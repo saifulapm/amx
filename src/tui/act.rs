@@ -23,7 +23,7 @@ use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use super::paint::Card;
+use super::paint::{Card, Hunk};
 use super::rows::{Narrow, shorten};
 use crate::catalog::{self, Entry};
 use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
@@ -1756,6 +1756,29 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     }
 }
 
+/// The words somebody typed on the card's line, with the hunk they are about
+/// in front of them.
+///
+/// What a review comment has to carry is where it is pointed, and on a patch
+/// that is the file and the line — said first, because it is the one thing the
+/// agent cannot work out from the words. Under it the hunk as git wrote it, in
+/// a fence marked `diff` so a vendor that renders markdown draws it as the
+/// patch it is rather than as a paragraph of plusses.
+///
+/// The fence grows a backtick for as long as the hunk holds one that long: a
+/// patch to a markdown file is routinely three backticks in column two, and a
+/// fence the text can close is a comment that ends in the middle of itself.
+pub fn on_hunk(hunk: &Hunk, words: &str) -> String {
+    let mut fence = String::from("```");
+    while hunk.text.contains(&fence) {
+        fence.push('`');
+    }
+    format!(
+        "{}:{}\n\n{fence}diff\n{}\n{fence}\n\n{words}",
+        hunk.path, hunk.line, hunk.text
+    )
+}
+
 /// Whether a line typed at this agent would reach it, for the card that has to
 /// say so before anybody types.
 ///
@@ -2655,6 +2678,36 @@ mod tests {
             (Some("prefer the stacked one".to_string()), None),
             "a line that does not open with a key is quoted back whole rather \
              than by its first word"
+        );
+    }
+
+    #[test]
+    fn card_sends_the_hunk_under_the_cursor_in_front_of_the_words() {
+        let hunk = |text: &str| Hunk {
+            path: "src/foo.rs".to_string(),
+            line: 12,
+            row: 4,
+            text: text.to_string(),
+        };
+
+        // Where it is pointed, then the hunk as git wrote it, then what
+        // somebody typed: an agent reading this has the file, the line and the
+        // rows the comment is about before it has the comment.
+        assert_eq!(
+            on_hunk(
+                &hunk("@@ -12,2 +12,3 @@\n context\n+added"),
+                "why this row?"
+            ),
+            "src/foo.rs:12\n\n```diff\n@@ -12,2 +12,3 @@\n context\n+added\n```\n\nwhy this row?"
+        );
+
+        // A patch to a file that has a fence of its own in it takes a longer
+        // one, because a fence the hunk can close is a comment that ends in
+        // the middle of itself.
+        let fenced = on_hunk(&hunk("@@ -1,1 +1,2 @@\n+```sh"), "and this?");
+        assert_eq!(
+            fenced,
+            "src/foo.rs:12\n\n````diff\n@@ -1,1 +1,2 @@\n+```sh\n````\n\nand this?"
         );
     }
 

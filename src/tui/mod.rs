@@ -64,7 +64,7 @@ use act::{Asking, Composer, Renamed, Replied, Started};
 /// The editor door, for `amx new --edit`: the view and the command line open
 /// the same one, so a task written in either place is read the same way.
 pub use act::{Edited, edited};
-use paint::{Body, Card, HOLDS, Notice};
+use paint::{Body, Card, HOLDS, Hunk, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -2179,7 +2179,18 @@ impl Screen {
                 // they press enter is what they are answering.
                 if matches!(composer.asking, Asking::Reply) {
                     if let Some(id) = self.card.as_ref().map(|card| card.id.clone()) {
-                        let said = act::reply(root, &id, &composer.whole());
+                        // With the hunk the cursor is on in front of the
+                        // words, where it is on one: what somebody typed while
+                        // reading a patch is a comment on the hunk they were
+                        // reading, and the agent is owed the file and the line
+                        // it is about. Anywhere else the words go as they were
+                        // typed.
+                        let words = composer.whole();
+                        let said = match self.at_hunk() {
+                            Some((_, hunk)) => act::on_hunk(hunk, &words),
+                            None => words,
+                        };
+                        let said = act::reply(root, &id, &said);
                         self.replied(said, composer);
                     }
                     return Ok(Doing::Carry);
@@ -3077,6 +3088,20 @@ impl Screen {
         if let Some(card) = &self.card {
             self.scroll.to_hunk(card.body.hunks(), forward);
         }
+    }
+
+    /// Which hunk of the card's patch the cursor is standing on, and the hunk
+    /// itself. Nothing until somebody has stepped to one.
+    ///
+    /// The number as well as the hunk, because both are said out loud: the row
+    /// under the line names it, and the message the line sends is about it.
+    /// Read against the patch the card is holding now, the way the rule over
+    /// the card is — a cursor left on the twelfth hunk of a patch that has
+    /// since become a shorter one is standing on nothing.
+    pub(super) fn at_hunk(&self) -> Option<(usize, &Hunk)> {
+        let at = self.scroll.at_hunk()?;
+        let hunk = self.card.as_ref()?.body.hunks().get(at)?;
+        Some((at, hunk))
     }
 
     /// `rows` into the card's body, or back toward its natural edge.
@@ -5594,6 +5619,12 @@ diff --git a/src/bar.rs b/src/bar.rs
         press(&mut screen, ctrl('n'));
         assert_eq!(screen.scroll.at_hunk(), Some(1), "stepped from under it");
         assert_eq!(screen.answering().expect("still typing").text, "x");
+
+        // And what it is standing on is the hunk itself, which is what the
+        // line sends the words with: the file and the line a comment on it
+        // names.
+        let (at, hunk) = screen.at_hunk().expect("a hunk under the cursor");
+        assert_eq!((at, hunk.path.as_str(), hunk.line), (1, "src/bar.rs", 8));
     }
 
     #[test]

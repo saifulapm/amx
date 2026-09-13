@@ -1220,6 +1220,76 @@ fn d_shows_what_the_agent_has_changed() {
 }
 
 #[test]
+fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let tree = PathBuf::from(
+        amx.meta("fix-login-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+    types(&amx, &view, "d");
+    amx.until("the diff", || {
+        screen(&amx, &view).contains("+after").then_some(())
+    });
+
+    // Stepped onto the one hunk the patch has, the row under the line says
+    // which one the words will carry.
+    press(&amx, &view, "C-n");
+    amx.until("the hunk under the cursor", || {
+        screen(&amx, &view).contains("hunk 1 of 1").then_some(())
+    });
+    types(&amx, &view, "why this row?");
+    let asked = amx.until("the words on the line", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ why this row?").then_some(drawn)
+    });
+    assert!(
+        asked.contains("enter sends it with hunk 1"),
+        "and the keys say what enter will send: {asked}"
+    );
+
+    // What reached the agent is where the comment is pointed, the hunk as git
+    // wrote it, and then the words.
+    press(&amx, &view, "Enter");
+    let sent = amx.until("the message on the record", || {
+        amx.events("fix-login-a1b")
+            .into_iter()
+            .find(|event| event["kind"] == "send")
+    });
+    assert_eq!(
+        sent["payload"]["text"],
+        json!("README.md:1\n\n```diff\n@@ -1 +1 @@\n-before\n+after\n```\n\nwhy this row?")
+    );
+}
+
+#[test]
 fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     let amx = Harness::new();
     let repo = amx.a_repo();

@@ -178,10 +178,7 @@ pub struct Body {
 /// begins.
 ///
 /// The cursor steps by the row, and what it is standing on is what a comment
-/// off the card names — and that comment is not in the view yet. `expect`
-/// rather than `allow`: the day it is, the compiler asks for the attribute
-/// back.
-#[cfg_attr(not(test), expect(dead_code, reason = "read by a comment on a hunk"))]
+/// off the card names.
 pub struct Hunk {
     /// The file it changes, on the new side — the old side where the file is
     /// being deleted and there is no new one.

@@ -41,22 +41,26 @@ use crate::tui::{Mode, Screen};
 /// reads as a keyboard at a glance and only as prose on a second look. That is
 /// also what stands between one hint and the next — the weight changing is a
 /// clearer edge than any character amx could put there, and it costs no cells.
-pub(super) type Hint = (&'static str, &'static str);
+///
+/// The key is written down and the words after it are borrowed: what enter
+/// does on the card's line names the hunk under the cursor, and that is a
+/// number read off the card rather than a sentence anybody could write here.
+pub(super) type Hint<'a> = (&'static str, &'a str);
 
 /// The key the hint row keeps whatever else it has to shed, because the
 /// overlay behind it is where every key is.
-const MORE: Hint = ("?", "keys");
+const MORE: Hint<'static> = ("?", "keys");
 
 /// The key the row under a card keeps whatever else it sheds: a card is drawn
 /// over the list it was opened from, and one nobody can see the way out of is
 /// one they are stuck in.
-const CLOSES: Hint = ("esc", "closes it");
+const CLOSES: Hint<'static> = ("esc", "closes it");
 
 /// And what the row says while a `g` is standing there waiting for its second.
 ///
 /// Both halves of it, because what somebody wants to know having pressed one
 /// key of two is what the other one would do and how to not do it.
-const WAITING_ON_A_G: [Hint; 2] = [
+const WAITING_ON_A_G: [Hint<'static>; 2] = [
     ("g again", "the top of the list"),
     ("any other key", "carries on"),
 ];
@@ -474,7 +478,7 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
 /// those over the other two would be teaching somebody to press the wrong key.
 /// So what the cursor is standing on decides the front of the row, and the
 /// keys that mean the same thing wherever it is standing follow.
-fn hints(screen: &Screen) -> Vec<Hint> {
+fn hints(screen: &Screen) -> Vec<Hint<'static>> {
     let list = &screen.list;
     let mut said = match list.items().get(list.cursor()) {
         Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
@@ -520,7 +524,7 @@ fn hints(screen: &Screen) -> Vec<Hint> {
 /// the row under a card, where an enter on an empty line goes straight back to
 /// the wall. A hint that named one of the three over the other two would be
 /// teaching somebody to press the wrong key.
-fn enters(screen: &Screen) -> Hint {
+fn enters(screen: &Screen) -> Hint<'static> {
     match screen.list.items().get(screen.list.cursor()) {
         Some(Item::Heading(_, tally)) => match tally.shut {
             true => ("enter", "opens it"),
@@ -547,13 +551,19 @@ fn enters(screen: &Screen) -> Hint {
 /// nothing to break.
 fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static> {
     if !composer.text.is_empty() {
-        // The same key reaching the agent two ways: a question is answered,
-        // and an agent that is asking nothing is told something.
-        let enter = match screen.card.as_ref().is_some_and(|card| card.asks()) {
-            true => ("enter", "answers it"),
-            false => ("enter", "sends it"),
+        // The same key reaching the agent three ways: a question is answered,
+        // an agent that is asking nothing is told something, and words typed
+        // while a hunk is under the cursor go with that hunk. The last is the
+        // one nobody can see from the line itself, so the row counts the hunk
+        // the way the rule over the card counts it.
+        let does = match screen.card.as_ref().is_some_and(|card| card.asks()) {
+            true => "answers it".to_string(),
+            false => match screen.at_hunk() {
+                Some((at, _)) => format!("sends it with hunk {}", at + 1),
+                None => "sends it".to_string(),
+            },
         };
-        return fitted(&[enter, ("alt+enter", "newline")], CLOSES, width);
+        return fitted(&[("enter", &does), ("alt+enter", "newline")], CLOSES, width);
     }
 
     let mut said = vec![enters(screen), ("space", "closes it")];
@@ -576,8 +586,8 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
 /// to all the others; on a line being typed `?` is a character like any other
 /// and there is no overlay to shed into, so the place goes to esc, because a
 /// mode nobody can see the way out of is a mode they are stuck in.
-fn fitted(said: &[Hint], last: Hint, width: usize) -> Line<'static> {
-    let with = |kept: &[Hint]| {
+fn fitted<'a>(said: &[Hint<'a>], last: Hint<'a>, width: usize) -> Line<'static> {
+    let with = |kept: &[Hint<'a>]| -> Vec<Hint<'a>> {
         let mut all = kept.to_vec();
         all.push(last);
         all
@@ -592,7 +602,7 @@ fn fitted(said: &[Hint], last: Hint, width: usize) -> Line<'static> {
 
 /// Those hints drawn: each key carrying the weight, what it does dim behind
 /// it, and a gap of plain wall between one and the next.
-pub(super) fn row(hints: &[Hint]) -> Line<'static> {
+pub(super) fn row(hints: &[Hint<'_>]) -> Line<'static> {
     let mut spans = Vec::new();
     for (key, does) in hints {
         if !spans.is_empty() {
@@ -605,7 +615,7 @@ pub(super) fn row(hints: &[Hint]) -> Line<'static> {
 }
 
 /// The cells that row takes, which is what the shedding is measured against.
-fn spent(hints: &[Hint]) -> usize {
+fn spent(hints: &[Hint<'_>]) -> usize {
     let said: usize = hints
         .iter()
         .map(|(key, does)| key.chars().count() + 1 + does.chars().count())
@@ -1271,6 +1281,47 @@ mod tests {
         assert_eq!(
             hint_row(&carded(a_long_answer(), "keep it"), wide),
             "enter sends it   alt+enter newline   esc closes it"
+        );
+    }
+
+    /// A card holding what an agent has changed, which is the one body a hunk
+    /// can be under the cursor on.
+    fn a_patch() -> Card {
+        Card {
+            phase: Phase::Working,
+            question: None,
+            options: Vec::new(),
+            body: "diff --git a/src/foo.rs b/src/foo.rs\n\
+                   --- a/src/foo.rs\n\
+                   +++ b/src/foo.rs\n\
+                   @@ -1,2 +1,3 @@\n \
+                   context\n\
+                   +added\n"
+                .to_string(),
+            changes: true,
+            ..asking(&[], None)
+        }
+    }
+
+    #[test]
+    fn keymap_the_line_under_a_patch_says_the_hunk_the_words_will_go_with() {
+        let wide = (80, 14);
+
+        // Nothing stepped to yet, so the words go as they were typed and the
+        // row says so.
+        let screen = carded(a_patch(), "why this row?");
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter sends it   alt+enter newline   esc closes it"
+        );
+
+        // Stepped to a hunk, the key names the one it will carry: which hunk
+        // a comment is about is the one thing the line itself cannot show.
+        let card = screen.card.as_ref().expect("the card");
+        screen.scroll.to_hunk(card.body.hunks(), true);
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter sends it with hunk 1   alt+enter newline   esc closes it"
         );
     }
 
