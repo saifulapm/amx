@@ -2586,6 +2586,69 @@ fn c_whose_window_lapses_keeps_every_agent_it_marked() {
 }
 
 #[test]
+fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_names_it() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let (clean, holding) = two_agents_whose_work_landed(&amx, &repo);
+
+    // Both branches are in the main line, but somebody left a file in the
+    // second tree that no commit has. The sweep keeps such a tree and the
+    // record that names it, so the view has it to say before the press that
+    // would otherwise clear the row.
+    std::fs::write(Path::new(&holding).join("notes.md"), "half an idea\n")
+        .expect("a file nobody committed");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
+    });
+
+    // The first press asks git of every tree it found, and the row behind the
+    // one holding work says so where the others say what the next press does.
+    press(&amx, &view, "c");
+    let armed = amx.until("the row that will be kept to say why", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("holds work no commit has").then_some(drawn)
+    });
+    let held_row = row_of(&amx, &view, "tidy-b2c").expect("the row still on the wall");
+    assert!(
+        held_row.contains("holds work no commit has") && !held_row.contains("c again clears"),
+        "the held row says why rather than promising a press that passes it \
+         by:\n{armed}"
+    );
+    assert!(
+        row_of(&amx, &view, "fix-login-a1b")
+            .is_some_and(|row| row.contains("c again clears · #12 merged")),
+        "and the row with nothing uncommitted in it says what it said:\n{armed}"
+    );
+
+    // The press inside the window takes the clean row and goes past the held
+    // one, and the line at the foot names what stayed rather than counting it.
+    press(&amx, &view, "c");
+    amx.until("the count and the name of what was kept", || {
+        screen(&amx, &view)
+            .contains("cleared 1 · kept tidy-b2c: holds work no commit has")
+            .then_some(())
+    });
+    assert_eq!(
+        agents(&amx),
+        ["tidy-b2c"],
+        "the kept agent keeps its record, since the tree is where its work is"
+    );
+    assert!(!Path::new(&clean).exists(), "{clean} went with its record");
+    assert!(
+        Path::new(&holding).join("notes.md").exists(),
+        "and the uncommitted file is where somebody left it"
+    );
+    let after = screen(&amx, &view);
+    assert!(
+        after.contains("tidy-b2c"),
+        "the kept agent is still a row on the wall:\n{after}"
+    );
+}
+
+#[test]
 fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
