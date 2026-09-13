@@ -136,7 +136,7 @@ no composer and no footer in it at all.
 
 ## What reaches each rule
 
-Eight rules, in the order the document holds them.
+Nine rules, in the order the document holds them.
 
 - **`first_time_setup`** wants `Welcome to pi,` and twenty columns of rule. One
   component draws that banner: `first-time-setup.js`, over both of its steps.
@@ -145,9 +145,13 @@ Eight rules, in the order the document holds them.
   the first and the last of them. One component draws that title:
   `trust-selector.js`, which is what `/trust` raises. It is not what a pi
   stopped by its own startup gate draws — see finding 1 below.
+- **`folder_trust`** wants `Trust project folder?`, twenty columns of rule, and
+  one of `Do not trust` or `This allows pi to load`. That is the startup gate:
+  `extension-selector.js` with the words `core/project-trust.ts` hands it.
 - **`dialog`** wants `↑↓ navigate` and twenty columns of rule. Three components
   draw that hint row: `extension-selector.js`, `trust-selector.js` and
-  `first-time-setup.js`, and the two rules above take the last two off it first.
+  `first-time-setup.js`, and the rules above take the last two, and the
+  startup gate, off it first.
   Everything else pi draws spells its keys some other way, and `enter submit`,
   `Enter to select · … · Escape/Ctrl+C to cancel` and `Enter to select · Esc
   to go back` are three separate other ways.
@@ -197,7 +201,8 @@ against 0.85.1: the rows that moved say so.
 
 | Component | What raises it | The row it ends in | Reads |
 | --- | --- | --- | --- |
-| `extension-selector.js` | `ctx.ui.select`, `ctx.ui.confirm`, pi's own `/login` method chooser, and pi's own startup trust question | `↑↓ navigate  enter select  escape/ctrl+c cancel`, then a border | **`dialog`**, waiting (span 8; 7 on the `/login` chooser). On 0.85.1 a dialog raised mid-turn has no frame anywhere above it: the working indicator is in the editor the dialog replaced |
+| `extension-selector.js` | `ctx.ui.select`, `ctx.ui.confirm`, and pi's own `/login` method chooser | `↑↓ navigate  enter select  escape/ctrl+c cancel`, then a border | **`dialog`**, waiting (span 8; 7 on the `/login` chooser). On 0.85.1 a dialog raised mid-turn has no frame anywhere above it: the working indicator is in the editor the dialog replaced |
+| `extension-selector.js` | pi's own startup trust question, in a folder carrying `.pi/` with no decision saved | `↑↓ navigate  enter select  escape/ctrl+c cancel`, then a border | **`folder_trust`**, waiting, `trust` — since 2026-09-14; it read `dialog` before, see finding 1 of the 2026-09-05 pass |
 | `trust-selector.js` | `/trust` | `↑↓ navigate  enter save  escape/ctrl+c cancel`, then a border | **`project_trust`**, waiting (span 5). 0.85.1 draws the saved decision's `✓` in front of the label, so an unsaved folder's rows read `→   Trust`; the anchors are the title and the two rows under it, which did not move |
 | `first-time-setup.js` | first interactive run, with `PI_EXPERIMENTAL=1` and no `settings.json` | `↑↓ navigate`, then `enter continue` on the theme step and `enter finish` on the next, then `escape/ctrl+c skip setup`, then a border | **`first_time_setup`**, waiting (span 7 on both steps) |
 | `model-selector.js` | `/model`, or `ctrl+l` | `  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel`, then a border — 0.85.1 builds the row from the person's keybindings; 0.84.4 wrote `Esc to cancel` | nothing, unknown (span 2). It read **`login`** on 0.85.1 until the login rule's anchor gained its parenthesis — see finding 2 of the 0.85.1 pass |
@@ -784,6 +789,13 @@ both about where a box sits on the pane rather than about what is in it.
    goes with it never comes. The question the row shows is the sentence above
    the arrow, which on this screen is the consequence rather than the question:
    *This allows pi to load .pi settings and resources…*.
+
+   Closed 2026-09-14 with a rule: `folder_trust`, between `project_trust` and
+   `dialog`, anchored on `Trust project folder?` with one of `Do not trust` or
+   `This allows pi to load` beside it. `trust`, `setup`, and the title with
+   the folder under it for the question. Measured at 0.85.1 at 100 and 20
+   columns; at 20 the title is above the floor and the screen still falls to
+   `dialog`, as the `/trust` selector does.
 2. **The update box takes every windowed rule off the pane.** The first pass
    measured the idle half of this. The whole of it is worse: `row_of` finds the
    topmost row carrying a string, the box's own top border is that row, and

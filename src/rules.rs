@@ -1733,6 +1733,67 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)  mu
 ";
 
+    /// pi 0.85.1 asking about the folder of its own accord, at 100 columns on
+    /// a pane of 30 rows, started with `--offline --no-session` in a checkout
+    /// carrying a `.pi/` and no saved decision. Measured 2026-09-14. Not the
+    /// `/trust` selector above: a different title, a sentence about what
+    /// trusting allows where the saved decision was, five choices rather than
+    /// three, and the dialog's own `enter select` in the hint row.
+    const A_PI_FOLDER_TRUST: &str = r"
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Trust project folder?
+ /home/saiful/Sites/tries/pi-src
+
+ This allows pi to load .pi settings and resources, install missing project packages, and execute
+ project extensions.
+
+ → Trust
+   Trust parent folder (/home/saiful/Sites/tries)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+";
+
+    /// The same at 20 columns. The title is above the rows a rule may see and
+    /// the folder is the first row left, so the screen falls to the dialog
+    /// rule the way the `/trust` selector does at this width.
+    const A_PI_FOLDER_TRUST_20: &str = r" /home/saiful/Sites
+ /tries/pi-src
+
+ This allows pi to
+ load .pi settings
+ and resources,
+ install missing
+ project packages,
+ and execute
+ project
+ extensions.
+
+ → Trust
+   Trust parent
+ folder
+ (/home/saiful/Site
+ s/tries)
+   Trust (this
+ session only)
+   Do not trust
+   Do not trust
+ (this session
+ only)
+
+ ↑↓ navigate  enter
+  select
+ escape/ctrl+c
+ cancel
+
+────────────────────
+";
+
     /// The gate pi puts in front of a first run, at 100 columns on a pane of
     /// 30 rows, with `PI_EXPERIMENTAL=1` and an agent directory with no
     /// `settings.json` in it. Its own startup screen rather than the pane a
@@ -2207,10 +2268,10 @@ Only showing models from configured providers. Use /login to add providers.
         assert_eq!(gates(claude()), ["folder_trust"]);
         assert_eq!(
             gates(pi()),
-            ["first_time_setup", "project_trust", "login"],
+            ["first_time_setup", "project_trust", "folder_trust", "login"],
             "the gate in front of a first run, the question a folder nobody \
-             has decided about raises, and a pi with no key to call a provider \
-             with"
+             has decided about raises — asked with `/trust` or by pi itself \
+             on the way in — and a pi with no key to call a provider with"
         );
 
         // And a gate is a screen somebody is standing in front of. One marked
@@ -2882,12 +2943,13 @@ Only showing models from configured providers. Use /login to add providers.
     }
 
     #[test]
-    fn rules_pi_reads_the_eight_screens_it_draws() {
+    fn rules_pi_reads_the_nine_screens_it_draws() {
         assert_eq!(
             named(pi()),
             [
                 "first_time_setup",
                 "project_trust",
+                "folder_trust",
                 "dialog",
                 "editor",
                 "input",
@@ -3063,6 +3125,46 @@ Only showing models from configured providers. Use /login to add providers.
         };
         assert_eq!(narrow.name, "dialog");
         assert_eq!(narrow.state, Phase::Waiting);
+        assert_eq!(narrow.kind, Some(crate::store::Kind::Question));
+    }
+
+    #[test]
+    fn rules_pi_asking_about_the_folder_on_its_way_in_is_the_same_kind_of_question() {
+        // A pi started in a folder carrying a `.pi/` asks about it before the
+        // turn, in the dialog's own box and with none of the `/trust`
+        // selector's anchors on it, so the dialog rule read it as a tool call
+        // and the row quoted the sentence about consequences. It is the same
+        // decision about the same tree: `trust`, a gate, and the title with
+        // the folder under it for the question.
+        let Claim::Ruled(rule) = claim(pi(), A_PI_FOLDER_TRUST, Phase::Starting) else {
+            panic!("pi's own rule claims pi's own screen");
+        };
+        assert_eq!(rule.name, "folder_trust");
+        assert_eq!(rule.state, Phase::Waiting);
+        assert_eq!(rule.kind, Some(crate::store::Kind::Trust));
+        assert!(rule.setup);
+        let asked = pi()
+            .asking(A_PI_FOLDER_TRUST)
+            .expect("the screen says what it is blocking on");
+        assert_eq!(
+            asked.text,
+            "Trust project folder? /home/saiful/Sites/tries/pi-src"
+        );
+        assert!(asked.options.is_empty(), "pi numbers none of these");
+
+        // The `/trust` selector is still its own rule: neither takes the
+        // other's screen.
+        assert_eq!(
+            claim(pi(), A_PI_TRUST, Phase::Starting).rule_name(),
+            Some("project_trust")
+        );
+
+        // And at 20 columns the title is above the floor, so the screen falls
+        // to the dialog rule the way the selector does at that width.
+        let Claim::Ruled(narrow) = claim(pi(), A_PI_FOLDER_TRUST_20, Phase::Starting) else {
+            panic!("something still claims the screen at 20 columns");
+        };
+        assert_eq!(narrow.name, "dialog");
         assert_eq!(narrow.kind, Some(crate::store::Kind::Question));
     }
 

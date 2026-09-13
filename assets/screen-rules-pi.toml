@@ -379,6 +379,65 @@ all = ["project trust", "──────────────────�
 any = ["saved decision:", "current session:"]
 within = 7
 
+# pi asking the same question of its own accord, before a turn: a pi started
+# in a folder it has no decision for and that carries a `.pi/` directory. Not
+# the screen above — `docs/pi-screens.md` (the 2026-09-05 pass, finding 1)
+# measured that `core/project-trust.ts` builds this one as a string for
+# `ctx.ui.select`, so it is the dialog's own box with pi's own words in it, and
+# `project_trust` walks past it. Measured at 0.85.1 on 2026-09-14, at 100 and
+# 20 columns on a pane of 30 rows, with `pi --offline --no-session` in a
+# checkout of pi's own source, which carries a `.pi/`:
+#
+#   ──────────────────────────────────────────────────────────
+#
+#    Trust project folder?
+#    /home/saiful/Sites/tries/pi-src
+#
+#    This allows pi to load .pi settings and resources, install missing
+#    project packages, and execute project extensions.
+#
+#    → Trust
+#      Trust parent folder (/home/saiful/Sites/tries)
+#      Trust (this session only)
+#      Do not trust
+#      Do not trust (this session only)
+#
+#    ↑↓ navigate  enter select  escape/ctrl+c cancel
+#
+#   ──────────────────────────────────────────────────────────
+#
+# `Trust project folder?` is the anchor: pi's own title, fixed, with the folder
+# on the row under it, and on no other screen. `any` keeps a quotation of the
+# title from being the title on its own — `Do not trust` is one of this
+# screen's own rows, twelve columns, and `This allows pi to load` opens the
+# sentence under the folder. Both are the screen's, neither is the `/trust`
+# selector's.
+#
+# `asks` reads the title as a sentence, and the sentence runs on to the folder
+# under it, which is the half of the question that says what is being decided
+# about. Reading above the arrow, as the dialog rule does, takes the sentence
+# about consequences instead — which is what this screen showed on a row
+# before this rule existed.
+#
+# No `within`: the folder and the sentence under it wrap deeper on a deeper
+# tree, so how far the title sits from the rows under it is not one number.
+#
+# At 20 columns the box is taller than the rows a rule may see and the title
+# is above the floor; the screen falls to the dialog rule, as the `/trust`
+# selector does at the same width.
+#
+# `setup` and `trust` for the reasons given at the rule above: a gate in front
+# of the work, about the folder, that only a person gets an agent past — and
+# the one `crate::trust` answers with `--approve` when the config says amx may.
+[[rule]]
+name = "folder_trust"
+state = "waiting"
+kind = "trust"
+setup = true
+all = ["trust project folder?", "────────────────────"]
+any = ["do not trust", "this allows pi to load"]
+asks = { sentence = "trust project folder?" }
+
 # pi is blocked on a dialog a tool call raised, and it is drawn INSIDE the
 # composer box: the editor is replaced by the dialog and the two borders stay
 # where they were, with the working directory and the stats line under them
