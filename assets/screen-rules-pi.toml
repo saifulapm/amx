@@ -269,6 +269,11 @@ bottom = 1
 # the analytics step it is the opt-in question and the prose beneath it, read
 # as the one sentence the vendor drew them as.
 #
+# `marks` is the same arrow again, read as the list this time: `Dark` and
+# `Light` on the theme step, `Share anonymous usage data` and `Don't share` on
+# the one after it. With it the sentence is read above the RUN rather than
+# above the arrow, so a cursor somebody moved leaves the question where it is.
+#
 # `setup` is what tells `doctor` this screen stands in front of the work rather
 # than inside it: nothing the agent was spawned to do has begun, nobody but the
 # person at the keyboard can get it past, and no amount of waiting ends it.
@@ -284,6 +289,7 @@ setup = true
 all = ["welcome to pi,", "────────────────────"]
 not_below = ["$0.", "%/"]
 asks = { above = "→" }
+marks = "→"
 
 # pi is asking whether this folder is one to trust. It comes above the dialog
 # rule because that rule claims it too — same box, same hint row — and what the
@@ -366,6 +372,14 @@ asks = { above = "→" }
 # to do about this screen is not one of the three choices on it anyway — it is
 # whether amx should have answered it before the agent ever met it.
 #
+# `marks` is the arrow, and it is what puts the three choices on the record:
+# `Trust`, `Trust parent folder (…)` and `Do not trust`, numbered here in the
+# order pi draws them. It costs the question, which a rule that names no `asks`
+# now reads above the run — `Saved decision: none Current session: trusted`,
+# the two rows the comment above says are the screen rather than the question.
+# The choices are worth more than the sentence: without them the only grammar
+# on this screen is a walk typed blind.
+#
 # `setup` for the reason given at the rule above: the agent is stopped in front
 # of its work and only a person gets it past. The `trust` kind is the other half
 # of what `doctor` reads here — a gate that asks about the tree amx cut is one
@@ -378,6 +392,7 @@ setup = true
 all = ["project trust", "────────────────────"]
 any = ["saved decision:", "current session:"]
 within = 7
+marks = "→"
 
 # pi asking the same question of its own accord, before a turn: a pi started
 # in a folder it has no decision for and that carries a `.pi/` directory. Not
@@ -419,6 +434,16 @@ within = 7
 # about consequences instead — which is what this screen showed on a row
 # before this rule existed.
 #
+# `marks` is the arrow, and the five rows of the run it is in are the choices:
+# `Trust`, `Trust parent folder (…)`, `Trust (this session only)`, `Do not
+# trust` and `Do not trust (this session only)`, numbered here in the order pi
+# draws them. Measured at 0.85.1 on 2026-09-14 — `1`, `2`, `y` and `n` do
+# nothing to that selector, `Up` and `Down` move one row and clamp at both
+# ends, and `Enter` takes the arrowed row — so the numbers are amx's own and
+# the record says as much. A tree deep enough to wrap a label keeps it whole:
+# the rows the vendor wraps onto start left of where the marked row's words
+# start, and the reading joins them back on.
+#
 # No `within`: the folder and the sentence under it wrap deeper on a deeper
 # tree, so how far the title sits from the rows under it is not one number.
 #
@@ -437,6 +462,7 @@ setup = true
 all = ["trust project folder?", "────────────────────"]
 any = ["do not trust", "this allows pi to load"]
 asks = { sentence = "trust project folder?" }
+marks = "→"
 
 # pi is blocked on a dialog a tool call raised, and it is drawn INSIDE the
 # composer box: the editor is replaced by the dialog and the two borders stay
@@ -489,17 +515,28 @@ asks = { sentence = "trust project folder?" }
 # floor puts its top border out of reach entirely. There is no height a window
 # could be sized to.
 #
-# ── What it asks, and what it cannot list ────────────────────────────────────
+# ── What it asks, and what it lists ──────────────────────────────────────────
 # The question is the caller's own title, and pi draws it at the top of the box
 # with a blank row under it and the choices under that. `asks` is what reads
 # it: the sentence above the arrow, because pi marks its selected choice with a
-# leading `→ ` and numbers nothing. That is also what the reading cannot do.
-# The choices are read off a screen by their numbers — first, second, third,
-# each on its own row — and on this vendor there are none, so a row waiting on
-# a pi dialog carries the sentence and an empty list of answers where claude's
-# carries both. `→` is one column, it was on every capture measured, and it is
-# the lowest row carrying it that the question is read above: the choices under
-# the first one carry two spaces instead.
+# leading `→ ` and numbers nothing. `→` is one column and it was on every
+# capture measured.
+#
+# `marks` is what reads the rest. The choices claude draws are read off a
+# screen by their numbers — first, second, third, each on its own row — and on
+# this vendor there are none, so until 2026-09-14 a row waiting on a pi dialog
+# carried the sentence and an empty list of answers where claude's carried
+# both, and the only grammar left was a walk typed blind. With `marks` the
+# reading takes the run of rows the arrow is in — `Allow once`, `Allow always`,
+# `Deny` on the capture above, `Yes` and `No` on a confirm — and numbers them
+# itself, in the order pi draws them. The rows under the marked one carry two
+# spaces where it carries the arrow and a space, which is what tells a choice
+# from the wrap of the one above it: a wrap starts further left.
+#
+# With `marks` the question is read above the RUN rather than above the arrow.
+# The arrow moves when somebody presses a key and the run does not, so a cursor
+# one row down no longer turns the choice above it into the sentence a row
+# quotes.
 #
 # `ctx.ui.confirm` draws its message on the row directly under the title, and
 # the reading takes the two rows as the one sentence pi drew them as:
@@ -526,6 +563,7 @@ kind = "question"
 all = ["↑↓ navigate", "────────────────────"]
 any = ["escape/ctrl+c", "enter select"]
 asks = { above = "→" }
+marks = "→"
 
 # pi is blocked on a caller asking for a BLOCK of text — `ctx.ui.editor`, the
 # third of the three calls an extension stops pi with. Same box as the dialog

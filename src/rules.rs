@@ -99,6 +99,16 @@ pub struct Rule {
     /// do not keep it where a screen usually does.
     #[serde(default)]
     pub asks: Asks,
+    /// The glyph this screen draws in front of the row its cursor is on, for a
+    /// vendor that marks a choice instead of numbering one.
+    ///
+    /// A rule saying nothing reads numbered choices and nothing else, which is
+    /// how every choice amx has ever read was read. A rule saying this takes
+    /// the run of rows the mark is in as the list and numbers it itself — see
+    /// [`Screen::marked_below`] — so a person has a key to press on a screen
+    /// whose only other grammar is a walk typed blind.
+    #[serde(default)]
+    pub marks: Option<String>,
     /// What this screen wants back, which is what decides what may be sent to
     /// it. Every screen that blocks has one; a screen that is a state rather
     /// than a question wants nothing and says so by leaving this out.
@@ -328,22 +338,45 @@ impl Rule {
     /// are states, not questions. The rest is where each screen keeps its
     /// question, which is not the same place on any two of them — see
     /// [`Asks`].
+    ///
+    /// On a rule with [`marks`](Rule::marks) the list is the run of rows the
+    /// mark is in, and the question is the sentence above that run rather than
+    /// above the mark: the mark says where the vendor's cursor is, a person can
+    /// move it before amx looks, and a choice above the cursor is not what the
+    /// screen is asking.
     pub fn question(&self, capture: &str) -> Option<Question> {
         if self.state != Phase::Waiting {
             return None;
         }
 
         let screen = Screen::new(capture);
-        let choices = screen.first_option();
-        let (from, to) = match &self.asks {
-            Asks::Sentence(anchor) => screen.sentence_at(screen.row_above(choices, anchor)?),
-            Asks::Above(anchor) => screen.sentence_above(screen.row_above(choices, anchor)?)?,
-            Asks::AboveOptions => screen.sentence_above(choices?)?,
+        let marked = self
+            .marks
+            .as_deref()
+            .and_then(|mark| Some((screen.run_of(mark)?, mark)));
+        let choices = marked
+            .map(|(run, _)| run.0)
+            .or_else(|| screen.first_option());
+        let (from, to) = match (&self.asks, marked) {
+            (Asks::Sentence(anchor), _) => screen.sentence_at(screen.row_above(choices, anchor)?),
+            (Asks::Above(anchor), None) => {
+                screen.sentence_above(screen.row_above(choices, anchor)?)?
+            }
+            // The run's first row is the anchor row on a marked screen,
+            // whichever of the two the document asked for.
+            (Asks::Above(_) | Asks::AboveOptions, _) => screen.sentence_above(choices?)?,
         };
 
         let text = screen.joined(from, to);
+        let options = match marked {
+            Some((run, mark)) => screen.marked_below(run, mark),
+            None => screen.options_below(to),
+        };
         (!text.is_empty()).then(|| Question {
-            options: screen.options_below(to),
+            // Nothing was read off a mark where nothing was read, and a list
+            // amx did not number is not one to offer numbers for.
+            walked: marked.is_some() && !options.is_empty(),
+            options,
             text,
         })
     }
@@ -530,6 +563,87 @@ impl Screen {
         }
         options
     }
+
+    /// The rows the list a mark names is drawn on: the run of rows with
+    /// something on them around the LOWEST row carrying `mark`.
+    ///
+    /// The lowest for the reason [`first_option`](Screen::first_option) takes
+    /// the lowest first choice — a blocking screen is the last thing the vendor
+    /// draws, and a glyph is a glyph wherever an agent's own output put one
+    /// earlier. A blank row ends the run at each end, and so does the rule the
+    /// vendor draws its box with, which is what stops a list at the border
+    /// under it.
+    fn run_of(&self, mark: &str) -> Option<(usize, usize)> {
+        let at = self.shown.iter().rposition(|row| row.contains(mark))?;
+
+        let mut from = at;
+        while from > 0 && content(&self.shown[from - 1]) {
+            from -= 1;
+        }
+
+        let mut to = at;
+        while to + 1 < self.shown.len() && content(&self.shown[to + 1]) {
+            to += 1;
+        }
+        Some((from, to))
+    }
+
+    /// The choices of the run at `run`, in the order they are drawn.
+    ///
+    /// The mark and the space after it are what the list is measured by: a row
+    /// whose own words start where the marked row's words start is a choice,
+    /// and a row starting to the left of that is the rest of the choice above
+    /// it, joined with one space. That is how the vendor wraps a label too long
+    /// for the pane, and it is the only thing that tells a wrap from a choice
+    /// on a screen with no numbers on it.
+    fn marked_below(&self, run: (usize, usize), mark: &str) -> Vec<String> {
+        let (from, to) = run;
+        let rows = &self.shown[from..=to];
+        let Some(column) = rows
+            .iter()
+            .filter_map(|row| column_of(row, mark))
+            .next_back()
+        else {
+            return Vec::new();
+        };
+
+        let mut options: Vec<String> = Vec::new();
+        for row in rows {
+            let (at, label) = labelled(row, mark);
+            if label.is_empty() {
+                continue;
+            }
+            if at >= column + 2 {
+                options.push(label.to_string());
+            } else if let Some(above) = options.last_mut() {
+                above.push(' ');
+                above.push_str(label);
+            }
+        }
+        options
+    }
+}
+
+/// Which column `mark` is drawn in, counting from the left of the row.
+fn column_of(row: &str, mark: &str) -> Option<usize> {
+    row.find(mark).map(|at| row[..at].chars().count())
+}
+
+/// Where a row's own words start, and what they say: the row trimmed, with a
+/// leading mark and the space after it taken off with the indent.
+fn labelled<'a>(row: &'a str, mark: &str) -> (usize, &'a str) {
+    let words = row.trim_start();
+    let mut at = row.chars().count() - words.chars().count();
+
+    let words = match words.strip_prefix(mark) {
+        Some(rest) => {
+            let label = rest.trim_start();
+            at += mark.chars().count() + rest.chars().count() - label.chars().count();
+            label
+        }
+        None => words,
+    };
+    (at, words.trim_end())
 }
 
 /// One numbered choice, as the vendor draws it: `❯ 1. Yes` for the one under
@@ -2582,6 +2696,11 @@ Only showing models from configured providers. Use /login to add providers.
             let asked = asked(claude(), screen);
             assert_eq!(asked.text, whole, "{what}");
             assert_eq!(asked.options, options, "{what}");
+            assert!(
+                !asked.walked,
+                "{what}: claude's document marks no screen, so nothing here is \
+                 a list amx numbered"
+            );
         }
     }
 
@@ -3150,7 +3269,19 @@ Only showing models from configured providers. Use /login to add providers.
             asked.text,
             "Trust project folder? /home/saiful/Sites/tries/pi-src"
         );
-        assert!(asked.options.is_empty(), "pi numbers none of these");
+        assert_eq!(
+            asked.options,
+            [
+                "Trust",
+                "Trust parent folder (/home/saiful/Sites/tries)",
+                "Trust (this session only)",
+                "Do not trust",
+                "Do not trust (this session only)"
+            ],
+            "the five rows of the run the arrow is in, in the order pi draws \
+             them"
+        );
+        assert!(asked.walked, "read off the marks, and numbered here");
 
         // The `/trust` selector is still its own rule: neither takes the
         // other's screen.
@@ -3313,37 +3444,98 @@ Only showing models from configured providers. Use /login to add providers.
     }
 
     #[test]
-    fn rules_a_pi_dialog_carries_the_callers_question_and_none_of_its_choices() {
+    fn rules_a_pi_dialog_carries_the_callers_question_and_the_choices_it_marks() {
         // The sentence a gated tool call asks is whatever its caller passed,
         // and pi draws it at the top of the box with the choices under it. The
-        // choices are the half of this the reading cannot have: pi marks the
-        // selected one with a leading arrow and numbers nothing, so there is
-        // no first option to walk up from and no telling a choice from the
-        // description under one. The arrow is what the question is read above.
+        // choices are marked rather than numbered — an arrow in front of the
+        // row the cursor is on, two spaces in front of the rest — so the
+        // reading takes the run of rows the arrow is in, numbers them itself in
+        // the order they are drawn, and says on the record that it did.
         let Claim::Ruled(rule) = claim(pi(), A_PI_DIALOG, Phase::Working) else {
             panic!("pi's own rule claims pi's own screen");
         };
         assert_eq!(rule.kind, Some(crate::store::Kind::Question));
 
-        for (what, screen, sentence) in [
-            ("a gated tool call", A_PI_DIALOG, "Run echo hi?"),
-            ("the same at 20 columns", A_PI_DIALOG_20, "Run echo hi?"),
+        let gated: &[&str] = &["Allow once", "Allow always", "Deny"];
+        for (what, screen, sentence, options) in [
+            ("a gated tool call", A_PI_DIALOG, "Run echo hi?", gated),
+            (
+                "the same at 20 columns",
+                A_PI_DIALOG_20,
+                "Run echo hi?",
+                gated,
+            ),
             (
                 "a confirm, which draws its message under its title",
                 A_PI_CONFIRM,
                 "Push to origin? This rewrites the remote branch.",
+                &["Yes", "No"],
             ),
         ] {
             let asked = pi()
                 .asking(screen)
                 .unwrap_or_else(|| panic!("{what} says what it is blocking on"));
             assert_eq!(asked.text, sentence, "{what}");
+            assert_eq!(asked.options, options, "{what}");
             assert!(
-                asked.options.is_empty(),
-                "{what}: pi numbers none of these, so none of them is read: {:?}",
-                asked.options
+                asked.walked,
+                "{what}: the numbers are amx's own, and the record says so"
             );
         }
+    }
+
+    #[test]
+    fn rules_a_cursor_somebody_moved_leaves_the_question_where_it_is() {
+        // The mark says which row the vendor's cursor is on, and a person can
+        // move it with an arrow key before amx ever looks. So the question is
+        // the sentence above the RUN the mark is in rather than above the mark
+        // itself: anchored on the mark, a cursor one row down would make the
+        // choice above it the sentence a row quotes.
+        //
+        // Not a capture. It is the measured dialog with its arrow moved one row
+        // down, which is what `Down` does to that screen — measured on pi
+        // 0.85.1 on 2026-09-14, where the list clamps at both ends and `Enter`
+        // takes the arrowed row.
+        let moved = A_PI_DIALOG
+            .replace(" → Allow once", "   Allow once")
+            .replace("   Allow always", " → Allow always");
+
+        let asked = pi().asking(&moved).expect("the screen still blocks");
+        assert_eq!(asked.text, "Run echo hi?");
+        assert_eq!(
+            asked.options,
+            ["Allow once", "Allow always", "Deny"],
+            "the list is the run, and the cursor is not part of what it says"
+        );
+    }
+
+    #[test]
+    fn rules_which_screens_mark_a_choice_is_the_documents_to_say() {
+        // Which screens draw a marked list rather than a numbered one is a
+        // fact about the vendor, so it is written in that vendor's own
+        // document. claude numbers what it asks — the one screen of its own
+        // that does not is its 2.1.259 trust gate, which takes a walk and no
+        // digit at all — and a rule that says nothing reads numbers the way it
+        // always has.
+        let marks = |screens: &'static Ruleset| -> Vec<&'static str> {
+            screens
+                .rules()
+                .iter()
+                .filter(|rule| rule.marks.is_some())
+                .map(|rule| rule.name.as_str())
+                .collect()
+        };
+        assert_eq!(
+            marks(pi()),
+            [
+                "first_time_setup",
+                "project_trust",
+                "folder_trust",
+                "dialog"
+            ],
+            "every screen pi draws a selector on"
+        );
+        assert!(marks(claude()).is_empty(), "claude numbers what it asks");
     }
 
     #[test]

@@ -146,6 +146,14 @@ pub struct Question {
     /// something has read the screen, and empty on a question that takes words
     /// rather than a key.
     pub options: Vec<String>,
+    /// Whether those choices were read off the mark a vendor draws in front of
+    /// the row its cursor is on, rather than off numbers the vendor wrote.
+    ///
+    /// The numbers on a walked list are amx's own — see `rules::Rule::marks` —
+    /// so the key that takes one is not the digit beside it but a walk down
+    /// from the top, and everything offering an answer has to know which of
+    /// the two it is looking at.
+    pub walked: bool,
 }
 
 /// What kind of thing an agent has stopped to ask.
@@ -316,6 +324,10 @@ pub struct State {
     /// They belong to the question above them and go wherever it goes; the
     /// record has no place for options with no question over them.
     pub options: Vec<String>,
+    /// Whether the choices above were read off a mark rather than off numbers
+    /// the vendor wrote — see [`Question::walked`]. It goes where they go, and
+    /// a record with no choices claims nothing about how they would be taken.
+    pub walked: bool,
     /// The whole of the call the question came from, where the call is the
     /// vendor asking its own: every question in it, the sentences under their
     /// choices, and which of them have been answered. One question of it is
@@ -434,6 +446,7 @@ impl State {
     pub fn asks(&mut self, question: Option<String>) {
         self.question = question;
         self.options.clear();
+        self.walked = false;
         self.asking.clear();
         self.reported = self.question.is_some();
         if self.question.is_none() {
@@ -491,6 +504,7 @@ impl State {
             .unzip();
         self.question = text;
         self.options = options.unwrap_or_default();
+        self.walked = false;
         self.reported = self.question.is_some();
     }
 
@@ -538,6 +552,7 @@ impl State {
         }
         if self.options.is_empty() {
             self.options.clone_from(&seen.options);
+            self.walked = seen.walked;
         }
     }
 
@@ -546,11 +561,15 @@ impl State {
     /// reason [`learns_from`](State::learns_from) is: a look that found the
     /// screen the record already has has no business holding it.
     pub fn corrected_by(&self, seen: Option<&Question>) -> bool {
-        let (text, options) = match asked(seen) {
-            Some(seen) => (Some(seen.text.as_str()), seen.options.as_slice()),
-            None => (None, &[][..]),
+        let (text, options, walked) = match asked(seen) {
+            Some(seen) => (
+                Some(seen.text.as_str()),
+                seen.options.as_slice(),
+                seen.walked,
+            ),
+            None => (None, &[][..], false),
         };
-        self.question.as_deref() != text || self.options != options
+        self.question.as_deref() != text || self.options != options || self.walked != walked
     }
 
     /// Take what a screen said over what a screen said before it.
@@ -572,6 +591,7 @@ impl State {
         let seen = asked(seen);
         self.question = seen.map(|seen| seen.text.clone());
         self.options = seen.map(|seen| seen.options.clone()).unwrap_or_default();
+        self.walked = seen.is_some_and(|seen| seen.walked);
         self.reported = false;
     }
 }
@@ -669,6 +689,12 @@ struct Known {
     text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<String>,
+    /// Whether those choices were read off a mark — see [`State::walked`].
+    /// Written only where it is true, the way `reported` is: a document that
+    /// does not say is a list the vendor numbered itself, which is what every
+    /// document written before this field holds.
+    #[serde(skip_serializing_if = "is_not")]
+    walked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<Kind>,
     /// The call the question came from, whole. The question showing and its
@@ -704,6 +730,7 @@ impl From<State> for Wire {
             summary,
             question,
             options,
+            walked,
             asking,
             kind,
             reported,
@@ -753,6 +780,7 @@ impl From<State> for Wire {
                 (text, kind) => Some(Asked::Whole(Known {
                     text,
                     options,
+                    walked,
                     kind,
                     asking,
                     reported,
@@ -774,16 +802,17 @@ impl From<State> for Wire {
 
 impl From<Wire> for State {
     fn from(wire: Wire) -> State {
-        let (question, options, kind, asking, reported) = match wire.question {
-            Some(Asked::Words(text)) => (Some(text), Vec::new(), None, Vec::new(), true),
+        let (question, options, walked, kind, asking, reported) = match wire.question {
+            Some(Asked::Words(text)) => (Some(text), Vec::new(), false, None, Vec::new(), true),
             Some(Asked::Whole(asked)) => (
                 asked.text,
                 asked.options,
+                asked.walked,
                 asked.kind,
                 asked.asking,
                 asked.reported,
             ),
-            None => (None, Vec::new(), None, Vec::new(), false),
+            None => (None, Vec::new(), false, None, Vec::new(), false),
         };
 
         State {
@@ -795,6 +824,7 @@ impl From<Wire> for State {
             summary: wire.summary,
             question,
             options,
+            walked,
             asking,
             kind,
             reported,
@@ -1934,6 +1964,7 @@ mod tests {
         let seen = Question {
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
+            walked: false,
         };
 
         let mut state = hooked.clone();
@@ -1965,6 +1996,7 @@ mod tests {
         let seen = Question {
             text: "Run echo hi?".to_string(),
             options: vec!["Allow once".to_string(), "Deny".to_string()],
+            walked: false,
         };
 
         let mut heard = State::default();
@@ -2033,6 +2065,7 @@ mod tests {
         read.correct(Some(&Question {
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
+            walked: false,
         }));
         let document = serde_json::to_value(read.clone()).unwrap();
         assert_eq!(document["question"]["reported"], serde_json::Value::Null);
@@ -2049,6 +2082,62 @@ mod tests {
     }
 
     #[test]
+    fn store_round_trips_a_list_amx_numbered_itself() {
+        // Choices read off the marks a vendor draws in front of the row its
+        // cursor is on are choices no digit takes by itself, and what may be
+        // sent back turns on that. So the mark travels with the options:
+        // written where it is true, absent where it is not, and off every
+        // record written before it existed.
+        let seen = Question {
+            text: "Run echo hi?".to_string(),
+            options: vec!["Allow once".to_string(), "Deny".to_string()],
+            walked: true,
+        };
+        let mut state = State::default();
+        state.correct(Some(&seen));
+        assert!(state.walked);
+
+        let document = serde_json::to_value(state.clone()).unwrap();
+        assert_eq!(document["question"]["walked"], true);
+        assert_eq!(serde_json::from_value::<State>(document).unwrap(), state);
+
+        // The same choices read off numbers the vendor wrote are a different
+        // answer to how they are taken, so a reading that changes nothing else
+        // still corrects the record.
+        let numbered = Question {
+            walked: false,
+            ..seen.clone()
+        };
+        assert!(state.corrected_by(Some(&numbered)));
+        state.correct(Some(&numbered));
+        let document = serde_json::to_value(state.clone()).unwrap();
+        assert_eq!(
+            document["question"]["walked"],
+            serde_json::Value::Null,
+            "a document that does not say is a list the vendor numbered"
+        );
+        assert_eq!(serde_json::from_value::<State>(document).unwrap(), state);
+
+        // A document written before any of this reads the same way, and the
+        // choices take the mark with them when the question goes.
+        let before: State = serde_json::from_str(
+            r#"{"state":"waiting","question":{"text":"Run echo hi?","options":["Allow once"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(before.options, ["Allow once"]);
+        assert!(!before.walked);
+
+        let mut answered = State::default();
+        answered.learn(&seen);
+        assert!(
+            answered.walked,
+            "a screen's mark is learned with its choices"
+        );
+        answered.asks(Some("Claude needs your permission".to_string()));
+        assert!(!answered.walked, "and a hook's question offers no walk");
+    }
+
+    #[test]
     fn store_lets_a_later_screen_correct_what_an_earlier_screen_said() {
         // The law for a question a screen read: there is no vendor's word on
         // the record to be careful of, only what some earlier look read off
@@ -2061,6 +2150,7 @@ mod tests {
         let later = Question {
             text: "Which branch should I push to?".to_string(),
             options: Vec::new(),
+            walked: false,
         };
 
         assert!(state.corrected_by(Some(&later)), "the pane has moved on");
@@ -2096,10 +2186,12 @@ mod tests {
         typed_at.correct(Some(&Question {
             text: "Enter Cerebras API key".to_string(),
             options: Vec::new(),
+            walked: false,
         }));
         typed_at.correct(Some(&Question {
             text: "Project trust".to_string(),
             options: vec!["Trust".to_string(), "Do not trust".to_string()],
+            walked: false,
         }));
         assert_eq!(typed_at.question.as_deref(), Some("Project trust"));
         assert_eq!(typed_at.options, ["Trust", "Do not trust"]);
@@ -2119,6 +2211,7 @@ mod tests {
         let seen = Question {
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string()],
+            walked: false,
         };
         let noted = writer.observe(|s| s.learn(&seen)).unwrap();
         assert_eq!(noted.question.as_deref(), Some("Do you want to proceed?"));

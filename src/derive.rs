@@ -320,6 +320,10 @@ impl View {
             "summary": self.state.summary,
             "question": self.state.question,
             "options": self.state.options,
+            // Whether those choices carry the vendor's own numbers or amx's:
+            // on a walked list the key that takes one is a walk down from the
+            // top, so a caller answering by machine has to know which it has.
+            "walked": self.state.walked,
             // The question showing above, and the whole of the call it came
             // from here: every question in it with its own choices, the
             // sentences under them and the flag saying how many may be taken.
@@ -454,6 +458,7 @@ fn forget_the_placeholder(screens: &Ruleset, state: &mut State) {
     {
         state.question = None;
         state.options.clear();
+        state.walked = false;
     }
 }
 
@@ -2839,6 +2844,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let seen = Question {
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
+            walked: false,
         };
 
         forget_the_placeholder(rules::of("claude"), &mut state);
