@@ -55,6 +55,7 @@ pub fn run(
         agent
             .writer()?
             .update_state(|state| state.state = Phase::Stopped)?;
+        stopped(&agent, &meta);
     }
 
     end(&server, &meta.pane, &meta.id)?;
@@ -71,6 +72,31 @@ pub fn run(
         writeln!(out, "removed {}'s record", args.id)?;
     }
     Ok(exit::OK)
+}
+
+/// Run whatever somebody asked to have run when an agent is stopped.
+///
+/// Only where this verb is what wrote the phase, which is what the caller has
+/// just decided: an agent that had already ended reached this moment somewhere
+/// else, or never reached it at all.
+///
+/// Here rather than at the end of the verb, because what is left of the verb is
+/// a pane being ended and a worktree that may be about to go — and the worktree
+/// is where the command runs. Nothing is appended to the event log for it:
+/// nothing has happened to the agent that the record does not already say, so
+/// the line the command reads is built rather than read back.
+///
+/// The person's own config, because this verb is handed none — and the
+/// project's own file is read by [`crate::errand::assembled`], which is the one
+/// key of it that matters here.
+fn stopped(agent: &Agent, meta: &Meta) {
+    let event = store::Event::new("stop", serde_json::json!({}));
+    let config = crate::config::current();
+    if let Some(errand) = crate::errand::assembled(config, agent, meta, Phase::Stopped, &event) {
+        // Nobody is asked whether anybody is looking at the pane: this verb is
+        // closing it.
+        crate::notify::start(&errand, None);
+    }
 }
 
 /// Ask the agent to stop, then insist.

@@ -227,12 +227,14 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     if anothers(&meta, payload) {
         return Ok(());
     }
-    writer.append(&crate::store::Event::new(
-        kind(payload).unwrap_or("unknown"),
-        payload.clone(),
-    ))?;
+    // Kept rather than appended and forgotten: the line the event log gets is
+    // the line an errand is handed, and they are the same line because they are
+    // the same event.
+    let event = crate::store::Event::new(kind(payload).unwrap_or("unknown"), payload.clone());
+    writer.append(&event)?;
 
     let mut state = writer.state()?;
+    let was = state.state;
     let before = meta.clone();
     let notice = apply(payload, &mut state, &mut meta);
 
@@ -274,7 +276,12 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     }
     drop(writer);
 
-    notify::post(notice.as_ref(), config.notifications, None);
+    // The same fork, and the same answer about who is looking, for both: this
+    // hook is standing between the vendor and its next token, and one child is
+    // what it can afford.
+    let errand = reached(written.state, was, notice.is_some())
+        .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
+    notify::post(notice.as_ref(), config.notifications, errand.as_ref());
 
     // The turn is over and the vendor is sitting at its prompt, holding the
     // couple of hundred megabytes it worked in. Nothing is watching for the
@@ -296,6 +303,28 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
         let _ = Server::from_socket(meta.socket).run_after(delay, &command);
     }
     Ok(())
+}
+
+/// The moment one event brought the agent to, where it is one somebody may
+/// have written a command for.
+///
+/// A moment is a thing that happened, not a phase the record holds: an agent
+/// that was waiting when the second notice about the same screen arrived has
+/// not reached anything, and neither has one the vendor nudges about an hour
+/// after its turn ended.
+///
+/// So each is asked the question its own phase answers. Waiting is asked of the
+/// notice, which is the one thing that tells one stop from the three events
+/// that say so — see [`apply`]. Idle is asked of the phase before it, because
+/// the nudge about an idle session is the turn that is already over, said
+/// again. Every other phase is either the agent on its way somewhere or the end
+/// of the command, which is [`record_exit`]'s to say.
+fn reached(now: Phase, was: Phase, told: bool) -> Option<Phase> {
+    match now {
+        Phase::Waiting => told.then_some(Phase::Waiting),
+        Phase::Idle => (was != Phase::Idle).then_some(Phase::Idle),
+        _ => None,
+    }
 }
 
 /// How long this agent keeps a pane it is idle in.
@@ -356,10 +385,8 @@ fn quoted(word: &str) -> String {
 /// Record how the command ended, and tell somebody if it is worth telling.
 fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     let writer = agent.writer()?;
-    writer.append(&crate::store::Event::new(
-        "exit",
-        serde_json::json!({ "code": code }),
-    ))?;
+    let event = crate::store::Event::new("exit", serde_json::json!({ "code": code }));
+    writer.append(&event)?;
 
     let state = writer.update_state(|state| {
         state.exit = Some(code);
@@ -381,7 +408,15 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     drop(writer);
 
     let notice = Notice::finished(agent.id(), state.state, state.exit);
-    notify::post(notice.as_ref(), config.notifications, None);
+
+    // The phase this wrote, and only where it wrote one. An agent somebody
+    // stopped keeps the phase `stop` gave it, and `stop` ran that moment's
+    // command itself; this exit is the signal landing a moment behind it.
+    let errand = (state.state != Phase::Stopped)
+        .then(|| agent.meta().ok())
+        .flatten()
+        .and_then(|meta| crate::errand::assembled(config, agent, &meta, state.state, &event));
+    notify::post(notice.as_ref(), config.notifications, errand.as_ref());
     Ok(())
 }
 
@@ -2240,6 +2275,42 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "PreToolUse");
         assert_eq!(events[0].payload["tool_name"], "Bash");
+    }
+
+    #[test]
+    fn hook_a_moment_is_a_phase_the_agent_had_not_reached() {
+        // Waiting is the notice's to say: one screen fires three events, and
+        // the notice is the only thing that tells one stop from three.
+        assert_eq!(
+            reached(Phase::Waiting, Phase::Working, true),
+            Some(Phase::Waiting)
+        );
+        assert_eq!(
+            reached(Phase::Waiting, Phase::Waiting, false),
+            None,
+            "a box answered by the notification repeating it"
+        );
+
+        // Idle is the phase before it: the vendor nudges about an idle session
+        // a minute after the turn ended, and that is the same turn still over.
+        assert_eq!(
+            reached(Phase::Idle, Phase::Working, false),
+            Some(Phase::Idle)
+        );
+        assert_eq!(reached(Phase::Idle, Phase::Idle, false), None);
+
+        // Everything else is the agent on its way somewhere, or the end of the
+        // command, which `record_exit` writes and this never sees.
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Done,
+            Phase::Failed,
+            Phase::Stopped,
+            Phase::Unknown,
+        ] {
+            assert_eq!(reached(phase, Phase::Working, true), None, "{phase}");
+        }
     }
 
     #[test]
