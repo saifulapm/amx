@@ -664,6 +664,10 @@ struct Screen {
     /// its agent is saying at this moment.
     root: PathBuf,
     list: List,
+    /// Where the view stands: the directory it was opened about, or the one
+    /// it was run from. A task typed at the view starts here unless its line
+    /// or the cursor says otherwise.
+    standing: PathBuf,
     /// What the next agent will be started with.
     profile: Profile,
     /// The colours it is all painted in, which the paint asks by role and
@@ -946,17 +950,23 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     // What the next agent will be started with is read once, from the config
-    // this run was given and the directory it was run from: neither moves
+    // this run was given and the directory the view stands in: neither moves
     // while somebody is looking at the screen, and a dial they turn is theirs
-    // until they close it.
+    // until they close it. A view opened about a directory stands there, the
+    // way a view run from one does.
+    let standing = match scope.under() {
+        Some(under) => under.to_path_buf(),
+        None => std::env::current_dir().context("no working directory")?,
+    };
     let mut screen = Screen {
         root: root.to_path_buf(),
         profile: Profile::open(
             config,
             cap,
-            std::env::current_dir().ok().as_deref(),
+            Some(&standing),
             std::env::home_dir().as_deref(),
         ),
+        standing,
         theme: painting.theme,
         remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
@@ -2506,7 +2516,7 @@ impl Screen {
                 composer
                     .under
                     .clone()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                    .unwrap_or_else(|| self.standing.clone()),
             ),
         };
         let found = act::suggest(composer, &launching, &project, &self.projects);
@@ -2701,6 +2711,7 @@ impl Screen {
             &launching,
             &composer.whole(),
             composer.under.as_deref(),
+            &self.standing,
         ) {
             Ok(Started::Yes { id, said }) => {
                 self.remember_line(&Asking::Task, &composer.whole());

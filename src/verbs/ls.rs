@@ -71,6 +71,11 @@ impl Scope {
         })
     }
 
+    /// The directory the reading is about, where one was named.
+    pub fn under(&self) -> Option<&Path> {
+        self.under.as_deref()
+    }
+
     /// Whether the reading is about this agent: it runs under the directory,
     /// or the repository its worktree was cut from is under it.
     pub fn covers(&self, meta: &Meta) -> bool {

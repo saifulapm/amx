@@ -1483,10 +1483,17 @@ pub fn slight(config: &Config, line: &str) -> Option<String> {
 /// Start an agent on what was typed, where the view is — or run it, where the
 /// line is a command row.
 ///
-/// `under` is the project the line was opened in, where the wall was showing
-/// one. It stands in for the view's own directory and gives way to a `d:`: the
-/// cursor says where somebody was looking and the line says where they mean.
-pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> Result<Started> {
+/// `here` is where the view stands. `under` is the project the line was
+/// opened in, where the wall was showing one. It stands in for `here` and
+/// gives way to a `d:`: the cursor says where somebody was looking and the
+/// line says where they mean.
+pub fn start(
+    root: &Path,
+    config: &Config,
+    line: &str,
+    under: Option<&Path>,
+    here: &Path,
+) -> Result<Started> {
     let (turned, task) = match turned(config, line) {
         Ok(read) => read,
         Err(refusal) => return Ok(Started::No(refusal)),
@@ -1498,7 +1505,7 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         }));
     }
 
-    let here = std::env::current_dir().context("no working directory")?;
+    let here = here.to_path_buf();
     // Where this one runs: what the line named, then the project it was opened
     // in, then where the view is. A relative path is still read against the
     // view's own directory whichever of them it lands in — what a name means at
@@ -3345,7 +3352,9 @@ mod tests {
         // Said in the word that was typed: `new` refuses this under the name of
         // its flag, which is a name nobody on a task line has seen.
         let line = format!("d:{} w:changes port the importer", here.path().display());
-        let Started::No(why) = start(root.path(), &Config::default(), &line, None).unwrap() else {
+        let Started::No(why) =
+            start(root.path(), &Config::default(), &line, None, here.path()).unwrap()
+        else {
             panic!("a spawn was sent to carry work that is not there");
         };
         assert_eq!(
@@ -3368,6 +3377,7 @@ mod tests {
             &Config::default(),
             "d:nowhere/at/all port the importer",
             None,
+            here.path(),
         )
         .unwrap() else {
             panic!("a spawn was aimed at a directory that is not there");

@@ -17,11 +17,14 @@ use std::path::{Path, PathBuf};
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Only the agents whose work is under this directory.
+    /// Only the agents whose work is under this directory, and where the
+    /// view stands.
     ///
     /// The front door's own narrowing, so `amx --dir /srv/app` is the list of
-    /// that project's agents and nothing else, drawn or printed. A verb that
-    /// takes the same flag reads its own first.
+    /// that project's agents and nothing else, drawn or printed. The view
+    /// opened by it stands in that directory as if it had been run there: the
+    /// header names it and a task typed at the view starts under it. A verb
+    /// that takes the same flag reads its own first.
     #[arg(long, value_name = "PATH")]
     pub dir: Option<PathBuf>,
 

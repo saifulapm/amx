@@ -1020,6 +1020,47 @@ fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
 }
 
 #[test]
+fn a_view_opened_about_a_directory_stands_in_it() {
+    let amx = Harness::new();
+    amx.config(&format!("agent = \"{}\"\nworktrees = false\n", amx.mock()));
+    let repo = amx.home().join("elsewhere");
+    std::fs::create_dir_all(&repo).expect("the project");
+    let scenario = amx.scenario("happy-turn").to_string_lossy().into_owned();
+    let transcript = amx
+        .home()
+        .join("composed.jsonl")
+        .to_string_lossy()
+        .into_owned();
+
+    // Opened from the home directory about a project under it: the view
+    // stands in the project, not where the shell was.
+    let view = amx.in_a_terminal(
+        &[
+            ("MOCK_CLAUDE_SCENARIO", &scenario),
+            ("MOCK_CLAUDE_TRANSCRIPT", &transcript),
+        ],
+        &["--dir", &repo.to_string_lossy()],
+    );
+    until_empty(&amx, &view);
+    let drawn = screen(&amx, &view);
+    assert!(
+        drawn.contains("AMX  ~/elsewhere"),
+        "the header names the directory the view was opened about:\n{drawn}"
+    );
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    assert_eq!(
+        amx.meta(&id)["dir"],
+        repo.to_string_lossy().as_ref(),
+        "and a task typed at it starts there"
+    );
+}
+
+#[test]
 fn the_composer_folds_a_long_paste_and_starts_the_task_it_stands_for() {
     let amx = Harness::new();
     let view = a_view_that_dispatches(&amx, "happy-turn");
