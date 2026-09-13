@@ -1392,19 +1392,27 @@ fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
     // put the caller's own sentence at the top of pi's box, and the row is
     // where a person reads it: the vendor reports through no hooks, so there
     // is no payload the question could arrive in.
-    for (what, scenario, rule, question) in [
-        ("a choice", "asks-a-question", "dialog", "Run echo hi?"),
+    for (what, scenario, rule, question, options) in [
+        (
+            "a choice",
+            "asks-a-question",
+            "dialog",
+            "Run echo hi?",
+            &["Allow once", "Allow always", "Deny"][..],
+        ),
         (
             "a line",
             "asks-for-a-line",
             "input",
             "Which branch should I push to?",
+            &[][..],
         ),
         (
             "a block",
             "asks-for-a-block",
             "editor",
             "Write the commit message",
+            &[][..],
         ),
     ] {
         let amx = Harness::new();
@@ -1439,9 +1447,15 @@ fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
         );
         assert_eq!(
             agent["options"],
-            json!([]),
-            "pi numbers none of its choices, and two of these have none to \
-             number: {agent}"
+            json!(options),
+            "the choices off the arrow, numbered by amx, and none where the \
+             caller asked for words instead: {agent}"
+        );
+        assert_eq!(
+            agent["walked"],
+            json!(!options.is_empty()),
+            "a list amx numbered itself says so, and a screen with no list \
+             does not: {agent}"
         );
     }
 }
@@ -1603,13 +1617,14 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
     // login dialog is short enough that the box and the stats line under it
     // added up to `prompt` — a card saying idle over a pi that cannot take a
     // turn until somebody types a key into it.
-    for (what, scenario, drawn_row, rule, question) in [
+    for (what, scenario, drawn_row, rule, question, options) in [
         (
             "the gate a first run stops at",
             "stops-at-setup",
             "Welcome to pi,",
             "first_time_setup",
             "Pick a theme. Detected system appearance: dark",
+            &["Dark", "Light"][..],
         ),
         (
             "a pi waiting for a provider's key",
@@ -1617,6 +1632,7 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
             "Login to",
             "login",
             "Enter Cerebras API key",
+            &[][..],
         ),
     ] {
         let amx = Harness::new();
@@ -1654,8 +1670,15 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
         );
         assert_eq!(
             agent["options"],
-            json!([]),
-            "pi numbers none of its choices: {agent}"
+            json!(options),
+            "the two themes off the arrow on the gate, numbered by amx, and no \
+             list on a box waiting for a key: {agent}"
+        );
+        assert_eq!(
+            agent["walked"],
+            json!(!options.is_empty()),
+            "a list amx numbered itself says so, and a screen with no list \
+             does not: {agent}"
         );
     }
 }
@@ -2324,9 +2347,10 @@ fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
     );
 
     // The trust selector asks about the tree amx cut rather than anything a
-    // caller passed, so `project_trust` reads no question off it — and a
-    // screen with nothing on it to answer is an agent with nothing
-    // outstanding. This is the finding: the login box's sentence stood here.
+    // caller passed, and it asks it in its own title with the folder under it.
+    // This is the finding: the login box's sentence stood here.
+    let dir = amx.home().to_string_lossy().to_string();
+    let parent = dir.rsplit_once('/').expect("a parent folder").0.to_string();
     let agent = amx.until("the trust selector to take the pane", || {
         let agent = status(&amx, id);
         (agent["rule"] == json!("project_trust")).then_some(agent)
@@ -2334,12 +2358,21 @@ fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
     assert_eq!(agent["state"], "waiting", "{agent}");
     assert_eq!(
         agent["question"],
-        Value::Null,
-        "and nothing of the box before it is left to answer: {agent}"
+        json!(format!("Project trust {dir}")),
+        "this screen's own question, and nothing of the box before it: {agent}"
     );
     assert_eq!(
-        amx.state(id)["question"],
-        Value::Null,
+        agent["options"],
+        json!([
+            "Trust",
+            format!("Trust parent folder ({parent})"),
+            "Do not trust"
+        ]),
+        "with the three rows of the run the arrow is in under it: {agent}"
+    );
+    assert_eq!(
+        amx.state(id)["question"]["text"],
+        json!(format!("Project trust {dir}")),
         "written down, rather than concluded and forgotten"
     );
 
@@ -2385,8 +2418,8 @@ fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
     assert_eq!(agent["state"], "waiting", "{agent}");
 
     // Aged past the freshness window with the vendor's words on it, which is
-    // when a reader goes to the pane at all. The question is left exactly as
-    // the hook wrote it — including how the document says a hook wrote it.
+    // when a reader goes to the pane at all. The words are left exactly as the
+    // hook wrote them; what the reading adds is the choices under them.
     let mut aged = amx.state(id);
     aged["since"] = json!(1);
     aged["last_event"] = json!(1);
@@ -2405,9 +2438,15 @@ fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
     );
     assert_eq!(
         amx.state(id)["question"],
-        json!("Allow the bash tool?"),
-        "written down as the words alone, which is how the document says a \
-         hook carried them"
+        json!({
+            "text": "Allow the bash tool?",
+            "options": ["Allow once", "Allow always", "Deny"],
+            "walked": true,
+            "reported": true,
+        }),
+        "written down whole, the way claude's reported questions always were: \
+         the vendor's words with the choices the screen filled in under them, \
+         and `reported` to say which half came from where"
     );
 }
 

@@ -905,6 +905,10 @@ Saiful ruled that this is not an answer a person can give.
 - **the question**: the sentence above the run rather than above the mark. The
   arrow moves when somebody presses a key and the run does not, so a cursor one
   row down no longer turns the choice above it into the sentence a row quotes.
+  A rule naming an `asks` sentence still reads that one: both trust screens do,
+  because what sits directly above their choices is the decision pi already has
+  or what trusting would allow, and their question is the title with the folder
+  under it.
 
 The numbers under that reading are amx's own rather than the vendor's, so the
 record says which it has: `walked` beside `options`, on the wire only where it

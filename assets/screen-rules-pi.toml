@@ -365,20 +365,18 @@ marks = "→"
 # `not_below` has nothing to find. What it costs if it is wrong is a row that
 # says a person is needed when nobody is.
 #
-# There is no `asks` here, and the reading the rule below uses is the reason.
-# The question on this screen is the title and the folder under it, and what
-# sits directly above the choices is the two rows pi draws for the decision it
-# already has, so reading above the arrow here would take those instead. What
-# to do about this screen is not one of the three choices on it anyway — it is
-# whether amx should have answered it before the agent ever met it.
+# `asks` names the title, and the sentence runs on to the folder under it,
+# which is the question this screen asks: what is being decided about. The two
+# rows directly above the choices are the decision pi already has, so reading
+# above the run — as the dialog rule does — would take `Saved decision: none
+# Current session: trusted` instead, which is the screen and not the question.
+# The rule below reads its own title the same way.
 #
 # `marks` is the arrow, and it is what puts the three choices on the record:
 # `Trust`, `Trust parent folder (…)` and `Do not trust`, numbered here in the
-# order pi draws them. It costs the question, which a rule that names no `asks`
-# now reads above the run — `Saved decision: none Current session: trusted`,
-# the two rows the comment above says are the screen rather than the question.
-# The choices are worth more than the sentence: without them the only grammar
-# on this screen is a walk typed blind.
+# order pi draws them. Without them the only grammar on this screen is a walk
+# typed blind. What to do about it is not one of the three anyway — it is
+# whether amx should have answered it before the agent ever met it.
 #
 # `setup` for the reason given at the rule above: the agent is stopped in front
 # of its work and only a person gets it past. The `trust` kind is the other half
@@ -392,6 +390,7 @@ setup = true
 all = ["project trust", "────────────────────"]
 any = ["saved decision:", "current session:"]
 within = 7
+asks = { sentence = "project trust" }
 marks = "→"
 
 # pi asking the same question of its own accord, before a turn: a pi started

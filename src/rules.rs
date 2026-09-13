@@ -3234,6 +3234,30 @@ Only showing models from configured providers. Use /login to add providers.
         assert_eq!(rule.state, Phase::Waiting);
         assert_eq!(rule.kind, Some(crate::store::Kind::Trust));
 
+        // The title and the folder under it, which is what this screen is
+        // deciding about. The two rows directly above the choices are the
+        // decision pi already has, so reading above the run would take those
+        // instead; `asks` names the title and the sentence runs on to the
+        // folder, the way the rule below reads its own.
+        let asked = pi()
+            .asking(A_PI_TRUST)
+            .expect("the screen says what it is blocking on");
+        assert_eq!(
+            asked.text,
+            "Project trust /home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees/fix-login-a1b"
+        );
+        assert_eq!(
+            asked.options,
+            [
+                "Trust",
+                "Trust parent folder (/home/saiful/.claude/jobs/1e9e9b98/tmp/worktrees)",
+                "Do not trust"
+            ],
+            "the three rows of the run the arrow is in, in the order pi draws \
+             them"
+        );
+        assert!(asked.walked, "read off the marks, and numbered here");
+
         // And at 20 columns the box is taller than the rows a rule may see, so
         // the title is out of reach and the screen falls to the rule below.
         // Still waiting, and asked about the way a tool call would be: quiet
