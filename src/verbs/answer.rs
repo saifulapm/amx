@@ -59,6 +59,14 @@
 //! what makes the take the caller's row rather than the vendor's is the walk
 //! in front of it.
 //!
+//! A walk typed blind is not an answer a person can give, though, and pi draws
+//! every blocking list this way — an arrow in front of the row under the
+//! cursor and no number anywhere. So where a reader read the arrow and numbered
+//! the rows itself, the digit comes back: it names a row amx has the label of,
+//! and the walk that reaches it is amx's to work out rather than the caller's
+//! to guess. The keys that screen would swallow are refused there, because a
+//! grammar that invites what does nothing is a grammar that answers nothing.
+//!
 //! Two things about a menu are the screen's rather than the record's, and both
 //! were re-measured against 2.1.240 on 2026-08-25. The screen is numbered two
 //! rows past the payload — the vendor adds a free-text row and `Chat about
@@ -109,6 +117,18 @@ const OFF_THE_FIELD: &str = "Down";
 /// checkbox box, or `1. Submit answers` on the review screen.
 const TAKE_IT: &str = "Enter";
 
+/// The key that walks a list's cursor one row towards the top.
+///
+/// A list clamps at both ends — measured on claude 2.1.259 on 2026-09-05 and on
+/// pi 0.85.1 on 2026-09-14 — so one of these for every row of the list reaches
+/// the top row from wherever the cursor was left standing. That is what lets a
+/// digit be an answer on a list amx numbered itself: the walk starts from a row
+/// it knows rather than from the one the vendor happens to be on.
+const TO_THE_TOP: &str = "Up";
+
+/// The key that walks a list's cursor one row down.
+const DOWN_A_ROW: &str = "Down";
+
 /// The keys that walk the cursor of a list the vendor puts no numbers on.
 ///
 /// Measured against claude 2.1.259 on 2026-09-05 and written up in
@@ -118,7 +138,7 @@ const TAKE_IT: &str = "Enter";
 /// only thing that reaches the other row. pi's own gate says the same in its
 /// hint row — `↑↓ navigate  enter select` — so this is the shape of a list
 /// without numbers rather than a fact about one vendor.
-const WALKS: [&str; 2] = ["Up", "Down"];
+const WALKS: [&str; 2] = [TO_THE_TOP, DOWN_A_ROW];
 
 /// The key that puts the cursor in the notes field, on the one shape that
 /// draws one. Measured against 2.1.240: at a menu with no preview it does
@@ -219,6 +239,9 @@ enum Answer {
     /// The cursor moves that reach the row a caller means on a list with no
     /// numbers on it, and the key that takes what they land on.
     Walk(Vec<String>),
+    /// The row a digit names on a list amx numbered itself: which row it is,
+    /// counting from one, and the walk that reaches it.
+    Picked(usize, Vec<String>),
 }
 
 impl Answer {
@@ -228,9 +251,13 @@ impl Answer {
     /// answering, so amx can put the answer on the record and press the
     /// vendor's confirm for it. `y`, `enter` and `esc` are keys whose effect
     /// on the screen amx does not model: what they did to the prompt is the
-    /// next hook's business and the screen's after that. A walk is the same:
-    /// the row it lands on carries no number, so there is nothing on the
-    /// record for amx to say it took.
+    /// next hook's business and the screen's after that. A walk somebody wrote
+    /// is the same: the row it lands on carries no number, so there is nothing
+    /// on the record for amx to say it took.
+    ///
+    /// A walk amx worked out from a digit is not that. The rows were read and
+    /// numbered here, so the row the moves land on is one this knows the label
+    /// of, and a question amx can say was answered is one it must clear.
     ///
     /// It is also what decides whether the answer settles the question — see
     /// [`answered`]. A key amx cannot name the answer of is one it cannot say
@@ -246,7 +273,12 @@ impl Answer {
     /// The answer as the vendor itself would write it down: the label that was
     /// chosen, the labels that were checked joined the way its own answer map
     /// joins them, or the words that were typed.
-    fn said(&self, pending: Option<&Ask>) -> String {
+    ///
+    /// The whole state rather than the question showing, because a list amx
+    /// numbered off a mark has no call behind it: its labels are the ones the
+    /// reader read off the pane, and they are on the state itself.
+    fn said(&self, state: &State) -> String {
+        let pending = state.pending();
         let label = |at: usize| match pending.and_then(|ask| ask.options.get(at - 1)) {
             Some(choice) => choice.label.clone(),
             None => at.to_string(),
@@ -263,6 +295,10 @@ impl Answer {
                 .join(", "),
             Answer::Words(words) => words.clone(),
             Answer::Walk(keys) => keys.join(" "),
+            Answer::Picked(at, _) => match state.options.get(at - 1) {
+                Some(label) => label.clone(),
+                None => at.to_string(),
+            },
         }
     }
 
@@ -277,6 +313,13 @@ impl Answer {
             }),
             Answer::Words(words) => serde_json::json!({ "text": words }),
             Answer::Walk(keys) => serde_json::json!({ "key": keys.join(" ") }),
+            // The digit that was typed rather than the walk it came to: the
+            // keys are amx's way of reaching the row, and the row is what was
+            // answered.
+            Answer::Picked(at, _) => serde_json::json!({
+                "key": at.to_string(),
+                "answer": said,
+            }),
         }
     }
 }
@@ -391,6 +434,9 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
         return walk(walked);
     }
     if let Some(key) = named(typed) {
+        if state.walked {
+            return at_a_walked_list(&key, state);
+        }
         if unnumbered(kind, state) && key != "Escape" {
             return Err(match key == TAKE_IT {
                 true => format!(
@@ -425,6 +471,68 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
             "`{typed}` is not an answer. {}",
             grammar(kind, state)
         )),
+    }
+}
+
+/// Read a key at a list amx put the numbers on itself.
+///
+/// pi draws every blocking list the same way — an arrow in front of the row
+/// under the cursor, nothing in front of the rest — so a reader that reads the
+/// arrow hands back choices whose numbers are amx's own. The digits are
+/// therefore the whole grammar, and the keys a person might otherwise reach for
+/// are refused rather than sent: measured on pi 0.85.1 on 2026-09-14 at 100
+/// columns, `1`, `2`, `y` and `n` do nothing whatever to the selector, and
+/// `Enter` takes whichever row the cursor is on, which is the first until
+/// somebody moves it. `esc` still cancels, as it does everywhere.
+fn at_a_walked_list(key: &str, state: &State) -> Result<Answer, String> {
+    if key == "Escape" {
+        return Ok(Answer::Key(key.to_string()));
+    }
+    let rows = state.options.len();
+    match one_choice(key) {
+        Some(at) if at <= rows => Ok(Answer::Picked(at, to_the_row(at, rows))),
+        Some(_) => Err(format!(
+            "this screen lists {rows} choices, and `{key}` is not one of them: press {}",
+            digits(rows)
+        )),
+        None if key == TAKE_IT => Err(format!(
+            "`enter` takes the row the cursor is on, which is the first row until \
+             somebody moves it: press {} for the row you mean",
+            digits(rows)
+        )),
+        None => Err(format!(
+            "`{key}` does nothing to this screen, which reads no letter and draws no \
+             number of its own: press {} for the row you mean",
+            digits(rows)
+        )),
+    }
+}
+
+/// The keys that reach the row at this number on a list of this many rows, and
+/// take it.
+///
+/// Up to the top first, because where the cursor is standing is not on the
+/// record: pi opens it on the first row and a person at the pane may have moved
+/// it since. The list clamps at both ends, so an `Up` too many costs nothing —
+/// see [`TO_THE_TOP`] — and one for every row is always enough.
+fn to_the_row(at: usize, rows: usize) -> Vec<String> {
+    let up = std::iter::repeat_n(TO_THE_TOP.to_string(), rows.saturating_sub(1));
+    let down = std::iter::repeat_n(DOWN_A_ROW.to_string(), at.saturating_sub(1));
+    up.chain(down).chain([TAKE_IT.to_string()]).collect()
+}
+
+/// The digits that reach a row of a list of this many, named the way a usage
+/// line names them.
+///
+/// Nine is the end of them: past that the grammar has no key to send, so a
+/// longer list is offered what it can take rather than what it has. Zero is a
+/// screen amx counted no rows on at all, where `1-9` is what a box of two and a
+/// box of five have in common.
+fn digits(rows: usize) -> String {
+    match rows.min(9) {
+        0 => "1-9".to_string(),
+        1 => "1".to_string(),
+        last => format!("1-{last}"),
     }
 }
 
@@ -647,10 +755,12 @@ fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
             steps.extend(checked.iter().map(|at| key(&at.to_string())));
             steps.push(key(OFF_THE_CHOICES));
         }
-        // The moves and the take as they were given: nothing is added to the
-        // end of a walk, because the row it lands on is the caller's and the
-        // row it opened on is the vendor's.
-        Answer::Walk(walked) => steps.extend(walked.iter().map(|pressed| key(pressed))),
+        // The moves and the take, whether a caller wrote them or a digit did:
+        // nothing is added to the end of either, because the row they land on
+        // is the caller's and the row the list opened on is the vendor's.
+        Answer::Walk(walked) | Answer::Picked(_, walked) => {
+            steps.extend(walked.iter().map(|pressed| key(pressed)))
+        }
         Answer::Words(words) => {
             steps.push(key(TO_THE_FIELD));
             steps.push(Step::Type(words.clone()));
@@ -683,14 +793,18 @@ fn steps(answer: &Answer, note: Option<&str>, shape: Shape) -> Vec<Step> {
 /// vendor opened on — which on the one screen measured is the one that ends the
 /// agent. What is offered there is the walk, which names the row before it
 /// takes it.
+///
+/// A list amx numbered itself is offered those numbers and nothing else. Every
+/// other key is one the selector swallows, and the walk is not offered there
+/// either: it is still taken, but a caller who can read the rows numbered has
+/// no reason to count them a second time.
 fn grammar(kind: Option<Kind>, state: &State) -> String {
+    if state.walked {
+        return format!("use {} or esc", digits(state.options.len()));
+    }
     let pending = state.pending();
     let offered = offered(pending);
-    let run = match offered {
-        0 => "1-9".to_string(),
-        1 => "1".to_string(),
-        last => format!("1-{last}"),
-    };
+    let run = digits(offered);
     let and_words = match previewed(pending) {
         true => "enter or esc",
         false => "enter, esc, or words of your own",
@@ -824,7 +938,7 @@ fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
 /// reader at the pane, is what settles it.
 fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
-    let said = answer.said(writer.state()?.pending());
+    let said = answer.said(&writer.state()?);
     let mut what = answer.event(&said);
     if let Some(note) = note {
         what["note"] = serde_json::json!(note);
@@ -967,6 +1081,45 @@ mod tests {
             kind: Some(Kind::Trust),
             ..State::default()
         }
+    }
+
+    /// A screen whose choices were read off the arrow in front of one of them,
+    /// which is how a reader hands back a list the vendor puts no numbers on.
+    fn walked(question: &str, options: &[&str], kind: Kind) -> State {
+        State {
+            state: Phase::Waiting,
+            question: Some(question.to_string()),
+            options: options.iter().map(|row| row.to_string()).collect(),
+            walked: true,
+            kind: Some(kind),
+            ..State::default()
+        }
+    }
+
+    /// pi's own folder-trust gate as 0.85.1 draws it, once a reader has read
+    /// the arrow: five rows, with the numbers on them amx's own.
+    fn a_walked_trust_gate() -> State {
+        walked(
+            "Trust project folder? /home/saiful/Sites/tries/pi-src",
+            &[
+                "Trust",
+                "Trust parent folder (/home/saiful/Sites/tries)",
+                "Trust (this session only)",
+                "Do not trust",
+                "Do not trust (this session only)",
+            ],
+            Kind::Trust,
+        )
+    }
+
+    /// pi's own tool gate, which its `dialog` rule reads the same way: three
+    /// rows, and an `Allow always` nobody can take back.
+    fn a_walked_dialog() -> State {
+        walked(
+            "Allow pi to run `rm -rf build`?",
+            &["Allow once", "Allow always", "Deny"],
+            Kind::Question,
+        )
     }
 
     /// A permission box: a question with no call behind it and one key to
@@ -1402,17 +1555,24 @@ mod tests {
         // with a comma, and that is what a caller reading the record wants
         // back rather than the keys amx typed.
         let state = a_checkbox_question();
-        let pending = state.pending();
-        assert_eq!(Answer::Toggle(vec![1, 3]).said(pending), "Logging, Tracing");
-        assert_eq!(Answer::Key("2".to_string()).said(pending), "Metrics");
+        assert_eq!(Answer::Toggle(vec![1, 3]).said(&state), "Logging, Tracing");
+        assert_eq!(Answer::Key("2".to_string()).said(&state), "Metrics");
         assert_eq!(
-            Answer::Words("audit".to_string()).said(pending),
+            Answer::Words("audit".to_string()).said(&state),
             "audit",
             "and words of your own are their own answer"
         );
 
+        // A list amx numbered off a mark has no call behind it, so its labels
+        // are the ones the reader left on the state itself.
+        let dialog = a_walked_dialog();
+        assert_eq!(
+            Answer::Picked(2, to_the_row(2, 3)).said(&dialog),
+            "Allow always"
+        );
+
         // A question with no choices on the record is answered by the key.
-        assert_eq!(Answer::Key("y".to_string()).said(None), "y");
+        assert_eq!(Answer::Key("y".to_string()).said(&State::default()), "y");
     }
 
     #[test]
@@ -1515,6 +1675,100 @@ mod tests {
             Ok(Answer::Key("Enter".to_string())),
             "including the trust screen of a vendor that still numbers its rows"
         );
+    }
+
+    #[test]
+    fn surfaces_a_digit_on_a_walked_list_is_the_walk_that_reaches_its_row() {
+        // Measured on pi 0.85.1 on 2026-09-14 at 100 columns: the selector
+        // clamps at both ends, so `Up` on the top row does nothing and n-1 of
+        // them reach the top from wherever the cursor was left standing. That
+        // is what makes a digit an answer here rather than a guess — amx never
+        // has to know where the cursor is, only how many rows it counted.
+        let gate = a_walked_trust_gate();
+        assert_eq!(
+            typed(&gate, &given("1")),
+            keys(&["Up", "Up", "Up", "Up", "Enter"]),
+            "the first of five rows, from wherever the cursor was"
+        );
+        assert_eq!(
+            typed(&gate, &given("5")),
+            keys(&[
+                "Up", "Up", "Up", "Up", "Down", "Down", "Down", "Down", "Enter"
+            ])
+        );
+
+        let dialog = a_walked_dialog();
+        assert_eq!(
+            typed(&dialog, &given("3")),
+            keys(&["Up", "Up", "Down", "Down", "Enter"])
+        );
+
+        // And each of them goes in a call of its own with a moment after it,
+        // the way every other answer of more than one key does.
+        let typist = Typed::default();
+        drive(&typist, &typed(&dialog, &given("1"))).unwrap();
+        assert_eq!(
+            *typist.0.borrow(),
+            vec![
+                vec!["Up"],
+                vec!["settle"],
+                vec!["Up"],
+                vec!["settle"],
+                vec!["Enter"],
+            ],
+        );
+    }
+
+    #[test]
+    fn surfaces_a_digit_on_a_walked_list_records_the_row_it_chose() {
+        // A row amx numbered is a row amx read, so the record gets the label
+        // rather than the keys — and the question does not stand afterwards for
+        // somebody to answer a second time.
+        let root = tempfile::TempDir::new().unwrap();
+        let dialog = a_walked_dialog();
+        let agent = recorded(root.path(), &dialog);
+        let picked = answer(&given("3"), dialog.kind, &dialog).expect("the third row");
+        answered(&agent, &picked, None).unwrap();
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty(), "{:?}", state.options);
+        assert!(!state.walked, "and nothing is left claiming a walk");
+
+        let event = &agent.events().unwrap()[0].payload;
+        assert_eq!(event["key"], "3");
+        assert_eq!(event["answer"], "Deny");
+    }
+
+    #[test]
+    fn surfaces_the_keys_a_walked_list_swallows_are_refused_for_the_digits_amx_wrote() {
+        // Measured on pi 0.85.1 on 2026-09-14: `1`, `2`, `y` and `n` do nothing
+        // whatever to the selector, and `Enter` takes whichever row the cursor
+        // is on — the first, until somebody moves it. A digit past the rows amx
+        // counted is nobody's row at all.
+        let gate = a_walked_trust_gate();
+        for swallowed in ["y", "n", "enter", "6"] {
+            let refused = answer(&given(swallowed), gate.kind, &gate).expect_err(swallowed);
+            assert!(refused.contains("press 1-5"), "{swallowed}: {refused}");
+        }
+
+        // `esc` still cancels, and a walk written by hand is still the caller's
+        // own: amx put the numbers on these rows, the vendor did not.
+        assert_eq!(
+            answer(&given("esc"), gate.kind, &gate),
+            Ok(Answer::Key("Escape".to_string()))
+        );
+        assert_eq!(
+            answer(&given("down enter"), gate.kind, &gate),
+            Ok(Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]))
+        );
+
+        // And what is offered is what is taken: the digits amx wrote, and the
+        // key that cancels.
+        assert_eq!(grammar(gate.kind, &gate), "use 1-5 or esc");
+        let dialog = a_walked_dialog();
+        assert_eq!(grammar(dialog.kind, &dialog), "use 1-3 or esc");
     }
 
     #[test]

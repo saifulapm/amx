@@ -316,14 +316,19 @@ pub fn how_to_answer(view: &View) -> String {
 /// The keys the screen showing will take, named the way a usage line names its
 /// argument.
 ///
-/// Three readings decide it. A list the vendor puts no numbers on takes only
-/// the walk. A question the vendor asked itself takes its choices and, unless
-/// it draws a preview beside them, words of your own. Everything else — a
-/// permission box, a numbered trust screen, a question amx knows nothing about
-/// — reads one key.
+/// Four readings decide it. A list the vendor puts no numbers on takes only the
+/// walk. A list amx numbered itself, off the mark in front of the row under its
+/// cursor, takes those numbers and the key that cancels — every other key is
+/// one that selector swallows. A question the vendor asked itself takes its
+/// choices and, unless it draws a preview beside them, words of your own.
+/// Everything else — a permission box, a numbered trust screen, a question amx
+/// knows nothing about — reads one key.
 fn takes(kind: Option<Kind>, state: &State) -> String {
     if unnumbered(kind, state) {
         return "<down enter|up enter|esc>".to_string();
+    }
+    if state.walked {
+        return format!("<{}|esc>", digits(&state.options));
     }
     let digits = digits(&state.options);
     match kind {
@@ -639,6 +644,38 @@ mod tests {
             Some(Kind::Trust),
         ));
         assert!(numbered.contains("y|n|1-2|enter|esc"), "{numbered}");
+    }
+
+    #[test]
+    fn surfaces_a_list_amx_numbered_itself_is_offered_the_digits_amx_wrote() {
+        // pi draws every blocking list with an arrow and no numbers, so the
+        // numbers under such a question are amx's own — and they are the whole
+        // of what that screen takes, because `answer` walks to the row they
+        // name. Offering `y`, `n` or `enter` beside them would be offering
+        // three keys the selector swallows.
+        let mut gate = asking(
+            Some("Trust project folder? /srv/app"),
+            &[
+                "Trust",
+                "Trust parent folder (/srv)",
+                "Trust (this session only)",
+                "Do not trust",
+                "Do not trust (this session only)",
+            ],
+            Some(Kind::Trust),
+        );
+        gate.state.walked = true;
+        assert_eq!(how_to_answer(&gate), "amx answer fix-login-a1b <1-5|esc>");
+
+        // And pi's own tool gate, which is a question rather than a trust
+        // screen and takes exactly the same keys.
+        let mut dialog = asking(
+            Some("Allow pi to run `rm -rf build`?"),
+            &["Allow once", "Allow always", "Deny"],
+            Some(Kind::Question),
+        );
+        dialog.state.walked = true;
+        assert_eq!(how_to_answer(&dialog), "amx answer fix-login-a1b <1-3|esc>");
     }
 
     #[test]
