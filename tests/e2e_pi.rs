@@ -1532,6 +1532,105 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
 }
 
 #[test]
+fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
+    // The whole chain on the screen a person meets it on. pi draws this
+    // selector with an arrow in front of the row under its cursor and a number
+    // on none of them, so the numbers a caller reads here are amx's own: what
+    // `status` prints has to be what `answer` takes, or the offer is a sentence
+    // that lies to whoever is about to type.
+    //
+    // Measured on pi 0.85.1 on 2026-09-14 at 100 columns: `1`, `2`, `y` and `n`
+    // do nothing whatever to the selector, and `enter` takes whichever row the
+    // cursor is standing on, which is the first until somebody moves it. A
+    // `Trust` nobody meant cannot be taken back, so that key is refused here
+    // and the digit is what reaches a row.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "stops-on-trust");
+    let pane = amx.pane_of(id);
+
+    amx.until("the trust question to be drawn", || {
+        row_of(&drawn(&amx, &pane), "Project trust")
+    });
+    // Nothing heard for an hour and nothing outstanding, which is where the
+    // screen is the only witness there is on a vendor that reports nothing.
+    amx.set_state(
+        id,
+        json!({ "state": "starting", "since": 1, "last_event": 1 }),
+    );
+
+    // The look that finds the question is the look that writes it down, so the
+    // report a person reads is also what puts the choices on the record.
+    let printed = amx.until("the trust question to reach the record", || {
+        let out = amx.amx(&["status", id]);
+        assert!(
+            out.status.success(),
+            "amx status: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+        printed.contains("1. Trust").then_some(printed)
+    });
+
+    let dir = amx.home().to_string_lossy().to_string();
+    let parent = dir.rsplit_once('/').expect("a parent folder").0.to_string();
+    let second = format!("Trust parent folder ({parent})");
+    for choice in ["1. Trust", &format!("2. {second}"), "3. Do not trust"] {
+        assert!(
+            printed.contains(choice),
+            "the rows of the run the arrow is in, numbered in the order pi drew \
+             them: {printed}"
+        );
+    }
+    assert!(
+        printed.contains(&format!("answer    amx answer {id} <1-3|esc>")),
+        "and the command under them takes those numbers and the key that \
+         cancels, and offers no key this screen swallows: {printed}"
+    );
+
+    // The key that takes the row the cursor is on is not one of them: it
+    // answers whichever row pi happens to be standing on rather than the one
+    // that was meant.
+    let out = amx.amx(&["answer", id, "enter"]);
+    assert_eq!(
+        out.status.code(),
+        Some(64),
+        "amx answer enter: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let refused = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        refused.contains("press 1-3"),
+        "refused naming the numbers that do reach a row: {refused}"
+    );
+    assert!(
+        !amx.event_kinds(id).iter().any(|kind| kind == "answer"),
+        "and nothing was answered on the way to refusing it"
+    );
+
+    // The digit, which is the walk that reaches the second row and the key
+    // that takes it, with the row itself on the record.
+    let out = amx.amx(&["answer", id, "2"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "amx answer 2: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answered = amx
+        .events(id)
+        .into_iter()
+        .find(|event| event["kind"] == "answer")
+        .expect("the answer on the record");
+    assert_eq!(
+        answered["payload"],
+        json!({ "key": "2", "answer": second }),
+        "the digit that was typed and the row it chose, rather than the keys \
+         amx walked to reach it: {answered}"
+    );
+}
+
+#[test]
 fn the_stand_in_draws_the_gate_pi_puts_in_front_of_a_first_run() {
     // The screen `assets/screen-rules-pi.toml` names `first_time_setup`, and
     // it is the one screen in that document with none of pi's chrome under it:
