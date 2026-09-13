@@ -393,6 +393,8 @@ table.
 | `pgdn` `ctrl+f` | and the other way |
 | `ctrl+u` | half a page of it, toward the edge |
 | `ctrl+d` | and half a page away |
+| `ctrl+n` | the next hunk of the patch, at the top of the card |
+| `ctrl+p` | and the one before it |
 | `i` | cut short the turn it is on, as `amx interrupt` does from a shell |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
 | `c` | mark the agents whose work has landed, and twice to take them |

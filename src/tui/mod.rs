@@ -1746,6 +1746,11 @@ impl Screen {
             // where the new one came from.
             KeyCode::Char('u') if ctrl => self.paged_by(true, self.half()),
             KeyCode::Char('d') if ctrl => self.paged_by(false, self.half()),
+            // And the patch by what it is made of. The pages are how far the
+            // card moves; these are what it moves to, which is the unit a
+            // patch is read and answered in.
+            KeyCode::Char('n') if ctrl => self.to_hunk(true),
+            KeyCode::Char('p') if ctrl => self.to_hunk(false),
             KeyCode::Char(' ') if plain => match self.look {
                 Look::Away => self.look_closer(root),
                 _ => self.look_away(),
@@ -3057,6 +3062,21 @@ impl Screen {
     /// that was not taken.
     fn half(&self) -> usize {
         (self.scroll.page.get() / 2).max(1)
+    }
+
+    /// The next hunk of the patch the card is holding, or the one before it.
+    ///
+    /// Only over a changes card: nothing else the card can hold is made of
+    /// hunks, and a chord that did something on one card and nothing on
+    /// another would be a key nobody could learn. Everywhere else the two are
+    /// free, and this leaves them so.
+    fn to_hunk(&self, forward: bool) {
+        if self.look != Look::Changes {
+            return;
+        }
+        if let Some(card) = &self.card {
+            self.scroll.to_hunk(card.body.hunks(), forward);
+        }
     }
 
     /// `rows` into the card's body, or back toward its natural edge.
@@ -5512,6 +5532,68 @@ mod tests {
         assert!(screen.scroll.away.get() > 0, "paged down into the patch");
         press(&mut screen, KeyCode::PageUp);
         assert_eq!(screen.scroll.away.get(), 0, "and back to the top");
+    }
+
+    /// A patch of two files, which is two hunks to step between.
+    const TWO_HUNKS: &str = "\
+diff --git a/src/foo.rs b/src/foo.rs
+--- a/src/foo.rs
++++ b/src/foo.rs
+@@ -1,2 +1,2 @@
+-    let old = 1;
++    let new = 2;
+diff --git a/src/bar.rs b/src/bar.rs
+--- a/src/bar.rs
++++ b/src/bar.rs
+@@ -8,1 +8,2 @@
+ done
++and more";
+
+    #[test]
+    fn keys_ctrl_n_and_ctrl_p_step_the_hunks_of_a_changes_card_alone() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "an answer")]);
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        // A card of what the agent said is not a patch, and the keys have
+        // nothing to step through on one.
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.at_hunk(), None, "no patch to step through");
+
+        // A patch in hand, the way `d` leaves one.
+        screen.look = Look::Changes;
+        screen.card = Some(Card {
+            id: "done-a1b".to_string(),
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            kind: None,
+            body: Body::patch(TWO_HUNKS),
+            changes: true,
+            answer: false,
+            listening: true,
+        });
+        screen.scroll.open_at(0);
+
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.at_hunk(), Some(0), "the first from none");
+        assert_eq!(screen.scroll.away.get(), 1, "its header row, at the top");
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.at_hunk(), Some(1), "and the next after it");
+        assert_eq!(screen.scroll.away.get(), 5);
+        press(&mut screen, ctrl('p'));
+        assert_eq!(screen.scroll.at_hunk(), Some(0), "and the one before it");
+
+        // The card's line takes neither of them: a chord is somebody reaching
+        // past the line, exactly as the page keys are.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('x')));
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.at_hunk(), Some(1), "stepped from under it");
+        assert_eq!(screen.answering().expect("still typing").text, "x");
     }
 
     #[test]

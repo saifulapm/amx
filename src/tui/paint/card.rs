@@ -177,10 +177,11 @@ pub struct Body {
 /// text and a second walk could disagree with the first about where a hunk
 /// begins.
 ///
-/// What it is read for is the cursor that steps through them and the comment
-/// that names one, and neither is in the view yet. `expect` rather than
-/// `allow`: the day they are, the compiler asks for the attribute back.
-#[cfg_attr(not(test), expect(dead_code, reason = "read by the hunk cursor"))]
+/// The cursor steps by the row, and what it is standing on is what a comment
+/// off the card names — and that comment is not in the view yet. `expect`
+/// rather than `allow`: the day it is, the compiler asks for the attribute
+/// back.
+#[cfg_attr(not(test), expect(dead_code, reason = "read by a comment on a hunk"))]
 pub struct Hunk {
     /// The file it changes, on the new side — the old side where the file is
     /// being deleted and there is no new one.
@@ -431,7 +432,6 @@ impl Body {
 
     /// The hunks of the patch it is holding, in the order the patch writes
     /// them.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the hunk cursor"))]
     pub(in crate::tui) fn hunks(&self) -> &[Hunk] {
         &self.hunks
     }
@@ -662,15 +662,55 @@ pub struct Scroll {
     /// the card back on the page it opened on, which is the end, rather than
     /// leaving it standing a row short of the end it was opened to show.
     anchor: Cell<usize>,
+    /// Which hunk of the patch the card is standing on, where somebody has
+    /// stepped to one. A patch is read a hunk at a time, and this is the one
+    /// the rule counts, the paint marks, and a message off the card is about.
+    hunk: Cell<Option<usize>>,
 }
 
 impl Scroll {
     /// Open a card `away` rows from its natural edge, and remember that this
     /// is where it opened.
+    ///
+    /// The one door a card comes up through, which is why the hunk cursor is
+    /// put back to none here: taking the diff again and walking the list onto
+    /// another agent both open a card, and a card that was closed comes back
+    /// this way too. A hunk of the patch before it is no place to open on.
     pub fn open_at(&self, away: usize) {
         self.away.set(away);
         self.opened.set(away);
         self.anchor.set(away);
+        self.hunk.set(None);
+    }
+
+    /// Step to the next hunk of the patch the card is holding, or the one
+    /// before it, and open the card on that hunk's header row.
+    ///
+    /// From no hunk at all, either way is the first of them: there is nothing
+    /// before the first and nothing after none. Both ends hold rather than
+    /// wrapping, because a key that came back round to the top would read as a
+    /// key that had lost its place.
+    ///
+    /// Opened rather than paged, so the frame that draws it puts the header
+    /// row at the top of the window and every frame after it holds the card
+    /// there — clamped, on a hunk near the end of a patch, to the last page
+    /// the card has rows for.
+    pub fn to_hunk(&self, hunks: &[Hunk], forward: bool) {
+        let Some(last) = hunks.len().checked_sub(1) else {
+            return;
+        };
+        let at = match (self.hunk.get(), forward) {
+            (None, _) => 0,
+            (Some(at), true) => at.saturating_add(1).min(last),
+            (Some(at), false) => at.saturating_sub(1),
+        };
+        self.open_at(hunks[at].row);
+        self.hunk.set(Some(at));
+    }
+
+    /// Which hunk the card is standing on, where somebody has stepped to one.
+    pub fn at_hunk(&self) -> Option<usize> {
+        self.hunk.get()
     }
 
     /// Whether somebody has paged the card away from where it opened.
@@ -911,9 +951,13 @@ pub(super) fn float(
     // What is left is the body's window, which is what the offset is clamped
     // against and what one press moves by.
     let held = scroll.kept(length(card), room as usize);
+    // And where the hunk cursor is standing, which the rule counts and the
+    // body marks. A patch shorter than the one the cursor was stepped through
+    // has no such hunk, and nothing is marked.
+    let at = scroll.at_hunk().filter(|at| *at < card.body.hunks().len());
 
     frame.render_widget(
-        Paragraph::new(rule(card, called, held, area.width as usize, theme)),
+        Paragraph::new(rule(card, called, held, at, area.width as usize, theme)),
         ruled,
     );
 
@@ -957,7 +1001,7 @@ pub(super) fn float(
     }
 
     frame.render_widget(
-        Paragraph::new(body(card, screen.height as usize, held)),
+        Paragraph::new(body(card, screen.height as usize, held, at, theme)),
         screen,
     );
 }
@@ -969,17 +1013,29 @@ pub(super) fn float(
 /// says its state in — the card stands away from its row now, so the name is
 /// what says which agent this is a look at. After it, on a card that is a
 /// reading of a patch, that it is one: the row says what the agent is doing,
-/// and this is not that. And at the far end, how far a paged body stands from
-/// its natural edge. Both of those are dim, because they are facts about what
-/// the card is showing rather than about the agent.
+/// and this is not that, and which hunk of it is under the cursor where
+/// somebody has stepped to one. And at the far end, how far a paged body
+/// stands from its natural edge. All of those are dim, because they are facts
+/// about what the card is showing rather than about the agent.
 ///
 /// The same rule the band a line is typed in draws, in the same character and
 /// the same dim, because the card is that band with something else in it.
-fn rule(card: &Card<Body>, called: &str, held: usize, width: usize, theme: Theme) -> Line<'static> {
+fn rule(
+    card: &Card<Body>,
+    called: &str,
+    held: usize,
+    at: Option<usize>,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
     let named = fit(&inert(called), width);
+    let hunk = match at {
+        Some(at) => format!("{SEPARATOR}hunk {} of {}", at + 1, card.body.hunks().len()),
+        None => String::new(),
+    };
     let changed = match card.changes {
         true => fit(
-            &format!("{SEPARATOR}{CHANGED}"),
+            &format!("{SEPARATOR}{CHANGED}{hunk}"),
             width.saturating_sub(width_of(&named)),
         ),
         false => String::new(),
@@ -1070,7 +1126,17 @@ fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
 /// in [`Body::screen`]. After would be worse than not at all: the card would
 /// spend its window on the vendor's composer and then have nothing left for
 /// the work.
-pub(super) fn body(card: &Card<Body>, rows: usize, away: usize) -> Vec<Line<'static>> {
+///
+/// `at` is the hunk the cursor is standing on, whose header row is drawn on
+/// the cursor's own background — the same mark the list puts under the row a
+/// person is on, because it is the same fact: this is where they are.
+pub(super) fn body(
+    card: &Card<Body>,
+    rows: usize,
+    away: usize,
+    at: Option<usize>,
+    theme: Theme,
+) -> Vec<Line<'static>> {
     if card.asks() && card.question.is_some() {
         return Vec::new();
     }
@@ -1081,7 +1147,19 @@ pub(super) fn body(card: &Card<Body>, rows: usize, away: usize) -> Vec<Line<'sta
         true => head(card.body.kept, rows, away),
         false => tail(card.body.kept, rows, away),
     };
-    let shown = card.body.rows[window].to_vec();
+    let start = window.start;
+    let mut shown = card.body.rows[window].to_vec();
+
+    // The header row of that hunk, where the window has it: a hunk stepped to
+    // is at the top of the window, and one the clamp pulled up from the end of
+    // a patch is further down it.
+    if let Some(row) = at
+        .and_then(|at| card.body.hunks.get(at))
+        .and_then(|hunk| hunk.row.checked_sub(start))
+        && let Some(line) = shown.get_mut(row)
+    {
+        line.style = line.style.bg(theme.cursor);
+    }
 
     // Said only where the walk actually cut. An agent that has said nothing
     // yet is a different fact from a pane holding nothing but furniture, and
@@ -1831,6 +1909,103 @@ index e69de29..0000000
 
         // A body that is not a patch has no hunks to step through.
         assert!(Body::said("nothing to review here").hunks().is_empty());
+    }
+
+    #[test]
+    fn card_steps_the_hunk_cursor_through_the_patch_and_back() {
+        let body = Body::patch(A_PATCH);
+        let scroll = Scroll::default();
+        assert_eq!(scroll.at_hunk(), None, "a card opens on no hunk at all");
+
+        // The first hunk from none, with the card opened on its header row:
+        // opened rather than paged, so the frame that draws it puts it back
+        // there rather than holding it wherever it stood.
+        scroll.to_hunk(body.hunks(), true);
+        assert_eq!(scroll.at_hunk(), Some(0));
+        assert_eq!(scroll.away.get(), body.hunks()[0].row);
+        assert!(!scroll.paged(), "which is where the card now opens");
+
+        scroll.to_hunk(body.hunks(), true);
+        assert_eq!(scroll.at_hunk(), Some(1), "and the next one after it");
+        assert_eq!(scroll.away.get(), body.hunks()[1].row);
+        scroll.to_hunk(body.hunks(), true);
+        assert_eq!(scroll.at_hunk(), Some(1), "the last of them stays");
+
+        scroll.to_hunk(body.hunks(), false);
+        assert_eq!(scroll.at_hunk(), Some(0), "and back the way it came");
+        assert_eq!(scroll.away.get(), body.hunks()[0].row);
+        scroll.to_hunk(body.hunks(), false);
+        assert_eq!(scroll.at_hunk(), Some(0), "the first stays too");
+
+        // Whatever puts a card where it opens puts the cursor back to none:
+        // taking the diff again, and the cursor landing on another agent.
+        scroll.open_at(0);
+        assert_eq!(scroll.at_hunk(), None);
+
+        // A card that is not a patch has no hunk to step to.
+        scroll.to_hunk(Body::said("nothing to review here").hunks(), true);
+        assert_eq!(scroll.at_hunk(), None);
+        assert_eq!(scroll.away.get(), 0, "and the card was left where it was");
+    }
+
+    #[test]
+    fn card_stands_the_hunk_under_the_cursor_at_the_top_and_counts_it_on_the_rule() {
+        let screen = showing(
+            vec![view("fix-login-a1b", Phase::Working, None, 3)],
+            Some(Card {
+                id: "fix-login-a1b".to_string(),
+                phase: Phase::Working,
+                question: None,
+                options: Vec::new(),
+                kind: None,
+                body: A_PATCH.to_string(),
+                changes: true,
+                answer: false,
+                listening: true,
+            }),
+        );
+        let size = (60, 24);
+
+        // Nothing is counted until somebody steps to a hunk.
+        let all = painted(&screen, size).join("\n");
+        assert!(all.contains("what it has changed"), "{all}");
+        assert!(!all.contains("hunk"), "no hunk is under the cursor: {all}");
+
+        let hunks = screen.card.as_ref().expect("the card").body.hunks();
+        screen.scroll.to_hunk(hunks, true);
+
+        let buffer = cells(&screen, size);
+        let rows: Vec<String> = (0..size.1)
+            .map(|row| {
+                (0..size.0)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect();
+        let at = rows
+            .iter()
+            .position(|row| row.contains("@@ -1,4 +1,5 @@"))
+            .expect("the hunk's header on the card");
+        assert!(
+            rows[at - 1].contains("what it has changed · hunk 1 of 2"),
+            "the rule counts the hunks and says which one this is: {:?}",
+            rows[at - 1]
+        );
+        assert_eq!(
+            buffer[(2, at as u16)].bg,
+            theme().cursor,
+            "the header row is the row the cursor is standing on"
+        );
+        assert_ne!(
+            buffer[(2, at as u16 + 1)].bg,
+            theme().cursor,
+            "and the rows of the hunk under it are not"
+        );
+        assert!(
+            rows[at + 1].contains("fn main() {"),
+            "the hunk stands at the top of the window: {:?}",
+            &rows[at..]
+        );
     }
 
     #[test]
@@ -2971,7 +3146,7 @@ index e69de29..0000000
 
     /// What a card's body says, with the paint it says it in set aside.
     fn said(card: Card, rows: usize) -> Vec<String> {
-        body(&card.read(), rows, 0)
+        body(&card.read(), rows, 0, None, theme())
             .iter()
             .map(|line| {
                 line.spans
