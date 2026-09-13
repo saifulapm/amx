@@ -831,6 +831,7 @@ mod tests {
             body: "$ cargo test\nDo you want to proceed?".to_string(),
             changes: false,
             answer: false,
+            listening: true,
         }
     }
 
