@@ -2444,8 +2444,8 @@ fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) 
 fn until_armed(amx: &Harness, view: &str) -> String {
     amx.until("both rows to say why their work has landed", || {
         let drawn = screen(amx, view);
-        (drawn.contains("#12 merged · c again clears")
-            && drawn.contains("amx/tidy-b2c merged into main · c again clears"))
+        (drawn.contains("c again clears · #12 merged")
+            && drawn.contains("c again clears · amx/tidy-b2c merged into main"))
         .then_some(drawn)
     })
 }

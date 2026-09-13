@@ -310,7 +310,7 @@ fn row(
     let armed = moment.armed.iter().position(|id| id == view.id());
     let said = match armed {
         Some(at) => match moment.why.get(at) {
-            Some(why) => format!("{why} · {CLEARS}"),
+            Some(why) => format!("{CLEARS} · {why}"),
             None if moment.swept => AGAIN_ALL.to_string(),
             None => AGAIN.to_string(),
         },
@@ -398,12 +398,14 @@ const AGAIN: &str = "ctrl+x again forgets";
 /// only for itself.
 const AGAIN_ALL: &str = "ctrl+x again stops and forgets";
 
-/// And what a row `c` armed says after the reason it was found by: the same
+/// And what a row `c` armed says before the reason it was found by: the same
 /// two-press sentence in the key that is actually armed.
 ///
-/// The reason comes first because it is the part that differs row by row, and
-/// somebody reading down a marked wall is reading the reasons rather than the
-/// same instruction over and over.
+/// The instruction comes first because the summary column is the one that
+/// gives way: at eighty columns it holds forty-eight cells, and a branch
+/// merged into main is more than that on its own. What the cut takes is the
+/// end of the sentence, and the end can be the reason, which the card still
+/// holds; it cannot be the half that says what the next press does.
 const CLEARS: &str = "c again clears";
 
 /// How wide the pull request column has to be, which is the one column of a
@@ -1084,7 +1086,7 @@ mod tests {
         });
         let drawn = painted(&screen, size);
         assert!(
-            drawn[2].contains("#12 merged · c again clears"),
+            drawn[2].contains("c again clears · #12 merged"),
             "the row says why it is on the list and what the next press does: {:?}",
             drawn[2]
         );
