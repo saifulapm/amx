@@ -1740,7 +1740,7 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
             if view.meta.agent.is_none() {
                 return Ok(Replied::No(format!(
                     "{id} is {}; nothing is listening",
-                    doing(&view)
+                    verbs::interrupt::doing(&view)
                 )));
             }
             let env = spawn::env_snapshot(std::env::vars());
@@ -1784,18 +1784,6 @@ pub fn listening(root: &Path, view: &View) -> bool {
 /// is what `send` itself says when it turns one away.
 fn parked(view: &View) -> bool {
     view.verdict.evidence == derive::Evidence::LetGo
-}
-
-/// What to call what an agent nothing is running is doing.
-///
-/// The phase word, except for the parked one: its record says idle and idle is
-/// the one thing it is not, so the word for it is the one the verb that took
-/// its pane away is called.
-fn doing(view: &View) -> String {
-    match parked(view) {
-        true => "parked".to_string(),
-        false => view.phase().to_string(),
-    }
 }
 
 /// The card's one line, as the command line the verb reads.
