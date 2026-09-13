@@ -1696,6 +1696,61 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
 }
 
 #[test]
+fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
+    let amx = Harness::new();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.play("port-import-b2c", "works-with-a-spinner");
+    amx.until_state("ask-a1b", "waiting");
+    amx.until_state("port-import-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the two groups", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
+    });
+
+    // The working agent pinned over the rest, which puts the one that is
+    // asking below it: the key has to reach down the wall and not just to the
+    // top of it.
+    press(&amx, &view, "Down");
+    press(&amx, &view, "Down");
+    press(&amx, &view, "C-t");
+    let drawn = amx.until("the pinned group", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("Pinned").then_some(drawn)
+    });
+    assert!(
+        line_of(&drawn, "port-import-b2c") < line_of(&drawn, "ask-a1b"),
+        "the agent that is asking stands under the working one:\n{drawn}"
+    );
+
+    // From the top of the wall, which is the heading over the pinned row: the
+    // question is about the wall rather than about the line the cursor is on.
+    twice(&amx, &view, "g");
+    amx.until("the bar at the top", || {
+        coloured_line(&amx, &view, "Pinned")
+            .contains(&bar())
+            .then_some(())
+    });
+
+    press(&amx, &view, "w");
+    amx.until("the bar on the agent that is asking", || {
+        coloured_line(&amx, &view, "ask-a1b")
+            .contains(&bar())
+            .then_some(())
+    });
+    let drawn = screen(&amx, &view);
+    assert!(
+        !coloured_line(&amx, &view, "Pinned").contains(&bar()),
+        "and off the line it was pressed on:\n{drawn}"
+    );
+    assert!(
+        !drawn.lines().any(|line| line.starts_with("ask-a1b ┈")),
+        "the cursor is all the key moves, so nothing is opened over the wall:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
     // Every card opens with a line at its foot, and every letter is text the
     // moment one is open: these letters are keys on the wall and characters
