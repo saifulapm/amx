@@ -755,15 +755,18 @@ pub fn finding(line: &str) -> Vec<Narrow> {
 }
 
 /// The tokens a task line may be led with, and what each of them turns.
-const DIALS: [&str; 7] = [MODEL, PERMISSION, WORKTREE, DIR, AGENT, BASE, REQUEST];
+const DIALS: [&str; 8] = [
+    MODEL, PERMISSION, EFFORT, WORKTREE, DIR, AGENT, BASE, REQUEST,
+];
 
 /// The one of them that says which vendor the line is for, which is the vendor
 /// every other word on it is read against.
 const AGENT: &str = "agent:";
 
-/// The two the vendor declares, whose values are the vendor's own to name.
+/// The three the vendor declares, whose values are the vendor's own to name.
 const MODEL: &str = "m:";
 const PERMISSION: &str = "p:";
+const EFFORT: &str = "e:";
 
 /// And the four that are amx's: whether this agent is given a tree of its own,
 /// where it runs, what its tree is cut from and the request it is cut for.
@@ -796,6 +799,7 @@ pub struct Turned {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub permission: Option<String>,
+    pub effort: Option<String>,
     /// Whether this agent is given a tree of its own, when the line said.
     pub worktree: Option<bool>,
     /// Where this one runs, as it was typed. Kept as the word on the line
@@ -918,6 +922,9 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
             }
             MODEL => {
                 turned.model = Some(pointed(&agent, dial, entry.and_then(|e| e.model), value)?);
+            }
+            EFFORT => {
+                turned.effort = Some(pointed(&agent, dial, entry.and_then(|e| e.effort), value)?);
             }
             _ => {
                 turned.permission = Some(pointed(
@@ -1197,6 +1204,7 @@ fn dialled(agent: &str, typed: &str) -> Option<Vec<Entry>> {
     let (dial, cycle): (&str, &[&str]) = match typed {
         _ if typed.starts_with(MODEL) => (MODEL, vendor?.model?.cycle),
         _ if typed.starts_with(PERMISSION) => (PERMISSION, vendor?.permission?.cycle),
+        _ if typed.starts_with(EFFORT) => (EFFORT, vendor?.effort?.cycle),
         _ if typed.starts_with(WORKTREE) => (WORKTREE, &TREE),
         _ => return None,
     };
@@ -1477,9 +1485,12 @@ pub fn start(root: &Path, config: &Config, line: &str, under: Option<&Path>) -> 
         command: turned.agent,
         model: turned.model,
         permission: turned.permission,
-        effort: None,
+        effort: turned.effort,
     };
-    let named = dials.command.is_some() || dials.model.is_some() || dials.permission.is_some();
+    let named = dials.command.is_some()
+        || dials.model.is_some()
+        || dials.permission.is_some()
+        || dials.effort.is_some();
     let args = NewArgs {
         task: Some(task),
         // The line the view types is the task itself; a file and an editor are
@@ -2869,7 +2880,8 @@ mod tests {
 
     #[test]
     fn composer_reads_the_dials_off_the_front_of_a_task_line() {
-        let (dials, task) = turned(&as_claude(), "m:opus p:plan w:off port the importer").unwrap();
+        let (dials, task) =
+            turned(&as_claude(), "m:opus p:plan e:high w:off port the importer").unwrap();
         assert_eq!(
             dials,
             Turned {
@@ -2877,6 +2889,7 @@ mod tests {
                 agent: None,
                 model: Some("opus".to_string()),
                 permission: Some("plan".to_string()),
+                effort: Some("high".to_string()),
                 worktree: Some(false),
                 dir: None,
                 base: None,
@@ -3085,6 +3098,9 @@ mod tests {
         assert!(said.contains("acceptEdits"), "every mode it has: {said}");
         assert_eq!(refused("w:maybe port it"), "w:maybe: on, off or changes");
         assert_eq!(refused("m: port it"), "m: takes a value");
+        let said = refused("e:hard port it");
+        assert!(said.starts_with("e:hard: claude takes"), "{said}");
+        assert!(said.contains("xhigh"), "every level it has: {said}");
         assert_eq!(refused("agent: port it"), "agent: takes a command");
 
         // Open dials take what the cycle never names, because `--model` does.
@@ -3438,6 +3454,14 @@ mod tests {
         line.insert("p:pl");
         let found = suggest(&line, &as_claude(), a_project(), &[]).expect("claude's modes");
         assert_eq!(offered(&found), ["p:plan"]);
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("e:");
+        let found = suggest(&line, &as_claude(), a_project(), &[]).expect("claude's levels");
+        assert_eq!(
+            offered(&found),
+            cycle("e:", claude.effort.expect("claude has an effort dial"))
+        );
 
         // The tree is amx's own dial, so its words are amx's own answer and in
         // no table.

@@ -417,6 +417,7 @@ table.
 | `ctrl+w` `alt+backspace` | the word behind the cursor, in one press |
 | `alt+a` | which vendor the next agent runs |
 | `alt+m` | which model the next agent is given |
+| `alt+e` | how hard the next agent thinks, where its vendor has a dial for it |
 | `alt+w` | whether it gets a worktree of its own |
 | `shift+tab` | what the next agent may do without asking |
 | `b:` `pr:` `w:changes` | on the task line: a ref to cut from, a request to start on, take the uncommitted work |
@@ -526,9 +527,9 @@ and the project's files, `tab` and `↑` `↓` walking them exactly as under the
 task line. They are read against the agent on the card — its own vendor and the
 directory it runs in — rather than the header's dials, because a word offered
 out of anywhere else is a word that agent would not find. The dials themselves
-are the task line's alone: `m:`, `p:`, `w:`, `d:` and `agent:` typed here are
-words of the message, since the agent is already running under whatever it was
-started with.
+are the task line's alone: `m:`, `p:`, `e:`, `w:`, `d:` and `agent:` typed here
+are words of the message, since the agent is already running under whatever it
+was started with.
 
 At a question of the vendor's own whose choices are all it takes, the line reads
 `1-2 picks` and the number pressed is the answer: it reaches the agent as it is
@@ -633,7 +634,7 @@ one question worth pulling it forward for. The title your terminal came with is
 put back when the view closes.
 
 Every key answers to the one chord it is written under, so the `alt+q` of
-somebody arranging their windows closes nothing. The four dials are about the
+somebody arranging their windows closes nothing. The five dials are about the
 agent that does not exist yet: they change what the next `n` starts and nothing
 about what is already running, and the header says where they point.
 
@@ -698,8 +699,8 @@ the terminal narrows — the eighty columns above have already dropped
 goes.
 
 The line a task is typed on reads a few words of its own, at the front of it
-and nowhere else. `m:`, `p:`, `w:`, `d:` and `agent:` turn the dials for the
-one agent that line starts, as in `m:opus w:off port the importer`. `d:` is
+and nowhere else. `m:`, `p:`, `e:`, `w:`, `d:` and `agent:` turn the dials for
+the one agent that line starts, as in `m:opus w:off port the importer`. `d:` is
 where that one runs: `d:/srv/app port it`, `d:~/code/importer port it`, or a
 name read against the directory you opened the view in, the way a shell prompt
 standing there would read it. Nothing else on it is a word amx reads, so
@@ -750,9 +751,9 @@ and narrowed to what you have typed of the word. `agent:` is offered the same
 way, out of the vendors amx has an entry for. Six of them at most, and the
 rows come off the wall the way the line's own do.
 
-The dials are offered too: `m:` and `p:` the values that vendor's dial takes,
-`w:` its three, and `d:` the directories under the one the line will run in
-along with every project you already have an agent in. An `@` word that names
+The dials are offered too: `m:`, `p:` and `e:` the values that vendor's dial
+takes, `w:` its three, and `d:` the directories under the one the line will run
+in along with every project you already have an agent in. An `@` word that names
 none of the vendor's agents is a path — the other thing the mark is for — and
 what it offers is what is in the directory it names, read against the line's
 own `d:` where it has one, under the project whose heading the line was opened

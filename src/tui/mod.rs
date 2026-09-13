@@ -235,6 +235,7 @@ struct Profile {
     /// is what makes the model dial reach past the vendor the file names.
     models: Vec<(String, &'static str)>,
     permission: String,
+    effort: String,
     /// Whether the next agent is cut a worktree of its own.
     worktree: bool,
     /// Where the next agent will run, as a person writes it.
@@ -289,6 +290,7 @@ impl Profile {
                 entry.and_then(|e| e.permission),
                 config.permission.as_deref(),
             ),
+            effort: effective(entry.and_then(|e| e.effort), config.effort.as_deref()),
             worktree: config.worktrees,
             dir: dir.map(|dir| rows::shorten(dir, home)).unwrap_or_default(),
             cap,
@@ -303,6 +305,11 @@ impl Profile {
     /// This vendor's permission dial, under the same rule.
     fn permission_dial(&self) -> Option<registry::DialSpec> {
         registry::entry(&self.agent)?.permission
+    }
+
+    /// And the dial for how hard it thinks, where the vendor has one.
+    fn effort_dial(&self) -> Option<registry::DialSpec> {
+        registry::entry(&self.agent)?.effort
     }
 
     /// What the vendor dial offers: the command the config file asked for,
@@ -339,6 +346,7 @@ impl Profile {
         self.agent = next;
         self.model = registry::DEFAULT.to_string();
         self.permission = effective(self.permission_dial(), Some(&self.permission));
+        self.effort = effective(self.effort_dial(), Some(&self.effort));
     }
 
     /// The next model on the dial, and under it the harness that runs it.
@@ -373,6 +381,7 @@ impl Profile {
         self.model = model;
         self.agent = self.spelled(vendor);
         self.permission = effective(self.permission_dial(), Some(&self.permission));
+        self.effort = effective(self.effort_dial(), Some(&self.effort));
     }
 
     /// How this profile writes a harness: the command the file asked for where
@@ -395,6 +404,15 @@ impl Profile {
         }
     }
 
+    fn cycle_effort(&mut self) {
+        if let Some(next) = self
+            .effort_dial()
+            .and_then(|d| next_in(d.cycle, &self.effort))
+        {
+            self.effort = next;
+        }
+    }
+
     fn toggle_worktree(&mut self) {
         self.worktree = !self.worktree;
     }
@@ -414,6 +432,7 @@ impl Profile {
             worktrees: self.worktree,
             model: turned_to(&self.model),
             permission: turned_to(&self.permission),
+            effort: turned_to(&self.effort),
             ..config.clone()
         }
     }
@@ -1637,6 +1656,7 @@ impl Screen {
         match key.code {
             KeyCode::Char('a') if alt => self.profile.cycle_vendor(),
             KeyCode::Char('m') if alt => self.profile.cycle_model(),
+            KeyCode::Char('e') if alt => self.profile.cycle_effort(),
             KeyCode::Char('w') if alt => self.profile.toggle_worktree(),
             // Shift+tab is a key of its own where a terminal has one, and tab
             // with shift held where it does not.
@@ -3965,6 +3985,7 @@ mod tests {
         let config = Config {
             model: Some("opus".to_string()),
             permission: Some("plan".to_string()),
+            effort: Some("high".to_string()),
             worktrees: false,
             max_agents: 3,
             ..Config::default()
@@ -3978,6 +3999,7 @@ mod tests {
 
         assert_eq!(profile.model, "opus");
         assert_eq!(profile.permission, "plan");
+        assert_eq!(profile.effort, "high");
         assert!(!profile.worktree);
         assert_eq!(profile.cap, Some(3), "what the door said to count against");
         assert_eq!(
@@ -4006,6 +4028,37 @@ mod tests {
         assert!(profile.worktree);
         profile.toggle_worktree();
         assert!(!profile.worktree);
+    }
+
+    #[test]
+    fn profile_the_effort_dial_offers_the_levels_the_vendor_declares() {
+        let mut profile = Profile::default();
+        assert_eq!(
+            profile.effort,
+            registry::DEFAULT,
+            "how hard it thinks is claude's own answer until somebody says"
+        );
+
+        for want in ["low", "medium", "high", "xhigh", "max", registry::DEFAULT] {
+            profile.cycle_effort();
+            assert_eq!(profile.effort, want, "claude's own levels, in its order");
+        }
+
+        // A level the vendor turned to would not take rests at the sentinel,
+        // the way every other dial settles under a vendor somebody turned.
+        profile.effort = "xhigh".to_string();
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi");
+        assert_eq!(profile.effort, "xhigh", "and pi has a level of that name");
+        profile.effort = "minimal".to_string();
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "claude");
+        assert_eq!(
+            profile.effort,
+            registry::DEFAULT,
+            "claude has no level called minimal, so the dial is where it was \
+             before anybody turned it"
+        );
     }
 
     #[test]
@@ -4184,9 +4237,12 @@ mod tests {
 
         assert!(profile.model_dial().is_none());
         assert!(profile.permission_dial().is_none());
+        assert!(profile.effort_dial().is_none());
         assert_eq!(profile.model, registry::DEFAULT);
         profile.cycle_model();
         assert_eq!(profile.model, registry::DEFAULT, "and nothing to cycle to");
+        profile.cycle_effort();
+        assert_eq!(profile.effort, registry::DEFAULT, "nor for the effort key");
     }
 
     #[test]
@@ -4204,6 +4260,7 @@ mod tests {
              flag that means what the vendor was going to do anyway"
         );
         assert_eq!(resting.permission, None);
+        assert_eq!(resting.effort, None);
         assert!(resting.worktrees);
         assert_eq!(
             resting.max_agents, 4,
@@ -4212,11 +4269,13 @@ mod tests {
 
         profile.cycle_model();
         profile.cycle_permission();
+        profile.cycle_effort();
         profile.toggle_worktree();
 
         let turned = profile.launching(&config);
         assert_eq!(turned.model.as_deref(), Some("fable"));
         assert_eq!(turned.permission.as_deref(), Some("acceptEdits"));
+        assert_eq!(turned.effort.as_deref(), Some("low"));
         assert!(!turned.worktrees, "whichever way the file had it");
     }
 
@@ -4245,6 +4304,8 @@ mod tests {
         assert_eq!(screen.profile.agent, "claude");
         press(&mut screen, alt('m'));
         assert_eq!(screen.profile.model, "fable");
+        press(&mut screen, alt('e'));
+        assert_eq!(screen.profile.effort, "low");
         press(
             &mut screen,
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
@@ -7839,13 +7900,14 @@ mod tests {
         };
         let dials = &screen.profile;
         format!(
-            "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} {} {} {}",
+            "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} {} {} {} {}",
             screen.list,
             screen.card.as_ref().map(|card| (&card.id, card.changes)),
             screen.scroll.away.get(),
             dials.agent,
             dials.model,
             dials.permission,
+            dials.effort,
             dials.worktree,
         )
     }

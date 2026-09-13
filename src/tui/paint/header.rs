@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 
 use super::style::dim;
 use super::text::{SEPARATOR, fit, said};
+use crate::registry;
 use crate::theme::Theme;
 use crate::tui::rows::{Group, List};
 use crate::tui::{Profile, Screen};
@@ -203,7 +204,7 @@ const APART: &str = "   ";
 /// said as a value rather than as a hole in the row.
 ///
 /// Where every label will not fit they all go but `next`, and the pairs are
-/// separated by a mark instead: the order of four dials is learned once, and
+/// separated by a mark instead: the order of the dials is learned once, and
 /// the values are what change. An `agent` is a command line, and a command is
 /// routinely a long one — it takes the columns the dials beside it leave, but
 /// never fewer than [`SHORTEST_AGENT`] of them, because which program runs is
@@ -227,7 +228,7 @@ fn dials(profile: &Profile, width: usize, theme: Theme) -> Vec<Span<'static>> {
 
     // What the row costs before the vendor's own value is written into it,
     // with the labels and without them.
-    let chrome = |labelled: bool| {
+    let chrome = |pairs: &[(&'static str, String)], labelled: bool| {
         BRANCH.chars().count()
             + NEXT.chars().count()
             + BESIDE.chars().count()
@@ -246,8 +247,24 @@ fn dials(profile: &Profile, width: usize, theme: Theme) -> Vec<Span<'static>> {
                 })
                 .sum::<usize>()
     };
-    let labelled = chrome(true) + SHORTEST_AGENT <= width;
-    let room = width.saturating_sub(chrome(labelled)).max(SHORTEST_AGENT);
+
+    // The fifth dial, which the row was full without. One nobody has turned
+    // says only what the vendor was going to do anyway, so where naming every
+    // dial would no longer fit it stands down rather than taking the labels
+    // off the four that were here first. Turned, it is a fact about the next
+    // spawn and stands at any width: a dial somebody set and cannot see is
+    // worse than a crowded row.
+    if profile.effort_dial().is_some() {
+        pairs.push(("effort", profile.effort.clone()));
+        if profile.effort == registry::DEFAULT && chrome(&pairs, true) + SHORTEST_AGENT > width {
+            pairs.pop();
+        }
+    }
+
+    let labelled = chrome(&pairs, true) + SHORTEST_AGENT <= width;
+    let room = width
+        .saturating_sub(chrome(&pairs, labelled))
+        .max(SHORTEST_AGENT);
 
     let turned = Style::new().fg(theme.accent);
     let mut spans = vec![
@@ -536,7 +553,9 @@ mod tests {
             screen[0]
         );
         assert_eq!(
-            screen[1], "└ next  claude   model  default   permission  default   worktree  new",
+            screen[1],
+            "└ next  claude   model  default   permission  default   worktree  new   \
+             effort  default",
             "and under it every dial the next agent will be started with"
         );
         assert_eq!(screen[2], "", "a blank row stands the list off from it");
@@ -619,13 +638,15 @@ mod tests {
         let screen = launching(Vec::new());
         let drawn = painted(&screen, WIDE);
         assert_eq!(
-            drawn[1], "└ next  claude   model  default   permission  default   worktree  new",
+            drawn[1],
+            "└ next  claude   model  default   permission  default   worktree  new   \
+             effort  default",
             "one glyph in the first column says the row is subordinate to the \
              one above it, without a word of explanation"
         );
 
         let buffer = cells(&screen, WIDE);
-        for label in ["└", "next", "model", "permission", "worktree"] {
+        for label in ["└", "next", "model", "permission", "worktree", "effort"] {
             let cell = buffer[(column_of(&drawn[1], label), 1)].clone();
             assert_eq!(cell.fg, Color::Reset, "{label}: {:?}", drawn[1]);
             assert!(
@@ -664,7 +685,8 @@ mod tests {
         let mut screen = launching(Vec::new());
         assert_eq!(
             screen_line(&screen, WIDE, 1),
-            "└ next  claude   model  default   permission  default   worktree  new",
+            "└ next  claude   model  default   permission  default   worktree  new   \
+             effort  default",
             "the vendor's own answer said as a value, not a guess at which \
              model claude would have picked"
         );
@@ -673,10 +695,11 @@ mod tests {
         // so the row a person has learned to read stays the row they read.
         screen.profile.model = "opus".to_string();
         screen.profile.permission = "plan".to_string();
+        screen.profile.effort = "high".to_string();
         screen.profile.worktree = false;
         assert_eq!(
             screen_line(&screen, WIDE, 1),
-            "└ next  claude   model  opus   permission  plan   worktree  none"
+            "└ next  claude   model  opus   permission  plan   worktree  none   effort  high"
         );
 
         // An agent the registry never heard of declares no dials, so the row
@@ -685,6 +708,27 @@ mod tests {
         assert_eq!(
             screen_line(&screen, WIDE, 1),
             "└ next  mock-claude   worktree  none"
+        );
+    }
+
+    #[test]
+    fn header_keeps_the_effort_dial_off_a_row_too_narrow_to_name_it() {
+        // Eighty columns is the terminal a person opens, and the row was full
+        // at four dials. A fifth resting where the vendor left it says nothing
+        // that is not already true, so it waits rather than pushing the labels
+        // off the row.
+        let mut screen = launching(Vec::new());
+        assert_eq!(
+            screen_line(&screen, (80, 12), 1),
+            "└ next  claude   model  default   permission  default   worktree  new"
+        );
+
+        // Turned, it is a fact about the next spawn, and it is on the row at
+        // whatever that costs the labels beside it.
+        screen.profile.effort = "high".to_string();
+        assert_eq!(
+            screen_line(&screen, (80, 12), 1),
+            "└ next  claude  ·  default  ·  default  ·  new  ·  high"
         );
     }
 

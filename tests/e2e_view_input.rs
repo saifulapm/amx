@@ -2067,6 +2067,56 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
 }
 
 #[test]
+fn header_effort_dial_says_how_hard_the_next_agent_thinks() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
+    amx.until("the header", || {
+        screen(&amx, &view)
+            .contains("└ next  claude   model  default")
+            .then_some(())
+    });
+
+    // Eighty columns has no room to name a fifth dial nobody has turned, so
+    // the row says it by turning: the labels give way and the level is on it.
+    press(&amx, &view, "M-e");
+    let drawn = amx.until("the effort dial to turn", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("·  low").then_some(drawn)
+    });
+    assert!(
+        drawn.contains("└ next  claude"),
+        "and the row is still the dials:\n{drawn}"
+    );
+
+    types(&amx, &view, "n");
+    types(&amx, &view, "port the importer");
+    press(&amx, &view, "Enter");
+
+    let id = composed(&amx);
+    let command = command_of(&amx, &id);
+    assert!(
+        command.windows(2).any(|pair| pair == ["--effort", "low"]),
+        "what the header says the next agent thinks at is what it is: \
+         {command:?}"
+    );
+
+    // And a word on the line is about the one spawn it leads, so it beats the
+    // dial the view is holding.
+    types(&amx, &view, "n");
+    types(&amx, &view, "e:max fix the login bug");
+    press(&amx, &view, "Enter");
+
+    let next = composed_after(&amx, &id);
+    assert!(
+        command_of(&amx, &next)
+            .windows(2)
+            .any(|pair| pair == ["--effort", "max"]),
+        "{:?}",
+        command_of(&amx, &next)
+    );
+}
+
+#[test]
 fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
     let amx = Harness::new();
     // The file names a command amx has no entry for, and claude is on the
