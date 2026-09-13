@@ -106,6 +106,58 @@ fn diff_has_nothing_to_show_for_an_agent_that_has_changed_nothing() {
     );
 }
 
+/// A viewer that marks every row it was handed, keeps a copy of them, and then
+/// holds the terminal the way a pager does.
+const VIEWER: &str =
+    "diff = \"sed 's/^/VIEWED /' | tee $HOME/viewed.patch; while :; do sleep 0.05; done\"\n";
+
+#[test]
+fn diff_at_a_terminal_goes_through_the_viewer_the_config_names() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+    amx.config(VIEWER);
+
+    let pane = amx.in_a_terminal(&[], &["diff", "fix-login-a1b"]);
+
+    // On the terminal amx was asked from, which is what a viewer is for: the
+    // patch is drawn where a person is looking rather than piped anywhere.
+    amx.until("the viewer to draw the patch", || {
+        amx.capture(&pane).contains("VIEWED +after").then_some(())
+    });
+}
+
+#[test]
+fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+    amx.config(VIEWER);
+    let copy = amx.home().join("viewed.patch");
+
+    // A caller reading the patch is a caller reading git's own patch, whatever
+    // somebody set the key to for their own screen.
+    let out = amx.amx(&["diff", "fix-login-a1b"]);
+    assert!(out.status.success());
+    let patch = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        patch.contains("+after") && !patch.contains("VIEWED"),
+        "{patch}"
+    );
+    assert!(!copy.exists(), "and nothing was run to read it");
+
+    // And --stat is the shape of the work, which is not what a patch viewer is
+    // handed: the terminal comes back rather than being held by one.
+    let pane = amx.in_a_terminal(&[], &["diff", "fix-login-a1b", "--stat"]);
+    amx.until(
+        "the summary to be printed and the terminal given back",
+        || (!amx.pane_alive(&pane)).then_some(()),
+    );
+    assert!(!copy.exists(), "{}", copy.display());
+}
+
 #[test]
 fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
     // The question `--stat` answers is how far along an agent is, which a
