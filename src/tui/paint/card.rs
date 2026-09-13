@@ -164,6 +164,33 @@ pub struct Body {
     /// paint owns the clamp — see [`Scroll::kept`] — and only the paint knows
     /// how many rows the card had to give.
     anchor: usize,
+    /// The hunks of it, where it is a patch, in the order the patch writes
+    /// them. Every other body has none: a pane and an answer are prose, and
+    /// nothing in them is a change to a file.
+    hunks: Vec<Hunk>,
+}
+
+/// One hunk of a patch, as the card holds it: where it stands on the card, and
+/// what a comment on it would have to name.
+///
+/// Read off the same pass that makes the rows, because both are readings of one
+/// text and a second walk could disagree with the first about where a hunk
+/// begins.
+///
+/// What it is read for is the cursor that steps through them and the comment
+/// that names one, and neither is in the view yet. `expect` rather than
+/// `allow`: the day they are, the compiler asks for the attribute back.
+#[cfg_attr(not(test), expect(dead_code, reason = "read by the hunk cursor"))]
+pub struct Hunk {
+    /// The file it changes, on the new side — the old side where the file is
+    /// being deleted and there is no new one.
+    pub path: String,
+    /// The line its header names on that side.
+    pub line: usize,
+    /// Which of the body's rows its `@@` header is.
+    pub row: usize,
+    /// Its rows, from that header to the last of them, as git wrote them.
+    pub text: String,
 }
 
 /// The glyph a prompt wears in the conversation, which is the composer's own.
@@ -191,6 +218,7 @@ impl Body {
             kept: 0,
             chrome: false,
             anchor: 0,
+            hunks: Vec::new(),
         }
     }
 
@@ -301,6 +329,7 @@ impl Body {
             anchor: rows.len(),
             rows,
             chrome: false,
+            hunks: Vec::new(),
         }
     }
 
@@ -311,17 +340,100 @@ impl Body {
 
     /// A patch: amx's own reading of a repository rather than a pane, so there
     /// is no paint on it to keep and no furniture under it to cut.
+    ///
+    /// Read the way git writes it. The block of headers over each file — the
+    /// `diff --git` row, the blob it was, the two sides, a mode, a rename, a
+    /// binary row — is six or seven rows saying one thing, and on a card
+    /// fourteen rows tall that is a file whose changes are off the bottom
+    /// before they begin. All of it becomes one heading: what the file is
+    /// called and what it gained and lost. What is under the heading is
+    /// coloured by what it is, the way git colours a patch at a terminal, and
+    /// kept whole: `+after` is a row that says `+after`, and a card that
+    /// dropped the mark would have it read as the line that was already there.
+    ///
+    /// The hunks come off the same pass, because both are readings of one text
+    /// and a second walk could disagree with the first about where a hunk
+    /// begins.
     pub(in crate::tui) fn patch(text: &str) -> Body {
-        let rows: Vec<Line<'static>> = text
-            .lines()
-            .map(|text| Line::styled(inert(text), dim()))
-            .collect();
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        let mut hunks: Vec<Hunk> = Vec::new();
+        // The headers of the file being opened, held until the first row
+        // under them: the counts the heading carries are not known until that
+        // file's hunks have been read, so the row goes down blank and is
+        // written when the file closes.
+        let mut headers: Vec<&str> = Vec::new();
+        let mut file: Option<Reading> = None;
+        // And the rows of the hunk being read, from its header down.
+        let mut held: Vec<&str> = Vec::new();
+
+        for row in text.lines() {
+            if row.starts_with(FILE) {
+                shut(&mut hunks, &mut held);
+                // A file whose headers had nothing under them at all — a mode
+                // change, a rename, a binary file — is its heading and no
+                // more.
+                file = open(&mut rows, &mut headers).or(file);
+                close(&mut rows, file.take());
+                headers.push(row);
+                continue;
+            }
+            // The first row that is not one of those headers closes the block:
+            // the heading stands where the whole of it stood.
+            if !headers.is_empty() {
+                if header(row) {
+                    headers.push(row);
+                    continue;
+                }
+                file = open(&mut rows, &mut headers);
+            }
+
+            let style = if row.starts_with(HUNK) {
+                shut(&mut hunks, &mut held);
+                hunks.push(Hunk {
+                    path: file
+                        .as_ref()
+                        .map_or(String::new(), |file| file.path.clone()),
+                    line: starts(row),
+                    row: rows.len(),
+                    text: String::new(),
+                });
+                Style::default().fg(Color::Cyan)
+            } else if row.starts_with('+') {
+                if let Some(file) = file.as_mut() {
+                    file.added += 1;
+                }
+                Style::default().fg(Color::Green)
+            } else if row.starts_with('-') {
+                if let Some(file) = file.as_mut() {
+                    file.removed += 1;
+                }
+                Style::default().fg(Color::Red)
+            } else {
+                dim()
+            };
+            if !held.is_empty() || row.starts_with(HUNK) {
+                held.push(row);
+            }
+            rows.push(Line::styled(inert(row), style));
+        }
+        shut(&mut hunks, &mut held);
+        file = open(&mut rows, &mut headers).or(file);
+        close(&mut rows, file);
+
         Body {
             kept: rows.len(),
             rows,
             chrome: false,
             anchor: 0,
+            hunks,
         }
+    }
+
+    /// The hunks of the patch it is holding, in the order the patch writes
+    /// them.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the hunk cursor"))]
+    pub(in crate::tui) fn hunks(&self) -> &[Hunk] {
+        &self.hunks
     }
 
     /// A live pane, in the paint the vendor drew it in, with that vendor's own
@@ -370,6 +482,7 @@ impl Body {
             kept,
             chrome: drawn < plain.len(),
             anchor: 0,
+            hunks: Vec::new(),
         }
     }
 
@@ -394,6 +507,135 @@ impl Body {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// The row git opens a file with, which is where one file's part of a patch
+/// begins.
+const FILE: &str = "diff --git ";
+
+/// And the row it opens a hunk with.
+const HUNK: &str = "@@";
+
+/// The side of a hunk that is not there at all, on a file being added or
+/// deleted.
+const NOWHERE: &str = "/dev/null";
+
+/// A file of the patch as it is being read: which row its heading is, what it
+/// is called, and what its hunks have added and taken away so far.
+struct Reading {
+    at: usize,
+    path: String,
+    added: usize,
+    removed: usize,
+}
+
+/// Put a heading where the block of headers stood, blank for now: what the
+/// file gained and lost is not known until its hunks have been read.
+fn open(rows: &mut Vec<Line<'static>>, headers: &mut Vec<&str>) -> Option<Reading> {
+    if headers.is_empty() {
+        return None;
+    }
+    let file = Reading {
+        at: rows.len(),
+        path: named(headers),
+        added: 0,
+        removed: 0,
+    };
+    rows.push(Line::default());
+    headers.clear();
+    Some(file)
+}
+
+/// And write it, now that the file is over: what it is called and what it
+/// gained and lost.
+fn close(rows: &mut [Line<'static>], file: Option<Reading>) {
+    let Some(file) = file else {
+        return;
+    };
+    let said = format!("{}  +{} -{}", inert(&file.path), file.added, file.removed);
+    rows[file.at] = Line::styled(said, Style::default());
+}
+
+/// Hand the hunk that was being read the rows it was given.
+fn shut(hunks: &mut [Hunk], held: &mut Vec<&str>) {
+    if held.is_empty() {
+        return;
+    }
+    if let Some(hunk) = hunks.last_mut() {
+        hunk.text = held.join("\n");
+    }
+    held.clear();
+}
+
+/// Whether a row is one of the headers git writes between `diff --git` and the
+/// first hunk of a file.
+fn header(row: &str) -> bool {
+    const HEADERS: [&str; 13] = [
+        "index ",
+        "--- ",
+        "+++ ",
+        "old mode ",
+        "new mode ",
+        "new file mode ",
+        "deleted file mode ",
+        "similarity index ",
+        "dissimilarity index ",
+        "rename ",
+        "copy ",
+        "Binary files ",
+        "GIT binary patch",
+    ];
+    HEADERS.iter().any(|header| row.starts_with(header))
+}
+
+/// What the file those headers open is called: the path on the new side, and
+/// the old one's where there is no new side — a file being deleted is named by
+/// what it was.
+///
+/// Off the two sides where they are there at all. A mode change, a rename with
+/// nothing in it and a binary file have neither, and the row the block opens
+/// with names both.
+fn named(headers: &[&str]) -> String {
+    let side = |mark: &str| {
+        headers
+            .iter()
+            .find_map(|row| row.strip_prefix(mark))
+            .filter(|path| *path != NOWHERE)
+            .map(|path| {
+                path.strip_prefix("a/")
+                    .or_else(|| path.strip_prefix("b/"))
+                    .unwrap_or(path)
+                    .to_string()
+            })
+    };
+    side("+++ ").or_else(|| side("--- ")).unwrap_or_else(|| {
+        let opened = headers.first().copied().unwrap_or_default();
+        let opened = opened.strip_prefix(FILE).unwrap_or(opened);
+        opened
+            .split_once(" b/")
+            .map_or(opened.to_string(), |(_, new)| new.to_string())
+    })
+}
+
+/// What a hunk's header says it starts at: the line on the new side, and the
+/// old side's where the new side holds no rows at all — a hunk that only takes
+/// rows away names no line of the file as it now stands.
+fn starts(row: &str) -> usize {
+    let mut sides = row.trim_start_matches('@').trim_start().split(' ');
+    let old = counted(sides.next().unwrap_or_default());
+    let new = counted(sides.next().unwrap_or_default());
+    match new.1 {
+        0 => old.0,
+        _ => new.0,
+    }
+}
+
+/// One side of that header, as the line it starts at and the rows it holds. A
+/// side with no count holds one row, which is how git writes it.
+fn counted(side: &str) -> (usize, usize) {
+    let side = side.trim_start_matches(['-', '+']);
+    let (start, rows) = side.split_once(',').unwrap_or((side, "1"));
+    (start.parse().unwrap_or(0), rows.parse().unwrap_or(1))
 }
 
 /// Where the card's body stands against its natural edge — the bottom of a
@@ -1495,6 +1737,100 @@ mod tests {
             format!("{said}\n\nreading the importer"),
             "one blank row between the record and the tail, and nothing else"
         );
+    }
+
+    /// A patch as git writes one: a file changed and a file deleted, with the
+    /// whole block of headers over each of them.
+    const A_PATCH: &str = "\
+diff --git a/src/foo.rs b/src/foo.rs
+index 1234567..89abcde 100644
+--- a/src/foo.rs
++++ b/src/foo.rs
+@@ -1,4 +1,5 @@
+ fn main() {
+-    let old = 1;
++    let new = 2;
++    let more = 3;
+ }
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+index e69de29..0000000
+--- a/old.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+-and gone
+\\ No newline at end of file";
+
+    #[test]
+    fn card_reads_a_patch_into_rows_by_kind_and_hunks() {
+        let body = Body::patch(A_PATCH);
+
+        assert_eq!(
+            body.says(),
+            "src/foo.rs  +2 -1\n\
+             @@ -1,4 +1,5 @@\n\
+             \x20fn main() {\n\
+             -    let old = 1;\n\
+             +    let new = 2;\n\
+             +    let more = 3;\n\
+             \x20}\n\
+             old.txt  +0 -2\n\
+             @@ -1,2 +0,0 @@\n\
+             -gone\n\
+             -and gone\n\
+             \\ No newline at end of file",
+            "each file's headers as one heading row with its counts, and every \
+             other row whole"
+        );
+        assert_eq!(
+            body.kept, 12,
+            "counted as they are drawn, so the far end follows the collapsed \
+             headers"
+        );
+
+        // The colours are git's own at a terminal, and the heading is in no
+        // colour at all: it is amx's own row, and the one row of a file a
+        // reader walking the patch is looking for.
+        let paint: Vec<Style> = body.rows.iter().map(|row| row.style).collect();
+        assert_eq!(paint[0], Style::default());
+        assert_eq!(paint[7], Style::default());
+        assert_eq!(paint[1].fg, Some(Color::Cyan), "the hunk header");
+        assert_eq!(paint[3].fg, Some(Color::Red), "what it took away");
+        assert_eq!(paint[4].fg, Some(Color::Green), "and what it added");
+        assert_eq!(paint[2], dim(), "the context around them");
+        assert_eq!(paint[11], dim(), "and the row about the missing newline");
+
+        let hunks = body.hunks();
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].path, "src/foo.rs");
+        assert_eq!(hunks[0].line, 1, "the new side's start");
+        assert_eq!(hunks[0].row, 1, "which row of the body its header is");
+        assert_eq!(
+            hunks[0].text,
+            "@@ -1,4 +1,5 @@\n fn main() {\n-    let old = 1;\n\
+             +    let new = 2;\n+    let more = 3;\n }",
+            "its own rows, as git wrote them"
+        );
+        assert_eq!(
+            hunks[1].path, "old.txt",
+            "the old side, where the new one is gone"
+        );
+        assert_eq!(
+            hunks[1].line, 1,
+            "and the old side's start, where the new side holds nothing"
+        );
+        assert_eq!(hunks[1].row, 8);
+        assert!(
+            hunks[1]
+                .text
+                .ends_with("-and gone\n\\ No newline at end of file"),
+            "down to the last row before the next file: {:?}",
+            hunks[1].text
+        );
+
+        // A body that is not a patch has no hunks to step through.
+        assert!(Body::said("nothing to review here").hunks().is_empty());
     }
 
     #[test]
