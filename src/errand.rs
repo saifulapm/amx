@@ -41,10 +41,6 @@ pub const WATCHED_ENV: &str = "AMX_WATCHED";
 /// One key is read off the project rather than the whole file laid up, because
 /// the caller is a hook holding the person's config already — see
 /// [`crate::config::project_key`].
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the moments are wired in a later task")
-)]
 pub fn assembled(
     config: &Config,
     agent: &Agent,

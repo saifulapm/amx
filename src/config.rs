@@ -546,10 +546,6 @@ pub fn for_dir(dir: &Path) -> (Config, Vec<String>) {
 ///
 /// Proved a config first, the way [`keys_of`] proves it: one key is never
 /// taken out of a file every other key of which was thrown away.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the errand is assembled in a later task")
-)]
 pub fn project_key(dir: &Path, key: &str) -> Option<String> {
     let path = crate::paths::project_config(dir)?;
     let keys = usable(&path).ok()??;
