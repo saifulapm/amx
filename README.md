@@ -256,7 +256,12 @@ The second row hangs off it on a `└` and holds the dials, which are about the
 agent that does not exist yet, so nothing on it can be read as a fact about the
 fleet. On a terminal under ten rows the second row goes and the first stays.
 The row at the foot is whatever keys the line under the cursor makes true, cut
-to what the terminal holds, with `?` pinned to the end of it.
+to what the terminal holds, with `?` pinned to the end of it. When amx has
+something to say about the key you just pressed it says it there instead, in
+one of three colours: red where it was attempted and failed, amber where you
+asked for it and it did not happen, and dim for advice and for a thing that
+went the way you asked. A refusal painted the same dim as `started
+fix-login-a1b` reads as nothing having happened at all, which is why it is not.
 
 The list answers one question, so it is gathered under the answer: whatever you
 pinned there yourself comes first, then the work standing in front of a
@@ -1159,10 +1164,14 @@ as much as work that went in through a request.
 
 The view has the same thing under `c`, asked wherever the cursor is standing.
 The first press asks it of every agent on the wall and marks the ones it found,
-each row saying why it is on the list where its summary was; the press inside
-the window takes them and says `cleared 2`, with `kept 1` after it where a tree
-was holding work no commit has. Nothing landed is `nothing has landed`, and a
-window left to lapse takes nothing.
+each row saying why it is on the list where its summary was. It asks their
+trees the same question the sweep would, so a row whose tree is holding work no
+commit has says `holds work no commit has` there instead: that one is kept
+before you press again, and never offers a second press it would not honour.
+The press inside the window takes the rest and says `cleared 2`, with the rows
+it kept named after that — `kept fix-login-a1b: holds work no commit has`, or a
+count and the names where there is more than one. Nothing landed is `nothing
+has landed`, and a window left to lapse takes nothing.
 
 ## Worktrees
 
