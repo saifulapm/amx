@@ -385,6 +385,7 @@ table.
 | `esc` | put the card away, or leave a line alone |
 | `n` | start an agent, and the cursor goes to its row |
 | `alt+n` | start the line and go to the agent it started |
+| `f` | start a copy of it on a task you type, as `amx fork` does from a shell |
 | `!` | leading the task line, run it as a command rather than give it to an agent |
 | `d` | what it has changed |
 | `o` | open its pull request in the browser, through `gh` or `glab` |

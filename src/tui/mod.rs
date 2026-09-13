@@ -1863,6 +1863,33 @@ impl Screen {
                     });
                 }
             }
+            // A copy of the agent under the cursor, on a task typed at the
+            // line the key opens. Nothing typed is a copy with no first turn,
+            // which is a conversation somebody means to take somewhere else
+            // and has not said where yet.
+            //
+            // A command amx ran is turned away here rather than at the line:
+            // no vendor was started for it, so there is no conversation to
+            // copy, and a line asking for a task nothing could be given would
+            // be a keystroke to take back.
+            KeyCode::Char('f') if plain => {
+                if let Some(view) = self.list.selected() {
+                    match view.meta.agent {
+                        Some(_) => {
+                            self.mode = Mode::Typing(Composer::new(Asking::Fork {
+                                id: view.id().to_string(),
+                            }));
+                        }
+                        None => {
+                            self.notice = Some(Notice::Refused(format!(
+                                "{} is a command, not an agent; there is no \
+                                 conversation to copy",
+                                rows::called(view)
+                            )));
+                        }
+                    }
+                }
+            }
             // The same key, read where the cursor is: on a row it is that
             // agent's ending, and on a heading it is the finished agents under
             // it, which is the one place a person is looking at a group rather
@@ -1923,7 +1950,7 @@ impl Screen {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         match &mut self.mode {
             Mode::Typing(composer) => match composer.asking {
-                Asking::Task | Asking::Reply => composer.paste(&text),
+                Asking::Task | Asking::Reply | Asking::Fork { .. } => composer.paste(&text),
                 Asking::Name { .. } | Asking::Find => composer.insert(&text),
             },
             _ => {
@@ -2085,6 +2112,18 @@ impl Screen {
                     }
                     return Ok(Doing::Carry);
                 }
+                // A fork line is entered empty as well as written on: what
+                // the copy is given is the task typed at it, and a line with
+                // nothing on it is a copy sitting at the conversation it was
+                // made from with no turn put to it yet.
+                if let Asking::Fork { id } = &composer.asking {
+                    let id = id.clone();
+                    let whole = composer.whole();
+                    let task = (!whole.trim().is_empty()).then_some(whole);
+                    let made = act::spawn_copy(root, &id, task.as_deref());
+                    self.forked(made, composer);
+                    return Ok(Doing::Carry);
+                }
                 if composer.text.trim().is_empty() {
                     return Ok(Doing::Carry);
                 }
@@ -2221,6 +2260,33 @@ impl Screen {
         }
     }
 
+    /// What became of the copy the line asked for, said out loud.
+    ///
+    /// What [`Screen::starting`] does with a spawn, because a fork is one: the
+    /// line is kept among the tasks, the cursor goes to meet the agent it
+    /// made, and a line nothing was made from stays where it was typed with
+    /// the reason under it. Nobody goes with a copy — the key that starts one
+    /// is pressed at the wall, where the agent it was copied from is still
+    /// running and still worth watching.
+    fn forked(&mut self, made: Result<Started>, composer: Composer) {
+        match made {
+            Ok(Started::Yes { id, said }) => {
+                self.remember_line(&composer.asking, &composer.whole());
+                self.notice = Some(Notice::Advice(said));
+                self.acted();
+                self.started = Some(id);
+            }
+            Ok(Started::No(why)) => {
+                self.notice = Some(Notice::Refused(why));
+                self.mode = Mode::Typing(composer);
+            }
+            Err(e) => {
+                self.notice = Some(Notice::Failed(format!("{e:#}")));
+                self.acted();
+            }
+        }
+    }
+
     /// A task line, opened where the cursor is standing.
     ///
     /// The wall gathered by project is somebody reading one project, so a line
@@ -2254,13 +2320,19 @@ impl Screen {
         // line goes to an agent already running: its words are that agent's
         // own vendor's, read under the directory it runs in, because a word
         // offered out of anywhere else is a word that agent would not find.
-        let (launching, project) = match composer.asking {
-            Asking::Reply => {
-                let Some(view) = self
-                    .card
-                    .as_ref()
-                    .and_then(|card| self.list.agent_by_id(&card.id))
-                else {
+        // A fork line is the same reading of the agent it copies, since the
+        // copy runs that agent's vendor where that agent ran.
+        let (launching, project) = match &composer.asking {
+            Asking::Reply | Asking::Fork { .. } => {
+                // The card's line is aimed at whichever agent the card is
+                // open on, read at the keystroke; a fork line is aimed at the
+                // row the key was pressed on, whatever the cursor has done
+                // since.
+                let whose = match &composer.asking {
+                    Asking::Fork { id } => Some(id.clone()),
+                    _ => self.card.as_ref().map(|card| card.id.clone()),
+                };
+                let Some(view) = whose.and_then(|id| self.list.agent_by_id(&id)) else {
                     return;
                 };
                 let vendor = view
@@ -7986,6 +8058,89 @@ mod tests {
             )
             .unwrap();
         assert!(screen.notice.is_none(), "a heading has no turn in it");
+    }
+
+    #[test]
+    fn keys_f_opens_a_line_that_copies_the_row_and_turns_a_command_away() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let f = KeyEvent::from(KeyCode::Char('f'));
+        let press = |screen: &mut Screen| {
+            screen.act(f, root.path(), &config, None).unwrap();
+        };
+
+        // An agent's row opens the line, labelled with the agent it would be
+        // a copy of: the cursor may walk anywhere while the task is typed, and
+        // what the copy is of was decided by the press.
+        let mut agent = reading("port-a1b", Phase::Idle, State::default());
+        agent.meta.agent = Some("claude".to_string());
+        let mut screen = watching(vec![agent]);
+        press(&mut screen);
+        let Mode::Typing(line) = &screen.mode else {
+            panic!("no line was opened on the agent's row");
+        };
+        assert_eq!(line.label(), "FORK");
+        assert_eq!(line.about().as_deref(), Some("port-a1b"));
+        assert!(screen.notice.is_none(), "and nothing to say about it");
+
+        // A command amx ran has no vendor in its pane and so no conversation
+        // to copy. Said where the keys are said, and no line opened: a task
+        // typed at it could never be given to anybody.
+        let mut screen = watching(vec![reading("ls-b2c", Phase::Working, State::default())]);
+        press(&mut screen);
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("nothing said about a row with no conversation to copy");
+        };
+        assert_eq!(
+            said,
+            "ls-b2c is a command, not an agent; there is no conversation to copy"
+        );
+        assert!(
+            matches!(screen.mode, Mode::List),
+            "and the wall is still what is on the screen"
+        );
+    }
+
+    #[test]
+    fn keys_f_enters_an_empty_line_as_a_copy_waiting_for_a_turn() {
+        // The one line enter is pressed on with nothing typed: every other
+        // line the view opens is dropped empty, and this one is a copy that
+        // has been given no first turn. What proves it went is the verb
+        // answering about an agent amx has no record of, which is as far as an
+        // empty root lets a fork get.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut agent = reading("port-a1b", Phase::Idle, State::default());
+        agent.meta.agent = Some("claude".to_string());
+        let mut screen = watching(vec![agent]);
+        screen.mode = Mode::Typing(Composer::new(Asking::Fork {
+            id: "port-a1b".to_string(),
+        }));
+        screen
+            .act(KeyEvent::from(KeyCode::Enter), root.path(), &config, None)
+            .unwrap();
+        let Some(Notice::Failed(said)) = &screen.notice else {
+            panic!("the empty line was dropped instead of being entered");
+        };
+        assert!(said.contains("no agent"), "{said}");
+    }
+
+    #[test]
+    fn keys_f_on_a_heading_is_a_key_about_no_agent_at_all() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(a_wall());
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('f')),
+                root.path(),
+                &Config::default(),
+                None,
+            )
+            .unwrap();
+        assert!(screen.notice.is_none(), "a heading is no agent to copy");
+        assert!(matches!(screen.mode, Mode::List), "and no line is opened");
     }
 
     /// The wall as it stands: the headings and the agents under them, in the

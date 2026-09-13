@@ -854,6 +854,120 @@ fn the_cursor_lands_on_the_agent_the_line_started() {
 }
 
 #[test]
+fn f_starts_a_copy_of_the_agent_under_the_cursor_on_the_task_the_line_says() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    // An agent the view started, because a copy is made of the conversation
+    // the vendor announced and nothing a test writes by hand has one.
+    types(&amx, &view, "n");
+    types(&amx, &view, "port it");
+    press(&amx, &view, "Enter");
+    let origin = composed(&amx);
+    amx.until("the session the vendor announced", || {
+        amx.meta(&origin)["session"].as_str().map(str::to_string)
+    });
+
+    // The line the key opens says which agent it is a copy of, however far
+    // the cursor walks while the task is being typed.
+    press(&amx, &view, "f");
+    types(&amx, &view, "use sqlite");
+    let drawn = amx.until("the fork line", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ use sqlite").then_some(drawn)
+    });
+    assert!(
+        drawn.contains(&format!("FORK · {origin}")),
+        "the rule over the line names the agent the copy is of:\n{drawn}"
+    );
+
+    press(&amx, &view, "Enter");
+    let copy = composed_after(&amx, &origin);
+    let argv = command_of(&amx, &copy);
+    assert!(
+        argv.contains(&"--fork-session".to_string()),
+        "the copy is asked of the vendor as a branch of the session: {argv:?}"
+    );
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("use sqlite"),
+        "with what was typed as its first turn: {argv:?}"
+    );
+    assert!(
+        screen(&amx, &view).contains(&format!("forked {origin} as {copy}")),
+        "and the view says both agents:\n{}",
+        screen(&amx, &view)
+    );
+
+    // The row does not exist until the reading after the fork, and the cursor
+    // is on it as soon as it does: whoever asked for a copy is watching for
+    // the copy.
+    amx.until("the cursor on the row of the copy", || {
+        coloured(&amx, &view)
+            .lines()
+            .any(|line| line.contains(&copy) && line.contains(&bar()))
+            .then_some(())
+    });
+
+    // The same key on the copy, entered on nothing: a copy waiting for a turn,
+    // which is the whole conversation and no first word put to it.
+    amx.until("the copy's own session", || {
+        amx.meta(&copy)["session"].as_str().map(str::to_string)
+    });
+    press(&amx, &view, "f");
+    press(&amx, &view, "Enter");
+    let waiting = amx.until("the copy of the copy", || {
+        let id = agents(&amx)
+            .into_iter()
+            .find(|id| id != &origin && id != &copy)?;
+        amx.meta(&id)["pane"].as_str().map(|_| id)
+    });
+    assert_eq!(
+        amx.meta(&waiting)["task"],
+        amx.meta(&copy)["task"],
+        "a copy given nothing is about what the agent it came from was about"
+    );
+    let argv = command_of(&amx, &waiting);
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("--fork-session"),
+        "and nothing is put to it: {argv:?}"
+    );
+}
+
+#[test]
+fn f_on_a_command_row_says_there_is_no_conversation_to_copy() {
+    let amx = Harness::new();
+    let view = a_view_that_dispatches(&amx, "happy-turn");
+
+    // A row amx ran a shell for, which the cursor lands on as it is started.
+    types(&amx, &view, "n");
+    types(&amx, &view, "!echo hi");
+    press(&amx, &view, "Enter");
+    let id = composed(&amx);
+    amx.until("the cursor on the command row", || {
+        coloured(&amx, &view)
+            .lines()
+            .any(|line| line.contains(&id) && line.contains(&bar()))
+            .then_some(())
+    });
+
+    // No vendor was started for it, so there is nothing of it to copy and no
+    // line is opened to type a task nobody could be given.
+    press(&amx, &view, "f");
+    let drawn = amx.until("what the key said about a command row", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .contains(&format!("{id} is a command, not an agent"))
+            .then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("FORK ·"),
+        "and nothing was opened to type at:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
     let amx = Harness::new();
     let view = a_view_that_dispatches(&amx, "happy-turn");

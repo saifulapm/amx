@@ -121,7 +121,10 @@ impl Backlog {
     /// walking back over two copies of it would be a step that went nowhere.
     pub fn remember_line(&mut self, asking: &Asking, line: &str) {
         let lines = match asking {
-            Asking::Task => &mut self.tasks,
+            // A fork line is a task said to an agent that does not exist yet,
+            // the same as the line that starts one from nothing, so the two of
+            // them are walked back through together.
+            Asking::Task | Asking::Fork { .. } => &mut self.tasks,
             Asking::Reply => &mut self.replies,
             Asking::Name { .. } | Asking::Find => return,
         };
@@ -136,7 +139,7 @@ impl Backlog {
     /// kind that sends nothing.
     pub fn lines_for(&self, asking: &Asking) -> &[String] {
         match asking {
-            Asking::Task => &self.tasks,
+            Asking::Task | Asking::Fork { .. } => &self.tasks,
             Asking::Reply => &self.replies,
             Asking::Name { .. } | Asking::Find => &[],
         }
@@ -197,6 +200,15 @@ pub enum Asking {
     Reply,
     /// A name for one of them, which goes nowhere near the agent itself.
     Name { id: String },
+    /// The first turn of a copy of one of them, which is what `amx fork`
+    /// starts: a second agent on the conversation the first one has had.
+    /// Nothing typed is a copy waiting for a turn.
+    ///
+    /// It names the agent it is a copy of, where a reply names nobody: this
+    /// line stands over the wall rather than at the foot of a card, so the row
+    /// the key was pressed on is the only thing that says which agent is being
+    /// copied.
+    Fork { id: String },
     /// Which agents to keep on the wall. Not a line that is sent: it is read
     /// on every keystroke, so the list under it is already narrowed by the
     /// time somebody has finished typing what they were looking for.
@@ -638,6 +650,7 @@ impl Composer {
             // on.
             Asking::Reply => "REPLY",
             Asking::Name { .. } => "RENAME",
+            Asking::Fork { .. } => "FORK",
             // Nothing draws a rule over a find line: it is one row at the
             // foot, so the label has nowhere to be said and nothing to say.
             Asking::Find => "FIND",
@@ -647,7 +660,9 @@ impl Composer {
     /// What the line is aimed at, where it is aimed at anything.
     ///
     /// The label alone does not say it, and it is what somebody about to press
-    /// enter has to be sure of: a rename renames one agent and nothing else.
+    /// enter has to be sure of: a rename renames one agent and nothing else,
+    /// and a fork copies one. Both name that agent by its id, which is the
+    /// word every verb takes it by and the one the line was opened with.
     /// A task is aimed at nobody yet, so what it says instead is
     /// the project it will run in — the one thing about a spawn that the rule
     /// can say before there is an agent to name — and nothing where that is
@@ -667,7 +682,7 @@ impl Composer {
             // And a reply names nobody here, because the card's rule above it
             // already names the agent it is going to.
             Asking::Find | Asking::Reply => None,
-            Asking::Name { id } => Some(id.clone()),
+            Asking::Name { id } | Asking::Fork { id } => Some(id.clone()),
         }
     }
 }
@@ -987,10 +1002,11 @@ fn pointed(
 
 /// What the word under the cursor could be, where it could be something.
 ///
-/// A task line only. The other lines go to an agent that is already running,
-/// and what a vendor loads by name is what a task line asks it for. A command
-/// row asks it for nothing either: it runs a shell, where `/etc` is a directory
-/// rather than the front of a skill's name.
+/// The three lines a vendor is ever given words on: the task, the line at the
+/// foot of the card, and the first turn of a copy. What a vendor loads by name
+/// is what those ask it for, and a rename and a find line ask it for nothing.
+/// A command row asks it for nothing either: it runs a shell, where `/etc` is a
+/// directory rather than the front of a skill's name.
 ///
 /// Read on the keystroke, the way the find line narrows the wall on one: a
 /// suggestion arriving after the word it was about has been finished is no use
@@ -1006,11 +1022,15 @@ pub fn suggest(
     project: &Path,
     wall: &[PathBuf],
 ) -> Option<Suggest> {
-    // A task line, and the line at the foot of the card: the vendor's words
-    // are the same words said to an agent already running, and `config` and
-    // `project` are that agent's own there rather than the header's dials.
-    // The dials are the task line's alone — see [`answering`].
-    if !matches!(composer.asking, Asking::Task | Asking::Reply) || composer.commanding() {
+    // A task line, the line at the foot of the card, and a fork line: the
+    // vendor's words are the same words said to an agent already running, and
+    // `config` and `project` are that agent's own on those two rather than the
+    // header's dials. The dials are the task line's alone — see [`answering`].
+    if !matches!(
+        composer.asking,
+        Asking::Task | Asking::Reply | Asking::Fork { .. }
+    ) || composer.commanding()
+    {
         return None;
     }
     let word = under_the_cursor(&composer.text, composer.at)?;
@@ -1574,6 +1594,41 @@ fn spawned(
     })
 }
 
+/// Start a copy of an agent, on a task of its own or on nothing.
+///
+/// `amx fork` said from the view: a second agent on the conversation the first
+/// one has had, running where it ran. What the copy is given is what was typed
+/// at the line, and a line with nothing on it is a copy sitting at its prompt
+/// with the whole conversation behind it, which is what the verb does with no
+/// task either.
+///
+/// The verb decides the whole of it — which session there is to copy, whether
+/// the vendor can be asked for a copy at all, the cap the project sets — and
+/// says so on the stderr it is handed, which is a buffer here: a view in raw
+/// mode is in no position to receive what a verb writes to a terminal.
+pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> {
+    let (mut out, mut problems) = (Vec::new(), Vec::new());
+    let code = verbs::fork::run(
+        root,
+        id,
+        task,
+        &spawn::env_snapshot(std::env::vars()),
+        &mut out,
+        &mut problems,
+        false,
+    )?;
+    if code != exit::OK {
+        return Ok(Started::No(one_line(&problems)));
+    }
+    // What the verb wrote is the copy's id and nothing else, and the line says
+    // both agents: a copy is only ever read against the one it came from.
+    let copy = one_line(&out);
+    Ok(Started::Yes {
+        said: format!("forked {id} as {copy}"),
+        id: copy,
+    })
+}
+
 /// What a reply came to.
 pub enum Replied {
     /// It reached the agent, and this says what was done with it.
@@ -2013,7 +2068,9 @@ fn one_line(written: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Choice;
+    use crate::spawn::Handoff;
+    use crate::store::{Choice, Meta};
+    use crate::tmux::{PaneId, Socket};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -2277,7 +2334,7 @@ mod tests {
 
     #[test]
     fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
-        // Which of the four this is, in one word, with the agent it is aimed
+        // Which of the five this is, in one word, with the agent it is aimed
         // at said beside it rather than in it.
         assert_eq!(Composer::new(Asking::Task).label(), "TASK");
         assert_eq!(
@@ -2286,6 +2343,84 @@ mod tests {
             })
             .label(),
             "RENAME"
+        );
+        assert_eq!(
+            Composer::new(Asking::Fork {
+                id: "fix-login-b2c".to_string(),
+            })
+            .label(),
+            "FORK"
+        );
+    }
+
+    #[test]
+    fn fork_line_names_the_agent_it_copies_and_is_walked_back_among_the_tasks() {
+        let copying = || Asking::Fork {
+            id: "fix-login-b2c".to_string(),
+        };
+        assert_eq!(
+            Composer::new(copying()).about().as_deref(),
+            Some("fix-login-b2c"),
+            "the rule names the agent the copy is of, by the id every verb \
+             takes it by"
+        );
+
+        // A fork line is a task for an agent that does not exist yet, so it is
+        // kept where the line that starts one from nothing is kept and walked
+        // back from either of them.
+        let mut sent = Backlog::default();
+        sent.remember_line(&copying(), "now do it with sqlite");
+        assert_eq!(sent.lines_for(&Asking::Task), ["now do it with sqlite"]);
+        assert_eq!(sent.lines_for(&copying()), ["now do it with sqlite"]);
+    }
+
+    #[test]
+    fn fork_from_the_view_answers_in_the_line_the_verb_would_have_written() {
+        // The cap is the one refusal a fork can be turned away with before
+        // anything is made, so it is what proves the verb's stderr comes back
+        // as the line the view says things on: plain, because there is no
+        // terminal on the other end of it, and on one row.
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+        let meta = Meta {
+            id: "fix-login-a1b".to_string(),
+            task: "fix the login bug".to_string(),
+            agent: Some("claude".to_string()),
+            dir: here.path().to_path_buf(),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: Socket::Name("amx-not-a-server".to_string()),
+            pane: PaneId::new("%404").unwrap(),
+            bg: false,
+            session: Some("6f1c9f4e-0d5b-4a51-9f6e-2b1f0c3d4e5a".to_string()),
+            transcript: None,
+            created: store::now(),
+        };
+        let origin = Agent::create(root.path(), &meta).unwrap();
+        spawn::write_handoff(
+            origin.dir(),
+            &Handoff {
+                task: meta.task.clone(),
+                command: vec!["claude".to_string(), meta.task.clone()],
+            },
+        )
+        .unwrap();
+        std::fs::create_dir(here.path().join(".amx")).unwrap();
+        std::fs::write(here.path().join(".amx/config.toml"), "max_agents = 0\n").unwrap();
+
+        let Started::No(why) =
+            spawn_copy(root.path(), "fix-login-a1b", Some("do it again")).unwrap()
+        else {
+            panic!("a copy was started over the project's own cap");
+        };
+        assert!(why.starts_with("amx fork: "), "{why:?}");
+        assert!(why.contains("max_agents is 0"), "{why:?}");
+        assert!(!why.contains('\u{1b}'), "{why:?}");
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["fix-login-a1b"],
+            "and nothing was made on the way to finding out"
         );
     }
 

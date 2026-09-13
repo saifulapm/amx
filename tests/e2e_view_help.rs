@@ -166,6 +166,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     });
     for does in [
         "start an agent",
+        "start a copy of it on a task",
         "an answer or a message on it",
         "what it has changed",
         "open its pull request in the browser",
