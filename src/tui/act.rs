@@ -1865,8 +1865,15 @@ fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
 /// what its numbers stand for is amx's reading of a picture of a pane, an
 /// allowed tool call cannot be taken back, and a card that sent one on a
 /// keystroke would be answering a screen it guessed the shape of.
-pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> bool {
+///
+/// A walked list is the fourth. Its numbers are amx's own — the vendor draws
+/// none, and the verb walks its cursor to the row a number names — so the
+/// press is a reading of a picture of a pane in exactly the way a permission
+/// box is, and what it would send is an enter on a row. A pi dialog is a tool
+/// gate too, and an allow cannot be taken back.
+pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>, walked: bool) -> bool {
     kind == Some(Kind::Question)
+        && !walked
         && !options.is_empty()
         && !asked.is_some_and(|ask| ask.multi || ask.takes_notes())
 }
@@ -1887,13 +1894,26 @@ pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> boo
 /// the same [`picks`] the keystroke is read by: a row that said `press 1-2`
 /// wherever the digits went straight to the pane would be inviting an enter
 /// that is never wanted.
-pub fn invitation(kind: Option<Kind>, options: &[String], asked: Option<&Ask>) -> String {
+///
+/// On a walked list the numbers are the whole line. They are amx's own, put on
+/// a list the vendor numbered none of, and a walk is all the verb will send
+/// there: no `y`, no `n`, and no words, because the screen underneath has no
+/// field to take them.
+pub fn invitation(
+    kind: Option<Kind>,
+    options: &[String],
+    asked: Option<&Ask>,
+    walked: bool,
+) -> String {
     let numbers = match options.len() {
         0 => None,
         1 => Some("1".to_string()),
         many => Some(format!("1-{}", many.min(9))),
     };
-    let choices = numbers.map(|numbers| match picks(kind, options, asked) {
+    if walked && let Some(numbers) = &numbers {
+        return format!("press {numbers}");
+    }
+    let choices = numbers.map(|numbers| match picks(kind, options, asked, walked) {
         true => format!("{numbers} picks"),
         false => format!("press {numbers}"),
     });
@@ -2081,6 +2101,7 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
         phase: view.phase(),
         question: None,
         options: Vec::new(),
+        walked: false,
         kind: None,
         body: match patch.trim().is_empty() {
             true => "nothing changed yet".to_string(),
@@ -2538,16 +2559,16 @@ mod tests {
         // A question of the vendor's own offers choices and a field, and the
         // choices answer it on the press.
         assert_eq!(
-            invitation(Some(Kind::Question), &two, None),
+            invitation(Some(Kind::Question), &two, None, false),
             "1-2 picks, or type an answer"
         );
         assert_eq!(
-            invitation(Some(Kind::Question), &one, None),
+            invitation(Some(Kind::Question), &one, None, false),
             "1 picks, or type an answer",
             "and one choice is one number"
         );
         assert_eq!(
-            invitation(Some(Kind::Question), &[], None),
+            invitation(Some(Kind::Question), &[], None, false),
             "type an answer",
             "and a menu whose choices amx has not read yet names none"
         );
@@ -2555,11 +2576,11 @@ mod tests {
         // One that takes more than one choice is answered by checking boxes,
         // and the line says how they are named.
         assert_eq!(
-            invitation(Some(Kind::Question), &two, Some(&asked(true, false))),
+            invitation(Some(Kind::Question), &two, Some(&asked(true, false)), false),
             "press 1-2, 1,3 for several, or type an answer"
         );
         assert_eq!(
-            invitation(Some(Kind::Question), &[], Some(&asked(true, false))),
+            invitation(Some(Kind::Question), &[], Some(&asked(true, false)), false),
             "type an answer",
             "with no choices read there is nothing to check"
         );
@@ -2568,11 +2589,11 @@ mod tests {
         // row for words of your own at all, so the words on the line are the
         // note rather than an answer.
         assert_eq!(
-            invitation(Some(Kind::Question), &two, Some(&asked(false, true))),
+            invitation(Some(Kind::Question), &two, Some(&asked(false, true)), false),
             "press 1-2, and words after it are a note"
         );
         assert_eq!(
-            invitation(Some(Kind::Question), &two, Some(&asked(true, true))),
+            invitation(Some(Kind::Question), &two, Some(&asked(true, true)), false),
             "press 1-2, 1,3 for several, and words after it are a note",
             "and a checkbox question can carry one too"
         );
@@ -2581,26 +2602,57 @@ mod tests {
         // never invites words at either.
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
             assert_eq!(
-                invitation(kind, &two, None),
+                invitation(kind, &two, None, false),
                 "press 1-2, y or n",
                 "{kind:?}"
             );
-            assert_eq!(invitation(kind, &one, None), "press 1, y or n", "{kind:?}");
+            assert_eq!(
+                invitation(kind, &one, None, false),
+                "press 1, y or n",
+                "{kind:?}"
+            );
         }
         for kind in [Some(Kind::Permission), None] {
             assert_eq!(
-                invitation(kind, &[], None),
+                invitation(kind, &[], None, false),
                 "press y, n or 1-9",
                 "with nothing read off the screen, the grammar itself: {kind:?}"
             );
         }
 
         // A trust screen with no numbers read off it is one the vendor draws
-        // none on — claude 2.1.259's gate, pi's own — and the verb takes only
-        // a walk or `esc` there, so that is what the card invites.
+        // none on — claude 2.1.259's gate — and the verb takes only a walk or
+        // `esc` there, so that is what the card invites.
         assert_eq!(
-            invitation(Some(Kind::Trust), &[], None),
+            invitation(Some(Kind::Trust), &[], None, false),
             "type down enter, up enter or esc"
+        );
+
+        // A list amx numbered itself, off the mark the vendor draws in front
+        // of the row its cursor is on. The numbers are amx's own reading and
+        // the verb sends a walk to reach the row one names, so they are the
+        // whole of what the card offers: no y, no n, and no words, whatever
+        // kind the screen is.
+        let five = [
+            "Trust".to_string(),
+            "Trust parent".to_string(),
+            "Trust and remember".to_string(),
+            "Do not trust".to_string(),
+            "Do not trust (this session only)".to_string(),
+        ];
+        assert_eq!(
+            invitation(Some(Kind::Trust), &five, None, true),
+            "press 1-5"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &two, None, true),
+            "press 1-2",
+            "and a walked dialog names its two the same way"
+        );
+        assert_eq!(
+            invitation(Some(Kind::Question), &one, None, true),
+            "press 1",
+            "and one choice is one number"
         );
 
         // And a question of a call under a record that calls the screen
@@ -2611,12 +2663,12 @@ mod tests {
         // offered either.
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
             assert_eq!(
-                invitation(kind, &two, Some(&asked(false, false))),
+                invitation(kind, &two, Some(&asked(false, false)), false),
                 "press 1-2",
                 "{kind:?}"
             );
             assert_eq!(
-                invitation(kind, &two, Some(&asked(true, false))),
+                invitation(kind, &two, Some(&asked(true, false)), false),
                 "press 1-2, 1,3 for several",
                 "{kind:?}"
             );
@@ -2626,7 +2678,7 @@ mod tests {
     #[test]
     fn card_reads_a_digit_as_the_answer_only_where_one_choice_is_the_answer() {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
-        let question = |asked: Option<&Ask>| picks(Some(Kind::Question), &two, asked);
+        let question = |asked: Option<&Ask>| picks(Some(Kind::Question), &two, asked, false);
 
         // The vendor's own question with its choices read, whether the payload
         // behind it was read or not: one of them is the whole answer.
@@ -2642,11 +2694,20 @@ mod tests {
 
         // A menu whose choices amx has not read has no number to stand behind,
         // and a permission box is answered in a grammar amx read off a pane.
-        assert!(!picks(Some(Kind::Question), &[], None));
+        assert!(!picks(Some(Kind::Question), &[], None, false));
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
-            assert!(!picks(kind, &two, None), "{kind:?}");
-            assert!(!picks(kind, &two, Some(&asked(false, false))), "{kind:?}");
+            assert!(!picks(kind, &two, None, false), "{kind:?}");
+            assert!(
+                !picks(kind, &two, Some(&asked(false, false)), false),
+                "{kind:?}"
+            );
         }
+
+        // And a list amx numbered itself is answered by a walk the verb sends,
+        // which is a good deal more than the keystroke: the digit fills the
+        // line and enter sends it, because a dialog can be a tool gate and an
+        // allow cannot be taken back.
+        assert!(!picks(Some(Kind::Question), &two, None, true));
     }
 
     #[test]

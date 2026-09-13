@@ -1618,7 +1618,7 @@ impl Screen {
             .and_then(rows::showing)
             .map(|showing| showing.ask);
         let at = digit.to_digit(10)? as usize;
-        (act::picks(card.kind, &card.options, asked) && at <= card.options.len())
+        (act::picks(card.kind, &card.options, asked, card.walked) && at <= card.options.len())
             .then(|| (card.id.clone(), digit.to_string()))
     }
 
@@ -3427,6 +3427,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 phase: view.phase(),
                 question: view.state.question.clone(),
                 options: view.state.options.clone(),
+                walked: view.state.walked,
                 kind: view.kind(),
                 body: Body::said(&said),
                 changes: false,
@@ -3471,6 +3472,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 phase: view.phase(),
                 question: view.state.question.clone(),
                 options: view.state.options.clone(),
+                walked: view.state.walked,
                 kind: view.kind(),
                 body: Body::conversation(&said, live.as_deref(), width, theme),
                 changes: false,
@@ -3507,6 +3509,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
             phase: view.phase(),
             question: view.state.question.clone(),
             options: view.state.options.clone(),
+            walked: view.state.walked,
             kind: view.kind(),
             // No falling back to the answer a finished turn left, either: a
             // card that is asking shows nothing older than the question.
@@ -5559,6 +5562,7 @@ mod tests {
             phase: Phase::Done,
             question: None,
             options: Vec::new(),
+            walked: false,
             kind: None,
             body: Body::patch("+ line"),
             changes: true,
@@ -5609,6 +5613,7 @@ mod tests {
             phase: Phase::Done,
             question: None,
             options: Vec::new(),
+            walked: false,
             kind: None,
             body: Body::patch("+ line"),
             changes: true,
@@ -5665,6 +5670,7 @@ diff --git a/src/bar.rs b/src/bar.rs
             phase: Phase::Done,
             question: None,
             options: Vec::new(),
+            walked: false,
             kind: None,
             body: Body::patch(TWO_HUNKS),
             changes: true,
@@ -5785,6 +5791,7 @@ diff --git a/src/bar.rs b/src/bar.rs
             phase: Phase::Done,
             question: None,
             options: Vec::new(),
+            walked: false,
             kind: None,
             body: Body::patch("+ line"),
             changes: true,

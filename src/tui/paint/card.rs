@@ -58,6 +58,11 @@ pub struct Card<B = String> {
     pub question: Option<String>,
     /// The choices that question offers, in the order the screen lists them.
     pub options: Vec<String>,
+    /// Whether those choices are amx's own numbering of a list the vendor put
+    /// no numbers on — see [`crate::store::State::walked`]. The numbers are
+    /// still what the card offers, but a walk is what the verb sends to reach
+    /// the one somebody names.
+    pub walked: bool,
     /// What kind of question it is, which is what decides the answers it will
     /// take.
     pub kind: Option<Kind>,
@@ -134,6 +139,7 @@ impl Card<String> {
             phase: self.phase,
             question: self.question,
             options: self.options,
+            walked: self.walked,
             kind: self.kind,
             changes: self.changes,
             answer: self.answer,
@@ -1410,7 +1416,7 @@ fn answer_row(
 /// somebody to type into the dark.
 fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
     match (card.asks(), card.listening) {
-        (true, _) => act::invitation(card.kind, &card.options, asked),
+        (true, _) => act::invitation(card.kind, &card.options, asked, card.walked),
         (_, false) => NOBODY.to_string(),
         _ => REPLY.to_string(),
     }
@@ -1527,6 +1533,7 @@ mod tests {
             phase: Phase::Waiting,
             question: Some("Which fixture should the port keep?".to_string()),
             options: options.iter().map(|label| (*label).to_string()).collect(),
+            walked: false,
             kind,
             body: "$ cargo test\nDo you want to proceed?".to_string(),
             changes: false,
@@ -1954,6 +1961,7 @@ index e69de29..0000000
                 phase: Phase::Working,
                 question: None,
                 options: Vec::new(),
+                walked: false,
                 kind: None,
                 body: A_PATCH.to_string(),
                 changes: true,
@@ -2733,6 +2741,7 @@ index e69de29..0000000
                 phase: Phase::Working,
                 question: None,
                 options: Vec::new(),
+                walked: false,
                 kind: None,
                 body: patch,
                 changes: true,
@@ -2764,6 +2773,7 @@ index e69de29..0000000
             phase: Phase::Working,
             question: None,
             options: Vec::new(),
+            walked: false,
             kind: None,
             body: (0..lines)
                 .map(|n| format!("+ line {n}"))
@@ -2833,6 +2843,7 @@ index e69de29..0000000
                     phase: Phase::Done,
                     question: None,
                     options: Vec::new(),
+                    walked: false,
                     kind: None,
                     body: (0..40)
                         .map(|n| format!("said {n}"))
