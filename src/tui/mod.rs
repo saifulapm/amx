@@ -155,6 +155,11 @@ enum Doing {
     },
     /// Lend it to an editor for as long as somebody is writing the line in it.
     Edit,
+    /// And to whatever reads patches, for as long as somebody is reading this
+    /// agent's.
+    View {
+        id: String,
+    },
 }
 
 /// What the keys are doing at the moment.
@@ -1069,6 +1074,10 @@ where
                 edit_the_line(terminal, &mut screen, config)?;
                 called.clear();
             }
+            Doing::View { id } => {
+                view_the_patch(terminal, &mut screen, root, &id, config)?;
+                called.clear();
+            }
         }
     }
 }
@@ -1168,6 +1177,43 @@ where
         Ok(Edited::No(why)) => Some(Notice::Refused(why)),
         Err(e) => Some(Notice::Failed(format!("{e:#}"))),
     };
+    Ok(())
+}
+
+/// Give the terminal to whatever the config reads patches with, on this
+/// agent's work.
+///
+/// The same borrow the editor gets, and for the same reason: a pager or a
+/// differ wants a whole terminal, and what it draws on one is between it and
+/// the person reading it. `amx diff` at a shell hands its patch over exactly
+/// this way, so the key and the verb put the same thing in front of somebody.
+///
+/// What the verb will not read — a row with no tree of its own, a tree
+/// somebody has removed — it refuses in its own words, which are the words a
+/// shell would have got.
+fn view_the_patch<B>(
+    terminal: &mut Terminal<B>,
+    screen: &mut Screen,
+    root: &Path,
+    id: &str,
+    config: &Config,
+) -> Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    // The key that asked read this first: a view that gave the terminal up for
+    // a command it does not have would be a screen going away and coming back
+    // for nothing.
+    let Some(viewer) = &config.diff else {
+        return Ok(());
+    };
+    let read = borrowed(terminal, || verbs::diff::in_viewer(root, id, viewer))?;
+
+    // A viewer that ran and ended badly said so on the terminal it was given,
+    // which is between it and whoever was reading; what never got that far is
+    // the view's to say.
+    screen.notice = read.err().map(|e| Notice::Failed(format!("{e:#}")));
     Ok(())
 }
 
@@ -1851,6 +1897,29 @@ impl Screen {
                             self.follow_the_cursor();
                         }
                         Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
+                    }
+                }
+            }
+            // The same patch, read in whatever the person already reads
+            // patches in: the card is where it is answered, and a pager with
+            // colours and a word diff is where it is read. The terminal goes
+            // to the viewer for as long as that takes.
+            KeyCode::Char('d') if alt => {
+                if let Some(view) = self.list.selected() {
+                    match config.diff.is_some() {
+                        true => {
+                            return Ok(Doing::View {
+                                id: view.id().to_string(),
+                            });
+                        }
+                        // Nothing to read it with is nothing the view can go
+                        // and find, so what it says is the key that would
+                        // have named one.
+                        false => {
+                            self.notice = Some(Notice::Refused(
+                                "no diff key in the config to read the patch with".to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -8149,6 +8218,43 @@ diff --git a/src/bar.rs b/src/bar.rs
         assert!(screen.notice.is_none(), "a heading is left alone");
     }
 
+    #[test]
+    fn keys_alt_d_answers_with_the_row_to_read_and_names_the_key_that_reads_it() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(a_wall());
+
+        // Nothing in the config is nothing to read the patch with, and the
+        // answer says which key would have named it.
+        let doing = screen
+            .act(alt('d'), root.path(), &Config::default(), None)
+            .unwrap();
+        assert!(matches!(doing, Doing::Carry), "nothing is borrowed for it");
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("nothing said about a view with no viewer");
+        };
+        assert!(said.contains("diff"), "the key is named: {said}");
+
+        // With one, the key answers with the agent under the cursor, for the
+        // loop to give the terminal up on.
+        let config = Config {
+            diff: Some("delta".to_string()),
+            ..Config::default()
+        };
+        let doing = screen.act(alt('d'), root.path(), &config, None).unwrap();
+        let Doing::View { id } = doing else {
+            panic!("the patch was not handed anywhere");
+        };
+        assert_eq!(id, "ask-a1b");
+
+        // A heading is a group rather than an agent, and a group has no patch.
+        let mut screen = watching(a_wall());
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        let doing = screen.act(alt('d'), root.path(), &config, None).unwrap();
+        assert!(matches!(doing, Doing::Carry), "a heading is left alone");
+        assert!(screen.notice.is_none(), "and nothing is said about it");
+    }
+
     /// A tmux server of this test's own, gone when the test is.
     ///
     /// The rows `i` has anything to send a key to are rows a reader calls live,
@@ -8530,7 +8636,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         // Each of these carries a key the list does act on. Held down with
         // something the list never asked for, they are somebody reaching past
         // the view: alt+q is a window being arranged, not a view being closed.
-        for key in [alt('q'), ctrl('q'), alt('d'), ctrl('n'), alt('?')] {
+        for key in [alt('q'), ctrl('q'), ctrl('n'), alt('?')] {
             assert!(
                 !acts_on(key, root.path(), |_| {}),
                 "{} is not a key of this view",

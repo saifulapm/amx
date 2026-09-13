@@ -42,7 +42,7 @@ use crate::tui::grid;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 53] = [
+pub(in crate::tui) const HELP: [(&str, &str); 54] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -57,6 +57,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 53] = [
     ("enter →", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
     ("o", "open its pull request in the browser"),
+    ("alt+d", "the patch in the viewer the config names"),
     ("pgup ctrl+b", "page the card, when it holds more"),
     ("pgdn ctrl+f", "and the other way"),
     ("ctrl+u", "half a page of it, toward the edge"),
@@ -114,7 +115,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 53] = [
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 8),
-    ("look", 10),
+    ("look", 11),
     ("start", 12),
     ("arrange", 11),
     ("dials", 12),

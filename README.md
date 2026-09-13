@@ -389,6 +389,7 @@ table.
 | `!` | leading the task line, run it as a command rather than give it to an agent |
 | `d` | what it has changed |
 | `o` | open its pull request in the browser, through `gh` or `glab` |
+| `alt+d` | the same patch in whatever the `diff` config key names, on the terminal |
 | `pgup` `ctrl+b` | page the card, when it holds more |
 | `pgdn` `ctrl+f` | and the other way |
 | `ctrl+u` | half a page of it, toward the edge |

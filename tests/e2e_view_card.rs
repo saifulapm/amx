@@ -1290,6 +1290,88 @@ fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
 }
 
 #[test]
+fn alt_d_hands_the_terminal_to_the_viewer_the_config_names() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let tree = PathBuf::from(
+        amx.meta("fix-login-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+
+    // A viewer that keeps what it was handed, and only where it was handed the
+    // terminal with it: without one there is no file to read afterwards.
+    let read = amx.home().join("read.patch");
+    amx.config(&format!(
+        "diff = \"test -t 1 && cat > {}\"\n",
+        read.display()
+    ));
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    press(&amx, &view, "M-d");
+    let patch = amx.until("what the viewer was handed", || {
+        let patch = std::fs::read_to_string(&read).ok()?;
+        patch.contains("+after").then_some(patch)
+    });
+    assert!(patch.contains("-before"), "git's own patch: {patch}");
+
+    // And the terminal comes back: the view is drawn again and the keys reach
+    // it, which is the whole of what a borrow owes whoever lent it.
+    types(&amx, &view, "d");
+    let shown = amx.until("the card after it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("+after").then_some(drawn)
+    });
+    assert!(shown.contains("what it has changed"), "{shown}");
+}
+
+#[test]
+fn alt_d_on_a_row_with_no_tree_says_what_the_verb_says() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    amx.config("diff = \"cat\"\n");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    // An agent working in a directory of its own has nothing to compare, which
+    // is the answer `amx diff` gives it, in the words it gives it in.
+    press(&amx, &view, "M-d");
+    amx.until("what the verb says of it", || {
+        screen(&amx, &view)
+            .contains("has no worktree of its own")
+            .then_some(())
+    });
+}
+
+#[test]
 fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     let amx = Harness::new();
     let repo = amx.a_repo();
