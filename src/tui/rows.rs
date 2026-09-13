@@ -1010,6 +1010,27 @@ impl List {
         true
     }
 
+    /// The first agent on the screen with something on it for the person
+    /// reading, for a key that lands the cursor on it.
+    ///
+    /// The rows the list is showing, which is what a narrowing left and what a
+    /// shut heading is not holding back, so [`List::land_on`] can always go
+    /// where this says. In their state order whichever axis is drawn, because
+    /// what an agent is waiting for is a fact about the agent and not about
+    /// the way the fleet was gathered.
+    // The key that lands the cursor on what this names takes it up next. Until
+    // it does, the callers are this module's own tests.
+    #[allow(dead_code)]
+    pub fn first_needing(&self) -> Option<String> {
+        let showing: Vec<(Group, String)> = self
+            .ordered()
+            .into_iter()
+            .map(|n| (self.group(&self.views[n]), self.views[n].id().to_string()))
+            .filter(|(_, id)| self.drawn(id))
+            .collect();
+        needing_you(&showing)
+    }
+
     /// Which line this agent is drawn on, where the list is drawing it.
     fn row_of(&self, id: &str) -> Option<usize> {
         self.items
@@ -1427,6 +1448,30 @@ pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, Stri
             (list.group(view), view.id().to_string())
         })
         .collect()
+}
+
+/// Which agent on a wall has something on it for the person reading it.
+///
+/// What is keeping somebody from getting on is a question nobody has answered,
+/// then work standing in front of a reviewer, then the last turn to have
+/// ended: an agent that stopped while they were away is what they came back
+/// for. The order the wall is already in settles which row of a group that is
+/// — each group the way somebody left it, and the finished newest first — so
+/// the head of the first group with anybody in it is the answer.
+///
+/// Here rather than in the verb that first asked, because the key on the list
+/// and `amx attach --waiting` are the same question asked of the same wall,
+/// and two spellings of it would drift apart a group at a time.
+pub fn needing_you(order: &[(Group, String)]) -> Option<String> {
+    let first_of = |group: Group| {
+        order
+            .iter()
+            .find(|(on, _)| *on == group)
+            .map(|(_, id)| id.clone())
+    };
+    first_of(Group::NeedsInput)
+        .or_else(|| first_of(Group::Review))
+        .or_else(|| first_of(Group::Completed))
 }
 
 /// Whether `said` holds `want`, whatever case either was written in.
@@ -2229,6 +2274,113 @@ mod tests {
         // to, and the answer says so rather than the cursor moving.
         assert!(!list.land_on("port-c3d"));
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
+    }
+
+    #[test]
+    fn view_names_the_first_agent_that_needs_you() {
+        // A question nobody has answered is what is holding somebody up.
+        let fleet = || {
+            vec![
+                view("busy-a1b", Phase::Working, 10),
+                on_a_branch(view("review-b2c", Phase::Done, 20), "amx/fix-login-a1b"),
+                view("ask-c3d", Phase::Waiting, 30),
+                view("done-d4e", Phase::Done, 40),
+            ]
+        };
+        assert_eq!(
+            over_the_forge(fleet()).first_needing().as_deref(),
+            Some("ask-c3d")
+        );
+
+        // With nothing asking, work standing in front of a reviewer.
+        let mut without_the_question = fleet();
+        without_the_question.remove(2);
+        assert_eq!(
+            over_the_forge(without_the_question)
+                .first_needing()
+                .as_deref(),
+            Some("review-b2c")
+        );
+
+        // And with neither, the turn that ended most recently, which the group
+        // has at its head already.
+        let ended = |id: &str, at: u64| {
+            let mut view = view(id, Phase::Done, at);
+            view.state.ended = at;
+            view
+        };
+        assert_eq!(
+            listed(vec![
+                view("busy-a1b", Phase::Working, 10),
+                ended("early-b2c", 20),
+                ended("late-c3d", 30),
+            ])
+            .first_needing()
+            .as_deref(),
+            Some("late-c3d")
+        );
+
+        // Work in flight and rows somebody put away is a wall with nothing on
+        // it for them.
+        let list = sleeping(
+            listed(vec![
+                view("busy-a1b", Phase::Working, 10),
+                view("nap-b2c", Phase::Waiting, 20),
+            ]),
+            "nap-b2c",
+        );
+        assert_eq!(list.first_needing(), None);
+    }
+
+    #[test]
+    fn view_names_a_row_it_is_showing_for_the_cursor_to_land_on() {
+        let fleet = || {
+            vec![
+                at(view("ask-a1b", Phase::Waiting, 10), "/src/web/app"),
+                at(view("busy-b2c", Phase::Working, 20), "/src/api"),
+                at(view("done-c3d", Phase::Done, 30), "/src/api"),
+            ]
+        };
+
+        // Gathered by project, the agent that needs somebody is the same one:
+        // what a row is waiting for is not a fact about the way the rows were
+        // laid out.
+        let mut list = over_the_disk(fleet());
+        assert_eq!(list.first_needing().as_deref(), Some("ask-a1b"));
+        assert!(list.land_on("ask-a1b"));
+
+        // A narrowing that hid the question leaves what is under it, because
+        // the rows on the screen are the rows a cursor can reach.
+        let mut list = listed(fleet());
+        list.narrow(vec![Narrow::State(Some("done".to_string()))]);
+        assert_eq!(list.first_needing().as_deref(), Some("done-c3d"));
+        assert!(list.land_on("done-c3d"));
+
+        list.narrow(vec![Narrow::State(Some("working".to_string()))]);
+        assert_eq!(
+            list.first_needing(),
+            None,
+            "a screen of work in flight has nothing on it to land on"
+        );
+
+        // A shut heading holds its rows the same way: the count says the
+        // question is there, and no line of it is somewhere to put a cursor.
+        let mut list = listed(fleet());
+        list.top();
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            [
+                "Needs input (1) shut",
+                "",
+                "Working (1)",
+                "busy-b2c",
+                "",
+                "Completed (1)",
+                "done-c3d",
+            ]
+        );
+        assert_eq!(list.first_needing().as_deref(), Some("done-c3d"));
     }
 
     #[test]

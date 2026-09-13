@@ -119,12 +119,6 @@ fn agent_in(session_name: &str) -> Option<String> {
 /// for `--prev`.
 fn pick(order: &[(Group, String)], current: Option<&str>, aim: &Aim) -> Result<String> {
     let at = current.and_then(|id| order.iter().position(|(_, on)| on == id));
-    let first_of = |group: Group| {
-        order
-            .iter()
-            .find(|(on, _)| *on == group)
-            .map(|(_, id)| id.clone())
-    };
     let wrapped = |row: Option<&(Group, String)>| match row {
         Some((_, id)) => Ok(id.clone()),
         None => bail!(EMPTY),
@@ -137,14 +131,10 @@ fn pick(order: &[(Group, String)], current: Option<&str>, aim: &Aim) -> Result<S
                 .and_then(|before| order.get(before))
                 .or(order.last()),
         ),
-        // What a person is being kept from is a question nobody has answered,
-        // then work waiting on a reviewer, then the last turn to have ended:
-        // an agent that stopped while they were away is what they came back
-        // for, and the newest of them is at the head of its group already.
-        Aim::Waiting => match first_of(Group::NeedsInput)
-            .or_else(|| first_of(Group::Review))
-            .or_else(|| first_of(Group::Completed))
-        {
+        // Which agent is waiting on somebody is the wall's own question, and
+        // the key on the list asks it of the same rows: see
+        // [`rows::needing_you`] for what it answers and why.
+        Aim::Waiting => match rows::needing_you(order) {
             Some(id) => Ok(id),
             None => bail!("nothing on the wall is waiting on you"),
         },
