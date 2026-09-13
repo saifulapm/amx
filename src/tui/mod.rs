@@ -1925,11 +1925,20 @@ impl Screen {
             // The same key, read where the cursor is: on a row it is that
             // agent's ending, and on a heading it is the finished agents under
             // it, which is the one place a person is looking at a group rather
-            // than at an agent.
-            KeyCode::Char('x') if ctrl => match self.list.heading() {
-                Some(under) => self.sweep_or_arm(root, under),
-                None => self.end_or_arm(root),
-            },
+            // than at an agent. A pointer resting on a row or a heading is
+            // where the person is looking, so the cursor goes there first and
+            // the press is read on it — the way a click lands before it acts.
+            KeyCode::Char('x') if ctrl => {
+                if let Some(at) = self.hover
+                    && self.list.land(at)
+                {
+                    self.moved();
+                }
+                match self.list.heading() {
+                    Some(under) => self.sweep_or_arm(root, under),
+                    None => self.end_or_arm(root),
+                }
+            }
             // And the whole wall's worth of work that has landed, which is the
             // one press here that is about no row in particular.
             KeyCode::Char('c') if plain => self.clear_or_arm(root),
@@ -3073,7 +3082,8 @@ impl Screen {
     /// it — the cursor lands and the agent's window comes forward — a click
     /// on a heading or the fold keeps its toggle, the wheel is the walk — or
     /// a page, when the pointer is over an open card — and the pointer
-    /// resting on a row tints that row's name without moving the cursor.
+    /// resting on a row or a heading tints it without moving the cursor,
+    /// and is where `ctrl+x` is read.
     /// Nothing else is clickable, and the clicks and the wheel are the
     /// list's the way its letter keys are — the card's own line aside, which
     /// takes no pointer and so takes none of it. A task or a name being typed
@@ -3087,9 +3097,12 @@ impl Screen {
     ) -> Result<Doing> {
         match mouse.kind {
             MouseEventKind::Moved => {
-                self.hover = self
-                    .line_under(mouse.column, mouse.row)
-                    .filter(|at| matches!(self.list.items().get(*at), Some(rows::Item::Agent(_))));
+                self.hover = self.line_under(mouse.column, mouse.row).filter(|at| {
+                    matches!(
+                        self.list.items().get(*at),
+                        Some(rows::Item::Agent(_) | rows::Item::Heading(..))
+                    )
+                });
             }
             MouseEventKind::Down(MouseButton::Left) if self.list_takes_the_mouse() => {
                 let Some(at) = self.line_under(mouse.column, mouse.row) else {
@@ -9402,12 +9415,55 @@ mod tests {
             "and the keyboard's cursor did not move"
         );
 
-        // A heading is not an agent, and off the rows there is nothing to
-        // tint.
+        // A heading is hovered the way a row is; off the list there is
+        // nothing to tint.
         resting(&mut screen, 5, 3);
-        assert_eq!(screen.hover, None);
+        assert_eq!(screen.hover, Some(0), "the heading over them is hovered");
         resting(&mut screen, 5, 0);
         assert_eq!(screen.hover, None);
+    }
+
+    #[test]
+    fn ctrl_x_is_read_on_the_row_or_heading_under_the_pointer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        a_frame(&mut screen);
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+
+        // The pointer rests on the other row: the press lands the cursor
+        // there and arms that row, not the one the cursor was on.
+        screen
+            .moused(
+                mouse(MouseEventKind::Moved, 5, 5),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        screen
+            .pressed(ctrl('x'), root.path(), &config, None)
+            .unwrap();
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        assert_eq!(screen.armed(), ["done-b2c"]);
+
+        // And on the heading, the press is the group's.
+        screen
+            .moused(
+                mouse(MouseEventKind::Moved, 5, 3),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        screen
+            .pressed(ctrl('x'), root.path(), &config, None)
+            .unwrap();
+        assert!(screen.list.on_heading());
+        assert_eq!(screen.armed().len(), 2, "{:?}", screen.armed());
     }
 
     #[test]

@@ -113,7 +113,8 @@ pub(super) struct Moment<'a> {
     /// press after this one would do. One arm at a time, so it is a fact about
     /// the frame rather than about each row.
     pub(super) swept: bool,
-    /// The line the pointer is resting on, if it is resting on an agent's.
+    /// The line the pointer is resting on, if it is resting on an agent's or
+    /// a heading.
     pub(super) hover: Option<usize>,
     /// The agent the terminal was last lent to, where it has been lent to one.
     pub(super) lent: Option<&'a str>,
@@ -142,8 +143,8 @@ fn line(
 ) -> Line<'static> {
     let line = match item {
         Item::Heading(under, tally) => match under {
-            Under::Group(group) => heading(group, tally, theme),
-            Under::Project(_) => path_heading(list.title(under), tally, width, theme),
+            Under::Group(group) => heading(group, tally, at.hovered, theme),
+            Under::Project(_) => path_heading(list.title(under), tally, at.hovered, width, theme),
         },
         Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
@@ -206,12 +207,14 @@ fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
 /// The failures come after it either way, because that is the one thing a
 /// heading is worth reading without opening it — an agent that failed is the
 /// reason somebody came to the screen.
-fn heading(group: Group, tally: Tally, theme: Theme) -> Line<'static> {
+fn heading(group: Group, tally: Tally, hovered: bool, theme: Theme) -> Line<'static> {
     // Dim like the rows under it, with the one exception the wall makes up
     // here: the group that wants a person says so in colour, which is what the
-    // weight used to be spent on and reads louder than it did.
+    // weight used to be spent on and reads louder than it did. Under the
+    // pointer it comes up the way a hovered name does.
     let label = match group {
         Group::NeedsInput => Style::new().fg(theme.waiting),
+        _ if hovered => Style::new(),
         _ => dim(),
     };
     Line::from(vec![
@@ -230,11 +233,21 @@ fn heading(group: Group, tally: Tally, theme: Theme) -> Line<'static> {
 /// is [`grid::elide`]'s business: the end is the segment that says which
 /// worktree of a project this is, and cutting there would leave every one of
 /// them reading the same.
-fn path_heading(title: String, tally: Tally, width: usize, theme: Theme) -> Line<'static> {
+fn path_heading(
+    title: String,
+    tally: Tally,
+    hovered: bool,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
     let failed = failures(tally);
     let path = grid::elide(&title, grid::path_room(width, failed.trim()));
+    let label = match hovered {
+        true => Style::new(),
+        false => dim(),
+    };
     Line::from(vec![
-        Span::styled(format!("{path}{}", count(tally)), dim()),
+        Span::styled(format!("{path}{}", count(tally)), label),
         Span::styled(failed, Style::new().fg(theme.failed)),
     ])
 }
@@ -1647,6 +1660,32 @@ mod tests {
         );
         assert_eq!(
             behind(&screen, size, 4),
+            vec![Color::Reset; 60],
+            "and a hover is not the bar"
+        );
+    }
+
+    #[test]
+    fn rows_a_hovered_heading_comes_up_too() {
+        let size = (60, 10);
+        let mut screen = showing(
+            vec![read(view(
+                "fix-login-a1b",
+                Phase::Done,
+                Some("wrote the parser"),
+                60,
+            ))],
+            None,
+        );
+        assert!(
+            word_modifier(&screen, size, 2, "Completed").contains(Modifier::DIM),
+            "a heading is dim until the pointer rests on it"
+        );
+        screen.hover = Some(0);
+        let hovered = word_modifier(&screen, size, 2, "Completed");
+        assert!(!hovered.contains(Modifier::DIM), "{hovered:?}");
+        assert_eq!(
+            behind(&screen, size, 2),
             vec![Color::Reset; 60],
             "and a hover is not the bar"
         );
