@@ -2516,7 +2516,7 @@ impl Screen {
         };
         if self.forgetting().iter().any(|id| id == view.id()) {
             self.arm = None;
-            self.notice = said(act::forget(root, view));
+            self.notice = kept_a_tree(act::forget(root, view));
             self.acted();
             return;
         }
@@ -2609,11 +2609,11 @@ impl Screen {
             // where a stop failed, because part of what was asked for did not
             // happen.
             self.notice = match trouble.len() {
-                0 => said(forgotten),
+                0 => kept_a_tree(forgotten),
                 stuck => Some(Notice::Failed(format!(
                     "{} · {stuck} would not stop: {}",
                     match &forgotten {
-                        Ok(said) => said.clone(),
+                        Ok((said, _)) => said.clone(),
                         Err(e) => format!("{e:#}"),
                     },
                     trouble[0]
@@ -3002,6 +3002,22 @@ impl Screen {
 fn said(outcome: Result<String>) -> Option<Notice> {
     Some(match outcome {
         Ok(said) => Notice::Advice(said),
+        Err(e) => Notice::Failed(format!("{e:#}")),
+    })
+}
+
+/// The same, for a forget: what it came to, and whether it left a tree
+/// standing.
+///
+/// A forget that kept a tree is the one thing this key can do that is not
+/// what it was pressed for. Nothing went wrong — the safety worked — so it is
+/// not a failure; but a row that is still there and a sentence painted like
+/// "fix-login-a1b forgotten" is somebody pressing the key again to find out
+/// why nothing happened.
+fn kept_a_tree(outcome: Result<(String, bool)>) -> Option<Notice> {
+    Some(match outcome {
+        Ok((said, true)) => Notice::Refused(said),
+        Ok((said, false)) => Notice::Advice(said),
         Err(e) => Notice::Failed(format!("{e:#}")),
     })
 }
@@ -6556,6 +6572,64 @@ mod tests {
         );
         assert!(swept.contains("forgot 2"), "{swept}");
         assert_eq!(left(), 0);
+    }
+
+    #[test]
+    fn acts_ctrl_x_says_a_tree_it_kept_as_something_that_did_not_happen() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let held = has_landed(root.path(), repo.path(), "fix-login-a1b");
+        std::fs::write(
+            held.meta.worktree.as_deref().unwrap().join("login.rs"),
+            "fn login() {}\n",
+        )
+        .unwrap();
+        let mut screen = watching(vec![held]);
+
+        // Two presses, the same as any other forget. The second one finds
+        // work no commit has, keeps the tree and the record that names it,
+        // and says so where a forget that went through would have said it —
+        // so the colour is the only thing telling somebody which of the two
+        // they got.
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("a tree kept back was said as though the row had gone")
+        };
+        assert!(said.contains("keeping fix-login-a1b"), "{said}");
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["fix-login-a1b".to_string()],
+            "and what it says is what happened"
+        );
+    }
+
+    #[test]
+    fn acts_ctrl_x_on_a_heading_says_a_tree_it_kept_the_same_way() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let config = Config::default();
+        let held = has_landed(root.path(), repo.path(), "fix-login-a1b");
+        std::fs::write(
+            held.meta.worktree.as_deref().unwrap().join("login.rs"),
+            "fn login() {}\n",
+        )
+        .unwrap();
+        let gone = has_landed(root.path(), repo.path(), "port-importer-b2c");
+        let mut screen = watching(vec![held, gone]);
+        screen.list.up();
+
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        let Some(Notice::Refused(said)) = &screen.notice else {
+            panic!("a group that left a tree standing was said as a clean sweep")
+        };
+        assert_eq!(said, "forgot 1 · kept 1 holding work no commit has");
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["fix-login-a1b".to_string()]
+        );
     }
 
     #[test]

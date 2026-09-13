@@ -1800,24 +1800,34 @@ fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
     Ok(Forgotten::Yes)
 }
 
-/// The same, as the line the view puts where its keys are.
+/// The same, as the line the view puts where its keys are, and whether a tree
+/// was kept back.
 ///
 /// How many presses it took to get here is the view's own business, and the
 /// answer there is two whatever the row was doing: this door opens on the
 /// second press of a row the first one armed — stopping it if it was live —
 /// because nothing brings a record and the tree under it back.
-pub fn forget(root: &Path, view: &View) -> Result<String> {
+///
+/// The second half of the answer is the caller's to paint with: a press that
+/// kept a tree is a press that did not do what it was pressed for, and a
+/// sentence saying so in the colour of one that went through is a sentence
+/// nobody reads twice.
+pub fn forget(root: &Path, view: &View) -> Result<(String, bool)> {
     Ok(match forgetting(root, view)? {
-        Forgotten::Yes => format!("{} forgotten", view.id()),
-        Forgotten::Kept(tree) => format!(
-            "keeping {}: {} holds work no commit has",
-            view.id(),
-            tree.display()
+        Forgotten::Yes => (format!("{} forgotten", view.id()), false),
+        Forgotten::Kept(tree) => (
+            format!(
+                "keeping {}: {} holds work no commit has",
+                view.id(),
+                tree.display()
+            ),
+            true,
         ),
     })
 }
 
-/// Forget all of these, and say what became of them.
+/// Forget all of these, and say what became of them — and, as [`forget`]
+/// does, whether any of their trees was kept back.
 ///
 /// One at a time and through the door a single ctrl+x uses, so a tree holding
 /// work no commit has keeps its agent here exactly as it does there. That is
@@ -1827,7 +1837,7 @@ pub fn forget(root: &Path, view: &View) -> Result<String> {
 /// Nothing stops for a record that will not go. Somebody asked for the group
 /// to be cleared, and one agent amx could not deal with is a line at the end
 /// rather than a reason to leave the rest of them standing.
-pub fn forget_all(root: &Path, views: &[&View]) -> Result<String> {
+pub fn forget_all(root: &Path, views: &[&View]) -> Result<(String, bool)> {
     let (mut gone, mut kept) = (0, 0);
     let mut trouble = Vec::new();
     for view in views {
@@ -1847,7 +1857,7 @@ pub fn forget_all(root: &Path, views: &[&View]) -> Result<String> {
     if !trouble.is_empty() {
         bail!("{said} · {} would not go: {}", trouble.len(), trouble[0]);
     }
-    Ok(said)
+    Ok((said, kept > 0))
 }
 
 /// What the agent has changed, for the card.
