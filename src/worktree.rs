@@ -163,6 +163,69 @@ pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Wor
     })
 }
 
+/// Cut a tree for `id` on `branch`, which this checkout already has.
+///
+/// [`create_on`] without the fetch: a branch that is here is a branch there is
+/// nothing to bring, and fetching one anyway would move it to whatever the
+/// origin has rather than leaving the commits somebody made locally alone.
+/// [`create`]'s other half is missing too — no `-b`, since the branch exists
+/// and the point is to land on it rather than beside it.
+///
+/// The base is read off the branch, which is where `diff` measures the agent's
+/// work from: everything that was already on the branch is history, and what
+/// the agent does to it is the answer.
+// Called by t2, which starts an agent on a branch that already exists.
+#[allow(dead_code)]
+pub fn create_on_local(repo: &Path, id: &str, branch: &str) -> Result<Worktree> {
+    ensure_excluded(repo)?;
+
+    let path = path_for(repo, id);
+    git(repo, &["worktree", "add", &path.to_string_lossy(), branch])?;
+    let base = commit_of(repo, branch)?;
+
+    Ok(Worktree {
+        path,
+        branch: branch.to_string(),
+        base,
+    })
+}
+
+/// Whether git last recorded `branch`'s upstream as deleted.
+///
+/// The third way an agent's work can be finished with, and the only one that
+/// sees a squash merge: the forge took the work under a commit this branch
+/// does not hold, so [`is_merged`] says no, and then it deleted the branch.
+///
+/// What git recorded, not what the origin holds now — `%(upstream:track)` is
+/// read off the remote-tracking ref, and that moves only when somebody
+/// fetches. A branch with no upstream at all, and one git does not have, both
+/// answer no: neither is an upstream that has gone.
+// Called by t3, where a sweep reads it after fetching.
+#[allow(dead_code)]
+pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
+    let track = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:track)",
+            &format!("refs/heads/{branch}"),
+        ],
+    )?;
+    Ok(track.trim() == "[gone]")
+}
+
+/// Bring the origin's branches up to date, and drop the records of the ones it
+/// no longer has.
+///
+/// The fetch [`upstream_gone`] reads after: without it a branch deleted on the
+/// forge a week ago still reads as one somebody may be reviewing.
+// Called by t3, which fetches once per repository before a sweep walks it.
+#[allow(dead_code)]
+pub fn prune_origin(repo: &Path) -> Result<()> {
+    git(repo, &["fetch", "--prune", "--quiet", "origin"])?;
+    Ok(())
+}
+
 /// Whether some tree in this repository already has `branch` checked out.
 ///
 /// git allows one tree per branch, so the question a name has to answer before
@@ -855,6 +918,79 @@ mod tests {
             setup(repo.path(), &["status", "--porcelain"]),
             "",
             "and this tree is kept out of the status like any other"
+        );
+    }
+
+    #[test]
+    fn worktree_is_cut_on_a_branch_this_checkout_already_has() {
+        // Nothing is fetched and no origin is needed: the branch is here, and
+        // the commits the agent makes have to land on it rather than on a
+        // fresh `amx/<id>` beside it.
+        let repo = a_repo();
+        setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.path().join("login.rs"), "fn login() {}\n").unwrap();
+        setup(repo.path(), &["add", "login.rs"]);
+        setup(repo.path(), &["commit", "-m", "the work already on it"]);
+        let head = setup(repo.path(), &["rev-parse", "HEAD"]);
+        setup(repo.path(), &["checkout", "-q", "main"]);
+
+        let tree = create_on_local(repo.path(), "fix-login-a1b", "feature").unwrap();
+
+        assert_eq!(tree.branch, "feature");
+        assert_eq!(tree.base, head, "recorded at the commit the branch is at");
+        assert_eq!(tree.path, repo.path().join(".amx/worktrees/fix-login-a1b"));
+        assert_eq!(
+            setup(&tree.path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "feature",
+            "and the tree is on the branch rather than on a detached head"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join("login.rs")).unwrap(),
+            "fn login() {}\n",
+            "so the agent opens the work that is already there"
+        );
+        assert_eq!(
+            setup(repo.path(), &["status", "--porcelain"]),
+            "",
+            "and this tree is kept out of the status like any other"
+        );
+    }
+
+    #[test]
+    fn worktree_says_a_branchs_upstream_has_gone_once_a_fetch_has_pruned_it() {
+        // What a squash merge leaves behind: the forge took the work and
+        // deleted the branch, and this checkout knows nothing about it until
+        // somebody fetches.
+        let repo = a_repo();
+        let origin = an_origin(repo.path());
+        setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.path().join("login.rs"), "fn login() {}\n").unwrap();
+        setup(repo.path(), &["add", "login.rs"]);
+        setup(repo.path(), &["commit", "-m", "the agent's own commit"]);
+
+        assert!(
+            !upstream_gone(repo.path(), "feature").unwrap(),
+            "a branch that was never pushed has no upstream to lose"
+        );
+        setup(repo.path(), &["push", "-q", "-u", "origin", "feature"]);
+        assert!(
+            !upstream_gone(repo.path(), "feature").unwrap(),
+            "and one the origin holds is there"
+        );
+
+        setup(origin.path(), &["branch", "-D", "feature"]);
+        assert!(
+            !upstream_gone(repo.path(), "feature").unwrap(),
+            "the delete is on the forge and this checkout has not heard of it"
+        );
+        prune_origin(repo.path()).unwrap();
+        assert!(
+            upstream_gone(repo.path(), "feature").unwrap(),
+            "the fetch is what makes it a fact git records"
+        );
+        assert!(
+            !upstream_gone(repo.path(), "amx/never-cut-b2c").unwrap(),
+            "and a branch git does not have has no upstream either"
         );
     }
 
