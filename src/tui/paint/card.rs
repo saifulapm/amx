@@ -709,9 +709,6 @@ impl Scroll {
     /// Blank is dropped rather than kept as an empty string so that everything
     /// counting remarks can count entries: a line stepped off with nothing on
     /// it is not a note on that hunk, and neither is one cleared by hand.
-    // Written and read by the card's line as the hunk cursor steps, which takes
-    // these up next; until it does, the tests here are their only callers.
-    #[allow(dead_code)]
     pub fn remark(&self, at: Option<usize>, words: &str) {
         match words.trim().is_empty() {
             true => self.remarks.borrow_mut().remove(&at),
@@ -720,9 +717,16 @@ impl Scroll {
     }
 
     /// What was written about `at`, which is empty where nothing was.
-    #[allow(dead_code)]
     pub fn remarked(&self, at: Option<usize>) -> String {
         self.remarks.borrow().get(&at).cloned().unwrap_or_default()
+    }
+
+    /// The hunks something has been written about, in patch order, which is
+    /// what the rule counts, the body marks and the row under the line offers
+    /// to send. The words at the top of the patch are on no hunk, and are no
+    /// note.
+    pub fn noted(&self) -> Vec<usize> {
+        self.remarks.borrow().keys().copied().flatten().collect()
     }
 
     /// Everything written so far, the opening first and the hunks after it in
@@ -1019,12 +1023,8 @@ pub(super) fn float(
     // has no such hunk, and nothing is marked.
     let at = scroll.at_hunk().filter(|at| *at < card.body.hunks().len());
     // And which hunks a note has been written on, which the rule counts and
-    // the body marks. The opening words are on no hunk, and are no note.
-    let notes: Vec<usize> = scroll
-        .remarks()
-        .into_iter()
-        .filter_map(|(at, _)| at)
-        .collect();
+    // the body marks.
+    let notes = scroll.noted();
 
     frame.render_widget(
         Paragraph::new(rule(
@@ -1103,7 +1103,7 @@ fn rule(
     called: &str,
     held: usize,
     at: Option<usize>,
-    notes: usize,
+    kept: usize,
     width: usize,
     theme: Theme,
 ) -> Line<'static> {
@@ -1114,10 +1114,9 @@ fn rule(
     };
     // After the hunk, because the hunk is where the next note is about to be
     // written: what is on the line, and then what is behind it.
-    let noted = match notes {
+    let noted = match kept {
         0 => String::new(),
-        1 => format!("{SEPARATOR}1 note"),
-        notes => format!("{SEPARATOR}{notes} notes"),
+        kept => format!("{SEPARATOR}{}", notes(kept)),
     };
     let changed = match card.changes {
         true => fit(
@@ -1146,6 +1145,15 @@ fn rule(
         Span::styled(RULE.repeat(width.saturating_sub(said)), dim()),
         Span::styled(more, dim()),
     ])
+}
+
+/// How many notes, in the words the rule over the card and the row under the
+/// line both say them in: a review is counted the same wherever it is counted.
+pub(super) fn notes(kept: usize) -> String {
+    match kept {
+        1 => "1 note".to_string(),
+        kept => format!("{kept} notes"),
+    }
 }
 
 /// Whether the body holds more than the card is showing, which is what makes

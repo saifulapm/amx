@@ -1790,10 +1790,6 @@ pub fn on_hunk(hunk: &Hunk, words: &str) -> String {
 ///
 /// A blank opening is no opening rather than an empty part, so nobody's message
 /// begins with a blank row they did not type.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the card's enter reaches it next")
-)]
 pub fn on_hunks(opening: &str, notes: &[(&Hunk, &str)]) -> String {
     let opening = (!opening.trim().is_empty()).then(|| opening.to_string());
     opening

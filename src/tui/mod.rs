@@ -47,6 +47,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -1650,7 +1651,14 @@ impl Screen {
     }
 
     /// Put the card away, and the line it was holding with it.
+    ///
+    /// The review goes too, which is what the row under the line says this key
+    /// does: a review is written about the patch in front of somebody, and the
+    /// key that puts the patch away is them saying they are done with it. One
+    /// key out is worth more than notes kept for a card that may never come
+    /// back, and the hint names the cost before it is paid.
     fn look_away(&mut self) {
+        self.scroll.open_at(0);
         self.look = Look::Away;
         self.follow_the_cursor();
     }
@@ -2104,7 +2112,12 @@ impl Screen {
         // Two of them are read on an empty line before that rule, which is the
         // whole of the exception to it: space and enter have nothing to do to
         // a line with nothing on it, so down there they are the wall's.
-        let empty = composer.text.is_empty() && the_lists_on_an_empty_line(key);
+        //
+        // Unless a review is waiting to go. Then the line is empty and the card
+        // is not: the words were typed a hunk ago and enter is what sends them,
+        // which is worth more down here than the row the cursor is standing on.
+        let sending = key.code == KeyCode::Enter && !self.noted("").is_empty();
+        let empty = composer.text.is_empty() && the_lists_on_an_empty_line(key) && !sending;
         if self.on_the_card(&composer) && (empty || !the_lines(&composer, key)) {
             self.mode = Mode::Typing(composer);
             return self.pressed(key, root, config, here);
@@ -2239,29 +2252,43 @@ impl Screen {
                     self.forked(made, composer);
                     return Ok(Doing::Carry);
                 }
-                if composer.text.trim().is_empty() {
-                    return Ok(Doing::Carry);
-                }
                 // The card's line goes to the card's agent, read at the press
                 // rather than kept from the moment the line opened: the card
                 // follows the cursor, and what somebody is looking at when
                 // they press enter is what they are answering.
                 if matches!(composer.asking, Asking::Reply) {
                     if let Some(id) = self.card.as_ref().map(|card| card.id.clone()) {
-                        // With the hunk the cursor is on in front of the
-                        // words, where it is on one: what somebody typed while
-                        // reading a patch is a comment on the hunk they were
-                        // reading, and the agent is owed the file and the line
-                        // it is about. Anywhere else the words go as they were
-                        // typed.
-                        let words = composer.whole();
-                        let said = match self.at_hunk() {
-                            Some((_, hunk)) => act::on_hunk(hunk, &words),
-                            None => words,
-                        };
-                        let said = act::reply(root, &id, &said);
-                        self.replied(said, composer);
+                        // The whole review as one message: what was written at
+                        // the top of the patch, every hunk somebody left words
+                        // on, and the line itself as the note on the hunk under
+                        // the cursor. A review is one turn because that is how
+                        // it is read — sent a hunk at a time the agent answers
+                        // the first note before the second has arrived. A card
+                        // with nothing written about it sends the line alone,
+                        // which is every other card's message.
+                        let review = self.review(&composer.whole());
+                        let said = self.written(&review);
+                        if said.trim().is_empty() {
+                            return Ok(Doing::Carry);
+                        }
+                        // Before the send, because the send is what spends
+                        // them: a review the agent took is behind whoever
+                        // wrote it.
+                        let kept = !self.scroll.remarks().is_empty();
+                        let sent = act::reply(root, &id, &said);
+                        let took = matches!(sent, Ok(Replied::Yes(_)));
+                        self.replied(sent, composer);
+                        // And the card goes back to the top of the patch it
+                        // was a review of, with nothing kept and no hunk under
+                        // the cursor. A refusal keeps both, because the review
+                        // is still to send.
+                        if took && kept {
+                            self.scroll.open_at(0);
+                        }
                     }
+                    return Ok(Doing::Carry);
+                }
+                if composer.text.trim().is_empty() {
                     return Ok(Doing::Carry);
                 }
 
@@ -3150,13 +3177,90 @@ impl Screen {
     /// hunks, and a chord that did something on one card and nothing on
     /// another would be a key nobody could learn. Everywhere else the two are
     /// free, and this leaves them so.
-    fn to_hunk(&self, forward: bool) {
+    ///
+    /// The line goes with the cursor. What is on it is about the hunk it was
+    /// typed under, so the step leaves it there and puts back whatever was
+    /// left on the hunk it reaches — a blank line leaving nothing behind, and
+    /// an empty one coming back where nothing was written. A review is
+    /// written a hunk at a time and read whole, and this is the whole of what
+    /// keeps the two the same thing.
+    // `to_` names where the cursor goes, which is what every other stepping
+    // key here is named for, rather than a conversion off the screen.
+    #[allow(clippy::wrong_self_convention)]
+    fn to_hunk(&mut self, forward: bool) {
         if self.look != Look::Changes {
             return;
         }
-        if let Some(card) = &self.card {
-            self.scroll.to_hunk(card.body.hunks(), forward);
+        // A line that is not the card's own — a task, a rename — is not a note
+        // on anything, and a step taken under one leaves it where it is.
+        let words = match &self.mode {
+            Mode::Typing(composer) if self.on_the_card(composer) => Some(composer.whole()),
+            _ => None,
+        };
+        let Some(card) = &self.card else { return };
+        if let Some(words) = &words {
+            self.scroll.remark(self.noting(), words);
         }
+        self.scroll.to_hunk(card.body.hunks(), forward);
+        if words.is_some() {
+            let words = self.scroll.remarked(self.noting());
+            if let Mode::Typing(composer) = &mut self.mode {
+                composer.at = words.chars().count();
+                composer.text = words;
+                // The markers stood for pastes made on the line being left, and
+                // the words coming back are the words themselves.
+                composer.pastes.clear();
+            }
+        }
+    }
+
+    /// Where the words on the line now would be kept: under the hunk the
+    /// cursor is standing on, and under no hunk at all at the top of the
+    /// patch, where a review's opening words are written.
+    fn noting(&self) -> Option<usize> {
+        self.at_hunk().map(|(at, _)| at)
+    }
+
+    /// The review as enter would send it: what has been written about the
+    /// patch so far, with `words` standing as the note where the cursor is.
+    ///
+    /// The line is part of the review rather than a message beside it — what
+    /// somebody has just typed is as much of what they think as what they
+    /// typed a minute ago. Blank takes back what was kept there, by the rule
+    /// [`paint::Scroll::remark`] holds for a line stepped off with nothing on
+    /// it: an emptied line is a note somebody has withdrawn.
+    pub(super) fn review(&self, words: &str) -> BTreeMap<Option<usize>, String> {
+        let mut review: BTreeMap<_, _> = self.scroll.remarks().into_iter().collect();
+        let at = self.noting();
+        match words.trim().is_empty() {
+            true => review.remove(&at),
+            false => review.insert(at, words.to_string()),
+        };
+        review
+    }
+
+    /// The hunks that review would carry a note on, in patch order. Its
+    /// opening words are on no hunk and are no note, so an opening alone is
+    /// nothing to send.
+    pub(super) fn noted(&self, words: &str) -> Vec<usize> {
+        self.review(words).keys().copied().flatten().collect()
+    }
+
+    /// That review as one message: the opening words, then every note on a
+    /// hunk the card is still showing, in patch order.
+    ///
+    /// A note keyed to a hunk the patch no longer has is dropped rather than
+    /// sent without one. The card can be retaken under a review — the agent
+    /// carries on working while it is read — and a comment whose hunk has gone
+    /// is a comment pointed at nothing.
+    fn written(&self, review: &BTreeMap<Option<usize>, String>) -> String {
+        let hunks = self.card.as_ref().map_or(&[][..], |card| card.body.hunks());
+        let notes: Vec<(&Hunk, &str)> = review
+            .iter()
+            .filter_map(|(at, words)| Some((hunks.get((*at)?)?, words.as_str())))
+            .collect();
+        let opening = review.get(&None).map_or("", String::as_str);
+        act::on_hunks(opening, &notes)
     }
 
     /// Which hunk of the card's patch the cursor is standing on, and the hunk
@@ -5688,18 +5792,146 @@ diff --git a/src/bar.rs b/src/bar.rs
         press(&mut screen, ctrl('p'));
         assert_eq!(screen.scroll.at_hunk(), Some(0), "and the one before it");
 
-        // The card's line takes neither of them: a chord is somebody reaching
-        // past the line, exactly as the page keys are.
+        // The card's line takes neither of them as a character: a chord is
+        // somebody reaching past the line, exactly as the page keys are. What
+        // was on it goes with the hunk it was typed under.
         press(&mut screen, KeyEvent::from(KeyCode::Char('x')));
         press(&mut screen, ctrl('n'));
         assert_eq!(screen.scroll.at_hunk(), Some(1), "stepped from under it");
-        assert_eq!(screen.answering().expect("still typing").text, "x");
+        assert_eq!(screen.scroll.remarked(Some(0)), "x", "kept on the hunk");
 
         // And what it is standing on is the hunk itself, which is what the
         // line sends the words with: the file and the line a comment on it
         // names.
         let (at, hunk) = screen.at_hunk().expect("a hunk under the cursor");
         assert_eq!((at, hunk.path.as_str(), hunk.line), (1, "src/bar.rs", 8));
+    }
+
+    /// A view standing at the line under a card of that patch, which is where
+    /// a review is written.
+    fn reviewing() -> Screen {
+        let mut screen = watching(vec![finished_saying("done-a1b", "an answer")]);
+        screen.look = Look::Changes;
+        screen.card = Some(Card {
+            id: "done-a1b".to_string(),
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: Body::patch(TWO_HUNKS),
+            changes: true,
+            answer: false,
+            listening: true,
+        });
+        screen.scroll.open_at(0);
+        screen.mode = Mode::Typing(Composer::new(Asking::Reply));
+        screen
+    }
+
+    #[test]
+    fn card_line_carries_its_words_to_the_hunk_it_steps_off() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = reviewing();
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+        let types = |screen: &mut Screen, text: &str| {
+            for key in word(text) {
+                press(screen, KeyEvent::from(key));
+            }
+        };
+
+        // The top of the patch is where a review opens, and what is written
+        // there is its opening rather than a note on any hunk.
+        types(&mut screen, "looks close");
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.remarked(None), "looks close");
+        assert!(screen.scroll.noted().is_empty(), "an opening is no note");
+        assert_eq!(
+            screen.answering().expect("the line").text,
+            "",
+            "and the hunk stepped to has nothing on it yet"
+        );
+
+        types(&mut screen, "why this row?");
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.remarked(Some(0)), "why this row?");
+        assert_eq!(screen.scroll.noted(), vec![0], "one note behind the line");
+
+        // Stepped back, the words come back onto the line with the cursor at
+        // the end of them: a note is edited where it was written.
+        press(&mut screen, ctrl('p'));
+        let line = screen.answering().expect("the line");
+        assert_eq!(line.text, "why this row?");
+        assert_eq!(line.at, "why this row?".chars().count());
+        press(&mut screen, ctrl('p'));
+        assert_eq!(screen.scroll.at_hunk(), None, "and the top above them");
+        assert_eq!(screen.answering().expect("the line").text, "looks close");
+
+        // A line emptied by hand takes back what was kept there, which is the
+        // only way a review loses a part of itself short of esc.
+        for _ in 0.."looks close".len() {
+            press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        }
+        press(&mut screen, ctrl('n'));
+        assert_eq!(screen.scroll.remarked(None), "", "the opening withdrawn");
+        assert_eq!(screen.scroll.noted(), vec![0], "the note still standing");
+    }
+
+    #[test]
+    fn card_line_sends_the_whole_review_as_one_message() {
+        let screen = reviewing();
+        let card = screen.card.as_ref().expect("the card");
+        let hunks = card.body.hunks();
+
+        // Nothing written yet, so the line alone is the message, which is what
+        // the card has always sent: the hunk under the cursor in front of the
+        // words, byte for byte as `on_hunk` writes it.
+        screen.scroll.to_hunk(hunks, true);
+        assert_eq!(
+            screen.written(&screen.review("why this row?")),
+            act::on_hunk(&hunks[0], "why this row?")
+        );
+
+        // With a review behind it, one message: the opening, then every noted
+        // hunk in patch order, the line's own words standing as the note on
+        // the hunk it was typed under.
+        screen.scroll.remark(None, "looks close");
+        screen.scroll.remark(Some(0), "why this row?");
+        screen.scroll.to_hunk(hunks, true);
+        assert_eq!(screen.noted("and this one is new"), vec![0, 1]);
+        assert_eq!(
+            screen.written(&screen.review("and this one is new")),
+            format!(
+                "looks close\n\n{}\n\n{}",
+                act::on_hunk(&hunks[0], "why this row?"),
+                act::on_hunk(&hunks[1], "and this one is new")
+            )
+        );
+
+        // An empty line sends what is kept and nothing of its own, and an
+        // opening with no note on any hunk is nothing to send at all.
+        assert_eq!(screen.noted(""), vec![0]);
+        screen.scroll.remark(Some(0), "");
+        assert!(screen.noted("").is_empty());
+    }
+
+    #[test]
+    fn esc_puts_the_card_away_and_the_review_with_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = reviewing();
+        screen.scroll.remark(None, "looks close");
+        screen.scroll.remark(Some(0), "why this row?");
+
+        screen
+            .act(KeyEvent::from(KeyCode::Esc), root.path(), &config, None)
+            .unwrap();
+        assert!(screen.card.is_none(), "the card went");
+        assert!(screen.scroll.remarks().is_empty(), "and the review with it");
+        assert_eq!(screen.scroll.at_hunk(), None);
     }
 
     #[test]
