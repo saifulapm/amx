@@ -63,7 +63,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 54] = [
     ("ctrl+u", "half a page of it, toward the edge"),
     ("ctrl+d", "and half a page away"),
     ("ctrl+n", "the next hunk of the patch"),
-    ("ctrl+p", "and the one before it"),
+    ("ctrl+p", "and the one before it, or the top"),
     // start
     ("n", "start an agent"),
     ("alt+n", "start the line and go to the agent"),
