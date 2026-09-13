@@ -385,6 +385,7 @@ table.
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+↑` `alt+↓` | the lines sent before, newest first; a task line takes `↑` `↓` for the same |
 | `alt+1..9` | reach the agent at that place on the wall |
+| `w` | put the cursor on the first agent that needs you |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | pin it over the wall, and again to let it go |
@@ -423,6 +424,15 @@ has no shell under it.
 wall, counting rows from the top and skipping the headings, without walking the
 cursor to them first. It is the fleet you already have in front of you, reached
 by the number you were about to count to.
+
+`w` is the one agent you do not have to find: the cursor goes to the first one
+stopped on a question, else the first whose work is waiting on a reviewer, else
+the turn that ended most recently. It is the wall that `amx attach --waiting`
+reads, asked of the rows in front of you: an agent a narrowing left out, or one
+under a group you have shut, is not what it lands on. Nothing opens and nothing
+is attached to — where the cursor lands, `space` and `enter` are the keys they
+always were — and a wall with nothing on it for you says `nothing on the wall is
+waiting on you` instead.
 
 `space` opens the card, and the card is not a box. It stands at the foot of the
 list, where the line you type stands, and is drawn the way that band is: a rule

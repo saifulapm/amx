@@ -1747,6 +1747,9 @@ impl Screen {
                 let at = digit.to_digit(10).unwrap_or_default() as usize;
                 return self.reach_the_nth(at, root, config, here);
             }
+            // And the one agent nobody has to count to: whichever of them is
+            // waiting on the person at the keyboard.
+            KeyCode::Char('w') if plain => self.land_on_what_needs_you(),
             // Opened at the top, wherever the last person to ask left it: the
             // question is what the keys are, not where somebody stopped
             // reading them.
@@ -2348,6 +2351,29 @@ impl Screen {
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
         Ok(Doing::Carry)
+    }
+
+    /// `w` on the list: the cursor onto the first agent with something on it
+    /// for whoever is reading, which is what `amx attach --waiting` answers at
+    /// a shell, in the same words where the answer is nobody.
+    ///
+    /// The cursor and nothing else. What to do about the row it lands on is
+    /// the press after this one — the card, an answer, the window itself — so
+    /// nothing here opens anything or takes the terminal anywhere.
+    ///
+    /// Read wherever the cursor is standing, a heading included: the question
+    /// is about the wall rather than about the line somebody stopped on.
+    fn land_on_what_needs_you(&mut self) {
+        match self.list.first_needing() {
+            Some(id) => {
+                self.list.land_on(&id);
+            }
+            None => {
+                self.notice = Some(Notice::Advice(
+                    "nothing on the wall is waiting on you".to_string(),
+                ));
+            }
+        }
     }
 
     /// Enter the line, which starts an agent on it — asking first where the
@@ -7045,6 +7071,79 @@ mod tests {
         assert!(
             screen.arm.as_ref().is_some_and(|arm| arm.cleared),
             "the arm is c's again, and it is a first press"
+        );
+    }
+
+    /// The key that lands the cursor on the first agent that needs somebody,
+    /// which is read wherever the cursor is standing.
+    fn w() -> KeyEvent {
+        KeyEvent::from(KeyCode::Char('w'))
+    }
+
+    /// One mid-turn, which is the wall a person is waiting out.
+    fn at_work(id: &str) -> View {
+        reading(
+            id,
+            Phase::Working,
+            State {
+                state: Phase::Working,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    }
+
+    #[test]
+    fn keys_w_lands_the_cursor_on_the_first_agent_that_needs_you() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(vec![
+            at_work("port-import-b2c"),
+            stopped_on_a_question("ask-a1b"),
+        ]);
+
+        // From somewhere else on the wall: the key is for somebody who has
+        // been reading the rows that are still working.
+        screen.list.bottom();
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "port-import-b2c",
+            "the cursor starts away from the agent that is asking"
+        );
+
+        screen
+            .act(w(), root.path(), &Config::default(), None)
+            .unwrap();
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "ask-a1b",
+            "the question is what is holding somebody up"
+        );
+        assert!(screen.notice.is_none(), "and the key had nothing to say");
+        assert!(
+            screen.card.is_none(),
+            "the cursor is the whole of what the press moves"
+        );
+    }
+
+    #[test]
+    fn keys_w_says_nothing_is_waiting_when_every_agent_is_at_work() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(vec![at_work("port-import-b2c"), at_work("fix-login-c3d")]);
+        screen.list.bottom();
+        let standing = screen.list.selected().unwrap().id().to_string();
+
+        screen
+            .act(w(), root.path(), &Config::default(), None)
+            .unwrap();
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about a wall with nothing waiting on it")
+        };
+        assert_eq!(said, "nothing on the wall is waiting on you");
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            standing,
+            "and the cursor is left where somebody put it"
         );
     }
 
