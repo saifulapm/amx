@@ -2,7 +2,7 @@
 #
 # Copy this to ~/.config/amx/config.toml and change what you want changed. A
 # copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Sixteen keys and a table per
+# the one amx uses when the key is left out. Seventeen keys and a table per
 # harness; a key amx has never heard of is warned about and ignored, and a file
 # it cannot parse falls back to these defaults with a warning, because losing
 # an agent to a stray comma is the worse outcome.
@@ -93,6 +93,12 @@ park_after = 3600
 # What a tree is cut from: any branch, tag or commit git will resolve. Left
 # out, it is HEAD where you typed `amx new`.
 # base = "main"
+
+# What reads the patch: a command handed the unified diff on stdin and run in
+# the agent's tree, on the terminal you typed `amx diff` at. Left out, the
+# patch is git's own, and so it is down a pipe or under --stat whatever you
+# write here.
+# diff = "delta --paging=always"
 
 # One table per harness, named after the command that harness runs. There is a
 # table to be had for each harness amx has an entry for, claude and pi today,

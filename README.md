@@ -1488,7 +1488,7 @@ the notice is handed over and never waited for.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, sixteen keys and a table per harness:
+`~/.config/amx/config.toml`, seventeen keys and a table per harness:
 
 ```toml
 agent = "claude"        # the command a new agent runs: claude, pi or your own
@@ -1515,6 +1515,10 @@ copy = [".env"]
 link = ["node_modules"]
 setup = ["pnpm install"]
 base = "main"
+
+# What reads the patch when `amx diff` has a terminal to draw on. Left out, the
+# patch is git's own.
+diff = "delta --paging=always"
 ```
 
 A tree git has just cut is a clean checkout, so the first turn in it goes on an
@@ -1532,6 +1536,14 @@ reason, and the tree goes with it rather than standing half furnished for an
 agent to work the rest out. `base` is what a tree is cut from — any
 branch, tag or commit git will resolve — and left out it is HEAD where you
 typed the command.
+
+`diff` is what reads the patch. `amx diff <id>` at a terminal with this key set
+runs the command through `sh -c` in the agent's tree, git's patch on its stdin
+and the terminal its own, so the work comes up in `delta`, in `difftastic` or
+in whatever else you read patches in, and amx is done when it is. A viewer
+that exits non-zero is a failure saying which command it was. Down a pipe
+or under `--stat` the patch is git's own whatever this says, so `amx diff
+fix-login-a1b | head` is unchanged.
 
 Each harness amx has an entry for — claude and pi today — can have a table of
 its own, named after the command it runs:

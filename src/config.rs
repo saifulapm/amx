@@ -1,4 +1,4 @@
-//! `~/.config/amx/config.toml` — sixteen keys and a table per harness — with a
+//! `~/.config/amx/config.toml` — seventeen keys and a table per harness — with a
 //! project's own `<project>/.amx/config.toml` laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// Every key the file may carry, beside the harness tables. Anything else is
 /// warned about and ignored.
-pub const KNOWN_KEYS: [&str; 16] = [
+pub const KNOWN_KEYS: [&str; 17] = [
     "agent",
     "max_agents",
     "max_total",
@@ -32,6 +32,7 @@ pub const KNOWN_KEYS: [&str; 16] = [
     "link",
     "setup",
     "base",
+    "diff",
 ];
 
 /// What one harness says about itself, in a table of its own named after the
@@ -146,6 +147,13 @@ pub struct Config {
     /// standing in already means, so there is no value here that says it and
     /// an `Option` is the honest shape.
     pub base: Option<String>,
+    /// What reads a patch when there is a terminal to read it on: a shell
+    /// command handed the unified diff on stdin, `delta --paging=always` or
+    /// another of its kind.
+    ///
+    /// Absent is git's own patch, which is also what a pipe gets whatever this
+    /// says, so `amx diff fix-login-a1b | head` reads the same either way.
+    pub diff: Option<String>,
     /// What each harness the file names says about itself, keyed by the
     /// program that harness runs.
     ///
@@ -186,6 +194,7 @@ impl Default for Config {
             link: Vec::new(),
             setup: Vec::new(),
             base: None,
+            diff: None,
             harnesses: BTreeMap::new(),
         }
     }
@@ -536,6 +545,8 @@ mod tests {
         assert!(c.link.is_empty());
         assert!(c.setup.is_empty());
         assert_eq!(c.base, None);
+        // A patch is git's own until somebody names something to read it with.
+        assert_eq!(c.diff, None);
         // No harness says anything about itself until a table of its own does.
         assert!(c.harnesses.is_empty());
     }
@@ -667,6 +678,11 @@ mod tests {
         assert_eq!(c.base.as_deref(), Some("main"));
         assert!(c.setup.is_empty());
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("diff = \"delta --paging=always\"").unwrap();
+        assert_eq!(c.diff.as_deref(), Some("delta --paging=always"));
+        assert_eq!(c.base, None);
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -689,6 +705,7 @@ mod tests {
                 link = ["node_modules"]
                 setup = ["pnpm install"]
                 base = "main"
+                diff = "delta --paging=always"
             "#,
         )
         .unwrap();
@@ -708,10 +725,11 @@ mod tests {
         assert_eq!(c.link, ["node_modules"]);
         assert_eq!(c.setup, ["pnpm install"]);
         assert_eq!(c.base.as_deref(), Some("main"));
+        assert_eq!(c.diff.as_deref(), Some("delta --paging=always"));
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            16,
+            17,
             "a key this file does not name is a key nothing here proves"
         );
     }
