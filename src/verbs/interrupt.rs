@@ -59,29 +59,54 @@ pub fn from_env(id: &str) -> Result<i32> {
 
 /// The verb, with the state directory named.
 pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
-    let view = derive::view(root, id, store::now())?;
-    match what_is_running(&view) {
-        Cut::Turn => {}
-        Cut::Question => return a_question_is_answered(&view, to_terminal, out),
+    match cut_the_turn(root, id)? {
+        Cut::Turn => Ok(exit::OK),
+        // The three that sent nothing are answered off the record read again,
+        // which says what it said a moment ago: a refusal types nothing at the
+        // pane and writes nothing down, so there is nothing for a second
+        // reading to disagree with.
+        Cut::Question => a_question_is_answered(&reading(root, id)?, to_terminal, out),
         Cut::Command => {
             complain!("amx: {}", end_the_command(id));
-            return Ok(exit::FAILURE);
+            Ok(exit::FAILURE)
         }
         Cut::Nothing => {
-            complain!("amx: {}", nothing_is_running(id, doing(&view)));
-            return Ok(exit::FAILURE);
+            complain!(
+                "amx: {}",
+                nothing_is_running(id, doing(&reading(root, id)?))
+            );
+            Ok(exit::FAILURE)
         }
     }
+}
 
-    let agent = Agent::open(root, id)?;
-    recorded(&agent)?;
-    Server::from_socket(view.meta.socket.clone()).send_keys(&view.meta.pane, &[CANCELS])?;
-    Ok(exit::OK)
+/// Cut the turn short, and say what was at the pane.
+///
+/// The whole of the verb bar the sentences: [`Cut::Turn`] is the interrupt
+/// recorded and Escape sent, and each of the other three is a pane the key was
+/// kept away from, with nothing written down and nothing typed. The view
+/// presses this so that a key on the list and the verb at a shell weigh the
+/// same record the same way, and says in its own words what `run` says in
+/// stderr's.
+pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
+    let view = reading(root, id)?;
+    let cut = what_is_running(&view);
+    if cut == Cut::Turn {
+        let agent = Agent::open(root, id)?;
+        recorded(&agent)?;
+        Server::from_socket(view.meta.socket.clone()).send_keys(&view.meta.pane, &[CANCELS])?;
+    }
+    Ok(cut)
+}
+
+/// This agent as a reader has it now.
+fn reading(root: &Path, id: &str) -> Result<View> {
+    derive::view(root, id, store::now())
 }
 
 /// What is in this agent's pane, as far as a key is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Cut {
+pub enum Cut {
     /// A turn, which is the one thing Escape ends.
     Turn,
     /// A question. Escape there answers it rather than ends anything.
@@ -189,7 +214,11 @@ fn nothing_is_running(id: &str, doing: &str) -> String {
 /// the agent was at when amx took its pane, and a refusal naming that without
 /// saying the pane has gone is one somebody reads as an agent sitting at a
 /// prompt.
-fn doing(view: &View) -> &'static str {
+///
+/// Public for the view, which says the same of the row under the cursor: the
+/// word belongs to the refusal, and one of them saying `idle` where the other
+/// says `parked` would be two accounts of one agent.
+pub fn doing(view: &View) -> &'static str {
     match view.verdict.evidence == Evidence::LetGo {
         true => "parked",
         false => view.phase().as_str(),

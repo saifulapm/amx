@@ -56,6 +56,7 @@ use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
 use crate::vendor::Models;
+use crate::verbs::interrupt::{self, Cut};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, models, registry, spawn, verbs};
@@ -1835,6 +1836,33 @@ impl Screen {
                     };
                 }
             }
+            // The turn the row is in the middle of, cut short where it stands.
+            // What is at the pane is the verb's own reading of the record, so
+            // the key and `amx interrupt` keep a person away from the same
+            // three panes and say why in the same words.
+            KeyCode::Char('i') if plain => {
+                if let Some(view) = self.list.selected() {
+                    let name = rows::called(view);
+                    self.notice = Some(match interrupt::cut_the_turn(root, view.id()) {
+                        Ok(Cut::Turn) => Notice::Advice(format!("interrupted {name}")),
+                        // Escape at a question dismisses it, which is an answer
+                        // nobody can take back, so the key that means to answer
+                        // is named instead.
+                        Ok(Cut::Question) => Notice::Refused(format!(
+                            "{name} is waiting on a question, not working; esc on \
+                             its card dismisses it"
+                        )),
+                        Ok(Cut::Command) => Notice::Refused(format!(
+                            "{name} is a command, not an agent; ctrl+x stops it"
+                        )),
+                        Ok(Cut::Nothing) => Notice::Refused(format!(
+                            "{name} is {}; nothing is running to interrupt",
+                            interrupt::doing(view)
+                        )),
+                        Err(e) => Notice::Failed(format!("{e:#}")),
+                    });
+                }
+            }
             // The same key, read where the cursor is: on a row it is that
             // agent's ending, and on a heading it is the finished agents under
             // it, which is the one place a person is looking at a group rather
@@ -3444,12 +3472,13 @@ mod tests {
     use crate::config::HarnessConfig;
     use crate::derive::{Evidence, Verdict};
     use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, State};
-    use crate::tmux::Socket;
+    use crate::tmux::{Socket, Spawn};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     /// What arrives from a script, and then nobody at the terminal at all.
@@ -7751,6 +7780,212 @@ mod tests {
         assert!(screen.list.on_heading(), "the cursor is on the heading");
         press(&mut screen, o);
         assert!(screen.notice.is_none(), "a heading is left alone");
+    }
+
+    /// A tmux server of this test's own, gone when the test is.
+    ///
+    /// The rows `i` has anything to send a key to are rows a reader calls live,
+    /// and a record naming a pane that is not there is not one of them.
+    struct TestServer(Server);
+
+    impl TestServer {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let name = format!(
+                "amx-test-view-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            );
+            // An empty conf, so nothing in the developer's ~/.tmux.conf can
+            // change what these tests measure.
+            Self(Server::named(&name).with_conf("/dev/null"))
+        }
+
+        /// A pane for this agent, in a session named the way a spawn names
+        /// one, which is what makes the pane answer for it rather than for
+        /// nobody.
+        fn pane(&self, id: &str) -> PaneId {
+            self.0
+                .new_session(&Spawn {
+                    name: Some(&format!("{}{id}", crate::tmux::SESSION_PREFIX)),
+                    command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                    ..Spawn::default()
+                })
+                .expect("a pane for it")
+                .1
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+        }
+    }
+
+    /// The record a key is weighed against, written where the verb reads it.
+    fn a_record(
+        root: &Path,
+        id: &str,
+        vendor: Option<&str>,
+        (socket, pane): (Socket, PaneId),
+        state: &State,
+    ) -> Agent {
+        let agent = Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "port the importer".to_string(),
+                agent: vendor.map(str::to_string),
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket,
+                pane,
+                bg: false,
+                session: None,
+                transcript: None,
+                created: now(),
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(state).unwrap(),
+        )
+        .unwrap();
+        agent
+    }
+
+    /// The socket and pane of a record nothing answers for.
+    fn no_pane() -> (Socket, PaneId) {
+        (
+            Socket::Name("amx-not-a-server".to_string()),
+            PaneId::new("%404").unwrap(),
+        )
+    }
+
+    #[test]
+    fn keys_i_cuts_short_the_turn_and_says_which_rows_have_none_to_cut() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let server = TestServer::new();
+        let i = KeyEvent::from(KeyCode::Char('i'));
+        // What the press said, and in which of the three voices: a key that
+        // did what it was asked and one that says why it could not are the
+        // same words in different weights.
+        let press = |views: Vec<View>| -> String {
+            let mut screen = watching(views);
+            screen.act(i, root.path(), &config, None).unwrap();
+            match &screen.notice {
+                Some(Notice::Advice(said)) => format!("advice: {said}"),
+                Some(Notice::Refused(said)) => format!("refused: {said}"),
+                Some(Notice::Failed(said)) => format!("failed: {said}"),
+                None => "nothing said".to_string(),
+            }
+        };
+
+        // A turn at a live pane is the one thing the key ends, and the verb
+        // writes it down before it types: what the view says afterwards is
+        // that it happened.
+        let working = State {
+            state: Phase::Working,
+            since: now(),
+            last_event: now(),
+            ..State::default()
+        };
+        let agent = a_record(
+            root.path(),
+            "port-a1b",
+            Some("claude"),
+            (server.0.socket().clone(), server.pane("port-a1b")),
+            &working,
+        );
+        assert_eq!(
+            press(vec![reading("port-a1b", Phase::Working, working)]),
+            "advice: interrupted port-a1b"
+        );
+        let kinds: Vec<String> = agent
+            .events()
+            .unwrap()
+            .into_iter()
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(kinds, ["interrupt"], "the turn it cut short is on the log");
+
+        // The three rows nothing is sent to, each named by what is at its pane
+        // instead: a question Escape would answer rather than end, a command
+        // with no vendor in it to read a key, and an agent with no turn to cut
+        // short at all.
+        let asking = stopped_on_a_question("ask-b2c");
+        a_record(
+            root.path(),
+            "ask-b2c",
+            Some("claude"),
+            (server.0.socket().clone(), server.pane("ask-b2c")),
+            &asking.state,
+        );
+        assert_eq!(
+            press(vec![asking]),
+            "refused: ask-b2c is waiting on a question, not working; esc on \
+             its card dismisses it"
+        );
+
+        let starting = State {
+            state: Phase::Starting,
+            since: now(),
+            last_event: now(),
+            ..State::default()
+        };
+        a_record(
+            root.path(),
+            "build-c3d",
+            None,
+            (server.0.socket().clone(), server.pane("build-c3d")),
+            &starting,
+        );
+        assert_eq!(
+            press(vec![reading("build-c3d", Phase::Working, starting)]),
+            "refused: build-c3d is a command, not an agent; ctrl+x stops it"
+        );
+
+        // The parked one is the row whose phase alone would say idle, so the
+        // refusal says what the verb's own does: the pane amx took away.
+        let parked = State {
+            state: Phase::Idle,
+            since: now(),
+            last_event: now(),
+            parked_at: now(),
+            ..State::default()
+        };
+        let agent = a_record(root.path(), "quiet-d4e", Some("claude"), no_pane(), &parked);
+        let mut row = reading("quiet-d4e", Phase::Idle, parked);
+        row.verdict.evidence = Evidence::LetGo;
+        assert_eq!(
+            press(vec![row]),
+            "refused: quiet-d4e is parked; nothing is running to interrupt"
+        );
+        assert!(
+            agent.events().unwrap().is_empty(),
+            "and a refusal writes nothing down"
+        );
+    }
+
+    #[test]
+    fn keys_i_on_a_heading_is_a_key_about_no_agent_at_all() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(a_wall());
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('i')),
+                root.path(),
+                &Config::default(),
+                None,
+            )
+            .unwrap();
+        assert!(screen.notice.is_none(), "a heading has no turn in it");
     }
 
     /// The wall as it stands: the headings and the agents under them, in the

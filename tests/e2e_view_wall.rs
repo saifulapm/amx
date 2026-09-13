@@ -2208,6 +2208,50 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
 }
 
 #[test]
+fn i_cuts_short_the_turn_the_row_under_the_cursor_is_on() {
+    let amx = Harness::new();
+    let pane = amx.play("port-import-c3d", "interrupted");
+    amx.until_state("port-import-c3d", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || row_of(&amx, &view, "port-import-c3d"));
+    // Gathered by the project, where a row carries its state as a word of its
+    // own rather than standing under a heading that says it.
+    press(&amx, &view, "C-s");
+    amx.until("the working row", || {
+        row_of(&amx, &view, "port-import-c3d").filter(|row| row.contains("working"))
+    });
+
+    // The view opens on the first row, which is the one agent there is.
+    press(&amx, &view, "i");
+    let said = amx.until("what the view says it did", || {
+        screen(&amx, &view)
+            .lines()
+            .rfind(|line| line.contains("interrupted"))
+            .map(str::to_string)
+    });
+    assert!(said.contains("interrupted port-import-c3d"), "{said}");
+
+    // The key reached the vendor and not only the record: this scenario sits
+    // on its stdin until Escape arrives, and draws its prompt only then.
+    amx.until("the vendor to go back to its prompt", || {
+        amx.capture(&pane).contains("⏵⏵").then_some(())
+    });
+    let row = amx.until("the row off the turn it was on", || {
+        row_of(&amx, &view, "port-import-c3d").filter(|row| row.contains("idle"))
+    });
+    assert!(!row.contains("working"), "{row}");
+
+    // What the press wrote down is the verb's own, so a `result` waiting on
+    // this turn is told there is no answer coming.
+    let kinds = amx.event_kinds("port-import-c3d");
+    assert!(
+        kinds.iter().any(|kind| kind == "interrupt"),
+        "the turn the view cut short is on the log: {kinds:?}"
+    );
+}
+
+#[test]
 fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
