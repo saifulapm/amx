@@ -385,8 +385,8 @@ pub struct NewArgs {
     /// What the agent should do.
     #[arg(
         value_parser = a_task,
-        required_unless_present = "file",
-        conflicts_with = "file"
+        required_unless_present_any = ["file", "edit"],
+        conflicts_with_all = ["file", "edit"]
     )]
     pub task: Option<String>,
 
@@ -397,6 +397,17 @@ pub struct NewArgs {
     /// and what is left is the task exactly as a typed one would have been.
     #[arg(long, value_name = "PATH")]
     pub file: Option<PathBuf>,
+
+    /// Write the task in `$VISUAL`, `$EDITOR` or `vi` first.
+    ///
+    /// `--file` for the brief you have not written yet: an empty file is opened
+    /// in your editor, and what you leave in it is the task, exactly as a typed
+    /// one would have been. There is no task on the command line beside it, and
+    /// no file either — that would be the task somewhere else already. An
+    /// editor closed on an empty file is an empty task and refused as one, and
+    /// an editor that exits unhappily starts no agent.
+    #[arg(long, conflicts_with = "file")]
+    pub edit: bool,
 
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
@@ -643,7 +654,17 @@ pub fn text_of(path: &Path) -> Result<String, String> {
         true => std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}")),
         false => std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display())),
     }?;
-    a_task(text.strip_suffix('\n').unwrap_or(&text))
+    a_text(&text)
+}
+
+/// The task inside text somebody wrote somewhere other than the command line:
+/// the last newline off, and then through [`a_task`].
+///
+/// The reading itself, apart from where the text came from, because a file is
+/// not the only place it comes from: `new --edit` opens an editor, and the task
+/// it is closed on is read the same way the same editor's file would have been.
+pub fn a_text(text: &str) -> Result<String, String> {
+    a_task(text.strip_suffix('\n').unwrap_or(text))
 }
 
 /// What becomes of a worktree or a branch when its agent stops.
@@ -1240,6 +1261,33 @@ mod tests {
     }
 
     #[test]
+    fn clibatch_a_task_can_be_written_in_an_editor_instead_of_typed() {
+        let cli = parse(&["amx", "new", "--edit"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.edit);
+        assert_eq!(args.task, None, "the editor is where the task is");
+
+        // A command out of an editor is a task out of an editor, the same way
+        // `--exec --file` is.
+        let cli = parse(&["amx", "new", "--exec", "--edit"]).unwrap();
+        let Some(Command::New(args)) = cli.command else {
+            panic!("expected new");
+        };
+        assert!(args.exec && args.edit);
+
+        // Two tasks is not a task, and no task at all is still none.
+        for argv in [
+            &["amx", "new", "port the importer", "--edit"][..],
+            &["amx", "new", "--edit", "--file", "brief.md"],
+            &["amx", "new"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
+    }
+
+    #[test]
     fn clibatch_a_message_is_typed_or_read_from_a_file_and_never_both() {
         let cli = parse(&["amx", "send", "fix-login-a1b", "--file", "notes.md"]).unwrap();
         let Some(Command::Send { id, text, file }) = cli.command else {
@@ -1297,6 +1345,25 @@ mod tests {
         // mistyped.
         let refusal = text_of(&dir.path().join("nothing.md")).unwrap_err();
         assert!(refusal.contains("nothing.md"), "{refusal}");
+    }
+
+    #[test]
+    fn clibatch_text_written_somewhere_else_is_read_the_way_a_files_text_is() {
+        // The reading [`text_of`] does once the file is read, which is what an
+        // editor's answer goes through too: one trailing newline off, and an
+        // empty task refused wherever it was written.
+        assert_eq!(a_text("fix the login bug\n").unwrap(), "fix the login bug");
+        assert_eq!(
+            a_text("fix the login bug\n\n").unwrap(),
+            "fix the login bug\n"
+        );
+        assert_eq!(
+            a_text("  fix the login bug").unwrap(),
+            "  fix the login bug"
+        );
+        for written in ["", "\n", "  \n"] {
+            assert!(a_text(written).is_err(), "{written:?}");
+        }
     }
 
     #[test]

@@ -59,7 +59,10 @@ use crate::vendor::Models;
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
 use crate::{exit, models, registry, spawn, verbs};
-use act::{Asking, Composer, Edited, Renamed, Replied, Started};
+use act::{Asking, Composer, Renamed, Replied, Started};
+/// The editor door, for `amx new --edit`: the view and the command line open
+/// the same one, so a task written in either place is read the same way.
+pub use act::{Edited, edited};
 use paint::{Body, Card, HOLDS, Notice};
 use rows::{Arrangement, List, Narrow};
 

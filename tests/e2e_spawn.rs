@@ -329,6 +329,108 @@ fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
     );
 }
 
+/// `amx new`, with `$VISUAL` pointed at a script standing in for the editor
+/// somebody would have written the task in.
+///
+/// A script rather than an editor: what `$VISUAL` names is run with the file
+/// behind it, so a script that writes the file is exactly what closing an
+/// editor on a task looks like from amx's side, and it is the only editor a
+/// test can be sure of.
+fn new_edited_by(amx: &Harness, scenario: &str, args: &[&str], script: &str) -> Output {
+    use std::os::unix::fs::PermissionsExt;
+
+    let editor = amx.home().join("editor.sh");
+    std::fs::write(&editor, script).expect("an editor for the task");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755))
+        .expect("an editor that runs");
+
+    amx.amx_command(&[&["new"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("VISUAL", &editor)
+        .output()
+        .expect("running amx new")
+}
+
+/// Every agent amx has a record of, which after a refusal is none.
+fn every_row(amx: &Harness) -> Vec<Value> {
+    let out = amx.amx(&["ls", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("the listing is json")
+}
+
+#[test]
+fn new_takes_the_task_from_the_editor() {
+    // The brief nobody has written yet: `--file` for the file that does not
+    // exist, opened the way the view's own `ctrl+g` opens one.
+    let amx = Harness::new();
+    let mock = amx.mock();
+
+    let id = id_of(&new_edited_by(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--edit"],
+        "#!/bin/sh\nprintf 'fix the login bug\\n' > \"$1\"\n",
+    ));
+
+    // What was left in the file is the task everywhere a typed one would have
+    // been, with the newline the editor wrote taken off.
+    assert!(id.starts_with("fix-the-login-bug-"), "{id}");
+    assert_eq!(amx.meta(&id)["task"], "fix the login bug");
+    assert_eq!(amx.handoff(&id)["task"], "fix the login bug");
+    assert_eq!(
+        command_of(&amx, &id).last().map(String::as_str),
+        Some("fix the login bug")
+    );
+    assert_eq!(amx.until_state(&id, "idle")["result"], "the tests pass now");
+}
+
+#[test]
+fn new_starts_nothing_where_the_editor_would_have_none_of_it() {
+    // An editor that exits on you is somebody saying no to the spawn, which is
+    // a spawn that did not happen rather than a command line nobody could
+    // read: it exits 1 and leaves no id behind.
+    let amx = Harness::new();
+    let mock = amx.mock();
+
+    let refused = new_edited_by(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--edit"],
+        "#!/bin/sh\nexit 1\n",
+    );
+
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.starts_with("amx new: "), "{said}");
+    assert!(said.contains("left the line as it was"), "{said}");
+    assert!(every_row(&amx).is_empty(), "and nothing was minted for it");
+}
+
+#[test]
+fn new_refuses_an_editor_closed_on_nothing_the_way_it_refuses_an_empty_task() {
+    // The file amx opened is empty, and an editor closed without writing
+    // anything into it is an empty task: a malformed command line, wherever
+    // the emptiness was typed.
+    let amx = Harness::new();
+    let mock = amx.mock();
+
+    let refused = new_edited_by(
+        &amx,
+        "happy-turn",
+        &["--no-worktree", "--agent", &mock, "--edit"],
+        "#!/bin/sh\nexit 0\n",
+    );
+
+    assert_eq!(refused.status.code(), Some(64));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("something to do"), "{said}");
+    assert!(every_row(&amx).is_empty(), "and nothing was minted for it");
+}
+
 #[test]
 fn a_running_command_says_what_it_last_printed() {
     // A command has no vendor: nothing reports on it, and no document amx

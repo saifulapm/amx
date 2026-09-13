@@ -110,6 +110,7 @@ amx new --name importer "port it"      # an id you chose
 amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx new --file brief.md                # the task, read out of a file
 amx new --file -                       # the task, read off a pipe
+amx new --edit                         # the task, written in your editor
 amx rename importer auth               # what the wall calls it, afterwards
 ```
 
@@ -128,6 +129,12 @@ left is the task exactly as if you had typed it. `--file -` reads stdin, so a
 heredoc or the output of something else is a task as well. There is no task on
 the command line beside it — one or the other, never both — and a file with
 nothing in it is an empty task and refused as one.
+
+`--edit` is the same door for the brief you have not written yet. It opens an
+empty file in `$VISUAL`, `$EDITOR` or `vi`, the way the view's own `ctrl+g`
+does, and what you leave in it is the task. Quit the editor without writing
+anything and you get the refusal an empty task always gets; quit it unhappily —
+`:cq` in vim — and nothing is started at all.
 
 `--name` and `amx rename` name different things. `--name` is the id itself,
 chosen rather than cut out of the task, and it is what the pane, the branch and

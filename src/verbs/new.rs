@@ -233,17 +233,17 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     // task nobody can read is a command line that never started an agent.
     let task = match task_of(args) {
         Ok(task) => task,
-        Err(refusal) => {
+        Err(no_task) => {
             writeln!(
                 problems,
                 "{}",
                 said(
                     Severity::Warned,
-                    &format!("amx new: {refusal}"),
+                    &format!("amx new: {}", no_task.said),
                     to_terminal
                 )
             )?;
-            return Ok(exit::USAGE);
+            return Ok(no_task.code);
         }
     };
 
@@ -260,17 +260,60 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     )
 }
 
-/// What this spawn is on: the file's text where `--file` named one, else what
-/// was typed.
+/// Why there is no task to start an agent on, and what amx exits with for it.
 ///
-/// One or the other and never both — the command line refuses a task typed
-/// beside a file — so this is the whole of the question, and everything
-/// downstream is handed the answer rather than the two places it could have
-/// come from.
-fn task_of(args: &NewArgs) -> Result<String, String> {
+/// Two codes, because there are two kinds of nothing. A command line that
+/// names no task is malformed and exits `USAGE`, wherever the emptiness was
+/// typed. An editor that was opened and would have none of it ran and
+/// answered: the command line was well formed, and what happened is a spawn
+/// that did not happen, which is `FAILURE`.
+struct NoTask {
+    said: String,
+    code: i32,
+}
+
+/// What this spawn is on: the text left in an editor where `--edit` opened one,
+/// the file's text where `--file` named one, else what was typed.
+///
+/// One of the three and never two — the command line refuses a task typed
+/// beside a file or an editor — so this is the whole of the question, and
+/// everything downstream is handed the answer rather than the places it could
+/// have come from.
+fn task_of(args: &NewArgs) -> Result<String, NoTask> {
+    if args.edit {
+        return written_in_an_editor();
+    }
     match &args.file {
-        Some(path) => crate::cli::text_of(path),
+        Some(path) => crate::cli::text_of(path).map_err(malformed),
         None => Ok(args.task.clone().unwrap_or_default()),
+    }
+}
+
+/// The task somebody wrote in their editor, opened on nothing and read back
+/// the way a file handed to `--file` is read.
+///
+/// An editor that could not be run at all is the same answer as one that
+/// exited unhappily: it was asked for the task and there is none, and the
+/// sentence saying so is the whole of what amx knows about it.
+fn written_in_an_editor() -> Result<String, NoTask> {
+    match crate::tui::edited("") {
+        Ok(crate::tui::Edited::Line(text)) => crate::cli::a_text(&text).map_err(malformed),
+        Ok(crate::tui::Edited::No(why)) => Err(NoTask {
+            said: why,
+            code: exit::FAILURE,
+        }),
+        Err(e) => Err(NoTask {
+            said: format!("{e:#}"),
+            code: exit::FAILURE,
+        }),
+    }
+}
+
+/// A command line that could not name a task.
+fn malformed(said: String) -> NoTask {
+    NoTask {
+        said,
+        code: exit::USAGE,
     }
 }
 
@@ -841,6 +884,7 @@ mod tests {
         NewArgs {
             task: Some("port the importer".to_string()),
             file: None,
+            edit: false,
             name: None,
             dir: None,
             no_worktree: false,
@@ -865,6 +909,7 @@ mod tests {
         NewArgs {
             task: Some(command.to_string()),
             file: None,
+            edit: false,
             name: None,
             dir: None,
             no_worktree: false,
