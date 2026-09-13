@@ -47,7 +47,7 @@ pub fn run(
 ) -> Result<i32> {
     let candidates: Vec<(View, String)> = derive::views(root, store::now())?
         .into_iter()
-        .filter_map(|view| reason(&view).map(|why| (view, why)))
+        .filter_map(|view| why_landed(&view).map(|why| (view, why)))
         .collect();
 
     if candidates.is_empty() {
@@ -64,7 +64,7 @@ pub fn run(
     }
 
     for (view, _) in &candidates {
-        take(root, &view.meta, out)?;
+        take_landed(root, &view.meta, out)?;
     }
     Ok(exit::OK)
 }
@@ -76,7 +76,7 @@ pub fn run(
 /// last look wrote down — a sweep must not stand still while a network answers,
 /// and a request that merged stays merged, so what is written down is as good
 /// an answer as a fresh one.
-fn reason(view: &View) -> Option<String> {
+pub fn why_landed(view: &View) -> Option<String> {
     if !finished(view.phase()) {
         return None;
     }
@@ -149,7 +149,7 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
 /// nothing else. The whole ladder — the grace period, the tree git is asked to
 /// remove, the branch that cannot go while a tree holds it, every line said as
 /// it happens — is written down once, in the verb whose job it is.
-fn take(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()> {
+pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()> {
     // The one thing `stop --force` would not save us from is the one thing
     // that cannot be undone, so it is answered before the ladder starts: a
     // dirty tree keeps its record too, because the record is where the tree
@@ -390,6 +390,32 @@ mod tests {
         assert!(
             Agent::open(root.path(), &meta.id).is_err(),
             "and the record with them"
+        );
+    }
+
+    #[test]
+    fn sweep_hands_out_the_same_reader_and_taker_the_verb_runs_on() {
+        // What the view presses `c` for is these two and nothing beside them:
+        // one asks of an agent why it is on the list, the other takes that one
+        // agent, with no list and no question in between.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
+        let tree = meta.worktree.clone().unwrap();
+
+        let views = derive::views(root.path(), store::now()).unwrap();
+        let view = views.iter().find(|view| view.id() == meta.id).unwrap();
+        assert_eq!(
+            why_landed(view).as_deref(),
+            Some("amx/fix-login-a1b merged into main")
+        );
+
+        let mut out = Vec::new();
+        take_landed(root.path(), &view.meta, &mut out).unwrap();
+        assert!(!tree.exists(), "the tree is gone");
+        assert!(
+            Agent::open(root.path(), &meta.id).is_err(),
+            "and the record with it"
         );
     }
 
