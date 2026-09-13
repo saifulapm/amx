@@ -69,6 +69,24 @@ pub fn again(
     id: &str,
     env: &BTreeMap<String, String>,
 ) -> Result<Comeback> {
+    picked_up(root, id, None, env)
+}
+
+/// The same, with a first turn for the agent that comes back.
+///
+/// The card's line is the door that carries one: what somebody typed at an
+/// agent that has ended is the thing they want it to do next, and a resume
+/// that dropped it would bring the agent back with nothing to say to it. The
+/// message travels the way `amx resume <id> "message"` carries one — on the
+/// vendor's argv, from [`bring_back`] — and the gates in front of it are the
+/// same, because whether there is anything to pick up is not a question the
+/// message changes.
+pub fn picked_up(
+    root: &Path,
+    id: &str,
+    message: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<Comeback> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
     if let Err(why) = to_continue(&meta) {
@@ -80,8 +98,20 @@ pub fn again(
     if let Some(full) = at_capacity(root, &meta.dir)? {
         return Ok(Comeback::No(full));
     }
-    bring_back(root, id, None, env)?;
+    bring_back(root, id, message, env)?;
     Ok(Comeback::Back)
+}
+
+/// Whether there is anything to bring this agent back on, for a door that has
+/// to say so before anybody types.
+///
+/// The two halves a resume needs — the session it was carried on, and the
+/// command to carry it — asked as a yes or no. Not the cap: a project that is
+/// full this second has room the next, and a card that told somebody nothing
+/// would come of their line over a count would be wrong as often as it was
+/// right. What the cap answers is the resume itself, in a sentence.
+pub fn can_come_back(meta: &Meta, dir: &Path) -> bool {
+    to_continue(meta).is_ok() && to_start(dir, &meta.id).is_ok()
 }
 
 /// Run the verb against the machine.
@@ -663,6 +693,27 @@ mod tests {
                 "{phase}"
             );
         }
+    }
+
+    #[test]
+    fn resume_says_whether_there_is_anything_to_bring_an_agent_back_on() {
+        let dir = TempDir::new().unwrap();
+        let mut meta = read_as(Phase::Stopped, Evidence::Record).meta;
+
+        // Both halves, or neither: the session the agent was carried on, and
+        // the command that carries it.
+        assert!(
+            !can_come_back(&meta, dir.path()),
+            "there is no command to start again"
+        );
+        spawn::write_handoff(dir.path(), &handoff(&["claude", "go"], "go")).unwrap();
+        assert!(can_come_back(&meta, dir.path()));
+
+        meta.session = None;
+        assert!(
+            !can_come_back(&meta, dir.path()),
+            "there is no session to continue"
+        );
     }
 
     #[test]

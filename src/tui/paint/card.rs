@@ -72,6 +72,11 @@ pub struct Card<B = String> {
     /// over — rather than a picture of a pane, or a conversation still being
     /// added to, both of which are read up from their bottom.
     pub answer: bool,
+    /// Whether a line typed here would reach the agent at all: an agent in a
+    /// pane takes what is typed, and one whose pane has gone takes it by being
+    /// brought back on it. Only the agent that can be neither sent to nor
+    /// started again is past listening.
+    pub listening: bool,
 }
 
 impl<B> Card<B> {
@@ -132,6 +137,7 @@ impl Card<String> {
             kind: self.kind,
             changes: self.changes,
             answer: self.answer,
+            listening: self.listening,
         }
     }
 }
@@ -1079,20 +1085,22 @@ fn answer_row(
 /// At a question, what that question will take — which is the one thing
 /// somebody looking at a prompt they did not draw cannot work out for
 /// themselves, and it is said from the same place the refusal is written. On
-/// an agent still working, the word for what the line is: whatever is typed
-/// there goes to it as it stands. And on one whose command has ended, that
-/// nothing will come of it, in the words [`act::reply`] refuses it in — a
+/// an agent something will come of it on, the word for what the line is:
+/// whatever is typed there reaches the agent, by being sent to its pane or by
+/// bringing it back on those words. And on one nothing will come of it on,
+/// that — in the words [`act::reply`] refuses it in, because a
 /// line that invited a reply nobody would receive would be the card telling
 /// somebody to type into the dark.
 fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
-    match (card.asks(), card.phase.is_terminal()) {
+    match (card.asks(), card.listening) {
         (true, _) => act::invitation(card.kind, &card.options, asked),
-        (_, true) => NOBODY.to_string(),
+        (_, false) => NOBODY.to_string(),
         _ => REPLY.to_string(),
     }
 }
 
-/// What the line says on an agent that is still working, which is what it is.
+/// What the line says on an agent that will do something with it, which is
+/// what it is.
 const REPLY: &str = "reply";
 
 /// And on one past listening, which is the whole of what would come of it.
@@ -1206,6 +1214,7 @@ mod tests {
             body: "$ cargo test\nDo you want to proceed?".to_string(),
             changes: false,
             answer: false,
+            listening: true,
         }
     }
 
@@ -1997,22 +2006,29 @@ mod tests {
              waiting on them"
         );
 
-        // And on one whose command has ended, what would come of it — in the
-        // words the reply itself is refused in, because it is the same fact
-        // said before rather than after the keystroke.
-        let over = answering(
-            Card {
-                phase: Phase::Done,
-                question: None,
-                options: Vec::new(),
-                body: "did what it was asked".to_string(),
-                answer: true,
-                ..asking(&[], None)
-            },
-            "",
-        );
-        let ended = answer_row(&painted(&over, size));
-        assert!(ended.contains("❯ nothing is listening"), "{ended:?}");
+        // An agent whose command has ended still takes a line, because a line
+        // typed there brings it back on those words. The word is the same one
+        // a working agent's line carries: what happens to it is amx's to
+        // arrange, not something to spell on the line.
+        let ended = |listening| Card {
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            body: "did what it was asked".to_string(),
+            answer: true,
+            listening,
+            ..asking(&[], None)
+        };
+        let back = answering(ended(true), "");
+        let comes_back = answer_row(&painted(&back, size));
+        assert!(comes_back.contains("❯ reply"), "{comes_back:?}");
+
+        // And on the one there is nothing to bring back, what would come of
+        // it — in the words the reply itself is refused in, because it is the
+        // same fact said before rather than after the keystroke.
+        let over = answering(ended(false), "");
+        let past = answer_row(&painted(&over, size));
+        assert!(past.contains("❯ nothing is listening"), "{past:?}");
         assert_eq!(chevron(&over, size), (Color::Reset, Modifier::DIM));
     }
 
@@ -2213,6 +2229,7 @@ mod tests {
                 body: patch,
                 changes: true,
                 answer: false,
+                listening: true,
             }),
             (60, 14),
         );
@@ -2246,6 +2263,7 @@ mod tests {
                 .join("\n"),
             changes: true,
             answer: false,
+            listening: true,
         }
     }
 
@@ -2314,6 +2332,7 @@ mod tests {
                         .join("\n"),
                     changes: false,
                     answer: true,
+                    listening: true,
                 }),
             )
         };

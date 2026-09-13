@@ -501,12 +501,17 @@ Every card ends with a line, whatever the agent is doing, and the line opens
 with the card, so one key puts both the look and the way to answer it in front
 of you. While nothing is typed on it the line says what it will take. At a
 question that is what the question will take. On an agent still at work it reads
-`reply`, because whatever you write there goes to it as it stands. On one whose
-command has ended it reads `nothing is listening`, which is the refusal a reply
-would come back with — a line that invited one there would be the card telling
-you to type into the dark. The `❯` carries the waiting colour at a question and
-is dim everywhere else: a prompt waiting on you should not look like one you may
-type at if you feel like it. A blank row stands between what the card says and
+`reply`, because whatever you write there goes to it as it stands. It reads
+`reply` on an agent whose command has ended, and on one amx parked, for the same
+reason the other way round: what you type there brings the agent back on those
+words, on the session it already had, exactly as `amx resume <id> "message"`
+does. Where there is nothing to bring back — a command row, which has no vendor
+to take a first turn, or an agent with no session or no command written down —
+it reads `nothing is listening`, which is the refusal a reply would come back
+with; a line that invited one there would be the card telling you to type into
+the dark. The `❯` carries the waiting colour at a question and is dim
+everywhere else: a prompt waiting on you should not look like one you may type
+at if you feel like it. A blank row stands between what the card says and
 the line, and goes first where the band is short.
 
 The line is the task line in everything that is not about starting an agent.

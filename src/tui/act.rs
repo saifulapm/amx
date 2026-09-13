@@ -32,6 +32,7 @@ use crate::derive::View;
 use crate::store::{Agent, Ask, Kind, Phase};
 use crate::tmux::Server;
 use crate::verbs::answer::Answered;
+use crate::verbs::resume::Comeback;
 use crate::{derive, exit, registry, spawn, store, verbs, worktree};
 
 /// A line somebody is typing, and what it is for.
@@ -1591,6 +1592,12 @@ pub enum Replied {
 /// answer nobody chose, so the verb refuses them before a byte of them reaches
 /// the pane — and refuses them here in the same words, because it is the same
 /// reading of the same record.
+///
+/// An agent nothing is running is answered by starting it again on the line:
+/// what somebody typed at an agent that has ended is the next thing they want
+/// of it, and `amx resume <id> "message"` is the command that would carry it.
+/// The one row there is nothing to do that to is a command amx ran, which has
+/// no vendor to take a first turn.
 pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     let view = derive::view(root, id, store::now())?;
     let agent = Agent::open(root, id)?;
@@ -1604,13 +1611,65 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
                 Answered::No(refused) => Ok(Replied::No(format!("{id}: {refused}"))),
             }
         }
-        phase if phase.is_terminal() => Ok(Replied::No(format!(
-            "{id} is {phase}; nothing is listening"
-        ))),
+        phase if phase.is_terminal() || parked(&view) => {
+            if view.meta.agent.is_none() {
+                return Ok(Replied::No(format!(
+                    "{id} is {}; nothing is listening",
+                    doing(&view)
+                )));
+            }
+            let env = spawn::env_snapshot(std::env::vars());
+            match verbs::resume::picked_up(root, id, Some(text), &env)? {
+                Comeback::Back => Ok(Replied::Yes(format!("resumed {id}"))),
+                Comeback::No(why) => Ok(Replied::No(why)),
+            }
+        }
         _ => {
             verbs::send::deliver(&agent, &server, &view.meta.pane, text)?;
             Ok(Replied::Yes(format!("sent to {id}")))
         }
+    }
+}
+
+/// Whether a line typed at this agent would reach it, for the card that has to
+/// say so before anybody types.
+///
+/// An agent in a pane takes what is typed as it stands. One whose pane has
+/// gone takes it by being brought back on it, where there is a session to pick
+/// up and a command to pick it up with. A command amx ran has neither: no
+/// vendor was started for it, so there is nothing to put a first turn to.
+///
+/// Read from the same record [`reply`] reads, because the card saying nothing
+/// will come of a line and the keystroke refusing it are the same fact said
+/// before and after.
+pub fn listening(root: &Path, view: &View) -> bool {
+    if !(view.phase().is_terminal() || parked(view)) {
+        return true;
+    }
+    view.meta.agent.is_some()
+        && Agent::open(root, view.id())
+            .is_ok_and(|agent| verbs::resume::can_come_back(&view.meta, agent.dir()))
+}
+
+/// Whether amx took this agent's pane away while it sat at its prompt.
+///
+/// A parked agent reads idle, because idle is where it was when the pane went,
+/// and nothing is running it: the vendor is gone and the session is waiting to
+/// be picked up. So a line typed at one is a resume rather than a send, which
+/// is what `send` itself says when it turns one away.
+fn parked(view: &View) -> bool {
+    view.verdict.evidence == derive::Evidence::LetGo
+}
+
+/// What to call what an agent nothing is running is doing.
+///
+/// The phase word, except for the parked one: its record says idle and idle is
+/// the one thing it is not, so the word for it is the one the verb that took
+/// its pane away is called.
+fn doing(view: &View) -> String {
+    match parked(view) {
+        true => "parked".to_string(),
+        false => view.phase().to_string(),
     }
 }
 
@@ -1889,6 +1948,7 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
         },
         changes: true,
         answer: false,
+        listening: listening(root, view),
     })
 }
 

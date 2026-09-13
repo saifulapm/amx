@@ -3128,6 +3128,9 @@ fn holding(view: &View) -> bool {
 /// come to the same card.
 fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, Freshness) {
     let agent = Agent::open(root, view.id()).ok();
+    // Whether the line at the foot of the card would reach anybody, read
+    // through the door that would refuse it.
+    let listening = act::listening(root, view);
     // What the command printed, kept beside the record by its own boot. An
     // empty file is an empty card: the command has printed nothing yet, and a
     // capture of the pane in its place would be a screen of somebody else's
@@ -3149,6 +3152,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 // that has ended is read forward, because what it printed is
                 // all there and the start of it is where a reader begins.
                 answer: view.phase().is_terminal(),
+                listening,
             },
             Freshness::Files(printed.into_iter().collect()),
         );
@@ -3192,6 +3196,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 // edge; one whose turn is over reads forward from its last
                 // answer.
                 answer: !working,
+                listening,
             },
             Freshness::Files(recorded.into_iter().chain(streaming).collect()),
         );
@@ -3245,6 +3250,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
             },
             changes: false,
             answer: answered,
+            listening,
         },
         // Every card that reaches here is a question, a capture, or the words
         // the record itself holds — and the record is read again on the wall's
@@ -5233,6 +5239,7 @@ mod tests {
             body: Body::patch("+ line"),
             changes: true,
             answer: false,
+            listening: true,
         });
         press(&mut screen, ctrl('f'));
         assert!(
@@ -5282,6 +5289,7 @@ mod tests {
             body: Body::patch("+ line"),
             changes: true,
             answer: false,
+            listening: true,
         });
         let press = |screen: &mut Screen, code| {
             screen
@@ -5389,6 +5397,7 @@ mod tests {
             body: Body::patch("+ line"),
             changes: true,
             answer: false,
+            listening: true,
         });
         screen.scroll.away.set(5);
 

@@ -1651,3 +1651,106 @@ fn card_on_a_command_that_has_ended_is_what_it_printed() {
         "in the order it printed them:\n{carded}"
     );
 }
+
+/// The id the vendor's stand-in announces for a session it was asked to
+/// continue. A resume changes exactly this about an agent, so it is what says
+/// the line reached one.
+const CONTINUED: &str = "b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42";
+
+#[test]
+fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
+    // A real agent rather than a record written by hand, because what the
+    // line does to one is a resume: the session it was carried on and the
+    // command that carries it are both written down by the start it had.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let started = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        started.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    amx.until_state(id, "idle");
+    let session = amx.meta(id)["session"]
+        .as_str()
+        .expect("a session was recorded")
+        .to_string();
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+
+    // The resume runs in the view's own process, so the stand-in it starts is
+    // the one this terminal was opened with.
+    let scenario = amx.scenario("continues-a-session");
+    let view = amx.in_a_terminal(
+        &[
+            ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
+            ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+        ],
+        &[],
+    );
+    let carded = card_on(&amx, &view, id);
+    assert!(
+        carded.contains("❯ reply"),
+        "the line takes words on an agent there is something to bring back:\n{carded}"
+    );
+
+    types(&amx, &view, "and now the linter");
+    press(&amx, &view, "Enter");
+    amx.until("the view to say the agent came back", || {
+        screen(&amx, &view)
+            .contains(&format!("resumed {id}"))
+            .then_some(())
+    });
+    amx.until("the continued session on the record", || {
+        (amx.meta(id)["session"] == CONTINUED).then_some(())
+    });
+
+    // On the session it already had, with the line as its first turn: the
+    // agent is the one that ended, carrying on from where it was.
+    let pane = amx.pane_of(id);
+    let called = amx.until("the vendor to say how it was called", || {
+        let drawn = amx.capture(&pane);
+        drawn.contains("argv:").then_some(drawn)
+    });
+    assert!(called.contains(&format!("--resume={session}")), "{called}");
+    assert!(
+        called.contains("and now the linter"),
+        "the line is the turn it comes back on:\n{called}"
+    );
+}
+
+#[test]
+fn card_line_on_a_command_that_has_ended_says_nothing_is_listening() {
+    // A command amx ran has no vendor to take a first turn, so there is
+    // nothing a line typed at it could do — and the card says so rather than
+    // inviting one.
+    let amx = Harness::new();
+    let id = "print-one-b2c";
+    let ran = amx.amx(&["new", "--name", id, "--exec", r#"printf "one\n""#]);
+    assert!(
+        ran.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    amx.until_state(id, "done");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let carded = card_on(&amx, &view, id);
+    assert!(
+        carded.contains("❯ nothing is listening"),
+        "a command row is past listening:\n{carded}"
+    );
+}
