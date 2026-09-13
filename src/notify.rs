@@ -570,7 +570,7 @@ mod tests {
         };
         assert_eq!(
             osc_notice(&notice),
-            format!("\u{1b}]777;notify;héllo;naïve\u{7}").into_bytes()
+            "\u{1b}]777;notify;héllo;naïve\u{7}".as_bytes()
         );
     }
 
