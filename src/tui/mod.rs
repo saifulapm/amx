@@ -1136,7 +1136,7 @@ where
             screen.suggesting(config);
             None
         }
-        Ok(Edited::No(why)) => Some(Notice::Advice(why)),
+        Ok(Edited::No(why)) => Some(Notice::Refused(why)),
         Err(e) => Some(Notice::Failed(format!("{e:#}"))),
     };
     Ok(())
@@ -1819,7 +1819,7 @@ impl Screen {
                         // A row amx cut no branch for is a row with nothing to
                         // open, and saying which row that was is the whole of
                         // what a wall of them needs.
-                        None => Some(Notice::Advice(format!(
+                        None => Some(Notice::Refused(format!(
                             "no pull request on {}",
                             rows::called(view)
                         ))),
@@ -2038,7 +2038,7 @@ impl Screen {
                             self.acted();
                         }
                         Ok(Renamed::No(why)) => {
-                            self.notice = Some(Notice::Advice(why));
+                            self.notice = Some(Notice::Refused(why));
                             self.mode = Mode::Typing(composer);
                         }
                         Err(e) => {
@@ -2174,7 +2174,7 @@ impl Screen {
                 self.acted();
             }
             Ok(Replied::No(why)) => {
-                self.notice = Some(Notice::Advice(why));
+                self.notice = Some(Notice::Refused(why));
                 self.mode = Mode::Typing(composer);
             }
             Err(e) => {
@@ -2336,7 +2336,7 @@ impl Screen {
             .filter_map(|item| self.list.agent(*item))
             .nth(at.saturating_sub(1));
         let Some(view) = nth else {
-            self.notice = Some(Notice::Advice(format!(
+            self.notice = Some(Notice::Refused(format!(
                 "the wall has fewer than {at} agents"
             )));
             return Ok(Doing::Carry);
@@ -2434,7 +2434,7 @@ impl Screen {
             // it. A task retyped because a dial was misspelt is a task
             // somebody types shorter the second time.
             Ok(Started::No(why)) => {
-                self.notice = Some(Notice::Advice(why));
+                self.notice = Some(Notice::Refused(why));
                 self.mode = Mode::Typing(composer);
             }
             Err(e) => {
@@ -3274,7 +3274,7 @@ fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Resu
 
     let env = spawn::env_snapshot(std::env::vars());
     match verbs::resume::again(root, config, view.id(), &env)? {
-        Comeback::No(why) => Ok(Reach::Say(Notice::Advice(why))),
+        Comeback::No(why) => Ok(Reach::Say(Notice::Refused(why))),
         // The pane the record named a moment ago is not the pane it names now,
         // and where the agent is is the whole of what the rest of this is
         // about, so the record is read again rather than argued with.
@@ -3306,7 +3306,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
     if let Some(here) = here
         && server.pane_field(&view.meta.pane, "#{pid}")? != here.pid
     {
-        return Ok(Reach::Say(Notice::Advice(format!(
+        return Ok(Reach::Say(Notice::Refused(format!(
             "{id} is on another tmux. run `amx attach {id}` to reach it",
             id = view.id()
         ))));
@@ -5022,6 +5022,10 @@ mod tests {
         refused.insert("not yet");
         screen.replied(Ok(Replied::No("busy".to_string())), refused);
         assert_eq!(screen.sent.lines_for(&Asking::Reply), ["ship it"]);
+        assert!(
+            matches!(screen.notice, Some(Notice::Refused(_))),
+            "and the reason it would not take it is said as a refusal"
+        );
     }
 
     #[test]
@@ -7497,7 +7501,7 @@ mod tests {
         // person who pressed this is looking at one.
         let mut screen = watching(a_wall());
         press(&mut screen, o);
-        let Some(Notice::Advice(said)) = &screen.notice else {
+        let Some(Notice::Refused(said)) = &screen.notice else {
             panic!("nothing said about a row with no request");
         };
         assert_eq!(said, "no pull request on ask-a1b");
@@ -8292,6 +8296,11 @@ mod tests {
             "p:nonsense port it"
         );
         assert!(crate::store::list(root.path()).unwrap().is_empty());
+        assert!(
+            matches!(screen.notice, Some(Notice::Refused(_))),
+            "and the reason under it is said as something that did not \
+             happen rather than as advice"
+        );
 
         // And a task barely long enough to be one is asked about first: the
         // key that goes with the agent is still the key that starts it.
@@ -8318,7 +8327,7 @@ mod tests {
         screen
             .landing(root.path(), &Config::default(), "first-a1b", None)
             .unwrap();
-        let Some(Notice::Advice(said)) = &screen.notice else {
+        let Some(Notice::Refused(said)) = &screen.notice else {
             panic!("nothing was said about where the agent went")
         };
         // Nothing was ever recorded for this one to be picked up again, so
@@ -8336,7 +8345,7 @@ mod tests {
         finished(root.path(), "first-a1b", "wrote the parser", 60);
         let view = derive::view(root.path(), "first-a1b", now()).unwrap();
 
-        let Reach::Say(Notice::Advice(said)) =
+        let Reach::Say(Notice::Refused(said)) =
             reach(root.path(), &Config::default(), None, &view).unwrap()
         else {
             panic!("an agent with nothing to continue was reached anyway")
