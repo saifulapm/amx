@@ -128,9 +128,10 @@ fn landed(view: &View, requests: fn(&Meta) -> Vec<Pr>) -> Option<String> {
 /// cut in two or three checkouts, and only the agents a candidate could come
 /// from are worth the fetch at all.
 ///
-/// A fetch that fails costs the third fact and nothing else — an origin that
-/// is not there, a network that is not either, a forge asking for a password
-/// nobody is here to type — so it is said once and the walk goes on.
+/// A fetch that fails costs the third fact and nothing else — a network that
+/// is not there, a forge asking for a password nobody is here to type — so it
+/// is said once and the walk goes on. A repository with no origin is not that:
+/// [`prune_origin`](worktree::prune_origin) runs nothing there and says nothing.
 fn fetch_origins(views: &[View]) {
     let mut fetched = BTreeSet::new();
     for view in views {

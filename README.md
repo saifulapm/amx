@@ -1186,9 +1186,9 @@ The third reason is the one a squash merge leaves. The forge takes the commits
 under a sha your branch does not hold, so git reads nothing as merged, and then
 it deletes the branch. `sweep` fetches with `--prune` once per repository before
 it walks, and a branch whose upstream has gone is listed as `amx/fix-login-a1b
-gone from origin`. A repository the fetch fails in — no origin, no network, a
-forge wanting a password — is said once on stderr and swept on the other two
-reasons.
+gone from origin`. A repository with no origin has nothing to fetch and is read
+on the other two reasons without a word; one the fetch fails in — no network, a
+forge wanting a password — is said once on stderr and read the same way.
 
 The view has the same thing under `c`, asked wherever the cursor is standing.
 It waits on nothing: the request is what the last look wrote down, the upstream

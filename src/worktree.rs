@@ -214,8 +214,13 @@ pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
 /// no longer has.
 ///
 /// The fetch [`upstream_gone`] reads after: without it a branch deleted on the
-/// forge a week ago still reads as one somebody may be reviewing.
+/// forge a week ago still reads as one somebody may be reviewing. A repository
+/// with no origin has nothing to fetch and no upstream to have gone, and that
+/// is not a failure: nothing is run there and nothing is said.
 pub fn prune_origin(repo: &Path) -> Result<()> {
+    if git(repo, &["remote", "get-url", "origin"]).is_err() {
+        return Ok(());
+    }
     git(repo, &["fetch", "--prune", "--quiet", "origin"])?;
     Ok(())
 }
@@ -432,7 +437,13 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<bool> {
     // for another spawn to pop by mistake, and an empty answer where there is
     // nothing to move. The tree reads the commit out of the object store the
     // two of them share.
-    let stashed = git(from, &["stash", "create"])?;
+    let stashed = match git(from, &["stash", "create"]) {
+        Ok(stashed) => stashed,
+        Err(e) => {
+            let _ = git(from, &["reset", "-q"]);
+            return Err(e);
+        }
+    };
     if stashed.is_empty() {
         // The index is put back whatever happens next: staging was this
         // function's doing, and `from` is somebody's working directory.
@@ -735,7 +746,11 @@ fn command(dir: &Path, overrides: &[String], args: &[&str]) -> Command {
         // The overrides blank the keys amx knows to blank; the machine's own
         // /etc/gitconfig can name programs under keys nobody thought of, and
         // nothing amx asks git for depends on it.
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        // Nobody is at a terminal for git to ask. A fetch through a forge that
+        // wants a password is a failure said on stderr, not a prompt a cron
+        // line hangs on.
+        .env("GIT_TERMINAL_PROMPT", "0");
     git
 }
 
@@ -986,6 +1001,16 @@ mod tests {
             !upstream_gone(repo.path(), "amx/never-cut-b2c").unwrap(),
             "and a branch git does not have has no upstream either"
         );
+    }
+
+    #[test]
+    fn worktree_fetches_nothing_and_says_nothing_where_there_is_no_origin() {
+        // A checkout that has never had a remote is most of the test suite
+        // and plenty of scratch work: a sweep over it fetches nothing, and
+        // fetching nothing is not a failure to warn about.
+        let repo = a_repo();
+        prune_origin(repo.path()).unwrap();
+        assert!(!upstream_gone(repo.path(), "main").unwrap());
     }
 
     #[test]
