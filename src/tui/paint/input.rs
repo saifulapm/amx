@@ -745,6 +745,14 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 ("esc", "leaves it alone"),
                 width,
             ),
+            // On nothing as well as on a task, which is the one thing about
+            // this line a person could not guess: enter on an empty one is a
+            // copy with no first turn.
+            Asking::Fork { .. } => fitted(
+                &[("enter", "starts the copy"), ("empty", "no first turn")],
+                ("esc", "cancels"),
+                width,
+            ),
             // Drawn above, on the row this one would have taken.
             Asking::Find => find_row(composer, width),
         },
