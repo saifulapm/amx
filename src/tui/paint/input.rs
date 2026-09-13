@@ -25,7 +25,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::card::pages;
+use super::card::{notes, pages};
 use super::style::{bold, dim, prospective};
 use super::text::{RULE, SEPARATOR, fit};
 use crate::registry::DEFAULT;
@@ -549,24 +549,53 @@ fn enters(screen: &Screen) -> Hint<'static> {
 /// alt+enter is named only on the second of them: a newline is worth the room
 /// once there is a paragraph being written, and a line with nothing on it has
 /// nothing to break.
+///
+/// A review being written changes both ends of the row, because it outlives the
+/// line it is typed on: enter counts the notes it would send rather than naming
+/// the one hunk, and esc says how many it would drop. What a key costs is worth
+/// more than what it does, and esc down here costs a review.
 fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static> {
+    let going = screen.noted(&composer.text);
+    let kept = screen.scroll.noted().len();
+    let drops = format!("drops {}", notes(kept));
+    let closes = match kept {
+        0 => CLOSES,
+        _ => ("esc", drops.as_str()),
+    };
+
     if !composer.text.is_empty() {
         // The same key reaching the agent three ways: a question is answered,
         // an agent that is asking nothing is told something, and words typed
-        // while a hunk is under the cursor go with that hunk. The last is the
-        // one nobody can see from the line itself, so the row counts the hunk
-        // the way the rule over the card counts it.
+        // while a patch is being read go as the review they are part of. The
+        // last is the one nobody can see from the line itself, so the row
+        // counts it the way the rule over the card counts it — naming the hunk
+        // instead where this line's words are the whole of what would go,
+        // which is the one note somebody cannot see the number of.
         let does = match screen.card.as_ref().is_some_and(|card| card.asks()) {
             true => "answers it".to_string(),
-            false => match screen.at_hunk() {
-                Some((at, _)) => format!("sends it with hunk {}", at + 1),
-                None => "sends it".to_string(),
+            false => match (going.as_slice(), screen.at_hunk()) {
+                ([], _) => "sends it".to_string(),
+                ([one], Some((at, _))) if *one == at => format!("sends it with hunk {}", at + 1),
+                (going, _) => format!("sends {}", notes(going.len())),
             },
         };
-        return fitted(&[("enter", &does), ("alt+enter", "newline")], CLOSES, width);
+        let mut said = vec![("enter", does.as_str()), ("alt+enter", "newline")];
+        // And the key that keeps the words for the hunk they are about, which
+        // is how a review of several is written. Last, so a narrow row sheds
+        // it first: it is the one key here somebody can reach by stepping.
+        if screen.card.as_ref().is_some_and(|card| card.changes) {
+            said.push(("ctrl+n", "keeps it"));
+        }
+        return fitted(&said, closes, width);
     }
 
-    let mut said = vec![enters(screen), ("space", "closes it")];
+    // An empty line over a review is still a line with something to send, so
+    // enter says that rather than what it does down on the wall.
+    let sends = format!("sends {}", notes(going.len()));
+    let mut said = match going.is_empty() {
+        true => vec![enters(screen), ("space", "closes it")],
+        false => vec![("enter", sends.as_str()), ("space", "closes it")],
+    };
     if screen
         .card
         .as_ref()
@@ -574,7 +603,7 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
     {
         said.push(("pgup", "pages it"));
     }
-    fitted(&said, CLOSES, width)
+    fitted(&said, closes, width)
 }
 
 /// Those keys on one row, cut to what a screen this wide can hold, with
@@ -1286,7 +1315,8 @@ mod tests {
     }
 
     /// A card holding what an agent has changed, which is the one body a hunk
-    /// can be under the cursor on.
+    /// can be under the cursor on. Two files, so there are two hunks to write
+    /// a review across.
     fn a_patch() -> Card {
         Card {
             phase: Phase::Working,
@@ -1297,7 +1327,13 @@ mod tests {
                    +++ b/src/foo.rs\n\
                    @@ -1,2 +1,3 @@\n \
                    context\n\
-                   +added\n"
+                   +added\n\
+                   diff --git a/src/bar.rs b/src/bar.rs\n\
+                   --- a/src/bar.rs\n\
+                   +++ b/src/bar.rs\n\
+                   @@ -8,1 +8,2 @@\n \
+                   done\n\
+                   +and more\n"
                 .to_string(),
             changes: true,
             ..asking(&[], None)
@@ -1309,11 +1345,12 @@ mod tests {
         let wide = (80, 14);
 
         // Nothing stepped to yet, so the words go as they were typed and the
-        // row says so.
+        // row says so. The key that keeps them for a hunk is named here and
+        // nowhere else, because a patch is the one thing read a hunk at a time.
         let screen = carded(a_patch(), "why this row?");
         assert_eq!(
             hint_row(&screen, wide),
-            "enter sends it   alt+enter newline   esc closes it"
+            "enter sends it   alt+enter newline   ctrl+n keeps it   esc closes it"
         );
 
         // Stepped to a hunk, the key names the one it will carry: which hunk
@@ -1322,7 +1359,39 @@ mod tests {
         screen.scroll.to_hunk(card.body.hunks(), true);
         assert_eq!(
             hint_row(&screen, wide),
-            "enter sends it with hunk 1   alt+enter newline   esc closes it"
+            "enter sends it with hunk 1   alt+enter newline   ctrl+n keeps it   esc closes it"
+        );
+
+        // With a note behind it the row counts what would go instead, because
+        // the hunk under the cursor is no longer the whole of the message. Esc
+        // says what it would cost, whatever is on the line.
+        screen.scroll.remark(Some(1), "this file can go");
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter sends 2 notes   alt+enter newline   ctrl+n keeps it   esc drops 1 note"
+        );
+    }
+
+    #[test]
+    fn keymap_an_empty_line_over_a_review_says_enter_sends_it() {
+        let wide = (80, 14);
+
+        // Nothing kept, so the two keys the empty line has no use for are the
+        // list's, exactly as under any other card.
+        let screen = carded(a_patch(), "");
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter attach   space closes it   pgup pages it   esc closes it"
+        );
+
+        // A review kept behind an empty line is still a review to send, and
+        // both keys say so: one what it would send, the other what it would
+        // drop.
+        screen.scroll.remark(Some(0), "why this row?");
+        screen.scroll.remark(Some(1), "this file can go");
+        assert_eq!(
+            hint_row(&screen, wide),
+            "enter sends 2 notes   space closes it   pgup pages it   esc drops 2 notes"
         );
     }
 

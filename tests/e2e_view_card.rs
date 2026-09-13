@@ -1290,6 +1290,116 @@ fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
 }
 
 #[test]
+fn card_line_sends_a_review_of_several_hunks_as_one_message() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Three files changed, which is three hunks to read and write about.
+    let tree = PathBuf::from(
+        amx.meta("fix-login-a1b")["worktree"]
+            .as_str()
+            .expect("a worktree"),
+    );
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+    std::fs::write(tree.join("STYLE.md"), "two spaces\n").expect("the second file");
+    std::fs::write(tree.join("TODO.md"), "ship it\n").expect("the third file");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+    types(&amx, &view, "d");
+    amx.until("the diff", || {
+        screen(&amx, &view).contains("+after").then_some(())
+    });
+
+    // The top of the patch, where a review opens: the words written here are
+    // its opening and are a note on nothing.
+    types(&amx, &view, "looks close");
+    amx.until("the opening on the line", || {
+        screen(&amx, &view).contains("❯ looks close").then_some(())
+    });
+
+    // A hunk at a time from there, the line carrying what was typed under each
+    // one to the hunk it was about.
+    press(&amx, &view, "C-n");
+    let stepped = amx.until("the first hunk", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("hunk 1 of 3").then_some(drawn)
+    });
+    assert!(
+        !stepped.contains("looks close"),
+        "and the line is the hunk's own: {stepped}"
+    );
+    types(&amx, &view, "why this row?");
+    press(&amx, &view, "C-n");
+    amx.until("the second hunk", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("hunk 2 of 3 · 1 note").then_some(())
+    });
+    types(&amx, &view, "spaces or tabs?");
+    press(&amx, &view, "C-n");
+
+    // Standing on a hunk with nothing to say about it, the empty line under
+    // the card still has the review to send, and the row says so.
+    let kept = amx.until("the third hunk, with the review behind it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("hunk 3 of 3 · 2 notes").then_some(drawn)
+    });
+    assert!(
+        kept.contains("enter sends 2 notes") && kept.contains("esc drops 2 notes"),
+        "the keys say what the review would cost either way: {kept}"
+    );
+
+    // One message, in patch order: the opening, then each noted hunk as the
+    // card has always written one.
+    press(&amx, &view, "Enter");
+    let sent = amx.until("the message on the record", || {
+        amx.events("fix-login-a1b")
+            .into_iter()
+            .find(|event| event["kind"] == "send")
+    });
+    assert_eq!(
+        sent["payload"]["text"],
+        json!(
+            "looks close\n\n\
+             README.md:1\n\n```diff\n@@ -1 +1 @@\n-before\n+after\n```\n\nwhy this row?\n\n\
+             STYLE.md:1\n\n```diff\n@@ -0,0 +1 @@\n+two spaces\n```\n\nspaces or tabs?"
+        )
+    );
+
+    // And the card is back at the top of the patch it was a review of, with
+    // nothing kept and no hunk under the cursor.
+    let after = amx.until("the card put back", || {
+        let drawn = screen(&amx, &view);
+        (!drawn.contains("hunk 3 of 3")).then_some(drawn)
+    });
+    assert!(
+        !after.contains("note") && !after.contains("hunk"),
+        "the review is spent: {after}"
+    );
+}
+
+#[test]
 fn alt_d_hands_the_terminal_to_the_viewer_the_config_names() {
     let amx = Harness::new();
     let repo = amx.a_repo();
