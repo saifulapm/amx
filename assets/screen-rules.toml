@@ -544,6 +544,47 @@ name = "spinner"
 state = "working"
 all = ["ing…"]
 
+# A turn is over by the hooks and the agent is still working: claude 2.1.270
+# fires Stop when the answer stops streaming and goes on running the subagents
+# that turn started, with this line above the composer while it does.
+#
+#   ✻ Waiting for 1 background agent to finish
+#                                                            ● high · /effort
+#   ────────────────────────────────────────────────────────────────────────
+#   ❯
+#   ────────────────────────────────────────────────────────────────────────
+#     Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high
+#     ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+#
+#     ● main
+#     ◯ general-purpose  Preparing to run `sleep 45`        48s · ↓ 10.2k tokens
+#
+# Measured live on 2026-09-14 at 100, 54, 40, 30 and 24 columns, one subagent
+# sleeping for 45 seconds. The mode row is under the line, so `idle_prompt` had
+# the screen and a busy agent read idle once the record had gone quiet.
+#
+# The glyph is not the rule. `✻` is one of the glyphs the spinner cycles and it
+# is also what the line a finished turn leaves behind opens with — this one
+# held at `✻` across every capture over ten seconds rather than cycling, which
+# is a fact about this version and the next bump re-measures it. The words
+# after it are what says which line this is, and they wrap: after `to` at 40
+# columns, after `background` at 30 and after `1` at 24, so `waiting for` and
+# `background` end up on different rows and `all` cannot want them together.
+# One row apart is the widest measured and `within` is sized at 3 over it.
+#
+# No `not_below`: the composer and the mode footer are drawn under this line on
+# every capture, which is the whole reason the rule is here.
+#
+# A working claim over a record the hooks left idle is a READING and never
+# something written down. claude reports, and what it reported stands on the
+# record — this only puts the right word on the row while the line is up.
+[[rule]]
+name = "background_agents"
+state = "working"
+all = ["✻ waiting for"]
+any = ["background"]
+within = 3
+
 # claude is drawn and waiting for a human to type. This is the mode footer
 # under the input box, and the glyph it opens with is what every mode and every
 # width have in common — see the permission rule above for the measurement.

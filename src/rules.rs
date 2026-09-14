@@ -2661,6 +2661,7 @@ Only showing models from configured providers. Use /login to add providers.
                 "ask_menu",
                 "plan_approval",
                 "spinner",
+                "background_agents",
                 "idle_prompt"
             ],
             "order decides, so it is part of the data"
@@ -3041,6 +3042,52 @@ Only showing models from configured providers. Use /login to add providers.
                 Some(Phase::Idle),
                 "{what} is not a spinner"
             );
+        }
+    }
+
+    #[test]
+    fn rules_a_turn_waiting_on_a_background_agent_is_still_a_turn() {
+        // claude 2.1.270 ends its turn when the answer stops and goes on
+        // working at the subagents it started, drawing this line above the
+        // composer while it does. The hooks have said the turn is over, the
+        // mode row is under the line as it is under everything this vendor
+        // draws, and the screen read idle over an agent that was busy.
+        //
+        // A claim of `working` over a record the hooks left idle is a reading
+        // and never something written down: claude reports, and what it
+        // reported stands on the record.
+        let rules = claude();
+        for (what, screen, named) in [
+            ("at 100 columns", BACKGROUND_270_100, "background_agents"),
+            // At 54 the agents panel elides its subagent's label to
+            // `Preparing…`, which is the whole of the spinner rule's anchor,
+            // on a row under the mode footer. Both rules hold and both say
+            // working; which of the two names the screen is the document
+            // order's to say, and the spinner comes first.
+            ("at 54, under an elided panel", BACKGROUND_270_54, "spinner"),
+            (
+                "at 40, wrapped after `to`",
+                BACKGROUND_270_40,
+                "background_agents",
+            ),
+            (
+                "at 30, wrapped after `background`",
+                BACKGROUND_270_30,
+                "background_agents",
+            ),
+            (
+                "at 24, wrapped after `1`",
+                BACKGROUND_270_24,
+                "background_agents",
+            ),
+        ] {
+            let claimed = claim(rules, screen, Phase::Idle);
+            assert_eq!(
+                claimed.phase(),
+                Some(Phase::Working),
+                "{what} must rule working, ruled {claimed:?}"
+            );
+            assert_eq!(claimed.rule_name(), Some(named), "{what}");
         }
     }
 
