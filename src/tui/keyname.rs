@@ -25,10 +25,6 @@ pub(in crate::tui) struct Bound {
     /// wrote.
     pub(in crate::tui) spelling: String,
     /// The key that spelling is, which is what a press is matched against.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the press in a later task")
-    )]
     pub(in crate::tui) key: KeyEvent,
     pub(in crate::tui) command: String,
 }

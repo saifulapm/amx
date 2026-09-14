@@ -163,6 +163,13 @@ enum Doing {
     View {
         id: String,
     },
+    /// And to a command of somebody's own, bound to a key in the config file
+    /// and run on the agent the cursor is on.
+    Bound {
+        id: String,
+        spelling: String,
+        command: String,
+    },
 }
 
 /// What the keys are doing at the moment.
@@ -1109,6 +1116,14 @@ where
                 view_the_patch(terminal, &mut screen, root, &id, config)?;
                 called.clear();
             }
+            Doing::Bound {
+                id,
+                spelling,
+                command,
+            } => {
+                run_the_key(terminal, &mut screen, root, &id, &spelling, &command)?;
+                called.clear();
+            }
         }
     }
 }
@@ -1245,6 +1260,38 @@ where
     // which is between it and whoever was reading; what never got that far is
     // the view's to say.
     screen.notice = read.err().map(|e| Notice::Failed(format!("{e:#}")));
+    Ok(())
+}
+
+/// Give the terminal to a command somebody bound a key to, in the tree of the
+/// agent the cursor was on.
+///
+/// The same borrow the patch viewer gets, for the same reason and on the same
+/// terms: what a person binds a key to is a program they mean to sit in front
+/// of — lazygit, a test run under a pager — and the view is not drawing while
+/// they are.
+///
+/// The command said whatever it had to say on the terminal it was handed, so
+/// the notice carries only what a person could not have read there, under the
+/// spelling they pressed: a wall can hold several bound keys, and which one
+/// went wrong is the first thing to say about it.
+fn run_the_key<B>(
+    terminal: &mut Terminal<B>,
+    screen: &mut Screen,
+    root: &Path,
+    id: &str,
+    spelling: &str,
+    command: &str,
+) -> Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let ran = borrowed(terminal, || act::run_bound(root, id, command))?;
+
+    screen.notice = ran
+        .err()
+        .map(|e| Notice::Failed(format!("{spelling}: {e:#}")));
     Ok(())
 }
 
@@ -2073,7 +2120,28 @@ impl Screen {
                 let slept = self.list.sleep_or_wake();
                 self.keep(slept);
             }
-            _ => {}
+            // And last of all, a key of somebody's own. Here rather than
+            // anywhere above, so every key amx binds keeps the meaning the
+            // keys screen gives it and a table entry naming one of them never
+            // runs: what a person may rebind is what amx left unbound.
+            //
+            // The command runs on the agent under the cursor, so a heading and
+            // an empty wall do nothing and say nothing, the way alt+d does —
+            // there is no tree to run it in and nothing was asked for.
+            _ => {
+                if let Some(view) = self.list.selected()
+                    && let Some(bound) = self
+                        .bound
+                        .iter()
+                        .find(|bound| key.code == bound.key.code && chord(key) == chord(bound.key))
+                {
+                    return Ok(Doing::Bound {
+                        id: view.id().to_string(),
+                        spelling: bound.spelling.clone(),
+                        command: bound.command.clone(),
+                    });
+                }
+            }
         }
         Ok(Doing::Carry)
     }
@@ -8549,6 +8617,70 @@ diff --git a/src/bar.rs b/src/bar.rs
         screen.list.up();
         assert!(screen.list.on_heading(), "the cursor is on the heading");
         let doing = screen.act(alt('d'), root.path(), &config, None).unwrap();
+        assert!(matches!(doing, Doing::Carry), "a heading is left alone");
+        assert!(screen.notice.is_none(), "and nothing is said about it");
+    }
+
+    #[test]
+    fn keys_a_bound_key_runs_on_the_row_and_is_read_after_every_key_amx_binds() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        // Three spellings: one nothing else answers to, and two the view
+        // already binds — a dial and the key that closes it.
+        let bound = || {
+            keyname::bound_by(&BTreeMap::from([
+                ("alt+g".to_string(), "lazygit".to_string()),
+                ("alt+a".to_string(), "never runs".to_string()),
+                ("q".to_string(), "never runs either".to_string()),
+            ]))
+            .0
+        };
+        let watching_them = || {
+            let mut screen = watching(a_wall());
+            screen.bound = bound();
+            screen
+        };
+
+        let mut screen = watching_them();
+        let doing = screen.act(alt('g'), root.path(), &config, None).unwrap();
+        let Doing::Bound {
+            id,
+            spelling,
+            command,
+        } = doing
+        else {
+            panic!("the key nothing else answers to did not reach the table");
+        };
+        assert_eq!(
+            (id.as_str(), spelling.as_str(), command.as_str()),
+            ("ask-a1b", "alt+g", "lazygit"),
+            "the agent under the cursor, the spelling as it was written, and \
+             what it runs"
+        );
+
+        // A key amx binds keeps its meaning, whatever a table says about it:
+        // the dials turn before the list is asked, and the list's own keys
+        // answer before anything of somebody's own.
+        let mut screen = watching_them();
+        let doing = screen.act(alt('a'), root.path(), &config, None).unwrap();
+        assert!(matches!(doing, Doing::Carry), "alt+a is still the dial");
+        let mut screen = watching_them();
+        let doing = screen
+            .act(
+                KeyEvent::from(KeyCode::Char('q')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(doing, Doing::Close), "q still closes the view");
+
+        // A heading is a group rather than an agent, so there is no tree to
+        // run anything in, as with alt+d.
+        let mut screen = watching_them();
+        screen.list.up();
+        assert!(screen.list.on_heading(), "the cursor is on the heading");
+        let doing = screen.act(alt('g'), root.path(), &config, None).unwrap();
         assert!(matches!(doing, Doing::Carry), "a heading is left alone");
         assert!(screen.notice.is_none(), "and nothing is said about it");
     }

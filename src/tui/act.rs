@@ -2188,6 +2188,39 @@ fn browse(at: &Path, forge: &Path, request: &str, number: u64) -> std::io::Resul
         .map(|_| ())
 }
 
+/// Run the command somebody bound a key to, on the agent under the cursor.
+///
+/// `sh -c`, because what the table holds is a command line a person wrote — a
+/// pager on the end of it, flags, a pipe — and not a program and its argv. It
+/// runs where the agent works: the tree amx cut for it, and else the directory
+/// it was started in, which is the same answer a moment key's errand gets.
+///
+/// The terminal is the command's own, stdin and all: the view has given it up
+/// for exactly as long as this takes, and whatever the command draws, pages and
+/// asks is between it and the person who pressed the key. So what comes back
+/// here is only what they could not have seen — a command that never started,
+/// and the code one ended on.
+pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
+    let agent = Agent::open(root, id)?;
+    let meta = agent.meta()?;
+    let dir = meta.worktree.clone().unwrap_or_else(|| meta.dir.clone());
+
+    let ended = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(&dir)
+        .envs(crate::errand::surroundings(&agent, &meta))
+        .status()
+        .with_context(|| format!("running `{command}`"))?;
+
+    match ended.code() {
+        // A signal took the command down, and a signal is not a code to report
+        // as one: ctrl+c on a pager is somebody closing it.
+        Some(exit::OK) | None => Ok(()),
+        Some(code) => bail!("{command} exited {code}"),
+    }
+}
+
 /// What a verb wrote, as the one line the view has room for.
 fn one_line(written: &[u8]) -> String {
     String::from_utf8_lossy(written)
@@ -2555,6 +2588,101 @@ mod tests {
             ["fix-login-a1b"],
             "and nothing was made on the way to finding out"
         );
+    }
+
+    /// A record of an agent, with its tree wherever the test wants it.
+    fn record(root: &Path, id: &str, dir: &Path, worktree: Option<&Path>) -> Agent {
+        Agent::create(
+            root,
+            &Meta {
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: Some("claude".to_string()),
+                dir: dir.to_path_buf(),
+                worktree: worktree.map(Path::to_path_buf),
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx-not-a-server".to_string()),
+                pane: PaneId::new("%404").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: store::now(),
+            },
+        )
+        .expect("the record")
+    }
+
+    #[test]
+    fn a_bound_key_runs_where_the_agent_works_with_the_agent_around_it() {
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+        let tree = TempDir::new().unwrap();
+        let said = here.path().join("said");
+        let agent = record(root.path(), "fix-login-a1b", here.path(), Some(tree.path()));
+
+        // What the command is told about the agent it was pressed on, in the
+        // one place those pairs are named.
+        let command = format!(
+            "{{ pwd; echo \"$AMX_ID|$AMX_DIR|$AMX_AGENT_DIR|$AMX_WORKTREE|$AMX_NESTED\"; }} > {}",
+            said.display()
+        );
+        run_bound(root.path(), "fix-login-a1b", &command).expect("the command");
+
+        let written = std::fs::read_to_string(&said).expect("what the command wrote");
+        let (ran_in, pairs) = written.split_once('\n').expect("a line and the pairs");
+        assert_eq!(
+            std::fs::canonicalize(ran_in).unwrap(),
+            std::fs::canonicalize(tree.path()).unwrap(),
+            "the tree amx cut for the agent is where its key runs: {ran_in}"
+        );
+        assert_eq!(
+            pairs.trim_end(),
+            format!(
+                "fix-login-a1b|{}|{}|{}|1",
+                agent.dir().display(),
+                crate::spawn::scratch(agent.dir()).unwrap().display(),
+                tree.path().display()
+            )
+        );
+
+        // An agent with no tree of its own works in the directory it was
+        // started in, and that is where its key runs too.
+        let work = TempDir::new().unwrap();
+        record(root.path(), "no-tree-b2c", work.path(), None);
+        let said = here.path().join("elsewhere");
+        run_bound(
+            root.path(),
+            "no-tree-b2c",
+            &format!("pwd > {}", said.display()),
+        )
+        .expect("the command");
+        assert_eq!(
+            std::fs::canonicalize(std::fs::read_to_string(&said).unwrap().trim()).unwrap(),
+            std::fs::canonicalize(work.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_bound_command_that_ended_badly_is_named_with_the_code_it_gave() {
+        // Whatever went wrong the command has already said on the terminal it
+        // was handed, so what is left for the view is which command it was.
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+        record(root.path(), "fix-login-a1b", here.path(), None);
+
+        let said = format!(
+            "{:#}",
+            run_bound(root.path(), "fix-login-a1b", "exit 3").unwrap_err()
+        );
+        assert_eq!(said, "exit 3 exited 3");
+
+        // And a row whose record is not there is nothing to run anything for.
+        let said = format!(
+            "{:#}",
+            run_bound(root.path(), "never-made-abc", "true").unwrap_err()
+        );
+        assert!(said.contains("no agent"), "{said}");
     }
 
     /// One question of a call, as the payload records one: `multi` is whether
