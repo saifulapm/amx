@@ -62,9 +62,10 @@ use wall::{Moment, agents, first_drawn};
 pub(super) use card::walks;
 pub use card::{Body, Card, Hunk, Scroll, body_width};
 pub use header::title;
-/// The table the keys overlay is drawn from, for the test up in the view that
-/// presses everything a terminal can send and holds what acted against it.
-#[cfg(test)]
+/// The table the keys overlay is drawn from, which is also the list of what
+/// amx binds: [`keyname`](super::keyname) reads it to refuse a spelling of a
+/// key of amx's own. The test up in the view presses everything a terminal can
+/// send and holds what acted against it.
 pub(super) use help::HELP;
 pub use input::Notice;
 /// The sentence an armed row wears when the press after it will pass it by,

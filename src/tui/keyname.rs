@@ -18,6 +18,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
 
+use super::chord;
+use super::paint::HELP;
+
 /// A key somebody bound, and the command they bound to it.
 pub(in crate::tui) struct Bound {
     /// The spelling as the file has it, which is what the keys screen shows:
@@ -96,8 +99,52 @@ fn one_character(spelling: &str) -> Option<char> {
     (alone && !one.is_whitespace() && !one.is_control()).then_some(one)
 }
 
+/// What amx does on this key, where this is a key amx binds.
+///
+/// The keys screen is the list of them, so it is the list this reads: every
+/// token of a [`HELP`] row's key column that is also a spelling is a key
+/// somebody cannot have, and what they would have taken it from is the row's
+/// own words.
+///
+/// The code and the chord, and nothing else. Shift is the case of the
+/// character the terminal sent, so `G` and `g` are two keys here rather than
+/// one key held two ways.
+pub(in crate::tui) fn amx_binds(key: KeyEvent) -> Option<&'static str> {
+    let pressed = |bound: KeyEvent| bound.code == key.code && chord(bound) == chord(key);
+    for (keys, does) in HELP {
+        if keys.split_whitespace().filter_map(spelt).any(pressed) {
+            return Some(does);
+        }
+    }
+    besides(key)
+}
+
+/// The keys amx binds that the key column does not spell.
+///
+/// The column is written for somebody reading down it rather than as a list to
+/// look a key up in: it says `gg` for two presses of the one key, `alt+1..9`
+/// for the nine of them, and says nothing at all about what answers a question
+/// card, because those keys are on the card.
+fn besides(key: KeyEvent) -> Option<&'static str> {
+    let held = chord(key);
+    match key.code {
+        KeyCode::Char('g') if held.is_empty() => does("gg G"),
+        KeyCode::Char('1'..='9') if held == KeyModifiers::ALT => does("alt+1..9"),
+        KeyCode::Char('1'..='9' | 'y') if held.is_empty() => Some("an answer on a question card"),
+        _ => None,
+    }
+}
+
+/// What the row with this key column says, so a key named above carries the
+/// words the screen shows rather than a second copy of them.
+fn does(keys: &str) -> Option<&'static str> {
+    HELP.iter()
+        .find(|(column, _)| *column == keys)
+        .map(|(_, does)| *does)
+}
+
 /// The table read into the keys it binds, and a sentence for every spelling it
-/// could not read.
+/// did not bind.
 ///
 /// In the table's own order, under the spelling as it was written: the keys
 /// screen shows both back, and a person looking for what they bound should
@@ -106,14 +153,21 @@ pub(in crate::tui) fn bound_by(keys: &BTreeMap<String, String>) -> (Vec<Bound>, 
     let mut bound = Vec::new();
     let mut refused = Vec::new();
     for (spelling, command) in keys {
-        match spelt(spelling) {
-            Some(key) => bound.push(Bound {
-                spelling: spelling.clone(),
-                key,
-                command: command.clone(),
-            }),
-            None => refused.push(format!("keys: `{spelling}` is no key the view can read")),
+        let Some(key) = spelt(spelling) else {
+            refused.push(format!("keys: `{spelling}` is no key the view can read"));
+            continue;
+        };
+        // A key amx binds is read before this table ever is, so a command
+        // bound to one would sit in the file looking bound and never run.
+        if let Some(does) = amx_binds(key) {
+            refused.push(format!("keys: `{spelling}` is amx's own: {does}"));
+            continue;
         }
+        bound.push(Bound {
+            spelling: spelling.clone(),
+            key,
+            command: command.clone(),
+        });
     }
     (bound, refused)
 }
@@ -194,6 +248,49 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_amx_binds_are_the_ones_the_keys_screen_names() {
+        // Every key the table spells, answering with the row it stands in. A
+        // key two rows name — `→` brings a window forward on the list and
+        // moves the cursor on the line — answers for the first of them, which
+        // is the row somebody reading down finds first.
+        let mut seen: Vec<KeyEvent> = Vec::new();
+        for (keys, does) in HELP {
+            for token in keys.split_whitespace() {
+                let Some(key) = spelt(token) else { continue };
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                assert_eq!(amx_binds(key), Some(does), "`{token}` is amx's own");
+            }
+        }
+
+        // And the keys nothing in the column spells: two presses of the one
+        // key, a row written as a range, and what a question card takes.
+        let named = |spelling: &str| amx_binds(spelt(spelling).expect("a spelling"));
+        assert_eq!(
+            named("g"),
+            Some("the top of the list, and the foot"),
+            "`gg` is two presses of a key the column cannot spell once"
+        );
+        assert_eq!(
+            named("alt+3"),
+            Some("reach one by where it is on the wall"),
+            "the row names the range rather than the nine keys in it"
+        );
+        assert_eq!(named("7"), Some("an answer on a question card"));
+        assert_eq!(
+            named("y"),
+            Some("an answer on a question card"),
+            "which the table leaves to the card itself"
+        );
+
+        for spelling in ["alt+g", "x", "f5"] {
+            assert_eq!(named(spelling), None, "`{spelling}` is nobody's yet");
+        }
+    }
+
+    #[test]
     fn the_table_is_read_in_its_own_order_and_says_what_it_could_not_read() {
         let keys = BTreeMap::from([
             ("alt+g".to_string(), "lazygit".to_string()),
@@ -218,6 +315,30 @@ mod tests {
             refused,
             ["keys: `shift+z` is no key the view can read"],
             "and the one it could not read is named rather than dropped"
+        );
+    }
+
+    #[test]
+    fn a_spelling_amx_already_binds_is_refused_by_what_that_key_does() {
+        let keys = BTreeMap::from([
+            ("alt+g".to_string(), "lazygit".to_string()),
+            ("ctrl+x".to_string(), "never runs".to_string()),
+        ]);
+        let (bound, refused) = bound_by(&keys);
+
+        assert_eq!(
+            bound
+                .iter()
+                .map(|one| one.spelling.as_str())
+                .collect::<Vec<_>>(),
+            ["alt+g"],
+            "a key amx binds is bound to nothing, so nothing lists it or \
+             matches it"
+        );
+        assert_eq!(
+            refused,
+            ["keys: `ctrl+x` is amx's own: stop it · again forgets · a heading, the group"],
+            "and the sentence says which key of amx's somebody wrote"
         );
     }
 }
