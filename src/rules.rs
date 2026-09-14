@@ -91,6 +91,14 @@ pub struct Rule {
     /// a quotation of a widget rather than one.
     #[serde(default)]
     pub not_below: Vec<String>,
+    /// None of these may appear anywhere a rule can see. `not_below` refuses a
+    /// widget with the vendor's own chrome under it; this refuses the screen
+    /// outright, wherever the string is, for the rows a vendor draws that say
+    /// what a person is looking at — a viewer over the transcript, an overlay
+    /// in the slot the composer had. Those screens carry the chrome of the one
+    /// underneath them, so no window a rule's anchors fit tells them apart.
+    #[serde(default)]
+    pub not: Vec<String>,
     /// Whether this rule needs the screen to have held still before it may end
     /// a running turn.
     #[serde(default)]
@@ -284,6 +292,13 @@ impl Rule {
     /// rule hold where it failed; the floor `apart` still refuses a lone
     /// bottom border, because no choice of rows on that screen spans enough.
     fn holds(&self, screen: &Screen) -> bool {
+        // A string the screen names itself with settles it before any of this:
+        // no choice of rows can make a screen that says it is something else
+        // into the one this rule is about.
+        if screen.carries_any(&self.not) {
+            return false;
+        }
+
         let mut anchors: Vec<Vec<usize>> = Vec::with_capacity(self.all.len() + 1);
         for needle in &self.all {
             let rows = screen.rows_of(needle);
@@ -476,6 +491,13 @@ impl Screen {
             .filter(|(_, row)| row.contains(needle))
             .map(|(at, _)| at)
             .collect()
+    }
+
+    /// Whether any of `needles` is anywhere in the rows a rule may see.
+    fn carries_any(&self, needles: &[String]) -> bool {
+        self.folded
+            .iter()
+            .any(|row| needles.iter().any(|needle| row.contains(needle)))
     }
 
     /// Whether any of `needles` appears below `row`.
@@ -2489,6 +2511,7 @@ Only showing models from configured providers. Use /login to add providers.
                     .iter()
                     .chain(&rule.any)
                     .chain(&rule.not_below)
+                    .chain(&rule.not)
                     .chain(asks)
                 {
                     assert_eq!(
@@ -2982,6 +3005,42 @@ Only showing models from configured providers. Use /login to add providers.
             Claim::Unclaimed,
             "six rows apart is not one box"
         );
+    }
+
+    #[test]
+    fn rules_a_screen_that_says_what_it_is_refuses_the_rule() {
+        // `not` is the other end of `not_below`. That one asks where a string
+        // is; this one only asks whether it is there at all, because the
+        // screens it is for — a viewer, an overlay — draw the chrome of the
+        // screen underneath them wherever they please.
+        let ruleset = Ruleset::parse(
+            r#"
+            [[rule]]
+            name = "prompt"
+            state = "idle"
+            any = ["mode:"]
+            not = ["showing"]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            ruleset
+                .claim("here\nmode: careful\n", Phase::Starting, 1)
+                .phase(),
+            Some(Phase::Idle)
+        );
+        for (where_it_is, screen) in [
+            ("above the match", "showing the transcript\nmode: careful\n"),
+            ("below it", "mode: careful\nshowing the transcript\n"),
+            ("on the same row", "mode: careful, showing the transcript\n"),
+        ] {
+            assert_eq!(
+                ruleset.claim(screen, Phase::Starting, 1),
+                Claim::Unclaimed,
+                "a screen naming itself {where_it_is} is not this rule's screen"
+            );
+        }
     }
 
     #[test]

@@ -10,9 +10,12 @@
 #
 # Rules are ORDERED: the first whose conditions hold decides, so the more
 # specific screens come first. A rule holds when every string in `all` appears
-# and — if `any` is given — at least one of those appears too. Matching is done
-# against the capture with its control characters replaced and its case folded,
-# so a colour change in the middle of a word cannot hide a rule.
+# and — if `any` is given — at least one of those appears too. A rule does not
+# hold at all when a string in `not` appears anywhere in the rows it may see,
+# whatever else fits: that is how a screen the vendor draws OVER another one
+# says it is not the one underneath. Matching is done against the capture with
+# its control characters replaced and its case folded, so a colour change in
+# the middle of a word cannot hide a rule.
 #
 # ── The anchor law ───────────────────────────────────────────────────────────
 # Every string here was read off a live claude, and where it was measured is
