@@ -485,17 +485,30 @@ fn the_server_went(stderr: &[u8]) -> bool {
         || said.contains("server exited")
 }
 
-/// Where `tmux -L <name>` keeps its sockets: `$TMUX_TMPDIR`, else
-/// `/tmp/tmux-<uid>`, the same rule tmux applies.
+/// Where `tmux -L <name>` keeps its sockets: `tmux-<uid>` under
+/// `$TMUX_TMPDIR`, else under `/tmp`, the same rule tmux applies and the same
+/// one `tmux::socket_dir` reads. The suites set `TMUX_TMPDIR` themselves
+/// (tests/e2e_wall.rs), so reading it as the socket directory itself, rather
+/// than as what that directory sits under, is a cleanup that misses.
 fn socket_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("TMUX_TMPDIR") {
-        return PathBuf::from(dir);
-    }
+    sockets_under(std::env::var_os("TMUX_TMPDIR"))
+}
+
+/// The same rule, given the variable, so it can be checked without setting one
+/// on a process that has tests running beside it.
+fn sockets_under(tmpdir: Option<std::ffi::OsString>) -> PathBuf {
+    tmpdir
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+        .join(format!("tmux-{}", uid()))
+}
+
+/// Whose sockets these are, as tmux names the directory.
+fn uid() -> u32 {
     use std::os::unix::fs::MetadataExt;
-    let uid = std::fs::metadata("/proc/self")
+    std::fs::metadata("/proc/self")
         .map(|m| m.uid())
-        .unwrap_or(0);
-    PathBuf::from(format!("/tmp/tmux-{uid}"))
+        .unwrap_or(0)
 }
 
 impl Default for Harness {
@@ -540,4 +553,28 @@ fn write(path: &Path, value: &Value) {
 
 fn read(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// These run in every binary that takes the harness in. They are cheap, and
+/// what they hold is the rule the harness cleans up by: get the directory
+/// wrong and the sockets pile up in silence, one per server, until new servers
+/// time out.
+#[test]
+fn common_a_named_tmpdir_holds_the_socket_directory_under_it() {
+    assert_eq!(
+        sockets_under(Some("/run/user/1000".into())),
+        PathBuf::from(format!("/run/user/1000/tmux-{}", uid())),
+        "tmux puts tmux-<uid> under $TMUX_TMPDIR, not the sockets themselves"
+    );
+}
+
+#[test]
+fn common_no_tmpdir_named_is_the_socket_directory_under_tmp() {
+    let under_tmp = PathBuf::from(format!("/tmp/tmux-{}", uid()));
+    assert_eq!(sockets_under(None), under_tmp);
+    assert_eq!(
+        sockets_under(Some("".into())),
+        under_tmp,
+        "an empty $TMUX_TMPDIR names no directory, which is how tmux reads it"
+    );
 }
