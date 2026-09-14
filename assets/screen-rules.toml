@@ -563,14 +563,18 @@ all = ["ing…"]
 # sleeping for 45 seconds. The mode row is under the line, so `idle_prompt` had
 # the screen and a busy agent read idle once the record had gone quiet.
 #
-# The glyph is not the rule. `✻` is one of the glyphs the spinner cycles and it
-# is also what the line a finished turn leaves behind opens with — this one
-# held at `✻` across every capture over ten seconds rather than cycling, which
-# is a fact about this version and the next bump re-measures it. The words
-# after it are what says which line this is, and they wrap: after `to` at 40
-# columns, after `background` at 30 and after `1` at 24, so `waiting for` and
-# `background` end up on different rows and `all` cannot want them together.
-# One row apart is the widest measured and `within` is sized at 3 over it.
+# The glyph alone would claim nothing worth having. `✻` is one of the six the
+# spinner cycles and it is also what the line a finished turn leaves behind
+# opens with, so it is here only to put the words on the row the vendor drew
+# them on: `waiting for` by itself is a sentence an agent writes about a build
+# every day. This line held at `✻` across every capture over ten seconds rather
+# than cycling, which is a fact about this version and nothing this rule leans
+# on; the next vendor bump re-measures it.
+#
+# The words wrap: after `to` at 40 columns, after `background` at 30 and after
+# `1` at 24, so `waiting for` and `background` end up on different rows and no
+# one anchor can want both. One row apart is the widest measured, and `within`
+# is sized at 3 over it.
 #
 # No `not_below`: the composer and the mode footer are drawn under this line on
 # every capture, which is the whole reason the rule is here.
