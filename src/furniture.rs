@@ -473,6 +473,188 @@ mod tests {
         "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents  ",
     ];
 
+    /// The same live screen as `A_BACKGROUND_LINE_PANE` with the window
+    /// resized, from `/tmp/measure-270/c4-bgline-w54.txt` on 2026-09-14. The
+    /// panel under the footer is three rows here too, and the hint row is
+    /// still drawn; what the width moves is where the vendor breaks its own
+    /// sentences.
+    const A_BACKGROUND_LINE_AT_54: &[&str] = &[
+        "▝▜██████▀  Claude Max",
+        "  ▝▝ ▝▝    /tmp/measure-270",
+        "",
+        "",
+        "❯ /btw ",
+        "  ⎿  Usage: /btw <your question>",
+        "",
+        "❯ Use the Task tool to start exactly one subagent in  ",
+        "  the background whose whole job is to run the shell  ",
+        "  command sleep 45 and then say finished. Do not wait ",
+        "  for it. Reply with the single word started as soon  ",
+        "  as it is launched.                                  ",
+        "",
+        "● I'll launch it in the background.",
+        "",
+        "● Agent(Sleep 45 then report)",
+        "  ⎿  Backgrounded agent (↓ to manage · ctrl+o to ",
+        "",
+        "● started",
+        "",
+        "✻ Waiting for 1 background agent to finish",
+        "                                    ● high · /effort",
+        "──────────────────────────────────────────────────────",
+        "❯  ",
+        "──────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure…",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents",
+        "",
+        "  ● main",
+        "  ◯ general-purpose  Preparing… 49s · ↓ 10.2k tokens",
+    ];
+
+    /// The same screen at 40 columns, from
+    /// `/tmp/measure-270/c4-bgline-w40.txt`, where the waiting line wraps
+    /// after `to` and the subagent's row has lost its label.
+    const A_BACKGROUND_LINE_AT_40: &[&str] = &[
+        "",
+        "❯ /btw ",
+        "  ⎿  Usage: /btw <your question>",
+        "",
+        "❯ Use the Task tool to start exactly    ",
+        "  one subagent in the background whose  ",
+        "  whole job is to run the shell command ",
+        "  sleep 45 and then say finished. Do    ",
+        "  not wait for it. Reply with the       ",
+        "  single word started as soon as it is  ",
+        "  launched.                             ",
+        "",
+        "● I'll launch it in the background.",
+        "",
+        "● Agent(Sleep 45 then report)",
+        "  ⎿  Backgrounded agent (↓ to ",
+        "",
+        "● started",
+        "",
+        "✻ Waiting for 1 background agent to ",
+        "  finish",
+        "                      ● high · /effort",
+        "────────────────────────────────────────",
+        "❯  ",
+        "────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ …",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        "",
+        "  ● main",
+        "  ◯ general-purpose 50s · ↓ 10.2k tokens",
+    ];
+
+    /// At 30 columns, from `/tmp/measure-270/c4-bgline-w30.txt`: the waiting
+    /// line wraps after `background` and the statusline is elided mid-word.
+    const A_BACKGROUND_LINE_AT_30: &[&str] = &[
+        "",
+        "❯ Use the Task tool to start  ",
+        "  exactly one subagent in the ",
+        "  background whose whole job  ",
+        "  is to run the shell         ",
+        "  command sleep 45 and then   ",
+        "  say finished. Do not wait   ",
+        "  for it. Reply with the      ",
+        "  single word started as soon ",
+        "  as it is launched.          ",
+        "",
+        "● I'll launch it in the",
+        "  background.",
+        "",
+        "● Agent(Sleep 45 then report)",
+        "  ⎿  Backgrounded agent ",
+        "",
+        "● started",
+        "",
+        "✻ Waiting for 1 background ",
+        "  agent to finish",
+        "            ● high · /effort",
+        "──────────────────────────────",
+        "❯  ",
+        "──────────────────────────────",
+        "  Opus 5 (1M context) (1M c…",
+        "  ⏵⏵ auto mode on (shift+tab",
+        "",
+        "  ● main",
+        "  ◯ general-purpose 51s · ↓ ",
+    ];
+
+    /// And at 24, from `/tmp/measure-270/c4-bgline-w24.txt`, the narrowest
+    /// pane of the pass: the waiting line takes three rows and the footer has
+    /// nothing left but its glyphs and two words.
+    const A_BACKGROUND_LINE_AT_24: &[&str] = &[
+        "  whole job is to run   ",
+        "  the shell command     ",
+        "  sleep 45 and then say ",
+        "  finished. Do not      ",
+        "  wait for it. Reply    ",
+        "  with the single word  ",
+        "  started as soon as it ",
+        "  is launched.          ",
+        "",
+        "● I'll launch it in the",
+        "  background.",
+        "",
+        "● Agent(Sleep 45 then",
+        "       report)",
+        "  ⎿  Backgrounded",
+        "",
+        "● started",
+        "",
+        "✻ Waiting for 1 ",
+        "  background agent to ",
+        "  finish",
+        "      ● high · /effort",
+        "────────────────────────",
+        "❯  ",
+        "────────────────────────",
+        "  Opus 5 (1M context)…",
+        "  ⏵⏵ auto mode on ",
+        "",
+        "  ● main",
+        "  ◯ general-purpose 51s ",
+    ];
+
+    /// A pane whose turn is over, from `/tmp/measure-270/b6-idle.txt` — the
+    /// same shape as `AN_IDLE_PANE` and taken an hour earlier, except that the
+    /// vendor did draw the hint row on this one. Which is the pair that makes
+    /// the row a step the walk takes where it finds one.
+    const AN_IDLE_PANE_WITH_A_HINT_ROW: &[&str] = &[
+        "",
+        " ▐▛███▛█   Claude Code v2.1.270",
+        "▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max",
+        "  ▝▝ ▝▝    /tmp/measure-270",
+        "",
+        "",
+        "❯ First use the AskUserQuestion tool to ask me one question, \"Proceed?\", with the two options Yes   ",
+        "  and No. After I answer, run exactly: sleep 5 with the Bash tool, then reply with the single word  ",
+        "  done.                                                                                             ",
+        "",
+        "● I'll ask the question first.     ",
+        "",
+        "● User answered Claude's questions:",
+        "  ⎿  · Proceed? → Yes     ",
+        "",
+        "  Ran 1 shell command          ",
+        "",
+        "● done                                           ",
+        "       ",
+        "✻ Cogitated for 10s · done 2:19 PM",
+        "                      ",
+        "",
+        "                                                                                                  ",
+        "",
+        "                                                                                  ● high · /effort",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯        ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high",
+        "  ⏸ manual mode on · ← 2 agents  ",
+    ];
+
     fn claude() -> &'static Furniture {
         crate::rules::of("claude").furniture()
     }
@@ -581,6 +763,44 @@ mod tests {
         // this vendor draws none here, and the cut is the one it made before
         // the row was measured at all.
         assert_eq!(claude().cut(AN_IDLE_PANE), &AN_IDLE_PANE[..25]);
+    }
+
+    #[test]
+    fn furniture_the_narrow_widths_are_cut_where_the_wide_one_is() {
+        // Both of the rows this vendor put where the walk expected none are
+        // drawn at every width it was measured at: three rows of panel under
+        // the footer, and the hint row on the composer's border. So the cut
+        // falls in the same place on all four captures, and the row it leaves
+        // at the bottom is the turn's own last row wherever the width broke
+        // the sentence.
+        for (width, pane) in [
+            (54, A_BACKGROUND_LINE_AT_54),
+            (40, A_BACKGROUND_LINE_AT_40),
+            (30, A_BACKGROUND_LINE_AT_30),
+            (24, A_BACKGROUND_LINE_AT_24),
+        ] {
+            let kept = claude().cut(pane);
+            assert_eq!(kept, &pane[..21], "at {width} columns");
+            assert!(
+                kept.last().is_some_and(|row| row.ends_with("finish")),
+                "at {width} columns the waiting line is kept whole: {:?}",
+                kept.last()
+            );
+        }
+    }
+
+    #[test]
+    fn furniture_an_idle_pane_that_does_draw_the_hint_row_loses_it() {
+        // The pane AN_IDLE_PANE is, an hour earlier and with the hint row on
+        // it: the two together are why the row is one the walk steps over
+        // where it finds one rather than one it counts on. Everything the walk
+        // took off the other comes off this one, and the hint row with it.
+        let kept = claude().cut(AN_IDLE_PANE_WITH_A_HINT_ROW);
+        assert_eq!(kept, &AN_IDLE_PANE_WITH_A_HINT_ROW[..24]);
+        assert!(
+            !kept.iter().any(|row| row.contains("/effort")),
+            "the row the walk used to leave on the card is off it"
+        );
     }
 
     #[test]
