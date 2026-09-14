@@ -859,40 +859,29 @@ A `working` claim over a record the hooks left idle is a reading and never
 something written down. claude reports, and what it reported stands on the
 record; this only puts the right word on the row for as long as the line is up.
 
-### The walk that cuts the chrome has stopped cutting it
+### The walk that cuts the chrome had stopped cutting it
 
 `Furniture::cut` is what `src/furniture.rs` walks over to take the vendor's
 chrome off a capture before the view floats it in a card, and it reads from the
-bottom: no mode footer on the last drawn row, no cut at all. On
-`c4-bgline-w100` the last drawn row is the agents panel, so:
+bottom: the mode footer on the last drawn row is the anchor every later step
+hangs off. 2.1.270 draws two rows the walk had never been measured against, one
+below the footer and one above the composer, and each of them cost a card
+something.
 
-| What the walk was given | Rows in | Rows kept |
-| --- | --- | --- |
-| `c4-bgline-w100`, a subagent running | 30 | 30 |
-| `4-idle`, `2-fresh`, `b6-idle`, `c2-btw-after` | 30 | 25 |
+The one below. On `c4-bgline` the last drawn row is the agents panel, so there
+is no footer at the bottom, no anchor, and nothing is cut at all: the card over
+that agent carried the banner, the whole transcript, the composer box, the
+statusline, the mode row and both rows of the panel. That is the walk's own law
+working as written — what a shape it was not measured against costs is furniture
+left on the screen and never a row of work taken off it — and it is still a card
+of chrome.
 
-Nothing is cut off the background screen. The card over that agent would carry
-the banner, the whole transcript, the composer box, the statusline, the mode row
-and both rows of the panel. That is the walk's own law working as written — what
-a shape it was not measured against costs is furniture left on the screen and
-never a row of work taken off it — and it is still a card of chrome.
-
-The same measurement on the screens the walk does cut. Five rows of chrome come
-off as they should, and this is the last row it keeps:
-
-                                                                                      ● high · /effort
-    ────────────────────────────────────────────────────────────────────────────────────────────────────
-    ❯
-    ────────────────────────────────────────────────────────────────────────────────────────────────────
-      Opus 5 (1M context) (1M context) │ ◈ 0% │ measure-270 │ ◖ high
-      ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
-
-`● high · /effort` is new in 2.1.270, right-aligned above the composer's top
-border, and it is drawn on a fresh pane, over a running turn and on an idle pane
-after one — though not on every idle screen, since `4-idle` has none. Where it
-is drawn the walk keeps it, because the walk's last step looks for the spinner
-row above the box and this is the row it finds instead. On a pane with a turn
-running that costs two rows and not one:
+The one above is `● high · /effort`, right-aligned directly on the composer's
+top border with no blank row between the two. It is drawn on a fresh pane, over
+a running turn and on an idle pane after one — though not on every idle screen,
+since `4-idle` and `c9-workflow` have none. The walk's last step looks for the
+spinner row above the box, and where this row is drawn it is what that step
+finds instead, so on a pane with a turn running it cost two rows and not one:
 
     ● Wibbling… (20s)
                                                                                       ● high · /effort
@@ -902,10 +891,48 @@ running that costs two rows and not one:
       Opus 5 (1M context) (1M context) │ ◈ 3% │ measure-270 │ ◖ high
       ⏸ plan mode on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents
 
-The spinner row the walk was moved onto `ing…` for on 2026-09-06 is no longer
-cut, because it is no longer the row above the box. A wrong cut is a finding
-here and not this pass's fix: both of these are the walk's numbers wanting a
-re-measurement against a vendor that has put a row where the walk expected none.
+The spinner row the walk was moved onto `ing…` for on 2026-09-06 came through
+onto the card with the hint row under it, because it was no longer the row above
+the box.
+
+**What the walk does now.** Three fields in `[furniture]`, every number read on
+2026-09-14 off this pass's own captures at 100, 54, 40, 30 and 24 columns:
+
+- `beneath = ["● ", "◯ "]`, what a row the vendor draws under its mode footer
+  opens with after the indent. `c4-bgline` has three of them at all five widths:
+  a blank row, `  ● main`, and one row an agent, `  ◯ general-purpose` and its
+  elapsed time and tokens.
+- `panel = 8`, how many such rows, blank ones counted, the walk steps over from
+  the bottom before it must meet the footer. Three were measured, for two
+  agents; eight is the statusline's cap and the same kind of margin. The step is
+  taken by position, so a taller panel leaves the walk standing on a row that is
+  no footer, which is the whole screen kept.
+- `hint = ["/effort"]`, the fragment the row on the composer's top border
+  carries at all five widths. It is read as a fragment rather than as what the
+  row opens with because the row is right-aligned: where it starts is the pane's
+  width. Where the walk finds it the cut moves above it, and the blank-skip and
+  the spinner check run from there — which is how the spinner row over
+  `c8-plan-after` now goes with it.
+
+Both are steps the walk takes where it finds the row and neither is a row it
+requires, so a screen that draws neither is cut where it always was:
+
+| What the walk was given | Rows in | Kept before | Kept now |
+| --- | --- | --- | --- |
+| `c4-bgline` at 100, 54, 40, 30 and 24 | 30 | 30 | 21 |
+| `c6-after-bg` and `c7-planmode`, the same shape | 30 | 30 | 21 |
+| `c8-plan-after`, the hint row with a spinner over it | 30 | 25 | 23 |
+| `2-fresh`, `c0-fresh`, `b6-idle`, `c2-btw-after` | 30 | 25 | 24 |
+| `4-idle` and `c9-workflow`, neither row drawn | 30 | 25 | 25 |
+
+The five `c4-bgline` widths keep the same twenty-one rows and end on the row the
+turn left up — `✻ Waiting for 1 background agent to finish`, wherever the width
+broke it — with the panel, the footer, the statusline, the box and the hint row
+off the bottom. `c8-plan-after` keeps through the blank row under `● Agent
+"Sleep 45 then report" finished · 1m 34s`. Those five widths, `c8-plan-after`,
+`2-fresh`, `4-idle` and `b6-idle` are held verbatim as tests in
+`src/furniture.rs`, and so is a pane with nine rows under its footer, which is
+the cap being met and the screen kept whole.
 
 ### The six screens, re-measured
 
