@@ -48,6 +48,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The oldest tmux amx runs against.
 pub const MINIMUM_VERSION: (u32, u32) = (3, 2);
@@ -284,12 +285,29 @@ impl Server {
 
     /// End the server and everything on it. A server that is already gone is
     /// the outcome asked for, not a failure.
+    ///
+    /// The socket file goes too. tmux keeps it after a `kill-server`
+    /// — measured on 3.7 — and a crate whose every test server ends here left
+    /// one file per server behind: fifteen thousand of them in one socket
+    /// directory by 2026-09-14. Only a socket nobody answers at is taken:
+    /// whoever is listening at this path is somebody's server, whatever
+    /// `kill-server` said about it.
     pub fn kill(&self) -> Result<()> {
         match self.run(&["kill-server"]) {
-            Ok(_) => Ok(()),
-            Err(e) if is_no_server(&e) => Ok(()),
-            Err(e) => Err(e),
+            Ok(_) => {}
+            Err(e) if is_no_server(&e) => {}
+            Err(e) => return Err(e),
         }
+        let path = match &self.socket {
+            Socket::Name(name) => socket_dir().join(name),
+            Socket::Path(path) => path.clone(),
+        };
+        if nobody_answers(&path) {
+            // A file that is already gone, or was never ours to take, is the
+            // outcome asked for either way.
+            let _ = std::fs::remove_file(&path);
+        }
+        Ok(())
     }
 
     /// Create a detached session, and answer with it and its first pane.
@@ -718,6 +736,27 @@ pub fn servers_here() -> Vec<Server> {
         .into_iter()
         .map(Server::at)
         .collect()
+}
+
+/// Whether nobody is answering at this socket, waited on for a moment.
+///
+/// A server holds its socket open for a little past the `kill-server` that
+/// answered — measured on tmux 3.7 at about fifteen milliseconds — so a single
+/// probe reads a server on its way out as one to leave alone, and its file
+/// stays for good. A second is far past that gap and under what a person ending
+/// a server would notice; a socket still answering at the end of one is
+/// somebody who was never leaving.
+fn nobody_answers(socket: &Path) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if std::os::unix::net::UnixStream::connect(socket).is_err() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// The sockets in a directory that somebody is listening at.
@@ -1928,6 +1967,59 @@ mod tests {
             vec![live],
             "and only one of them is a server"
         );
+    }
+
+    #[test]
+    fn tmux_a_killed_server_takes_its_socket_file_with_it() {
+        let server = TestServer::new();
+        server.new_session(&idle()).unwrap();
+        // Ask tmux where it is listening rather than working the path out
+        // the way kill does.
+        let socket = PathBuf::from(
+            server
+                .run(&["display-message", "-p", "#{socket_path}"])
+                .unwrap(),
+        );
+        assert!(socket.exists(), "the server is listening at it");
+
+        server.kill().unwrap();
+        assert!(
+            !socket.exists(),
+            "the file went with the server: {socket:?}"
+        );
+    }
+
+    #[test]
+    fn tmux_a_killed_server_addressed_by_path_takes_its_file_too() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let socket = dir.path().join("by-path");
+        let server = Server::at(&socket).with_conf("/dev/null");
+        server.new_session(&idle()).unwrap();
+        assert!(socket.exists(), "the server is listening at it");
+
+        server.kill().unwrap();
+        assert!(
+            !socket.exists(),
+            "the file went with the server: {socket:?}"
+        );
+    }
+
+    #[test]
+    fn tmux_kill_leaves_a_socket_somebody_answers_at_alone() {
+        // Whoever is bound here is not this call's to clear away, whatever
+        // kill-server made of them. The thread is what keeps the test
+        // moving: a tmux client waits on a reply until the peer hangs up.
+        let dir = tempfile::TempDir::new().unwrap();
+        let socket = dir.path().join("listening");
+        let listening = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            while let Ok((client, _)) = listening.accept() {
+                drop(client);
+            }
+        });
+
+        let _ = Server::at(&socket).with_conf("/dev/null").kill();
+        assert!(socket.exists(), "somebody is answering at it: {socket:?}");
     }
 
     #[test]
