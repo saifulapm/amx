@@ -588,8 +588,34 @@ all = ["ing…"]
 # `← for agents` now counts them. This rule did not notice, because the tail is
 # not what it reads — which is the anchor law paying for itself twice in three
 # vendor bumps.
+#
+# ── The screens this vendor draws OVER the prompt ────────────────────────────
+# `not` is what keeps them off this rule, and both strings were read off claude
+# 2.1.270 on 2026-09-14 at 100, 54, 40, 30 and 24 columns.
+#
+# The transcript viewer, opened with ctrl+o, ends in a footer of its own —
+# `Showing detailed transcript · ctrl+o to toggle · ? for shortcuts` at 100
+# columns — and draws no mode row at all. So the only anchor above it can find
+# on that screen is the pre-2.1 hint, and a person reading the transcript
+# through a long tool call got a row saying the turn was over as soon as the
+# hooks went stale and the screen held still. The footer truncates from the
+# middle rather than the right, `verbose` pinned to the far side of the row:
+# `ctrl+o to togg…verbose` at 54, `· …verbose` at 40, `tran…verbos` at 30 and
+# `Showing detaile…verbos` at 24, the last letter wrapping onto a row of its
+# own at the two narrowest. What no width touches is the fragment the row opens
+# with, so that is what is written here.
+#
+# `↑/↓ to scroll` is the row the /btw overlay opens its footer with once it has
+# answered — `↑/↓ to scroll · c to copy · f to fork · Esc to close`, whole at
+# all five widths. The vendor draws that overlay in the slot the composer had
+# and puts no mode row under it either, so nothing in this document claims it
+# as things stand; it is named here because a screen in the composer's slot is
+# not the composer, and the rows this rule stands on are the composer's. The
+# overlay while it is still working is the spinner rule's, through
+# `· Answering…`, and that is the right answer about it.
 [[rule]]
 name = "idle_prompt"
 state = "idle"
 quiescent = true
 any = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+not = ["showing detaile", "↑/↓ to scroll"]

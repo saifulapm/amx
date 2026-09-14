@@ -844,6 +844,178 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle)
 ";
 
+    // ── Screens measured off a live claude 2.1.270 ──────────────────────────
+    // Driven live on 2026-09-14 the way docs/claude-screens.md records: a
+    // private tmux server, one pane, the same live screen read at 100, 54, 40,
+    // 30 and 24 columns and captured the way `src/tmux.rs` captures one.
+    // Trailing spaces are off the rows and nothing else is.
+
+    /// The transcript viewer at 100 columns, claude 2.1.270 on 2026-09-14:
+    /// ctrl+o on a fresh session, with the pane empty above the rule. It ends
+    /// in a footer of its own and draws NO mode row, so the one anchor this
+    /// document has on the screen is `? for shortcuts` — the hint kept for an
+    /// older vendor. A person reading the transcript through a long tool call
+    /// got a row saying the turn was over as soon as the hooks went stale.
+    const TRANSCRIPT_270_100: &str = "\
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Showing detailed transcript · ctrl+o to toggle · ? for shortcuts                          verbose
+";
+
+    /// The same viewer at 54 columns. The footer truncates from the middle —
+    /// `verbose` is pinned to the right — so the hint is off the screen below
+    /// 100 columns and what survives every width is the fragment the row opens
+    /// with.
+    const TRANSCRIPT_270_54: &str = "\
+──────────────────────────────────────────────────────
+  Showing detailed transcript · ctrl+o to togg…verbose
+";
+
+    /// At 40 columns, where the middle of the footer is gone entirely.
+    const TRANSCRIPT_270_40: &str = "\
+────────────────────────────────────────
+  Showing detailed transcript · …verbose
+";
+
+    /// At 30 columns, where the truncation eats into the first fragment too and
+    /// the last letter of `verbose` wraps onto a row of its own.
+    const TRANSCRIPT_270_30: &str = "\
+──────────────────────────────
+  Showing detailed tran…verbos
+                        e
+";
+
+    /// And at 24 columns, the narrowest driven, where `Showing detaile` is the
+    /// whole of what is left to read the screen by.
+    const TRANSCRIPT_270_24: &str = "\
+────────────────────────
+  Showing detaile…verbos
+                  e
+";
+
+    /// The /btw overlay once it has answered, at 100 columns on the same day.
+    /// The vendor draws it in the slot the composer had, from its own top
+    /// border down, and puts no mode row under it either.
+    ///
+    /// Eleven rows above this border, on the pane it came off, the turn's own
+    /// `✻ Waiting for 1 background agent to finish` was still drawn — inside
+    /// the rows a rule may see at 100, 54 and 40 columns and scrolled past them
+    /// at 30 and 24. This is the overlay, which is the screen the rules are
+    /// about; what the whole pane reads with that line on it is in
+    /// `BACKGROUND_270_100` below.
+    const BTW_ANSWERED_270_100: &str = "\
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+    /btw how many files are in this folder
+
+      I can't tell you — that needs an actual directory listing, and I have no tools available in
+      a side question.
+
+      Nothing in the conversation so far has enumerated the contents of /tmp/measure-270. Ask in
+      the main conversation and it can run ls there.
+
+    ↑/↓ to scroll · c to copy · f to fork · Esc to close
+";
+
+    /// The same overlay while it works, off the same pane a moment earlier.
+    /// `· Answering…` is this vendor's own gerund and ellipsis, so the spinner
+    /// rule has the screen — which is the answer a person wants: a side
+    /// question being answered is a turn running.
+    const BTW_ANSWERING_270_100: &str = "\
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+    /btw how many files are in this folder
+
+      · Answering…
+
+    Esc to close
+";
+
+    /// A turn that has answered and is waiting on a background subagent, at 100
+    /// columns, 2026-09-14. The Stop hook has fired and the record says the
+    /// turn is over; the line above the composer says it is not. The mode row
+    /// is under it and an agents panel under that, which is why this screen
+    /// read idle before there was a rule for it.
+    ///
+    /// The glyph held at `✻` in every capture over ten seconds, and the line a
+    /// finished turn leaves behind wears it too, so the glyph alone says
+    /// nothing — the words after it are the rule.
+    const BACKGROUND_270_100: &str = "\
+✻ Waiting for 1 background agent to finish
+                                                                                  ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+
+  ● main
+  ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens
+";
+
+    /// The same at 54 columns, where the agents panel elides its subagent's
+    /// label to `Preparing…`. That is the spinner rule's whole anchor, drawn on
+    /// a row under the mode footer, so both rules hold on this screen and the
+    /// document's order decides which of them names it. Both say working.
+    const BACKGROUND_270_54: &str = "\
+✻ Waiting for 1 background agent to finish
+                                    ● high · /effort
+──────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────
+  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure…
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+
+  ● main
+  ◯ general-purpose  Preparing… 49s · ↓ 10.2k tokens
+";
+
+    /// At 40 columns, where the line wraps after `to`.
+    const BACKGROUND_270_40: &str = "\
+✻ Waiting for 1 background agent to
+  finish
+                      ● high · /effort
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  Opus 5 (1M context) (1M context) │ …
+  ⏵⏵ auto mode on (shift+tab to cycle)
+
+  ● main
+  ◯ general-purpose 50s · ↓ 10.2k tokens
+";
+
+    /// At 30 columns, where it wraps after `background` instead.
+    const BACKGROUND_270_30: &str = "\
+✻ Waiting for 1 background
+  agent to finish
+            ● high · /effort
+──────────────────────────────
+❯
+──────────────────────────────
+  Opus 5 (1M context) (1M c…
+  ⏵⏵ auto mode on (shift+tab
+
+  ● main
+  ◯ general-purpose 51s · ↓
+";
+
+    /// And at 24 columns, where it wraps after `1` and takes three rows. One
+    /// row is the widest the two anchors were measured apart.
+    const BACKGROUND_270_24: &str = "\
+✻ Waiting for 1
+  background agent to
+  finish
+      ● high · /effort
+────────────────────────
+❯
+────────────────────────
+  Opus 5 (1M context)…
+  ⏵⏵ auto mode on
+
+  ● main
+  ◯ general-purpose 51s
+";
+
     /// The folder-trust screen as v2.1.226 renders it on a 220-column pane,
     /// captured 2026-08-12.
     const TRUST_SCREEN_220: &str = "\
@@ -2887,6 +3059,48 @@ Only showing models from configured providers. Use /login to add providers.
                 "{what} must rule idle"
             );
         }
+    }
+
+    #[test]
+    fn rules_a_screen_drawn_over_the_prompt_is_not_the_prompt() {
+        // Two screens claude 2.1.270 draws in front of a session, neither of
+        // them with a mode row on it. The transcript viewer ends in `? for
+        // shortcuts`, which this document carries for an older vendor, so a
+        // person reading the transcript through a long tool call was told the
+        // turn had ended. The /btw overlay sits in the slot the composer had.
+        //
+        // Unclaimed is the answer both want: a reader keeps an idle or waiting
+        // record's own word on a screen nobody claims, and a record mid-turn
+        // reads unknown rather than being ended by a screen amx cannot see
+        // behind.
+        let rules = claude();
+        assert!(
+            TRANSCRIPT_270_100.contains("? for shortcuts"),
+            "the anchor that claimed this screen is still drawn on it, and \
+             `not` is what keeps the rule off it"
+        );
+        for (what, screen) in [
+            ("the viewer at 100 columns", TRANSCRIPT_270_100),
+            ("at 54", TRANSCRIPT_270_54),
+            ("at 40", TRANSCRIPT_270_40),
+            ("at 30", TRANSCRIPT_270_30),
+            ("at 24", TRANSCRIPT_270_24),
+            ("the answered /btw overlay", BTW_ANSWERED_270_100),
+        ] {
+            assert_eq!(
+                claim(rules, screen, Phase::Working),
+                Claim::Unclaimed,
+                "{what} must claim nothing"
+            );
+        }
+
+        // The same overlay while it answers is a turn running, and it says so
+        // in the vendor's own grammar.
+        assert_eq!(
+            claim(rules, BTW_ANSWERING_270_100, Phase::Idle).phase(),
+            Some(Phase::Working),
+            "a side question being answered is a turn"
+        );
     }
 
     #[test]
