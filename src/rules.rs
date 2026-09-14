@@ -848,6 +848,10 @@ mod tests {
     // Driven live on 2026-09-14 the way docs/claude-screens.md records: a
     // private tmux server, one pane, the same live screen read at 100, 54, 40,
     // 30 and 24 columns and captured the way `src/tmux.rs` captures one.
+    //
+    // Each is held the way the 2.1.259 ones are: from the top of the screen it
+    // is about — the widget's own border, or the row the rule stands on — down
+    // to the bottom of the pane, with the transcript above that left off.
     // Trailing spaces are off the rows and nothing else is.
 
     /// The transcript viewer at 100 columns, claude 2.1.270 on 2026-09-14:
@@ -898,10 +902,12 @@ mod tests {
     ///
     /// Eleven rows above this border, on the pane it came off, the turn's own
     /// `✻ Waiting for 1 background agent to finish` was still drawn — inside
-    /// the rows a rule may see at 100, 54 and 40 columns and scrolled past them
-    /// at 30 and 24. This is the overlay, which is the screen the rules are
-    /// about; what the whole pane reads with that line on it is in
-    /// `BACKGROUND_270_100` below.
+    /// the rows a rule may see at 100, 54 and 40 columns, and scrolled past
+    /// them at 30 and 24. So the whole pane reads `background_agents` at the
+    /// three wider ones and nothing at the two narrow ones, on the strength of
+    /// a row the overlay is drawn over. Held here is the overlay, which is the
+    /// screen these two rules are about; whether an overlay should outrank the
+    /// turn behind it is nobody's decision yet.
     const BTW_ANSWERED_270_100: &str = "\
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
