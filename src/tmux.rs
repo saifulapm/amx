@@ -708,12 +708,23 @@ impl Server {
 /// any of them.
 ///
 /// A socket file is not a server. It outlives the server that made it where
-/// one was killed outright, and only the next call on it can say whether
-/// anybody is still behind it.
+/// one was killed outright, so only the sockets somebody answers at are
+/// servers here: a connect that is refused costs a system call, where asking
+/// tmux about the file would cost a process to be told the same. Measured
+/// 2026-09-14 on this machine: fifteen thousand such files in one socket
+/// directory, every one of them a test's, and no server behind any.
 pub fn servers_here() -> Vec<Server> {
-    sockets_in(&socket_dir())
+    listening_in(&socket_dir())
         .into_iter()
         .map(Server::at)
+        .collect()
+}
+
+/// The sockets in a directory that somebody is listening at.
+fn listening_in(dir: &Path) -> Vec<PathBuf> {
+    sockets_in(dir)
+        .into_iter()
+        .filter(|socket| std::os::unix::net::UnixStream::connect(socket).is_ok())
         .collect()
 }
 
@@ -1898,6 +1909,25 @@ mod tests {
 
         assert_eq!(sockets_in(dir.path()), vec![socket]);
         assert!(sockets_in(&dir.path().join("nowhere")).is_empty());
+    }
+
+    #[test]
+    fn tmux_a_socket_nobody_answers_at_is_a_file_a_dead_server_left() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let live = dir.path().join("default");
+        let _listening = std::os::unix::net::UnixListener::bind(&live).unwrap();
+        let dead = dir.path().join("amx-count-4242");
+        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+        assert!(dead.exists(), "the file outlives the listener");
+
+        let mut sockets = sockets_in(dir.path());
+        sockets.sort();
+        assert_eq!(sockets, vec![dead, live.clone()], "both are socket files");
+        assert_eq!(
+            listening_in(dir.path()),
+            vec![live],
+            "and only one of them is a server"
+        );
     }
 
     #[test]
