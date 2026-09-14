@@ -48,7 +48,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 /// The oldest tmux amx runs against.
 pub const MINIMUM_VERSION: (u32, u32) = (3, 2);
@@ -293,16 +292,21 @@ impl Server {
     /// whoever is listening at this path is somebody's server, whatever
     /// `kill-server` said about it.
     pub fn kill(&self) -> Result<()> {
-        match self.run(&["kill-server"]) {
-            Ok(_) => {}
-            Err(e) if is_no_server(&e) => {}
+        let going = match self.run(&["kill-server"]) {
+            // The server took the order, so it is going: the file is dead
+            // whether or not the process has let go of it yet.
+            Ok(_) => true,
+            // Nobody was there to take it. The file is dead unless something
+            // that is not a tmux server is listening at it, which the probe
+            // says.
+            Err(e) if is_no_server(&e) => false,
             Err(e) => return Err(e),
-        }
+        };
         let path = match &self.socket {
             Socket::Name(name) => socket_dir().join(name),
             Socket::Path(path) => path.clone(),
         };
-        if nobody_answers(&path) {
+        if going || nobody_answers(&path) {
             // A file that is already gone, or was never ours to take, is the
             // outcome asked for either way.
             let _ = std::fs::remove_file(&path);
@@ -738,25 +742,16 @@ pub fn servers_here() -> Vec<Server> {
         .collect()
 }
 
-/// Whether nobody is answering at this socket, waited on for a moment.
+/// Whether nobody is answering at this socket.
 ///
-/// A server holds its socket open for a little past the `kill-server` that
-/// answered — measured on tmux 3.7 at about fifteen milliseconds — so a single
-/// probe reads a server on its way out as one to leave alone, and its file
-/// stays for good. A second is far past that gap and under what a person ending
-/// a server would notice; a socket still answering at the end of one is
-/// somebody who was never leaving.
+/// Asked only when `kill-server` found no server to kill, so a socket still
+/// answering here is something that is not a tmux server and not ours to
+/// take. A server that took the order is going and is never asked: it holds
+/// its socket open a little past its answer — measured on tmux 3.7 at about
+/// fifteen milliseconds, and longer under a parallel suite — and a probe that
+/// read that as somebody home left one file per test behind.
 fn nobody_answers(socket: &Path) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        if std::os::unix::net::UnixStream::connect(socket).is_err() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    std::os::unix::net::UnixStream::connect(socket).is_err()
 }
 
 /// The sockets in a directory that somebody is listening at.

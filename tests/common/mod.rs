@@ -490,7 +490,7 @@ fn the_server_went(stderr: &[u8]) -> bool {
 /// one `tmux::socket_dir` reads. The suites set `TMUX_TMPDIR` themselves
 /// (tests/e2e_wall.rs), so reading it as the socket directory itself, rather
 /// than as what that directory sits under, is a cleanup that misses.
-fn socket_dir() -> PathBuf {
+pub fn socket_dir() -> PathBuf {
     sockets_under(std::env::var_os("TMUX_TMPDIR"))
 }
 

@@ -41,6 +41,9 @@ impl Drop for Theirs {
         let _ = Command::new("tmux")
             .args(["-L", &self.0, "kill-server"])
             .output();
+        // tmux does not unlink a killed server's socket; the file goes with
+        // the server the way the harness's own does.
+        let _ = std::fs::remove_file(common::socket_dir().join(&self.0));
     }
 }
 
