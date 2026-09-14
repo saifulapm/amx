@@ -1037,6 +1037,10 @@ at all when no agent needs saying:
 set -g status-right '#(amx statusline)'
 ```
 
+It is plain bytes with no colour of its own, because it lands inside a line
+that is not amx's. `assets/tmux.conf` has this line with the rest of what a
+tmux is worth telling about amx.
+
 ## A copy of a conversation
 
 An agent that has gone a long way down one road is worth keeping when you want
@@ -1657,6 +1661,14 @@ nothing, so naming a harness costs nothing until you write one of them.
 The repository ships the same file with every key explained and the defaults
 written out, at `assets/config.toml`: copy it and change what you want changed,
 and a copy nobody edits runs exactly as no file at all would.
+
+`assets/tmux.conf` is the other half of that, for the config amx does not own.
+Nothing in it is needed to run an agent — a tmux out of the box spawns them,
+attaches to them and answers them — and each line says what it changes: the
+extended keys the view reads, the counts in the status line, a key for the
+agent that has stopped on a question, and where you land when an agent's
+session goes. Copy from it rather than sourcing it: the keys there are written
+under whatever prefix you already press.
 
 Config is a convenience, never a gate. A file amx cannot read or parse falls
 back to these defaults with a warning, because losing an agent to a stray
