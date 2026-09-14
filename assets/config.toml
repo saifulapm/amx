@@ -132,10 +132,11 @@ park_after = 3600
 # waits, takes the terminal back, and says only what went wrong. The keys
 # screen lists what you bind here under `yours`.
 #
-# amx's own keys keep their meaning: a bound key is looked for after every key
-# the view binds, so an entry naming one of them never runs. This is the one
-# table a project's file lays over yours an entry at a time, so a repository
-# binds the key its work wants without unbinding the keys you press everywhere.
+# amx's own keys keep their meaning: a spelling one of them would take is
+# refused when the view opens, named with what amx does on that key, and bound
+# to nothing. This is the one table a project's file lays over yours an entry
+# at a time, so a repository binds the key its work wants without unbinding the
+# keys you press everywhere.
 
 [keys]
 # "alt+g" = "lazygit"

@@ -160,3 +160,34 @@ fn a_spelling_the_view_cannot_read_is_said_once_and_binds_nothing() {
         "least of all the command nobody can reach:\n{keys}"
     );
 }
+
+#[test]
+fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
+    let amx = Harness::new();
+    amx.config("[keys]\n\"ctrl+x\" = \"never runs\"\n");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let said = amx.until("the view to say the key is its own", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("ctrl+x").then_some(drawn)
+    });
+    assert!(
+        said.contains("amx's own"),
+        "in words that say whose key it is:\n{said}"
+    );
+    assert!(
+        said.contains("stop it"),
+        "and what amx does on it, so the person knows what they were taking:\n{said}"
+    );
+
+    resize(&amx, &view, 120, 40);
+    let keys = keys_screen(&amx, &view);
+    assert!(
+        !keys.contains("YOURS"),
+        "and nothing was bound, so there is no group of theirs:\n{keys}"
+    );
+    assert!(
+        !keys.contains("never runs"),
+        "least of all the command the key amx binds would never reach:\n{keys}"
+    );
+}

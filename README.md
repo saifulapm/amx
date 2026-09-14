@@ -1611,11 +1611,11 @@ it has none, with the terminal as its stdin, stdout and stderr and with
 `AMX_ID`, `AMX_DIR`, `AMX_AGENT_DIR`, `AMX_NESTED=1` and `AMX_WORKTREE` where
 there is a tree. The view waits for it, takes the terminal back, and says on
 the notice line only what went wrong. The keys screen lists what you bind under
-`yours`, each beside its command. amx's own keys keep their meaning: a bound
-key is looked for after every key the view binds, so an entry naming one of
-them never runs. It is the one table a project's file lays over yours an entry
-at a time, so a repository binds the key its work wants without unbinding the
-keys you press everywhere.
+`yours`, each beside its command. amx's own keys keep their meaning: a spelling
+one of them would take is refused on the notice line when the view opens, in a
+sentence naming what amx does on that key, and bound to nothing. It is the one
+table a project's file lays over yours an entry at a time, so a repository
+binds the key its work wants without unbinding the keys you press everywhere.
 
 Each harness amx has an entry for — claude and pi today — can have a table of
 its own, named after the command it runs:
