@@ -171,9 +171,50 @@ still on the pane.
 
 The pass drove screens and nothing else. `--help`, the hook list and the
 transcript shape were not re-driven and still carry their 2.1.237 and 2.1.240
-dates. Nor was `[furniture] spinner`, which walks over the two punctuation
-fragments the `spinner` rule was moved off, and which is the last finding that
-document leaves open.
+dates. `[furniture] spinner`, which walked over the two punctuation fragments
+the `spinner` rule was moved off, was driven the day after and moved onto `ing…`
+with the rule.
+
+The screens were driven a third time against **2.1.270 on 2026-09-14**, at 100,
+54, 40, 30 and 24 columns, and the second half of `docs/claude-screens.md` is
+that pass. Nothing the document already knew had moved. Three screens it did not
+know were being read wrong: the transcript viewer and the answered `/btw`
+overlay were claimed as `idle` by the rule that stands on the mode row, and the
+line claude leaves above the composer while a background subagent runs — `✻
+Waiting for 1 background agent to finish` — was claimed as `idle` at four of the
+five widths. The first two are refused by name now and claimed by nobody; the
+third has a rule of its own.
+
+That pass was driven beside herdr's claude manifest, version `2026.09.04.1`,
+which is the only other published measurement of these screens. herdr reads
+panes the way amx does and writes what it reads in TOML too: a manifest per
+vendor, five states on it (idle, working, blocked, done and unknown), a rule
+that can say a screen means nothing about the agent at all
+(`skip_state_update`), `blocked` claimed only on a widget it recognises, and the
+manifests themselves updated from its own website between releases.
+
+Three of those amx has under other names. Its rules claim `waiting`, `working`
+and `idle` and nothing else, because every other phase on the record comes from
+a hook or an exit status rather than from a picture. A screen that should say
+nothing needs no rule here at all: an unclaimed screen already leaves an idle or
+a waiting record its own word and reads `unknown` over a running one, which is
+what the viewer and the overlay were given. And claiming `blocked` only on a
+recognised widget is the anchor law with the emphasis somewhere else. The one
+thing amx will not take is the manifest from a website: a vendor's entry here is
+code with its document beside it and a test tying the two together, and a string
+nobody on this machine has read off a live screen is not an anchor.
+
+What amx leaves unknown, and means to: the pane title. herdr ranks two title
+rules above every screen rule in its claude entry, `osc_title_working` and
+`osc_title_idle`, measured at 2.1.227 and 2.1.228, and a title is the one signal
+a narrow pane cannot truncate — which made it the most attractive thing on that
+manifest. On 2.1.270 there is nothing on it to read: seventy samples of claude's
+own title across two turns, taken twice a second, every one of them opening with
+`✳` and none of them changing while the state did. Working, a menu, a permission
+box and idle all wear the same glyph, so amx reads no title and this bump gives
+it no reason to start. The `/model` picker is left unknown for a plainer reason
+— amx has no verb that answers it — and herdr's pi manifest, one rule measured
+in June against amx's nine, is where the comparison runs the other way.
 
 ## pi
 
