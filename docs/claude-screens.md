@@ -1,11 +1,13 @@
-# The six screens amx reads on a claude 2.1.259 pane
+# The screens amx reads on a claude pane
 
-`assets/screen-rules.toml` holds six rules. Every string in them was read off a
-live claude, and until this pass the newest of those readings was three bumps
-old — 2.1.226, 2.1.237, 2.1.240. This file is those six rules driven against
-2.1.259 at 220, 54, 40, 30 and 24 columns, with the capture beside each
-verdict. It is a measurement and not a second ruleset: no anchor in it, and
-nothing here changes what amx recognises.
+`assets/screen-rules.toml` held six rules when this was written. Every string in
+them was read off a live claude, and until this pass the newest of those
+readings was three bumps old — 2.1.226, 2.1.237, 2.1.240. This file is those six
+rules driven against 2.1.259 at 220, 54, 40, 30 and 24 columns, with the capture
+beside each verdict. It is a measurement and not a second ruleset: no anchor in
+it, and nothing here changes what amx recognises. The pass at the foot of the
+file drove the same document against 2.1.270 nine days later, and that one added
+the seventh rule.
 
 Three rules were re-anchored off these captures afterwards, and the verdicts
 below have been re-run against the document as it now stands, so a row in a
@@ -612,3 +614,413 @@ out of the floor, so the row says an agent is waiting on a question and carries
 no question and no options. Claiming the screen is what a person standing at it
 needs and is worth having on its own; reading a box taller than `FLOOR_LINES`
 is a separate measurement and nobody has made it.
+
+## What the 2.1.270 pass found
+
+Driven on 2026-09-14 against the claude on this machine, `claude --version`
+reporting `2.1.270 (Claude Code)`. The pass above drove the six screens the
+document already knew; this one went after screens it does not — the viewer and
+the overlay a person opens in front of a session, and the shape a pane takes
+when the turn is over and the work is not. It carried a question from outside
+with it. herdr's claude manifest reads the pane title before it reads anything
+on the screen, and amx reads no title at all; the first finding below is the
+answer to that, and `docs/vendors.md` carries the rest of the comparison.
+
+The short version: two screens amx read as `idle` are claimed by nobody now,
+one screen nobody claimed is claimed as `working`, the pane title is no signal
+on this version, and the walk that cuts the vendor's chrome off a card has
+stopped cutting it.
+
+**The pane.** One tmux pane on a server of its own, 100 columns by 30 rows, its
+width changed with `resize-window` between captures so that the same live screen
+is what each width reads: 100, 54, 40, 30 and 24. Captures are taken the way
+`src/tmux.rs` takes one, and the rows below are those captures with trailing
+spaces stripped and nothing else done to them. Fifty-nine of them, off one
+scratch folder that was nobody's work.
+
+**The verdict** is `Ruleset::claim` over `assets/screen-rules.toml`, run out of
+a copy of the tree with `Phase::Unknown` on the record and no still looks — the
+same call the pass above made, and for the same reason: that is the reading amx
+gives an agent nothing is outstanding for. It was made twice over every capture,
+once against the document as 2.1.259 left it and once against the document this
+branch carries, which gains a `not` list on `idle_prompt` and a seventh rule
+between `spinner` and it. Both readings are in the tables, because the reading a
+rule was written for is the only way to check the rule.
+
+**Raising the screens.** The viewer with ctrl+o on a fresh session. The overlay
+by typing `/btw` and a question mid-session. The background line by asking for
+one subagent, started in the background, to run `sleep 45` and report: claude
+ends the turn when the answer stops streaming and goes on running the subagent
+after it. The trust gate, the menu, the permission box and the plan box as
+before, except that the box this time was raised by the subagent and not by the
+agent on the pane.
+
+### The pane title is no signal on this version
+
+`#{pane_title}` was sampled twice a second across both turns of the pass, 71
+samples in all:
+
+| What was on the pane | The title |
+| --- | --- |
+| the trust gate, before claude had drawn a title | `macbook-m2` |
+| a fresh session | `✳ Claude Code` |
+| a turn running, tool call and all | `✳ Sleep 15` |
+| a menu up, a permission box up, and idle after both | `✳ Confirmation and sleep command` |
+
+Seventy of the seventy-one are claude's own and every one of them opens with
+`✳`. The glyph did not move while the state did, and no braille frame or
+half-circle ever reached the title. herdr's claude manifest ranks two rules on
+it first of all — `osc_title_working` and `osc_title_idle`, measured at 2.1.227
+and 2.1.228 — and on this version both would be reading the same character in
+every state there is.
+
+Reading the title was the one item on the 2026-09-09 herdr list that would have
+bought amx a width-independent signal, since a title does not wrap. This is the
+measurement that says there is nothing on it to read.
+
+### The transcript viewer read `idle` over a running turn
+
+ctrl+o takes the whole pane and ends in a footer of its own. At 100 columns:
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      Showing detailed transcript · ctrl+o to toggle · ? for shortcuts                          verbose
+
+No mode row under it and no mode row anywhere else on the screen. What
+`idle_prompt` found there was `? for shortcuts`, the anchor this document keeps
+for a claude older than the glyphs, so a person who opened the viewer to watch a
+long tool call got a row saying the turn was over as soon as the hooks went
+stale and the screen had held still for `SETTLED_LOOKS`.
+
+The footer truncates from the middle rather than from the right, with `verbose`
+pinned to the far side of the row. At 54, 40, 30 and 24:
+
+      Showing detailed transcript · ctrl+o to togg…verbose
+
+      Showing detailed transcript · …verbose
+
+      Showing detailed tran…verbos
+                            e
+
+      Showing detaile…verbos
+                      e
+
+The last letter wraps onto a row of its own at the two narrowest. `? for
+shortcuts` is off the screen below 100 columns, so the wrong claim needed the
+wide pane; below it the screen was unclaimed for want of any anchor at all,
+which is the right answer arrived at by accident. What no width touches is the
+fragment the row opens with, and that is the string the rule refuses itself on
+now.
+
+| The viewer | 100 | 54 | 40 | 30 | 24 |
+| --- | --- | --- | --- | --- | --- |
+| before | **idle** | unclaimed | unclaimed | unclaimed | unclaimed |
+| after | unclaimed | unclaimed | unclaimed | unclaimed | unclaimed |
+
+Unclaimed is what this screen wants, rather than a rule of its own. A screen
+nobody claims leaves an idle or a waiting record its own word and reads
+`unknown` over a record mid-turn, which is herdr's `skip_state_update` reached
+from the other end: amx has no way to say *this screen means nothing about the
+agent*, and needs none, because that is what an unclaimed screen already says.
+
+### The /btw overlay
+
+`/btw` puts a side question in the slot the composer had. While it works:
+
+    ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+        /btw how many files are in this folder
+
+          · Answering…
+
+        Esc to close
+
+`· Answering…` carries `ing…`, so the spinner rule has it, and that is the
+answer a person wants: a side question being answered is a turn running. Once it
+has answered:
+
+    ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+        /btw how many files are in this folder
+
+          I can't tell you — that needs an actual directory listing, and I have no tools available in
+          a side question.
+
+          Nothing in the conversation so far has enumerated the contents of /tmp/measure-270. Ask in
+          the main conversation and it can run ls there.
+
+        ↑/↓ to scroll · c to copy · f to fork · Esc to close
+
+No mode row under this one either, and the footer it opens — `↑/↓ to scroll · c
+to copy · f to fork · Esc to close` — is whole at all five widths. Nothing in
+the document claimed the overlay before and nothing claims it now. `↑/↓ to
+scroll` went into the rule's `not` list all the same, and on these fifty-nine
+captures it moves no verdict: the rows `idle_prompt` stands on are the
+composer's and the composer is not on the screen. It is written down because a
+screen drawn in the composer's slot is not the composer, and the next thing the
+vendor draws there may keep chrome this one leaves off.
+
+The overlay is not the whole pane, though, and the pane is what amx captures.
+Directly above the overlay's top border, on the pane it came off, the turn's own
+`✻ Waiting for 1 background agent to finish` was still drawn. Where that row
+falls is what the width decides: twelve rows up from the bottom at 100 columns,
+sixteen at 54 and nineteen at 40, all inside the floor — and twenty-six and
+twenty-nine rows up at 30 and 24, where the taller overlay pushes it out:
+
+| The answered overlay | 100 | 54 | 40 | 30 | 24 |
+| --- | --- | --- | --- | --- | --- |
+| the overlay alone, before | unclaimed | unclaimed | unclaimed | unclaimed | unclaimed |
+| the overlay alone, after | unclaimed | unclaimed | unclaimed | unclaimed | unclaimed |
+| the whole pane, before | unclaimed | unclaimed | unclaimed | unclaimed | unclaimed |
+| the whole pane, after | working | working | working | unclaimed | unclaimed |
+
+The three that say `working` say it on `background_agents`, off a row the
+overlay is drawn over, and the word is true of the agent: a subagent was running
+the whole time the side question was open. Whether a screen a person has opened
+in front of a session should outrank the turn behind it is a question this pass
+raises and nobody has answered.
+
+### The line a background subagent leaves up
+
+A turn that has answered, with a subagent still running under it, at 100
+columns:
+
+    ✻ Waiting for 1 background agent to finish
+                                                                                      ● high · /effort
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high
+      ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+
+      ● main
+      ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens
+
+The Stop hook has fired and the record says the turn is over. The line above the
+composer says it is not, the mode row is under the line as it is under
+everything this vendor draws, and there is a panel below that with a row per
+agent. Before there was a rule for it this screen read `idle` — the mode row is
+what `idle_prompt` stands on, and the line above it was nobody's anchor.
+
+The words wrap, and not at one place: after `to` at 40 columns, after
+`background` at 30, after `1` at 24.
+
+    ✻ Waiting for 1 background agent to
+      finish
+                          ● high · /effort
+    ────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────
+      Opus 5 (1M context) (1M context) │ …
+      ⏵⏵ auto mode on (shift+tab to cycle)
+
+    ✻ Waiting for 1 background
+      agent to finish
+                ● high · /effort
+    ──────────────────────────────
+    ❯
+    ──────────────────────────────
+      Opus 5 (1M context) (1M c…
+      ⏵⏵ auto mode on (shift+tab
+
+    ✻ Waiting for 1
+      background agent to
+      finish
+          ● high · /effort
+    ────────────────────────
+    ❯
+    ────────────────────────
+      Opus 5 (1M context)…
+      ⏵⏵ auto mode on
+
+So `waiting for` and `background` end up on different rows and no one anchor can
+want both. One row apart is the widest of the five, and `within = 3` is sized
+over it.
+
+| The background line | 100 | 54 | 40 | 30 | 24 |
+| --- | --- | --- | --- | --- | --- |
+| before | **idle** | working (`spinner`) | **idle** | **idle** | **idle** |
+| after | working | working (`spinner`) | working | working | working |
+
+At 54 columns the agents panel elides its subagent's label to `Preparing…`,
+which is the whole of the spinner rule's anchor, drawn on a row
+under the mode footer. Both rules hold on that screen and both say `working`;
+which of them names it is the document order's business, and `spinner` comes
+first. The coincidence is why the rule under it was measured at the other four
+widths as well.
+
+The glyph is not what the rule reads. `✻` is one of the six the spinner cycles
+and it is also what the line a finished turn leaves behind opens with — `✻
+Cooked for 18s · done 2:17 PM`, on the same pane an hour earlier — so it is in
+the anchor only to put the words on the row the vendor drew them on. It held at
+`✻` in every capture over ten seconds rather than cycling, which is a fact about
+this version and nothing the rule leans on; the next bump re-measures it.
+
+A `working` claim over a record the hooks left idle is a reading and never
+something written down. claude reports, and what it reported stands on the
+record; this only puts the right word on the row for as long as the line is up.
+
+### The walk that cuts the chrome has stopped cutting it
+
+`Furniture::cut` is what `src/furniture.rs` walks over to take the vendor's
+chrome off a capture before the view floats it in a card, and it reads from the
+bottom: no mode footer on the last drawn row, no cut at all. On
+`c4-bgline-w100` the last drawn row is the agents panel, so:
+
+| What the walk was given | Rows in | Rows kept |
+| --- | --- | --- |
+| `c4-bgline-w100`, a subagent running | 30 | 30 |
+| `4-idle`, `2-fresh`, `b6-idle`, `c2-btw-after` | 30 | 25 |
+
+Nothing is cut off the background screen. The card over that agent would carry
+the banner, the whole transcript, the composer box, the statusline, the mode row
+and both rows of the panel. That is the walk's own law working as written — what
+a shape it was not measured against costs is furniture left on the screen and
+never a row of work taken off it — and it is still a card of chrome.
+
+The same measurement on the screens the walk does cut. Five rows of chrome come
+off as they should, and this is the last row it keeps:
+
+                                                                                      ● high · /effort
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      Opus 5 (1M context) (1M context) │ ◈ 0% │ measure-270 │ ◖ high
+      ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+
+`● high · /effort` is new in 2.1.270, right-aligned above the composer's top
+border, and it is drawn on a fresh pane, over a running turn and on an idle pane
+after one — though not on every idle screen, since `4-idle` has none. Where it
+is drawn the walk keeps it, because the walk's last step looks for the spinner
+row above the box and this is the row it finds instead. On a pane with a turn
+running that costs two rows and not one:
+
+    ● Wibbling… (20s)
+                                                                                      ● high · /effort
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      Opus 5 (1M context) (1M context) │ ◈ 3% │ measure-270 │ ◖ high
+      ⏸ plan mode on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents
+
+The spinner row the walk was moved onto `ing…` for on 2026-09-06 is no longer
+cut, because it is no longer the row above the box. A wrong cut is a finding
+here and not this pass's fix: both of these are the walk's numbers wanting a
+re-measurement against a vendor that has put a row where the walk expected none.
+
+### The six screens, re-measured
+
+Everything the document already knew was driven again, and nothing in it moved.
+
+| Screen | Capture | Widths | before and after |
+| --- | --- | --- | --- |
+| `folder_trust` | `1-gate` | 100 | waiting |
+| `ask_menu` | `b2-menu` | 100 | waiting |
+| `permission_prompt` | `b4-box`, `c3-background` | 100, 54, 40, 30, 24 | waiting |
+| `plan_approval` | `c8-plan` | 100, 54, 40, 30, 24 | waiting |
+| `spinner` | `b5-after-box`, `c8-plan-after` | 100 | working |
+| `idle_prompt` | `4-idle`, `2-fresh`, `b6-idle`, `c9-workflow` | 100, 54, 40, 30, 24 | idle |
+
+The trust gate draws `❯ No, exit` over `Yes, I trust this folder` exactly as
+2.1.259 did, which is the shape `answer`'s walk was written for. The menu keeps
+its numbers, its separator and `4. Chat about this`:
+
+     ☐ Proceed?
+
+    Proceed?
+
+    ❯ 1. Yes
+         Go ahead.
+      2. No
+         Do not go ahead.
+      3. Type something.
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      4. Chat about this
+
+    Enter to select · ↑/↓ to navigate · Esc to cancel
+
+The permission box is the same box with a new first row on it when a subagent
+raised it. Here it is over the background line, raised by the subagent the turn
+had started:
+
+    ✻ Waiting for 1 background agent to finish
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+     Bash command · from the general-purpose agent
+
+       sleep 45
+       Sleep for 45 seconds
+
+     Ask rule Bash overrides auto mode for this command.
+     /permissions to let auto mode decide
+
+     Do you want to proceed?
+     ❯ 1. Yes
+       2. No
+
+     Esc to cancel · Tab to amend
+
+`Bash command · from the general-purpose agent` says whose question it is, which
+is a row worth having and not a row any rule reads: `do you want to`, `❯ 1.` and
+`esc to cancel` are all on the screen and all in their old places, and the footer
+still ends at `Esc to cancel · Tab to amend`. The sentence above it is the
+vendor's wording for an `ask` rule under auto mode — `Ask rule Bash overrides
+auto mode for this command.` — where the pass above read `Permission rule Bash
+requires confirmation for this command.` under manual mode. Neither is an anchor.
+
+The plan box, at 100 columns, the same rows in the same order as 2.1.259:
+
+       Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+       ❯ 1. Yes, and use auto mode
+         2. Yes, manually approve edits
+         3. Tell Claude what to change
+            shift+tab to approve with this feedback
+
+       ctrl+g to edit in Kak · ~/.claude/plans/plan-a-change-add-hazy-origami.md
+
+The spinner spins `● Synthesizing… (4s · ↓ 223 tokens)` and `● Wibbling… (20s)`
+on this version, the glyph `●` rather than the `✻` of a finished turn, and
+`ing…` is on both. The finished line reads `✻ Cooked for 18s · done 2:17 PM`.
+
+The idle footer gained two things. `· ← 2 agents` is where 2.1.259 read `← for
+agents`, the count coming back after the 2.1.240 bump had taken it away:
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────────────────────────────────────────────────
+      Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high
+      ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+
+And the agents panel under the mode row, the two rows in the background capture
+above. Neither is an anchor either — the rule stands on the glyph the mode row
+opens with, and both of these are drawn after it.
+
+### What was not raised, and so has no rule
+
+Under the anchor law a string nobody has read off a live screen is not an
+anchor, so none of these got one:
+
+- **The plan-mode interview.** shift+tab into plan mode and a request for a plan
+  went straight to the approval box the document already matches. Whatever
+  interview this version can draw was never on the pane.
+- **The dynamic workflow prompt.** Asked for and not drawn: the model listed the
+  folder's files instead. The captures from that turn are an ordinary idle pane
+  and read as one.
+- **MCP elicitation, the connection prompt and the MCP-tasks line.** No MCP
+  server was configured for the pass, so none of the three could come up.
+
+The `/model` picker was raised and is claimed by nothing, which is the answer it
+should have: it is a vendor dialog amx has no verb for and no rule stands on it.
+
+       Select model
+       Switch between Claude models. Your pick becomes the default for new sessions. For
+       other/previous model names, specify with --model.
+
+       ❯ 1. Default (recommended) ✔  Opus 5 with 1M context · Best for everyday, complex tasks
+         2. Opus (1M context)        Opus 5 with 1M context · Best for everyday, complex tasks
+         3. Sonnet                   Sonnet 5 · Efficient for routine tasks
+         4. Haiku                    Haiku 4.5 · Fastest for quick answers
+
+       ● High effort (default) ←/→ to adjust
+
+       Enter to set as default · s to use this session only · Esc to cancel
