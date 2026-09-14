@@ -66,9 +66,34 @@ pub fn assembled(
     let dir = meta.worktree.clone().unwrap_or_else(|| meta.dir.clone());
     let command = crate::config::project_key(&dir, key).or_else(|| person.clone())?;
 
+    let mut env = surroundings(agent, meta);
+    env.push((STATE_ENV.to_string(), phase.as_str().to_string()));
+
+    let mut stdin = serde_json::to_vec(event).ok()?;
+    stdin.push(b'\n');
+
+    Some(Errand {
+        command,
+        dir,
+        env,
+        stdin,
+    })
+}
+
+/// What a command run for an agent is told about the agent it was run for.
+///
+/// The one place those pairs are named, because two roads reach them: a moment
+/// key assembles an errand above, and a key somebody bound in the view runs a
+/// command in the same tree. Both are somebody's own command started off one
+/// agent, and a person who learnt the words on one road should not find the
+/// other spelling them differently.
+///
+/// The moment itself is not here. An errand is run because the agent reached
+/// one; a key is pressed whenever somebody presses it, and there is no phase
+/// the press is about.
+pub fn surroundings(agent: &Agent, meta: &Meta) -> Vec<(String, String)> {
     let mut env = vec![
         (crate::hook::ID_ENV.to_string(), meta.id.clone()),
-        (STATE_ENV.to_string(), phase.as_str().to_string()),
         (
             crate::spawn::RECORD_DIR_ENV.to_string(),
             spelled(agent.dir()),
@@ -85,16 +110,7 @@ pub fn assembled(
     // The command is something an agent's moment started, and a claude run
     // from one would otherwise report its whole session under this agent's id.
     env.push((crate::hook::NESTED_ENV.to_string(), "1".to_string()));
-
-    let mut stdin = serde_json::to_vec(event).ok()?;
-    stdin.push(b'\n');
-
-    Some(Errand {
-        command,
-        dir,
-        env,
-        stdin,
-    })
+    env
 }
 
 /// A path as a variable holds it.
