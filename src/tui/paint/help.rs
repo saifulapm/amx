@@ -27,6 +27,7 @@ use std::ops::Range;
 use super::style::{bold, dim};
 use super::text::{RULE, fit, said, width_of};
 use crate::tui::grid;
+use crate::tui::keyname::Bound;
 
 /// Every key, for whoever asked what they are.
 ///
@@ -164,15 +165,24 @@ const GAP: usize = 2;
 /// somebody left off reading rather than a fact about the screen. The clamp is
 /// here: only the paint knows how many pages a screen this shape made of them,
 /// so the key that turns them only adds and subtracts.
-pub(super) fn help(frame: &mut Frame, area: Rect, page: &Cell<usize>) {
+pub(super) fn help(frame: &mut Frame, area: Rect, page: &Cell<usize>, bound: &[Bound]) {
     let width = (area.width as usize).max(1);
     let dealt = dealt(width);
     let share = width / dealt.len();
-    let columns: Vec<Vec<Vec<Span<'static>>>> = dealt
+    let mut columns: Vec<Vec<Vec<Span<'static>>>> = dealt
         .iter()
         .enumerate()
         .map(|(n, groups)| column(groups.clone(), room(width, share, n, dealt.len())))
         .collect();
+    // The keys somebody bound themselves, after the last of amx's own and
+    // under the same kind of heading: a group like the five, in the place the
+    // eye gets to last, because the keys the view binds are the ones on every
+    // machine.
+    if !bound.is_empty() {
+        let last = columns.len() - 1;
+        let told = yours(bound, room(width, share, last, columns.len()));
+        columns[last].extend(told);
+    }
     let deep = columns.iter().map(Vec::len).max().unwrap_or(0);
 
     // The rows the keys themselves have: the screen's, less the one the foot
@@ -264,22 +274,43 @@ fn room(width: usize, share: usize, n: usize, columns: usize) -> usize {
 /// One column: its groups in order, each headed and each standing off from the
 /// one before it. An empty row is that space rather than a key.
 fn column(groups: Range<usize>, room: usize) -> Vec<Vec<Span<'static>>> {
-    let does = room.saturating_sub(INDENT + KEY);
     let mut told = Vec::new();
     for group in groups {
         if !told.is_empty() {
             told.push(Vec::new());
         }
-        told.push(heading(group, room));
-        told.extend(under(group).map(|(key, said)| {
-            vec![
-                Span::raw(" ".repeat(INDENT)),
-                Span::styled(grid::pad(key, KEY), bold()),
-                Span::styled(fit(said, does), dim()),
-            ]
-        }));
+        let (label, count) = GROUPS[group];
+        told.push(heading(label, count, room));
+        told.extend(under(group).map(|(key, said)| row(key, said, room)));
     }
     told
+}
+
+/// The keys somebody bound in their config file, standing off from the last of
+/// amx's own the way one group stands off from the next.
+///
+/// The command is the row: a bound key has no name but what it runs, and a
+/// second one somebody had to write would be a name that goes stale the day
+/// they change the command.
+fn yours(bound: &[Bound], room: usize) -> Vec<Vec<Span<'static>>> {
+    let mut told = vec![Vec::new(), heading("yours", bound.len(), room)];
+    told.extend(
+        bound
+            .iter()
+            .map(|one| row(&one.spelling, &one.command, room)),
+    );
+    told
+}
+
+/// One key and what it does: the key in a column of its own, and what is left
+/// of the room for the rest.
+fn row(key: &str, said: &str, room: usize) -> Vec<Span<'static>> {
+    let does = room.saturating_sub(INDENT + KEY);
+    vec![
+        Span::raw(" ".repeat(INDENT)),
+        Span::styled(grid::pad(key, KEY), bold()),
+        Span::styled(fit(said, does), dim()),
+    ]
 }
 
 /// A heading over a run of keys: what they are for, a rule, and how many of
@@ -287,8 +318,7 @@ fn column(groups: Range<usize>, room: usize) -> Vec<Vec<Span<'static>>> {
 ///
 /// The shape a group of agents wears on the wall, so a person who has learned
 /// to read one heading has learned to read the other.
-fn heading(group: usize, room: usize) -> Vec<Span<'static>> {
-    let (label, under) = GROUPS[group];
+fn heading(label: &str, under: usize, room: usize) -> Vec<Span<'static>> {
     let label = label.to_uppercase();
     // What the rule is left: the space in front of the label, the label, the
     // space after it, and the gap and the count at the far end.
@@ -333,6 +363,7 @@ fn line(columns: &[Vec<Vec<Span<'static>>>], at: usize, share: usize) -> Line<'s
 mod tests {
     use super::*;
     use crate::derive::View;
+    use crate::tui::keyname::spelt;
     use crate::tui::paint::header::{header_rows, space_rows};
     use crate::tui::paint::{Card, draw};
     use crate::tui::{Mode, Screen};
@@ -374,9 +405,24 @@ mod tests {
 
     /// The overlay on a screen this size, and the rows it was drawn on.
     fn overlay(size: (u16, u16)) -> Vec<String> {
+        overlay_of(size, Vec::new())
+    }
+
+    /// The same, with keys somebody bound in their config file.
+    fn overlay_of(size: (u16, u16), bound: Vec<Bound>) -> Vec<String> {
         let mut screen = showing(Vec::new(), None);
         screen.mode = Mode::Keys;
+        screen.bound = bound;
         painted(&screen, size)
+    }
+
+    /// One key somebody bound, read the way the config file's own table is.
+    fn bound(spelling: &str, command: &str) -> Bound {
+        Bound {
+            spelling: spelling.to_string(),
+            key: spelt(spelling).expect("a spelling the view can read"),
+            command: command.to_string(),
+        }
     }
 
     /// The cells between two columns of a drawn screen, as their own lines:
@@ -619,6 +665,66 @@ mod tests {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");
         }
+    }
+
+    #[test]
+    fn keymap_stands_the_keys_somebody_bound_under_a_heading_of_their_own() {
+        let painted = overlay_of(
+            WIDE_SCREEN,
+            vec![
+                bound("alt+g", "lazygit"),
+                bound("alt+t", "cargo test 2>&1 | less"),
+            ],
+        );
+        let share = WIDE_SCREEN.0 as usize / 2;
+        let right = between(&painted, share, WIDE_SCREEN.0 as usize);
+
+        // The heading amx's own groups wear, counting the keys under it: what
+        // somebody bound is a group of keys like any other.
+        let heading = right
+            .lines()
+            .find(|line| line.starts_with(" YOURS ┈"))
+            .unwrap_or_else(|| panic!("no heading over the bound keys:\n{right}"));
+        assert!(
+            heading.trim_end().ends_with('2'),
+            "and how many stand under it: {heading:?}"
+        );
+
+        // Under the last of amx's own rather than over them or beside them:
+        // the keys the view binds are the ones every machine has.
+        let row = |said: &str| {
+            right
+                .lines()
+                .position(|line| line.contains(said))
+                .unwrap_or_else(|| panic!("{said} is not down the last column:\n{right}"))
+        };
+        assert!(
+            row(" DIALS ┈") < row(" YOURS ┈"),
+            "the group somebody wrote stands after the ones amx ships:\n{right}"
+        );
+
+        // The spelling in the key column and the command against it, because
+        // the command is what a bound key is: there is no second name for it.
+        for (spelling, command) in [("alt+g", "lazygit"), ("alt+t", "cargo test 2>&1 | less")] {
+            let line = right.lines().nth(row(spelling)).expect("the row it is on");
+            assert!(
+                line.starts_with(&format!("{}{spelling}", " ".repeat(INDENT))),
+                "the spelling stands in the key column: {line:?}"
+            );
+            assert!(
+                line.contains(command),
+                "{spelling} is not against what it runs: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keymap_grows_nothing_for_a_config_that_bound_no_keys() {
+        let painted = overlay(WIDE_SCREEN).join("\n");
+        assert!(
+            !painted.contains("YOURS"),
+            "a heading over nothing is a heading in everybody's way:\n{painted}"
+        );
     }
 
     #[test]

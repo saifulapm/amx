@@ -218,7 +218,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         (carding > 0).then_some(carded),
     );
     match &screen.mode {
-        Mode::Keys => help(frame, middle, &screen.page),
+        Mode::Keys => help(frame, middle, &screen.page, &screen.bound),
         // The card stands under the list rather than among the rows, so every
         // row is drawn where it would stand with no card up at all.
         _ => agents(

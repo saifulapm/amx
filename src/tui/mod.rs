@@ -27,6 +27,7 @@
 
 mod act;
 mod grid;
+mod keyname;
 mod paint;
 // The list is the view's own, and one thing in it is not: what somebody
 // pinned outlives the view they pinned it in, and the verb that takes an idle
@@ -65,6 +66,7 @@ use act::{Asking, Composer, Renamed, Replied, Started};
 /// The editor door, for `amx new --edit`: the view and the command line open
 /// the same one, so a task written in either place is read the same way.
 pub use act::{Edited, edited};
+use keyname::Bound;
 use paint::{Body, Card, HOLDS, Hunk, Notice};
 use rows::{Arrangement, List, Narrow};
 
@@ -691,6 +693,11 @@ struct Screen {
     /// here too, for the same reason: only it knows how many pages a screen
     /// this shape made of them.
     page: Cell<usize>,
+    /// The keys somebody bound in the config file, each against the command it
+    /// runs. Read when the view opens and not again: the file is a person's
+    /// standing answer, and a key that moved under their hands while they were
+    /// looking at the screen would be a key they never pressed.
+    bound: Vec<Bound>,
     notice: Option<Notice>,
     /// Where the last frame put things, which is what a mouse position is
     /// read against.
@@ -958,8 +965,13 @@ where
         Some(under) => under.to_path_buf(),
         None => std::env::current_dir().context("no working directory")?,
     };
+    // The keys the file binds, read here because this is where the config is:
+    // a spelling is turned into a key once, and what the view holds afterwards
+    // is keys rather than words.
+    let (bound, refused) = keyname::bound_by(&config.keys);
     let mut screen = Screen {
         root: root.to_path_buf(),
+        bound,
         profile: Profile::open(
             config,
             cap,
@@ -972,6 +984,14 @@ where
         ..Screen::default()
     };
     screen.say_of_the_theme(&painting.warnings);
+    // A spelling nothing can press is said on the frame the view opens on and
+    // not again: it is about the file rather than about anything happening,
+    // and the next key somebody presses is them having read it. Said after the
+    // theme has had its say, because a key that does nothing is the nearer of
+    // the two to what they are about to do.
+    if !refused.is_empty() {
+        screen.notice = Some(Notice::Refused(refused.join(" · ")));
+    }
     // And the file behind it, for the loop to notice somebody editing.
     let mut watching = painting.watching;
     // The list opens the way it was left, before anything is drawn on it: a
@@ -4018,6 +4038,34 @@ mod tests {
         )
         .unwrap();
         (code, terminal.backend().buffer().clone())
+    }
+
+    /// And the same for a view opened under a config somebody wrote, for the
+    /// tests about what the file itself puts on the screen.
+    fn drawn_under(root: &Path, config: &Config, script: Vec<Typed>) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+        watch(
+            root,
+            config,
+            None,
+            &Scope::default(),
+            &mut terminal,
+            &mut Script(script.into_iter()),
+            None,
+            None,
+            &mut Said::default(),
+            Painting::default(),
+        )
+        .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..10)
+            .map(|row| {
+                (0..50)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The same again, answering with how many frames the view drew rather
@@ -9054,6 +9102,64 @@ diff --git a/src/bar.rs b/src/bar.rs
             said.0,
             ["amx"],
             "said once and not again on every frame that did not change it"
+        );
+    }
+
+    /// A config that binds a key of somebody's own, and one spelling nothing
+    /// can press.
+    fn binding() -> Config {
+        Config {
+            keys: BTreeMap::from([
+                ("alt+g".to_string(), "lazygit".to_string()),
+                ("shift+z".to_string(), "never runs".to_string()),
+            ]),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn view_says_the_spellings_it_could_not_read_on_the_frame_it_opens_on() {
+        let root = TempDir::new().unwrap();
+        let refused = "keys: `shift+z` is no key the view can read";
+
+        let opening = drawn_under(root.path(), &binding(), Vec::new());
+        assert!(
+            opening.contains(refused),
+            "a key somebody bound and nothing can press is worth the sentence \
+             it takes to say so:\n{opening}"
+        );
+
+        let after = drawn_under(
+            root.path(),
+            &binding(),
+            vec![Typed::Key(KeyEvent::from(KeyCode::Down))],
+        );
+        assert!(
+            !after.contains("no key the view can read"),
+            "and it is said the once: the file is read when the view opens, \
+             and a person who has read the sentence is done with it:\n{after}"
+        );
+    }
+
+    #[test]
+    fn view_shows_the_keys_somebody_bound_where_it_shows_the_ones_it_binds() {
+        let root = TempDir::new().unwrap();
+        // The keys screen, paged to the end of itself: a screen this small
+        // holds a handful of keys at a time, and what somebody bound stands
+        // under the last of amx's own.
+        let mut script = vec![Typed::Key(KeyEvent::from(KeyCode::Char('?')))];
+        script
+            .extend((0..paint::HELP.len()).map(|_| Typed::Key(KeyEvent::from(KeyCode::PageDown))));
+        let keys = drawn_under(root.path(), &binding(), script);
+
+        assert!(
+            keys.contains("alt+g"),
+            "the key the config file bound is on the screen that answers what \
+             the keys are:\n{keys}"
+        );
+        assert!(
+            keys.contains("lazygit"),
+            "against the command it runs, which is the whole of what it is:\n{keys}"
         );
     }
 
