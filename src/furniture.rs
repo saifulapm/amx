@@ -50,6 +50,22 @@ pub struct Furniture {
     pub statusline: usize,
     /// How many rows the composer's bottom border can take.
     pub bottom: usize,
+    /// What a row the vendor draws UNDER its mode footer opens with, after
+    /// whatever it indents by, any one of them. The footer is the last row of
+    /// most panes and not of all of them: a vendor that reports on the agents
+    /// a turn started puts them below it.
+    #[serde(default)]
+    pub beneath: Vec<String>,
+    /// How many such rows, blank ones counted, the walk will step over from
+    /// the bottom before it must meet the footer. The cap on a step taken by
+    /// position, the same as `statusline` is on its own.
+    #[serde(default)]
+    pub panel: usize,
+    /// The fragments the row directly above the composer's top border carries,
+    /// where the vendor draws one there. Not every screen has it, so it is a
+    /// row the walk steps over when it is there rather than one it requires.
+    #[serde(default)]
+    pub hint: Vec<String>,
 }
 
 /// The vendor's own furniture, cut off the bottom of a capture.
@@ -64,10 +80,11 @@ pub fn cut<'a, 'b>(furniture: &Furniture, rows: &'a [&'b str]) -> &'a [&'b str] 
 
 impl Furniture {
     /// The chrome this vendor draws under every pane it has the room for: the
-    /// composer's top border, whatever is staged in the box, the composer's
-    /// bottom border, the statusline, and the mode footer. None of it is the
-    /// agent's work, and all of it stands between a person and the rows they
-    /// opened the card to read.
+    /// row it hangs off the composer's top border, that border, whatever is
+    /// staged in the box, the composer's bottom border, the statusline, the
+    /// mode footer, and whatever the vendor draws below that footer. None of
+    /// it is the agent's work, and all of it stands between a person and the
+    /// rows they opened the card to read.
     ///
     /// **Read from the bottom, and every step capped.** A rule that found the
     /// last footer row and cut everything below it reads the same and is not:
@@ -90,6 +107,22 @@ impl Furniture {
         let mut at = rows.len();
         while at > 0 && blank(rows[at - 1]) {
             at -= 1;
+        }
+
+        // The panel a vendor draws under its own footer, which claude 2.1.270
+        // fills with the agents a turn started: a blank row, the main agent,
+        // and one row each for the subagents. Stepped over by position and
+        // capped like every other step of that kind — a panel taller than the
+        // measurement leaves the walk on a row that is no footer, and the
+        // screen is kept whole.
+        let mut under = 0;
+        while at > 0
+            && !self.mode_footer(rows[at - 1])
+            && under < self.panel
+            && (blank(rows[at - 1]) || self.beneath_row(rows[at - 1]))
+        {
+            at -= 1;
+            under += 1;
         }
 
         // The anchor. No footer, no cut: the screens carrying none are the
@@ -151,6 +184,14 @@ impl Furniture {
         // The composer's top border: the row the scan stopped on, and only it.
         at -= 1;
 
+        // The row the vendor hangs off that border with no blank row between
+        // them — claude 2.1.270 right-aligns its effort there. It is the
+        // vendor's own writing, and it is also what the step below would
+        // otherwise find where it went looking for the spinner.
+        if at > 0 && self.hint_row(rows[at - 1]) {
+            at -= 1;
+        }
+
         // And the line the vendor spins while a turn runs, which sits above
         // the box with a blank row between them. A vendor that draws its
         // working indicator in the top border itself — pi since 0.85.1 —
@@ -188,6 +229,23 @@ impl Furniture {
     fn mode_footer(&self, row: &str) -> bool {
         let drawn = row.trim_start();
         self.mode.iter().any(|opening| drawn.starts_with(opening))
+    }
+
+    /// A row of the panel the vendor draws under its mode footer. Read from
+    /// what the row opens with, the same way the footer is, so the indent the
+    /// vendor puts in front of it costs nothing.
+    fn beneath_row(&self, row: &str) -> bool {
+        let drawn = row.trim_start();
+        self.beneath
+            .iter()
+            .any(|opening| drawn.starts_with(opening))
+    }
+
+    /// The row the vendor draws directly above the composer's top border, told
+    /// by any one of the fragments it carries: the row is right-aligned, so
+    /// where it starts is the pane's width and not the vendor's choice.
+    fn hint_row(&self, row: &str) -> bool {
+        self.hint.iter().any(|fragment| row.contains(fragment))
     }
 
     /// The line the vendor spins while a turn runs, told apart from the line
@@ -268,6 +326,157 @@ mod tests {
         "  ⏵⏵ accept edits on (shift+tab to cycle)",
     ];
 
+    /// claude 2.1.270 with a subagent running, transcribed from
+    /// `/tmp/measure-270/c4-bgline-w100.txt` on 2026-09-14 at 100 columns. The
+    /// vendor draws the agents it is running UNDER its own mode footer, so the
+    /// last row of the pane is a subagent's and not the anchor the walk needs,
+    /// and a right-aligned `● high · /effort` sits directly on top of the
+    /// composer's border with no blank row between.
+    const A_BACKGROUND_LINE_PANE: &[&str] = &[
+        "",
+        " ▐▛███▛█   Claude Code v2.1.270 ",
+        "▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max",
+        "  ▝▝ ▝▝    /tmp/measure-270                                                                         ",
+        "",
+        "",
+        "❯ /btw ",
+        "  ⎿  Usage: /btw <your question>   ",
+        "",
+        "❯ Use the Task tool to start exactly one subagent in the background whose whole job is to run the   ",
+        "  shell command sleep 45 and then say finished. Do not wait for it. Reply with the single word      ",
+        "  started as soon as it is launched.                                                                ",
+        "",
+        "● I'll launch it in the background.",
+        "",
+        "● Agent(Sleep 45 then report)",
+        "  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)                                            ",
+        "                                              ",
+        "● started",
+        "           ",
+        "✻ Waiting for 1 background agent to finish",
+        "                                                                                  ● high · /effort",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯                                    ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents",
+        "        ",
+        "  ● main",
+        "  ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens",
+    ];
+
+    /// The same vendor a turn later, from `/tmp/measure-270/c8-plan-after.txt`:
+    /// the footer is the last row again, but the hint row is drawn over the
+    /// composer with the spinner of the running turn directly above it and no
+    /// blank row anywhere between the three.
+    const A_PLAN_PANE_AFTER_A_SUBAGENT: &[&str] = &[
+        "     │                                                                                             │",
+        "     │ Terminal captures of the Claude Code v2.1.270 UI — startup box, transcript, status line and │",
+        "     │ background-task line — recorded in numbered series and, for the `c*` files, at several      │",
+        "     │ terminal                                                                                    │",
+        "     │ widths.                                                                                     │",
+        "     │                                                                                             │",
+        "     │ Assumption worth flagging: I inferred the folder's purpose from the filenames and from      │",
+        "     │ reading                                                                                     │",
+        "     │ c0-fresh.txt and c1-transcript-w40.txt. If these captures were taken for a specific         │",
+        "     │ investigation (e.g. checking how the status line wraps at narrow widths), say so and the    │",
+        "     │ sentence                                                                                    │",
+        "     │ should name that instead — it is more useful than describing the file format.               │",
+        "     │                                                                                             │",
+        "     │ Verification                                                                                │",
+        "     │                                                                                             │",
+        "     │ - cat /tmp/measure-270/README.md — file exists and holds the sentence above.                │",
+        "     │ - ls /tmp/measure-270 — README.md present, all pre-existing .txt files unchanged.           │",
+        "     ╰─────────────────────────────────────────────────────────────────────────────────────────────╯",
+        "                                                                                    ",
+        "✻ Churned for 20s · done 3:11 PM",
+        "",
+        r#"● Agent "Sleep 45 then report" finished · 1m 34s                                                  "#,
+        "                                                                                   ",
+        "● Wibbling… (20s)",
+        "                                                                                  ● high · /effort",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯                                 ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 3% │ measure-270 │ ◖ high",
+        "  ⏸ plan mode on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents",
+    ];
+
+    /// A pane nobody has typed in yet, from `/tmp/measure-270/2-fresh.txt`:
+    /// the welcome box, the hint row over the composer, and nothing else.
+    const A_FRESH_PANE: &[&str] = &[
+        "",
+        " ▐▛███▛█   Claude Code v2.1.270",
+        "▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max",
+        "  ▝▝ ▝▝    /tmp/measure-270",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                                  ● high · /effort",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯  ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 0% │ measure-270 │ ◖ high",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents  ",
+    ];
+
+    /// A pane whose turn is over, from `/tmp/measure-270/4-idle.txt`. This
+    /// vendor draws no hint row on it — which is why the row is measured as
+    /// one the walk looks for rather than one it can count on.
+    const AN_IDLE_PANE: &[&str] = &[
+        "",
+        " ▐▛███▛█   Claude Code v2.1.270",
+        "▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max",
+        "  ▝▝ ▝▝    /tmp/measure-270",
+        "",
+        "",
+        "❯ Use the Bash tool to run exactly: sleep 15. Then reply with the single word done.                 ",
+        "",
+        "● I'll run that now.      ",
+        "",
+        "  Ran 1 shell command          ",
+        "",
+        "● done                                           ",
+        "",
+        "✻ Cooked for 18s · done 2:17 PM",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                                                  ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯                                                                                   ",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents  ",
+    ];
+
+    fn claude() -> &'static Furniture {
+        crate::rules::of("claude").furniture()
+    }
+
     fn second() -> Furniture {
         let screens = crate::vendor::second::SECOND
             .screens
@@ -326,5 +535,65 @@ mod tests {
             !unmeasured.spinning(" ⠼ Working..."),
             "and neither is no frames to find"
         );
+    }
+
+    #[test]
+    fn furniture_the_walk_steps_under_the_footer_to_reach_it() {
+        // The footer is no longer the last row this vendor draws: 2.1.270 puts
+        // the agents a turn started under it, a blank row and then one row an
+        // agent. A walk that wanted the footer at the bottom found a subagent
+        // there instead and kept all thirty rows, chrome and all.
+        let kept = claude().cut(A_BACKGROUND_LINE_PANE);
+        assert_eq!(kept, &A_BACKGROUND_LINE_PANE[..21]);
+        assert_eq!(
+            kept.last(),
+            Some(&"✻ Waiting for 1 background agent to finish"),
+            "the line the vendor draws about its own subagents is not a row of work"
+        );
+    }
+
+    #[test]
+    fn furniture_the_walk_cuts_the_hint_row_and_what_is_over_it() {
+        // The hint row sits on the composer's top border with no blank row
+        // between, so the step that looks for the spinner above the box met it
+        // instead and both rows survived onto the card. Above it here is a
+        // running turn's spinner, which goes with it.
+        let kept = claude().cut(A_PLAN_PANE_AFTER_A_SUBAGENT);
+        assert_eq!(kept, &A_PLAN_PANE_AFTER_A_SUBAGENT[..23]);
+        assert!(
+            kept[21].starts_with("● Agent \"Sleep 45 then report\" finished"),
+            "the turn's own last word is kept, and the blank row under it: {:?}",
+            kept[21]
+        );
+    }
+
+    #[test]
+    fn furniture_the_hint_row_is_cut_off_a_pane_with_nothing_above_it() {
+        // Nobody has typed in this one, so what the hint row stands on is the
+        // blank middle of a fresh pane and the welcome box is the whole of the
+        // screen's content.
+        assert_eq!(claude().cut(A_FRESH_PANE), &A_FRESH_PANE[..24]);
+    }
+
+    #[test]
+    fn furniture_a_pane_with_no_hint_row_is_cut_where_it_always_was() {
+        // The hint row is a row the walk looks for and never one it requires:
+        // this vendor draws none here, and the cut is the one it made before
+        // the row was measured at all.
+        assert_eq!(claude().cut(AN_IDLE_PANE), &AN_IDLE_PANE[..25]);
+    }
+
+    #[test]
+    fn furniture_a_panel_taller_than_the_measurement_keeps_the_whole_screen() {
+        // Which is the law the walk is built on paying out again: the rows
+        // under the footer are stepped over by position, and a step that runs
+        // out of room before it finds its anchor gives back everything it took
+        // rather than guessing where the work ends.
+        let mut pane = A_CLAUDE_PANE.to_vec();
+        pane.extend(std::iter::repeat_n(
+            "  ◯ general-purpose  Preparing…  3s",
+            9,
+        ));
+        assert_eq!(claude().cut(&pane), pane);
     }
 }

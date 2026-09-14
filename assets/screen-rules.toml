@@ -74,7 +74,8 @@ placeholders = [
 
 # ── The furniture ────────────────────────────────────────────────────────────
 # The chrome claude draws under every pane it has the room for, as the anchors
-# that find it: composer box, statusline, mode footer, and the line it spins
+# that find it: composer box, statusline, mode footer, the panel of running
+# agents under that footer, the effort row over the box, and the line it spins
 # while a turn runs. `src/furniture.rs` walks up from the bottom of a capture
 # over these, so that a card and `amx logs` show the rows an agent earned and
 # not the rows the vendor drew under them.
@@ -84,16 +85,6 @@ placeholders = [
 # present in all six permission modes at every width from 24 to 220 — the same
 # measurement the rules below anchor on, and it is written out under
 # `permission_prompt`.
-#
-# `spinner` is two punctuation fragments off the turn spinner, the ellipsis
-# before its elapsed time and the separator after it, both on the one row.
-# Both of them sit in the tail 2.1.259 truncates from the right, so this walk
-# has no spinner row to find on a narrow pane and steps over the vendor's
-# chrome as though it were the agent's own output. The separator is also on the
-# line a finished turn leaves behind now — `✻ Cogitated for 2m 6s · done
-# 10:09 AM`, at every width — which the walk survives only because it wants
-# both. The `spinner` rule below was re-measured against 2.1.259 and this was
-# not; driving it is the next thing owed here.
 #
 # `rule` is the glyph the composer's box is drawn with. `statusline` is how
 # many rows of it the walk will step over to reach that box's bottom border,
@@ -119,12 +110,44 @@ placeholders = [
 # driven at 80 columns with `--effort low`: claude spun `● Actioning…` with
 # nothing after it for the 65 seconds before the first token, and the walk
 # printed that row at the foot of the view's card as the agent's own output.
+#
+# `beneath` and `panel` are the panel the vendor draws UNDER its footer, and
+# they are why the footer is no longer the last row of every pane. claude
+# 2.1.270 reports the agents a turn started down there — a blank row, `● main`,
+# and one row an agent, the row opening with `◯ ` and ending in that agent's
+# elapsed time and tokens. Measured on 2026-09-14 at 100, 54, 40, 30 and 24
+# columns with one subagent running: three rows at every width, and because the
+# bottom row of the pane was a subagent's rather than the footer, the walk found
+# no anchor and kept all thirty rows of all five captures, chrome and all.
+#
+# `beneath` is what those rows open with after the indent, and `panel` is how
+# many of them, blank rows counted, the walk will step over before it must meet
+# the footer. Eight is the statusline's cap and the same kind of margin: three
+# rows were measured, for two agents. A pane with more of them than that leaves
+# the walk standing on a row that is no footer, which is a screen kept whole.
+#
+# `hint` is the row the vendor right-aligns directly on the composer's top
+# border, with no blank row between the two: `● high · /effort`, the effort the
+# next turn will run at. Measured at the same five widths on 2026-09-14 — on a
+# fresh pane, on an idle one after a turn, and mid-turn, and absent from the
+# idle capture taken before it — so it is a row the walk steps over where it
+# finds one and never a row it requires. `/effort` is the fragment it carries
+# at all five widths, and it is read as a fragment rather than an opening
+# because the row is right-aligned: where it starts is the pane's width.
+#
+# What that row costs is above it rather than on it. The step that looks for
+# the spinner over the composer met this row instead and stopped there, so on
+# the mid-turn capture `● Wibbling… (20s)` sat directly on top of the hint row
+# with no blank between, and both of them came through onto the card.
 [furniture]
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]
 rule = "─"
 statusline = 8
 bottom = 2
+beneath = ["● ", "◯ "]
+panel = 8
+hint = ["/effort"]
 
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.
