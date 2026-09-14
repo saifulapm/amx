@@ -2,10 +2,10 @@
 #
 # Copy this to ~/.config/amx/config.toml and change what you want changed. A
 # copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Twenty-two keys and a table per
-# harness; a key amx has never heard of is warned about and ignored, and a file
-# it cannot parse falls back to these defaults with a warning, because losing
-# an agent to a stray comma is the worse outcome.
+# the one amx uses when the key is left out. Twenty-two keys, the keys you bind
+# yourself and a table per harness; a key amx has never heard of is warned about
+# and ignored, and a file it cannot parse falls back to these defaults with a
+# warning, because losing an agent to a stray comma is the worse outcome.
 #
 # A project can keep the same file at <repo>/.amx/config.toml, laid over this
 # one a key at a time: a project file holding one line has changed its mind
@@ -119,6 +119,27 @@ park_after = 3600
 # on_done = "notify-send 'amx' \"$AMX_ID $AMX_STATE\""
 # on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
 # on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
+
+# The keys you bind yourself: a spelling against the command pressing it runs.
+# ctrl+ and alt+ in either order, then one character or f1 through f12, and a
+# capital letter is shift with it.
+#
+# Pressed in the view with the cursor on an agent's row, the key borrows the
+# terminal the way `alt+d` does for the patch and runs the command through
+# sh -c in that agent's worktree, or where the agent runs when it has none,
+# with the terminal as its stdin and stdout and with AMX_ID, AMX_DIR,
+# AMX_AGENT_DIR, AMX_NESTED and AMX_WORKTREE where there is a tree. The view
+# waits, takes the terminal back, and says only what went wrong. The keys
+# screen lists what you bind here under `yours`.
+#
+# amx's own keys keep their meaning: a bound key is looked for after every key
+# the view binds, so an entry naming one of them never runs. This is the one
+# table a project's file lays over yours an entry at a time, so a repository
+# binds the key its work wants without unbinding the keys you press everywhere.
+
+[keys]
+# "alt+g" = "lazygit"
+# "alt+t" = "cargo test 2>&1 | less"
 
 # One table per harness, named after the command that harness runs. There is a
 # table to be had for each harness amx has an entry for, claude and pi today,

@@ -1516,7 +1516,8 @@ was these words, and `true` and `false` still read as desktop and off.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, twenty-two keys and a table per harness:
+`~/.config/amx/config.toml`, twenty-two keys, the keys you bind yourself and a
+table per harness:
 
 ```toml
 agent = "claude"          # the command a new agent runs: claude, pi or your own
@@ -1554,6 +1555,11 @@ on_idle = "echo $AMX_ID idle >> ~/amx.log"
 on_done = "notify-send 'amx' \"$AMX_ID $AMX_STATE\""
 on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
 on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
+
+# The keys you bind yourself, each against the command pressing it runs.
+[keys]
+"alt+g" = "lazygit"
+"alt+t" = "cargo test 2>&1 | less"
 ```
 
 A tree git has just cut is a clean checkout, so the first turn in it goes on an
@@ -1593,6 +1599,23 @@ four a hook writes also carry `AMX_WATCHED`: 1 when somebody is attached to the
 agent's pane, 0 when nobody is. What the command prints goes nowhere, so a log
 is a redirect you write into the command yourself. Five flat keys rather than
 one table, so a project's own file lays its over yours a moment at a time.
+
+`[keys]` is what you bind for yourself: a key spelling against the shell
+command pressing it runs. A spelling is `ctrl+` and `alt+` in either order,
+then one character or `f1` through `f12`, and a capital letter is shift with
+it; a spelling amx cannot read is said on the notice line when the view opens
+and bound to nothing. Pressed in the view with the cursor on an agent's row,
+the key borrows the terminal the way `alt+d` does for the patch and runs the
+command through `sh -c` in that agent's worktree, or where the agent runs when
+it has none, with the terminal as its stdin, stdout and stderr and with
+`AMX_ID`, `AMX_DIR`, `AMX_AGENT_DIR`, `AMX_NESTED=1` and `AMX_WORKTREE` where
+there is a tree. The view waits for it, takes the terminal back, and says on
+the notice line only what went wrong. The keys screen lists what you bind under
+`yours`, each beside its command. amx's own keys keep their meaning: a bound
+key is looked for after every key the view binds, so an entry naming one of
+them never runs. It is the one table a project's file lays over yours an entry
+at a time, so a repository binds the key its work wants without unbinding the
+keys you press everywhere.
 
 Each harness amx has an entry for — claude and pi today — can have a table of
 its own, named after the command it runs:
@@ -1644,7 +1667,8 @@ A project can keep the same file at `<repo>/.amx/config.toml`, and it is laid
 over yours a key at a time. A project file holding one line has changed its
 mind about one key: everything else is still what you set. A harness table is
 one key like any other, so a project that names one has said what that harness
-is there, all three of them, rather than edited the table you keep. Whatever amx cannot
+is there, all three of them, rather than edited the table you keep. `[keys]` is
+the one exception, laid over an entry at a time. Whatever amx cannot
 use in it — an unknown key, a key of the wrong type, a file that will not open
 — is a warning naming that file, and the file under it still stands.
 

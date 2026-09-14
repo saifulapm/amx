@@ -1,5 +1,6 @@
-//! `~/.config/amx/config.toml` — twenty-two keys and a table per harness — with a
-//! project's own `<project>/.amx/config.toml` laid over it.
+//! `~/.config/amx/config.toml` — twenty-two keys, the keys the person binds and
+//! a table per harness — with a project's own `<project>/.amx/config.toml` laid
+//! over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
@@ -39,6 +40,10 @@ pub const KNOWN_KEYS: [&str; 22] = [
     "on_failed",
     "on_stopped",
 ];
+
+/// The table of bound keys, which is neither one of [`KNOWN_KEYS`] nor a
+/// harness's own: amx reads it, and it is laid over entry by entry.
+const BOUND_KEYS: &str = "keys";
 
 /// How far a notice about a transition goes.
 ///
@@ -245,6 +250,16 @@ pub struct Config {
     pub on_failed: Option<String>,
     /// What runs when somebody stops an agent.
     pub on_stopped: Option<String>,
+    /// The keys the person binds themselves, each spelling against the shell
+    /// command pressing it runs on the agent the cursor is on.
+    ///
+    /// A table rather than a key apiece, because there is no list of the
+    /// spellings to write keys for: what is in it is whatever somebody has
+    /// bound. It is the one table a project's file lays over the person's
+    /// entry by entry rather than whole — a project binds the key its work
+    /// wants without unbinding the keys they press everywhere — which is what
+    /// the five moment keys got from being flat.
+    pub keys: BTreeMap<String, String>,
     /// What each harness the file names says about itself, keyed by the
     /// program that harness runs.
     ///
@@ -291,6 +306,7 @@ impl Default for Config {
             on_done: None,
             on_failed: None,
             on_stopped: None,
+            keys: BTreeMap::new(),
             harnesses: BTreeMap::new(),
         }
     }
@@ -316,8 +332,9 @@ pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
 
 /// The keys of a file amx has never heard of, one warning each.
 ///
-/// A table is a harness's own, so what amx has heard of there is whatever the
-/// registry has an entry for, and it is named the way the file writes it.
+/// A table is a harness's own, beside `[keys]`, which is amx's: what amx has
+/// heard of there is whatever the registry has an entry for, and it is named
+/// the way the file writes it.
 fn unknown_keys(table: &toml::Table) -> Vec<String> {
     table
         .iter()
@@ -325,6 +342,8 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
         .filter_map(|(key, value)| {
             if !value.is_table() {
                 Some(format!("ignoring unknown key `{key}`"))
+            } else if key == BOUND_KEYS {
+                None
             } else if registry::entry(key).is_none() {
                 Some(format!(
                     "ignoring [{key}]: amx runs no harness called {key}"
@@ -558,6 +577,10 @@ pub fn project_key(dir: &Path, key: &str) -> Option<String> {
 /// Key by key rather than file by file: a project file holding one line has
 /// changed its mind about one key, not thrown away everything the person set.
 ///
+/// `[keys]` is the one key laid over an entry at a time rather than whole,
+/// because a project binds the key its work wants and has said nothing about
+/// the keys the person binds everywhere.
+///
 /// The dials are settled once, at the end, because which dials a vendor takes
 /// turns on the `agent` key and either file may be the one that named it.
 fn layered(files: &[PathBuf]) -> (Config, Vec<String>) {
@@ -565,7 +588,18 @@ fn layered(files: &[PathBuf]) -> (Config, Vec<String>) {
     let mut warnings = Vec::new();
     for path in files {
         let (set, said) = keys_of(path);
-        keys.extend(set);
+        for (name, value) in set {
+            let laid = match (keys.remove(&name), value) {
+                (Some(toml::Value::Table(mut bound)), toml::Value::Table(over))
+                    if name == BOUND_KEYS =>
+                {
+                    bound.extend(over);
+                    toml::Value::Table(bound)
+                }
+                (_, value) => value,
+            };
+            keys.insert(name, laid);
+        }
         warnings.extend(said);
     }
 
@@ -667,6 +701,8 @@ mod tests {
         assert_eq!(c.on_done, None);
         assert_eq!(c.on_failed, None);
         assert_eq!(c.on_stopped, None);
+        // No key of your own is bound until a table binds one.
+        assert!(c.keys.is_empty());
         // No harness says anything about itself until a table of its own does.
         assert!(c.harnesses.is_empty());
     }
@@ -690,6 +726,13 @@ mod tests {
             });
             assert!(named, "{key} is not in assets/config.toml");
         }
+        // The keys you bind yourself are a table of the same kind: there to
+        // be found by somebody reading the file, with its entries commented
+        // out so a copy binds nothing.
+        assert!(
+            shipped.lines().any(|line| line == "[keys]"),
+            "[keys] is not in assets/config.toml"
+        );
         // A harness is one entry in the registry and one table here, so a new
         // entry nobody gave a table is a table nobody copying this will learn
         // of. The lists are comments: an empty table is no table at all.
@@ -924,6 +967,31 @@ mod tests {
         assert_eq!(c.max_agents, 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("wardrobe"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_keys_table_binds_a_key_to_a_command_and_is_no_unknown_table() {
+        let (c, w) = parse(
+            r#"
+                [keys]
+                "alt+g" = "lazygit"
+                "alt+t" = "cargo test 2>&1 | less"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.keys.len(), 2, "{:?}", c.keys);
+        assert_eq!(c.keys.get("alt+g").unwrap(), "lazygit");
+        assert_eq!(c.keys.get("alt+t").unwrap(), "cargo test 2>&1 | less");
+        // A table amx reads itself, so it is neither warned about nor looked
+        // for in the registry.
+        assert!(c.harnesses.is_empty(), "{:?}", c.harnesses);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_bound_command_that_is_not_a_string_is_an_error_not_a_guess() {
+        assert!(parse("[keys]\n\"alt+g\" = 3\n").is_err());
+        assert!(parse("keys = \"lazygit\"\n").is_err());
     }
 
     #[test]
@@ -1272,6 +1340,38 @@ mod tests {
         assert_eq!(c.on_idle.as_deref(), Some("b"));
         assert_eq!(c.on_done.as_deref(), Some("c"));
         assert_eq!(c.on_failed.as_deref(), Some("d"));
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_project_file_lays_its_bound_keys_over_the_persons_one_at_a_time() {
+        // The one table laid over entry by entry rather than whole: a project
+        // that binds the key its work wants has not unbound the keys you bind
+        // everywhere, and a spelling both files name is the project's.
+        let dir = TempDir::new().unwrap();
+        let person = wrote(
+            dir.path(),
+            "person.toml",
+            "[keys]\n\"alt+g\" = \"lazygit\"\n\"alt+t\" = \"cargo test\"\n",
+        );
+        let project = wrote(
+            dir.path(),
+            "project.toml",
+            "[keys]\n\"alt+t\" = \"just test\"\n\"alt+r\" = \"just run\"\n",
+        );
+
+        let (c, w) = layered(&[person.clone(), project]);
+        assert_eq!(c.keys.get("alt+g").unwrap(), "lazygit");
+        assert_eq!(c.keys.get("alt+t").unwrap(), "just test");
+        assert_eq!(c.keys.get("alt+r").unwrap(), "just run");
+        assert_eq!(c.keys.len(), 3, "{:?}", c.keys);
+        assert!(w.is_empty(), "{w:?}");
+
+        // And a project that binds nothing leaves every key you bound.
+        let quiet = wrote(dir.path(), "quiet.toml", "max_agents = 2\n");
+        let (c, w) = layered(&[person, quiet]);
+        assert_eq!(c.keys.len(), 2, "{:?}", c.keys);
+        assert_eq!(c.keys.get("alt+t").unwrap(), "cargo test");
         assert!(w.is_empty(), "{w:?}");
     }
 
