@@ -1508,6 +1508,9 @@ client of every tmux server under your socket directory — so a notice reaches
 you at the far end of an SSH session, where a desktop has nothing to post to.
 The terminal amx writes to is a tmux client, so over SSH run the view inside a
 tmux of your own; a bare SSH session has nothing for a notice to arrive on.
+What arrives is OSC 777, the escape foot, kitty, WezTerm and Ghostty turn into
+a desktop notification of their own; a terminal that does not know it shows
+nothing, and that is the terminal's to say.
 `"both"` does the two and `"off"` does neither. The key was a bool before it
 was these words, and `true` and `false` still read as desktop and off.
 
