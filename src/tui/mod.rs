@@ -1752,6 +1752,23 @@ impl Screen {
         self.follow_the_cursor();
     }
 
+    /// The cursor put on the row the pointer is resting on, for a key that is
+    /// read where the person is looking rather than where the cursor was left.
+    ///
+    /// Answers whether it moved, which is what tells a key aimed at another
+    /// row from one aimed at the row it was already on — off the list, and on
+    /// the blank, there is nothing to land on and the answer is no.
+    fn land_on_the_pointer(&mut self) -> bool {
+        let Some(at) = self.hover.filter(|at| *at != self.list.cursor()) else {
+            return false;
+        };
+        if !self.list.land(at) {
+            return false;
+        }
+        self.moved();
+        true
+    }
+
     /// What one key does.
     fn act(
         &mut self,
@@ -1894,17 +1911,29 @@ impl Screen {
             // patch is read and answered in.
             KeyCode::Char('n') if ctrl => self.to_hunk(true),
             KeyCode::Char('p') if ctrl => self.to_hunk(false),
-            KeyCode::Char(' ') if plain => match self.look {
-                Look::Away => self.look_closer(root),
-                _ => self.look_away(),
-            },
+            // The card, read where the pointer is the way `ctrl+x` is: a hand
+            // resting on a row is the row somebody means, so the cursor goes
+            // there and the card opens on it. Landing somewhere new opens that
+            // row even with a card already up — closing what is open is what
+            // the press means only where the cursor already was, which is
+            // every press with no pointer on the list.
+            KeyCode::Char(' ') if plain => {
+                let onto = self.land_on_the_pointer();
+                match onto || matches!(self.look, Look::Away) {
+                    true => self.look_closer(root),
+                    false => self.look_away(),
+                }
+            }
             // The letter vim goes in with, beside the space above it. Not
             // enter — an attach hands the terminal to tmux and leaves the view
             // altogether, which is not something a letter this easy to hit
             // should do. Nothing comes back out this way: a card ends with a
             // line, so the letters over one are characters and esc is the key
             // that closes it.
-            KeyCode::Char('l') if plain => self.look_closer(root),
+            KeyCode::Char('l') if plain => {
+                self.land_on_the_pointer();
+                self.look_closer(root);
+            }
             // One layer a press, innermost first: the card is in front of the
             // list, so it goes before the list changes under it. A narrowing
             // outlives the line it was typed on, so the key that drops one has
@@ -2100,11 +2129,7 @@ impl Screen {
             // where the person is looking, so the cursor goes there first and
             // the press is read on it — the way a click lands before it acts.
             KeyCode::Char('x') if ctrl => {
-                if let Some(at) = self.hover
-                    && self.list.land(at)
-                {
-                    self.moved();
-                }
+                self.land_on_the_pointer();
                 match self.list.heading() {
                     Some(under) => self.sweep_or_arm(root, under),
                     None => self.end_or_arm(root),
@@ -10376,6 +10401,71 @@ diff --git a/src/bar.rs b/src/bar.rs
             .unwrap();
         assert!(screen.list.on_heading());
         assert_eq!(screen.armed().len(), 2, "{:?}", screen.armed());
+    }
+
+    #[test]
+    fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        // Tall enough that the card's band leaves both rows where they are,
+        // so the pointer keeps naming the row it named before one opened.
+        a_frame_of(&mut screen, (60, 24));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+
+        let resting = |screen: &mut Screen, row| {
+            screen
+                .moused(
+                    mouse(MouseEventKind::Moved, 5, row),
+                    root.path(),
+                    &config,
+                    None,
+                )
+                .unwrap();
+        };
+        let press = |screen: &mut Screen, code| {
+            screen
+                .pressed(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+            a_frame_of(screen, (60, 24));
+        };
+        let carded = |screen: &Screen| screen.card.as_ref().map(|card| card.id.clone());
+
+        // The pointer rests on the row the cursor is not on: space lands the
+        // cursor there and opens that row's card, not the cursor's.
+        resting(&mut screen, 5);
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
+
+        // The pointer moves to the other row with the card still up: space
+        // opens that row rather than closing what is open.
+        resting(&mut screen, 4);
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+        assert_eq!(carded(&screen).as_deref(), Some("done-a1b"));
+
+        // Pressed again with the pointer where the cursor already is, it is
+        // the toggle it has always been.
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(carded(&screen), None, "space closed the card");
+
+        // `l` only ever opens, and it opens the pointer's row too.
+        resting(&mut screen, 5);
+        press(&mut screen, KeyCode::Char('l'));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
+
+        // And with no pointer on the list, both keys are the cursor's as
+        // they were before there was a pointer to read.
+        resting(&mut screen, 0);
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(carded(&screen), None);
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
     }
 
     #[test]

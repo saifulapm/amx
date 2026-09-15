@@ -1745,6 +1745,96 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     );
 }
 
+/// The name on the card's rule, where a card is open: the one row a card
+/// draws whatever it is a look at, and the only line of the screen that starts
+/// at the column the list indents its rows past.
+fn card_rule(drawn: &str) -> Option<String> {
+    drawn
+        .lines()
+        .find(|line| line.contains('┈') && !line.starts_with(' '))
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_string)
+}
+
+/// Whether the cursor's bar is on an agent's row of the list, told from the
+/// card's rule below it by the summary only a row carries.
+fn barred(amx: &Harness, view: &str, id: &str) -> bool {
+    coloured(amx, view)
+        .lines()
+        .any(|line| line.contains(id) && line.contains("did what") && line.contains(&bar()))
+}
+
+#[test]
+fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
+    let amx = Harness::new();
+    finished(&amx, "first-a1b", "done", 60);
+    finished(&amx, "second-b2c", "done", 120);
+    finished(&amx, "third-c3d", "done", 180);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("three rows with the bar on the first", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("second-b2c")
+            && drawn.contains("third-c3d")
+            && barred(&amx, &view, "first-a1b"))
+        .then_some(())
+    });
+
+    // The pointer comes to rest on the third row. Space is read where it is
+    // resting, so the card is that row's and the cursor went with it.
+    mouse(
+        &amx,
+        &view,
+        35,
+        5,
+        screen_row_of(&amx, &view, "third-c3d"),
+        true,
+    );
+    press(&amx, &view, "Space");
+    amx.until("the third row's card", || {
+        (card_rule(&screen(&amx, &view)).as_deref() == Some("third-c3d")).then_some(())
+    });
+    assert!(
+        barred(&amx, &view, "third-c3d"),
+        "the cursor landed where the pointer was"
+    );
+
+    // The same of `l`, with the pointer back on the first row.
+    press(&amx, &view, "Escape");
+    amx.until("the card away", || {
+        card_rule(&screen(&amx, &view)).is_none().then_some(())
+    });
+    mouse(
+        &amx,
+        &view,
+        35,
+        5,
+        screen_row_of(&amx, &view, "first-a1b"),
+        true,
+    );
+    press(&amx, &view, "l");
+    amx.until("the first row's card", || {
+        (card_rule(&screen(&amx, &view)).as_deref() == Some("first-a1b")).then_some(())
+    });
+    assert!(
+        barred(&amx, &view, "first-a1b"),
+        "the cursor landed where the pointer was"
+    );
+
+    // And with the pointer off the list, space is the cursor's card: the
+    // walk down moves it, and the row the pointer last rested on is not it.
+    press(&amx, &view, "Escape");
+    amx.until("the card away", || {
+        card_rule(&screen(&amx, &view)).is_none().then_some(())
+    });
+    mouse(&amx, &view, 35, 5, 1, true);
+    press(&amx, &view, "j");
+    press(&amx, &view, "Space");
+    amx.until("the second row's card", || {
+        (card_rule(&screen(&amx, &view)).as_deref() == Some("second-b2c")).then_some(())
+    });
+}
+
 #[test]
 fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
     let amx = Harness::new();
