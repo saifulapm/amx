@@ -24,12 +24,12 @@ pub fn from_env() -> Result<i32> {
 /// Run the verb, with everything it touches named: the records, and the home
 /// every vendor's wiring is under.
 pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
-    let live = crate::spawn::live(state_root)?;
-    if !live.is_empty() {
+    let still_there = crate::spawn::unfinished(state_root)?;
+    if !still_there.is_empty() {
         writeln!(
             out,
             "still running: {}. stop them first, or their answers go with the records.",
-            live.join(", ")
+            still_there.join(", ")
         )?;
         return Ok(exit::FAILURE);
     }
@@ -86,13 +86,20 @@ mod tests {
         }
     }
 
-    fn record(root: &Path, id: &str, phase: Phase, socket: Socket, pane: PaneId) -> Agent {
+    fn record(
+        root: &Path,
+        id: &str,
+        vendor: Option<&str>,
+        phase: Phase,
+        socket: Socket,
+        pane: PaneId,
+    ) -> Agent {
         let agent = Agent::create(
             root,
             &Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
-                agent: None,
+                agent: vendor.map(str::to_string),
                 dir: PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,
@@ -130,6 +137,10 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_while_an_agent_is_still_running() {
+        // Everything that has not ended and still has its pane, whatever it is
+        // doing on it. A cap counts the agents taking a turn; this counts the
+        // programs whose records are about to be deleted, and a command still
+        // printing into its output file loses as much as an agent mid-turn.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         let settings = settings_with_amx(home.path());
@@ -138,31 +149,45 @@ mod tests {
         // In a session named the way spawn::place names one, so the pane
         // answers for this agent: a pane nobody owns is a pane its record has
         // lost, and uninstall waits on no such agent.
-        let (_, pane) = server
-            .0
-            .new_session(&Spawn {
-                name: Some(&format!("{}fix-login-a1b", crate::tmux::SESSION_PREFIX)),
-                command: &["sh", "-c", "while :; do sleep 0.05; done"],
-                ..Spawn::default()
-            })
-            .unwrap();
-        record(
-            root.path(),
-            "fix-login-a1b",
-            Phase::Working,
-            server.0.socket().clone(),
-            pane,
-        );
+        let pane_for = |id: &str| {
+            server
+                .0
+                .new_session(&Spawn {
+                    name: Some(&format!("{}{id}", crate::tmux::SESSION_PREFIX)),
+                    command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                    ..Spawn::default()
+                })
+                .unwrap()
+                .1
+        };
+
+        // A shell command, which has no vendor, and an agent sitting at its
+        // prompt with the turn over.
+        for (id, vendor, phase) in [
+            ("watch-log-a1b", None, Phase::Working),
+            ("port-it-b2c", Some("claude"), Phase::Idle),
+        ] {
+            let pane = pane_for(id);
+            record(
+                root.path(),
+                id,
+                vendor,
+                phase,
+                server.0.socket().clone(),
+                pane,
+            );
+        }
 
         let mut said = Vec::new();
         let code = run(root.path(), home.path(), 2, &mut said).unwrap();
 
         assert_eq!(code, exit::FAILURE);
+        let said = String::from_utf8(said).unwrap();
         assert!(
-            String::from_utf8(said).unwrap().contains("fix-login-a1b"),
-            "the refusal names who is still working"
+            said.contains("watch-log-a1b") && said.contains("port-it-b2c"),
+            "the refusal names everything still there: {said}"
         );
-        assert!(root.path().join("fix-login-a1b").exists(), "records kept");
+        assert!(root.path().join("watch-log-a1b").exists(), "records kept");
         assert!(
             !install::installed_events(&claude::HOOKS, &read(&settings), "/home/dev/bin/amx _hook")
                 .is_empty(),
@@ -179,6 +204,7 @@ mod tests {
         record(
             root.path(),
             "fix-login-a1b",
+            Some("claude"),
             Phase::Done,
             Socket::Name("amx".to_string()),
             PaneId::new("%1").unwrap(),
@@ -208,6 +234,7 @@ mod tests {
         record(
             root.path(),
             "fix-login-a1b",
+            Some("claude"),
             Phase::Working,
             Socket::Name("amx-test-no-such-server".to_string()),
             PaneId::new("%404").unwrap(),

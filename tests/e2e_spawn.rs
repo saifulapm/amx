@@ -1745,10 +1745,10 @@ fn new_refuses_once_the_cap_is_reached() {
 
     let first = id_of(&new(
         &amx,
-        "happy-turn",
+        "works-without-end",
         &["--no-worktree", "--agent", &mock, "the first"],
     ));
-    amx.until_state(&first, "idle");
+    amx.until_state(&first, "working");
 
     let refused = new(
         &amx,
@@ -1782,12 +1782,12 @@ fn new_counts_the_cap_however_the_directory_was_spelled() {
 
     let first = id_of(
         &amx.amx_command(&["new", "--dir", "alpha", "--agent", &mock, "the first"])
-            .env("MOCK_CLAUDE_SCENARIO", amx.scenario("happy-turn"))
+            .env("MOCK_CLAUDE_SCENARIO", amx.scenario("works-without-end"))
             .current_dir(amx.home())
             .output()
             .expect("running amx new"),
     );
-    amx.until_state(&first, "idle");
+    amx.until_state(&first, "working");
     assert_eq!(
         amx.meta(&first)["dir"],
         std::fs::canonicalize(&alpha)
@@ -1825,7 +1825,7 @@ fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
 
     let first = id_of(&new(
         &amx,
-        "happy-turn",
+        "works-without-end",
         &[
             "--dir",
             &alpha.to_string_lossy(),
@@ -1834,7 +1834,7 @@ fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
             "the first",
         ],
     ));
-    amx.until_state(&first, "idle");
+    amx.until_state(&first, "working");
 
     let refused = new(
         &amx,
@@ -1886,7 +1886,7 @@ fn new_refuses_at_the_ceiling_over_every_project() {
 
     let first = id_of(&new(
         &amx,
-        "happy-turn",
+        "works-without-end",
         &[
             "--dir",
             &alpha.to_string_lossy(),
@@ -1895,7 +1895,7 @@ fn new_refuses_at_the_ceiling_over_every_project() {
             "the first",
         ],
     ));
-    amx.until_state(&first, "idle");
+    amx.until_state(&first, "working");
 
     let refused = new(
         &amx,
@@ -1935,6 +1935,69 @@ fn an_agent_that_has_ended_does_not_hold_a_place() {
         second.status.success(),
         "an agent that is over is not one of the five: {}",
         String::from_utf8_lossy(&second.stderr)
+    );
+}
+
+#[test]
+fn the_cap_counts_the_vendor_agents_that_are_running() {
+    // friction #JX6B7GWF: a project at max_agents 1 refused a spawn while the
+    // only records against it were a shell command and an agent sitting at its
+    // prompt. Neither is running a turn -- a command has no vendor at all, and
+    // an idle agent is a pane waiting to be spoken to -- so neither fills the
+    // place the cap is counting.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
+    let dir = alpha.to_string_lossy().into_owned();
+
+    let command = amx
+        .amx_command(&[
+            "new",
+            "--dir",
+            &dir,
+            "--name",
+            "watch-log-a1b",
+            "--exec",
+            "sleep 600",
+        ])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        command.status.success(),
+        "amx new --exec: {}",
+        String::from_utf8_lossy(&command.stderr)
+    );
+
+    let sitting = id_of(&new(
+        &amx,
+        "happy-turn",
+        &["--dir", &dir, "--agent", &mock, "the first"],
+    ));
+    amx.until_state(&sitting, "idle");
+
+    let started = new(
+        &amx,
+        "works-without-end",
+        &["--dir", &dir, "--agent", &mock, "the second"],
+    );
+    assert!(
+        started.status.success(),
+        "a command and an idle agent leave the cap its place: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let working = id_of(&started);
+    amx.until_state(&working, "working");
+
+    let refused = new(
+        &amx,
+        "happy-turn",
+        &["--dir", &dir, "--agent", &mock, "the third"],
+    );
+    assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("max_agents is 1"),
+        "and an agent working does fill it: {said}"
     );
 }
 

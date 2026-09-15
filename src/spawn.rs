@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::registry;
-use crate::store::{Agent, Meta};
+use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{PaneId, Server, Spawn};
 use crate::vendor::Vendor;
 
@@ -592,12 +592,12 @@ fn wait_for(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The agents that are still going, on the whole machine.
+/// The agents running a turn, on the whole machine.
 pub fn live(root: &Path) -> Result<Vec<String>> {
     Ok(named(going(root)?))
 }
 
-/// The agents of one project that are still going.
+/// The agents of one project that are running a turn.
 ///
 /// A cap is a key some file sets, so the agents counted against it are the
 /// agents that read that file: whichever directory one was started in, it
@@ -610,32 +610,58 @@ pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
     Ok(named(theirs))
 }
 
-/// The records of the agents that are still going: the record says they have
-/// not finished, and the pane it names still answers for them on the server it
-/// was recorded on.
+/// The agents amx has not finished with: every record that has not ended and
+/// whose pane still answers for it, whatever it is doing on that pane.
 ///
-/// Whose the pane is rather than whether it is there, because these agents are
-/// what a cap is counted over: a record whose server died names a number tmux
-/// has since handed to somebody else, and counting it would refuse a spawn
-/// over an agent that stopped running yesterday.
+/// Shell rows and agents at their prompts included, which is where this parts
+/// company with [`live`]. A cap rations the turns a project runs at once, so
+/// it counts the agents taking one; `uninstall` is about to delete every
+/// record there is, and a command still printing into its output file loses as
+/// much by that as an agent mid-turn does.
+pub fn unfinished(root: &Path) -> Result<Vec<String>> {
+    Ok(named(answering(root, |phase, _| !phase.is_terminal())?))
+}
+
+/// The records of the agents that are running: a vendor agent partway through
+/// a turn.
+///
+/// Running is `Starting`, `Working` or `Waiting`, and a vendor to be running
+/// it. A shell row has no vendor at all, and an agent that is `Idle` is sitting
+/// at its prompt with the turn over — neither is doing anything a cap is there
+/// to ration, and counting them refused people spawns over an afternoon's
+/// leftover panes (friction #JX6B7GWF). `Unknown` is a screen amx cannot
+/// account for and is not counted either.
+fn going(root: &Path) -> Result<Vec<Meta>> {
+    answering(root, |phase, meta| {
+        matches!(phase, Phase::Starting | Phase::Working | Phase::Waiting) && meta.agent.is_some()
+    })
+}
+
+/// The records `wanted` takes, of the agents whose pane still answers for them
+/// on the server it was recorded on.
+///
+/// Whose the pane is rather than whether it is there: a record whose server
+/// died names a number tmux has since handed to somebody else, and counting it
+/// would hold a place against an agent that stopped running yesterday.
 ///
 /// An agent whose state amx cannot read is skipped rather than failing the
 /// whole walk: one bad document should cost that agent, not everyone listed
-/// after it.
-fn going(root: &Path) -> Result<Vec<Meta>> {
-    let mut going = Vec::new();
+/// after it. The pane is asked last, since it is the only question here that
+/// leaves the machine's own disk.
+fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<Meta>> {
+    let mut kept = Vec::new();
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(state) = agent.state() else { continue };
-        if state.state.is_terminal() {
+        let Ok(meta) = agent.meta() else { continue };
+        if !wanted(state.state, &meta) {
             continue;
         }
-        let Ok(meta) = agent.meta() else { continue };
         if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
-            going.push(meta);
+            kept.push(meta);
         }
     }
-    Ok(going)
+    Ok(kept)
 }
 
 /// What those agents are called, in order.
@@ -690,8 +716,8 @@ pub fn project_of(dir: &Path) -> PathBuf {
 /// over every agent there is, and where nobody has set one there is none: a
 /// machine is as busy as the projects on it ask between them.
 ///
-/// Both counts are of agents that are still going. One that has finished is a
-/// record, not a running program.
+/// Both counts are of agents running a turn — see [`going`] for what that
+/// leaves out. One that has finished is a record, not a running program.
 pub fn at_capacity(
     root: &Path,
     project: &Path,
@@ -1302,11 +1328,13 @@ mod tests {
         assert!(boot(root.path(), "../elsewhere").is_err(), "not an id");
     }
 
+    /// A record of a vendor agent, which is what a cap counts: a row with no
+    /// vendor is a shell command and fills no place.
     fn meta(id: &str, socket: crate::tmux::Socket, pane: PaneId) -> Meta {
         Meta {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
-            agent: None,
+            agent: Some("claude".to_string()),
             dir: PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,
@@ -1439,6 +1467,45 @@ mod tests {
             at_capacity(root.path(), beta.path(), 2, Some(4)).unwrap(),
             None,
             "and a ceiling nothing has reached refuses nothing"
+        );
+    }
+
+    #[test]
+    fn live_counts_neither_a_shell_command_nor_an_agent_at_its_prompt() {
+        // friction #JX6B7GWF. All three panes are there and answering; what
+        // separates them is what is happening in one. A command has no vendor,
+        // and an idle agent has finished its turn and is waiting to be spoken
+        // to -- a cap rations turns, and neither of those is one.
+        let root = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let server = Own(
+            Server::named(format!("amx-running-{}", std::process::id())).with_conf("/dev/null")
+        );
+        let socket = server.0.socket().clone();
+
+        for (id, agent, phase) in [
+            ("run-tests-a1b", None, Phase::Starting),
+            ("port-it-b2c", Some("claude".to_string()), Phase::Idle),
+            ("fix-login-c3d", Some("claude".to_string()), Phase::Working),
+        ] {
+            let of_theirs = Meta {
+                agent,
+                dir: project.path().to_path_buf(),
+                ..meta(id, socket.clone(), placed(&server.0, id))
+            };
+            let record = Agent::create(root.path(), &of_theirs).expect("a record");
+            record
+                .writer()
+                .unwrap()
+                .update_state(|state| state.state = phase)
+                .unwrap();
+        }
+
+        assert_eq!(live(root.path()).unwrap(), ["fix-login-c3d"]);
+        assert_eq!(
+            at_capacity(root.path(), project.path(), 2, None).unwrap(),
+            None,
+            "and a cap of two has a place left: only one of the three is running"
         );
     }
 
