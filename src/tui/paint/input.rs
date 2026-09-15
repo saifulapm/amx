@@ -482,7 +482,7 @@ fn hints(screen: &Screen) -> Vec<Hint<'static>> {
     let list = &screen.list;
     let mut said = match list.items().get(list.cursor()) {
         Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
-        Some(Item::Fold(_)) => vec![enters(screen)],
+        Some(Item::Fold(..)) => vec![enters(screen)],
         // The cursor never rests on a blank; the arm is for the compiler.
         Some(Item::Blank) => Vec::new(),
         // An agent whose command has ended has no window to bring forward and
@@ -530,7 +530,7 @@ fn enters(screen: &Screen) -> Hint<'static> {
             true => ("enter", "opens it"),
             false => ("enter", "shuts it"),
         },
-        Some(Item::Fold(_)) => ("enter", "shows them"),
+        Some(Item::Fold(..)) => ("enter", "shows them"),
         _ => ("enter", "attach"),
     }
 }
@@ -1009,10 +1009,11 @@ mod tests {
         );
     }
 
-    /// A fleet with nothing left to finish, so there is a fold to walk onto.
+    /// A fleet with nothing left to finish and more of them than one group
+    /// shows, so there is a fold to walk onto.
     fn all_done() -> Vec<View> {
-        (0..5)
-            .map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60))
+        (0..12)
+            .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
             .collect()
     }
 
@@ -1202,15 +1203,13 @@ mod tests {
         // An agent whose command has ended has no window to bring forward and
         // nothing left to stop.
         let mut screen = showing(all_done(), None);
-        screen.list.fit(5);
-        screen.list.refit();
         let row = hint_row(&screen, wide);
         assert!(row.starts_with("space card   ctrl+x forget"), "{row:?}");
         assert!(!row.contains("attach"), "{row:?}");
 
         // The fold is not an agent either: what enter does there is give back
         // the rows it is holding.
-        for _ in 0..3 {
+        for _ in 0..10 {
             screen.list.down();
         }
         assert!(

@@ -9,10 +9,14 @@
 //!
 //! Inside a group the order is the order agents were started in, which is the
 //! one order that does not move under a cursor while somebody is reading. The
-//! exception is the finished group, where the newest ending comes first and
-//! whatever the screen has no row for folds away behind a count: a week of
-//! finished agents is history, and history takes the room the live ones leave
-//! rather than standing in front of them.
+//! exception is the finished group, where the newest ending comes first.
+//!
+//! A group past [`FOLD_AT`] rows shows that many and folds the rest away
+//! behind a count, whichever axis it was gathered on. Ten rows is as much of
+//! one group as somebody reads before they scroll, and the fold is the same
+//! ten whatever the terminal is: a wall cut to the height of the window moves
+//! rows under a reader every time the window changes, and a screen with room
+//! to spare is not a reason to put sixty endings in front of somebody.
 //!
 //! There is a second question a wall of agents gets asked — *what is running in
 //! this repository?* — and it is the same agents gathered a different way, so
@@ -41,10 +45,13 @@ use crate::derive::{Evidence, View};
 use crate::pr::{self, Pr, Standing};
 use crate::store::{Ask, Meta, Phase};
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// How many rows of one group somebody is shown before the rest fold away
+/// behind a count.
+pub const FOLD_AT: usize = 10;
 
 /// What an agent is, to somebody deciding what to do next.
 ///
@@ -243,8 +250,10 @@ pub enum Item {
     Heading(Under, Tally),
     /// The agent at this position of the reading behind the list.
     Agent(usize),
-    /// How many finished agents the fold is holding back.
-    Fold(usize),
+    /// Which heading's rows the fold is holding back, and how many of them.
+    /// The heading, because a fold is opened one group at a time and the row
+    /// somebody presses is the only thing that says which.
+    Fold(Under, usize),
     /// The line that stands a heading off from the group above it.
     Blank,
 }
@@ -370,15 +379,10 @@ pub struct List {
     /// Whether the cursor has been put on anything yet, which is what tells a
     /// view that has just opened from one somebody is reading.
     landed: bool,
-    unfolded: bool,
-    /// How many rows the screen has for the list, told back by the paint on
-    /// every frame: the fold is a fact about a screen, and the screen is the
-    /// paint's to know. A cell for the reason the paint's own write-backs are
-    /// cells — a draw is otherwise a pure reading of the view.
-    room: Cell<usize>,
-    /// The room the lines were last laid out for, which is what tells a
-    /// screen that has changed size from one that has not.
-    built: usize,
+    /// The groups somebody has opened the fold of, by what they stand for.
+    /// Remembered the way `shut` is and for the same reason: the heading a
+    /// fold belongs to has to be the same heading on the next reading.
+    unfolded: HashSet<Key>,
     /// The groups somebody has shut, by what they stand for.
     shut: HashSet<Key>,
     /// The agents somebody has pinned over the wall.
@@ -425,11 +429,7 @@ impl Default for List {
             items: Vec::new(),
             cursor: 0,
             landed: false,
-            unfolded: false,
-            // No screen heard from yet, so nothing folds: a fold cut for a
-            // guessed height would move rows the moment the real one arrived.
-            room: Cell::new(usize::MAX),
-            built: usize::MAX,
+            unfolded: HashSet::new(),
             shut: HashSet::new(),
             held: BTreeSet::new(),
             asleep: BTreeSet::new(),
@@ -749,7 +749,7 @@ impl List {
 
     /// Whether the cursor is on the fold rather than on an agent.
     pub fn on_fold(&self) -> bool {
-        matches!(self.items.get(self.cursor), Some(Item::Fold(_)))
+        matches!(self.items.get(self.cursor), Some(Item::Fold(..)))
     }
 
     /// Whether the cursor is on a heading rather than on anything under one.
@@ -879,31 +879,29 @@ impl List {
         self.axis == Axis::State && self.views.is_empty() && self.filters.label().is_none()
     }
 
-    /// Show the finished agents the fold was holding back, and keep showing
-    /// them: somebody who opened it is going through them.
+    /// Show the rows the fold under the cursor was holding back, and keep
+    /// showing them: somebody who opened it is going through them.
+    ///
+    /// That group and no other. A fold is a row of one group, so opening one
+    /// says nothing about the rest of the wall, and a press that gave every
+    /// group its rows back would be a press nobody could undo.
     pub fn unfold(&mut self) {
-        self.unfolded = true;
-        let on = self.on();
-        self.rebuild(on.agent());
+        self.unfold_at(self.cursor);
     }
 
-    /// Say how many rows the screen has for the list. The paint says it with
-    /// every frame it draws; the lines are laid out for it by the next
-    /// rebuild, or by [`List::refit`] where nothing else prompts one.
-    pub fn fit(&self, rows: usize) {
-        self.room.set(rows);
-    }
-
-    /// Lay the lines out again where the screen changed size under them, and
-    /// nowhere else: a rebuild moves rows, and rows should only move when
-    /// something moved them.
-    pub fn refit(&mut self) {
-        if self.built == self.room.get() {
+    /// The same for a fold somebody pointed at rather than walked to, which
+    /// is a line of its own: a click on a fold opens it and leaves the cursor
+    /// where it was.
+    pub fn unfold_at(&mut self, at: usize) {
+        let Some(Item::Fold(under, _)) = self.items.get(at).copied() else {
             return;
-        }
+        };
+        let Some(key) = self.key(under) else {
+            return;
+        };
+        self.unfolded.insert(key);
         let on = self.on();
         self.rebuild(on.agent());
-        self.follow(&on);
     }
 
     /// How many agents have stopped on a question, wherever their rows are.
@@ -1062,7 +1060,6 @@ impl List {
     /// have already moved the reading the old items point into, and an id
     /// read across that seam could be somebody else's.
     fn rebuild(&mut self, keeping: Option<&str>) {
-        self.built = self.room.get();
         self.remember_the_roots();
         let order = self.ordered();
         self.counts = self.counted(&order);
@@ -1076,7 +1073,7 @@ impl List {
                 self.items = self.by_state(&order, keeping);
             }
             Axis::Project => {
-                let (projects, items) = self.by_project(&order);
+                let (projects, items) = self.by_project(&order, keeping);
                 self.projects = projects;
                 self.items = items;
             }
@@ -1176,75 +1173,60 @@ impl List {
                 continue;
             }
 
-            // History takes the rows the screen has left. The live groups are
-            // in `items` already, drawn whole; the finished agents fill what
-            // remains, and only the ones there is genuinely no row for fold
-            // behind the count — the fold row standing on the last line of a
-            // full screen, and absent when everything fits.
-            let shown = match group == Group::Completed && !self.unfolded {
-                true => {
-                    let space = self
-                        .room
-                        .get()
-                        .saturating_sub(items.len())
-                        .saturating_sub(self.rows_under_history(order));
-                    match members.len() > space {
-                        true => self.worth_the_room(&members, space.saturating_sub(1), keeping),
-                        false => members.clone(),
-                    }
-                }
-                false => members.clone(),
-            };
-            let hidden = members.len() - shown.len();
-            items.extend(shown.into_iter().map(Item::Agent));
-            if hidden > 0 {
-                items.push(Item::Fold(hidden));
-            }
+            self.fold(
+                Under::Group(group),
+                &Key::Group(group),
+                &members,
+                keeping,
+                &mut items,
+            );
         }
         items
     }
 
-    /// The rows the groups drawn under history still need: a blank and a
-    /// heading for each that has anybody in it, and its rows where it is open.
+    /// Put a group's rows on the list, folding the ones past [`FOLD_AT`] away
+    /// behind a count on a row of their own.
     ///
-    /// History fills what the screen has left, but it is laid out before the
-    /// sleeping agents are, and a fold cut for the whole of the remaining
-    /// screen would leave the group somebody deliberately put rows under with
-    /// no rows on it: a row that vanished from the wall the moment it was put
-    /// to sleep is a mark that reads as a delete.
-    fn rows_under_history(&self, order: &[usize]) -> usize {
-        Group::ALL
-            .iter()
-            .skip_while(|group| **group != Group::Completed)
-            .skip(1)
-            .map(|&later| {
-                let members = order
-                    .iter()
-                    .filter(|&&n| self.group(&self.views[n]) == later)
-                    .count();
-                match members {
-                    0 => 0,
-                    _ if self.shut.contains(&Key::Group(later)) => 2,
-                    _ => 2 + members,
-                }
-            })
-            .sum()
+    /// Nothing here asks how tall the screen is. A group is as long as it is,
+    /// and the list scrolls.
+    ///
+    /// The heading is handed in both ways round because the two do not answer
+    /// each other yet: `Under::Project` is a place in a table this walk is
+    /// still building, so the key it would read back is the last reading's.
+    fn fold(
+        &self,
+        under: Under,
+        key: &Key,
+        members: &[usize],
+        keeping: Option<&str>,
+        items: &mut Vec<Item>,
+    ) {
+        let shown = match members.len() > FOLD_AT && !self.unfolded.contains(key) {
+            true => self.worth_the_room(members, FOLD_AT, keeping),
+            false => members.to_vec(),
+        };
+        let hidden = members.len() - shown.len();
+        items.extend(shown.into_iter().map(Item::Agent));
+        if hidden > 0 {
+            items.push(Item::Fold(under, hidden));
+        }
     }
 
-    /// Which finished rows a cut this tight keeps: the ones a person came to
-    /// scan for. A failure is news however old it is, a row carrying a pull
-    /// request is work still moving, a row nobody has been to read is holding
-    /// something that has never been seen, and the row the cursor stands on is
-    /// taken even over the room — folding it away would land the cursor on
-    /// whoever came up in its place, and the card with it. What is left over
-    /// fills whatever room is left, newest first, and everything kept is drawn
-    /// in the order the group already reads in.
+    /// Which rows a fold keeps: the ones a person came to scan for. A failure
+    /// is news however old it is, a row carrying a pull request is work still
+    /// moving, and the row the cursor stands on is taken even over the room —
+    /// folding it away would land the cursor on whoever came up in its place,
+    /// and the card with it. What is left over fills whatever room is left,
+    /// and everything kept is drawn in the order the group already reads in.
+    ///
+    /// Whether anybody has read a row plays no part. It used to, and a card
+    /// marks its row read, so reading one made the row under the cursor fall
+    /// out of the fold and the rest of the group shuffle up under somebody
+    /// mid-scan.
     fn worth_the_room(&self, members: &[usize], room: usize, keeping: Option<&str>) -> Vec<usize> {
         let cursor = |n: usize| keeping == Some(self.views[n].id());
         let scanned = |n: usize| {
-            self.views[n].phase() == Phase::Failed
-                || !self.requests(&self.views[n]).is_empty()
-                || unread(&self.views[n])
+            self.views[n].phase() == Phase::Failed || !self.requests(&self.views[n]).is_empty()
         };
         let room = room.max(members.iter().filter(|&&n| cursor(n)).count());
         let chosen: HashSet<usize> = members
@@ -1291,10 +1273,10 @@ impl List {
     ///
     /// Projects are ordered by what their most urgent agent needs and then by
     /// where they are: a question at the bottom of a quiet repository is still
-    /// a question, and two equally quiet repositories go by path. Nothing
-    /// folds here — the fold holds back history, and history is the completed
-    /// group rather than a place on a disk.
-    fn by_project(&self, order: &[usize]) -> (Vec<PathBuf>, Vec<Item>) {
+    /// a question, and two equally quiet repositories go by path. A project
+    /// past [`FOLD_AT`] agents folds the way a group does: sixty rows under
+    /// one path is as long a wall as sixty under one heading.
+    fn by_project(&self, order: &[usize], keeping: Option<&str>) -> (Vec<PathBuf>, Vec<Item>) {
         let mut roots: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for &n in order {
             let root = self.root_of(n);
@@ -1315,16 +1297,15 @@ impl List {
         let mut projects = Vec::new();
         let mut items = Vec::new();
         for (root, members) in roots {
-            let shut = self.shut.contains(&Key::Project(root.clone()));
+            let key = Key::Project(root.clone());
+            let shut = self.shut.contains(&key);
             if !items.is_empty() {
                 items.push(Item::Blank);
             }
-            items.push(Item::Heading(
-                Under::Project(projects.len()),
-                self.tally(&members, shut),
-            ));
+            let under = Under::Project(projects.len());
+            items.push(Item::Heading(under, self.tally(&members, shut)));
             if !shut {
-                items.extend(members.into_iter().map(Item::Agent));
+                self.fold(under, &key, &members, keeping, &mut items);
             }
             projects.push(root);
         }
@@ -1501,25 +1482,6 @@ pub fn called(view: &View) -> &str {
         .as_deref()
         .or(view.state.session_title.as_deref())
         .unwrap_or_else(|| view.id())
-}
-
-/// Whether this row is holding something nobody has read.
-///
-/// Two halves, and both are needed. An agent that is starting or mid-turn has
-/// nothing for anybody to have read: what it is doing is on the row already
-/// and it is different by the next reading. Everything else has stopped —
-/// on a question, at its prompt, or for good — and what it stopped with is
-/// worth a mark until somebody has been to look at it.
-///
-/// Read against the clock rather than against a flag, so the mark comes back
-/// on its own: an agent that was read at its prompt and then stopped on a
-/// question has said something since the last look at it.
-///
-/// Against the last thing it said and not against the end of its run: an
-/// answer routinely lands after the exit is recorded, and a row holding one
-/// nobody has read is exactly what the mark is for.
-pub fn unread(view: &View) -> bool {
-    !matches!(view.phase(), Phase::Starting | Phase::Working) && view.state.seen < said(view)
 }
 
 /// When the agent last said anything, as well as the record can say.
@@ -1740,13 +1702,6 @@ mod tests {
         }
     }
 
-    /// The same reading, with somebody having been to look at what it is
-    /// holding.
-    fn looked_at(mut view: View) -> View {
-        view.state.seen = said(&view);
-        view
-    }
-
     /// The same list with one agent pinned, which is a cursor on its row and
     /// the key.
     fn pinning(mut list: List, id: &str) -> List {
@@ -1800,7 +1755,7 @@ mod tests {
                     if tally.shut { " shut" } else { "" }
                 ),
                 Item::Agent(_) => list.agent(*item).unwrap().id().to_string(),
-                Item::Fold(hidden) => format!("… {hidden} more"),
+                Item::Fold(_, hidden) => format!("… {hidden} more"),
                 Item::Blank => String::new(),
             })
             .collect()
@@ -1821,13 +1776,12 @@ mod tests {
             .collect()
     }
 
-    /// The same list on a screen with this many rows for it, which is what
-    /// makes the finished agents fold.
-    fn sized(views: Vec<View>, room: usize) -> List {
-        let mut list = List::default();
-        list.fit(room);
-        list.show(views);
-        list
+    /// A run of finished agents, `done-0` the oldest ending and the last of
+    /// them the newest, which is the order the group draws them in.
+    fn a_history(count: u64) -> Vec<View> {
+        (0..count)
+            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+            .collect()
     }
 
     // Every directory the list asked about, in the order it asked. A thread
@@ -2014,182 +1968,170 @@ mod tests {
     }
 
     #[test]
-    fn view_folds_the_finished_agents_behind_a_count() {
-        // Five finished on a screen with five rows for the list: the heading,
-        // the three newest, and the fold on the last row.
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            5,
-        );
-
+    fn view_folds_a_group_past_ten_rows_behind_a_count() {
+        // Twelve endings: the heading, the ten newest, and the fold on the
+        // row under them. However tall the screen is — nothing here has been
+        // told one.
+        let mut list = listed(a_history(12));
         assert_eq!(
             lines(&list),
-            ["Completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
+            [
+                "Completed (12)",
+                "done-11",
+                "done-10",
+                "done-9",
+                "done-8",
+                "done-7",
+                "done-6",
+                "done-5",
+                "done-4",
+                "done-3",
+                "done-2",
+                "… 2 more"
+            ]
         );
 
+        for _ in 0..10 {
+            list.down();
+        }
         list.unfold();
-        assert_eq!(lines(&list).len(), 6, "the fold line is gone with the fold");
+        assert_eq!(
+            lines(&list).len(),
+            13,
+            "the fold line is gone with the fold"
+        );
         assert!(lines(&list).contains(&"done-0".to_string()));
 
         // And it stays open while more finish.
-        list.show(
-            (0..6)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-        );
+        list.show(a_history(13));
         assert!(lines(&list).contains(&"done-0".to_string()));
     }
 
     #[test]
-    fn view_folds_history_short_of_the_rows_the_sleeping_group_needs() {
-        // Five finished and one put to sleep, on a screen with eight rows for
-        // the list. History is laid out first and would otherwise take the
-        // whole of the room, and the group somebody made would draw with no
-        // row under it: a mark that reads as a delete.
-        let mut views: Vec<View> = (0..5)
-            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+    fn view_folds_the_eleventh_row_of_a_group_and_leaves_ten_standing() {
+        let ten = listed(a_history(10));
+        assert_eq!(
+            lines(&ten).len(),
+            11,
+            "a heading and ten rows, with nothing held back: {:?}",
+            lines(&ten)
+        );
+
+        let eleven = listed(a_history(11));
+        assert_eq!(
+            lines(&eleven).last().map(String::as_str),
+            Some("… 1 more"),
+            "{:?}",
+            lines(&eleven)
+        );
+    }
+
+    #[test]
+    fn view_folds_every_group_and_not_only_the_finished_ones() {
+        // A dozen agents stopped on a question is as long a wall as a dozen
+        // endings, and the fold is for the wall rather than for history.
+        let mut views: Vec<View> = (0..12)
+            .map(|n| view(&format!("ask-{n}"), Phase::Waiting, 10 * n))
             .collect();
-        views.push(view("nap-f6g", Phase::Working, 60));
-        let list = sleeping(sized(views, 8), "nap-f6g");
+        views.push(view("done-a1b", Phase::Done, 5));
 
         assert_eq!(
-            lines(&list),
+            lines(&listed(views)),
             [
-                "Completed (5)",
-                "done-4",
-                "done-3",
-                "done-2",
+                "Needs input (12)",
+                "ask-0",
+                "ask-1",
+                "ask-2",
+                "ask-3",
+                "ask-4",
+                "ask-5",
+                "ask-6",
+                "ask-7",
+                "ask-8",
+                "ask-9",
                 "… 2 more",
                 "",
-                "Asleep (1)",
-                "nap-f6g",
-            ],
-            "the fold gives the sleeping row its place"
-        );
-    }
-
-    #[test]
-    fn view_folds_only_what_the_screen_has_no_row_for() {
-        // Room to spare: every finished agent has a row, and there is no fold
-        // to walk onto at all.
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            6,
-        );
-        assert_eq!(
-            lines(&list),
-            [
-                "Completed (5)",
-                "done-4",
-                "done-3",
-                "done-2",
-                "done-1",
-                "done-0"
-            ]
-        );
-
-        // The screen shrinks under the same fleet, and the fold takes exactly
-        // what stopped fitting, standing on the last row the screen has.
-        list.fit(4);
-        list.refit();
-        assert_eq!(
-            lines(&list),
-            ["Completed (5)", "done-4", "done-3", "… 3 more"]
-        );
-
-        // And gives it back when the screen grows again.
-        list.fit(100);
-        list.refit();
-        assert_eq!(lines(&list).len(), 6);
-    }
-
-    #[test]
-    fn view_gives_history_the_rows_the_live_groups_leave() {
-        // The live groups draw whole; the finished agents fill what is left
-        // of the nine rows, and the fold takes the ninth.
-        let mut views = vec![
-            view("ask-a1b", Phase::Waiting, 10),
-            view("busy-b2c", Phase::Working, 20),
-        ];
-        views.extend((0..4).map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n)));
-        let list = sized(views, 9);
-
-        assert_eq!(
-            lines(&list),
-            [
-                "Needs input (1)",
-                "ask-a1b",
-                "",
-                "Working (1)",
-                "busy-b2c",
-                "",
-                "Completed (4)",
-                "done-3",
-                "… 3 more"
+                "Completed (1)",
+                "done-a1b"
             ]
         );
     }
 
     #[test]
-    fn view_keeps_failures_requests_and_unread_rows_ahead_of_the_plainly_done() {
-        // Six endings and rows for three of them. The failure, the row
-        // carrying a number, and the row nobody has been to read are what
-        // somebody scans this group for, so the cut keeps them over newer but
-        // plainly done rows that have been read — in the order the group
+    fn view_keeps_failures_and_requests_ahead_of_the_plainly_done() {
+        // Fourteen endings and rows for ten. The failure and the row carrying
+        // a number are what somebody scans this group for, so the fold keeps
+        // them over the oldest plainly done rows — in the order the group
         // already reads in.
+        //
+        // Nobody has read any of these, and the four that fold away are the
+        // four oldest all the same: whether a row has been looked at plays no
+        // part, because looking at one would otherwise move it.
         let mut list = List::default();
         list.asking(a_forge);
-        list.fit(5);
-        let mut views: Vec<View> = (1..=3)
-            .map(|n| looked_at(view(&format!("done-{n}"), Phase::Done, 10 * n)))
+        let mut views: Vec<View> = (1..=12)
+            .map(|n| view(&format!("done-{n:02}"), Phase::Done, 10 * n))
             .collect();
-        views.push(looked_at(view("broke-e5f", Phase::Failed, 2)));
-        views.push(looked_at(on_a_branch(
+        views.push(view("broke-e5f", Phase::Failed, 2));
+        views.push(on_a_branch(
             view("merged-f6g", Phase::Done, 1),
             "amx/merged-f6g",
-        )));
-        views.push(view("unread-g7h", Phase::Done, 3));
+        ));
         list.show(views);
 
         assert_eq!(
             lines(&list),
             [
-                "Completed (6)",
-                "unread-g7h",
+                "Completed (14)",
+                "done-12",
+                "done-11",
+                "done-10",
+                "done-09",
+                "done-08",
+                "done-07",
+                "done-06",
+                "done-05",
                 "broke-e5f",
                 "merged-f6g",
-                "… 3 more"
+                "… 4 more"
             ]
         );
     }
 
     #[test]
     fn view_never_folds_the_row_out_from_under_the_cursor() {
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            100,
-        );
-        for _ in 0..4 {
+        let mut list = listed(a_history(11));
+        for _ in 0..9 {
             list.down();
         }
-        assert_eq!(list.selected().unwrap().id(), "done-0");
+        assert_eq!(list.selected().unwrap().id(), "done-1");
 
-        // The screen shrinks to five rows. The cut keeps the two newest and
-        // the row the cursor is standing on, however old: a fold that took
-        // it would leave the cursor on whoever came up in its place.
-        list.fit(5);
-        list.refit();
+        // A twelfth ending arrives and pushes the cursor's row past the ten
+        // the fold leaves standing. It is kept anyway, and an older row goes
+        // in its place: a fold that took it would leave the cursor on
+        // whoever came up there.
+        let mut views = a_history(11);
+        views.push(view("done-11", Phase::Done, 110));
+        list.show(views);
+
         assert_eq!(
             lines(&list),
-            ["Completed (5)", "done-4", "done-3", "done-0", "… 2 more"]
+            [
+                "Completed (12)",
+                "done-11",
+                "done-10",
+                "done-9",
+                "done-8",
+                "done-7",
+                "done-6",
+                "done-5",
+                "done-4",
+                "done-3",
+                "done-1",
+                "… 2 more"
+            ]
         );
-        assert_eq!(list.selected().unwrap().id(), "done-0");
+        assert_eq!(list.selected().unwrap().id(), "done-1");
     }
 
     #[test]
@@ -2382,14 +2324,9 @@ mod tests {
 
     #[test]
     fn view_can_reach_the_fold_and_open_it_where_it_stands() {
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            5,
-        );
+        let mut list = listed(a_history(12));
 
-        for _ in 0..3 {
+        for _ in 0..10 {
             list.down();
         }
         assert!(list.on_fold());
@@ -2587,23 +2524,34 @@ mod tests {
     }
 
     #[test]
-    fn axis_keeps_the_finished_agents_folded_only_where_there_is_a_group_for_them() {
-        let views: Vec<View> = (0..5)
+    fn axis_folds_a_project_past_ten_rows_and_opens_that_heading_alone() {
+        let views: Vec<View> = (0..12)
             .map(|n| at(view(&format!("done-{n}"), Phase::Done, 10 * n), "/src/api"))
             .collect();
         let mut list = over_the_disk(views);
-        list.fit(5);
-        list.refit();
 
         assert_eq!(
             lines(&list).len(),
-            6,
-            "a project heading is not the completed group, so nothing folds under it: {:?}",
+            12,
+            "a path holds as many rows as a group does: {:?}",
             lines(&list)
         );
-
-        list.turn();
         assert!(lines(&list).contains(&"… 2 more".to_string()));
+
+        for _ in 0..10 {
+            list.down();
+        }
+        list.unfold();
+        assert_eq!(lines(&list).len(), 13, "{:?}", lines(&list));
+
+        // The same agents gathered by state are folded still: what somebody
+        // opened is one heading rather than the fleet.
+        list.turn();
+        assert!(
+            lines(&list).contains(&"… 2 more".to_string()),
+            "{:?}",
+            lines(&list)
+        );
     }
 
     #[test]
@@ -3122,14 +3070,9 @@ mod tests {
 
     #[test]
     fn arranged_a_move_reaches_the_rows_on_the_screen_and_not_the_folded_ones() {
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            5,
-        );
+        let mut list = listed(a_history(12));
         // Down to the last row the fold leaves standing.
-        for _ in 0..2 {
+        for _ in 0..9 {
             list.down();
         }
         assert_eq!(list.selected().unwrap().id(), "done-2");
@@ -3138,25 +3081,14 @@ mod tests {
             !list.move_by(1),
             "the row under it is the fold, and behind that is history"
         );
-        assert_eq!(
-            lines(&list),
-            ["Completed (5)", "done-4", "done-3", "done-2", "… 2 more"]
-        );
+        assert_eq!(lines(&list).last().map(String::as_str), Some("… 2 more"));
 
         // Opened, every row is a row a move can reach.
+        list.down();
         list.unfold();
         assert!(list.move_by(1));
-        assert_eq!(
-            lines(&list),
-            [
-                "Completed (5)",
-                "done-4",
-                "done-3",
-                "done-1",
-                "done-2",
-                "done-0"
-            ]
-        );
+        let after = lines(&list);
+        assert_eq!(&after[10..], ["done-2", "done-0", "done-1"], "{after:?}");
     }
 
     #[test]
@@ -3582,12 +3514,7 @@ mod tests {
 
     #[test]
     fn acts_a_heading_answers_for_its_agents_whether_or_not_they_are_drawn() {
-        let mut list = sized(
-            (0..5)
-                .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
-                .collect(),
-            5,
-        );
+        let mut list = listed(a_history(12));
         list.up();
 
         let under = list.heading().expect("the cursor is on the heading");
@@ -3599,14 +3526,14 @@ mod tests {
         };
         assert_eq!(
             members(&list, under).len(),
-            5,
+            12,
             "the fold decides how many rows are drawn, not how many there are"
         );
 
         list.shut_or_open();
         assert_eq!(
             members(&list, under).len(),
-            5,
+            12,
             "and a group somebody shut is still standing for them"
         );
 
@@ -3636,44 +3563,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["ask-a1b", "done-b2c"],
             "a project stands for what runs in it, subdirectory and all"
-        );
-    }
-
-    #[test]
-    fn acts_a_row_carries_a_mark_until_somebody_has_looked_at_it() {
-        let mut ended = view("done-a1b", Phase::Done, 10);
-        assert!(
-            unread(&ended),
-            "an agent that has ended and nobody has been to read"
-        );
-
-        ended.state.seen = 10;
-        assert!(!unread(&ended), "and it is read once somebody has");
-
-        ended.state.last_event = 20;
-        assert!(
-            unread(&ended),
-            "something said after the look is news again"
-        );
-
-        // Including on a record that stamped its ending: the mark is about
-        // what the agent has said since somebody looked, and a run that ended
-        // at ten can have an answer written down at twenty.
-        let mut stamped = view("done-c3d", Phase::Done, 10);
-        stamped.state.ended = 10;
-        stamped.state.seen = 10;
-        assert!(!unread(&stamped));
-        stamped.state.last_event = 20;
-        assert!(unread(&stamped));
-
-        // An agent still going is not holding anything to read: what it is
-        // doing is on the row already, and it changes with every reading.
-        for phase in [Phase::Starting, Phase::Working] {
-            assert!(!unread(&view("busy-b2c", phase, 30)), "{phase}");
-        }
-        assert!(
-            unread(&view("ask-c3d", Phase::Waiting, 30)),
-            "and one stopped on a question is the whole reason for the mark"
         );
     }
 

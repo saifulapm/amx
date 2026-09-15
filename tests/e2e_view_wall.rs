@@ -94,6 +94,12 @@ fn row_of(amx: &Harness, view: &str, id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// How many rows of a drawn screen name an agent whose id begins this way,
+/// which is how many of a group's rows the fold left standing.
+fn rows_of(drawn: &str, prefix: &str) -> usize {
+    drawn.lines().filter(|line| line.contains(prefix)).count()
+}
+
 /// The same screen with the colours the view drew it in, as the escapes tmux
 /// wrote them: what a bar is made of cannot be read off the text.
 fn coloured(amx: &Harness, pane: &str) -> String {
@@ -1054,53 +1060,65 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
 }
 
 #[test]
-fn completed_agents_fold_into_a_count_when_the_screen_runs_out_of_rows() {
+fn every_group_folds_past_ten_rows_and_enter_opens_the_one_it_is_on() {
     let amx = Harness::new();
-    for (n, id) in ["one-a1b", "two-b2c", "three-c3d", "four-d4e", "five-e5f"]
-        .iter()
-        .enumerate()
-    {
-        finished(&amx, id, "done", n as u64 * 60);
+    // Two dozen ended agents: twelve still standing in front of a reviewer
+    // and twelve over, in a directory each. Both axes gather them into two
+    // groups of twelve, so what folds is the same either way.
+    let reviews = amx.home().join("reviews");
+    let shipped = amx.home().join("shipped");
+    for at in [&reviews, &shipped] {
+        std::fs::create_dir_all(at).expect("a place for them to have run");
+    }
+    for n in 0..12u64 {
+        let id = format!("review-{n:02}");
+        finished(&amx, &id, "done", (n + 1) * 60);
+        a_request(&amx, &id, 100 + n, "open");
+        running_in(&amx, &id, &reviews);
+        let id = format!("over-{n:02}");
+        finished(&amx, &id, "done", (n + 1) * 60);
+        running_in(&amx, &id, &shipped);
     }
 
-    // A full-size terminal has a row for every one of them, so nothing
-    // folds however many have finished.
+    // Room for every row a fold could give back, so nothing here is about
+    // the height of the screen.
     let view = amx.in_a_terminal(&[], &[]);
-    let whole = amx.until("every row", || {
+    amx.tmux(&["resize-window", "-t", &view, "-x", "80", "-y", "40"]);
+    let folded = amx.until("both groups folded", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("one-a1b") && drawn.contains("five-e5f")).then_some(drawn)
+        (drawn.matches("2 more").count() == 2
+            && drawn.contains("Ready for review")
+            && drawn.contains("Completed"))
+        .then_some(drawn)
     });
-    assert!(!whole.contains("more"), "nothing is held back:\n{whole}");
-
-    // Shrunk to seven rows the list has five, and the fold takes exactly
-    // what stopped fitting: the two oldest, behind the count on the last
-    // row.
-    amx.tmux(&["resize-window", "-t", &view, "-x", "80", "-y", "7"]);
-    let folded = amx.until("the fold", || {
-        let drawn = screen(&amx, &view);
-        (drawn.contains("one-a1b") && drawn.contains("2 more")).then_some(drawn)
-    });
-    assert!(
-        !folded.contains("five-e5f"),
-        "the oldest are behind the count:\n{folded}"
+    assert_eq!(rows_of(&folded, "review-"), 10, "ten of twelve:\n{folded}");
+    assert_eq!(
+        rows_of(&folded, "over-"),
+        10,
+        "and ten of twelve:\n{folded}"
     );
 
-    // Down onto the fold — three agents are shown, so it is the fourth row
-    // — and open it, then one more row down to walk history onto the
-    // screen.
-    amx.tmux(&[
-        "send-keys",
-        "-t",
-        &view,
-        "Down",
-        "Down",
-        "Down",
-        "Enter",
-        "Down",
-    ]);
-    amx.until("the rest of them", || {
-        screen(&amx, &view).contains("five-e5f").then_some(())
+    // Down the ten rows onto the fold under them, and open it. That group
+    // gives its rows back and the other one is holding its two still.
+    for _ in 0..10 {
+        press(&amx, &view, "Down");
+    }
+    press(&amx, &view, "Enter");
+    let opened = amx.until("the group that was opened", || {
+        let drawn = screen(&amx, &view);
+        (rows_of(&drawn, "review-") == 12 && drawn.matches("2 more").count() == 1).then_some(drawn)
     });
+    assert_eq!(rows_of(&opened, "over-"), 10, "{opened}");
+
+    // The same fleet gathered by project folds the same way, and what was
+    // opened under a group heading is not open under a path.
+    press(&amx, &view, "C-s");
+    let by_project = amx.until("both projects folded", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("~/reviews") && drawn.matches("2 more").count() == 2).then_some(drawn)
+    });
+    assert_eq!(rows_of(&by_project, "review-"), 10, "{by_project}");
+    assert_eq!(rows_of(&by_project, "over-"), 10, "{by_project}");
 }
 
 #[test]

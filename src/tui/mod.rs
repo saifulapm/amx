@@ -1051,9 +1051,6 @@ where
             screen.repaint(theme);
             screen.say_of_the_theme(&warnings);
         }
-        // The last frame said how many rows the screen has; a screen that
-        // changed size gets its lines laid out again before the next one.
-        screen.list.refit();
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
 
@@ -3446,7 +3443,7 @@ impl Screen {
                     // The fold gives its rows back where it stands, and the
                     // cursor stays where it was: opening history is not
                     // choosing an agent from it.
-                    Some(rows::Item::Fold(_)) => self.list.unfold(),
+                    Some(rows::Item::Fold(..)) => self.list.unfold_at(at),
                     _ => {}
                 }
             }
@@ -6497,14 +6494,10 @@ diff --git a/src/bar.rs b/src/bar.rs
             showing_ids(&screen)
         );
 
-        // And on the fold it gives back the rows the fold is holding. A screen
-        // with room for five lines is what puts a fold under the finished
-        // ones at all.
-        let mut screen = watching(a_wall());
-        screen.list.fit(5);
-        screen.list.refit();
+        // And on the fold it gives back the rows the fold is holding.
+        let mut screen = watching(a_folding_wall());
         press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
-        for _ in 0..5 {
+        for _ in 0..12 {
             press(&mut screen, KeyEvent::from(KeyCode::Down));
         }
         assert!(screen.list.on_fold(), "the cursor is on the fold");
@@ -8497,6 +8490,26 @@ diff --git a/src/bar.rs b/src/bar.rs
         views
     }
 
+    /// The same wall with more endings than one group shows, so there is a
+    /// fold under them to walk onto.
+    fn a_folding_wall() -> Vec<View> {
+        let mut views = a_wall();
+        views.extend((5..12).map(|n| {
+            reading(
+                &format!("done-{n}"),
+                Phase::Done,
+                State {
+                    state: Phase::Done,
+                    exit: Some(0),
+                    since: 1,
+                    last_event: 1,
+                    ..State::default()
+                },
+            )
+        }));
+        views
+    }
+
     /// A place the cursor can stand, and what to call it in a failure.
     type Standing = (&'static str, fn(&mut Screen));
 
@@ -9959,9 +9972,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         }
     }
 
-    /// Draw the screen, so the map the mouse reads is a frame's: one frame
-    /// to teach the list its room, a refit, and the frame the map remembers
-    /// — the same settling the loop does across two passes.
+    /// Draw the screen, so the map the mouse reads is a frame's.
     ///
     /// Twelve rows unless a test wants its own: two of header, one of space,
     /// and the list from row three — a heading on it and the agents under
@@ -9973,8 +9984,6 @@ diff --git a/src/bar.rs b/src/bar.rs
     /// The same, at a size a test picks.
     fn a_frame_of(screen: &mut Screen, size: (u16, u16)) {
         let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
-        screen.list.refit();
         terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
     }
 
@@ -10032,38 +10041,39 @@ diff --git a/src/bar.rs b/src/bar.rs
     fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        // Nine finished on a band of eight rows: a heading, the six the
-        // screen has room for, and the fold on the last of them.
+        // Twelve finished: a heading, the ten a group shows, and the fold on
+        // the row under them, on a screen with room to draw all of it.
         let mut screen = watching(
-            (0..9)
-                .map(|n| finished_saying(&format!("done-{n}"), "an answer"))
+            (0..12)
+                .map(|n| finished_saying(&format!("done-{n:02}"), "an answer"))
                 .collect(),
         );
-        a_frame(&mut screen);
+        a_frame_of(&mut screen, (60, 20));
         assert_eq!(
             screen.list.items().len(),
-            8,
-            "a heading, six rows and the fold"
+            12,
+            "a heading, ten rows and the fold"
         );
 
-        // The fold is the row under the six drawn agents.
+        // The fold is the row under the ten drawn agents, and the list starts
+        // on the fourth row of the screen.
         screen
             .moused(
-                mouse(MouseEventKind::Down(MouseButton::Left), 5, 10),
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 14),
                 root.path(),
                 &config,
                 None,
             )
             .unwrap();
-        assert_eq!(screen.list.items().len(), 10, "the fold gave its rows back");
+        assert_eq!(screen.list.items().len(), 13, "the fold gave its rows back");
 
         // A click past the end of the list lands on nothing and moves
         // nothing.
         let before = screen.list.selected().unwrap().id().to_string();
-        a_frame(&mut screen);
+        a_frame_of(&mut screen, (60, 20));
         screen
             .moused(
-                mouse(MouseEventKind::Down(MouseButton::Left), 5, 11),
+                mouse(MouseEventKind::Down(MouseButton::Left), 5, 17),
                 root.path(),
                 &config,
                 None,

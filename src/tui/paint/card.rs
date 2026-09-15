@@ -2508,23 +2508,19 @@ index e69de29..0000000
         );
     }
 
-    /// The view drawn twice, with the list laid out for the screen between
-    /// the two: what a person sees a frame after anything changed the room.
+    /// The view drawn at a size a test picks: what a person sees there.
     fn settled(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
-        let mut screen = showing(views, card);
-        let _ = painted(&screen, size);
-        screen.list.refit();
-        painted(&screen, size)
+        painted(&showing(views, card), size)
     }
 
     #[test]
     fn card_stands_over_the_list_and_folds_nothing_when_it_opens() {
-        // Twenty finished agents on a screen with room for a dozen rows: the
-        // completed group folds behind a count at the foot of the band. The
-        // card covers that foot rather than taking it, so the wall above the
-        // card is laid out exactly as it was with no card up — the fold is
-        // not cut again for the rows the card left, and no row that stood
-        // above the card's rule is a different row afterwards.
+        // Twenty finished agents, so the completed group folds behind a
+        // count. The card covers the foot of the band rather than taking it,
+        // so the wall above the card is laid out exactly as it was with no
+        // card up — the fold is not cut again for the rows the card left,
+        // and no row that stood above the card's rule is a different row
+        // afterwards.
         let fleet = || {
             (0..20)
                 .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
@@ -2551,10 +2547,6 @@ index e69de29..0000000
             bare[..top],
             "every row above the card is the row that was there without it, \
              the fold uncut"
-        );
-        assert!(
-            !carded[..top].iter().any(|line| line.contains("more")),
-            "and the fold is behind the card, not moved up over it: {carded:?}"
         );
     }
 

@@ -146,7 +146,7 @@ fn line(
             Under::Group(group) => heading(group, tally, at.hovered, theme),
             Under::Project(_) => path_heading(list.title(under), tally, at.hovered, width, theme),
         },
-        Item::Fold(hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
+        Item::Fold(_, hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(
                 view,
@@ -732,15 +732,10 @@ mod tests {
         line.trim()
     }
 
-    /// The same, once the list has learned the screen's size: the first
-    /// frame writes the room back the way the loop's draw does, the refit
-    /// lays the rows out for it, and the second frame is the one a person
-    /// reads.
+    /// The same, drawn through a screen of its own: what a person reads at
+    /// this size.
     fn settled(views: Vec<View>, size: (u16, u16)) -> Vec<String> {
-        let mut screen = showing(views, None);
-        let _ = painted(&screen, size);
-        screen.list.refit();
-        painted(&screen, size)
+        painted(&showing(views, None), size)
     }
 
     /// The two agents a card is opened over, so there is a list to still be
@@ -1517,29 +1512,29 @@ mod tests {
 
     #[test]
     fn view_shows_the_fold_and_what_it_is_holding_back() {
-        // A working agent and five finished. On a tall screen every row is
-        // drawn and there is no fold at all; on a short one the finished
-        // group takes the rows the live group left, and the fold stands on
-        // the band's last row saying exactly what did not fit.
+        // A working agent and twelve finished: ten endings are drawn and the
+        // fold stands under them saying what it is holding back.
         let fleet = || {
             let mut views = vec![view("busy-b2c", Phase::Working, Some("Running Bash"), 3)];
             views.extend(
-                (0..5).map(|n| view(&format!("done-{n}"), Phase::Done, Some("did it"), 60)),
+                (0..12).map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60)),
             );
             views
         };
 
         let tall = settled(fleet(), (40, 24));
-        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), 5);
-        assert!(!tall.iter().any(|l| l.contains("more")), "{tall:?}");
-
-        let short = settled(fleet(), (40, 10));
-        assert_eq!(heading_of(&short[5]), "Completed");
-        assert_eq!(short.iter().filter(|l| l.contains("done-")).count(), 2);
+        assert_eq!(heading_of(&tall[6]), "Completed");
+        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), 10);
         assert!(
-            short[8].contains("… 3 more"),
-            "the fold stands on the last row the band has: {short:?}"
+            tall[17].contains("… 2 more"),
+            "the fold stands on the row under them: {tall:?}"
         );
+
+        // Twice the screen, the same ten rows and the same count. What folds
+        // is the length of the group, and the window has no say in it.
+        let taller = settled(fleet(), (40, 48));
+        assert_eq!(taller.iter().filter(|l| l.contains("done-")).count(), 10);
+        assert!(taller[17].contains("… 2 more"), "{taller:?}");
     }
 
     #[test]
