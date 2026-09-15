@@ -1052,7 +1052,11 @@ impl Agent {
     /// `None` where the record names no transcript, or names one that is not
     /// there: the vendor announces the path in its first hook, and the file
     /// can be gone by the time somebody reads the record.
-    pub fn transcript_tail(&self, meta: &Meta) -> Option<String> {
+    ///
+    /// Asks nothing of an `Agent` but this — the record's own `meta` is the
+    /// whole of what it reads — so a caller with a record and no open `Agent`
+    /// still reads it this way rather than the whole file's.
+    pub fn transcript_tail(meta: &Meta) -> Option<String> {
         let path = meta.transcript.as_ref()?;
         let mut file = File::open(path).ok()?;
         let from = file.metadata().ok()?.len().saturating_sub(TAIL);
@@ -2316,11 +2320,10 @@ mod tests {
     #[test]
     fn store_reads_the_tail_of_the_transcript_the_record_names() {
         let root = TempDir::new().unwrap();
-        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let mut record = meta("fix-login-a1b");
 
         assert_eq!(
-            agent.transcript_tail(&record),
+            Agent::transcript_tail(&record),
             None,
             "a record naming no transcript has no tail"
         );
@@ -2328,7 +2331,7 @@ mod tests {
         let path = root.path().join("abc-123.jsonl");
         record.transcript = Some(path.clone());
         assert_eq!(
-            agent.transcript_tail(&record),
+            Agent::transcript_tail(&record),
             None,
             "and neither has one whose file is not there"
         );
@@ -2336,7 +2339,7 @@ mod tests {
         let padding = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"still working\"}]}}\n";
         std::fs::write(&path, padding).unwrap();
         assert_eq!(
-            agent.transcript_tail(&record).as_deref(),
+            Agent::transcript_tail(&record).as_deref(),
             Some(padding),
             "a transcript shorter than the tail is read whole"
         );
@@ -2347,7 +2350,7 @@ mod tests {
         session.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n");
         std::fs::write(&path, &session).unwrap();
 
-        let tail = agent.transcript_tail(&record).unwrap();
+        let tail = Agent::transcript_tail(&record).unwrap();
         assert_eq!(tail.len(), TAIL as usize, "the last 64 KiB of it");
         assert!(
             serde_json::from_str::<serde_json::Value>(tail.lines().next().unwrap()).is_err(),

@@ -1553,7 +1553,7 @@ fn newest_said(agent: &Agent, meta: &Meta, state: &State) -> Option<String> {
         return None;
     }
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let tail = agent.transcript_tail(meta)?;
+    let tail = Agent::transcript_tail(meta)?;
     crate::conversation::latest(format, &tail)
 }
 
@@ -2078,7 +2078,7 @@ fn ask_about_the_turn(
     // worth no read either.
     let said = match about {
         About::TheAnswer => state.result.clone(),
-        About::TheTurnSoFar => the_turn_so_far(agent, meta),
+        About::TheTurnSoFar => the_turn_so_far(meta),
     };
     let Some(said) = said else {
         return;
@@ -2116,9 +2116,9 @@ fn ask_about_the_turn(
 /// A vendor that keeps no conversation, a record naming none, and a file with
 /// nothing readable in it are each nothing to ask about, and asking a command
 /// about nothing is a call somebody pays for and no line to show for it.
-fn the_turn_so_far(agent: &Agent, meta: &Meta) -> Option<String> {
+fn the_turn_so_far(meta: &Meta) -> Option<String> {
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let tail = agent.transcript_tail(meta)?;
+    let tail = Agent::transcript_tail(meta)?;
     let said = crate::conversation::plain(&crate::conversation::read(format, &tail));
     (!said.trim().is_empty()).then_some(said)
 }
@@ -5288,7 +5288,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     fn summary_a_rewrite_lands_only_on_the_turn_it_was_asked_about() {
         let root = TempDir::new().unwrap();
         let (meta, agent, running) = a_running_turn(&root);
-        let so_far = the_turn_so_far(&agent, &meta).expect("the turn so far");
+        let so_far = the_turn_so_far(&meta).expect("the turn so far");
 
         write_the_line(
             root.path(),

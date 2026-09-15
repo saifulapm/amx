@@ -264,7 +264,7 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     // A file with no name in it is a session the vendor has not named yet,
     // which is not a reason to take the name off the record.
     if let Some(format) = format
-        && let Some(tail) = agent.transcript_tail(&meta)
+        && let Some(tail) = Agent::transcript_tail(&meta)
         && let Some(title) = crate::conversation::session_title(format, &tail)
     {
         state.session_title = Some(title);
