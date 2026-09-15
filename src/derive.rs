@@ -1094,6 +1094,14 @@ fn conclude(
 /// line the other kind of row carries: the last row of a build is true for a
 /// second, and a record holding one would have every reader after this repeat
 /// it as news.
+///
+/// The work beside it is the whole of its life, `now - created`. A command's
+/// record never leaves [`Phase::Starting`], so no span was ever opened and
+/// [`worked`] would say nothing for the whole run — but a command that has been
+/// running a minute has been working for a minute. There is nothing else for it
+/// to have been doing. The terminal branch of [`worked`], which measures an
+/// ended run with no spans on it the same way, is what the row reads once the
+/// exit code lands.
 fn read_a_command(
     state: &State,
     created: u64,
@@ -1107,7 +1115,7 @@ fn read_a_command(
             evidence: Evidence::Screen,
             rule: None,
             age: clock(Phase::Working, state, created, now, heartbeat),
-            worked: worked(Phase::Working, state, created, now, heartbeat),
+            worked: now.saturating_sub(created),
         },
         asking: None,
         doing: screen.and_then(last_printed).map(str::to_string),
@@ -4210,6 +4218,20 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             None,
         );
         assert_eq!(claude.verdict.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_gives_a_running_command_the_whole_of_its_life_as_its_work() {
+        // A command's record never leaves Starting, so it never opens a span
+        // and the spans add up to nothing for as long as it runs. What it has
+        // been doing all that while is the command: a command started five
+        // seconds ago has worked five seconds.
+        let starting = state(Phase::Starting, 1_000);
+        assert_eq!(starting.worked_by(1_005), 0, "no span was ever opened");
+
+        let running = read_a_command(&starting, 1_000, Some(A_COMMAND), 1_005, None);
+        assert_eq!(running.verdict.worked, 5);
+        assert_eq!(running.verdict.age, 5, "which is its age as well");
     }
 
     #[test]
