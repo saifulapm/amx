@@ -933,12 +933,15 @@ const ASKED_TALL: u16 = 3;
 ///
 /// `called` is what the list calls the agent, which is what the rule says: the
 /// card is no longer touching that row, so its name is the one thing it has to
-/// carry for itself.
+/// carry for itself. `runs` is what that row runs, in the same case: already
+/// spelled the way the rule says it, because the words are the wall's and the
+/// card is only reading them out.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float(
     frame: &mut Frame,
     card: &Card<Body>,
     called: &str,
+    runs: &str,
     showing: Option<Showing>,
     prs: &[Pr],
     answering: Option<&Composer>,
@@ -1030,6 +1033,7 @@ pub(super) fn float(
         Paragraph::new(rule(
             card,
             called,
+            runs,
             held,
             at,
             notes.len(),
@@ -1089,8 +1093,9 @@ pub(super) fn float(
 ///
 /// At its front, what the list calls the agent, in the colour that agent's row
 /// says its state in — the card stands away from its row now, so the name is
-/// what says which agent this is a look at. After it, on a card that is a
-/// reading of a patch, that it is one: the row says what the agent is doing,
+/// what says which agent this is a look at. After it, what that agent runs, in
+/// the words the wall's own column says them in. After that, on a card that is
+/// a reading of a patch, that it is one: the row says what the agent is doing,
 /// and this is not that, and which hunk of it is under the cursor where
 /// somebody has stepped to one. And at the far end, how far a paged body
 /// stands from its natural edge. All of those are dim, because they are facts
@@ -1098,9 +1103,11 @@ pub(super) fn float(
 ///
 /// The same rule the band a line is typed in draws, in the same character and
 /// the same dim, because the card is that band with something else in it.
+#[allow(clippy::too_many_arguments)]
 fn rule(
     card: &Card<Body>,
     called: &str,
+    runs: &str,
     held: usize,
     at: Option<usize>,
     kept: usize,
@@ -1135,11 +1142,24 @@ fn rule(
             format!(" {edge} {held} more")
         }
     };
+    // What the agent runs stands between its name and what the card is
+    // showing, and takes the room the rest of the rule has left: a launch
+    // command is a path as often as a word, and a rule that let one of those
+    // crowd out what the card is showing would be saying the least useful
+    // thing on it at the cost of the most.
+    let runs = match runs.is_empty() {
+        true => String::new(),
+        false => fit(
+            &format!("{SEPARATOR}{runs}"),
+            width.saturating_sub(width_of(&named) + width_of(&changed) + 1 + width_of(&more)),
+        ),
+    };
     // A cell of wall between the label and the rule, so the words are not
     // running into the dashes.
-    let said = width_of(&named) + width_of(&changed) + 1 + width_of(&more);
+    let said = width_of(&named) + width_of(&runs) + width_of(&changed) + 1 + width_of(&more);
     Line::from(vec![
         Span::styled(named, colour(theme, card.phase)),
+        Span::styled(runs, dim()),
         Span::styled(changed, dim()),
         Span::raw(" "),
         Span::styled(RULE.repeat(width.saturating_sub(said)), dim()),
@@ -1598,7 +1618,7 @@ mod tests {
             meta: Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
-                agent: None,
+                agent: Some("claude".to_string()),
                 model: None,
                 effort: None,
                 dir: PathBuf::from("/srv/app"),
@@ -1630,6 +1650,14 @@ mod tests {
                 worked: age,
             },
         }
+    }
+
+    /// The same row run by a shell command rather than a vendor: the record a
+    /// `!cmd` or an `--exec` spawn writes, which is one with no agent on it.
+    fn command(id: &str, phase: Phase) -> View {
+        let mut view = view(id, phase, Some("cargo build"), 5);
+        view.meta.agent = None;
+        view
     }
 
     /// The view, with a reading in it. The card is read as it is planted,
@@ -2197,7 +2225,9 @@ index e69de29..0000000
             vec![view("fix-login-a1b", Phase::Working, None, 3)],
             Some(patch()),
         );
-        let size = (60, 24);
+        // Wide enough for the whole rule: the name, what the agent runs, and
+        // the count after the hunk, which is what is being read here.
+        let size = (76, 24);
 
         // The words a review opens with are not a note on anything, so the
         // rule has nothing to count yet.
@@ -2248,6 +2278,69 @@ index e69de29..0000000
         let rows = body(&patch().read(), 12, 0, None, &[1], theme());
         assert_eq!(rows[1].style.fg, Some(Color::Cyan));
         assert_eq!(rows[8].style.fg, Some(theme().waiting));
+    }
+
+    #[test]
+    fn card_rule_says_what_the_agent_it_is_a_look_at_runs() {
+        let patch = || Card {
+            id: "fix-login-a1b".to_string(),
+            phase: Phase::Working,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: A_PATCH.to_string(),
+            changes: true,
+            answer: false,
+            listening: true,
+        };
+        let size = (70, 24);
+        let ruled = |screen: &Screen| {
+            let drawn = painted(screen, size);
+            let at = drawn
+                .iter()
+                .position(|line| line.contains(RULE))
+                .expect("the card's rule");
+            (at as u16, drawn[at].clone())
+        };
+
+        let mut agent = view("fix-login-a1b", Phase::Working, None, 3);
+        agent.meta.model = Some("opus".to_string());
+        agent.meta.effort = Some("high".to_string());
+        let screen = showing(vec![agent], Some(patch()));
+        let (at, rule) = ruled(&screen);
+        assert!(
+            rule.starts_with("fix-login-a1b · claude · opus · high · what it has changed"),
+            "the rule names the agent, then what it runs, and what the card is \
+             showing after both: {rule:?}"
+        );
+        assert!(
+            cells(&screen, size)[(column_of(&rule, "claude") as u16, at)]
+                .modifier
+                .contains(Modifier::DIM),
+            "and what it runs is a fact about what the card is showing rather \
+             than about the agent, so it is dim like the rest of them: {rule:?}"
+        );
+
+        // Only the parts the record holds: a dial nobody turned is the
+        // vendor's own and amx never saw it.
+        let plain = view("fix-login-a1b", Phase::Working, None, 3);
+        let (_, rule) = ruled(&showing(vec![plain], Some(patch())));
+        assert!(
+            rule.starts_with("fix-login-a1b · claude · what it has changed"),
+            "{rule:?}"
+        );
+
+        // And a row no vendor runs says what it is instead, in the words its
+        // column on the wall says them in.
+        let (_, rule) = ruled(&showing(
+            vec![command("fix-login-a1b", Phase::Working)],
+            Some(patch()),
+        ));
+        assert!(
+            rule.starts_with("fix-login-a1b · sh · what it has changed"),
+            "{rule:?}"
+        );
     }
 
     #[test]
@@ -2373,7 +2466,9 @@ index e69de29..0000000
             "capped where the task line is: {drawn:?}"
         );
         assert!(
-            drawn.iter().any(|row| row.starts_with("ask-a1b ┈")),
+            drawn
+                .iter()
+                .any(|row| row.starts_with("ask-a1b · claude ┈")),
             "the rule stands: {drawn:?}"
         );
         assert!(
@@ -2439,9 +2534,9 @@ index e69de29..0000000
             panic!("no card in: {screen:?}")
         };
         assert!(
-            ruled.starts_with("ask-a1b ┈") && ruled.ends_with('┈'),
+            ruled.starts_with("ask-a1b · claude ┈") && ruled.ends_with('┈'),
             "the card opens on a rule carrying the name of the agent it is a \
-             look at, run out to the far end: {ruled:?}"
+             look at and what it runs, run out to the far end: {ruled:?}"
         );
         assert!(
             asked.starts_with("  Which fixture should the port keep?"),

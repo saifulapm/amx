@@ -1900,7 +1900,9 @@ fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
         "and off the line it was pressed on:\n{drawn}"
     );
     assert!(
-        !drawn.lines().any(|line| line.starts_with("ask-a1b ┈")),
+        !drawn
+            .lines()
+            .any(|line| line.starts_with("ask-a1b · claude ┈")),
         "the cursor is all the key moves, so nothing is opened over the wall:\n{drawn}"
     );
 }
@@ -1940,7 +1942,11 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
     // l goes in to the card and esc comes back out. The view still has the
     // terminal either way: an attach would have handed it to tmux, and the
     // wall would be gone rather than standing over a card.
-    let carded = |drawn: &str| drawn.lines().any(|line| line.starts_with("done-a1b ┈"));
+    let carded = |drawn: &str| {
+        drawn
+            .lines()
+            .any(|line| line.starts_with("done-a1b · claude ┈"))
+    };
     press(&amx, &view, "l");
     amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
 
@@ -3008,7 +3014,7 @@ fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     let carded = |drawn: &str| {
         drawn
             .lines()
-            .any(|line| line.starts_with("fix-login-a1b ┈"))
+            .any(|line| line.starts_with("fix-login-a1b · claude ┈"))
     };
     amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
 

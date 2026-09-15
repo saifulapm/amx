@@ -9574,7 +9574,9 @@ diff --git a/src/bar.rs b/src/bar.rs
         assert_eq!(code, exit::OK);
         assert!(screen.contains(" ∙ second-b2c"), "{screen}");
         assert!(
-            screen.lines().any(|line| line.starts_with("second-b2c ┈")),
+            screen
+                .lines()
+                .any(|line| line.starts_with("second-b2c · claude ┈")),
             "an agent with no pane left is read from its record, onto a card \
              at the foot under a rule of its own: {screen}"
         );

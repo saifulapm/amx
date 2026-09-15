@@ -238,6 +238,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             // where the list has lost the agent the card was taken from, so
             // the rule is never bare.
             on.map_or(card.id.as_str(), rows::called),
+            // And what it runs, in the words the wall's own column says them
+            // in, separated the way the rule separates everything else on it.
+            // Nothing at all where the list has lost the row: the record is
+            // where those words come from.
+            &on.map_or(String::new(), |view| {
+                rows::vendor_words(&view.meta).replace(' ', text::SEPARATOR)
+            }),
             showing,
             prs,
             screen.answering(),

@@ -198,8 +198,9 @@ fn card_stands_at_the_foot_and_moves_no_row_of_the_list() {
         carded
             .lines()
             .nth(top)
-            .is_some_and(|rule| rule.starts_with("ask-a1b ┈") && rule.ends_with('┈')),
-        "on a rule carrying the name of the agent it is a look at:\n{carded}"
+            .is_some_and(|rule| rule.starts_with("ask-a1b · claude ┈") && rule.ends_with('┈')),
+        "on a rule carrying the name of the agent it is a look at and what it \
+         runs:\n{carded}"
     );
 }
 
@@ -289,7 +290,49 @@ fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
         let drawn = screen(&amx, &view);
         drawn
             .lines()
-            .any(|line| line.starts_with("older-job-b2c ┈"))
+            .any(|line| line.starts_with("older-job-b2c · claude ┈"))
+            .then_some(())
+    });
+}
+
+#[test]
+fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
+    let amx = Harness::new();
+    // The two kinds of row the rule has anything to say about: a spawn that
+    // turned both dials, and a shell command, which runs no vendor at all.
+    finished(&amx, "fix-login-a1b", "done", 30);
+    amx.set_meta(
+        "fix-login-a1b",
+        json!({ "model": "opus", "effort": "high" }),
+    );
+    finished(&amx, "build-c3d", "done", 60);
+    amx.set_meta("build-c3d", json!({ "agent": null }));
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let before = amx.until("both rows", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("build-c3d")).then_some(drawn)
+    });
+    let command = line_holding(&before, "build-c3d");
+
+    // The newer row is the one the view opens on, so its card is the first.
+    card_on(&amx, &view, "fix-login-a1b");
+    amx.until("the rule to say what the agent runs", || {
+        let drawn = screen(&amx, &view);
+        card_lines(&drawn)
+            .first()
+            .is_some_and(|rule| rule.starts_with("fix-login-a1b · claude · opus · high ┈"))
+            .then_some(())
+    });
+
+    // And the row no vendor runs says what it is instead, in the words its
+    // column on the wall says them in.
+    click(&amx, &view, 5, command as u16 + 1);
+    amx.until("the rule over the command", || {
+        let drawn = screen(&amx, &view);
+        card_lines(&drawn)
+            .first()
+            .is_some_and(|rule| rule.starts_with("build-c3d · sh ┈"))
             .then_some(())
     });
 }
@@ -324,8 +367,8 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
         panic!("no card in:\n{carded}")
     };
     assert!(
-        ruled.starts_with("ask-a1b ┈"),
-        "the card opens on a rule saying whose it is: {ruled}"
+        ruled.starts_with("ask-a1b · claude ┈"),
+        "the card opens on a rule saying whose it is and what it runs: {ruled}"
     );
     assert!(
         asked.starts_with("  Claude needs your permission"),
@@ -1544,9 +1587,11 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     assert!(
-        saying.contains('↑') && saying.starts_with("fix-login-a1b · what it has changed"),
-        "at the far end of the card's own rule, past the agent's name and what \
-         the card is a reading of, pointing at the top: {paged}"
+        saying.contains('↑')
+            && saying.starts_with("fix-login-a1b · ")
+            && saying.contains("· what it has changed"),
+        "at the far end of the card's own rule, past the agent's name, what it \
+         runs and what the card is a reading of, pointing at the top: {paged}"
     );
 
     // A page back is the top again, with the indicator gone.
@@ -1637,12 +1682,12 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     let marker = saying
-        .strip_prefix("tall-b2c ")
+        .strip_prefix("tall-b2c · claude ")
         .unwrap_or_else(|| panic!("the indicator is not on the card's rule: {paged}"));
     assert!(
         marker.trim_start_matches('┈').starts_with(" ↑"),
-        "at the far end of a rule that says nothing else, pointing at the \
-         top: {paged}"
+        "at the far end of a rule that says nothing else but what the agent \
+         runs, pointing at the top: {paged}"
     );
 
     // And walking off the agent puts the next card on its own edge.
