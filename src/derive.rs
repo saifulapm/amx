@@ -299,6 +299,7 @@ impl View {
 
     /// The same, over requests already read.
     fn json_beside(&self, prs: &[crate::pr::Pr]) -> serde_json::Value {
+        let transcript = self.transcript();
         serde_json::json!({
             "id": self.meta.id,
             "state": self.verdict.phase.as_str(),
@@ -364,39 +365,28 @@ impl View {
             // the transcript itself rather than kept on the record, the way
             // [`newest_said`] reads it. Null where there is no transcript to
             // read, or nothing on it yet worth either question.
-            "context": self.usage_context(),
-            "last_words": self.last_words(),
+            "context": transcript
+                .as_ref()
+                .and_then(|(format, tail)| crate::conversation::usage_context(*format, tail)),
+            "last_words": transcript
+                .as_ref()
+                .and_then(|(format, tail)| crate::conversation::answer(*format, tail)),
         })
     }
 
-    /// The input side of the conversation's usage, off the transcript this
-    /// view names. `None` from a vendor amx has no shape for, a record naming
-    /// no transcript, or one with no usage on it yet.
-    fn usage_context(&self) -> Option<u64> {
-        let (format, tail) = self.transcript()?;
-        crate::conversation::usage_context(format, &tail)
-    }
-
-    /// The reader's answer at the end of the conversation, off the same
-    /// transcript. `None` under the same conditions as
-    /// [`usage_context`](Self::usage_context), or where the turn has not
-    /// ended.
-    fn last_words(&self) -> Option<String> {
-        let (format, tail) = self.transcript()?;
-        crate::conversation::answer(format, &tail)
-    }
-
-    /// The vendor's shape for this agent's conversation, and the transcript
-    /// itself, together — `None` unless both are there to read.
+    /// The vendor's shape for this agent's conversation, and the tail of the
+    /// transcript itself, together — `None` unless both are there to read.
     ///
-    /// A caller here asks once rather than every second, so reading the whole
-    /// file costs nothing extra and reads past whatever a tail cut short a
-    /// line on.
+    /// Read once here and handed to both `context` and `last_words` rather
+    /// than read once each: the tail [`crate::store::Agent::transcript_tail`]
+    /// reads is the same 64 KiB a row reads, and its body asks nothing of an
+    /// `Agent` but the record's own `meta` — so a view holding no live
+    /// `Agent` still reads it the row's way rather than the whole file's.
     fn transcript(&self) -> Option<(crate::vendor::Transcript, String)> {
         let format =
             crate::conversation::format_of(self.meta.agent.as_deref().unwrap_or_default())?;
-        let jsonl = std::fs::read_to_string(self.meta.transcript.as_ref()?).ok()?;
-        Some((format, jsonl))
+        let tail = crate::store::Agent::transcript_tail(&self.meta)?;
+        Some((format, tail))
     }
 }
 
