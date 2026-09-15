@@ -893,11 +893,13 @@ fn f_starts_a_copy_of_the_agent_under_the_cursor_on_the_task_the_line_says() {
         Some("use sqlite"),
         "with what was typed as its first turn: {argv:?}"
     );
-    assert!(
-        screen(&amx, &view).contains(&format!("forked {origin} as {copy}")),
-        "and the view says both agents:\n{}",
+    // Waited for rather than read once: the record is there before the
+    // frame that says so is drawn, and CI reads between the two.
+    amx.until("the view saying both agents", || {
         screen(&amx, &view)
-    );
+            .contains(&format!("forked {origin} as {copy}"))
+            .then_some(())
+    });
 
     // The row does not exist until the reading after the fork, and the cursor
     // is on it as soon as it does: whoever asked for a copy is watching for
