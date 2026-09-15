@@ -341,7 +341,15 @@ fn row(
     let mut spans = vec![
         Span::raw(GUTTER),
         Span::styled(
-            format!("{} ", icon(phase, &view.verdict.evidence, moment.beat)),
+            format!(
+                "{} ",
+                icon(
+                    phase,
+                    &view.verdict.evidence,
+                    moment.beat,
+                    view.meta.agent.is_none()
+                )
+            ),
             colour(theme, phase),
         ),
         Span::styled(
@@ -507,6 +515,10 @@ pub(super) fn pulse(beat: usize) -> &'static str {
 /// which is the one shape here the vendor's set does not hand out.
 const ENDED: &str = "∙";
 
+/// What a row running a shell command is marked with: the prompt a person
+/// types a command at.
+pub(super) const COMMAND_GLYPH: &str = "$";
+
 /// The mark a state rests on: the vendor's own asterisk while there is still a
 /// process to go back to, and that dot once there is not.
 ///
@@ -543,11 +555,19 @@ pub(super) fn resting(phase: Phase) -> &'static str {
 /// the only thing on the row that can say the pane has gone. The colour stays
 /// the state's own, because the state is still true — see
 /// [`crate::derive::Evidence::LetGo`].
-fn icon(phase: Phase, evidence: &Evidence, beat: usize) -> &'static str {
-    match (evidence, phase) {
-        (Evidence::LetGo, _) => ENDED,
-        (_, Phase::Starting | Phase::Working) => pulse(beat),
-        (_, phase) => resting(phase),
+///
+/// A command is asked before either of them, and in every state, because the
+/// two shapes above are an agent's: they say whether there is a pane left to
+/// attach to, answer or stop, and a row running `!cmd` or an `--exec` spawn
+/// is none of those things. So the shape says which kind of row it is — the
+/// one thing a wall mixing the two could not say at all — and the colour goes
+/// on saying how it is going.
+fn icon(phase: Phase, evidence: &Evidence, beat: usize, command: bool) -> &'static str {
+    match (command, evidence, phase) {
+        (true, _, _) => COMMAND_GLYPH,
+        (_, Evidence::LetGo, _) => ENDED,
+        (_, _, Phase::Starting | Phase::Working) => pulse(beat),
+        (_, _, phase) => resting(phase),
     }
 }
 
@@ -582,7 +602,7 @@ mod tests {
             meta: Meta {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
-                agent: None,
+                agent: Some("claude".to_string()),
                 model: None,
                 effort: None,
                 dir: PathBuf::from("/srv/app"),
@@ -614,6 +634,14 @@ mod tests {
                 worked: age,
             },
         }
+    }
+
+    /// The same row run by a shell command rather than a vendor: the record a
+    /// `!cmd` or an `--exec` spawn writes, which is one with no agent on it.
+    fn command(id: &str, phase: Phase) -> View {
+        let mut view = view(id, phase, Some("cargo build"), 5);
+        view.meta.agent = None;
+        view
     }
 
     /// Every state there is, so a table of marks cannot quietly miss one.
@@ -828,7 +856,7 @@ mod tests {
         // The pulse is a turn running, which starting is the first part of.
         for phase in [Phase::Starting, Phase::Working] {
             assert_eq!(
-                icon(phase, &Evidence::Hooks, 1),
+                icon(phase, &Evidence::Hooks, 1, false),
                 pulse(1),
                 "{phase} is a turn under way"
             );
@@ -838,11 +866,55 @@ mod tests {
             .filter(|phase| !matches!(phase, Phase::Starting | Phase::Working))
         {
             assert_eq!(
-                icon(*phase, &Evidence::Hooks, 1),
+                icon(*phase, &Evidence::Hooks, 1, false),
                 resting(*phase),
                 "and {phase} stands still"
             );
         }
+    }
+
+    #[test]
+    fn glyphs_wear_a_dollar_on_a_row_running_a_command() {
+        // Every state and both evidences, because a command's row says what
+        // it is and not how far along it is: the pulse and the dot are an
+        // agent's, and what they carry — whether there is still a pane to
+        // attach to, answer or stop — is not a question anybody asks of a
+        // shell command.
+        for phase in EVERY {
+            for evidence in [Evidence::Hooks, Evidence::Screen, Evidence::LetGo] {
+                assert_eq!(
+                    icon(phase, &evidence, 1, true),
+                    COMMAND_GLYPH,
+                    "{phase} on {evidence:?} is still a command"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glyphs_leave_a_command_row_the_colour_too() {
+        // The mark on the one row a view of one command draws.
+        let painted = |phase| {
+            let screen = showing(vec![command("build-a1b", phase)], None);
+            mark(&screen, (60, 8), 2)
+        };
+        let plain = Modifier::empty();
+
+        // The shape is the kind of row and the colour is how it went, which is
+        // the division the wall already draws the glyph by.
+        assert_eq!(
+            painted(Phase::Working),
+            (COMMAND_GLYPH.into(), Color::Reset, plain),
+            "a command still running has nothing to say about how it went"
+        );
+        assert_eq!(
+            painted(Phase::Done),
+            (COMMAND_GLYPH.into(), theme().done, plain)
+        );
+        assert_eq!(
+            painted(Phase::Failed),
+            (COMMAND_GLYPH.into(), theme().failed, plain)
+        );
     }
 
     #[test]

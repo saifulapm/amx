@@ -740,6 +740,48 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
 }
 
 #[test]
+fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
+    let amx = Harness::new();
+    // A shell row is a record with no agent on it, which is what `!cmd` and
+    // `amx new --exec` write. One still running and one over, beside an agent
+    // in each of the same two states, because what this is about is which of
+    // the shapes belongs to which kind of row.
+    let pane = a_pane_showing(&amx, &["cargo build"]);
+    amx.record("build-a1b", &pane);
+    amx.set_meta("build-a1b", json!({ "agent": null }));
+    finished(&amx, "sweep-b2c", "done", 30);
+    amx.set_meta("sweep-b2c", json!({ "agent": null }));
+    amx.play("port-import-c3d", "works-with-a-spinner");
+    amx.until_state("port-import-c3d", "working");
+    finished(&amx, "old-job-d4e", "done", 60);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    for id in ["build-a1b", "sweep-b2c"] {
+        amx.until(&format!("{id} to be marked $"), || {
+            (mark(&amx, &view, id) == Some('$')).then_some(())
+        });
+    }
+
+    // The agent rows are what they were: the one whose turn is running is
+    // drawn a frame at a time, and the one whose pane has gone rests on the
+    // dot.
+    amx.until("old-job-d4e to rest on the dot", || {
+        (mark(&amx, &view, "old-job-d4e") == Some('∙')).then_some(())
+    });
+    let mut frames = std::collections::BTreeSet::new();
+    amx.until("the working agent to breathe", || {
+        frames.extend(mark(&amx, &view, "port-import-c3d"));
+        (frames.len() > 1).then_some(())
+    });
+    for frame in &frames {
+        assert!(
+            "·✢*✶✻✽".contains(*frame),
+            "{frame} is not a frame of the pulse: {frames:?}"
+        );
+    }
+}
+
+#[test]
 fn a_working_row_says_what_the_line_over_the_composer_says() {
     let amx = Harness::new();
     let mut pane_rows = vec![
