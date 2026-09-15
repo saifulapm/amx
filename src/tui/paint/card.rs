@@ -9,12 +9,14 @@
 //! At the foot rather than under the row it came off, because the list is what
 //! somebody with a card open is walking: a card among the rows moves every row
 //! below it down, and walking the cursor with one open shakes the wall it is
-//! being read against. Down here the list never moves and the card changes
-//! under it.
+//! being read against. It covers the last rows of the list rather than taking
+//! them, and the wall is laid out as if no card were up, so opening one,
+//! closing it or walking the cursor with it up moves nothing. A cursor row the
+//! card is standing over is said by the card's own rule.
 //!
 //! How tall it is is worked out here as well, because that is an answer about
-//! the list above: never so much of the screen that the wall it was opened
-//! from is gone.
+//! the list above: never so much of the band that the wall it was opened from
+//! is gone.
 //!
 //! A card carries its body in one of two states. It is *built* from text — a
 //! pane capture, a recorded answer, a patch — and it is *drawn* from [`Body`],
@@ -26,7 +28,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -949,6 +951,10 @@ pub(super) fn float(
     area: Rect,
     theme: Theme,
 ) {
+    // The band is the last rows of the list, so the rows already drawn there
+    // come off before anything of the card goes down: what the card says
+    // covers the wall rather than showing through it.
+    frame.render_widget(Clear, area);
     // A card is a modal the way a line being typed is: for as long as it is
     // up every letter is its line's, and the wall above says so the way it
     // does under a task line, by going quiet to its last cell.
@@ -2610,6 +2616,140 @@ index e69de29..0000000
     /// The view drawn at a size a test picks: what a person sees there.
     fn settled(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
         painted(&showing(views, card), size)
+    }
+
+    /// The card a finished row opens: the answer it left behind, long enough
+    /// that the card asks for every row it is allowed.
+    fn ending(id: &str) -> Card {
+        Card {
+            id: id.to_string(),
+            phase: Phase::Done,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: (0..40).map(|n| format!("said {n}\n")).collect(),
+            changes: false,
+            answer: true,
+            listening: false,
+        }
+    }
+
+    /// Six waiting agents and six finished ones, which with a heading over
+    /// each group and the blank row between them is fifteen rows of list —
+    /// exactly the band a twenty-row screen has for it.
+    fn fifteen_rows() -> Vec<View> {
+        (0..6)
+            .map(|n| view(&format!("ask-{n:02}"), Phase::Waiting, None, 29))
+            .chain(
+                (0..6).map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60 + n)),
+            )
+            .collect()
+    }
+
+    #[test]
+    fn card_draws_over_the_foot_and_moves_no_row_under_a_walked_cursor() {
+        // Fifteen rows on a twenty-row screen: the header takes two, the rows
+        // of air at either end of the list one each, and the keys the last.
+        // The cursor is on the last of the fifteen, which is the case the card
+        // used to scroll the wall for.
+        let size = (60, 20);
+        let mut screen = showing(fifteen_rows(), None);
+        let last = screen.list.items().len() - 1;
+        assert_eq!(last + 1, 15, "fifteen rows: {:?}", screen.list.items());
+        assert!(screen.list.land(last));
+        let on = screen
+            .list
+            .selected()
+            .expect("the last row")
+            .id()
+            .to_string();
+        let bare = painted(&screen, size);
+        let foot = bare
+            .iter()
+            .position(|line| line.contains(&on))
+            .expect("the cursor's row");
+
+        screen.card = Some(ending(&on).read());
+        let carded = painted(&screen, size);
+        let top = carded
+            .iter()
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule");
+        assert!(
+            top < foot,
+            "the card is drawn over the foot of the list rather than under it: \
+             {carded:?}"
+        );
+        assert_eq!(
+            carded[..top],
+            bare[..top],
+            "and every row above it is the row that stood there without it"
+        );
+        assert!(
+            !carded[..top].iter().any(|line| line.contains(&on)),
+            "the row under the card is said by the card's rule alone: {carded:?}"
+        );
+
+        // Walking the list with the card open moves no row either: the wall is
+        // laid out as if no card were up, so the offset cannot change under it.
+        for at in (0..last).rev() {
+            if !screen.list.land(at) {
+                continue;
+            }
+            let walked = painted(&screen, size);
+            assert_eq!(
+                walked[..top],
+                bare[..top],
+                "the cursor walked to {at} and moved a row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_reads_the_row_the_card_left_where_it_was_and_none_under_the_card() {
+        // The same fifteen rows with the cursor on the last of them, read the
+        // way the mouse reads them: a point above the card names the row it
+        // named with no card up, and a point on the card names nothing at all.
+        let size = (60, 20);
+        let mut screen = showing(fifteen_rows(), None);
+        let last = screen.list.items().len() - 1;
+        assert!(screen.list.land(last));
+        let on = screen
+            .list
+            .selected()
+            .expect("the last row")
+            .id()
+            .to_string();
+        let _ = painted(&screen, size);
+        let bare: Vec<Option<usize>> = (0..size.1)
+            .map(|row| screen.map.line_under(5, row))
+            .collect();
+
+        screen.card = Some(ending(&on).read());
+        let carded = painted(&screen, size);
+        let top = carded
+            .iter()
+            .position(|line| line.contains(RULE))
+            .expect("the card's rule") as u16;
+        for row in 0..top {
+            assert_eq!(
+                screen.map.line_under(5, row),
+                bare[row as usize],
+                "row {row} names what it named with no card up: {carded:?}"
+            );
+        }
+        for row in top..size.1 {
+            assert_eq!(
+                screen.map.line_under(5, row),
+                None,
+                "row {row} is the card's or the chrome's, and names no line"
+            );
+        }
+        assert!(
+            bare[(size.1 - 3) as usize].is_some(),
+            "the card's band is rows the list itself was drawn in: {carded:?}"
+        );
     }
 
     #[test]

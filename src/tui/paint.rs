@@ -81,7 +81,7 @@ pub struct Map {
     list: Cell<Option<Rect>>,
     /// The item index of the band's first drawn row.
     offset: Cell<usize>,
-    /// The band the card stands in, where one is up.
+    /// The last rows of that band, where a card is covering them.
     card: Cell<Option<Rect>>,
 }
 
@@ -100,9 +100,9 @@ impl Map {
 
     /// The line of the list under this point, as an index into the items.
     ///
-    /// The card is a band of its own under the list rather than a row of it, so
-    /// a point on it names no line and no line of the list stands anywhere but
-    /// where it would stand with no card up. What comes back can run past the
+    /// The card covers the last rows of the list rather than standing among
+    /// them, so a point on it names no line and every line of the list is
+    /// where it would be with no card up. What comes back can run past the
     /// end of the items — the band is taller than the list — and the caller
     /// holds the bound, because only it has the items.
     pub(super) fn line_under(&self, column: u16, row: u16) -> Option<usize> {
@@ -156,23 +156,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // request is a fact about the agent rather than about the turn.
     let prs = on.map_or(&[][..], |view| screen.list.requests(view));
 
-    // Every band that is not the list or the card: the header, the space under
-    // it, the space over the keys, the keys, and the permission row. What the
-    // card may take is measured against what is left, so it can never be so
-    // tall that the list it was opened from is gone.
+    // Every band that is not the list: the header, the space under it, the
+    // space over the keys, the keys, and the permission row. The card is not
+    // among them — it is drawn over the foot of the list rather than taking
+    // rows off it — so nothing here is measured against how tall it is.
     let chrome = head + space + space + 1 + allowing;
-    let carding = match (helping, &screen.card) {
-        (false, Some(card)) => card_height(
-            area.height,
-            area.height.saturating_sub(chrome),
-            card_rows(card, showing, prs, screen.answering(), area.width),
-        ),
-        _ => 0,
-    };
-    // And the composer under the card takes what is left of the same room:
-    // the rows under it, and the line itself counted at the one row it never
-    // goes below.
-    let chrome = chrome + carding;
+    // The composer takes what is left of that room: the rows under it, and the
+    // line itself counted at the one row it never goes below.
     let composing = match banded {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
@@ -187,11 +177,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .and_then(|composer| composer.suggest.as_ref());
     let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
 
-    let [top, _, middle, carded, line, offered, allowed, _, keys] = Layout::vertical([
+    let [top, _, middle, line, offered, allowed, _, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
-        Constraint::Length(carding),
         Constraint::Length(composing),
         Constraint::Length(offering),
         Constraint::Length(allowing),
@@ -199,6 +188,24 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Constraint::Length(1),
     ])
     .areas(area);
+
+    // How much of that band the card covers, measured against the band itself
+    // so it can never be so tall that the list it was opened from is gone. It
+    // stands on the last rows of the list rather than beside them, which is
+    // what keeps the wall still while a card opens, closes and is walked.
+    let carding = match (helping, &screen.card) {
+        (false, Some(card)) => card_height(
+            area.height,
+            middle.height,
+            card_rows(card, showing, prs, screen.answering(), area.width),
+        ),
+        _ => 0,
+    };
+    let carded = Rect {
+        y: middle.bottom() - carding,
+        height: carding,
+        ..middle
+    };
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
     // What this frame put where, for the mouse to read back.
@@ -209,8 +216,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     );
     match &screen.mode {
         Mode::Keys => help(frame, middle, &screen.page, &screen.bound),
-        // The card stands under the list rather than among the rows, so every
-        // row is drawn where it would stand with no card up at all.
+        // The whole band, card or no card: the rows are laid out as if none
+        // were up, and the card is drawn over the last of them.
         _ => agents(
             frame,
             &screen.list,

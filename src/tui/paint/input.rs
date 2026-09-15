@@ -1901,8 +1901,8 @@ mod tests {
     fn header_leaves_the_list_a_row_with_every_other_band_open() {
         // Four bands of chrome at once: the header, a closer look, a line
         // being typed and the row under it. The list is what the view is for,
-        // so the closer look gives way rather than the rows it was opened
-        // from.
+        // so the band it is drawn in keeps a row whatever else is open — the
+        // card covers the foot of that band rather than taking rows off it.
         let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
         screen.card = Some(asking(&["the sqlite one"], Some(Kind::Question)).read());
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
@@ -1918,15 +1918,21 @@ mod tests {
         );
         assert!(painted[9].contains("enter starts it"), "{:?}", painted[9]);
 
-        // In that order down the screen: the list, the card under it, and the
-        // line under the card, which is the band a card gives way to.
+        // In that order down the screen: what is left of the list, the card
+        // over the foot of it, and the line under the card.
         let at = |front: &str| {
             painted
                 .iter()
                 .position(|line| line.starts_with(front))
                 .unwrap_or_else(|| panic!("nothing begins {front:?} in: {painted:?}"))
         };
-        assert!(at(" ✻ ask-a1b") < at("ask-a1b · claude ┈"), "{painted:?}");
+        assert!(at("Needs input") < at("ask-a1b · claude ┈"), "{painted:?}");
         assert!(at("ask-a1b · claude ┈") < at("TASK"), "{painted:?}");
+        // And the row the card was opened from is one of the rows it is
+        // standing on, so the rule is the only thing left naming that agent.
+        assert!(
+            !painted.iter().any(|line| line.starts_with(" ✻ ask-a1b")),
+            "{painted:?}"
+        );
     }
 }

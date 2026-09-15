@@ -40,9 +40,10 @@ use crate::tui::rows::{self, Group, Item, List, Tally, Under};
 
 /// The agents themselves.
 ///
-/// The whole band, whatever else is on the screen: a card stands in a band of
-/// its own at the foot, so the rows are drawn where they were drawn before it
-/// opened and none of them moves while somebody walks the list with it up.
+/// The whole band, whatever else is on the screen: a card is drawn over the
+/// last rows of it rather than taking rows off it, so the rows are drawn where
+/// they were drawn before it opened and none of them moves while somebody walks
+/// the list with it up.
 pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, theme: Theme) {
     if list.is_empty() {
         let nothing = empty::nothing(list, area.width as usize);
