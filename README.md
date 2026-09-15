@@ -1371,7 +1371,7 @@ it last heard from?" for every agent at once. `age` keeps its three questions
 long since anything was heard from one still going — and `worked` is the
 spans of work the record has added up. The table's column is the human reading
 of the same spans; programs read the fields. `context` is the input side of
-the conversation's usage, in tokens, off the last entry that carries it;
+the conversation's usage, in tokens, off the last turn that sent any;
 `last_words` is what the reader last said, off the same transcript. Both are
 null where there is no transcript to read, or nothing on it yet.
 
