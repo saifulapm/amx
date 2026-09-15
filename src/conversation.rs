@@ -161,6 +161,33 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
     }
 }
 
+/// The input side of the conversation's usage, as of the last assistant entry
+/// that carries `message.usage`: what the next turn would send back to the
+/// vendor, in tokens.
+///
+/// Both vendors report usage per message rather than accumulating it
+/// themselves, so the last entry that carries it is the whole of what the
+/// conversation has cost so far: claude `input_tokens +
+/// cache_creation_input_tokens + cache_read_input_tokens`, pi `input +
+/// cacheRead + cacheWrite`. A field the entry does not carry counts as 0, and
+/// a conversation with no such entry yet answers `None`.
+pub fn usage_context(format: Transcript, jsonl: &str) -> Option<u64> {
+    let entry = spoken(format, jsonl)
+        .into_iter()
+        .filter(|entry| voice(format, entry) == Some(Voice::Assistant))
+        .rfind(|entry| entry["message"]["usage"].is_object())?;
+    let usage = &entry["message"]["usage"];
+    let field = |key: &str| usage[key].as_u64().unwrap_or(0);
+    Some(match format {
+        Transcript::Claude => {
+            field("input_tokens")
+                + field("cache_creation_input_tokens")
+                + field("cache_read_input_tokens")
+        }
+        Transcript::Pi => field("input") + field("cacheRead") + field("cacheWrite"),
+    })
+}
+
 /// The name the session goes under, where something has given it one.
 ///
 /// claude writes the title on a line of its own and writes the whole line
@@ -601,6 +628,34 @@ mod tests {
             None,
             "and the vendor's bookkeeping is nothing said at all"
         );
+    }
+
+    #[test]
+    fn conversation_usage_context_sums_the_last_assistants_usage() {
+        let claude = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"a\"}],\
+             \"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":5,\
+             \"cache_read_input_tokens\":2}}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"b\"}],\
+             \"usage\":{\"input_tokens\":100}}}\n",
+        );
+        assert_eq!(
+            usage_context(Transcript::Claude, claude),
+            Some(100),
+            "the last entry that carries usage, absent fields at 0"
+        );
+
+        let pi = "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\
+                   \"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a\"}],\
+                   \"usage\":{\"input\":10,\"cacheRead\":5,\"cacheWrite\":2}}}\n";
+        assert_eq!(usage_context(Transcript::Pi, pi), Some(17));
+
+        assert_eq!(
+            usage_context(Transcript::Claude, CLAUDE),
+            None,
+            "no entry carries usage"
+        );
+        assert_eq!(usage_context(Transcript::Pi, PI), None);
     }
 
     #[test]
