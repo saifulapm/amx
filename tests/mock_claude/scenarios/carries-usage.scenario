@@ -1,7 +1,10 @@
 # A turn whose transcript carries the vendor's own usage numbers, so a caller
-# reading status can see what the next turn would send back.
+# reading status can see what the next turn would send back. The pause before
+# the transcript is written gives the caller's first status call, right after
+# dispatch, a window to land on nothing read yet, rather than race it.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "say hello"}
+sleep 500
 transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":120,"cache_creation_input_tokens":30,"cache_read_input_tokens":50}}}
 hook Stop {"last_assistant_message": "hello"}
 print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
