@@ -431,14 +431,15 @@ const CLEARS: &str = "c again clears";
 /// And what a row `c` found holding work no commit has says instead, which is
 /// why rather than what next: the press after this one goes past it.
 ///
-/// The sweep keeps such a tree and the record that names it, so the row would
+/// The verb keeps such a tree and the record that names it, so the row would
 /// still be on the wall after the second press. Saying `c again clears` over
 /// it promises something that will not happen — and the reason it will not is
 /// the one thing worth reading, since it is work somebody has not committed.
 ///
-/// The notice the second press leaves says the same sentence about the same
-/// rows, which is why it is one constant and not two.
-pub(in crate::tui) const HOLDS: &str = "holds work no commit has";
+/// The row is where it is said. The notice the second press leaves counts them
+/// — `kept 2 holding work no commit has` — because a press that covers a wall
+/// can keep more rows than one line of a footer holds.
+const HOLDS: &str = "holds work no commit has";
 
 /// How wide the pull request column has to be, which is the one column of a
 /// row the design does not fix: the widest label anybody on the screen is

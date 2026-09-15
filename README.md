@@ -398,7 +398,7 @@ table.
 | `ctrl+p` | and the one before it, back to the top of the patch, where the review opens |
 | `i` | cut short the turn it is on, as `amx interrupt` does from a shell |
 | `ctrl+x` | stop it, twice to forget it, and twice on a heading to stop and clear the group |
-| `c` | mark the agents whose work has landed, and twice to take them |
+| `c` | mark every finished agent, and twice to take them |
 | `ctrl+r` | call it something else, as `amx rename` does from a shell |
 | `ctrl+g` | write the line in `$EDITOR` |
 | `alt+↑` `alt+↓` | the lines sent before, newest first; a task line takes `↑` `↓` for the same |
@@ -617,7 +617,7 @@ press on every row. An agent that is still running — sitting idle at its
 prompt included — is stopped, which costs you the pane and nothing else, and
 the row is armed in the same move; one whose command has ended is armed as it
 stands. Where the row was saying what the agent did it says `ctrl+x again
-forgets` for about two seconds, and the press inside that window is the one
+forgets` for about five seconds, and the press inside that window is the one
 that takes the record away, and the worktree with it where that tree holds
 nothing no commit has. Leave it alone and the row goes back to saying what it
 was saying, having forgotten nothing. On a heading the two presses reach the
@@ -1266,15 +1266,16 @@ is what git last recorded, and the view is what keeps both of those current.
 While it is open it fetches with `--prune` in the background, once every five
 minutes per repository, so a branch the forge deleted while you were reading is
 on the list by the next press rather than the next sweep.
-The first press asks it of every agent on the wall and marks the ones it found,
-each row saying why it is on the list where its summary was. It asks their
-trees the same question the sweep would, so a row whose tree is holding work no
-commit has says `holds work no commit has` there instead: that one is kept
-before you press again, and never offers a second press it would not honour.
-The press inside the window takes the rest and says `cleared 2`, with the rows
-it kept named after that — `kept fix-login-a1b: holds work no commit has`, or a
-count and the names where there is more than one. Nothing landed is `nothing
-has landed`, and a window left to lapse takes nothing.
+The first press marks every finished row on the wall — the ones a fold or a
+shut heading is holding back as much as the ones in front of you — each saying
+where its summary was why it is on the list. It asks their trees the same
+question the verb would, so a row whose tree is holding work no commit has says
+`holds work no commit has` there instead: that one is kept before you press
+again, and never offers a second press it would not honour. The press inside
+the window, which is about five seconds wide, takes the rest and says
+`cleared 3`, with `· kept 1 holding work no commit has` after it where a tree
+stopped one. Nothing finished is `nothing has finished`, and a window left to
+lapse takes nothing.
 
 ## Worktrees
 

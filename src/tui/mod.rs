@@ -67,7 +67,7 @@ use act::{Asking, Composer, Renamed, Replied, Started};
 /// the same one, so a task written in either place is read the same way.
 pub use act::{Edited, edited};
 use keyname::Bound;
-use paint::{Body, Card, HOLDS, Hunk, Notice};
+use paint::{Body, Card, Hunk, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -83,7 +83,13 @@ const FRAME: Duration = Duration::from_millis(120);
 /// How long a press leaves a finished row armed: long enough to read what the
 /// row has started saying and press the key again, short enough that a key
 /// pressed after that is a fresh decision rather than the end of an old one.
-const ARMED: Duration = Duration::from_secs(2);
+///
+/// Five rather than the two it was until 2026-09-15, because `c` arms every
+/// finished row on the wall and a wall of reasons is more than two seconds of
+/// reading. One window for both keys: what makes a press the end of an old
+/// decision is how long ago the last one was, and that is not a different
+/// question for `ctrl+x`.
+const ARMED: Duration = Duration::from_secs(5);
 
 /// What arrived from the terminal.
 enum Typed {
@@ -586,10 +592,11 @@ struct Arm {
     /// Whether the first press was on a heading, which is where the press
     /// that forgets them all has to land again.
     swept: bool,
-    /// Whether it was `c` that armed them, which is a press about work that
-    /// has landed rather than about the row the cursor is on. The two kinds do
-    /// not answer each other's second press: a `ctrl+x` into this window is
-    /// somebody reaching for the other key, not agreeing to this one.
+    /// Whether it was `c` that armed them, which is a press about everything
+    /// on the wall that has finished rather than about the row the cursor is
+    /// on. The two kinds do not answer each other's second press: a `ctrl+x`
+    /// into this window is somebody reaching for the other key, not agreeing
+    /// to this one.
     cleared: bool,
     /// Why each of those rows is on the list, in the order `ids` are in, where
     /// the press that armed them had a reason to give. Empty for the arm
@@ -2095,8 +2102,8 @@ impl Screen {
                     None => self.end_or_arm(root),
                 }
             }
-            // And the whole wall's worth of work that has landed, which is the
-            // one press here that is about no row in particular.
+            // And the whole wall's worth of finished rows, which is the one
+            // press here that is about no row in particular.
             KeyCode::Char('c') if plain => self.clear_or_arm(root),
             // The same agents, gathered the other way.
             KeyCode::Char('s') if ctrl => {
@@ -2841,10 +2848,11 @@ impl Screen {
 
     /// The rows a `ctrl+x` armed, which is the only arm that key finishes.
     ///
-    /// The arm `c` leaves is about work that has landed, and the rows it marks
-    /// were never chosen by anybody's cursor. A `ctrl+x` pressed into that
-    /// window is somebody reaching for the other key a beat late, so it starts
-    /// its own arm rather than forgetting a wall of agents nobody pointed at.
+    /// The arm `c` leaves is about everything that has finished, and the rows
+    /// it marks were never chosen by anybody's cursor. A `ctrl+x` pressed into
+    /// that window is somebody reaching for the other key a beat late, so it
+    /// starts its own arm rather than forgetting a wall of agents nobody
+    /// pointed at.
     fn forgetting(&self) -> &[String] {
         self.arm
             .as_ref()
@@ -3039,17 +3047,23 @@ impl Screen {
         });
     }
 
-    /// `c` on the list: two presses over everything whose work has landed,
+    /// `c` on the list: two presses over everything that has finished,
     /// wherever the cursor is standing, and the first of them costs nothing.
     ///
-    /// What `amx sweep` does at a shell, under the view's own law for a press
-    /// that cannot be taken back. The first press asks of every agent on the
-    /// wall why it would be on the sweep's list — a request the forge said is
-    /// merged or closed, a branch somebody put in the main line themselves —
-    /// and marks the rows it found, each saying its own reason where its
-    /// summary was. The press inside the window takes them: the tree, the
-    /// branch and the record, under the one law `stop` keeps about a tree
-    /// holding work no commit has.
+    /// What `amx clear` does at a shell, under the view's own law for a press
+    /// that cannot be taken back. The first press asks the verb which rows are
+    /// over — done, failed or stopped — and why each one is on the list, and
+    /// marks them, each saying its own reason where its summary was. The press
+    /// inside the window takes them the way the verb takes them: the sweep's
+    /// way where the work landed, and otherwise the record and the tree amx
+    /// cut, under the one law `stop` keeps about a tree holding work no commit
+    /// has.
+    ///
+    /// Every row the wall stands for rather than every row it is drawing. A
+    /// group folded to ten and a heading somebody shut are about how much
+    /// screen there is, and this press is about the fleet. A narrowing is the
+    /// other way about: what it put out of reach is off this list for the same
+    /// reason it is off the wall.
     ///
     /// Asked on the press and never on a reading. The question is two git
     /// calls per finished row on a branch — is it merged, has its upstream
@@ -3065,18 +3079,20 @@ impl Screen {
             return;
         }
 
-        let landed: Vec<(String, String, bool)> = self
+        let wall: Vec<View> = self
             .list
             .items()
             .iter()
-            .filter_map(|item| self.list.agent(*item))
-            .filter_map(|view| {
-                verbs::sweep::why_landed(view)
-                    .map(|why| (view.id().to_string(), why, holding(view)))
+            .filter_map(|item| match item {
+                rows::Item::Heading(under, _) => Some(*under),
+                _ => None,
             })
+            .flat_map(|under| self.list.members(under))
+            .cloned()
             .collect();
-        if landed.is_empty() {
-            self.notice = Some(Notice::Advice("nothing has landed".to_string()));
+        let finished = verbs::clear::finished_rows(&wall);
+        if finished.is_empty() {
+            self.notice = Some(Notice::Advice("nothing has finished".to_string()));
             return;
         }
 
@@ -3084,11 +3100,12 @@ impl Screen {
         // whatever it was saying before makes way for them.
         self.notice = None;
         let (mut ids, mut why, mut held) = (Vec::new(), Vec::new(), Vec::new());
-        for (id, reason, holds) in landed {
-            if holds {
-                held.push(id.clone());
+        for (at, reason) in finished {
+            let view = &wall[at];
+            if holding(view) {
+                held.push(view.id().to_string());
             }
-            ids.push(id);
+            ids.push(view.id().to_string());
             why.push(reason);
         }
         self.arm = Some(Arm {
@@ -3107,35 +3124,32 @@ impl Screen {
     ///
     /// A row the first press found holding work no commit has is not handed to
     /// the taker at all. The taker would keep it for the same reason, but the
-    /// row has been saying so for two seconds by now, and asking git to say it
-    /// again is a second answer to a question already answered.
+    /// row has been saying so for as long as the window has been open by now,
+    /// and asking git to say it again is a second answer to a question already
+    /// answered.
     ///
-    /// What was kept is named rather than counted, and named in the channel
-    /// for a thing that did not happen: `kept 1` left a person hunting the
-    /// wall for which one, which is the whole of what they wanted to know.
+    /// What was kept is counted rather than named, in the channel for a thing
+    /// that did not happen — the sentence `ctrl+x` on a heading already says
+    /// about the same rows for the same reason. It named them while the press
+    /// was about the handful of rows a sweep had found; a press that covers a
+    /// wall can keep twenty, and twenty ids on the one line the view has is a
+    /// line nobody reads to the end of.
     fn clear(&mut self, root: &Path, ids: &[String], held: &[String]) {
-        let mut cleared = 0;
-        let mut kept: Vec<&str> = Vec::new();
+        let (mut cleared, mut kept) = (0, 0);
         let mut trouble = None;
         for id in ids {
             let Some(view) = self.list.agent_by_id(id) else {
                 continue;
             };
             if held.iter().any(|marked| marked == id) {
-                kept.push(id.as_str());
+                kept += 1;
                 continue;
             }
-            let mut out = Vec::new();
-            match verbs::sweep::take_landed(root, &view.meta, &mut out) {
-                Ok(()) => match String::from_utf8_lossy(&out)
-                    .lines()
-                    .any(|line| line.starts_with("kept "))
-                {
-                    // A tree that took work on between the two presses, which
-                    // the taker caught and this did not.
-                    true => kept.push(id.as_str()),
-                    false => cleared += 1,
-                },
+            match verbs::clear::take_row(root, view) {
+                Ok(verbs::clear::Taken::Gone) => cleared += 1,
+                // A tree that took work on between the two presses, which the
+                // taker caught and this did not.
+                Ok(verbs::clear::Taken::Holding(_)) => kept += 1,
                 Err(e) => {
                     trouble = Some(format!("{e:#}"));
                     break;
@@ -3145,13 +3159,10 @@ impl Screen {
 
         self.notice = Some(match trouble {
             Some(e) => Notice::Failed(e),
-            None => match kept.as_slice() {
-                [] => Notice::Advice(format!("cleared {cleared}")),
-                [one] => Notice::Refused(format!("cleared {cleared} · kept {one}: {HOLDS}")),
-                many => Notice::Refused(format!(
-                    "cleared {cleared} · kept {}: {}",
-                    many.len(),
-                    many.join(", ")
+            None => match kept {
+                0 => Notice::Advice(format!("cleared {cleared}")),
+                kept => Notice::Refused(format!(
+                    "cleared {cleared} · kept {kept} holding work no commit has"
                 )),
             },
         });
@@ -3555,8 +3566,8 @@ fn kept_a_tree(outcome: Result<(String, bool)>) -> Option<Notice> {
 
 /// Whether the tree behind a row `c` found still holds work no commit has.
 ///
-/// Asked on the press, of the rows the sweep found and no others: it is a git
-/// call per tree, and the wall is read again every second. A tree amx cannot
+/// Asked on the press, of the finished rows and no others: it is a git call
+/// per tree, and the wall is read again every second. A tree amx cannot
 /// get an answer about counts as holding work, which is the reading
 /// [`sweep::take_landed`](verbs::sweep::take_landed) takes of the same
 /// question — the two have to agree, or the row says one thing and the press
@@ -7788,7 +7799,7 @@ diff --git a/src/bar.rs b/src/bar.rs
     }
 
     /// A repository with one commit in it, which is what the key that clears
-    /// what has landed asks its questions of.
+    /// the finished asks its questions of.
     fn a_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         git(dir.path(), &["init", "-b", "main"]);
@@ -7844,26 +7855,143 @@ diff --git a/src/bar.rs b/src/bar.rs
         )
     }
 
-    /// The key that clears what has landed, which is read anywhere on the
-    /// list.
+    /// The key that clears the finished, which is read anywhere on the list.
     fn c() -> KeyEvent {
         KeyEvent::from(KeyCode::Char('c'))
     }
 
+    /// One somebody stopped: finished, with nothing outside amx that could
+    /// ever have an opinion about it — no branch, no request.
+    fn was_stopped(id: &str) -> View {
+        reading(
+            id,
+            Phase::Stopped,
+            State {
+                state: Phase::Stopped,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    }
+
     #[test]
-    fn keys_c_says_nothing_has_landed_when_no_branch_of_anybody_s_work_is_in() {
+    fn keys_c_says_nothing_has_finished_over_a_wall_that_is_still_at_work() {
         let root = TempDir::new().unwrap();
-        let mut screen = watching(a_wall());
+        let mut screen = watching(vec![at_work("port-a1b"), stopped_on_a_question("ask-b2c")]);
         screen
             .act(c(), root.path(), &Config::default(), None)
             .unwrap();
         let Some(Notice::Advice(said)) = &screen.notice else {
             panic!("nothing said about a wall with nothing on it to clear")
         };
-        assert_eq!(said, "nothing has landed");
+        assert_eq!(said, "nothing has finished");
         assert!(
             screen.arm.is_none(),
             "and nothing is left armed for a second press to take"
+        );
+    }
+
+    #[test]
+    fn keys_c_arms_every_finished_row_with_its_reason_and_the_press_after_takes_them() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        for id in ["first-a1b", "second-b2c", "third-c3d", "quiet-d4e"] {
+            idle(root.path(), id);
+        }
+        let mut screen = watching(vec![
+            was_stopped("first-a1b"),
+            was_stopped("second-b2c"),
+            was_stopped("third-c3d"),
+            // And one mid-turn, which no press here is about.
+            at_work("quiet-d4e"),
+        ]);
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        let arm = screen.arm.as_ref().expect("the arm the press left");
+        let mut marked: Vec<(&str, &str)> = arm
+            .ids
+            .iter()
+            .map(String::as_str)
+            .zip(arm.why.iter().map(String::as_str))
+            .collect();
+        marked.sort_unstable();
+        assert_eq!(
+            marked,
+            [
+                ("first-a1b", "stopped"),
+                ("second-b2c", "stopped"),
+                ("third-c3d", "stopped"),
+            ],
+            "every row whose turn is over, each with the reason it is on the \
+             list, and the one still at work on none of it"
+        );
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            4,
+            "and the first press takes nothing"
+        );
+
+        screen.act(c(), root.path(), &config, None).unwrap();
+        assert_eq!(
+            crate::store::list(root.path()).unwrap(),
+            ["quiet-d4e".to_string()],
+            "the records of all three, which is what a stopped row has"
+        );
+        let Some(Notice::Advice(said)) = &screen.notice else {
+            panic!("nothing said about what went")
+        };
+        assert_eq!(said, "cleared 3");
+        assert!(screen.arm.is_none(), "and the arm is taken with them");
+    }
+
+    /// The press is about the fleet, and the wall is only as long as there is
+    /// screen for it.
+    #[test]
+    fn keys_c_reaches_the_finished_rows_the_fold_is_holding_back() {
+        let root = TempDir::new().unwrap();
+        let mut screen = watching(a_folding_wall());
+        assert!(
+            screen
+                .list
+                .items()
+                .iter()
+                .any(|item| matches!(item, rows::Item::Fold(..))),
+            "the wall this is asked of is drawing a fold"
+        );
+
+        screen
+            .act(c(), root.path(), &Config::default(), None)
+            .unwrap();
+        let arm = screen.arm.as_ref().expect("the arm the press left");
+        assert_eq!(
+            arm.ids.len(),
+            12,
+            "every ended row on the wall, drawn or folded away: {:?}",
+            arm.ids
+        );
+    }
+
+    /// Five seconds rather than the two `ctrl+x` had: the press is about a
+    /// wall of rows rather than the one under the cursor, and reading a wall
+    /// of reasons takes longer than reading one.
+    #[test]
+    fn keys_c_still_clears_four_seconds_after_the_press_that_armed_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "first-a1b");
+        let mut screen = watching(vec![was_stopped("first-a1b")]);
+        screen.act(c(), root.path(), &config, None).unwrap();
+
+        let arm = screen.arm.as_mut().expect("the arm the press left");
+        arm.at = arm
+            .at
+            .checked_sub(Duration::from_secs(4))
+            .expect("a machine that has been up longer than the window");
+        screen.act(c(), root.path(), &config, None).unwrap();
+        assert!(
+            crate::store::list(root.path()).unwrap().is_empty(),
+            "the press was still inside the window"
         );
     }
 
@@ -7933,7 +8061,7 @@ diff --git a/src/bar.rs b/src/bar.rs
     }
 
     #[test]
-    fn keys_c_marks_a_tree_that_holds_work_no_commit_has_and_names_it_when_it_keeps_it() {
+    fn keys_c_marks_a_tree_that_holds_work_no_commit_has_and_counts_it_when_it_keeps_it() {
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let config = Config::default();
@@ -7959,10 +8087,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let Some(Notice::Refused(said)) = &screen.notice else {
             panic!("a row the press passed by was said as though it had gone")
         };
-        assert_eq!(
-            said,
-            "cleared 1 · kept fix-login-a1b: holds work no commit has"
-        );
+        assert_eq!(said, "cleared 1 · kept 1 holding work no commit has");
         assert_eq!(
             crate::store::list(root.path()).unwrap(),
             ["fix-login-a1b".to_string()],
@@ -7994,10 +8119,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let Some(Notice::Refused(said)) = &screen.notice else {
             panic!("nothing said about the row the press passed by")
         };
-        assert_eq!(
-            said,
-            "cleared 0 · kept fix-login-a1b: holds work no commit has"
-        );
+        assert_eq!(said, "cleared 0 · kept 1 holding work no commit has");
     }
 
     #[test]
@@ -8024,12 +8146,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let Some(Notice::Refused(said)) = &screen.notice else {
             panic!("nothing said about the rows the press passed by")
         };
-        let Some(names) = said.strip_prefix("cleared 0 · kept 2: ") else {
-            panic!("more than one kept is a count and then the names: {said}")
-        };
-        let mut named: Vec<&str> = names.split(", ").collect();
-        named.sort_unstable();
-        assert_eq!(named, ["fix-login-a1b", "port-importer-b2c"]);
+        assert_eq!(said, "cleared 0 · kept 2 holding work no commit has");
         assert_eq!(
             crate::store::list(root.path()).unwrap().len(),
             2,

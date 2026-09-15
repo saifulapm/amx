@@ -2715,7 +2715,7 @@ fn c_whose_window_lapses_keeps_every_agent_it_marked() {
 }
 
 #[test]
-fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_names_it() {
+fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let (clean, holding) = two_agents_whose_work_landed(&amx, &repo);
@@ -2753,11 +2753,11 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_names_it() {
     );
 
     // The press inside the window takes the clean row and goes past the held
-    // one, and the line at the foot names what stayed rather than counting it.
+    // one, and the line at the foot says how many stayed and why.
     press(&amx, &view, "c");
-    amx.until("the count and the name of what was kept", || {
+    amx.until("the count of what went and what was kept", || {
         screen(&amx, &view)
-            .contains("cleared 1 · kept tidy-b2c: holds work no commit has")
+            .contains("cleared 1 · kept 1 holding work no commit has")
             .then_some(())
     });
     assert_eq!(

@@ -87,7 +87,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 54] = [
     ("ctrl+r", "call it something else"),
     ("i", "cut short the turn it is on"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
-    ("c", "clear what has landed · again takes them"),
+    ("c", "clear the finished · again takes them"),
     ("/", "find by name, task or #12, as you type"),
     ("s:", "narrow by state, on the find line"),
     // dials

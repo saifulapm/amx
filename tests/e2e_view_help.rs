@@ -173,6 +173,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "what it has changed",
         "open its pull request in the browser",
         "stop it",
+        "clear the finished",
         "call it something else",
         "pin it over the wall",
         "ctrl+x",
