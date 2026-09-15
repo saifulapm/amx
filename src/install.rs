@@ -873,7 +873,10 @@ mod tests {
         let plugin: Value =
             serde_json::from_str(include_str!("../.claude-plugin/plugin.json")).unwrap();
         assert_eq!(plugin["name"], "amx");
-        assert_eq!(plugin["hooks"], "./hooks/hooks.json");
+        assert!(
+            plugin.get("hooks").is_none(),
+            "Claude Code loads hooks/hooks.json by convention and refuses a manifest naming it twice"
+        );
 
         let wiring_file: Value = serde_json::from_str(include_str!("../hooks/hooks.json")).unwrap();
         let by_event = wiring_file["hooks"]
