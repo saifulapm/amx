@@ -316,6 +316,35 @@ fn stopping_a_worker_mid_turn_ends_it_and_the_next_question_says_so() {
     assert_eq!(stdout(&answered), "");
 }
 
+#[test]
+fn status_json_carries_the_conversations_context_and_last_words() {
+    let amx = Harness::new();
+    let caller = Caller::new(&amx);
+    let dir = amx.a_repo();
+
+    let id = handle(&caller.dispatch(&dir, "carries-usage"));
+
+    // Nothing has been read off a transcript yet: dispatch returns before the
+    // worker's own process has even started.
+    let before = amx.amx(&["status", &id, "--json"]);
+    assert_eq!(code(&before), 0, "{}", stderr(&before));
+    let before: Value = serde_json::from_slice(&before.stdout).expect("status --json prints json");
+    assert_eq!(before["context"], Value::Null, "{before}");
+    assert_eq!(before["last_words"], Value::Null, "{before}");
+
+    let answered = caller.result(&id);
+    assert_eq!(code(&answered), 0, "{}", stderr(&answered));
+
+    let after = amx.amx(&["status", &id, "--json"]);
+    assert_eq!(code(&after), 0, "{}", stderr(&after));
+    let after: Value = serde_json::from_slice(&after.stdout).expect("status --json prints json");
+    assert_eq!(
+        after["context"], 200,
+        "input, cache creation and cache read tokens, summed: {after}"
+    );
+    assert_eq!(after["last_words"], "hello", "{after}");
+}
+
 /// The handle a dispatch hands back: the id, and nothing else on stdout for a
 /// caller to have to strip.
 fn handle(out: &Output) -> String {

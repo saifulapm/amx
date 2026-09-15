@@ -1,0 +1,8 @@
+# A turn whose transcript carries the vendor's own usage numbers, so a caller
+# reading status can see what the next turn would send back.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "say hello"}
+transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":120,"cache_creation_input_tokens":30,"cache_read_input_tokens":50}}}
+hook Stop {"last_assistant_message": "hello"}
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000
