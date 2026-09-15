@@ -599,7 +599,7 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use crate::tui::paint::text::fit;
     use crate::tui::paint::{Card, draw};
-    use crate::tui::rows::Narrow;
+    use crate::tui::rows::{FOLD_AT, Narrow};
     use crate::tui::{Arm, Screen};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1606,29 +1606,35 @@ mod tests {
 
     #[test]
     fn view_shows_the_fold_and_what_it_is_holding_back() {
-        // A working agent and twelve finished: ten endings are drawn and the
-        // fold stands under them saying what it is holding back.
+        // A working agent and two endings more than the fold holds: the fold's
+        // worth are drawn and the fold stands under them saying what it is
+        // holding back.
         let fleet = || {
             let mut views = vec![view("busy-b2c", Phase::Working, Some("Running Bash"), 3)];
             views.extend(
-                (0..12).map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60)),
+                (0..FOLD_AT + 2)
+                    .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60)),
             );
             views
         };
 
-        let tall = settled(fleet(), (40, 24));
+        let height = (FOLD_AT + 14) as u16;
+        let tall = settled(fleet(), (40, height));
         assert_eq!(heading_of(&tall[6]), "Completed");
-        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), 10);
+        assert_eq!(tall.iter().filter(|l| l.contains("done-")).count(), FOLD_AT);
         assert!(
-            tall[17].contains("… 2 more"),
+            tall[FOLD_AT + 7].contains("… 2 more"),
             "the fold stands on the row under them: {tall:?}"
         );
 
-        // Twice the screen, the same ten rows and the same count. What folds
-        // is the length of the group, and the window has no say in it.
-        let taller = settled(fleet(), (40, 48));
-        assert_eq!(taller.iter().filter(|l| l.contains("done-")).count(), 10);
-        assert!(taller[17].contains("… 2 more"), "{taller:?}");
+        // Twice the screen, the same rows and the same count. What folds is
+        // the length of the group, and the window has no say in it.
+        let taller = settled(fleet(), (40, height * 2));
+        assert_eq!(
+            taller.iter().filter(|l| l.contains("done-")).count(),
+            FOLD_AT
+        );
+        assert!(taller[FOLD_AT + 7].contains("… 2 more"), "{taller:?}");
     }
 
     #[test]

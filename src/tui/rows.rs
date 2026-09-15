@@ -12,11 +12,11 @@
 //! exception is the finished group, where the newest ending comes first.
 //!
 //! A group past [`FOLD_AT`] rows shows that many and folds the rest away
-//! behind a count, whichever axis it was gathered on. Ten rows is as much of
-//! one group as somebody reads before they scroll, and the fold is the same
-//! ten whatever the terminal is: a wall cut to the height of the window moves
-//! rows under a reader every time the window changes, and a screen with room
-//! to spare is not a reason to put sixty endings in front of somebody.
+//! behind a count, whichever axis it was gathered on. Thirty rows is as much
+//! of one group as somebody reads before they scroll, and the fold is the same
+//! thirty whatever the terminal is: a wall cut to the height of the window
+//! moves rows under a reader every time the window changes, and a screen with
+//! room to spare is not a reason to put sixty endings in front of somebody.
 //!
 //! There is a second question a wall of agents gets asked — *what is running in
 //! this repository?* — and it is the same agents gathered a different way, so
@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 
 /// How many rows of one group somebody is shown before the rest fold away
 /// behind a count.
-pub const FOLD_AT: usize = 10;
+pub const FOLD_AT: usize = 30;
 
 /// What an agent is, to somebody deciding what to do next.
 ///
@@ -1807,9 +1807,9 @@ mod tests {
 
     /// A run of finished agents, `done-0` the oldest ending and the last of
     /// them the newest, which is the order the group draws them in.
-    fn a_history(count: u64) -> Vec<View> {
+    fn a_history(count: usize) -> Vec<View> {
         (0..count)
-            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n))
+            .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n as u64))
             .collect()
     }
 
@@ -1997,109 +1997,86 @@ mod tests {
     }
 
     #[test]
-    fn view_folds_a_group_past_ten_rows_behind_a_count() {
-        // Twelve endings: the heading, the ten newest, and the fold on the
-        // row under them. However tall the screen is — nothing here has been
-        // told one.
-        let mut list = listed(a_history(12));
-        assert_eq!(
-            lines(&list),
-            [
-                "Completed (12)",
-                "done-11",
-                "done-10",
-                "done-9",
-                "done-8",
-                "done-7",
-                "done-6",
-                "done-5",
-                "done-4",
-                "done-3",
-                "done-2",
-                "… 2 more"
-            ]
-        );
+    fn view_folds_a_group_past_thirty_rows_behind_a_count() {
+        // Two endings more than the fold: the heading, the newest `FOLD_AT` of
+        // them, and the fold on the row under them. However tall the screen is
+        // — nothing here has been told one.
+        let mut list = listed(a_history(FOLD_AT + 2));
+        let mut standing = vec![format!("Completed ({})", FOLD_AT + 2)];
+        standing.extend((0..FOLD_AT).map(|n| format!("done-{}", FOLD_AT + 1 - n)));
+        standing.push("… 2 more".to_string());
+        assert_eq!(lines(&list), standing);
 
-        for _ in 0..10 {
+        for _ in 0..FOLD_AT {
             list.down();
         }
         list.unfold();
         assert_eq!(
             lines(&list).len(),
-            13,
+            FOLD_AT + 3,
             "the fold line is gone with the fold"
         );
         assert!(lines(&list).contains(&"done-0".to_string()));
 
         // And it stays open while more finish.
-        list.show(a_history(13));
+        list.show(a_history(FOLD_AT + 3));
         assert!(lines(&list).contains(&"done-0".to_string()));
     }
 
     #[test]
-    fn view_folds_the_eleventh_row_of_a_group_and_leaves_ten_standing() {
-        let ten = listed(a_history(10));
+    fn view_folds_the_thirty_first_row_of_a_group_and_leaves_thirty_standing() {
+        let whole = listed(a_history(FOLD_AT));
         assert_eq!(
-            lines(&ten).len(),
-            11,
-            "a heading and ten rows, with nothing held back: {:?}",
-            lines(&ten)
+            lines(&whole).len(),
+            FOLD_AT + 1,
+            "a heading and {FOLD_AT} rows, with nothing held back: {:?}",
+            lines(&whole)
         );
 
-        let eleven = listed(a_history(11));
+        let one_over = listed(a_history(FOLD_AT + 1));
         assert_eq!(
-            lines(&eleven).last().map(String::as_str),
+            lines(&one_over).last().map(String::as_str),
             Some("… 1 more"),
             "{:?}",
-            lines(&eleven)
+            lines(&one_over)
         );
     }
 
     #[test]
     fn view_folds_every_group_and_not_only_the_finished_ones() {
-        // A dozen agents stopped on a question is as long a wall as a dozen
-        // endings, and the fold is for the wall rather than for history.
-        let mut views: Vec<View> = (0..12)
-            .map(|n| view(&format!("ask-{n}"), Phase::Waiting, 10 * n))
+        // A group of agents stopped on a question is as long a wall as the
+        // same number of endings, and the fold is for the wall rather than for
+        // history.
+        let mut views: Vec<View> = (0..FOLD_AT + 2)
+            .map(|n| view(&format!("ask-{n}"), Phase::Waiting, 10 * n as u64))
             .collect();
         views.push(view("done-a1b", Phase::Done, 5));
 
-        assert_eq!(
-            lines(&listed(views)),
-            [
-                "Needs input (12)",
-                "ask-0",
-                "ask-1",
-                "ask-2",
-                "ask-3",
-                "ask-4",
-                "ask-5",
-                "ask-6",
-                "ask-7",
-                "ask-8",
-                "ask-9",
-                "… 2 more",
-                "",
-                "Completed (1)",
-                "done-a1b"
-            ]
-        );
+        let mut standing = vec![format!("Needs input ({})", FOLD_AT + 2)];
+        standing.extend((0..FOLD_AT).map(|n| format!("ask-{n}")));
+        standing.extend([
+            "… 2 more".to_string(),
+            String::new(),
+            "Completed (1)".to_string(),
+            "done-a1b".to_string(),
+        ]);
+        assert_eq!(lines(&listed(views)), standing);
     }
 
     #[test]
     fn view_keeps_failures_and_requests_ahead_of_the_plainly_done() {
-        // Fourteen endings and rows for ten. The failure and the row carrying
-        // a number are what somebody scans this group for, so the fold keeps
-        // them over the oldest plainly done rows — in the order the group
-        // already reads in.
+        // Four endings more than the fold has room for. The failure and the
+        // row carrying a number are what somebody scans this group for, so the
+        // fold keeps them over the oldest plainly done rows — in the order the
+        // group already reads in.
         //
         // Nobody has read any of these, and the four that fold away are the
         // four oldest all the same: whether a row has been looked at plays no
         // part, because looking at one would otherwise move it.
         let mut list = List::default();
         list.asking(a_forge);
-        let mut views: Vec<View> = (1..=12)
-            .map(|n| view(&format!("done-{n:02}"), Phase::Done, 10 * n))
+        let mut views: Vec<View> = (1..=FOLD_AT + 2)
+            .map(|n| view(&format!("done-{n:02}"), Phase::Done, 10 * n as u64))
             .collect();
         views.push(view("broke-e5f", Phase::Failed, 2));
         views.push(on_a_branch(
@@ -2108,58 +2085,40 @@ mod tests {
         ));
         list.show(views);
 
-        assert_eq!(
-            lines(&list),
-            [
-                "Completed (14)",
-                "done-12",
-                "done-11",
-                "done-10",
-                "done-09",
-                "done-08",
-                "done-07",
-                "done-06",
-                "done-05",
-                "broke-e5f",
-                "merged-f6g",
-                "… 4 more"
-            ]
-        );
+        let mut standing = vec![format!("Completed ({})", FOLD_AT + 4)];
+        standing.extend((0..FOLD_AT - 2).map(|n| format!("done-{:02}", FOLD_AT + 2 - n)));
+        standing.extend([
+            "broke-e5f".to_string(),
+            "merged-f6g".to_string(),
+            "… 4 more".to_string(),
+        ]);
+        assert_eq!(lines(&list), standing);
     }
 
     #[test]
     fn view_never_folds_the_row_out_from_under_the_cursor() {
-        let mut list = listed(a_history(11));
-        for _ in 0..9 {
+        let mut list = listed(a_history(FOLD_AT + 1));
+        for _ in 0..FOLD_AT - 1 {
             list.down();
         }
         assert_eq!(list.selected().unwrap().id(), "done-1");
 
-        // A twelfth ending arrives and pushes the cursor's row past the ten
+        // One more ending arrives and pushes the cursor's row past the rows
         // the fold leaves standing. It is kept anyway, and an older row goes
         // in its place: a fold that took it would leave the cursor on
         // whoever came up there.
-        let mut views = a_history(11);
-        views.push(view("done-11", Phase::Done, 110));
+        let mut views = a_history(FOLD_AT + 1);
+        views.push(view(
+            &format!("done-{}", FOLD_AT + 1),
+            Phase::Done,
+            10 * (FOLD_AT + 1) as u64,
+        ));
         list.show(views);
 
-        assert_eq!(
-            lines(&list),
-            [
-                "Completed (12)",
-                "done-11",
-                "done-10",
-                "done-9",
-                "done-8",
-                "done-7",
-                "done-6",
-                "done-5",
-                "done-4",
-                "done-3",
-                "done-1",
-                "… 2 more"
-            ]
-        );
+        let mut standing = vec![format!("Completed ({})", FOLD_AT + 2)];
+        standing.extend((0..FOLD_AT - 1).map(|n| format!("done-{}", FOLD_AT + 1 - n)));
+        standing.extend(["done-1".to_string(), "… 2 more".to_string()]);
+        assert_eq!(lines(&list), standing);
         assert_eq!(list.selected().unwrap().id(), "done-1");
     }
 
@@ -2353,9 +2312,9 @@ mod tests {
 
     #[test]
     fn view_can_reach_the_fold_and_open_it_where_it_stands() {
-        let mut list = listed(a_history(12));
+        let mut list = listed(a_history(FOLD_AT + 2));
 
-        for _ in 0..10 {
+        for _ in 0..FOLD_AT {
             list.down();
         }
         assert!(list.on_fold());
@@ -2553,25 +2512,30 @@ mod tests {
     }
 
     #[test]
-    fn axis_folds_a_project_past_ten_rows_and_opens_that_heading_alone() {
-        let views: Vec<View> = (0..12)
-            .map(|n| at(view(&format!("done-{n}"), Phase::Done, 10 * n), "/src/api"))
+    fn axis_folds_a_project_past_thirty_rows_and_opens_that_heading_alone() {
+        let views: Vec<View> = (0..FOLD_AT + 2)
+            .map(|n| {
+                at(
+                    view(&format!("done-{n}"), Phase::Done, 10 * n as u64),
+                    "/src/api",
+                )
+            })
             .collect();
         let mut list = over_the_disk(views);
 
         assert_eq!(
             lines(&list).len(),
-            12,
+            FOLD_AT + 2,
             "a path holds as many rows as a group does: {:?}",
             lines(&list)
         );
         assert!(lines(&list).contains(&"… 2 more".to_string()));
 
-        for _ in 0..10 {
+        for _ in 0..FOLD_AT {
             list.down();
         }
         list.unfold();
-        assert_eq!(lines(&list).len(), 13, "{:?}", lines(&list));
+        assert_eq!(lines(&list).len(), FOLD_AT + 3, "{:?}", lines(&list));
 
         // The same agents gathered by state are folded still: what somebody
         // opened is one heading rather than the fleet.
@@ -3099,9 +3063,9 @@ mod tests {
 
     #[test]
     fn arranged_a_move_reaches_the_rows_on_the_screen_and_not_the_folded_ones() {
-        let mut list = listed(a_history(12));
+        let mut list = listed(a_history(FOLD_AT + 2));
         // Down to the last row the fold leaves standing.
-        for _ in 0..9 {
+        for _ in 0..FOLD_AT - 1 {
             list.down();
         }
         assert_eq!(list.selected().unwrap().id(), "done-2");
@@ -3117,7 +3081,11 @@ mod tests {
         list.unfold();
         assert!(list.move_by(1));
         let after = lines(&list);
-        assert_eq!(&after[10..], ["done-2", "done-0", "done-1"], "{after:?}");
+        assert_eq!(
+            &after[FOLD_AT..],
+            ["done-2", "done-0", "done-1"],
+            "{after:?}"
+        );
     }
 
     #[test]
@@ -3544,7 +3512,7 @@ mod tests {
 
     #[test]
     fn acts_a_heading_answers_for_its_agents_whether_or_not_they_are_drawn() {
-        let mut list = listed(a_history(12));
+        let mut list = listed(a_history(FOLD_AT + 2));
         list.up();
 
         let under = list.heading().expect("the cursor is on the heading");
@@ -3556,14 +3524,14 @@ mod tests {
         };
         assert_eq!(
             members(&list, under).len(),
-            12,
+            FOLD_AT + 2,
             "the fold decides how many rows are drawn, not how many there are"
         );
 
         list.shut_or_open();
         assert_eq!(
             members(&list, under).len(),
-            12,
+            FOLD_AT + 2,
             "and a group somebody shut is still standing for them"
         );
 

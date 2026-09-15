@@ -1014,7 +1014,7 @@ mod tests {
     /// A fleet with nothing left to finish and more of them than one group
     /// shows, so there is a fold to walk onto.
     fn all_done() -> Vec<View> {
-        (0..12)
+        (0..crate::tui::rows::FOLD_AT + 2)
             .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
             .collect()
     }
@@ -1212,7 +1212,7 @@ mod tests {
 
         // The fold is not an agent either: what enter does there is give back
         // the rows it is holding.
-        for _ in 0..10 {
+        for _ in 0..crate::tui::rows::FOLD_AT {
             screen.list.down();
         }
         assert!(

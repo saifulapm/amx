@@ -3109,7 +3109,7 @@ impl Screen {
     /// has.
     ///
     /// Every row the wall stands for rather than every row it is drawing. A
-    /// group folded to ten and a heading somebody shut are about how much
+    /// group folded to thirty and a heading somebody shut are about how much
     /// screen there is, and this press is about the fleet. A narrowing is the
     /// other way about: what it put out of reach is off this list for the same
     /// reason it is off the wall.
@@ -6665,7 +6665,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         // And on the fold it gives back the rows the fold is holding.
         let mut screen = watching(a_folding_wall());
         press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
-        for _ in 0..12 {
+        for _ in 0..rows::FOLD_AT + 2 {
             press(&mut screen, KeyEvent::from(KeyCode::Down));
         }
         assert!(screen.list.on_fold(), "the cursor is on the fold");
@@ -8127,7 +8127,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let arm = screen.arm.as_ref().expect("the arm the press left");
         assert_eq!(
             arm.ids.len(),
-            12,
+            rows::FOLD_AT + 2,
             "every ended row on the wall, drawn or folded away: {:?}",
             arm.ids
         );
@@ -8773,7 +8773,7 @@ diff --git a/src/bar.rs b/src/bar.rs
     /// fold under them to walk onto.
     fn a_folding_wall() -> Vec<View> {
         let mut views = a_wall();
-        views.extend((5..12).map(|n| {
+        views.extend((5..rows::FOLD_AT + 2).map(|n| {
             reading(
                 &format!("done-{n}"),
                 Phase::Done,
@@ -10337,30 +10337,50 @@ diff --git a/src/bar.rs b/src/bar.rs
     fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        // Twelve finished: a heading, the ten a group shows, and the fold on
-        // the row under them, on a screen with room to draw all of it.
+        // Two finished past the fold: a heading, the rows a group shows, and
+        // the fold on the row under them, on a screen with room to draw all of
+        // it.
+        let height = (rows::FOLD_AT + 10) as u16;
         let mut screen = watching(
-            (0..12)
+            (0..rows::FOLD_AT + 2)
                 .map(|n| finished_saying(&format!("done-{n:02}"), "an answer"))
                 .collect(),
         );
-        a_frame_of(&mut screen, (60, 20));
+        a_frame_of(&mut screen, (60, height));
         assert_eq!(
             screen.list.items().len(),
-            12,
-            "a heading, ten rows and the fold"
+            rows::FOLD_AT + 2,
+            "a heading, the drawn rows and the fold"
         );
 
-        // The fold is the row under the ten drawn agents, and the list starts
-        // on the fourth row of the screen.
-        click(&mut screen, 5, 14, root.path(), &config).unwrap();
-        assert_eq!(screen.list.items().len(), 13, "the fold gave its rows back");
+        // The fold is the row under the drawn agents, and the list starts on
+        // the fourth row of the screen.
+        click(
+            &mut screen,
+            5,
+            (rows::FOLD_AT + 4) as u16,
+            root.path(),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(
+            screen.list.items().len(),
+            rows::FOLD_AT + 3,
+            "the fold gave its rows back"
+        );
 
         // A click past the end of the list lands on nothing and moves
         // nothing.
         let before = screen.list.selected().unwrap().id().to_string();
-        a_frame_of(&mut screen, (60, 20));
-        click(&mut screen, 5, 17, root.path(), &config).unwrap();
+        a_frame_of(&mut screen, (60, height));
+        click(
+            &mut screen,
+            5,
+            (rows::FOLD_AT + 7) as u16,
+            root.path(),
+            &config,
+        )
+        .unwrap();
         assert_eq!(screen.list.selected().unwrap().id(), before);
     }
 

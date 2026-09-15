@@ -1605,6 +1605,7 @@ mod tests {
     use crate::tui::act::Asking;
     use crate::tui::paint::draw;
     use crate::tui::paint::header::space_rows;
+    use crate::tui::rows::FOLD_AT;
     use crate::tui::{Mode, Screen};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -2754,18 +2755,18 @@ index e69de29..0000000
 
     #[test]
     fn card_stands_over_the_list_and_folds_nothing_when_it_opens() {
-        // Twenty finished agents, so the completed group folds behind a
-        // count. The card covers the foot of the band rather than taking it,
-        // so the wall above the card is laid out exactly as it was with no
-        // card up — the fold is not cut again for the rows the card left,
-        // and no row that stood above the card's rule is a different row
-        // afterwards.
+        // Ten finished agents more than the fold holds, so the completed
+        // group folds behind a count. The card covers the foot of the band
+        // rather than taking it, so the wall above the card is laid out
+        // exactly as it was with no card up — the fold is not cut again for
+        // the rows the card left, and no row that stood above the card's rule
+        // is a different row afterwards.
         let fleet = || {
-            (0..20)
+            (0..FOLD_AT + 10)
                 .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
                 .collect::<Vec<View>>()
         };
-        let size = (60, 20);
+        let size = (60, (FOLD_AT + 10) as u16);
         let bare = settled(fleet(), None, size);
         assert!(
             bare.iter().any(|line| line.contains("more")),
