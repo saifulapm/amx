@@ -154,8 +154,9 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
     // The screen the overlay is drawn for: wide enough for two columns and
-    // deep enough for the longer of them.
-    resize(&amx, &view, 120, 40);
+    // deep enough for the longer of them, the blank row over the keys counted
+    // in.
+    resize(&amx, &view, 120, 41);
 
     types(&amx, &view, "?");
     // Waited for by the last row of the deeper column, so a screen caught

@@ -1578,6 +1578,7 @@ mod tests {
     use crate::tmux::{PaneId, Socket};
     use crate::tui::act::Asking;
     use crate::tui::paint::draw;
+    use crate::tui::paint::header::space_rows;
     use crate::tui::{Mode, Screen};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1719,16 +1720,16 @@ mod tests {
     }
 
     /// The card as it stands on the screen, top to bottom: the band at the
-    /// foot of the list, which opens on its rule and runs to the row above the
-    /// keys.
+    /// foot of the list, which opens on its rule and runs to the keys.
+    ///
+    /// The keys are never the card's, and on a screen tall enough for it
+    /// neither is the blank row standing them off what is above them.
     fn card_lines(screen: &[String]) -> Vec<&str> {
         let Some(top) = screen.iter().position(|line| line.contains(RULE)) else {
             return Vec::new();
         };
-        screen[top..screen.len() - 1]
-            .iter()
-            .map(String::as_str)
-            .collect()
+        let foot = screen.len() - 1 - space_rows(screen.len() as u16) as usize;
+        screen[top..foot].iter().map(String::as_str).collect()
     }
 
     /// What a heading line says: the group's own words, the count where the
@@ -2459,8 +2460,9 @@ index e69de29..0000000
         );
         assert_eq!(
             top + card.len(),
-            screen.len() - 1,
-            "and the keys are the one row under it: {screen:?}"
+            screen.len() - 2,
+            "and the keys are what is under it, standing off it by a row: \
+             {screen:?}"
         );
     }
 

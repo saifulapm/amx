@@ -160,10 +160,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let prs = on.map_or(&[][..], |view| screen.list.requests(view));
 
     // Every band that is not the list or the card: the header, the space under
-    // it, the keys, and the permission row. What the card may take is measured
-    // against what is left, so it can never be so tall that the list it was
-    // opened from is gone.
-    let chrome = head + space + 1 + allowing;
+    // it, the space over the keys, the keys, and the permission row. What the
+    // card may take is measured against what is left, so it can never be so
+    // tall that the list it was opened from is gone.
+    let chrome = head + space + space + 1 + allowing;
     let carding = match (helping, &screen.card) {
         (false, Some(card)) => card_height(
             area.height,
@@ -190,7 +190,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .and_then(|composer| composer.suggest.as_ref());
     let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
 
-    let [top, _, middle, carded, line, offered, allowed, keys] = Layout::vertical([
+    let [top, _, middle, carded, line, offered, allowed, _, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
@@ -198,6 +198,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Constraint::Length(composing),
         Constraint::Length(offering),
         Constraint::Length(allowing),
+        Constraint::Length(space),
         Constraint::Length(1),
     ])
     .areas(area);

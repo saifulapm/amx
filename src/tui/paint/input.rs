@@ -1088,10 +1088,11 @@ mod tests {
     #[test]
     fn input_mode_takes_the_strength_off_the_wall_it_is_drawn_over() {
         // Everything above the band the line is drawn in, which on a screen
-        // this tall holding one line is every row but the last three.
+        // this tall holding one line is every row but the last four: the rule,
+        // the line, the blank row over the keys, and the keys.
         let weighty = |screen: &Screen| {
             let cells = cells(screen, TALL);
-            (0..27).any(|row| {
+            (0..26).any(|row| {
                 (0..TALL.0).any(|column| cells[(column, row)].modifier.contains(Modifier::BOLD))
             })
         };
@@ -1534,7 +1535,7 @@ mod tests {
         // placeholder, the way a browser draws a field's ghost text — and the
         // block says so by turning that cell over rather than by standing in
         // it, so the first letter of the lesson is still there to read.
-        assert_eq!(block(&typing(""), TALL, 28), Some(2));
+        assert_eq!(block(&typing(""), TALL, 27), Some(2));
         assert!(!clipped.contains('█'), "{clipped}");
 
         // The first character typed takes the placeholder away: whoever is
@@ -1575,9 +1576,9 @@ mod tests {
     #[test]
     fn composer_grows_a_row_at_a_time_as_the_line_it_holds_does() {
         let one = painted(&typing("port the importer"), TALL);
-        assert_eq!(one[28], "❯ port the importer");
+        assert_eq!(one[27], "❯ port the importer");
         assert_eq!(
-            one[26], "",
+            one[25], "",
             "one line takes one row, at the foot of it all, with the rule over it"
         );
 
@@ -1585,15 +1586,15 @@ mod tests {
             &typing("port the importer\nand its tests\nand the docs"),
             TALL,
         );
-        assert_eq!(three[26], "❯ port the importer");
+        assert_eq!(three[25], "❯ port the importer");
         assert_eq!(
-            three[27], "  and its tests",
+            three[26], "  and its tests",
             "a row under the first is indented to it, so a task reads as one \
              thing"
         );
-        assert_eq!(three[28], "  and the docs");
+        assert_eq!(three[27], "  and the docs");
         assert_eq!(
-            block(&typing("port it\nand test it"), TALL, 28),
+            block(&typing("port it\nand test it"), TALL, 27),
             Some(13),
             "and the block is at the end of the last of them"
         );
@@ -1617,12 +1618,12 @@ mod tests {
         let screen = typing_at("port the importer", 4);
         let painted = painted(&screen, TALL);
         assert_eq!(
-            painted[28], "❯ port the importer",
+            painted[27], "❯ port the importer",
             "the character keeps its cell, so nothing is hidden by the cursor \
              standing on it: {painted:?}"
         );
 
-        let cell = cells(&screen, TALL)[(15, 28)].clone();
+        let cell = cells(&screen, TALL)[(15, 27)].clone();
         assert_eq!(cell.symbol(), "r");
         assert!(
             cell.modifier.contains(Modifier::REVERSED),
@@ -1638,12 +1639,12 @@ mod tests {
         // And a line that wrapped is walked back a row at a time: the block
         // goes where the character it is on was drawn, which is the row above.
         assert_eq!(
-            block(&typing_at(&"x".repeat(116), 58), TALL, 28),
+            block(&typing_at(&"x".repeat(116), 58), TALL, 27),
             Some(2),
             "the first character of the second row"
         );
         assert_eq!(
-            block(&typing_at(&"x".repeat(116), 59), TALL, 27),
+            block(&typing_at(&"x".repeat(116), 59), TALL, 26),
             Some(59),
             "and the one before it is the last of the first row"
         );
@@ -1656,7 +1657,7 @@ mod tests {
         // screen.
         let screen = typing_at("port the importer\nand its tests\nand the docs", 4);
         let cells = cells(&screen, TALL);
-        for row in 26..=28 {
+        for row in 25..=27 {
             assert!(
                 (0..TALL.0).all(|column| !cells[(column, row)].modifier.contains(Modifier::BOLD)),
                 "no cell of the line being typed carries weight: row {row}"
@@ -1665,7 +1666,7 @@ mod tests {
 
         // The block is what says where the next character lands, and it says
         // it the way it always has: the cell turned over, in the accent.
-        let cell = cells[(10, 28)].clone();
+        let cell = cells[(10, 27)].clone();
         assert_eq!(cell.symbol(), "d");
         assert!(
             cell.modifier.contains(Modifier::REVERSED),
@@ -1686,13 +1687,13 @@ mod tests {
     fn composer_wrapping_past_the_width_grows_it_the_same_way_a_newline_does() {
         // Twice the room a sixty-column screen leaves beside the chevron.
         let painted = painted(&typing(&"x".repeat(116)), TALL);
-        assert_eq!(painted[27], format!("❯ {}", "x".repeat(58)));
-        assert_eq!(painted[28], format!("  {}", "x".repeat(58)));
+        assert_eq!(painted[26], format!("❯ {}", "x".repeat(58)));
+        assert_eq!(painted[27], format!("  {}", "x".repeat(58)));
 
         // A row filled to the width leaves the block no cell of its own past
         // the end of it, so it stands on the last cell the row has rather than
         // off the screen where nobody can see it.
-        assert_eq!(block(&typing(&"x".repeat(58)), TALL, 28), Some(59));
+        assert_eq!(block(&typing(&"x".repeat(58)), TALL, 27), Some(59));
     }
 
     #[test]
@@ -1701,16 +1702,16 @@ mod tests {
         let painted = painted(&screen, TALL);
 
         assert_eq!(
-            painted[19], "❯ row-11",
+            painted[18], "❯ row-11",
             "the prompt is on the top row however far the rest has scrolled: \
              {painted:?}"
         );
-        assert_eq!(painted[28], "  row-20", "{painted:?}");
+        assert_eq!(painted[27], "  row-20", "{painted:?}");
         assert!(
             !painted.iter().any(|line| line.contains("row-10")),
             "and what scrolled past is off the screen: {painted:?}"
         );
-        assert_eq!(block(&screen, TALL, 28), Some(8));
+        assert_eq!(block(&screen, TALL, 27), Some(8));
     }
 
     #[test]

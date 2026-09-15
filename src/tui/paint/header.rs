@@ -29,13 +29,14 @@ use crate::tui::{Profile, Screen};
 pub(super) const SHORT: usize = 10;
 
 /// From this many rows up there is a blank one between the header and the
-/// list. The groups stand off from each other that way, and the first of them
-/// has the chrome above it rather than nothing at all.
+/// list, and another between the list and the keys. The groups stand off from
+/// each other that way, and the first and the last of them have air above and
+/// below rather than chrome against them.
 ///
-/// It is the first row to go on a screen running out of them, for the reason
-/// [`SHORT`] is a rule: four rows of chrome over ten of terminal is most of
-/// what a person opened the view to read, and a row of air is worth less than
-/// a row of agents.
+/// Both are the first rows to go on a screen running out of them, for the
+/// reason [`SHORT`] is a rule: four rows of chrome over ten of terminal is
+/// most of what a person opened the view to read, and a row of air is worth
+/// less than a row of agents.
 pub(super) const SPACED: usize = 12;
 
 /// Fewer columns than this left for a directory and it is not on the row at
@@ -50,7 +51,8 @@ pub(super) fn header_rows(height: u16) -> u16 {
     }
 }
 
-/// And how many stand between it and the list.
+/// And how many stand between it and the list, which is also how many stand
+/// between the list and the keys: one rule, drawn at both ends of the list.
 pub(super) fn space_rows(height: u16) -> u16 {
     u16::from((height as usize) >= SPACED)
 }
@@ -524,6 +526,39 @@ mod tests {
         let short = drawn(a_fleet(), None, (60, SPACED as u16 - 1));
         assert_eq!(heading_of(&short[2]), "Needs input", "{short:?}");
         assert!(short[3].contains("ask-a1b"), "{short:?}");
+    }
+
+    /// A wall with more rows on it than a tall screen has, spread over enough
+    /// headings that no fold can shorten it below one: what the row over the
+    /// keys is read against is a list that would otherwise be standing there.
+    fn a_full_wall() -> Vec<View> {
+        (0..42)
+            .map(|at| {
+                let mut view = view(&format!("busy-{at:03}"), Phase::Working, None, 3);
+                view.meta.dir = PathBuf::from(format!("/srv/app{}", at % 6));
+                view
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_keys_row_stands_off_the_list_on_a_screen_with_the_row_to_spare() {
+        // The same rule at the other end of the screen: the keys against the
+        // last row of the list read as one more row of it, and the gap that
+        // says otherwise is worth a row wherever the header's is.
+        let mut screen = showing(a_full_wall(), None);
+        screen.list.turn();
+
+        let tall = painted(&screen, (60, 45));
+        assert!(!tall[42].is_empty(), "the list fills the screen: {tall:?}");
+        assert_eq!(tall[43], "", "{tall:?}");
+        assert!(tall[44].starts_with("space card"), "{:?}", tall[44]);
+
+        // And it is a row a short screen takes back, the way the one under the
+        // header is: the list is what the view is for.
+        let short = painted(&screen, (60, SPACED as u16 - 1));
+        assert!(!short[9].is_empty(), "{short:?}");
+        assert!(short[10].starts_with("space card"), "{:?}", short[10]);
     }
 
     #[test]

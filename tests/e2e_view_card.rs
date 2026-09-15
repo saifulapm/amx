@@ -121,12 +121,16 @@ fn card_rule(drawn: &str) -> Option<usize> {
 }
 
 /// The card as it stands on the screen, top to bottom: its rule, and every row
-/// under it down to the one the keys have.
+/// under it down to the blank one the keys stand off on.
+///
+/// The last two rows of a screen this tall belong to the screen rather than to
+/// the card: the keys, and the row of air over them.
 fn card_lines(drawn: &str) -> Vec<&str> {
     let lines: Vec<&str> = drawn.lines().collect();
+    let foot = lines.len().saturating_sub(2);
     match card_rule(drawn) {
-        Some(top) => lines[top..lines.len() - 1].to_vec(),
-        None => Vec::new(),
+        Some(top) if top < foot => lines[top..foot].to_vec(),
+        _ => Vec::new(),
     }
 }
 

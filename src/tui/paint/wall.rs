@@ -1692,7 +1692,11 @@ mod tests {
         // onto a wall of rows that all look alike. The one they were just in
         // is the row they are about to look for, so the wall says which it
         // was rather than leaving them to remember.
-        let size = (60, 12);
+        //
+        // A row taller than the rest of these: the three rows and the two
+        // headings between them want every row the list has once the keys
+        // have taken their own and the blank one over them.
+        let size = (60, 13);
         let mut screen = showing(
             vec![
                 read(view("ask-a1b", Phase::Waiting, Some("Proceed?"), 30)),

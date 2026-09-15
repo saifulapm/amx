@@ -437,8 +437,10 @@ mod tests {
     }
 
     /// A screen wide enough for the two columns and tall enough for all of
-    /// them, which is the shape the overlay is drawn for.
-    const WIDE_SCREEN: (u16, u16) = (120, 40);
+    /// them, which is the shape the overlay is drawn for. The keys row and the
+    /// blank one over it are counted in: what the overlay has is what the list
+    /// would have had.
+    const WIDE_SCREEN: (u16, u16) = (120, 41);
 
     /// The screen most people have: too narrow for two columns and far too
     /// short for one column of every key there is, which is the shape the
@@ -627,8 +629,9 @@ mod tests {
         // Tall enough for the one column whole, worked out rather than counted
         // off a screen somebody once looked at: every key, a heading over each
         // group, the row that stands each group off from the next, and the
-        // header, the space under it and the row of keys at the foot.
-        let deep = (HELP.len() + 2 * GROUPS.len() - 1 + 4) as u16;
+        // header, the space under it, the row of keys at the foot and the
+        // space over those.
+        let deep = (HELP.len() + 2 * GROUPS.len() - 1 + 5) as u16;
         let painted = overlay((80, deep));
         let all = painted.join("\n");
         for (key, does) in HELP {
@@ -659,7 +662,9 @@ mod tests {
         // Tall and wide enough for every key and every heading over them,
         // so each of them has the row to itself and every description is
         // whole.
-        let tall = (HELP.len() + GROUPS.len()) as u16 + header_rows(24) + space_rows(24) + 1;
+        // The chrome the overlay is drawn inside: the header, the blank row
+        // under it, the blank row over the keys, and the keys.
+        let tall = (HELP.len() + GROUPS.len()) as u16 + header_rows(24) + 2 * space_rows(24) + 1;
         let painted = painted(&screen, (140, tall)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
