@@ -2014,8 +2014,9 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
     );
     let carded = card_on(&amx, &view, id);
     assert!(
-        carded.contains("❯ reply"),
-        "the line takes words on an agent there is something to bring back:\n{carded}"
+        carded.contains("❯ resume"),
+        "the line takes words on an agent there is something to bring back, \
+         and says they will bring it back:\n{carded}"
     );
 
     types(&amx, &view, "and now the linter");

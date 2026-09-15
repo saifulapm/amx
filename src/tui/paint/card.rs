@@ -1557,6 +1557,7 @@ fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
     match (card.asks(), card.listening) {
         (true, _) => act::invitation(card.kind, &card.options, asked, card.walked),
         (_, false) => NOBODY.to_string(),
+        _ if card.phase.is_terminal() => RESUME.to_string(),
         _ => REPLY.to_string(),
     }
 }
@@ -1564,6 +1565,12 @@ fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
 /// What the line says on an agent that will do something with it, which is
 /// what it is.
 const REPLY: &str = "reply";
+
+/// And on one whose turn is over: a line typed here starts the agent again
+/// on those words, which is a vendor brought back and a turn paid for, so the
+/// line says so before the keystroke rather than after it (Saiful,
+/// 2026-09-15, off a stopped agent woken by a line typed at its card).
+const RESUME: &str = "resume";
 
 /// And on one past listening, which is the whole of what would come of it.
 const NOBODY: &str = "nothing is listening";
@@ -2989,9 +2996,9 @@ index e69de29..0000000
         );
 
         // An agent whose command has ended still takes a line, because a line
-        // typed there brings it back on those words. The word is the same one
-        // a working agent's line carries: what happens to it is amx's to
-        // arrange, not something to spell on the line.
+        // typed there brings it back on those words — and the line says so,
+        // since a resume is a vendor started again on the words, which is
+        // more than a working agent's line costs.
         let ended = |listening| Card {
             phase: Phase::Done,
             question: None,
@@ -3003,7 +3010,7 @@ index e69de29..0000000
         };
         let back = answering(ended(true), "");
         let comes_back = answer_row(&painted(&back, size));
-        assert!(comes_back.contains("❯ reply"), "{comes_back:?}");
+        assert!(comes_back.contains("❯ resume"), "{comes_back:?}");
 
         // And on the one there is nothing to bring back, what would come of
         // it — in the words the reply itself is refused in, because it is the

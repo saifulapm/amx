@@ -571,9 +571,16 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
         // counts it the way the rule over the card counts it — naming the hunk
         // instead where this line's words are the whole of what would go,
         // which is the one note somebody cannot see the number of.
+        // And on an agent whose turn is over, the words start it again, which
+        // the row says in the word the empty line said it in.
+        let resumes = screen
+            .card
+            .as_ref()
+            .is_some_and(|card| card.listening && card.phase.is_terminal());
         let does = match screen.card.as_ref().is_some_and(|card| card.asks()) {
             true => "answers it".to_string(),
             false => match (going.as_slice(), screen.at_hunk()) {
+                ([], _) if resumes => "resumes it".to_string(),
                 ([], _) => "sends it".to_string(),
                 ([one], Some((at, _))) if *one == at => format!("sends it with hunk {}", at + 1),
                 (going, _) => format!("sends {}", notes(going.len())),
@@ -1310,9 +1317,19 @@ mod tests {
             ),
             "enter answers it   alt+enter newline   esc closes it"
         );
+        // A message to an agent still there is sent; the same words at one
+        // whose turn is over start it again, and the row says which.
+        let between_turns = Card {
+            phase: Phase::Idle,
+            ..a_long_answer()
+        };
+        assert_eq!(
+            hint_row(&carded(between_turns, "keep it"), wide),
+            "enter sends it   alt+enter newline   esc closes it"
+        );
         assert_eq!(
             hint_row(&carded(a_long_answer(), "keep it"), wide),
-            "enter sends it   alt+enter newline   esc closes it"
+            "enter resumes it   alt+enter newline   esc closes it"
         );
     }
 
