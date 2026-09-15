@@ -43,7 +43,7 @@ use crate::tui::keyname::Bound;
 ///
 /// The table is not public to the rest of the crate, so the test that checks
 /// the README against it reads this file as text.
-pub(in crate::tui) const HELP: [(&str, &str); 54] = [
+pub(in crate::tui) const HELP: [(&str, &str); 55] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "the top of the list, and the foot"),
@@ -55,6 +55,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 54] = [
     ("q ctrl+c", "close the view"),
     // look
     ("space l", "the card, and an answer or a message on it"),
+    ("v", "which vendor, model and effort each one runs"),
     ("enter →", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
     ("o", "open its pull request in the browser"),
@@ -116,7 +117,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 54] = [
 /// or drop one between two headings.
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 8),
-    ("look", 11),
+    ("look", 12),
     ("start", 12),
     ("arrange", 11),
     ("dials", 12),
@@ -249,7 +250,7 @@ fn dealt(width: usize) -> Vec<Range<usize>> {
 }
 
 /// Where those two columns part, which for the table as it stands is after
-/// `start`: twenty-eight keys against twenty-three.
+/// `start`: thirty-two keys against twenty-three.
 fn cut() -> usize {
     let total: usize = GROUPS.iter().map(|(_, under)| under).sum();
     (1..GROUPS.len())
@@ -440,7 +441,31 @@ mod tests {
     /// them, which is the shape the overlay is drawn for. The keys row and the
     /// blank one over it are counted in: what the overlay has is what the list
     /// would have had.
-    const WIDE_SCREEN: (u16, u16) = (120, 41);
+    ///
+    /// The depth is worked out rather than counted off a screen somebody once
+    /// looked at, because it grows every time the table does: a number written
+    /// here would send the next key that joins the table paging.
+    fn wide_screen() -> (u16, u16) {
+        (120, deepest_column() + 5)
+    }
+
+    /// How many rows the deeper of the two columns takes: its keys, a heading
+    /// over each of its groups, and the row that stands each group off from
+    /// the one under it.
+    fn deepest_column() -> u16 {
+        let cut = cut();
+        [0..cut, cut..GROUPS.len()]
+            .into_iter()
+            .map(|column| {
+                let keys: u16 = GROUPS[column.clone()]
+                    .iter()
+                    .map(|(_, under)| *under as u16)
+                    .sum();
+                keys + 2 * column.len() as u16 - 1
+            })
+            .max()
+            .unwrap_or(0)
+    }
 
     /// The screen most people have: too narrow for two columns and far too
     /// short for one column of every key there is, which is the shape the
@@ -520,10 +545,10 @@ mod tests {
 
     #[test]
     fn keymap_stands_the_keys_in_two_columns_cut_where_they_balance() {
-        let painted = overlay(WIDE_SCREEN);
-        let share = WIDE_SCREEN.0 as usize / 2;
+        let painted = overlay(wide_screen());
+        let share = wide_screen().0 as usize / 2;
         let left = between(&painted, 0, share);
-        let right = between(&painted, share, WIDE_SCREEN.0 as usize);
+        let right = between(&painted, share, wide_screen().0 as usize);
 
         // Cut where the two columns come out nearest the same number of
         // keys, which for this table is after `start`. Worked out rather than
@@ -571,8 +596,8 @@ mod tests {
 
     #[test]
     fn keymap_heads_each_column_the_way_the_wall_heads_a_group() {
-        let painted = overlay(WIDE_SCREEN);
-        let share = WIDE_SCREEN.0 as usize / 2;
+        let painted = overlay(wide_screen());
+        let share = wide_screen().0 as usize / 2;
 
         // The heading a group of agents carries: the label uppercase, a rule
         // run out from it, and how many stand under it at the column's own
@@ -586,7 +611,7 @@ mod tests {
              {heading:?}"
         );
 
-        let second = between(&painted, share, WIDE_SCREEN.0 as usize);
+        let second = between(&painted, share, wide_screen().0 as usize);
         let beside = second
             .lines()
             .nth(3)
@@ -675,14 +700,14 @@ mod tests {
     #[test]
     fn keymap_stands_the_keys_somebody_bound_under_a_heading_of_their_own() {
         let painted = overlay_of(
-            WIDE_SCREEN,
+            wide_screen(),
             vec![
                 bound("alt+g", "lazygit"),
                 bound("alt+t", "cargo test 2>&1 | less"),
             ],
         );
-        let share = WIDE_SCREEN.0 as usize / 2;
-        let right = between(&painted, share, WIDE_SCREEN.0 as usize);
+        let share = wide_screen().0 as usize / 2;
+        let right = between(&painted, share, wide_screen().0 as usize);
 
         // The heading amx's own groups wear, counting the keys under it: what
         // somebody bound is a group of keys like any other.
@@ -725,7 +750,7 @@ mod tests {
 
     #[test]
     fn keymap_grows_nothing_for_a_config_that_bound_no_keys() {
-        let painted = overlay(WIDE_SCREEN).join("\n");
+        let painted = overlay(wide_screen()).join("\n");
         assert!(
             !painted.contains("YOURS"),
             "a heading over nothing is a heading in everybody's way:\n{painted}"
@@ -736,7 +761,7 @@ mod tests {
     fn keymap_carries_the_weight_on_the_label_and_the_key_and_none_of_it_elsewhere() {
         let mut screen = showing(Vec::new(), None);
         screen.mode = Mode::Keys;
-        let buffer = cells(&screen, WIDE_SCREEN);
+        let buffer = cells(&screen, wide_screen());
 
         let label = buffer[(1, 3)].clone();
         assert!(

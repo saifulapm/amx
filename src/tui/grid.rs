@@ -32,6 +32,13 @@ const NARROW_NAME: usize = 16;
 /// would be a lie.
 const STATE: usize = 8;
 
+/// The vendor column, sized for `claude sonnet high` — the program, the model
+/// and the effort with a space between each, which is the longest of them the
+/// registry can hand out. It does not shrink with the screen either: the
+/// column is only there because somebody pressed for it, and what they pressed
+/// for is the words.
+const VENDOR: usize = 18;
+
 /// The age column, which fits everything up to `365d`.
 const AGE: usize = 4;
 
@@ -52,6 +59,10 @@ const SHORTEST_RULE: usize = 8;
 pub(super) struct Widths {
     /// What the agent is called.
     pub name: usize,
+    /// What runs it — the vendor, the model and the effort. Nothing until
+    /// somebody asks for it: most walls run one vendor on one model, and a
+    /// column saying so on every row would be twenty cells of the same word.
+    pub vendor: usize,
     /// What state it is in, in a word. Nothing on the state axis, where the
     /// heading over the row already says it and saying it twice would be a
     /// column of noise.
@@ -64,8 +75,9 @@ pub(super) struct Widths {
     pub age: usize,
 }
 
-/// The columns a row is cut into at this width, on this axis.
-pub(super) fn widths(width: usize, axis: Axis) -> Widths {
+/// The columns a row is cut into at this width, on this axis, with the vendor
+/// column where somebody has asked for one.
+pub(super) fn widths(width: usize, axis: Axis, vendor: bool) -> Widths {
     let name = match width >= WIDE {
         true => WIDE_NAME,
         false => NARROW_NAME,
@@ -74,15 +86,22 @@ pub(super) fn widths(width: usize, axis: Axis) -> Widths {
         Axis::State => 0,
         Axis::Project => STATE,
     };
-    // What the dir axis inserts between the name and the summary: the state
-    // word and the gap in front of it, or nothing at all.
-    let inserted = match state {
-        0 => 0,
-        word => word + GAP,
+    let vendor = match vendor {
+        true => VENDOR,
+        false => 0,
     };
+    // What stands between the name and the summary: the vendor column, the
+    // state word the dir axis adds, each with the gap in front of it, and
+    // nothing at all for whichever of them is not there.
+    let inserted = [vendor, state]
+        .into_iter()
+        .filter(|column| *column > 0)
+        .map(|column| column + GAP)
+        .sum::<usize>();
     let spent = PREFIX + name + GAP + inserted + GAP + AGE;
     Widths {
         name,
+        vendor,
         state,
         summary: width.saturating_sub(spent),
         age: AGE,
@@ -212,10 +231,11 @@ mod tests {
     /// What a row spends on everything except the summary, which is what the
     /// summary is left over from.
     fn spent(widths: Widths) -> usize {
-        let inserted = match widths.state {
-            0 => 0,
-            state => state + GAP,
-        };
+        let inserted: usize = [widths.vendor, widths.state]
+            .into_iter()
+            .filter(|column| *column > 0)
+            .map(|column| column + GAP)
+            .sum();
         PREFIX + widths.name + GAP + inserted + GAP + widths.age
     }
 
@@ -223,7 +243,7 @@ mod tests {
     fn name_column_is_22_cells_at_100_and_wider() {
         for width in [100, 120, 200] {
             assert_eq!(
-                widths(width, Axis::State).name,
+                widths(width, Axis::State, false).name,
                 22,
                 "a {width}-cell screen has room for the wide name column"
             );
@@ -234,7 +254,7 @@ mod tests {
     fn name_column_drops_to_16_cells_below_100() {
         for width in [80, 99] {
             assert_eq!(
-                widths(width, Axis::State).name,
+                widths(width, Axis::State, false).name,
                 16,
                 "a {width}-cell screen does not"
             );
@@ -244,12 +264,12 @@ mod tests {
     #[test]
     fn state_word_is_8_cells_on_the_dir_axis_and_nothing_on_the_state_axis() {
         assert_eq!(
-            widths(100, Axis::Project).state,
+            widths(100, Axis::Project, false).state,
             8,
             "which is what `starting` needs"
         );
         assert_eq!(
-            widths(100, Axis::State).state,
+            widths(100, Axis::State, false).state,
             0,
             "the heading over the row says it there"
         );
@@ -258,23 +278,64 @@ mod tests {
     #[test]
     fn state_word_keeps_its_8_cells_on_a_narrow_screen() {
         assert_eq!(
-            widths(80, Axis::Project).state,
+            widths(80, Axis::Project, false).state,
             8,
             "a cut state word would be a lie"
         );
     }
 
     #[test]
+    fn vendor_column_is_18_cells_when_it_is_asked_for_and_nothing_when_it_is_not() {
+        assert_eq!(
+            widths(100, Axis::State, true).vendor,
+            18,
+            "which is what `claude sonnet high` needs"
+        );
+        assert_eq!(
+            widths(100, Axis::State, false).vendor,
+            0,
+            "and a column nobody asked for costs the row nothing"
+        );
+    }
+
+    #[test]
+    fn vendor_column_keeps_its_18_cells_on_a_narrow_screen() {
+        assert_eq!(
+            widths(80, Axis::Project, true).vendor,
+            18,
+            "a key somebody pressed is answered at whatever width they pressed it"
+        );
+    }
+
+    #[test]
+    fn summary_pays_for_the_vendor_column_and_nothing_else_moves() {
+        for width in [80, 100, 160] {
+            for axis in [Axis::State, Axis::Project] {
+                let off = widths(width, axis, false);
+                let on = widths(width, axis, true);
+                assert_eq!(off.name, on.name, "the name column does not move");
+                assert_eq!(off.age, on.age, "nor does the age column");
+                assert_eq!(off.state, on.state, "nor does the state word");
+                assert_eq!(
+                    off.summary - on.summary,
+                    VENDOR + GAP,
+                    "the summary absorbs the whole 20 cells at {width} on {axis:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn age_column_is_4_cells_on_either_axis() {
-        assert_eq!(widths(100, Axis::State).age, 4);
-        assert_eq!(widths(80, Axis::Project).age, 4);
+        assert_eq!(widths(100, Axis::State, false).age, 4);
+        assert_eq!(widths(80, Axis::Project, false).age, 4);
     }
 
     #[test]
     fn summary_pays_for_the_state_word_and_nothing_else_moves() {
         for width in [80, 100, 160] {
-            let state = widths(width, Axis::State);
-            let dir = widths(width, Axis::Project);
+            let state = widths(width, Axis::State, false);
+            let dir = widths(width, Axis::Project, false);
             assert_eq!(state.name, dir.name, "the name column does not move");
             assert_eq!(state.age, dir.age, "nor does the age column");
             assert_eq!(
@@ -289,12 +350,14 @@ mod tests {
     fn columns_fill_the_screen_they_are_given() {
         for width in 80..=200 {
             for axis in [Axis::State, Axis::Project] {
-                let widths = widths(width, axis);
-                assert_eq!(
-                    spent(widths) + widths.summary,
-                    width,
-                    "{axis:?} at {width} leaves no cell unspoken for"
-                );
+                for vendor in [false, true] {
+                    let widths = widths(width, axis, vendor);
+                    assert_eq!(
+                        spent(widths) + widths.summary,
+                        width,
+                        "{axis:?} at {width} leaves no cell unspoken for"
+                    );
+                }
             }
         }
     }
@@ -302,7 +365,7 @@ mod tests {
     #[test]
     fn summary_stops_at_nothing_below_the_designs_floor() {
         assert_eq!(
-            widths(30, Axis::Project).summary,
+            widths(30, Axis::Project, false).summary,
             0,
             "the summary is the first column to go and the last to be missed"
         );

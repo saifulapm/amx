@@ -406,6 +406,7 @@ table.
 | `w` | put the cursor on the first agent that needs you |
 | `backspace` | put the cursor on the agent you were last in, as `amx attach --last` goes back from a shell |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
+| `v` | say which vendor, model and effort each row runs, and again to hide it |
 | `ctrl+s` | gather them by state or by project |
 | `ctrl+t` | pin it over the wall, and again to let it go |
 | `z` | put it under everything, and again to wake it |

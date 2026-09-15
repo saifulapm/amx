@@ -155,21 +155,26 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     until_empty(&amx, &view);
     // The screen the overlay is drawn for: wide enough for two columns and
     // deep enough for the longer of them, the blank row over the keys counted
-    // in.
-    resize(&amx, &view, 120, 41);
+    // in. It grows with the table, so a key added to the first column is a row
+    // added here.
+    resize(&amx, &view, 120, 42);
 
     types(&amx, &view, "?");
     // Waited for by the last row of the deeper column, so a screen caught
     // halfway through being written is not read as a key that is missing.
     let keys = amx.until("the keys", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("write the line in $EDITOR").then_some(drawn)
+        drawn
+            .contains("lines sent before · ↑ ↓ too on a task line")
+            .then_some(drawn)
     });
     for does in [
         "start an agent",
         "start a copy of it on a task",
         "the agent you were last in",
         "an answer or a message on it",
+        "which vendor, model and effort each one runs",
+        "write the line in $EDITOR",
         "what it has changed",
         "open its pull request in the browser",
         "stop it",
@@ -201,6 +206,21 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     assert!(
         !keys.contains('…'),
         "a screen this wide cuts nothing short:\n{keys}"
+    );
+
+    // And the count at the end of a heading is the keys under it, `v` among
+    // them: a key on the screen that the heading over it does not count would
+    // be a number somebody has to check by hand.
+    let look = keys
+        .lines()
+        .find(|line| line.contains("LOOK"))
+        .unwrap_or_else(|| panic!("no heading over the looking keys:\n{keys}"));
+    // The first column alone: the second one is drawn on the same rows, and
+    // what stands beside this heading is a key of somebody else's group.
+    let first: String = look.chars().take(120 / 2).collect();
+    assert!(
+        first.trim_end().ends_with("12"),
+        "the LOOK count includes v: {first:?}"
     );
 
     // And back to the agents, which is what the view is for.

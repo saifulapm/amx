@@ -223,6 +223,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                 swept: screen.swept(),
                 hover: screen.hover,
                 lent: screen.lent.as_deref(),
+                vendor: screen.vendor,
             },
             theme,
         ),

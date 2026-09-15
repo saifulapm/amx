@@ -782,6 +782,101 @@ fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
 }
 
 #[test]
+fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
+    let amx = Harness::new();
+    // The three kinds of row the column has anything to say about: a spawn
+    // that turned both dials, one that turned neither, and a shell command,
+    // which runs no vendor at all.
+    finished(&amx, "fix-login-a1b", "done", 30);
+    amx.set_meta(
+        "fix-login-a1b",
+        json!({ "model": "opus", "effort": "high" }),
+    );
+    finished(&amx, "port-b2c", "done", 60);
+    let pane = a_pane_showing(&amx, &["cargo build"]);
+    amx.record("build-c3d", &pane);
+    amx.set_meta("build-c3d", json!({ "agent": null }));
+
+    let ids = ["fix-login-a1b", "port-b2c", "build-c3d"];
+    // The three rows or none of them: a capture can land mid-frame, and a
+    // screen half written is one to look at again rather than one to fail on.
+    let rows = |drawn: &str| -> Option<Vec<String>> {
+        ids.iter()
+            .map(|id| {
+                drawn
+                    .lines()
+                    .find(|line| line.contains(id))
+                    .map(str::to_string)
+            })
+            .collect()
+    };
+    let rows_of =
+        |drawn: &str| rows(drawn).unwrap_or_else(|| panic!("the three rows in:\n{drawn}"));
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let quiet = amx.until("the three rows", || {
+        let drawn = screen(&amx, &view);
+        rows(&drawn).map(|_| drawn)
+    });
+    for row in rows_of(&quiet) {
+        assert!(
+            !row.contains("claude"),
+            "the column is not on the wall until somebody asks: {row:?}"
+        );
+    }
+
+    // Waited for by all three rows, because all three are what is measured:
+    // a capture that landed between the frame and the assertion would read as
+    // a column that never came up.
+    press(&amx, &view, "v");
+    let loud = amx.until("what each row runs", || {
+        let drawn = screen(&amx, &view);
+        let said = rows(&drawn)?;
+        (said[0].contains("claude opus high")
+            && said[1].contains("claude")
+            && said[2].contains("sh"))
+        .then_some(drawn)
+    });
+    assert!(
+        !rows_of(&loud)[1].contains("opus"),
+        "a dial nobody turned is the vendor's own, and amx does not guess it: {:?}",
+        rows_of(&loud)[1]
+    );
+    for (before, after) in rows_of(&quiet).iter().zip(rows_of(&loud)) {
+        assert_eq!(
+            before.find(char::is_alphanumeric),
+            after.find(char::is_alphanumeric),
+            "the name column does not move for it:\n{before:?}\n{after:?}"
+        );
+    }
+
+    // The same key takes it away again.
+    press(&amx, &view, "v");
+    amx.until("the wall without it", || {
+        let drawn = screen(&amx, &view);
+        rows(&drawn)?
+            .iter()
+            .all(|row| !row.contains("claude"))
+            .then_some(())
+    });
+
+    // And the choice outlives the view that made it: put back up, it is the
+    // wall the next terminal opens on.
+    press(&amx, &view, "v");
+    amx.until("the column again", || {
+        screen(&amx, &view)
+            .contains("claude opus high")
+            .then_some(())
+    });
+    let again = amx.in_a_terminal(&[], &[]);
+    amx.until("the second view to open on the same wall", || {
+        let drawn = screen(&amx, &again);
+        let said = rows(&drawn)?;
+        (said[0].contains("claude opus high") && said[2].contains("sh")).then_some(())
+    });
+}
+
+#[test]
 fn a_working_row_says_what_the_line_over_the_composer_says() {
     let amx = Harness::new();
     let mut pane_rows = vec![

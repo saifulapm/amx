@@ -52,7 +52,7 @@ pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment,
 
     let offset = first_drawn(list, area.height);
     let width = area.width as usize;
-    let widths = grid::widths(width, list.axis());
+    let widths = grid::widths(width, list.axis(), moment.vendor);
     let requests = request_column(list);
 
     let lines: Vec<Line> = list
@@ -118,6 +118,11 @@ pub(super) struct Moment<'a> {
     pub(super) hover: Option<usize>,
     /// The agent the terminal was last lent to, where it has been lent to one.
     pub(super) lent: Option<&'a str>,
+    /// Whether the rows are saying what runs them. Not a fact about the clock
+    /// like the rest of these, but the same kind of thing to a row: something
+    /// the person at the screen is doing to the whole list at once, handed
+    /// down rather than asked for row by row.
+    pub(super) vendor: bool,
 }
 
 /// How the cursor and the pointer stand to one line: on it, over it, or come
@@ -361,6 +366,19 @@ fn row(
             name_colour(theme, phase, at.selected || at.hovered, at.lent),
         ),
     ];
+    if widths.vendor > 0 {
+        // Dim like the name beside it. What runs a row is a fact about how it
+        // was started rather than about how it is going, so it is the quietest
+        // thing on the line whatever state the row is in.
+        spans.push(Span::styled(
+            format!(
+                "{}{}",
+                grid::pad(&rows::vendor_words(&view.meta), widths.vendor),
+                " ".repeat(GAP)
+            ),
+            dim(),
+        ));
+    }
     if widths.state > 0 {
         spans.push(Span::styled(
             format!(
@@ -1832,6 +1850,140 @@ mod tests {
         assert!(
             marked.contains(Modifier::DIM) && !marked.contains(Modifier::BOLD),
             "the row somebody came back from is still a quiet row: {marked:?}"
+        );
+    }
+
+    /// The three kinds of row the vendor column has anything to say about: a
+    /// spawn that turned both dials, one that turned neither, and a shell
+    /// command, which runs no vendor at all.
+    fn three_kinds() -> Vec<View> {
+        let mut dialled = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
+        dialled.meta.model = Some("opus".to_string());
+        dialled.meta.effort = Some("high".to_string());
+        vec![
+            dialled,
+            view(
+                "port-import-b2c",
+                Phase::Working,
+                Some("Read src/lib.rs"),
+                5,
+            ),
+            command("build-c3d", Phase::Working),
+        ]
+    }
+
+    #[test]
+    fn vendor_column_says_what_each_kind_of_row_runs() {
+        let mut screen = showing(three_kinds(), None);
+        screen.vendor = true;
+        let drawn = painted(&screen, (100, 10));
+        let row = |id: &str| {
+            drawn
+                .iter()
+                .find(|line| line.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id}:\n{drawn:?}"))
+                .clone()
+        };
+
+        assert!(
+            row("fix-login-a1b").contains("claude opus high"),
+            "the vendor and both dials the spawn turned: {:?}",
+            row("fix-login-a1b")
+        );
+        assert!(
+            row("port-import-b2c").contains("claude"),
+            "{:?}",
+            row("port-import-b2c")
+        );
+        assert!(
+            !row("port-import-b2c").contains("opus"),
+            "a dial nobody turned is the vendor's own, and amx does not guess it: {:?}",
+            row("port-import-b2c")
+        );
+        assert!(
+            row("build-c3d").contains("sh"),
+            "a command row runs no vendor: {:?}",
+            row("build-c3d")
+        );
+    }
+
+    #[test]
+    fn vendor_column_is_paid_for_by_the_summary_so_the_name_and_the_age_stay() {
+        let size = (100, 10);
+        let quiet = painted(&showing(three_kinds(), None), size);
+        let mut screen = showing(three_kinds(), None);
+        screen.vendor = true;
+        let loud = painted(&screen, size);
+
+        for id in ["fix-login-a1b", "port-import-b2c", "build-c3d"] {
+            let (before, after) = (
+                quiet
+                    .iter()
+                    .find(|line| line.contains(id))
+                    .expect("the row"),
+                loud.iter().find(|line| line.contains(id)).expect("the row"),
+            );
+            assert_eq!(
+                before.find(id),
+                after.find(id),
+                "the name column does not move for {id}:\n{before:?}\n{after:?}"
+            );
+            // The age is right-aligned at the edge, which is where the line
+            // ends once the trailing spaces are off it.
+            let age = |line: &str| line.chars().rev().take(2).collect::<String>();
+            assert_eq!(
+                age(before),
+                age(after),
+                "nor does the age for {id}:\n{before:?}\n{after:?}"
+            );
+        }
+        // And off, no row says any of it. The header's dial row says `claude`
+        // about the next agent whatever the wall is doing, so this is asked of
+        // the rows rather than of the screen.
+        for id in ["fix-login-a1b", "port-import-b2c", "build-c3d"] {
+            let row = quiet
+                .iter()
+                .find(|line| line.contains(id))
+                .expect("the row");
+            assert!(
+                !row.contains("claude") && !row.contains(" sh "),
+                "the column is not there until somebody asks: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vendor_column_stands_between_the_name_and_the_state_word() {
+        let mut screen = by_project(vec![at(
+            {
+                let mut view = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
+                view.meta.model = Some("opus".to_string());
+                view
+            },
+            "/src/api",
+        )]);
+        screen.vendor = true;
+        let drawn = painted(&screen, (120, 10));
+        let row = drawn
+            .iter()
+            .find(|line| line.contains("fix-login-a1b"))
+            .expect("the row");
+
+        let at_of = |word: &str| {
+            row.find(word)
+                .unwrap_or_else(|| panic!("{word} in {row:?}"))
+        };
+        assert!(
+            at_of("fix-login-a1b") < at_of("claude opus"),
+            "what runs it comes after what it is called: {row:?}"
+        );
+        assert!(
+            at_of("claude opus") < at_of("working"),
+            "and before the state word the dir axis adds: {row:?}"
+        );
+        assert!(
+            at_of("working") < at_of("Running Bash"),
+            "which still stands in front of the summary: {row:?}"
         );
     }
 

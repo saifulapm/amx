@@ -694,6 +694,11 @@ struct Screen {
     complained: Option<String>,
     mode: Mode,
     look: Look,
+    /// Whether the rows say what runs them — the vendor, the model and the
+    /// effort — in a column of their own. Off until somebody asks for it: a
+    /// fleet on one vendor and one model is a column of the same word, and the
+    /// room it takes is the summary's.
+    vendor: bool,
     card: Option<Card<Body>>,
     /// What that card was taken of, where the view took it. Kept beside the
     /// card rather than on it, so that a card built anywhere else — a patch is
@@ -924,6 +929,8 @@ struct Remembered {
     statusline: bool,
     /// How somebody arranged the list, as the list itself states it.
     arrangement: Arrangement,
+    /// Whether the rows were left saying what runs them.
+    vendor: bool,
     /// The lines the view has sent, for a later line to bring back.
     sent: act::Backlog,
 }
@@ -1015,6 +1022,7 @@ where
     if let Some(path) = remembering {
         let remembered = Remembered::read(path);
         screen.list.arrange(remembered.arrangement);
+        screen.vendor = remembered.vendor;
         screen.sent = remembered.sent;
     }
 
@@ -2105,6 +2113,13 @@ impl Screen {
             // And the whole wall's worth of finished rows, which is the one
             // press here that is about no row in particular.
             KeyCode::Char('c') if plain => self.clear_or_arm(root),
+            // What each row runs, which is off the wall until it is asked for:
+            // the answer is the same every time on a fleet running one vendor,
+            // and the room is the summary's.
+            KeyCode::Char('v') if plain => {
+                self.vendor = !self.vendor;
+                self.keep(true);
+            }
             // The same agents, gathered the other way.
             KeyCode::Char('s') if ctrl => {
                 self.list.turn();
@@ -3516,6 +3531,7 @@ impl Screen {
         };
         let mut remembered = Remembered::read(path);
         remembered.arrangement = self.list.arrangement();
+        remembered.vendor = self.vendor;
         // Nothing on the screen is waiting on this, and the one line the view
         // has to say things on is worth more than a failure nobody can act on.
         let _ = remembered.write(path);
@@ -5719,6 +5735,53 @@ mod tests {
         // reads, with nothing to bring back.
         std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
         assert_eq!(Remembered::read(&path).sent, act::Backlog::default());
+    }
+
+    #[test]
+    fn keys_v_shows_what_each_row_runs_and_the_next_view_opens_on_the_same_wall() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let path = root.path().join("view.json");
+        let mut screen = Screen {
+            remembering: Some(path.clone()),
+            ..watching(vec![finished_saying("done-a1b", "the answer")])
+        };
+        let press = |screen: &mut Screen, key: KeyCode| {
+            screen
+                .act(KeyEvent::from(key), root.path(), &config, None)
+                .unwrap();
+        };
+
+        assert!(!screen.vendor, "the wall opens without the column");
+        press(&mut screen, KeyCode::Char('v'));
+        assert!(screen.vendor, "and the key puts it up");
+        assert!(
+            Remembered::read(&path).vendor,
+            "written as it is pressed, the way the arrangement is"
+        );
+
+        // The same key takes it away again, and that is remembered too: a
+        // choice that could only be made and not unmade would be a key
+        // somebody presses once by accident and lives with.
+        press(&mut screen, KeyCode::Char('v'));
+        assert!(!screen.vendor);
+        assert!(!Remembered::read(&path).vendor);
+
+        // A view opened on the file the last one left comes up on that wall.
+        press(&mut screen, KeyCode::Char('v'));
+        let next = Screen {
+            vendor: Remembered::read(&path).vendor,
+            ..Screen::default()
+        };
+        assert!(
+            next.vendor,
+            "the next view opens where the last one was left"
+        );
+
+        // And a file an older amx wrote, which knows nothing of the column,
+        // still reads, with the column down.
+        std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
+        assert!(!Remembered::read(&path).vendor);
     }
 
     #[test]
@@ -8584,10 +8647,11 @@ diff --git a/src/bar.rs b/src/bar.rs
         };
         let dials = &screen.profile;
         format!(
-            "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} {} {} {} {}",
+            "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} · {} {} {} {} {}",
             screen.list,
             screen.card.as_ref().map(|card| (&card.id, card.changes)),
             screen.scroll.away.get(),
+            screen.vendor,
             dials.agent,
             dials.model,
             dials.permission,

@@ -1484,6 +1484,33 @@ pub fn called(view: &View) -> &str {
         .unwrap_or_else(|| view.id())
 }
 
+/// What a row says its agent runs: the program the launch command names, then
+/// the model, then the effort, space separated.
+///
+/// Only the parts the record holds. A dial nobody turned is the vendor's own
+/// choice and amx never saw it, so a row naming a default would be amx
+/// guessing out loud where the record says nothing — and the words are read
+/// left to right rather than filled into fixed places, because two of the
+/// three are usually missing.
+///
+/// `sh` where no vendor runs the row at all, which is what `!cmd` and an
+/// `--exec` spawn write. The glyph already says the row is a command; this
+/// says what a command is, in the column that says what everything else runs.
+pub fn vendor_words(meta: &Meta) -> String {
+    let Some(agent) = meta.agent.as_deref() else {
+        return "sh".to_string();
+    };
+    [
+        Some(crate::registry::program(agent)),
+        meta.model.as_deref(),
+        meta.effort.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<&str>>()
+    .join(" ")
+}
+
 /// When the agent last said anything, as well as the record can say.
 fn said(view: &View) -> u64 {
     view.state.last_event.max(view.state.since)
@@ -3153,6 +3180,7 @@ mod tests {
         crate::tui::Remembered {
             statusline: true,
             arrangement: list.arrangement(),
+            vendor: false,
             sent: Default::default(),
         }
         .write(&kept)
@@ -3566,6 +3594,42 @@ mod tests {
             ["ask-a1b", "done-b2c"],
             "a project stands for what runs in it, subdirectory and all"
         );
+    }
+
+    #[test]
+    fn acts_a_row_says_the_program_then_the_dials_the_spawn_turned() {
+        let mut agent = view("fix-login-a1b", Phase::Working, 10);
+        // The launch command rather than the program, because that is what the
+        // record holds: the column is about the vendor, not about the argv it
+        // was reached through.
+        agent.meta.agent = Some("claude --dangerously-skip-permissions".to_string());
+        agent.meta.model = Some("opus".to_string());
+        agent.meta.effort = Some("high".to_string());
+        assert_eq!(vendor_words(&agent.meta), "claude opus high");
+
+        agent.meta.effort = None;
+        assert_eq!(vendor_words(&agent.meta), "claude opus");
+
+        agent.meta.model = None;
+        assert_eq!(
+            vendor_words(&agent.meta),
+            "claude",
+            "a dial nobody turned is the vendor's own and amx never saw it"
+        );
+
+        // An effort turned where the model was left alone still reads: the
+        // words are what was recorded, in order, not a row of fixed places.
+        agent.meta.effort = Some("low".to_string());
+        assert_eq!(vendor_words(&agent.meta), "claude low");
+    }
+
+    #[test]
+    fn acts_a_row_running_a_command_says_sh_where_the_vendor_would_be() {
+        // What `!cmd` and an `--exec` spawn write, which is a record with no
+        // agent on it: there is no vendor to name and no dial to have turned.
+        let command = view("build-b2c", Phase::Working, 10);
+        assert_eq!(command.meta.agent, None);
+        assert_eq!(vendor_words(&command.meta), "sh");
     }
 
     #[test]
