@@ -1225,6 +1225,41 @@ gone from origin`. A repository with no origin has nothing to fetch and is read
 on the other two reasons without a word; one the fetch fails in — no network, a
 forge wanting a password — is said once on stderr and read the same way.
 
+### Forgetting the rest
+
+`sweep` only takes what somebody else finished with. Most of a wall is not
+that: a row you stopped, a command that ran and exited, an agent on a branch
+nobody opened a request for. Nothing outside amx will ever have an opinion
+about those, so nothing outside amx can say when their records go — and one
+`amx stop --delete` at a time is why, on a wall of sixty, they do not go at
+all.
+
+```sh
+amx clear          # every finished agent, with why it is finished, then one question
+amx clear --force  # take them without asking
+```
+
+```
+fix-login-a1b  #12 merged
+add-search-b2c  stopped
+port-import-c3d  done
+clear 3? [y/N]
+```
+
+The list is every agent whose turn is over — done, failed or stopped — with
+the reason each one is on it: what `sweep` would have said where the work
+landed, and the state otherwise. An agent sitting at its prompt has not
+finished and is not on the list, because it still has a session you can send a
+turn to.
+
+One answer covers the list. A row whose work landed goes the way `sweep` takes
+it, branch and all, since the repository already holds every commit that was
+on it. Every other row goes the way `ctrl+x` takes one on the wall: the record
+and the worktree amx cut for it, with the branch left standing. A worktree
+holding work no commit has is kept, and its record with it — `kept
+port-import-c3d: /srv/app/.amx/worktrees/port-import-c3d holds work no commit
+has`.
+
 The view has the same thing under `c`, asked wherever the cursor is standing.
 It waits on nothing: the request is what the last look wrote down, the upstream
 is what git last recorded, and the view is what keeps both of those current.

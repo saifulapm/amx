@@ -3,6 +3,7 @@
 pub mod adopt;
 pub mod answer;
 pub mod attach;
+pub mod clear;
 pub mod diff;
 pub mod doctor;
 pub mod events;

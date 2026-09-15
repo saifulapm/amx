@@ -50,6 +50,7 @@ impl Cli {
             Logs { .. } => "logs",
             Stop(_) => "stop",
             Sweep { .. } => "sweep",
+            Clear { .. } => "clear",
             Diff { .. } => "diff",
             Resume { .. } => "resume",
             Fork { .. } => "fork",
@@ -251,6 +252,23 @@ pub enum Command {
     ///
     /// A worktree holding work no commit has is kept, and its record with it.
     Sweep {
+        /// Take them without asking.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Forget the finished agents, whether or not their work landed.
+    ///
+    /// Every agent whose turn is over — done, failed, or stopped — is holding a
+    /// record, and most of them are holding a worktree nothing outside amx will
+    /// ever have an opinion about. This lists them with the reason each one is
+    /// finished, asks once, and then takes the record and the worktree. Work
+    /// that landed goes the way `sweep` takes it, branch and all; everything
+    /// else keeps its branch.
+    ///
+    /// A worktree holding work no commit has is kept, and its record with it.
+    /// An agent sitting at its prompt has not finished and is not on the list.
+    Clear {
         /// Take them without asking.
         #[arg(long)]
         force: bool,
@@ -842,6 +860,8 @@ mod tests {
             (&["amx", "stop", "fix-a1b", "--delete"], "stop"),
             (&["amx", "sweep"], "sweep"),
             (&["amx", "sweep", "--force"], "sweep"),
+            (&["amx", "clear"], "clear"),
+            (&["amx", "clear", "--force"], "clear"),
             (&["amx", "diff", "fix-a1b"], "diff"),
             (&["amx", "diff", "fix-a1b", "--stat"], "diff"),
             (&["amx", "resume", "fix-a1b"], "resume"),

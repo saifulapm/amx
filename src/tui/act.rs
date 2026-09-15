@@ -32,6 +32,7 @@ use crate::derive::View;
 use crate::store::{Agent, Ask, Kind, Phase};
 use crate::tmux::Server;
 use crate::verbs::answer::Answered;
+use crate::verbs::clear::Taken;
 use crate::verbs::resume::Comeback;
 use crate::{derive, exit, registry, spawn, store, verbs, worktree};
 
@@ -2017,38 +2018,14 @@ pub fn stop(root: &Path, view: &View) -> Result<String> {
     Ok(one_line(&said))
 }
 
-/// What forgetting one agent came to.
-enum Forgotten {
-    /// The record is gone, and the tree with it.
-    Yes,
-    /// Both are still here, because the tree holds work no commit has.
-    Kept(PathBuf),
-}
-
 /// Forget an agent whose command has ended: its record, and the tree it was
 /// given with it.
 ///
-/// A tree holding work no commit has keeps both. Its record is where the
-/// branch and the commit that tree was cut from are named, and a tree nothing
-/// names is work nobody will find again.
-fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
-    let agent = Agent::open(root, view.id())?;
-
-    if let Some(tree) = &view.meta.worktree
-        && tree.exists()
-    {
-        if worktree::is_dirty(tree).unwrap_or(true) {
-            return Ok(Forgotten::Kept(tree.clone()));
-        }
-        let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
-        worktree::remove(&repo, tree)?;
-        // And its key in the vendor's store with it, the way `stop` takes it:
-        // the line has one row to say what happened, and that row is below.
-        verbs::stop::forget(&view.meta, tree, &mut std::io::sink())?;
-    }
-
-    agent.remove()?;
-    Ok(Forgotten::Yes)
+/// The verb's door and this one are the same door. `amx clear` is ctrl+x said
+/// once for a whole wall, so the law that keeps a tree holding work no commit
+/// has — and the record naming it — is written down once, where the verb is.
+fn forgetting(root: &Path, view: &View) -> Result<Taken> {
+    verbs::clear::forget_row(root, view)
 }
 
 /// The same, as the line the view puts where its keys are, and whether a tree
@@ -2065,8 +2042,8 @@ fn forgetting(root: &Path, view: &View) -> Result<Forgotten> {
 /// nobody reads twice.
 pub fn forget(root: &Path, view: &View) -> Result<(String, bool)> {
     Ok(match forgetting(root, view)? {
-        Forgotten::Yes => (format!("{} forgotten", view.id()), false),
-        Forgotten::Kept(tree) => (
+        Taken::Gone => (format!("{} forgotten", view.id()), false),
+        Taken::Holding(tree) => (
             format!(
                 "keeping {}: {} holds work no commit has",
                 view.id(),
@@ -2093,8 +2070,8 @@ pub fn forget_all(root: &Path, views: &[&View]) -> Result<(String, bool)> {
     let mut trouble = Vec::new();
     for view in views {
         match forgetting(root, view) {
-            Ok(Forgotten::Yes) => gone += 1,
-            Ok(Forgotten::Kept(_)) => kept += 1,
+            Ok(Taken::Gone) => gone += 1,
+            Ok(Taken::Holding(_)) => kept += 1,
             Err(e) => trouble.push(format!("{}: {e:#}", view.id())),
         }
     }
