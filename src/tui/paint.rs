@@ -46,8 +46,9 @@ mod wall;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::style::Modifier;
 use ratatui::widgets::Paragraph;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::rows;
 use super::{Mode, Screen};
@@ -83,6 +84,10 @@ pub struct Map {
     offset: Cell<usize>,
     /// The last rows of that band, where a card is covering them.
     card: Cell<Option<Rect>>,
+    /// What the frame says, one string to a row of the screen. The whole
+    /// screen rather than the list alone: a drag is over the terminal, and
+    /// what it covers is whatever was drawn there.
+    drawn: RefCell<Vec<String>>,
 }
 
 impl Map {
@@ -90,6 +95,11 @@ impl Map {
         self.list.set(list);
         self.offset.set(offset);
         self.card.set(card);
+    }
+
+    /// The text a selection covers, read off the last frame.
+    pub(super) fn selected(&self, from: (u16, u16), to: (u16, u16)) -> String {
+        selected_text(&self.drawn.borrow(), from, to)
     }
 
     /// How wide the band the list was drawn in is, which is the width the card
@@ -122,6 +132,56 @@ impl Map {
             .get()
             .is_some_and(|card| card.contains(Position { x: column, y: row }))
     }
+}
+
+/// The text a selection covers, as the last frame drew it.
+///
+/// Reading order, whichever way the hand dragged: the rest of the first row
+/// from where the press landed, every row between it and the release whole,
+/// and the head of the last one. A row gives up its trailing blanks, because
+/// the cells past the end of what a row says are the screen's rather than the
+/// row's and nobody dragged over them on purpose.
+pub(super) fn selected_text(drawn: &[String], from: (u16, u16), to: (u16, u16)) -> String {
+    let (from, to) = in_reading_order(from, to);
+    (from.1..=to.1)
+        .map(|row| {
+            let said = drawn.get(row as usize).map_or("", String::as_str);
+            let (first, last) = span(row, from, to);
+            said.chars()
+                .skip(first as usize)
+                .take((last - first) as usize + 1)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// A selection's two ends, in the order a reader would take them.
+///
+/// Which way the hand dragged is not a fact about the text: a drag up the
+/// screen and a drag down it over the same cells copy the same words.
+fn in_reading_order(from: (u16, u16), to: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    match (from.1, from.0) <= (to.1, to.0) {
+        true => (from, to),
+        false => (to, from),
+    }
+}
+
+/// The first and last column of `row` a selection covers, its ends already in
+/// reading order. A row between the two ends is covered end to end, which is
+/// as far right as the frame goes.
+fn span(row: u16, from: (u16, u16), to: (u16, u16)) -> (u16, u16) {
+    let first = match row == from.1 {
+        true => from.0,
+        false => 0,
+    };
+    let last = match row == to.1 {
+        true => to.0.max(first),
+        false => u16::MAX,
+    };
+    (first, last)
 }
 
 /// Draw everything.
@@ -273,4 +333,95 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         frame.render_widget(Paragraph::new(row), allowed);
     }
     frame.render_widget(Paragraph::new(footer(screen, keys.width)), keys);
+
+    // Last of all, because a selection is over the screen rather than over
+    // any one band of it: the cells a hand is holding are turned about where
+    // every widget has already had its say, and what the frame ended up
+    // saying is kept for the release to read the text back off.
+    let buffer = frame.buffer_mut();
+    if let Some((from, to)) = screen.selection {
+        reverse(buffer, from, to);
+    }
+    let area = buffer.area;
+    screen.map.drawn.replace(
+        (area.top()..area.bottom())
+            .map(|row| {
+                (area.left()..area.right())
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect(),
+    );
+}
+
+/// Turn the cells a selection covers about, so somebody dragging can see what
+/// they have.
+fn reverse(buffer: &mut ratatui::buffer::Buffer, from: (u16, u16), to: (u16, u16)) {
+    let (from, to) = in_reading_order(from, to);
+    let area = buffer.area;
+    for row in from.1..=to.1 {
+        let (first, last) = span(row, from, to);
+        for column in first..=last.min(area.right().saturating_sub(1)) {
+            if let Some(cell) = buffer.cell_mut(Position { x: column, y: row }) {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Three rows of a wall, each the width the frame was drawn at: what a
+    /// draw leaves behind for the mouse to read a selection out of.
+    fn drawn() -> Vec<String> {
+        vec![
+            " ● fix-login-a1b   wrote the parser  ".to_string(),
+            " ● port-import-b2c did what was asked".to_string(),
+            " ".repeat(37),
+        ]
+    }
+
+    #[test]
+    fn a_selection_on_one_row_is_the_cells_between_its_ends() {
+        // The id on the first row: past the indent and the glyph, and the
+        // last cell of the word is the one the release landed on.
+        assert_eq!(selected_text(&drawn(), (3, 0), (15, 0)), "fix-login-a1b");
+        // Dragged the other way, which is the same selection.
+        assert_eq!(selected_text(&drawn(), (15, 0), (3, 0)), "fix-login-a1b");
+        // One cell is one character.
+        assert_eq!(selected_text(&drawn(), (3, 0), (3, 0)), "f");
+    }
+
+    #[test]
+    fn a_selection_across_two_rows_is_read_in_reading_order() {
+        // From the id on the first row to the id on the second: the rest of
+        // the first row, then the second row up to where the release landed.
+        assert_eq!(
+            selected_text(&drawn(), (3, 0), (18, 1)),
+            "fix-login-a1b   wrote the parser\n ● port-import-b2c"
+        );
+        // Whichever end the hand started at.
+        assert_eq!(
+            selected_text(&drawn(), (18, 1), (3, 0)),
+            "fix-login-a1b   wrote the parser\n ● port-import-b2c"
+        );
+        // A row with nothing on it under the selection is a blank line
+        // rather than a run of spaces.
+        assert_eq!(
+            selected_text(&drawn(), (23, 1), (10, 2)),
+            "what was asked\n"
+        );
+    }
+
+    #[test]
+    fn a_selection_wider_than_the_row_says_stops_where_it_stops() {
+        // The cells past the end of a row are the screen's, so a drag that
+        // ran out over them copies the row and none of them.
+        assert_eq!(
+            selected_text(&drawn(), (3, 0), (36, 0)),
+            "fix-login-a1b   wrote the parser"
+        );
+    }
 }

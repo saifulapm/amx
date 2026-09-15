@@ -1709,6 +1709,67 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     );
 }
 
+/// The 1-based screen column a word starts at on an agent's row, for a drag
+/// to be aimed at the cells it is drawn on.
+/// Cells rather than bytes: the glyph a row opens with is three bytes of one
+/// of them.
+fn column_of(amx: &Harness, view: &str, id: &str, word: &str) -> u16 {
+    let row = row_of(amx, view, id).unwrap_or_else(|| panic!("no row for {id}"));
+    let at = row
+        .find(word)
+        .unwrap_or_else(|| panic!("no {word} on {row:?}"));
+    row[..at].chars().count() as u16 + 1
+}
+
+#[test]
+fn a_left_drag_reverses_the_cells_it_covers_and_copies_them_on_release() {
+    let amx = Harness::new();
+    finished(&amx, "fix-login-a1b", "done", 60);
+    let view = amx.in_a_terminal(&[], &[]);
+    // tmux only keeps a buffer of what a pane copies where it is asked to;
+    // by default it hands the sequence to the outer terminal and keeps
+    // nothing, and a buffer is the only way a test can read it back. Asked
+    // of the server the terminal above started, since there is no server to
+    // ask before it.
+    amx.tmux(&["set-option", "-s", "set-clipboard", "on"]);
+    amx.until("the row", || {
+        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+    });
+
+    // Press on the first cell of the id and drag to its last: the cells
+    // between come up reversed while the button is held, which is what says
+    // out loud what a release would copy.
+    let row = screen_row_of(&amx, &view, "fix-login-a1b");
+    let from = column_of(&amx, &view, "fix-login-a1b", "fix-login-a1b");
+    let to = from + "fix-login-a1b".len() as u16 - 1;
+    mouse(&amx, &view, 0, from, row, true);
+    mouse(&amx, &view, 32, to, row, true);
+    amx.until("the dragged cells reversed", || {
+        let line = coloured_line(&amx, &view, "fix-login-a1b");
+        sgr_at(&line, "fix-login-a1b").contains(&7).then_some(())
+    });
+
+    // And the release puts them on the clipboard by OSC 52, which this
+    // server is holding as a buffer, and says so where the view says things.
+    mouse(&amx, &view, 0, to, row, false);
+    amx.until("the view to say it copied", || {
+        screen(&amx, &view).contains("copied").then_some(())
+    });
+    assert_eq!(
+        amx.tmux(&["show-buffer"]),
+        "fix-login-a1b",
+        "the id the drag covered and nothing either side of it"
+    );
+    assert!(
+        !sgr_at(
+            &coloured_line(&amx, &view, "fix-login-a1b"),
+            "fix-login-a1b"
+        )
+        .contains(&7),
+        "and the reverse went with the button"
+    );
+}
+
 #[test]
 fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let amx = Harness::new();
