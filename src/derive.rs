@@ -359,7 +359,44 @@ impl View {
             // wants the same word, and this is the only place it is written.
             "session_title": self.state.session_title,
             "created": self.meta.created,
+            // What the next turn would send back to the vendor, and the
+            // reader's own words at the end of the last one — both read off
+            // the transcript itself rather than kept on the record, the way
+            // [`newest_said`] reads it. Null where there is no transcript to
+            // read, or nothing on it yet worth either question.
+            "context": self.usage_context(),
+            "last_words": self.last_words(),
         })
+    }
+
+    /// The input side of the conversation's usage, off the transcript this
+    /// view names. `None` from a vendor amx has no shape for, a record naming
+    /// no transcript, or one with no usage on it yet.
+    fn usage_context(&self) -> Option<u64> {
+        let (format, tail) = self.transcript()?;
+        crate::conversation::usage_context(format, &tail)
+    }
+
+    /// The reader's answer at the end of the conversation, off the same
+    /// transcript. `None` under the same conditions as
+    /// [`usage_context`](Self::usage_context), or where the turn has not
+    /// ended.
+    fn last_words(&self) -> Option<String> {
+        let (format, tail) = self.transcript()?;
+        crate::conversation::answer(format, &tail)
+    }
+
+    /// The vendor's shape for this agent's conversation, and the transcript
+    /// itself, together — `None` unless both are there to read.
+    ///
+    /// A caller here asks once rather than every second, so reading the whole
+    /// file costs nothing extra and reads past whatever a tail cut short a
+    /// line on.
+    fn transcript(&self) -> Option<(crate::vendor::Transcript, String)> {
+        let format =
+            crate::conversation::format_of(self.meta.agent.as_deref().unwrap_or_default())?;
+        let jsonl = std::fs::read_to_string(self.meta.transcript.as_ref()?).ok()?;
+        Some((format, jsonl))
     }
 }
 
