@@ -149,6 +149,10 @@ pub fn run(
             // and it is the one thing about this agent amx learns here that
             // outlives the reading.
             agent: Some(vendor.name.to_string()),
+            // How that vendor was launched is not the pane's word to give.
+            // The dials are a spawn's, and amx did not make this spawn.
+            model: None,
+            effort: None,
             dir,
             // amx cut nothing and started nothing here. A record claiming this
             // person's tree as an agent's worktree would be one `amx stop`
@@ -993,6 +997,8 @@ mod tests {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some(a_vendor().name.to_string()),
+                model: None,
+                effort: None,
                 dir: PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,

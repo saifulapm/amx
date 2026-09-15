@@ -419,6 +419,8 @@ mod tests {
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some("claude".to_string()),
+                model: None,
+                effort: None,
                 dir: std::path::PathBuf::from("/srv/app"),
                 worktree: None,
                 branch: None,

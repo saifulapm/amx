@@ -132,6 +132,8 @@ mod tests {
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
+            model: None,
+            effort: None,
             dir: dir.to_path_buf(),
             worktree,
             branch: None,

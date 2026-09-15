@@ -1399,9 +1399,10 @@ this loop written for one.
 `ls --json` and `status --json` are stable. Fields are added, never renamed or
 removed. Each row carries `id`, `state`, `evidence`, `rule`, `age`, `since`,
 `last_event`, `ended`, `worked`, `seq`, `summary`, `question`, `options`,
-`result`, `source`, `exit`, `kind`, `pr`, `task`, `dir`, `worktree`, `branch`,
-`base`, `pane`, `socket`, `session`, `name`, `created`, `context` and
-`last_words`, so one `ls` call answers both "is it still going?" and "when was
+`result`, `source`, `exit`, `kind`, `pr`, `task`, `agent`, `model`, `effort`,
+`dir`, `worktree`, `branch`, `base`, `pane`, `socket`, `session`, `name`,
+`created`, `context` and `last_words`, so one `ls` call answers both "is it
+still going?" and "when was
 it last heard from?" for every agent at once. `age` keeps its three questions
 — how long a finished run worked, how long a waiting agent has waited, and how
 long since anything was heard from one still going — and `worked` is the
@@ -1414,7 +1415,11 @@ null where there is no transcript to read, or nothing on it yet.
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
 state is an agent still worth waiting on. `kind` says what an outstanding
-question is: `permission`, `question` or `trust`. `name` is what somebody here
+question is: `permission`, `question` or `trust`. `agent`, `model` and `effort`
+say who is running the row: the command the vendor was launched with, and the
+two dials the spawn turned. All three are null on a `--exec` row, which runs no
+vendor at all, and a dial nobody turned is null on its own — the model a vendor
+picks for itself is never a word amx sees. `name` is what somebody here
 called the agent, and null where nobody has: a program drawing its own list of
 agents wants that word where there is one. `pr` is what the agent's branch has
 open, each entry a `number` and a `standing` — `merged`, `closed`, `draft`,

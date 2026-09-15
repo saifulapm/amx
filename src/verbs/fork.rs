@@ -187,6 +187,11 @@ fn start(
             id: id.to_string(),
             task: task.to_string(),
             agent: launched,
+            // The copy runs the origin's conversation, launched the origin's
+            // way: same vendor, same model, same effort. Nothing on a fork's
+            // command line turns a dial, so nothing here can differ.
+            model: origin.model.clone(),
+            effort: origin.effort.clone(),
             dir: origin.dir.clone(),
             // amx cut nothing for this agent. The tree it runs in belongs to
             // the agent it was copied from, and a copy that wrote that tree
@@ -505,6 +510,8 @@ mod tests {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
+            model: None,
+            effort: None,
             dir: PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,

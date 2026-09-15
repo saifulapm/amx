@@ -392,6 +392,8 @@ mod tests {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
+            model: None,
+            effort: None,
             dir: repo.to_path_buf(),
             worktree: Some(tree.path.clone()),
             branch: Some(tree.branch.clone()),

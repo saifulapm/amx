@@ -258,6 +258,17 @@ pub struct Meta {
     /// and from a record written before amx kept this.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Which model the spawn asked the vendor for, and how hard it asked the
+    /// model to think — the two dials `new` turns that say something about the
+    /// agent rather than about the command line. `None` where nobody turned
+    /// the dial, which is what a spawn that sent no flag has to say: the word
+    /// the vendor picked for itself is the vendor's, and amx never sees it.
+    /// `None` too from a shell command, which takes no dials at all, and from
+    /// an adoption, which finds a vendor in a pane it did not start.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     /// Where the agent runs — its worktree, or the directory it was asked for.
     pub dir: PathBuf,
     /// The worktree amx made for it, if it made one.
@@ -1320,6 +1331,8 @@ mod tests {
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
+            model: None,
+            effort: None,
             dir: PathBuf::from("/srv/app"),
             worktree: Some(PathBuf::from("/srv/app/.amx/worktrees/fix-login-a1b")),
             branch: Some("amx/fix-login-a1b".to_string()),

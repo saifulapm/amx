@@ -125,6 +125,17 @@ fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, Strin
     pane_environ(&pid)
 }
 
+/// What a `ls --json` row prints under a key. A field the record has nothing
+/// for is printed null; one the shape does not carry at all is missing, and a
+/// caller reading it off the row cannot tell those apart -- so this panics on
+/// the second rather than handing back the first.
+fn printed<'a>(row: &'a Value, key: &str) -> &'a Value {
+    row.as_object()
+        .expect("a row is an object")
+        .get(key)
+        .unwrap_or_else(|| panic!("the listing prints no `{key}`: {row}"))
+}
+
 /// The row `amx ls --json` prints for this agent, where it has one.
 fn listed(amx: &Harness, id: &str) -> Option<Value> {
     let out = amx.amx(&["ls", "--json"]);
@@ -2196,6 +2207,114 @@ fn dials_are_turned_by_the_config_for_every_spawn_that_says_nothing() {
                 .any(|pair| pair == ["--permission-mode", "plan"]),
         "{command:?}"
     );
+}
+
+#[test]
+fn dials_the_record_keeps_the_model_and_effort_that_were_turned() {
+    // Which vendor ran is on the record already; which model and how hard it
+    // was told to think lived in the pane's argv alone, where nothing reading
+    // a wall could get at them.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "fix the login bug",
+        ],
+    ));
+
+    let meta = amx.meta(&id);
+    assert_eq!(meta["model"], "opus", "{meta}");
+    assert_eq!(meta["effort"], "high", "{meta}");
+
+    let row = listed(&amx, &id).expect("a row for the agent just started");
+    assert_eq!(row["agent"], "claude", "{row}");
+    assert_eq!(row["model"], "opus", "{row}");
+    assert_eq!(row["effort"], "high", "{row}");
+}
+
+#[test]
+fn dials_a_spawn_that_turned_neither_records_neither() {
+    // A dial nobody turned sends no flag, and the record says the same thing
+    // the argv does: nothing. A reader that wants the word the vendor would
+    // have chosen has to ask the vendor.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", "claude", "fix the login bug"],
+    ));
+
+    let row = listed(&amx, &id).expect("a row for the agent just started");
+    assert_eq!(row["agent"], "claude", "{row}");
+    assert!(printed(&row, "model").is_null(), "{row}");
+    assert!(printed(&row, "effort").is_null(), "{row}");
+}
+
+#[test]
+fn dials_a_command_spawn_records_no_vendor_and_no_dials() {
+    // The dials are refused beside --exec, so nothing about a launch is
+    // resolved for a shell row. All three read null, the way `agent` does.
+    let amx = Harness::new();
+    let ran = id_of(
+        &amx.amx_command(&["new", "--exec", "true"])
+            .output()
+            .expect("running amx new --exec"),
+    );
+
+    let row = listed(&amx, &ran).expect("a row for the command just run");
+    assert!(printed(&row, "agent").is_null(), "{row}");
+    assert!(printed(&row, "model").is_null(), "{row}");
+    assert!(printed(&row, "effort").is_null(), "{row}");
+}
+
+#[test]
+fn dials_a_fork_carries_the_ones_its_origin_was_started_with() {
+    // A copy runs the conversation it was made from, launched the same way,
+    // so it is running the same model at the same effort. Nothing on the
+    // command line of a fork can say otherwise.
+    let amx = Harness::new();
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "fix the login bug",
+        ],
+    ));
+    amx.until("the hook to report a session", || {
+        amx.meta(&id)["session"].as_str().map(str::to_string)
+    });
+
+    let forked = amx
+        .amx_command(&["fork", &id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("PATH", path_with_the_stand_in(&amx))
+        .output()
+        .expect("running amx fork");
+    assert!(
+        forked.status.success(),
+        "amx fork: {}",
+        String::from_utf8_lossy(&forked.stderr)
+    );
+    let copy = String::from_utf8_lossy(&forked.stdout).trim().to_string();
+
+    let meta = amx.meta(&copy);
+    assert_eq!(meta["model"], "opus", "{meta}");
+    assert_eq!(meta["effort"], "high", "{meta}");
 }
 
 #[test]

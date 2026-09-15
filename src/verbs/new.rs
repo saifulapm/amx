@@ -544,6 +544,8 @@ fn start(
             id: id.to_string(),
             task: task.to_string(),
             agent: vendor_written(args.exec, &launch.agent),
+            model: dial_written(args.exec, &launch.dials.model),
+            effort: dial_written(args.exec, &launch.dials.effort),
             dir: cwd,
             worktree: tree.map(|tree| tree.path.clone()),
             branch: tree.map(|tree| tree.branch.clone()),
@@ -581,6 +583,19 @@ fn session_written(exec: bool, opens_under_id: bool, id: &str) -> Option<String>
 /// on.
 fn vendor_written(exec: bool, agent: &str) -> Option<String> {
     (!exec).then(|| agent.to_string())
+}
+
+/// What `Meta::model` and `Meta::effort` are recorded as: the value the dial
+/// was turned to, by the command line or by the config, and `None` for a dial
+/// left where the vendor's own configuration puts it.
+///
+/// [`registry::DEFAULT`] is amx saying it sent no flag, which is not a value
+/// the vendor was asked for — a record repeating it would have the wall
+/// claiming to know a word only the vendor knows. `None` from a command spawn
+/// for the same reason `vendor_written` gives: the dials are refused beside
+/// `--exec` and nothing was resolved for it.
+fn dial_written(exec: bool, dial: &str) -> Option<String> {
+    (!exec && dial != registry::DEFAULT).then(|| dial.to_string())
 }
 
 /// What the pane runs: a shell command when that is what was asked for, else

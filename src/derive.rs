@@ -341,6 +341,14 @@ impl View {
             // because a program has no colour to read it off.
             "pr": prs,
             "task": self.meta.task,
+            // Who is running this row, as the spawn settled it: the command
+            // the vendor was launched with, and the two dials that were
+            // turned. `agent` is null on a shell row, which runs no vendor;
+            // a dial nobody turned is null, because the word the vendor chose
+            // for itself was never amx's to know.
+            "agent": self.meta.agent,
+            "model": self.meta.model,
+            "effort": self.meta.effort,
             "dir": self.meta.dir,
             "worktree": self.meta.worktree,
             "branch": self.meta.branch,
@@ -2557,6 +2565,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
+            model: None,
+            effort: None,
             dir: std::path::PathBuf::from("/srv/app"),
             worktree: None,
             branch: None,
@@ -2735,6 +2745,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // as on one that does not.
         let vendor = Meta {
             agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
             ..meta()
         };
         assert!(reports(vendor_of(&vendor)), "a vendor with hooks");
@@ -3122,6 +3134,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let session = root.path().join("session.jsonl");
         let keeping_one = Meta {
             agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
             transcript: Some(session.clone()),
             ..meta()
         };
@@ -3208,6 +3222,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
         let keeping_one = Meta {
             agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
             transcript: Some(session),
             ..meta()
         };
@@ -3367,6 +3383,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let ran = |agent: Option<&str>| {
             answers_on_the_pane(vendor_of(&Meta {
                 agent: agent.map(str::to_string),
+                model: None,
+                effort: None,
                 ..meta()
             }))
         };
@@ -3442,6 +3460,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let started_by = [
             Meta {
                 agent: Some("claude".to_string()),
+                model: None,
+                effort: None,
                 ..meta()
             },
             meta(),
@@ -3567,6 +3587,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                     // Both are claude agents: a record naming no vendor is a
                     // command, and a command's row is its own output.
                     agent: Some("claude".to_string()),
+                    model: None,
+                    effort: None,
                     socket: socket.clone(),
                     pane: pane.clone(),
                     ..meta()
@@ -3614,6 +3636,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 &Meta {
                     id: id.to_string(),
                     agent: Some("claude".to_string()),
+                    model: None,
+                    effort: None,
                     socket: socket.clone(),
                     pane: pane.clone(),
                     ..meta()
@@ -3682,6 +3706,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 &Meta {
                     id: id.to_string(),
                     agent: Some(agent.to_string()),
+                    model: None,
+                    effort: None,
                     socket: socket.clone(),
                     pane: pane.clone(),
                     ..meta()
@@ -4205,6 +4231,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // whatever its pane happens to have on it.
         let agent = Meta {
             agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
             ..meta()
         };
         let claude = conclude(
@@ -5188,6 +5216,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).expect("a transcript");
         let meta = Meta {
             agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
             transcript: Some(session),
             // Somewhere the command can be run: `where_it_ran` is the agent's
             // own directory, and a command cannot start in one that is not
