@@ -49,7 +49,7 @@ use crate::config::Config;
 use crate::derive::View;
 use crate::rules::Rule;
 use crate::store::{Kind, Phase};
-use crate::vendor::{Hooks, Vendor, Wire};
+use crate::vendor::{Hooks, Wire};
 use crate::{derive, exit, install, registry, spawn, store, tmux, trust};
 
 /// One thing amx looked at.
@@ -97,10 +97,9 @@ pub struct Findings {
     pub config_warnings: Vec<String>,
     /// The person's home, which every vendor's wiring is written under.
     pub home: PathBuf,
-    /// Where the configured vendor's wiring goes — its settings file, or the
-    /// extension amx writes — and what is wired there now.
-    pub wire: PathBuf,
-    pub wired: install::Wired,
+    /// One per agent this machine has, in table order: where its wiring goes
+    /// and what is there now.
+    pub wirings: Vec<VendorWiring>,
     /// This amx, and every amx the PATH finds in the order it looks — each
     /// a file, named once however many names it goes by.
     pub exe: PathBuf,
@@ -121,6 +120,19 @@ pub struct Findings {
     /// writing one, and the trees it still names that the disk has not got.
     pub store: Option<PathBuf>,
     pub stale: Vec<PathBuf>,
+}
+
+/// One agent's wiring, read off the disk.
+///
+/// The vendor is carried by name and by entry both: the name is what a check
+/// about it says, and the entry is what says which files should be there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendorWiring {
+    pub vendor: &'static str,
+    pub hooks: Option<&'static Hooks>,
+    /// Where this agent's wiring goes, under the home.
+    pub wire: PathBuf,
+    pub wired: install::Wired,
 }
 
 /// The server amx would use, and where its own process is standing.
@@ -174,15 +186,9 @@ impl Setup {
 /// there is something to ask it of: a tmux server already running, on a
 /// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
-    let mut checks = vec![
-        tmux_check(found),
-        vendor_check(found),
-        config_check(found),
-        wiring_check(found, registry::entry(&found.vendor)),
-        amx_check(found),
-        state_check(found),
-        env_check(found),
-    ];
+    let mut checks = vec![tmux_check(found), vendor_check(found), config_check(found)];
+    checks.extend(found.wirings.iter().map(wiring_check));
+    checks.extend([amx_check(found), state_check(found), env_check(found)]);
     checks.extend(server_check(found));
     checks.push(setup_check(found));
     checks.push(store_check(found));
@@ -246,12 +252,12 @@ fn config_check(found: &Findings) -> Check {
 /// What is judged is whether the files the entry ships are the files that are
 /// there. Repairing it is `amx setup`'s, not doctor's: the remedy names the
 /// agent so that a person with two of them types the right line.
-fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
-    let Some(hooks) = hooks_of(vendor) else {
-        let name = vendor.map_or("this vendor", |vendor| vendor.name);
+fn wiring_check(found: &VendorWiring) -> Check {
+    let who = found.vendor;
+    let Some(hooks) = found.hooks else {
         return Check::ok(
             "hooks",
-            format!("{name} reports nothing amx can wire, so its pane is what amx reads"),
+            format!("{who} reports nothing amx can wire, so its pane is what amx reads"),
         );
     };
     let wire = found.wire.display();
@@ -267,30 +273,23 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
         install::Wired::File {
             present: true,
             current: true,
-        } => Check::ok("hooks", format!("the {what} at {wire}")),
+        } => Check::ok("hooks", format!("{who}: the {what} at {wire}")),
         install::Wired::File { present: true, .. } => Check::wrong(
             "hooks",
-            format!("{wire} is not the {what} this amx ships"),
-            setup_with(found),
+            format!("{who}: {wire} is not the {what} this amx ships"),
+            setup_with(who),
         ),
-        install::Wired::File { .. } | install::Wired::Nothing => {
-            Check::wrong("hooks", format!("no {what} at {wire}"), setup_with(found))
-        }
+        install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
+            "hooks",
+            format!("{who}: no {what} at {wire}"),
+            setup_with(who),
+        ),
     }
 }
 
 /// The line that wires this check's agent.
-fn setup_with(found: &Findings) -> String {
-    format!("run `amx setup {}`", program(&found.vendor))
-}
-
-/// How a vendor is wired, for the vendor the config names: its own hooks, or
-/// the first vendor's for a command amx has no entry for, and none at all
-/// for a vendor that reports nothing.
-fn hooks_of(vendor: Option<&'static Vendor>) -> Option<&'static Hooks> {
-    vendor
-        .or_else(|| registry::entries().first())
-        .and_then(|vendor| vendor.hooks.as_ref())
+fn setup_with(who: &str) -> String {
+    format!("run `amx setup {who}`")
 }
 
 /// Whether the amx the PATH finds is this one, and the only one.
@@ -529,13 +528,45 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
     })
 }
 
+/// The agents this machine is asked about, and what is wired for each.
+///
+/// Every entry in the table whose command the PATH finds, in table order, and
+/// the configured one whether or not it is there. A vendor that is not
+/// installed is not a machine with something missing from it, so it is not
+/// mentioned at all; the configured one is always asked about because its
+/// absence is a fault the `agent` check is already making, and because a
+/// machine with no agent installed should still read a hooks line rather than
+/// silently none.
+///
+/// The configured agent is resolved the way [`hooks_of`] resolves it: a
+/// command amx has no entry for is judged as the first vendor is, since a
+/// wrapper somebody wrote around claude loads the same files claude does.
+fn wirings(agent: &str, home: &Path, path: Option<&OsStr>) -> Vec<VendorWiring> {
+    let configured = registry::entry(agent).or_else(|| registry::entries().first());
+    registry::entries()
+        .iter()
+        .filter(|vendor| {
+            configured.is_some_and(|it| it.name == vendor.name)
+                || on_path(vendor.name, path).is_some()
+        })
+        .map(|vendor| {
+            let hooks = vendor.hooks.as_ref();
+            VendorWiring {
+                vendor: vendor.name,
+                hooks,
+                wire: hooks.map_or_else(|| home.to_path_buf(), |h| install::wire_path(h, home)),
+                wired: install::wired(hooks, home),
+            }
+        })
+        .collect()
+}
+
 /// Look at the machine.
 pub fn gather(config: &Config) -> Result<Findings> {
     let home = install::home()?;
     let exe = std::env::current_exe()?;
-    let hooks = hooks_of(registry::entry(&config.agent));
-    let wire = hooks.map_or_else(|| home.clone(), |hooks| install::wire_path(hooks, &home));
-    let wired = install::wired(hooks, &home);
+    let path = std::env::var_os("PATH");
+    let wirings = wirings(&config.agent, &home, path.as_deref());
     let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
     // Only for the vendor whose screen amx answers by writing its store: any
@@ -563,8 +594,7 @@ pub fn gather(config: &Config) -> Result<Findings> {
         config: crate::paths::config_file()?,
         config_warnings,
         home,
-        wire,
-        wired,
+        wirings,
         on_path: every_on_path("amx", std::env::var_os("PATH").as_deref()),
         exe: exe.canonicalize().unwrap_or(exe),
         state_error: usable(&state_root),
@@ -816,6 +846,7 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vendor::Vendor;
     use crate::vendor::second::SECOND;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -845,11 +876,20 @@ mod tests {
             .unwrap_or_else(|| panic!("{agent:?} draws no such screen"))
     }
 
-    /// Every file claude's plugin ships, standing where claude loads it.
-    fn all_wired() -> install::Wired {
-        install::Wired::File {
-            present: true,
-            current: true,
+    /// One agent's wiring, whole or missing, where its own entry puts it.
+    fn wiring(vendor: &'static str, there: bool) -> VendorWiring {
+        let hooks = registry::entry(vendor).and_then(|v| v.hooks.as_ref());
+        VendorWiring {
+            vendor,
+            hooks,
+            wire: hooks.map_or_else(
+                || PathBuf::from("/home/dev"),
+                |h| install::wire_path(h, Path::new("/home/dev")),
+            ),
+            wired: install::Wired::File {
+                present: there,
+                current: there,
+            },
         }
     }
 
@@ -861,8 +901,7 @@ mod tests {
             config: PathBuf::from("/home/dev/.config/amx/config.toml"),
             config_warnings: Vec::new(),
             home: PathBuf::from("/home/dev"),
-            wire: PathBuf::from("/home/dev/.claude/settings.json"),
-            wired: all_wired(),
+            wirings: vec![wiring("claude", true)],
             exe: PathBuf::from("/home/dev/.cargo/bin/amx"),
             on_path: vec![PathBuf::from("/home/dev/.cargo/bin/amx")],
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
@@ -1088,11 +1127,12 @@ mod tests {
         // Hooks are a vendor's own doing, and one that has none is not a
         // machine with something missing from it: there is nothing to wire and
         // nothing to fix, and what amx has instead is the pane.
-        let mut found = healthy();
-        found.vendor = SECOND.name.to_string();
-        found.wired = install::Wired::Nothing;
-
-        let hooks = wiring_check(&found, Some(&SECOND));
+        let hooks = wiring_check(&VendorWiring {
+            vendor: SECOND.name,
+            hooks: None,
+            wire: PathBuf::from("/home/dev"),
+            wired: install::Wired::Nothing,
+        });
         assert!(
             hooks.is_ok(),
             "nothing here is anybody's to repair: {hooks:?}"
@@ -1100,19 +1140,57 @@ mod tests {
         assert!(hooks.found.contains(SECOND.name), "{}", hooks.found);
         assert!(hooks.found.contains("pane"), "{}", hooks.found);
 
-        // The vendor amx was written against still answers for its wiring, and
-        // so does a command amx has no entry for: nothing measured is not a
-        // measurement, and a wrapper around claude loads the same files.
-        for measured in [crate::registry::entry("claude"), None] {
-            let hooks = wiring_check(&found, measured);
-            assert!(!hooks.is_ok(), "{hooks:?}");
-            let remedy = hooks.remedy.as_deref().unwrap();
-            assert!(remedy.contains("amx setup"), "{remedy}");
-            assert!(
-                !remedy.contains("--fix"),
-                "doctor repairs none of it: {remedy}"
-            );
-        }
+        // A vendor that does report is judged, and told which line wires it.
+        let hooks = wiring_check(&wiring("claude", false));
+        assert!(!hooks.is_ok(), "{hooks:?}");
+        let remedy = hooks.remedy.as_deref().unwrap();
+        assert!(remedy.contains("amx setup claude"), "{remedy}");
+        assert!(
+            !remedy.contains("--fix"),
+            "doctor repairs none of it: {remedy}"
+        );
+    }
+
+    #[test]
+    fn a_wrapper_somebody_wrote_is_judged_as_the_vendor_underneath_it_is() {
+        // A command amx has no entry for loads the files the first vendor
+        // loads, so the machine is asked about that vendor rather than about
+        // nothing at all.
+        let asked = wirings("my-claude", Path::new("/home/dev"), None);
+        assert_eq!(
+            asked.iter().map(|w| w.vendor).collect::<Vec<_>>(),
+            ["claude"],
+            "and only that one, since no other agent is on this PATH"
+        );
+    }
+
+    #[test]
+    fn an_agent_this_machine_has_not_got_is_not_asked_about() {
+        // Nothing is missing from a machine that never installed pi, so
+        // doctor says nothing about pi at all. The configured agent is the
+        // exception: its absence is the `agent` check's to report, and a
+        // hooks line about it is what names the line that wires it.
+        let dir = TempDir::new().unwrap();
+        let pi = dir.path().join("pi");
+        std::fs::write(&pi, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let home = Path::new("/home/dev");
+        assert_eq!(
+            wirings("claude", home, None)
+                .iter()
+                .map(|w| w.vendor)
+                .collect::<Vec<_>>(),
+            ["claude"]
+        );
+        assert_eq!(
+            wirings("claude", home, Some(dir.path().as_os_str()))
+                .iter()
+                .map(|w| w.vendor)
+                .collect::<Vec<_>>(),
+            ["claude", "pi"],
+            "pi is installed here, so it is asked about too"
+        );
     }
 
     /// pi, wired the way its hooks say it will be: the entry in the table
@@ -1125,15 +1203,16 @@ mod tests {
 
     #[test]
     fn doctor_judges_a_file_wire_by_the_file_that_is_there() {
-        let mut found = healthy();
-        found.vendor = PI_WIRED.name.to_string();
-        found.wire = PathBuf::from("/home/dev/.pi/agent/extensions/amx.ts");
-
-        found.wired = install::Wired::File {
-            present: false,
-            current: false,
+        let mut found = VendorWiring {
+            vendor: PI_WIRED.name,
+            hooks: PI_WIRED.hooks.as_ref(),
+            wire: PathBuf::from("/home/dev/.pi/agent/extensions/amx.ts"),
+            wired: install::Wired::File {
+                present: false,
+                current: false,
+            },
         };
-        let hooks = wiring_check(&found, Some(&PI_WIRED));
+        let hooks = wiring_check(&found);
         assert!(!hooks.is_ok());
         assert!(hooks.found.contains("no extension"), "{}", hooks.found);
         // The verb, naming this check's own agent, so that a person with two
@@ -1148,7 +1227,7 @@ mod tests {
             present: true,
             current: false,
         };
-        let hooks = wiring_check(&found, Some(&PI_WIRED));
+        let hooks = wiring_check(&found);
         assert!(!hooks.is_ok());
         assert!(
             hooks.found.contains("not the extension this amx ships"),
@@ -1161,7 +1240,7 @@ mod tests {
             present: true,
             current: true,
         };
-        let hooks = wiring_check(&found, Some(&PI_WIRED));
+        let hooks = wiring_check(&found);
         assert!(hooks.is_ok(), "{hooks:?}");
         assert!(hooks.found.contains("amx.ts"), "{}", hooks.found);
     }

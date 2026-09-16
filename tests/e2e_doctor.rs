@@ -22,6 +22,7 @@ mod common;
 
 use common::Harness;
 use serde_json::{Value, json};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -88,6 +89,23 @@ fn check_line(printed: &str, name: &str) -> (bool, String) {
 
 fn server_line(printed: &str) -> (bool, String) {
     check_line(printed, "server")
+}
+
+/// Doctor's hooks line about one agent: whether it passed, and what it said.
+///
+/// By agent rather than by position. doctor asks a hooks line of every agent
+/// this machine has, so on a developer's machine with claude installed a test
+/// about pi would otherwise read claude's line.
+fn hooks_line(printed: &str, vendor: &str) -> (bool, String) {
+    printed
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let verdict = fields.next()?;
+            let named = fields.next()? == "hooks" && fields.next()? == format!("{vendor}:");
+            named.then(|| (verdict == "ok", line.to_string()))
+        })
+        .unwrap_or_else(|| panic!("doctor said nothing about {vendor}'s hooks:\n{printed}"))
 }
 
 fn doctor(amx: &Harness) -> String {
@@ -251,6 +269,43 @@ fn doctor_on(amx: &Harness, dirs: &[&Path]) -> String {
 }
 
 #[test]
+fn doctor_asks_a_hooks_line_of_every_agent_this_machine_has() {
+    // The gap this closes: doctor read the configured agent and nothing else,
+    // so a machine set to claude with pi installed beside it never heard that
+    // pi was unwired. An agent that is not installed is not a fault and is
+    // not mentioned at all.
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    amx.amx(&["setup", "claude"]);
+
+    // claude alone on the PATH: one line, and nothing about pi.
+    let claude_only = tempfile::TempDir::new().unwrap();
+    let claude = claude_only.path().join("claude");
+    std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&claude, PermissionsExt::from_mode(0o755)).unwrap();
+    let printed = doctor_on(&amx, &[claude_only.path()]);
+    let (ok, line) = hooks_line(&printed, "claude");
+    assert!(ok, "claude is wired: {line}");
+    assert!(
+        !printed.contains("pi:"),
+        "nothing is missing from a machine that never installed pi:\n{printed}"
+    );
+
+    // pi installed beside it: a second line, red, naming the line that wires
+    // it — and claude's own line is unchanged.
+    let printed = doctor_on(&amx, &[Path::new(&pi_fixtures()), claude_only.path()]);
+    let (ok, _) = hooks_line(&printed, "claude");
+    assert!(ok, "claude is still wired:\n{printed}");
+    let (ok, line) = hooks_line(&printed, "pi");
+    assert!(!ok, "and pi is not:\n{printed}");
+    assert!(line.contains("extension"), "{line}");
+    assert!(
+        printed.contains("amx setup pi"),
+        "the line that wires it names pi:\n{printed}"
+    );
+}
+
+#[test]
 fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
     // Two installed amx, and `amx setup pi` run under the stale one wrote
     // the stale extension, doctor judged it against that amx's own body,
@@ -315,7 +370,7 @@ fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back(
     let extension = pi_extension(&amx);
 
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "pi");
     assert!(!ok, "nothing is wired yet: {printed}");
     assert!(line.contains("extension"), "{line}");
     assert!(
@@ -339,7 +394,7 @@ fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back(
         "it reports through amx: {written}"
     );
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "pi");
     assert!(ok, "the extension is in place: {line}");
 
     let out = amx.amx(&["uninstall"]);
@@ -362,7 +417,7 @@ fn doctor_fix_keeps_a_copy_of_a_file_that_is_not_amxs_and_uninstall_puts_it_back
     std::fs::write(&extension, theirs).unwrap();
 
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "pi");
     assert!(!ok, "a file that is not amx's is not the wiring: {line}");
 
     let out = amx.amx(&["setup", "pi"]);
@@ -400,7 +455,7 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
     std::fs::write(&extension, "// installed by amx\n// an older one\n").unwrap();
 
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "pi");
     assert!(!ok, "{line}");
     assert!(line.contains("not the extension this amx ships"), "{line}");
 
@@ -410,7 +465,7 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
         !printed.contains("the file as it was is at"),
         "an older amx's file is amx's to replace, and no copy is kept: {printed}"
     );
-    let (ok, _) = check_line(&doctor(&amx), "hooks");
+    let (ok, _) = hooks_line(&doctor(&amx), "pi");
     assert!(ok);
 }
 
@@ -486,7 +541,7 @@ fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back
     let plugin = amx.home().join(".claude/skills/amx");
 
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "claude");
     assert!(!ok, "nothing is wired yet: {printed}");
     assert!(line.contains("plugin"), "and it says which door: {line}");
     assert!(!plugin.exists());
@@ -512,7 +567,7 @@ fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back
     );
 
     let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
+    let (ok, line) = hooks_line(&printed, "claude");
     assert!(ok, "the plugin is in place: {line}");
 
     let out = amx.amx(&["uninstall"]);

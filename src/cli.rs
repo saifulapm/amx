@@ -1687,8 +1687,15 @@ mod tests {
             config: PathBuf::new(),
             config_warnings: Vec::new(),
             home: PathBuf::new(),
-            wire: PathBuf::new(),
-            wired: crate::install::Wired::Nothing,
+            // One agent's wiring, so that `hooks` is among the kinds of
+            // check counted below: a machine with no agent installed is a
+            // machine the `agent` check is already red about.
+            wirings: vec![crate::verbs::doctor::VendorWiring {
+                vendor: "claude",
+                hooks: None,
+                wire: PathBuf::new(),
+                wired: crate::install::Wired::Nothing,
+            }],
             exe: PathBuf::new(),
             on_path: Vec::new(),
             state_root: PathBuf::new(),
@@ -1702,10 +1709,14 @@ mod tests {
             store: None,
             stale: Vec::new(),
         });
+        // The kinds of check, not the lines: `hooks` is asked once per agent
+        // this machine has, so a person with claude and pi reads ten lines
+        // and is still asked the same nine things.
+        let kinds: std::collections::BTreeSet<&str> = checks.iter().map(|c| c.name).collect();
         let counted = [
             "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
         ]
-        .get(checks.len())
+        .get(kinds.len())
         .expect("a count these have a word for");
 
         use clap::CommandFactory;
@@ -1717,13 +1728,13 @@ mod tests {
             .to_lowercase();
         assert!(
             long.contains(&format!("{counted} things")),
-            "doctor makes {} checks and its help says otherwise: {long}",
-            checks.len()
+            "doctor asks {} kinds of check and its help says otherwise: {long}",
+            kinds.len()
         );
         assert!(
             README.contains(&format!("the {counted} things")),
-            "doctor makes {} checks and the README says otherwise",
-            checks.len()
+            "doctor asks {} kinds of check and the README says otherwise",
+            kinds.len()
         );
     }
 
