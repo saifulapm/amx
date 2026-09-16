@@ -12,10 +12,12 @@
 //! it knows and writes nothing.
 //!
 //! Nor does it ask. `doctor --fix` had to, because one flag stood for every
-//! repair it could make and the settings file is the person's; naming the
+//! repair it could make and the files are under somebody's home; naming the
 //! agent on the command line is that consent, said more precisely. What is
-//! kept from that door is the sentence: the file being written is named before
-//! it is written, and copied aside first.
+//! kept from that door is the sentence: what is about to be written is named
+//! before it is written, and anything of somebody's at that name is copied
+//! aside first. A machine already wired is told so instead, since a sentence
+//! about a write that is not going to happen is a sentence that is not true.
 
 use anyhow::Result;
 use std::io::Write;
@@ -56,22 +58,27 @@ pub fn run(vendor: Option<&str>, home: &Path, now: u64, out: &mut impl Write) ->
         return Ok(exit::OK);
     };
 
+    // Read before saying anything. The sentence below is about a write that
+    // is going to happen, and promises a copy of what it goes over; on a
+    // machine already wired it would be followed immediately by "nothing to
+    // do", which is two lines contradicting each other and a copy nobody took.
     let path = install::wire_path(hooks, home);
+    if install::wired(Some(hooks), home)
+        == (install::Wired::File {
+            present: true,
+            current: true,
+        })
+    {
+        writeln!(out, "nothing to do: {} is already that", path.display())?;
+        return Ok(exit::OK);
+    }
+
     writeln!(
         out,
         "{}",
         install::consent_line(hooks, &path, path.exists())
     )?;
-
     let wrote = install::install_hooks(hooks, home, now)?;
-    if !wrote.changed {
-        writeln!(
-            out,
-            "nothing to do: {} is already that",
-            wrote.path.display()
-        )?;
-        return Ok(exit::OK);
-    }
     match hooks.wire {
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
         Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
@@ -177,6 +184,10 @@ mod tests {
             let (code, printed) = said(Some(agent), home.path(), 2);
             assert_eq!(code, exit::OK, "{printed}");
             assert!(printed.contains("nothing to do"), "{agent}: {printed}");
+            assert!(
+                !printed.contains("amx will"),
+                "and it does not first say it is about to: {printed}"
+            );
         }
     }
 
