@@ -58,6 +58,7 @@ impl Cli {
             Events { .. } => "events",
             Statusline => "statusline",
             Doctor { .. } => "doctor",
+            Setup { .. } => "setup",
             Uninstall => "uninstall",
             Completion { .. } => "completion",
             Hook => "_hook",
@@ -371,6 +372,21 @@ pub enum Command {
         /// Install what is missing.
         #[arg(long)]
         fix: bool,
+    },
+
+    /// Wire an agent's hooks, so what it does reports back to amx.
+    ///
+    /// The agent is named, and never guessed: `amx setup claude` adds amx's
+    /// hooks to `~/.claude/settings.json` beside whatever is already there,
+    /// `amx setup pi` writes amx's extension where pi loads one from. Either
+    /// file is copied aside before it is touched, and `amx uninstall` puts
+    /// the copy back.
+    ///
+    /// A machine usually has more than one agent on it, so a bare `amx setup`
+    /// prints the agents amx has an entry for and writes nothing.
+    Setup {
+        /// Which agent to wire: `claude` or `pi`.
+        vendor: Option<String>,
     },
 
     /// Remove amx's hooks and state, restoring the settings backup.

@@ -68,6 +68,19 @@ each gone tree's key back out of the agent's trust store, with the file copied
 aside first and the count printed; only the trees amx cut ever go, never the
 repository's own entry.
 
+`amx setup <agent>` wires one agent, named on the command line:
+
+```sh
+amx setup claude   # amx's seven hooks into ~/.claude/settings.json
+amx setup pi       # amx's extension into ~/.pi/agent/extensions/amx.ts
+```
+
+Either file is copied aside before it is touched, and the copy is named. The
+agent is never guessed — a machine usually has more than one on it, and the one
+your config happens to name says nothing about the others — so a bare `amx
+setup` prints the agents amx has an entry for and writes nothing. Running it
+again on an agent already wired writes nothing and says so.
+
 The same seven hooks also ship as a claude plugin, which is the other way to
 wire them and touches no settings file of yours:
 

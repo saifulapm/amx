@@ -17,6 +17,7 @@ pub mod rename;
 pub mod result;
 pub mod resume;
 pub mod send;
+pub mod setup;
 pub mod status;
 pub mod statusline;
 pub mod stop;
