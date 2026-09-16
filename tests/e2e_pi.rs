@@ -2857,7 +2857,7 @@ fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
     );
 
     let printed = doctor_fix(&amx, "\n");
-    let (ok, line) = check_line(&printed, "setup");
+    let (ok, line) = check_line(&printed, "gate");
     assert!(!ok, "the agent is stopped in front of its work: {line}");
     assert!(line.contains(id), "{line}");
     assert!(

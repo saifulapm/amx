@@ -223,7 +223,7 @@ fn an_agent_stopped_at_its_own_vendors_setup_gate_is_named() {
         );
 
         let printed = doctor(&amx);
-        let (ok, line) = check_line(&printed, "setup");
+        let (ok, line) = check_line(&printed, "gate");
         assert!(
             !ok,
             "{what} is nobody's but a person's to answer: {printed}"
@@ -252,9 +252,9 @@ fn doctor_on(amx: &Harness, dirs: &[&Path]) -> String {
 
 #[test]
 fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
-    // Two installed amx, and `amx doctor --fix` run under the stale one
-    // judged the stale extension against its own body, said ok, and the
-    // build carrying the fix never ran. What a pi started by hand reports to
+    // Two installed amx, and `amx setup pi` run under the stale one wrote
+    // the stale extension, doctor judged it against that amx's own body,
+    // said ok, and the build carrying the fix never ran. What a pi started by hand reports to
     // is whichever amx the PATH finds, so doctor says which that is.
     let amx = Harness::new();
     let ours = tempfile::TempDir::new().unwrap();
@@ -307,9 +307,9 @@ fn pi_extension(amx: &Harness) -> PathBuf {
 
 #[test]
 fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back() {
-    // pi reports through a file amx writes where pi loads extensions from,
-    // not through entries in a settings file. doctor judges that file, --fix
-    // writes it after asking, and uninstall removes it.
+    // pi reports through a file amx writes where pi loads extensions from.
+    // doctor judges that file and repairs none of it; `amx setup pi` is what
+    // writes it, and uninstall removes it.
     let amx = Harness::new();
     amx.config("agent = \"pi\"\n");
     let extension = pi_extension(&amx);
@@ -318,14 +318,18 @@ fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back(
     let (ok, line) = check_line(&printed, "hooks");
     assert!(!ok, "nothing is wired yet: {printed}");
     assert!(line.contains("extension"), "{line}");
-    assert!(printed.contains("amx doctor --fix"), "{printed}");
+    assert!(
+        printed.contains("amx setup pi"),
+        "the remedy is the verb: {printed}"
+    );
+    assert!(!printed.contains("--fix"), "and not doctor: {printed}");
     assert!(!extension.exists());
 
-    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let out = amx.amx(&["setup", "pi"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         printed.contains("will write its extension"),
-        "it asked: {printed}"
+        "it says what it is doing: {printed}"
     );
     assert!(printed.contains("wrote the extension"), "{printed}");
     let written = std::fs::read_to_string(&extension).expect("the extension");
@@ -334,9 +338,6 @@ fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back(
         written.contains("_hook"),
         "it reports through amx: {written}"
     );
-    let (ok, line) = check_line(&printed, "hooks");
-    assert!(!ok, "the line before the fix said what was wrong: {line}");
-
     let printed = doctor(&amx);
     let (ok, line) = check_line(&printed, "hooks");
     assert!(ok, "the extension is in place: {line}");
@@ -364,7 +365,7 @@ fn doctor_fix_keeps_a_copy_of_a_file_that_is_not_amxs_and_uninstall_puts_it_back
     let (ok, line) = check_line(&printed, "hooks");
     assert!(!ok, "a file that is not amx's is not the wiring: {line}");
 
-    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let out = amx.amx(&["setup", "pi"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         printed.contains("keeping a copy"),
@@ -403,7 +404,7 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
     assert!(!ok, "{line}");
     assert!(line.contains("not the extension this amx ships"), "{line}");
 
-    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let out = amx.amx(&["setup", "pi"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         !printed.contains("the file as it was is at"),
@@ -445,9 +446,9 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
         "and which file: {line}"
     );
 
-    // The hooks question is the one repair that needs asking, and this is not
-    // it: the key goes whether or not anybody wants their settings written.
-    let out = amx.amx_with_input(&["doctor", "--fix"], "n\n");
+    // Nothing here is asked about: the key goes, and doctor writes no file of
+    // any vendor's either way.
+    let out = amx.amx(&["doctor", "--fix"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         printed.contains(&format!("forgot 1 tree from {}", store.display())),
@@ -490,11 +491,11 @@ fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back
     assert!(line.contains("plugin"), "and it says which door: {line}");
     assert!(!plugin.exists());
 
-    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let out = amx.amx(&["setup", "claude"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         printed.contains("will write its plugin"),
-        "it asked: {printed}"
+        "it says what it is doing: {printed}"
     );
 
     let manifest = std::fs::read_to_string(plugin.join(".claude-plugin/plugin.json"))

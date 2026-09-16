@@ -29,17 +29,20 @@
 //! there and dies at once. No server yet is not a fault, and neither is a
 //! platform amx cannot ask, so both go unsaid rather than answered green.
 //!
-//! `--fix` makes three repairs. Wiring the hooks needs asking, because the
-//! settings file it writes to is the vendor's and may hold anything else
-//! beside amx's own entries. Rewriting a handoff that still carries the
-//! environment needs none: amx wrote every one of those files itself, and
-//! taking a stray key back out of one is not a change anybody could object to.
-//! Nor does forgetting a tree amx cut, which is amx's own key for a directory
-//! that is not there any more, and the file is copied aside before it goes.
+//! `--fix` makes two repairs, and both of them are amx's own files to mend.
+//! Rewriting a handoff that still carries the environment needs no asking: amx
+//! wrote every one of those files itself, and taking a stray key back out of
+//! one is not a change anybody could object to. Nor does forgetting a tree amx
+//! cut, which is amx's own key for a directory that is not there any more, and
+//! the file is copied aside before it goes.
+//!
+//! Wiring an agent is not among them. That writes under somebody's home, and
+//! it is `amx setup` that does it, named agent by named agent; doctor says
+//! which agent is unwired and prints the line that wires it.
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -235,14 +238,14 @@ fn config_check(found: &Findings) -> Check {
 /// Whether amx's hooks are where this vendor's reports would come from.
 ///
 /// A vendor that reports nothing is not a machine with something missing from
-/// it: there are no entries to write, nothing for `--fix` to do, and what amx
+/// it: there is nothing to write, nothing for anybody to repair, and what amx
 /// has instead is the pane. A command amx has no entry for is measured neither
 /// way and is judged as the first vendor is — a wrapper somebody wrote around
-/// it reports through the same settings file.
+/// it loads the same files.
 ///
-/// What is judged follows the wire. A settings wire is judged by which events
-/// it names; a file wire by whether the file amx ships is the file that is
-/// there.
+/// What is judged is whether the files the entry ships are the files that are
+/// there. Repairing it is `amx setup`'s, not doctor's: the remedy names the
+/// agent so that a person with two of them types the right line.
 fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
     let Some(hooks) = hooks_of(vendor) else {
         let name = vendor.map_or("this vendor", |vendor| vendor.name);
@@ -268,14 +271,17 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
         install::Wired::File { present: true, .. } => Check::wrong(
             "hooks",
             format!("{wire} is not the {what} this amx ships"),
-            "run `amx doctor --fix`",
+            setup_with(found),
         ),
-        install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
-            "hooks",
-            format!("no {what} at {wire}"),
-            "run `amx doctor --fix`",
-        ),
+        install::Wired::File { .. } | install::Wired::Nothing => {
+            Check::wrong("hooks", format!("no {what} at {wire}"), setup_with(found))
+        }
     }
+}
+
+/// The line that wires this check's agent.
+fn setup_with(found: &Findings) -> String {
+    format!("run `amx setup {}`", program(&found.vendor))
 }
 
 /// How a vendor is wired, for the vendor the config names: its own hooks, or
@@ -408,7 +414,10 @@ fn env_check(found: &Findings) -> Check {
 
 fn setup_check(found: &Findings) -> Check {
     let Some(first) = found.parked.first() else {
-        return Check::ok("setup", "no agent is stopped at the vendor's own setup");
+        return Check::ok(
+            "gate",
+            "no agent is stopped at a screen its vendor puts first",
+        );
     };
 
     let each: Vec<String> = found
@@ -434,7 +443,7 @@ fn setup_check(found: &Findings) -> Check {
         ),
         _ => format!("answer it yourself: amx attach {}", first.id),
     };
-    Check::wrong("setup", what, remedy)
+    Check::wrong("gate", what, remedy)
 }
 
 /// Whether the vendor's own trust store still names trees amx cut and removed.
@@ -473,13 +482,7 @@ fn store_check(found: &Findings) -> Check {
 
 /// Print the checks, offer the one repair amx can make, and answer with an
 /// exit code: zero when there is nothing left to do.
-pub fn run(
-    found: &Findings,
-    fix: bool,
-    now: u64,
-    input: &mut impl BufRead,
-    out: &mut impl Write,
-) -> Result<i32> {
+pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Result<i32> {
     let mut current = found.clone();
     let mut checks = report(&current);
     for check in &checks {
@@ -519,57 +522,11 @@ pub fn run(
         checks = report(&current);
     }
 
-    if fix
-        && fixable(&checks)
-        && let Some(hooks) = hooks_of(registry::entry(&current.vendor))
-    {
-        writeln!(
-            out,
-            "\n{}",
-            install::consent_line(hooks, &current.wire, current.wire.exists())
-        )?;
-        write!(out, "go ahead? [y/N] ")?;
-        out.flush()?;
-
-        let mut answer = String::new();
-        input.read_line(&mut answer)?;
-        if answer.trim().eq_ignore_ascii_case("y") {
-            let wrote = install::install_hooks(hooks, &current.home, now)?;
-            match hooks.wire {
-                Wire::File { .. } => {
-                    writeln!(out, "wrote the extension to {}", wrote.path.display())?
-                }
-                Wire::Plugin { .. } => {
-                    writeln!(out, "wrote the plugin to {}", wrote.path.display())?
-                }
-            }
-            if let Some(backup) = wrote.backup {
-                writeln!(out, "the file as it was is at {}", backup.display())?;
-            }
-            // Judge again: the machine is not what it was a moment ago.
-            current.wired = install::wired(Some(hooks), &current.home);
-            checks = report(&current);
-        } else {
-            writeln!(out, "left {} alone", current.wire.display())?;
-        }
-    }
-
     Ok(if checks.iter().all(Check::is_ok) {
         exit::OK
     } else {
         exit::FAILURE
     })
-}
-
-/// Whether wiring the hooks — the repair that needs asking — is still needed,
-/// once the repair that does not has already run.
-fn fixable(checks: &[Check]) -> bool {
-    checks
-        .iter()
-        .any(|check| check.name == "hooks" && !check.is_ok())
-        && checks.iter().all(|check| {
-            check.name != "hooks" || check.remedy.as_deref() == Some("run `amx doctor --fix`")
-        })
 }
 
 /// Look at the machine.
@@ -807,9 +764,8 @@ fn usable(root: &Path) -> Option<String> {
 /// Run the verb against the machine.
 pub fn from_env(config: &Config, fix: bool) -> Result<i32> {
     let found = gather(config)?;
-    let mut input = std::io::stdin().lock();
     let mut out = std::io::stdout().lock();
-    run(&found, fix, crate::store::now(), &mut input, &mut out)
+    run(&found, fix, crate::store::now(), &mut out)
 }
 
 /// The program a configured command runs, without its arguments.
@@ -860,7 +816,6 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::claude;
     use crate::vendor::second::SECOND;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -895,14 +850,6 @@ mod tests {
         install::Wired::File {
             present: true,
             current: true,
-        }
-    }
-
-    /// A machine with nothing of amx's written under it.
-    fn none_wired() -> install::Wired {
-        install::Wired::File {
-            present: false,
-            current: false,
         }
     }
 
@@ -987,7 +934,7 @@ mod tests {
 
     fn said(found: &Findings, fix: bool) -> (i32, String) {
         let mut out = Vec::new();
-        let code = run(found, fix, 1, &mut "".as_bytes(), &mut out).unwrap();
+        let code = run(found, fix, 1, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
     }
 
@@ -1155,12 +1102,16 @@ mod tests {
 
         // The vendor amx was written against still answers for its wiring, and
         // so does a command amx has no entry for: nothing measured is not a
-        // measurement, and a wrapper around claude reports through the same
-        // settings file.
+        // measurement, and a wrapper around claude loads the same files.
         for measured in [crate::registry::entry("claude"), None] {
             let hooks = wiring_check(&found, measured);
             assert!(!hooks.is_ok(), "{hooks:?}");
-            assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
+            let remedy = hooks.remedy.as_deref().unwrap();
+            assert!(remedy.contains("amx setup"), "{remedy}");
+            assert!(
+                !remedy.contains("--fix"),
+                "doctor repairs none of it: {remedy}"
+            );
         }
     }
 
@@ -1185,7 +1136,13 @@ mod tests {
         let hooks = wiring_check(&found, Some(&PI_WIRED));
         assert!(!hooks.is_ok());
         assert!(hooks.found.contains("no extension"), "{}", hooks.found);
-        assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
+        // The verb, naming this check's own agent, so that a person with two
+        // of them types the right line.
+        assert_eq!(
+            hooks.remedy.as_deref(),
+            Some("run `amx setup pi`"),
+            "{hooks:?}"
+        );
 
         found.wired = install::Wired::File {
             present: true,
@@ -1198,7 +1155,7 @@ mod tests {
             "{}",
             hooks.found
         );
-        assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
+        assert_eq!(hooks.remedy.as_deref(), Some("run `amx setup pi`"));
 
         found.wired = install::Wired::File {
             present: true,
@@ -1207,53 +1164,6 @@ mod tests {
         let hooks = wiring_check(&found, Some(&PI_WIRED));
         assert!(hooks.is_ok(), "{hooks:?}");
         assert!(hooks.found.contains("amx.ts"), "{}", hooks.found);
-    }
-
-    #[test]
-    fn doctor_fix_writes_a_file_wire_after_asking_about_the_file() {
-        let dir = TempDir::new().unwrap();
-        let extension = install::wire_path(&crate::vendor::pi::HOOKS, dir.path());
-        // The check resolves the vendor by name out of the table, where pi
-        // carries no hooks yet, so the flow is driven at the install below
-        // and the check is proved above.
-        let report = install::install_hooks(&crate::vendor::pi::HOOKS, dir.path(), 1).unwrap();
-        assert!(report.changed);
-        let written = std::fs::read_to_string(&extension).unwrap();
-        assert!(written.starts_with("// installed by amx\n"));
-        assert_eq!(
-            install::wired(Some(&crate::vendor::pi::HOOKS), dir.path()),
-            install::Wired::File {
-                present: true,
-                current: true
-            }
-        );
-        let asked = install::consent_line(&crate::vendor::pi::HOOKS, &extension, false);
-        assert!(asked.contains("extension"), "{asked}");
-    }
-
-    #[test]
-    fn doctor_fix_wires_the_hooks_once_somebody_agrees() {
-        let dir = TempDir::new().unwrap();
-        let plugin = install::wire_path(&claude::HOOKS, dir.path());
-
-        let mut found = healthy();
-        found.home = dir.path().to_path_buf();
-        found.wire = plugin.clone();
-        found.wired = none_wired();
-
-        let mut out = Vec::new();
-        let code = run(&found, true, 1, &mut "y\n".as_bytes(), &mut out).unwrap();
-        let printed = String::from_utf8(out).unwrap();
-
-        assert_eq!(code, exit::OK, "nothing is wrong any more: {printed}");
-        assert!(printed.contains("will write"), "it asked first: {printed}");
-        assert_eq!(
-            install::wired(Some(&claude::HOOKS), dir.path()),
-            install::Wired::File {
-                present: true,
-                current: true
-            }
-        );
     }
 
     #[test]
@@ -1639,14 +1549,14 @@ mod tests {
             Some(gate),
         )]);
 
-        let setup = check(&found, "setup");
-        assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
+        let stopped = check(&found, "gate");
+        assert!(stopped.found.contains("fix-auth-2k3"), "{}", stopped.found);
         assert!(
-            setup.found.contains(gate),
+            stopped.found.contains(gate),
             "the screen, as the vendor drawing it names it: {}",
-            setup.found
+            stopped.found
         );
-        let remedy = setup.remedy.as_deref().unwrap();
+        let remedy = stopped.remedy.as_deref().unwrap();
         assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
         assert!(
             remedy.contains("trust = true"),
@@ -1673,10 +1583,14 @@ mod tests {
                 Some(&gate.name),
             )]);
 
-            let setup = check(&found, "setup");
-            assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
-            assert!(setup.found.contains(gate.name.as_str()), "{}", setup.found);
-            let remedy = setup.remedy.as_deref().unwrap();
+            let stopped = check(&found, "gate");
+            assert!(stopped.found.contains("port-cli-b91"), "{}", stopped.found);
+            assert!(
+                stopped.found.contains(gate.name.as_str()),
+                "{}",
+                stopped.found
+            );
+            let remedy = stopped.remedy.as_deref().unwrap();
             assert!(remedy.contains("amx attach port-cli-b91"), "{remedy}");
 
             // The offer is the folder-trust question's alone. On a gate that
@@ -1706,9 +1620,9 @@ mod tests {
                 Some(screen(command.unwrap_or_default(), Phase::Waiting, true)),
             )]);
 
-            let setup = check(&found, "setup");
-            assert!(!setup.is_ok(), "the agent is still stopped: {setup:?}");
-            let remedy = setup.remedy.as_deref().unwrap();
+            let stopped = check(&found, "gate");
+            assert!(!stopped.is_ok(), "the agent is still stopped: {stopped:?}");
+            let remedy = stopped.remedy.as_deref().unwrap();
             assert!(remedy.contains("amx attach fix-auth-2k3"), "{remedy}");
             assert!(!remedy.contains("trust = true"), "{command:?}: {remedy}");
         }
@@ -1725,16 +1639,16 @@ mod tests {
             screen: Setup::Unread,
         }];
 
-        let setup = check(&found, "setup");
-        assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
+        let stopped = check(&found, "gate");
+        assert!(stopped.found.contains("port-cli-b91"), "{}", stopped.found);
         assert!(
-            setup.remedy.as_deref().unwrap().contains("amx attach"),
-            "somebody has to look at it: {setup:?}"
+            stopped.remedy.as_deref().unwrap().contains("amx attach"),
+            "somebody has to look at it: {stopped:?}"
         );
     }
 
     #[test]
-    fn doctor_names_every_agent_stopped_at_setup_and_one_to_start_with() {
+    fn doctor_names_every_agent_stopped_at_a_gate_and_one_to_start_with() {
         let mut found = healthy();
         found.parked = vec![
             Parked {
@@ -1750,22 +1664,22 @@ mod tests {
             },
         ];
 
-        let setup = check(&found, "setup");
-        assert!(setup.found.contains('2'), "how many: {}", setup.found);
-        assert!(setup.found.contains("fix-auth-2k3"), "{}", setup.found);
-        assert!(setup.found.contains("port-cli-b91"), "{}", setup.found);
+        let stopped = check(&found, "gate");
+        assert!(stopped.found.contains('2'), "how many: {}", stopped.found);
+        assert!(stopped.found.contains("fix-auth-2k3"), "{}", stopped.found);
+        assert!(stopped.found.contains("port-cli-b91"), "{}", stopped.found);
         assert!(
-            setup
+            stopped
                 .remedy
                 .as_deref()
                 .unwrap()
                 .contains("amx attach fix-auth-2k3"),
-            "one of them to start with: {setup:?}"
+            "one of them to start with: {stopped:?}"
         );
     }
 
     #[test]
-    fn only_an_agent_that_never_got_started_is_stopped_at_setup() {
+    fn only_an_agent_that_never_got_started_is_stopped_at_a_gate() {
         // Every screen here is read out of the document of the vendor the
         // record names, and most of these name none — what an older amx wrote,
         // and what a shell command still writes — so they are read against the
@@ -1807,7 +1721,7 @@ mod tests {
             ),
             view(None, "login-e5f", Phase::Starting, Phase::Unknown, None),
             // Interrupted mid-turn onto a screen no rule claims. The vendor let
-            // this one start, so it is not stopped at setup.
+            // this one start, so it is not stopped at a gate.
             view(None, "lost-f6g", Phase::Working, Phase::Unknown, None),
             // Started, drawn, and sitting at its prompt with nothing to do.
             view(None, "fresh-g7h", Phase::Starting, Phase::Idle, Some(idle)),
