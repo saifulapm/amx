@@ -501,14 +501,9 @@ fn start(
             take_back(repo, tree, problems, to_terminal);
             return Err(e);
         }
-        trust_the_tree(
-            config,
-            &env,
-            &launch.agent,
-            &tree.path,
-            problems,
-            to_terminal,
-        );
+    }
+    if let Some(tree) = tree_to_trust(tree.map(|tree| tree.path.as_path()), dir, args.exec) {
+        trust_the_tree(config, &env, &launch.agent, tree, problems, to_terminal);
     }
 
     // amx's own id over the top of the harness's pairs laid above: a table
@@ -824,9 +819,25 @@ fn take_back(repo: &Path, tree: &worktree::Worktree, problems: &mut impl Write, 
     }
 }
 
-/// Write the vendor's own trust store for the tree amx has just cut, so that
-/// the agent starts on the task instead of on a question nobody has to think
-/// about.
+/// The tree whose folder-trust screen is amx's to answer on this spawn: the
+/// one it cut, or the linked worktree it was pointed at when it cut none.
+///
+/// The second is how `workflow run` dispatches every worker and reader, with
+/// `--no-worktree --dir <a tree it cut itself>`, and a linked worktree is
+/// derived from a repository whoever cut it, which is the same provenance a
+/// tree amx cut has. A checkout is the person's own to answer, a plain
+/// directory is derived from nothing, and a command asks no vendor anything,
+/// so none of those is answered for.
+fn tree_to_trust<'a>(cut: Option<&'a Path>, dir: &'a Path, exec: bool) -> Option<&'a Path> {
+    if exec {
+        return None;
+    }
+    cut.or_else(|| worktree::is_linked(dir).then_some(dir))
+}
+
+/// Write the vendor's own trust store for the tree the agent is about to
+/// start in, so that it starts on the task instead of on a question nobody
+/// has to think about.
 ///
 /// The half of the answer that is a file. A vendor answered with a flag
 /// instead is answered in [`launched`], on the argv of the pane it is about,
@@ -1644,6 +1655,46 @@ mod tests {
         assert!(told.contains("trust store amx can read"), "{told}");
         assert_eq!(told.lines().count(), 1, "{told}");
         assert!(told.starts_with("\u{1b}[33mamx new: "), "{told:?}");
+    }
+
+    #[test]
+    fn trust_is_answered_for_the_linked_worktree_a_no_worktree_spawn_was_pointed_at() {
+        // `workflow run` cuts its own trees and dispatches every worker with
+        // `--no-worktree --dir <tree>`, so nothing here cut anything, and
+        // until this the store was seeded for nothing: every claude reader in
+        // a repository nobody had trusted stopped at the screen and died
+        // there, with no event to say so. A linked worktree is derived from a
+        // repository whoever cut it, which is the same provenance a tree amx
+        // cut has. A checkout, a plain directory and a command are not.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+        let theirs = dir.path().join("workflow/plan/t1");
+        setup(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &theirs.to_string_lossy(),
+                "-b",
+                "t1",
+            ],
+        );
+        let cut = repo.join(".amx/worktrees/fix-login-a1b");
+
+        assert_eq!(tree_to_trust(Some(&cut), &repo, false), Some(cut.as_path()));
+        assert_eq!(tree_to_trust(None, &theirs, false), Some(theirs.as_path()));
+        assert_eq!(tree_to_trust(None, &repo, false), None, "the checkout");
+        assert_eq!(
+            tree_to_trust(None, dir.path(), false),
+            None,
+            "a plain directory"
+        );
+        assert_eq!(
+            tree_to_trust(None, &theirs, true),
+            None,
+            "a command asks no vendor anything"
+        );
     }
 
     #[test]

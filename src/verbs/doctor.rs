@@ -442,7 +442,7 @@ fn setup_check(found: &Findings) -> Check {
         // does nothing for any other.
         Setup::Gate { trust: true, .. } => format!(
             "answer it yourself: amx attach {}, or set trust = true in the \
-             config and amx answers it for the trees it cuts",
+             config and amx answers it for any linked worktree",
             first.id
         ),
         _ => format!("answer it yourself: amx attach {}", first.id),

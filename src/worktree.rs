@@ -101,6 +101,30 @@ pub fn is_amx_tree(path: &Path) -> bool {
             .is_some_and(|holds| holds.ends_with(WORKTREES))
 }
 
+/// Whether `dir` is a linked worktree: a tree git derived from a repository
+/// kept somewhere else, whoever cut it and wherever they put it.
+///
+/// Asked of git rather than read off the path, because the layout amx lays
+/// down is only amx's own and `workflow run` cuts trees of its own in a layout
+/// of its own. git keeps two directories for any tree, the tree's and the one
+/// the repository shares, and they are one directory only in the checkout the
+/// trees belong to. A directory in no repository has neither.
+pub fn is_linked(dir: &Path) -> bool {
+    let Ok(both) = git(
+        dir,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+    ) else {
+        return false;
+    };
+    let mut lines = both.lines();
+    matches!((lines.next(), lines.next()), (Some(own), Some(shared)) if own != shared)
+}
+
 /// Cut a tree for `id` from the commit `from` names, or from the repository's
 /// current commit when it names nothing.
 ///
@@ -1762,5 +1786,34 @@ mod tests {
         ] {
             assert!(!is_amx_tree(Path::new(other)), "{other}");
         }
+    }
+
+    #[test]
+    fn worktree_tells_a_linked_tree_from_the_checkout_it_belongs_to() {
+        // Asked of git and not read off the path: a tree somebody else cut,
+        // wherever they put it, is as much a linked worktree as one amx laid
+        // down in its own layout.
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        assert!(is_linked(&tree.path), "{}", tree.path.display());
+
+        let elsewhere = TempDir::new().unwrap();
+        let theirs = elsewhere.path().join("plan/t1");
+        setup(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &theirs.to_string_lossy(),
+                "-b",
+                "t1",
+            ],
+        );
+        assert!(is_linked(&theirs), "somebody else's layout, still a tree");
+
+        assert!(!is_linked(repo.path()), "the checkout the trees belong to");
+        let plain = TempDir::new().unwrap();
+        assert!(!is_linked(plain.path()), "a directory in no repository");
     }
 }

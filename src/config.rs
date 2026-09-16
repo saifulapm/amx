@@ -166,8 +166,8 @@ pub struct Config {
     ///
     /// One key, two answers, because the vendors answer it two ways and the
     /// difference is worth knowing. For claude it writes an entry in the
-    /// vendor's own trust store, for the worktree amx cut and nothing else,
-    /// and the entry outlives the agent: the store is the person's file, and
+    /// vendor's own trust store, for a linked worktree and nothing else, and
+    /// the entry outlives the agent: the store is the person's file, and
     /// this is the consent that write stands behind. For pi it puts
     /// `--approve` on the argv of the pane, which trusts that folder for that
     /// one run and writes nothing anywhere.

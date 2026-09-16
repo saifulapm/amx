@@ -1,4 +1,4 @@
-//! Answering a vendor's folder-trust screen for a tree amx cut.
+//! Answering a vendor's folder-trust screen for a linked worktree.
 //!
 //! A vendor asks once per folder it has never worked in — claude's wording is
 //! "Is this a project you created or one you trust?" — and it draws that
@@ -6,9 +6,10 @@
 //! report it. An agent that meets the screen sits on it until somebody
 //! attaches and answers.
 //!
-//! A tree amx cut a second ago, inside a repository the person is already
-//! working in, is the one case where there is nothing to decide. So amx
-//! answers it, and [`answers_for`] is where each vendor's answer is written
+//! A linked worktree, cut a second ago by amx or by whatever pointed amx at
+//! it, inside a repository the person is already working in, is the one case
+//! where there is nothing to decide. So amx answers it, and [`answers_for`]
+//! is where each vendor's answer is written
 //! down — because the two amx has measured are not the same act:
 //!
 //! * [`Answer::Store`] is an entry in the vendor's own file, written by this
@@ -23,8 +24,15 @@
 //! vendor whose answer nobody has measured — [`answers_for`] names the vendors
 //! it has, and a law in the tests keeps the table from growing one it has not.
 //!
-//! The store write answers for the tree amx cut and nothing else: never the
-//! repository around it, and never a directory somebody merely pointed amx at.
+//! The store write answers for a linked worktree and nothing else: the tree
+//! amx cut, or one somebody else cut and pointed amx at with `--no-worktree`,
+//! which is how `workflow run` dispatches every worker and reader. Either is
+//! by construction derived from a repository, and that provenance is the whole
+//! of the argument for answering: a tree that exists only because a repository
+//! does is not a folder anybody chose to trust or distrust on its own. What
+//! stays refused is the repository itself, whose entry is the person's own
+//! consent to their own checkout, and a plain directory, which is derived from
+//! nothing and could hold anything.
 //!
 //! Whether the agent being launched asks the question at all is the table's to
 //! say, and it is asked before any of this: a vendor with no folder-trust
@@ -267,9 +275,10 @@ fn seed_within(
     now: u64,
     patience: Duration,
 ) -> Result<bool> {
-    if !worktree::is_amx_tree(tree) {
+    // A tree amx cut is known by its path alone; any other is asked of git.
+    if !worktree::is_amx_tree(tree) && !worktree::is_linked(tree) {
         bail!(
-            "{} is not a tree amx made, so its trust is not amx's to answer",
+            "{} is not a linked worktree, so its trust is not amx's to answer",
             tree.display()
         );
     }
@@ -708,6 +717,27 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(store).unwrap()).unwrap()
     }
 
+    /// git as the tests run it: none of the developer's own configuration,
+    /// and an identity of its own.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// Somebody's own store, with two repositories and an account in it.
     fn a_persons_store() -> Value {
         json!({
@@ -836,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn trust_is_only_ever_written_for_a_tree_amx_made() {
+    fn trust_is_never_written_for_a_directory_derived_from_nothing() {
         let dir = TempDir::new().unwrap();
         let (repo, _) = a_tree(&dir);
         let store = dir.path().join(".claude.json");
@@ -849,7 +879,7 @@ mod tests {
         ] {
             let refused = seed(&store, &elsewhere, None, 1).unwrap_err();
             assert!(
-                format!("{refused:#}").contains("not a tree amx made"),
+                format!("{refused:#}").contains("not a linked worktree"),
                 "{}: {refused:#}",
                 elsewhere.display()
             );
@@ -858,6 +888,44 @@ mod tests {
             std::fs::read_to_string(&store).unwrap(),
             "{}\n",
             "and nothing was written on the way to refusing"
+        );
+    }
+
+    #[test]
+    fn trust_is_written_for_a_linked_worktree_somebody_else_cut() {
+        // The provenance the write stands behind is the tree's, not the
+        // layout's: a linked worktree is derived from a repository whoever
+        // cut it, and `workflow run` cuts its own and points amx at them. The
+        // checkout it belongs to is still the person's own to answer.
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let theirs = dir.path().join("workflow/plan/t1");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &theirs.to_string_lossy(),
+                "-b",
+                "t1",
+            ],
+        );
+        let store = dir.path().join(".claude.json");
+        std::fs::write(&store, "{}\n").unwrap();
+
+        assert!(seed(&store, &theirs, Some(&repo), 1).unwrap());
+        let written = read_back(&store);
+        assert!(trusted(&written, &theirs), "{written}");
+        assert!(!trusted(&written, &repo), "{written}");
+
+        let refused = seed(&store, &repo, None, 1).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("not a linked worktree"),
+            "{refused:#}"
         );
     }
 

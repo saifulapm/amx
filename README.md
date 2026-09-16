@@ -1590,7 +1590,7 @@ max_agents = 5            # how many live agents in a project before `new` refus
 max_total = 10            # a ceiling over every project on the machine
 worktrees = true          # give each agent its own worktree in a repository
 notifications = "desktop" # to the desktop; also "terminal", "both", "off"
-trust = false             # answer claude's folder-trust screen for trees amx cuts
+trust = false             # answer claude's folder-trust screen for linked worktrees
 park_after = 3600         # seconds an idle agent nobody is watching keeps its pane
 theme = "default"         # which palette the view paints in
 
