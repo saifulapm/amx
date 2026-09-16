@@ -372,6 +372,12 @@ pub enum Command {
     /// Where a tmux server is already running, a tenth: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
+    ///
+    /// Pointed at a directory, `amx --dir <path> doctor`, an eleventh: whether
+    /// an agent started there would meet its vendor's folder-trust screen,
+    /// which no hook can report and which a caller that never attaches would
+    /// lose the agent to. Nothing is written to find out, and the exit code
+    /// is the answer.
     Doctor {
         /// Mend what amx wrote itself: handoffs still carrying the
         /// environment, and trust-store keys for trees amx cut.
@@ -1709,10 +1715,12 @@ mod tests {
             parked: Vec::new(),
             // The counted checks are the ones every machine is asked. The
             // server check is asked only where there is a server to ask about,
-            // so it is deliberately absent here.
+            // and the trust check only where doctor was pointed at a
+            // directory, so both are deliberately absent here.
             server: None,
             store: None,
             stale: Vec::new(),
+            folder: None,
         });
         // The kinds of check, not the lines: `hooks` is asked once per agent
         // this machine has, so a person with claude and pi reads ten lines

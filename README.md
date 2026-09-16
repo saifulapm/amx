@@ -60,6 +60,16 @@ pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
+Pointed at a directory, `amx --dir <path> doctor` asks an eleventh: whether an
+agent started there would meet its vendor's folder-trust screen. That screen
+is drawn in front of the session every hook comes from, so an agent that meets
+it reports nothing and sits there until somebody attaches, and a caller that
+never attaches loses the agent to a question it never sees. The check reads
+claude's store and asks git what the directory is, writes nothing, and says
+where to answer the screen by hand when it would be drawn. It is there for a
+program starting agents it will not watch, `workflow run` at the top of a run,
+which branches on the exit code.
+
 `--fix` makes two repairs, and both are amx's own files to mend, so neither
 asks. It rewrites any handoff still carrying the spawner's environment inline —
 amx wrote every one of those files itself — and it takes each gone tree's key

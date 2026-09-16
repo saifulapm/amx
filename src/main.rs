@@ -147,7 +147,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Sweep { force }) => finish(verbs::sweep::from_env(*force)),
         Some(cli::Command::Clear { force }) => finish(verbs::clear::from_env(*force)),
-        Some(cli::Command::Doctor { fix }) => finish(verbs::doctor::from_env(config, *fix)),
+        Some(cli::Command::Doctor { fix }) => {
+            finish(verbs::doctor::from_env(config, *fix, cli.dir.as_deref()))
+        }
         Some(cli::Command::Setup { vendor }) => finish(verbs::setup::from_env(vendor.as_deref())),
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         Some(cli::Command::Completion { shell }) => finish(completion(*shell)),

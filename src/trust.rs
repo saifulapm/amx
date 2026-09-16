@@ -286,7 +286,7 @@ fn seed_within(
     // Looked at before the lock is asked for: the ordinary spawn is into a
     // repository somebody has trusted already, and standing in the vendor's
     // way to find out there is nothing to do would be a poor trade.
-    if covered(&read(store)?.unwrap_or_else(|| json!({})), tree, inherits) {
+    if covers(store, tree, inherits)? {
         return Ok(false);
     }
 
@@ -420,8 +420,25 @@ fn names(store: &Value, key: &str) -> bool {
         .is_some_and(|projects| projects.contains_key(key))
 }
 
-/// Whether the vendor would let an agent into `tree` as things stand, either
-/// because the tree is trusted or because the repository it belongs to is.
+/// Whether the vendor would let an agent into `dir` as the store stands,
+/// either by the directory's own entry or by that of the repository
+/// `inherits` names.
+///
+/// A look and not a write, so it takes no lock and makes no file: `doctor`
+/// asks it about a directory before a caller starts a reader there, and what
+/// it answers is worth what the store said at the moment of reading, which is
+/// all a pre-flight can be worth. A store the vendor has not written yet
+/// covers nothing; one amx cannot read is an error rather than a no, because
+/// the two mean different things to whoever is deciding whether to start.
+pub fn covers(store: &Path, dir: &Path, inherits: Option<&Path>) -> Result<bool> {
+    Ok(covered(
+        &read(store)?.unwrap_or_else(|| json!({})),
+        dir,
+        inherits,
+    ))
+}
+
+/// The same, off a store already read.
 fn covered(store: &Value, tree: &Path, inherits: Option<&Path>) -> bool {
     trusted(store, tree) || inherits.is_some_and(|repo| trusted(store, repo))
 }
@@ -888,6 +905,39 @@ mod tests {
             std::fs::read_to_string(&store).unwrap(),
             "{}\n",
             "and nothing was written on the way to refusing"
+        );
+    }
+
+    #[test]
+    fn trust_says_whether_a_directory_is_covered_without_writing_anything() {
+        let dir = TempDir::new().unwrap();
+        let (repo, tree) = a_tree(&dir);
+        let store = dir.path().join(".claude.json");
+
+        assert!(
+            !covers(&store, &tree, Some(&repo)).unwrap(),
+            "a store the vendor has not written yet covers nothing"
+        );
+        assert!(!store.exists(), "and was not made on the way to saying so");
+
+        let mut theirs = a_persons_store();
+        theirs[PROJECTS][key_for(&repo)] = json!({ ACCEPTED: true });
+        let bytes = serde_json::to_string_pretty(&theirs).unwrap();
+        std::fs::write(&store, &bytes).unwrap();
+
+        assert!(
+            covers(&store, &tree, Some(&repo)).unwrap(),
+            "by the repository's entry"
+        );
+        assert!(!covers(&store, &tree, None).unwrap(), "and by nothing else");
+        assert!(covers(&store, &repo, None).unwrap());
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), bytes);
+        assert!(!lock_beside(&store).exists(), "a look takes no lock");
+
+        std::fs::write(&store, "{ not json at all }").unwrap();
+        assert!(
+            covers(&store, &repo, None).is_err(),
+            "a store amx cannot read is not a no"
         );
     }
 

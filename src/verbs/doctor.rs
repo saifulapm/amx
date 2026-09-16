@@ -34,6 +34,16 @@
 //! there and dies at once. No server yet is not a fault, and neither is a
 //! platform amx cannot ask, so both go unsaid rather than answered green.
 //!
+//! An eleventh is asked only when doctor is pointed at a directory, `amx --dir
+//! <path> doctor`: whether an agent started there would meet its vendor's
+//! folder-trust screen. That screen is drawn in front of the session every
+//! hook comes from, so an agent that meets it reports nothing and sits there
+//! until somebody attaches, and a caller that cannot attach, `workflow run`
+//! starting a reader it will never look at, loses the agent to a question it
+//! never sees. The check reads the vendor's store and asks git what the
+//! directory is, and writes nothing anywhere, so that the caller can ask it at
+//! the top of a run and branch on the exit code.
+//!
 //! `--fix` makes two repairs, and both of them are amx's own files to mend.
 //! Rewriting a handoff that still carries the environment needs no asking: amx
 //! wrote every one of those files itself, and taking a stray key back out of
@@ -55,7 +65,7 @@ use crate::derive::View;
 use crate::rules::Rule;
 use crate::store::{Kind, Phase};
 use crate::vendor::{Hooks, Wire};
-use crate::{derive, exit, install, registry, spawn, store, tmux, trust};
+use crate::{derive, exit, install, registry, spawn, store, tmux, trust, worktree};
 
 /// One thing amx looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +135,28 @@ pub struct Findings {
     /// writing one, and the trees it still names that the disk has not got.
     pub store: Option<PathBuf>,
     pub stale: Vec<PathBuf>,
+    /// The directory doctor was pointed at, when it was, and what the vendor
+    /// would do for an agent started there.
+    pub folder: Option<Folder>,
+}
+
+/// A directory an agent would be started in, and whether its vendor would
+/// draw the folder-trust screen there. Read off the store and off git, and
+/// written nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folder {
+    pub dir: PathBuf,
+    /// The repository this is a linked worktree of, when it is one. The vendor
+    /// resolves the tree to it before looking the folder up, and so does the
+    /// answer amx writes at a spawn.
+    pub repo: Option<PathBuf>,
+    /// Whether the store already lets an agent in, by the directory's own
+    /// entry or the repository's. `None` for a vendor that keeps no store amx
+    /// reads.
+    pub covered: Option<bool>,
+    /// The config's `trust` key, which is what has amx answer for a linked
+    /// worktree when the agent starts.
+    pub trust: bool,
 }
 
 /// One agent's wiring, read off the disk.
@@ -197,6 +229,7 @@ pub fn report(found: &Findings) -> Vec<Check> {
     checks.extend(server_check(found));
     checks.push(setup_check(found));
     checks.push(store_check(found));
+    checks.extend(folder_check(found));
     checks
 }
 
@@ -484,6 +517,49 @@ fn store_check(found: &Findings) -> Check {
     Check::wrong("store", what, "run `amx doctor --fix`")
 }
 
+/// Whether an agent started in the directory doctor was pointed at would meet
+/// its vendor's folder-trust screen, when it was pointed at one.
+///
+/// Three ways to be fine: the store covers the directory already, the vendor
+/// keeps no store amx reads, or the directory is a linked worktree and the
+/// config's key has amx answer for it at the spawn. What is left is a screen
+/// somebody has to answer by hand, and the remedy says where: the repository,
+/// for a tree, because its entry covers every tree in it and the key does the
+/// same; the directory itself for anything else, because a checkout and a
+/// plain directory are the person's own to trust.
+fn folder_check(found: &Findings) -> Option<Check> {
+    let folder = found.folder.as_ref()?;
+    let (who, dir) = (program(&found.vendor), folder.dir.display());
+    Some(match folder.covered {
+        None => Check::ok(
+            "trust",
+            format!("{who} keeps no store amx reads a folder's answer from"),
+        ),
+        Some(true) => Check::ok(
+            "trust",
+            format!("{who} starts in {dir} without its folder-trust screen"),
+        ),
+        Some(false) if folder.trust && folder.repo.is_some() => Check::ok(
+            "trust",
+            format!(
+                "{who} would ask about {dir}, and amx answers for a linked worktree at the spawn"
+            ),
+        ),
+        Some(false) => Check::wrong(
+            "trust",
+            format!("{who} would stop at its folder-trust screen in {dir}"),
+            match &folder.repo {
+                Some(repo) => format!(
+                    "start {who} in {} once and answer it yourself, or set trust = true in \
+                     the config and amx answers it for any linked worktree",
+                    repo.display()
+                ),
+                None => format!("start {who} in {dir} once and answer it yourself"),
+            },
+        ),
+    })
+}
+
 /// Print the checks, offer the one repair amx can make, and answer with an
 /// exit code: zero when there is nothing left to do.
 pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Result<i32> {
@@ -566,8 +642,8 @@ fn wirings(agent: &str, home: &Path, path: Option<&OsStr>) -> Vec<VendorWiring> 
         .collect()
 }
 
-/// Look at the machine.
-pub fn gather(config: &Config) -> Result<Findings> {
+/// Look at the machine, and at `dir` when doctor was pointed at one.
+pub fn gather(config: &Config, dir: Option<&Path>) -> Result<Findings> {
     let home = install::home()?;
     let exe = std::env::current_exe()?;
     let path = std::env::var_os("PATH");
@@ -611,9 +687,30 @@ pub fn gather(config: &Config) -> Result<Findings> {
         ),
         state_root,
         server: standing_server(),
+        folder: dir.map(|dir| folder(dir, store.as_deref(), config.trust)),
         store,
         stale,
     })
+}
+
+/// What the vendor would do for an agent started in `dir`, read off the store
+/// and off git.
+///
+/// A store amx cannot read covers nothing, as far as this can tell: `new`
+/// refuses to write one by name, so the screen would be drawn and nobody
+/// would answer it, which is the answer given.
+fn folder(dir: &Path, store: Option<&Path>, trust: bool) -> Folder {
+    let repo = worktree::is_linked(dir)
+        .then(|| worktree::main_repo(dir).ok())
+        .flatten();
+    Folder {
+        // Resolved, because the line and the remedy name it, and `--dir .` is
+        // the usual way to ask.
+        dir: std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()),
+        covered: store.map(|store| trust::covers(store, dir, repo.as_deref()).unwrap_or(false)),
+        repo,
+        trust,
+    }
 }
 
 /// Every handoff under `root` that still carries the spawner's environment
@@ -796,9 +893,19 @@ fn usable(root: &Path) -> Option<String> {
     })
 }
 
-/// Run the verb against the machine.
-pub fn from_env(config: &Config, fix: bool) -> Result<i32> {
-    let found = gather(config)?;
+/// Run the verb against the machine, and against `dir` when there is one.
+pub fn from_env(config: &Config, fix: bool, dir: Option<&Path>) -> Result<i32> {
+    // A directory that is not there is a different fault from a screen, and
+    // an agent could not be started in it whatever the store says.
+    if let Some(dir) = dir
+        && !dir.is_dir()
+    {
+        anyhow::bail!(
+            "{} is not a directory an agent could start in",
+            dir.display()
+        );
+    }
+    let found = gather(config, dir)?;
     let mut out = std::io::stdout().lock();
     run(&found, fix, crate::store::now(), &mut out)
 }
@@ -916,6 +1023,7 @@ mod tests {
             server: None,
             store: Some(PathBuf::from("/home/dev/.claude.json")),
             stale: Vec::new(),
+            folder: None,
         }
     }
 
@@ -967,6 +1075,27 @@ mod tests {
             return false;
         }
         true
+    }
+
+    /// git as the tests run it: none of the developer's own configuration,
+    /// and an identity of its own.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn check(found: &Findings, name: &str) -> Check {
@@ -1616,6 +1745,119 @@ mod tests {
             std::fs::read_to_string(&copy).unwrap(),
             before,
             "the file as it was, keys and all"
+        );
+    }
+
+    /// A directory doctor was asked about, judged.
+    fn asked(repo: Option<&str>, covered: Option<bool>, trust: bool) -> Findings {
+        Findings {
+            folder: Some(Folder {
+                dir: PathBuf::from("/srv/app/plan/t1"),
+                repo: repo.map(PathBuf::from),
+                covered,
+                trust,
+            }),
+            ..healthy()
+        }
+    }
+
+    #[test]
+    fn doctor_says_whether_an_agent_started_in_a_directory_would_meet_the_trust_screen() {
+        // Asked only with --dir, so that a caller about to start a reader it
+        // cannot see finds out here instead of losing it to a screen nobody
+        // can attach to in time. Every answer is on the exit code.
+        assert!(
+            report(&healthy()).iter().all(|check| check.name != "trust"),
+            "nothing was asked about, so nothing is said"
+        );
+
+        let fine = check(&asked(None, Some(true), false), "trust");
+        assert!(fine.is_ok(), "{fine:?}");
+        assert!(fine.found.contains("/srv/app/plan/t1"), "{}", fine.found);
+
+        let plain = asked(None, Some(false), true);
+        let stopped = check(&plain, "trust");
+        assert!(
+            stopped.found.contains("folder-trust screen"),
+            "{}",
+            stopped.found
+        );
+        let remedy = stopped.remedy.as_deref().unwrap();
+        assert!(remedy.contains("/srv/app/plan/t1"), "{remedy}");
+        assert!(
+            !remedy.contains("trust = true"),
+            "the key answers for a linked worktree and this is not one: {remedy}"
+        );
+        assert_eq!(said(&plain, false).0, exit::FAILURE);
+
+        let linked = check(&asked(Some("/srv/app"), Some(false), false), "trust");
+        let remedy = linked.remedy.as_deref().unwrap();
+        assert!(
+            remedy.contains("/srv/app") && remedy.contains("trust = true"),
+            "the repository covers every tree in it, and so does the key: {remedy}"
+        );
+
+        let answered = check(&asked(Some("/srv/app"), Some(false), true), "trust");
+        assert!(answered.is_ok(), "{answered:?}");
+        assert!(answered.found.contains("amx answers"), "{}", answered.found);
+
+        let unread = check(&asked(None, None, false), "trust");
+        assert!(unread.is_ok(), "{unread:?}");
+        assert!(unread.found.contains("no store"), "{}", unread.found);
+    }
+
+    #[test]
+    fn doctor_reads_the_directory_it_was_asked_about_and_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let theirs = dir.path().join("workflow/plan/t1");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &theirs.to_string_lossy(),
+                "-b",
+                "t1",
+            ],
+        );
+        let store = dir.path().join(".claude.json");
+        let bytes = serde_json::to_string_pretty(&serde_json::json!({
+            "numStartups": 412,
+            "projects": { trust::key_for(&repo): { "hasTrustDialogAccepted": true } }
+        }))
+        .unwrap();
+        std::fs::write(&store, &bytes).unwrap();
+
+        let looked = folder(&theirs, Some(&store), false);
+        assert_eq!(
+            looked.repo.as_deref().map(trust::key_for),
+            Some(trust::key_for(&repo)),
+            "the repository the vendor resolves the tree to"
+        );
+        assert_eq!(looked.covered, Some(true), "and its entry covers the tree");
+        assert_eq!(
+            folder(&repo, Some(&store), false).repo,
+            None,
+            "a checkout belongs to nothing above it"
+        );
+
+        std::fs::write(&store, "{}\n").unwrap();
+        assert_eq!(folder(&theirs, Some(&store), true).covered, Some(false));
+        assert_eq!(folder(&theirs, None, true).covered, None);
+        assert_eq!(
+            std::fs::read_to_string(&store).unwrap(),
+            "{}\n",
+            "a look, not a write"
+        );
+        assert!(
+            !store.with_extension("json.lock").exists()
+                && !dir.path().join(".claude.json.lock").exists(),
+            "and no lock was taken to look"
         );
     }
 
