@@ -475,47 +475,47 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
 }
 
 #[test]
-fn doctor_reads_the_plugin_as_the_wiring_and_offers_the_settings_without_it() {
-    // `claude plugin install amx@amx` wires the same seven events out of the
-    // repository's own hooks file and writes nothing into anybody's settings,
-    // so a machine installed that way has a settings file with nothing of
-    // amx's in it and is wired all the same.
+fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back() {
+    // claude reports through a plugin amx writes under the skills directory,
+    // where claude loads one without a marketplace and without a line in
+    // anybody's settings. doctor judges that directory, --fix writes it after
+    // asking, and uninstall removes it.
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
+    let plugin = amx.home().join(".claude/skills/amx");
 
     let printed = doctor(&amx);
     let (ok, line) = check_line(&printed, "hooks");
-    assert!(!ok, "neither wiring is there yet: {line}");
+    assert!(!ok, "nothing is wired yet: {printed}");
+    assert!(line.contains("plugin"), "and it says which door: {line}");
+    assert!(!plugin.exists());
+
+    let out = amx.amx_with_input(&["doctor", "--fix"], "y\n");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
-        printed.contains("amx doctor --fix"),
-        "and the settings are what is offered: {printed}"
+        printed.contains("will write its plugin"),
+        "it asked: {printed}"
     );
 
-    // What claude leaves behind once the plugin has been installed.
-    let installed = amx.home().join(".claude/plugins/installed_plugins.json");
-    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
-    std::fs::write(
-        &installed,
-        serde_json::to_string_pretty(&json!({
-            "version": 2,
-            "plugins": {
-                "amx@amx": [{
-                    "scope": "user",
-                    "installPath": amx.home().join(".claude/plugins/cache/amx/amx"),
-                    "version": "0.3.0",
-                }],
-            },
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let printed = doctor(&amx);
-    let (ok, line) = check_line(&printed, "hooks");
-    assert!(ok, "the plugin is the wiring: {printed}");
-    assert!(line.contains("plugin"), "and it says which door: {line}");
+    let manifest = std::fs::read_to_string(plugin.join(".claude-plugin/plugin.json"))
+        .expect("the manifest claude loads it by");
+    assert!(manifest.contains("\"amx\""), "{manifest}");
+    let wiring = std::fs::read_to_string(plugin.join("hooks/hooks.json")).expect("the wiring");
+    assert!(
+        wiring.contains("amx _hook"),
+        "it reports through amx: {wiring}"
+    );
     assert!(
         !amx.home().join(".claude/settings.json").exists(),
-        "nothing was written into the settings to get there"
+        "and no settings file of anybody's was opened to get there"
     );
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "hooks");
+    assert!(ok, "the plugin is in place: {line}");
+
+    let out = amx.amx(&["uninstall"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{printed}");
+    assert!(!plugin.exists(), "and it is gone");
 }

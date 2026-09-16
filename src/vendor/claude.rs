@@ -184,7 +184,26 @@ pub const VENDOR: Vendor = Vendor {
 /// way as the dials above: a renamed event is hooks that never fire, and a
 /// renamed notification type is a nudge amx reads as a question.
 pub const HOOKS: Hooks = Hooks {
-    wire: Wire::Settings(".claude/settings.json"),
+    // A plugin under the skills directory rather than entries in
+    // `~/.claude/settings.json`: claude loads a directory there that carries a
+    // manifest as `<name>@skills-dir` — personal scope, every project, read
+    // live from the directory, and the person's own settings never opened.
+    // Measured on 2.1.270, 2026-09-16: seven hooks, no token cost, and an
+    // event taken out of the file was gone from the inventory at once.
+    wire: Wire::Plugin {
+        dir: ".claude/skills/amx",
+        files: &[
+            (
+                crate::install::MANIFEST,
+                include_str!("../../assets/claude/plugin.json"),
+            ),
+            (
+                "hooks/hooks.json",
+                include_str!("../../assets/claude/hooks.json"),
+            ),
+            ("SKILL.md", include_str!("../../skill/amx/SKILL.md")),
+        ],
+    },
     events: &[
         Wiring {
             moment: Moment::Started,
@@ -411,13 +430,28 @@ mod tests {
     }
 
     #[test]
-    fn claude_names_every_event_amx_wires_into_its_settings() {
+    fn claude_names_every_event_amx_wires_into_its_plugin() {
         // Measured against claude 2.1.240's own hook list on 2026-08-25, and
         // the whole of what amx asks to be told. Re-measure at every vendor
         // bump: a renamed event is a hook that never fires again, and nothing
         // says so — the record simply stops moving.
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
-        assert_eq!(hooks.wire, Wire::Settings(".claude/settings.json"));
+        let Wire::Plugin { dir, files } = hooks.wire else {
+            panic!("claude reports through a plugin amx writes");
+        };
+        assert_eq!(
+            dir, ".claude/skills/amx",
+            "the skills directory is where claude loads a plugin without a marketplace"
+        );
+        let shipped: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            shipped,
+            [crate::install::MANIFEST, "hooks/hooks.json", "SKILL.md",],
+            "the manifest claude loads it by, the file that wires the events, and amx's own skill"
+        );
+
+        // What those files hold is install.rs's to check, since the wiring
+        // one is held to this table event by event there.
 
         let wired: Vec<(Moment, &str, bool)> = hooks
             .events

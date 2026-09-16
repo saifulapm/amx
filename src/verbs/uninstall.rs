@@ -1,7 +1,8 @@
 //! `amx uninstall` — take amx back out of the machine.
 //!
-//! Every vendor's wiring comes out — the hooks from claude's settings, the
-//! extension from where pi loads it — and the agents' records are deleted. It
+//! Every vendor's wiring comes out — the plugin from where claude loads one,
+//! the extension from where pi loads its — and the agents' records are
+//! deleted. A directory amx never left a manifest in is not amx's to empty. It
 //! refuses while any agent is still running: those agents would keep working
 //! with nothing recording what they do, and their records would be the only
 //! place their answers were kept.
@@ -43,6 +44,8 @@ pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Re
             (Wire::Settings(_), false) => writeln!(out, "no hooks of amx's in {path}")?,
             (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
             (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
+            (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
+            (Wire::Plugin { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
         }
     }
 
@@ -60,7 +63,7 @@ mod tests {
     use crate::store::{Agent, Meta, Phase};
     use crate::tmux::{PaneId, Server, Socket, Spawn};
     use crate::vendor::claude;
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -123,18 +126,20 @@ mod tests {
         agent
     }
 
-    /// Somebody's settings with amx's hooks in them, where claude keeps them
-    /// under a home directory.
-    fn settings_with_amx(home: &Path) -> PathBuf {
-        let path = install::wire_path(&claude::HOOKS, home);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{\"model\": \"opus\"}\n").unwrap();
-        install::install(&claude::HOOKS, &path, "/home/dev/bin/amx _hook", 1).unwrap();
-        path
+    /// amx's plugin, written where claude loads one from under a home.
+    fn plugin_with_amx(home: &Path) -> PathBuf {
+        let dir = install::wire_path(&claude::HOOKS, home);
+        install::install_hooks(&claude::HOOKS, home, "/home/dev/bin/amx _hook", 1).unwrap();
+        dir
     }
 
-    fn read(path: &Path) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    /// Whether amx's plugin is still standing at `dir`, judged the way claude
+    /// judges it: the manifest that names it.
+    fn plugin_is_there(dir: &Path) -> bool {
+        std::fs::read_to_string(dir.join(install::MANIFEST))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|manifest| manifest["name"] == "amx")
     }
 
     #[test]
@@ -145,7 +150,7 @@ mod tests {
         // printing into its output file loses as much as an agent mid-turn.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let settings = settings_with_amx(home.path());
+        let plugin = plugin_with_amx(home.path());
 
         let server = TestServer::new();
         // In a session named the way spawn::place names one, so the pane
@@ -190,18 +195,14 @@ mod tests {
             "the refusal names everything still there: {said}"
         );
         assert!(root.path().join("watch-log-a1b").exists(), "records kept");
-        assert!(
-            !install::installed_events(&claude::HOOKS, &read(&settings), "/home/dev/bin/amx _hook")
-                .is_empty(),
-            "and the hooks are still wired"
-        );
+        assert!(plugin_is_there(&plugin), "and the hooks are still wired");
     }
 
     #[test]
     fn uninstall_takes_the_hooks_out_and_the_records_with_them() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let settings = settings_with_amx(home.path());
+        let plugin = plugin_with_amx(home.path());
 
         record(
             root.path(),
@@ -217,12 +218,11 @@ mod tests {
 
         assert_eq!(code, exit::OK);
         assert!(!root.path().exists(), "the records are gone");
+        assert!(!plugin_is_there(&plugin), "and so are the hooks");
         assert!(
-            install::installed_events(&claude::HOOKS, &read(&settings), "/home/dev/bin/amx _hook")
-                .is_empty(),
-            "and so are the hooks"
+            !home.path().join(".claude/settings.json").exists(),
+            "no settings file of anybody's was written, so none was restored"
         );
-        assert_eq!(read(&settings)["model"], "opus", "the rest is left alone");
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
         // agent, and must not block a person from removing amx.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        settings_with_amx(home.path());
+        plugin_with_amx(home.path());
 
         record(
             root.path(),
@@ -256,9 +256,10 @@ mod tests {
     fn uninstall_says_so_when_there_was_nothing_of_amxs_to_remove() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let settings = install::wire_path(&claude::HOOKS, home.path());
-        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        std::fs::write(&settings, "{\"model\": \"opus\"}\n").unwrap();
+        let dir = install::wire_path(&claude::HOOKS, home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
+        std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
         std::fs::remove_dir_all(root.path()).unwrap();
 
         let mut said = Vec::new();
@@ -267,25 +268,10 @@ mod tests {
             exit::OK
         );
         assert_eq!(
-            std::fs::read_to_string(&settings).unwrap(),
-            "{\"model\": \"opus\"}\n",
-            "an untouched file stays untouched"
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            theirs,
+            "a directory amx never wrote a manifest into stays untouched"
         );
-        assert!(String::from_utf8(said).unwrap().contains("no hooks"));
-    }
-
-    #[test]
-    fn uninstall_leaves_the_settings_amx_never_wrote_to() {
-        let home = TempDir::new().unwrap();
-        let settings = install::wire_path(&claude::HOOKS, home.path());
-        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        std::fs::write(&settings, json!({"hooks": {}}).to_string()).unwrap();
-        let root = TempDir::new().unwrap();
-
-        let mut said = Vec::new();
-        assert_eq!(
-            run(root.path(), home.path(), 2, &mut said).unwrap(),
-            exit::OK
-        );
+        assert!(String::from_utf8(said).unwrap().contains("no plugin"));
     }
 }

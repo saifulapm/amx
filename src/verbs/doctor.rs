@@ -257,6 +257,11 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
         );
     };
     let wire = found.wire.display();
+    let what = match hooks.wire {
+        Wire::Settings(_) => "hooks",
+        Wire::File { .. } => "extension",
+        Wire::Plugin { .. } => "plugin",
+    };
 
     match &found.wired {
         install::Wired::Settings {
@@ -295,18 +300,21 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
             };
             Check::wrong("hooks", what, "run `amx doctor --fix`")
         }
+        // The vendor's own word for what amx wrote there: pi loads an
+        // extension, claude loads a plugin, and a person sent to look at one
+        // under the other's name is a person looking for the wrong thing.
         install::Wired::File {
             present: true,
             current: true,
-        } => Check::ok("hooks", format!("the extension at {wire}")),
+        } => Check::ok("hooks", format!("the {what} at {wire}")),
         install::Wired::File { present: true, .. } => Check::wrong(
             "hooks",
-            format!("{wire} is not the extension this amx ships"),
+            format!("{wire} is not the {what} this amx ships"),
             "run `amx doctor --fix`",
         ),
         install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
             "hooks",
-            format!("no extension at {wire}"),
+            format!("no {what} at {wire}"),
             "run `amx doctor --fix`",
         ),
     }
@@ -575,6 +583,9 @@ pub fn run(
                 }
                 Wire::File { .. } => {
                     writeln!(out, "wrote the extension to {}", wrote.path.display())?
+                }
+                Wire::Plugin { .. } => {
+                    writeln!(out, "wrote the plugin to {}", wrote.path.display())?
                 }
             }
             if let Some(backup) = wrote.backup {
@@ -1362,11 +1373,11 @@ mod tests {
     #[test]
     fn doctor_fix_wires_the_hooks_once_somebody_agrees() {
         let dir = TempDir::new().unwrap();
-        let settings = a_home(&dir, "{\"model\": \"opus\"}\n");
+        let plugin = install::wire_path(&claude::HOOKS, dir.path());
 
         let mut found = healthy();
         found.home = dir.path().to_path_buf();
-        found.wire = settings.clone();
+        found.wire = plugin.clone();
         found.wired = none_wired();
 
         let mut out = Vec::new();
@@ -1374,14 +1385,14 @@ mod tests {
         let printed = String::from_utf8(out).unwrap();
 
         assert_eq!(code, exit::OK, "nothing is wrong any more: {printed}");
-        assert!(printed.contains("will add"), "it asked first: {printed}");
-        let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(printed.contains("will write"), "it asked first: {printed}");
         assert_eq!(
-            install::installed_events(&claude::HOOKS, &written, COMMAND).len(),
-            claude::HOOKS.events.len()
+            install::wired(Some(&claude::HOOKS), dir.path(), COMMAND),
+            install::Wired::File {
+                present: true,
+                current: true
+            }
         );
-        assert_eq!(written["model"], "opus");
     }
 
     #[test]

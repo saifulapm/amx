@@ -77,6 +77,7 @@ pub fn run(
     match hooks.wire {
         Wire::Settings(_) => writeln!(out, "wired the hooks into {}", wrote.path.display())?,
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
+        Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
     }
     if let Some(backup) = wrote.backup {
         writeln!(out, "the file as it was is at {}", backup.display())?;
@@ -110,37 +111,45 @@ mod tests {
     }
 
     #[test]
-    fn setup_wires_claudes_hooks_into_the_settings_file_and_keeps_a_copy() {
+    fn setup_writes_claudes_plugin_and_keeps_the_skill_that_was_there() {
+        // claude reports through a plugin amx writes under the skills
+        // directory, not through entries in anybody's settings. A skill
+        // already standing at that name is somebody's own until amx has left
+        // a manifest there, so it is copied aside rather than lost.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::claude::VENDOR.hooks.expect("claude reports");
-        let settings = install::wire_path(&hooks, home.path());
-        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        std::fs::write(&settings, "{\"model\": \"opus\"}\n").unwrap();
+        let dir = install::wire_path(&hooks, home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
+        std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
 
         let (code, printed) = said(Some("claude"), home.path(), 7);
 
         assert_eq!(code, exit::OK, "{printed}");
         assert!(
-            printed.contains(&settings.display().to_string()),
-            "the file is named before it is written: {printed}"
+            printed.contains(&dir.display().to_string()),
+            "the directory is named before it is written: {printed}"
         );
-        assert!(printed.contains("wired the hooks into"), "{printed}");
+        assert!(printed.contains("wrote the plugin to"), "{printed}");
 
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
-        assert_eq!(
-            install::installed_events(&hooks, &written, COMMAND).len(),
-            hooks.events.len(),
-            "every event claude's entry names: {printed}"
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(install::MANIFEST)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["name"], "amx");
+        let wiring = std::fs::read_to_string(dir.join("hooks/hooks.json")).unwrap();
+        for event in install::events(&hooks) {
+            assert!(wiring.contains(event), "{event} is not wired: {wiring}");
+        }
+        assert!(
+            !home.path().join(".claude/settings.json").exists(),
+            "no settings file of anybody's was opened, let alone written"
         );
-        assert_eq!(written["model"], "opus", "the rest is left alone");
 
-        let backup = install::latest_backup(&settings).unwrap().expect("a copy");
+        let backup = install::latest_backup(&dir.join("SKILL.md"))
+            .unwrap()
+            .expect("a copy of their skill");
         assert!(printed.contains(&backup.display().to_string()), "{printed}");
-        assert_eq!(
-            std::fs::read_to_string(&backup).unwrap(),
-            "{\"model\": \"opus\"}\n"
-        );
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
     }
 
     #[test]

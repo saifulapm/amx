@@ -87,6 +87,10 @@ pub fn consent_line(hooks: &Hooks, path: &Path, backup: bool) -> String {
             "amx will write its extension to {}{and_backup}.",
             path.display()
         ),
+        Wire::Plugin { .. } => format!(
+            "amx will write its plugin to {}{and_backup}.",
+            path.display()
+        ),
     }
 }
 
@@ -143,6 +147,24 @@ pub fn wired(hooks: Option<&Hooks>, home: &Path, command: &str) -> Wired {
                 current: false,
             },
         },
+        // A plugin is wired when every file it ships is there and is the one
+        // this amx ships. Half a plugin is not half wired: claude reads the
+        // directory whole, so a missing manifest is a plugin it never loads
+        // and a stale hooks file is events amx never hears.
+        Wire::Plugin { files, .. } => {
+            let mut present = true;
+            let mut current = true;
+            for (name, body) in files {
+                match std::fs::read_to_string(path.join(name)) {
+                    Ok(text) => current &= text == *body,
+                    Err(_) => {
+                        present = false;
+                        current = false;
+                    }
+                }
+            }
+            Wired::File { present, current }
+        }
     }
 }
 
@@ -180,7 +202,107 @@ pub fn install_hooks(hooks: &Hooks, home: &Path, command: &str, now: u64) -> Res
     match hooks.wire {
         Wire::Settings(_) => install(hooks, &path, command, now),
         Wire::File { body, .. } => install_file(&path, body, now),
+        Wire::Plugin { files, .. } => install_plugin(&path, files, now),
     }
+}
+
+/// The file whose contents say a plugin directory is amx's.
+///
+/// A plugin wire writes several files, and a first line is not enough to tell
+/// whose any of them is: amx's `SKILL.md` and somebody's own open with the
+/// same three lines. So ownership is asked of the directory once, through the
+/// manifest amx writes, and every file under it is answered the same way.
+pub const MANIFEST: &str = ".claude-plugin/plugin.json";
+
+/// Whether the plugin directory at `dir` is one amx wrote.
+///
+/// A manifest that does not parse, or names somebody else, is somebody else's
+/// directory: amx will write its own files into it and keep copies of whatever
+/// it wrote over, which is what it does for a directory with no manifest at
+/// all.
+fn is_amx_plugin(dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST)) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&text).is_ok_and(|manifest| manifest["name"] == "amx")
+}
+
+/// Write amx's plugin into `dir`, and answer whether anything needed writing.
+///
+/// A directory already amx's is amx's to rewrite: an older amx's files are
+/// replaced where they differ and nothing is kept, the way an older amx's
+/// extension is. A directory that is not amx's may hold a file of the
+/// person's at one of these names — theirs is copied aside before amx's goes
+/// over it.
+pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Report> {
+    let ours = is_amx_plugin(dir);
+    let mut report = Report {
+        path: dir.to_path_buf(),
+        backup: None,
+        changed: false,
+    };
+    for (name, body) in files {
+        let path = dir.join(name);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        if existing.as_deref() == Some(*body) {
+            continue;
+        }
+        if !ours && existing.is_some() {
+            report.backup = back_up(&path, now, true)?.or(report.backup.take());
+        }
+        write_bytes(&path, body.as_bytes())?;
+        report.changed = true;
+    }
+    Ok(report)
+}
+
+/// Take amx's plugin away again, and put back whatever it was written over.
+///
+/// A directory whose manifest is not amx's is not amx's to empty, however many
+/// of these names it happens to carry.
+pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result<Report> {
+    let mut report = Report {
+        path: dir.to_path_buf(),
+        backup: None,
+        changed: false,
+    };
+    if !is_amx_plugin(dir) {
+        return Ok(report);
+    }
+    for (name, _) in files {
+        let path = dir.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => report.changed = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+        if let Some(kept) = latest_backup(&path)? {
+            std::fs::copy(&kept, &path)
+                .with_context(|| format!("putting {} back", path.display()))?;
+            report.backup = Some(kept);
+        }
+    }
+    prune(dir, files);
+    Ok(report)
+}
+
+/// Take away what amx's plugin left empty behind it, and nothing else.
+///
+/// `remove_dir` refuses a directory with anything in it, which is the whole of
+/// the rule: a directory still holding a file of somebody's stays, and so does
+/// the one their file was put back into.
+fn prune(dir: &Path, files: &[(&str, &str)]) {
+    for (name, _) in files {
+        let mut at = dir.join(name);
+        while at.pop() && at.starts_with(dir) && at != dir {
+            let _ = std::fs::remove_dir(&at);
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// Take `hooks` back out from under `home`, whichever shape the wire is.
@@ -189,6 +311,7 @@ pub fn uninstall_hooks(hooks: &Hooks, home: &Path, now: u64) -> Result<Report> {
     match hooks.wire {
         Wire::Settings(_) => uninstall(hooks, &path, now),
         Wire::File { body, .. } => uninstall_file(&path, body, now),
+        Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
     }
 }
 
@@ -801,6 +924,133 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// claude's own plugin, and the three files it ships.
+    fn plugin() -> (&'static str, &'static [(&'static str, &'static str)]) {
+        let Wire::Plugin { dir, files } = claude::HOOKS.wire else {
+            panic!("claude reports through a plugin");
+        };
+        (dir, files)
+    }
+
+    #[test]
+    fn install_writes_a_plugin_whole_and_reads_it_back() {
+        let home = TempDir::new().unwrap();
+        let (_, files) = plugin();
+        let dir = wire_path(&claude::HOOKS, home.path());
+        assert_eq!(
+            wired(Some(&claude::HOOKS), home.path(), AMX),
+            Wired::File {
+                present: false,
+                current: false
+            }
+        );
+
+        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        assert!(report.changed);
+        assert_eq!(report.backup, None, "nothing was there to keep");
+        for (name, body) in files {
+            assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), body);
+        }
+        assert_eq!(
+            wired(Some(&claude::HOOKS), home.path(), AMX),
+            Wired::File {
+                present: true,
+                current: true
+            }
+        );
+
+        // Written twice is written once.
+        let again = install_hooks(&claude::HOOKS, home.path(), AMX, 2).unwrap();
+        assert!(!again.changed);
+        assert_eq!(again.backup, None);
+    }
+
+    #[test]
+    fn install_replaces_an_older_amxs_plugin_without_keeping_it() {
+        // The manifest is what says the directory is amx's, so a file beside
+        // one an older amx wrote is amx's to overwrite. Keeping a copy of
+        // every one of those would leave a backup behind at every upgrade.
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS, home.path());
+        install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "an older amx's skill\n").unwrap();
+        assert_eq!(
+            wired(Some(&claude::HOOKS), home.path(), AMX),
+            Wired::File {
+                present: true,
+                current: false
+            }
+        );
+
+        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 2).unwrap();
+        assert!(report.changed);
+        assert_eq!(
+            report.backup, None,
+            "an older amx's file is amx's to replace"
+        );
+        assert_eq!(latest_backup(&dir.join("SKILL.md")).unwrap(), None);
+    }
+
+    #[test]
+    fn install_keeps_a_file_in_the_plugins_directory_that_is_somebody_elses() {
+        // A person's own skill stands at the same name amx ships one under,
+        // and opens with the same three lines, so nothing about the file
+        // itself tells them apart. The directory answers instead: one with no
+        // manifest of amx's in it is not amx's, and what is in it is kept.
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS, home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
+        std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
+
+        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 7).unwrap();
+        let backup = report.backup.expect("their file was copied aside");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
+        assert_ne!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            theirs,
+            "and amx's own is what stands there now"
+        );
+
+        let report = uninstall_hooks(&claude::HOOKS, home.path(), 8).unwrap();
+        assert!(report.changed);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            theirs,
+            "their file is back where it was"
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_amxs_plugin_and_leaves_anyone_elses() {
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS, home.path());
+
+        // Nothing there is nothing to do.
+        assert!(
+            !uninstall_hooks(&claude::HOOKS, home.path(), 1)
+                .unwrap()
+                .changed
+        );
+
+        install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        let report = uninstall_hooks(&claude::HOOKS, home.path(), 2).unwrap();
+        assert!(report.changed);
+        assert!(!dir.exists(), "and the directory it emptied goes too");
+
+        // A directory whose manifest is somebody else's is not amx's to empty,
+        // however many of these names it carries.
+        std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+        std::fs::write(dir.join(MANIFEST), "{\"name\": \"theirs\"}\n").unwrap();
+        std::fs::write(dir.join("SKILL.md"), "theirs\n").unwrap();
+        let report = uninstall_hooks(&claude::HOOKS, home.path(), 3).unwrap();
+        assert!(!report.changed);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            "theirs\n"
+        );
+    }
+
     #[test]
     fn install_quotes_a_path_the_shell_would_split() {
         assert_eq!(
@@ -817,17 +1067,17 @@ mod tests {
         // The file is the vendor's, under the person's home, and the sentence
         // names it in full because that is the thing being agreed to.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
-        let settings = Path::new("/home/dev").join(table.wire.path());
-        assert_eq!(wire_path(&table, Path::new("/home/dev")), settings);
+        let plugin = Path::new("/home/dev").join(table.wire.path());
+        assert_eq!(wire_path(&table, Path::new("/home/dev")), plugin);
 
-        let asked = consent_line(&table, &settings, true);
-        assert!(asked.contains(&settings.display().to_string()), "{asked}");
-        assert!(asked.contains("hooks"), "{asked}");
+        let asked = consent_line(&table, &plugin, true);
+        assert!(asked.contains(&plugin.display().to_string()), "{asked}");
+        assert!(asked.contains("plugin"), "{asked}");
         assert!(
             asked.contains("copy"),
             "a person is told about the backup: {asked}"
         );
-        assert!(!consent_line(&table, &settings, false).contains("copy"));
+        assert!(!consent_line(&table, &plugin, false).contains("copy"));
 
         // A file wire is a different sentence about a different write.
         let extension = Path::new("/home/dev").join(crate::vendor::pi::HOOKS.wire.path());
@@ -870,15 +1120,27 @@ mod tests {
         // an event claude's entry stops naming, or starts, is an event the
         // plugin would go on being loaded with while amx heard nothing of it.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
-        let plugin: Value =
-            serde_json::from_str(include_str!("../.claude-plugin/plugin.json")).unwrap();
-        assert_eq!(plugin["name"], "amx");
+        let Wire::Plugin { files, .. } = table.wire else {
+            panic!("claude reports through a plugin");
+        };
+        let body = |wanted: &str| {
+            files
+                .iter()
+                .find_map(|(name, body)| (*name == wanted).then_some(*body))
+                .unwrap_or_else(|| panic!("the plugin ships {wanted}"))
+        };
+
+        let plugin: Value = serde_json::from_str(body(MANIFEST)).unwrap();
+        assert_eq!(
+            plugin["name"], "amx",
+            "the name is what says the directory is amx's"
+        );
         assert!(
             plugin.get("hooks").is_none(),
             "Claude Code loads hooks/hooks.json by convention and refuses a manifest naming it twice"
         );
 
-        let wiring_file: Value = serde_json::from_str(include_str!("../hooks/hooks.json")).unwrap();
+        let wiring_file: Value = serde_json::from_str(body("hooks/hooks.json")).unwrap();
         let by_event = wiring_file["hooks"]
             .as_object()
             .expect("one entry per event");

@@ -1,0 +1,5 @@
+{
+  "name": "amx",
+  "description": "Reports what a Claude session is doing back to amx, which runs coding agents as shell commands.",
+  "author": { "name": "Saiful Islam" }
+}
