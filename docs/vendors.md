@@ -74,7 +74,7 @@ real entry happens to take.
   before it acts and refuses naming the gap. A vendor with no entry has none
   of these, which is the floor every unregistered command stands on: a pane
   to watch, and nothing amx pretends to know about what is in it.
-- **`hooks`** — where the vendor's settings file is, the vendor's own name
+- **`hooks`** — which files amx writes and where, the vendor's own name
   for each of the seven moments amx listens for (started, prompted, calling,
   asked, refused, notified, ended), its tool matcher, its question tool, its
   two notification types, and the sentence it writes on a permission box.
@@ -105,7 +105,7 @@ variables. The questions the rest of amx puts to an entry:
 
 - `spawn` — which variables to strip, which flags the dials become, which
   flag opens a session under the id amx just minted.
-- `install` / `uninstall` / `doctor` — which settings file, which events.
+- `install` / `uninstall` / `doctor` — which files, which events.
 - `hook` — which moment a payload's event name is, which tool is the
   question tool, how the permission sentence reads.
 - `rules` / `derive` / the card — which screens document, whose chrome
@@ -232,10 +232,10 @@ which conversation it was typed inside, the same way claude's
 `CLAUDE_CODE_SESSION_ID` does.
 
 It reports through hooks, and amx reads its conversation back. pi's extension
-events are JS callbacks inside its own process, not command entries a settings
+events are JS callbacks inside its own process, not entries in a settings
 file can name, so its wire is a file: `Wire::File` at
 `.pi/agent/extensions/amx.ts`, whose body is `assets/pi/amx.ts`, written by
-`amx doctor --fix` where pi loads a global extension from and removed by `amx
+`amx setup pi` where pi loads a global extension from and removed by `amx
 uninstall`. That file runs `amx _hook` once per moment with the payload on
 stdin, under pi's own event names — `session_start`, `agent_start`,
 `tool_execution_start`, `ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
@@ -250,8 +250,9 @@ extension also streams the words of the answer being written to the record's
 by `AMX_DIR` in a pane amx started, and otherwise by what the hook answers:
 `amx _hook` prints the record's directory on every report about a vendor wired
 through `Wire::File` (`Wire::listens`), which is how a pi `adopt` took over
-streams too. A settings-wired vendor is never answered, because its hook
-runner shows what a hook prints. `Trust` is the one
+streams too. A vendor whose own hook runner runs the
+entries — claude, through the plugin amx writes — is never answered, because
+that runner shows what a hook prints. `Trust` is the one
 amx sends rather than writes: `--approve, -a` on the argv of a pane amx was
 starting anyway.
 

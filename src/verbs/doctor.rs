@@ -2,15 +2,20 @@
 //!
 //! Nine things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
-//! hooks wired into the vendor's settings or carried by the amx plugin
-//! instead, one amx on the PATH and this the
-//! one, a state root amx can keep an agent in, no handoff still carrying the
-//! spawner's environment from before that moved to a file of its own, no
-//! agent already stopped at a screen the vendor puts in front of the work, and
-//! no tree amx cut still named in the vendor's own trust store after the tree
-//! itself has gone. Each check that fails says what to do about it, because a
-//! check that only says "no" leaves somebody guessing at a machine they
-//! thought was fine.
+//! own files where each installed agent loads them, one amx on the PATH and
+//! this the one, a state root amx can keep an agent in, no handoff still
+//! carrying the spawner's environment from before that moved to a file of its
+//! own, no agent already stopped at a screen the vendor puts in front of the
+//! work, and no tree amx cut still named in the vendor's own trust store after
+//! the tree itself has gone. Each check that fails says what to do about it,
+//! because a check that only says "no" leaves somebody guessing at a machine
+//! they thought was fine.
+//!
+//! Nine kinds of check, that is, rather than nine lines. The wiring one is
+//! asked of every agent this machine has and names which agent it is about, so
+//! somebody with claude and pi reads two of those lines and is asked the same
+//! nine things. An agent that is not installed is not a machine with something
+//! missing from it and gets no line at all.
 //!
 //! What two of them are worth depends on the vendor, and the vendor is what
 //! says. The table answers the first: one that reports nothing has no wiring to

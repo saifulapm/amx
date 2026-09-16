@@ -358,18 +358,23 @@ pub enum Command {
     /// Check what amx needs from this machine, and what is missing.
     ///
     /// Nine things have to be true before an agent can run: tmux, the agent
-    /// command, the config, amx's hooks in the vendor's settings, one amx on
-    /// the PATH and this the one, a state directory to keep records in, no
-    /// handoff still carrying the spawner's environment from before that
-    /// moved to a file of its own, no agent already stopped at a screen
-    /// the vendor puts in front of the work, and no tree amx cut still named
-    /// in the agent's own trust store after the tree itself has gone.
+    /// command, the config, amx's own files where each installed agent loads
+    /// them, one amx on the PATH and this the one, a state directory to keep
+    /// records in, no handoff still carrying the spawner's environment from
+    /// before that moved to a file of its own, no agent already stopped at a
+    /// screen the vendor puts in front of the work, and no tree amx cut still
+    /// named in the agent's own trust store after the tree itself has gone.
+    ///
+    /// The wiring one is asked of every agent this machine has, so somebody
+    /// with claude and pi reads two of those lines. `amx setup` is what wires
+    /// one; doctor says which is unwired and prints the line.
     ///
     /// Where a tmux server is already running, a tenth: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
     Doctor {
-        /// Install what is missing.
+        /// Mend what amx wrote itself: handoffs still carrying the
+        /// environment, and trust-store keys for trees amx cut.
         #[arg(long)]
         fix: bool,
     },

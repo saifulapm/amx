@@ -34,17 +34,24 @@ idle     tidy-the-imports-d4e      2m  the imports are sorted
 
 ```sh
 cargo install --path .
-amx doctor --fix
+amx setup claude      # or `amx setup pi`, for whichever agents you have
+amx doctor
 ```
 
 `doctor` checks the nine things that have to be true before an agent can run:
-tmux, the agent command, the config file, the hooks, one amx on the PATH and
+tmux, the agent command, the config file, the wiring, one amx on the PATH and
 the one running the check, a state directory amx can keep records in, no
 handoff still carrying the spawner's environment from before that moved to a
 file of its own, no agent already stopped at a screen the vendor puts in
 front of the work, and no tree amx cut still named in the agent's own trust
 store after the tree itself has gone. Every check that fails says what to do
 about it.
+
+Nine kinds of check rather than nine lines. The wiring one is asked of every
+agent you have installed and names which agent it is about, so a machine with
+claude and pi reads two of those lines; an agent you have not got is not a
+fault and is not mentioned. `amx setup` is what wires one — `doctor` only says
+which is unwired, and prints the line that fixes it.
 
 Where a tmux server is already running, it checks a tenth: that the directory
 that server is standing in still exists. A server keeps the directory it was
@@ -53,17 +60,20 @@ pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-`--fix` makes three repairs. It wires the configured agent's hooks after asking
-once, writing what `amx setup` writes below. `amx uninstall` takes every
-agent's wiring back out, puts back anything of yours it was written over, and
-removes amx's records; it refuses while any agent is still running, since those
-records are the only place their answers are kept. It also rewrites any handoff
-still carrying the environment inline, which needs no asking — amx wrote every
-one of those files itself. Upgrading amx wants the wiring written again: the
-files amx ships change with it, and `doctor` says so until they are. And it
-takes each gone tree's key back out of the agent's trust store, with the file
-copied aside first and the count printed; only the trees amx cut ever go, never
-the repository's own entry.
+`--fix` makes two repairs, and both are amx's own files to mend, so neither
+asks. It rewrites any handoff still carrying the spawner's environment inline —
+amx wrote every one of those files itself — and it takes each gone tree's key
+back out of the agent's trust store, with the file copied aside first and the
+count printed; only the trees amx cut ever go, never the repository's own
+entry. It writes no agent's wiring: that is `amx setup`'s, below.
+
+`amx uninstall` takes every agent's wiring back out, puts back anything of
+yours it was written over, and removes amx's records. It refuses while any
+agent is still running, since those records are the only place their answers
+are kept.
+
+Upgrading amx wants the wiring written again: the files amx ships change with
+it, and `doctor` says so until they are.
 
 `amx setup <agent>` wires one agent, named on the command line:
 
@@ -492,8 +502,8 @@ whose turn is over — idle at its prompt, done, failed or stopped alike — ope
 on the end of its last answer, where the conclusion of it is, with the rest of
 that answer and every earlier turn a page up. One that is working ends on a
 live tail, standing off the record above it by a blank row: the last few rows
-of what pi is saying at this moment, streamed by the extension `doctor --fix`
-installs. claude streams nothing, so its card is the record alone until the
+of what pi is saying at this moment, streamed by the extension `amx setup pi`
+writes. claude streams nothing, so its card is the record alone until the
 next message lands — its tool calls as they are issued, its answers as each
 message ends — and the row over the card says what it is doing in between. The
 pane is never drawn under a record: it is the same turn in the vendor's own
@@ -1519,13 +1529,13 @@ transcript, resume, fork, adopt, trust. A verb asks before it acts, so
 gap, not a spawn that fails somewhere in a pane.
 
 Two commands have an entry today. `claude` is the one amx runs unless told
-otherwise. `pi` is the other. It has no settings file a hook can be named in,
-so it reports through an extension amx writes where pi loads one from — `amx
-doctor --fix` puts it there — one event per moment the way claude's hooks
-report, and the report names the session file pi writes, which is the
-conversation `amx logs` and the card read back. A pi without the extension is
-read off its pane, the way a claude with its hooks unwired is, and `doctor`
-says so. `agent = "pi"` in the config, or `--agent pi` on one spawn, runs it
+otherwise, and it reports through a plugin `amx setup claude` writes where
+claude loads one from. `pi` is the other, and it reports through an extension
+`amx setup pi` writes where pi loads one from — one event per moment the way
+claude's hooks report, and the report names the session file pi writes, which
+is the conversation `amx logs` and the card read back. Neither opens a settings
+file of yours. An agent without its wiring is read off its pane instead, and
+`doctor` says so. `agent = "pi"` in the config, or `--agent pi` on one spawn, runs it
 for every new agent.
 
 An entry also says where that vendor's models are found, which is what lets a
