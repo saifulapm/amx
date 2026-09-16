@@ -14,7 +14,9 @@
 //! to leave the pane where it is is asked again from scratch, and any one of
 //! them ends the verb having done nothing at all. Doing nothing is the usual
 //! outcome and is not a failure: a timer that fired over an agent somebody
-//! went back to has no complaint to make about it.
+//! went back to has no complaint to make about it. Neither has one that fired
+//! over an agent somebody cleared away first, which is the most ordinary of
+//! them: the person finished with the agent and said so.
 
 use anyhow::Result;
 use std::path::Path;
@@ -36,6 +38,15 @@ pub fn from_env(id: &str) -> Result<i32> {
 
 /// The verb, with the state directory and the moment named.
 pub fn consider(root: &Path, id: &str, now: u64) -> Result<i32> {
+    // A record that has been cleared is a reason to do nothing like any of
+    // the guards below, and the one with the least to say: somebody typed
+    // `amx clear` and meant it, and an hour-old timer firing over the gap they
+    // left has no complaint to make. `agent_dir_in` still bails on an id amx
+    // would never have handed out, and a record that is there but cannot be
+    // read fails loudly on the first line of it that is asked for.
+    if !paths::agent_dir_in(root, id)?.is_dir() {
+        return Ok(exit::OK);
+    }
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
     // The project's file over the person's, which is the rule `resume` follows
@@ -270,6 +281,30 @@ mod tests {
             .map(|event| event.kind)
             .collect();
         (agent.state().expect("the record").parked_at, kinds)
+    }
+
+    #[test]
+    fn park_finds_nothing_to_do_where_the_record_has_been_cleared() {
+        // The timer was set an hour ago and somebody has since typed `amx
+        // clear`. Being finished with an agent is an answer like the rest,
+        // and the verb gives it the same way: nothing happens and it exits
+        // OK, with nothing on either stream for the server to report.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        assert_eq!(
+            consider(&root, "cleared-a1b", 4_600).expect("a cleared record is not a failure"),
+            exit::OK
+        );
+    }
+
+    #[test]
+    fn park_still_says_so_where_the_record_cannot_be_read() {
+        // The directory is there and the record in it is not. That is not the
+        // cleared record above: amx has something to report and reports it.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        std::fs::create_dir_all(root.join("broken-a1b")).unwrap();
+        assert!(consider(&root, "broken-a1b", 4_600).is_err());
     }
 
     #[test]
