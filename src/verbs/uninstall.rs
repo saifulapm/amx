@@ -40,8 +40,6 @@ pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Re
         let report = install::uninstall_hooks(hooks, home, now)?;
         let path = report.path.display();
         match (hooks.wire, report.changed) {
-            (Wire::Settings(_), true) => writeln!(out, "took the hooks out of {path}")?,
-            (Wire::Settings(_), false) => writeln!(out, "no hooks of amx's in {path}")?,
             (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
             (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
             (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
@@ -129,7 +127,7 @@ mod tests {
     /// amx's plugin, written where claude loads one from under a home.
     fn plugin_with_amx(home: &Path) -> PathBuf {
         let dir = install::wire_path(&claude::HOOKS, home);
-        install::install_hooks(&claude::HOOKS, home, "/home/dev/bin/amx _hook", 1).unwrap();
+        install::install_hooks(&claude::HOOKS, home, 1).unwrap();
         dir
     }
 

@@ -1689,8 +1689,6 @@ mod tests {
             home: PathBuf::new(),
             wire: PathBuf::new(),
             wired: crate::install::Wired::Nothing,
-            plugin: false,
-            command: String::new(),
             exe: PathBuf::new(),
             on_path: Vec::new(),
             state_root: PathBuf::new(),

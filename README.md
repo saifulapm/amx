@@ -53,45 +53,38 @@ pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-`--fix` makes three repairs. It wires the configured agent's hooks, after asking
-once: for claude, amx's seven hooks into `~/.claude/settings.json`, beside
-whatever is already there, with the file backed up first; for pi, amx's own
-extension into `~/.pi/agent/extensions/amx.ts`, where pi loads one from, and
-a file of somebody else's standing there is copied aside. `amx uninstall` takes
-both back out, puts the backed-up bytes back, and removes amx's records. It
-refuses while any agent is still running: those records are the only place
-their answers are kept. It also rewrites any handoff still carrying the
-environment inline, which needs no asking — amx wrote every one of those files
-itself. Upgrading amx wants `doctor --fix` again: the extension it ships for pi
-changes with it, and `doctor` says so until the file is rewritten. And it takes
-each gone tree's key back out of the agent's trust store, with the file copied
-aside first and the count printed; only the trees amx cut ever go, never the
-repository's own entry.
+`--fix` makes three repairs. It wires the configured agent's hooks after asking
+once, writing what `amx setup` writes below. `amx uninstall` takes every
+agent's wiring back out, puts back anything of yours it was written over, and
+removes amx's records; it refuses while any agent is still running, since those
+records are the only place their answers are kept. It also rewrites any handoff
+still carrying the environment inline, which needs no asking — amx wrote every
+one of those files itself. Upgrading amx wants the wiring written again: the
+files amx ships change with it, and `doctor` says so until they are. And it
+takes each gone tree's key back out of the agent's trust store, with the file
+copied aside first and the count printed; only the trees amx cut ever go, never
+the repository's own entry.
 
 `amx setup <agent>` wires one agent, named on the command line:
 
 ```sh
-amx setup claude   # amx's seven hooks into ~/.claude/settings.json
+amx setup claude   # amx's plugin into ~/.claude/skills/amx
 amx setup pi       # amx's extension into ~/.pi/agent/extensions/amx.ts
 ```
 
-Either file is copied aside before it is touched, and the copy is named. The
-agent is never guessed — a machine usually has more than one on it, and the one
+Anything of yours standing at one of those names is copied aside before amx
+writes over it, and the copy is named. The agent is never guessed — a machine
+usually has more than one on it, and the one
 your config happens to name says nothing about the others — so a bare `amx
 setup` prints the agents amx has an entry for and writes nothing. Running it
 again on an agent already wired writes nothing and says so.
 
-The same seven hooks also ship as a claude plugin, which is the other way to
-wire them and touches no settings file of yours:
-
-```sh
-claude plugin marketplace add saifulapm/amx
-claude plugin install amx@amx
-```
-
-The plugin's entries run `amx _hook` off your PATH rather than a path written
-into a file, so it wants one amx there — which is a thing `doctor` checks — and
-keeps working after amx moves on disk.
+Neither wire opens a settings file of yours. claude's is a plugin directory
+under `~/.claude/skills/amx`, which claude loads as `amx@skills-dir` — personal
+scope, every project, read live from the directory, no marketplace and no
+install step. Both wires run `amx _hook` off your PATH rather than a path
+written into a file, so they want one amx there — which is a thing `doctor`
+checks — and keep working after amx moves on disk.
 
 Without the hooks amx falls back to reading panes, which is enough to say what
 an agent is doing but not enough to hand you what it said. Answers come from

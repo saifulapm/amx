@@ -1,25 +1,25 @@
 //! Wiring amx into the vendor's hooks, and taking it back out.
 //!
 //! Everything amx knows about a running agent arrives through the vendor's own
-//! hooks, which means one line in the vendor's settings file per event. Which
-//! file, and which events, is the vendor's entry to say. That file belongs to
-//! the person, not to amx, so three rules hold:
+//! hooks, and every vendor now loads them out of files of amx's own: pi an
+//! extension, claude a plugin directory. Which files, and where, is the
+//! vendor's entry to say; this file writes what the table holds and knows none
+//! of the words itself.
 //!
-//! * **Nothing is touched without a backup.** The pre-merge bytes are copied
-//!   to a timestamped file beside the settings before a single byte changes.
-//! * **Foreign hooks are never disturbed.** amx adds its own entries and
-//!   removes only its own; anything else in the file is carried through by a
-//!   plain JSON round trip.
-//! * **A file amx cannot read is a file amx does not write.** Settings that do
-//!   not parse are reported, never replaced — a person's own editing mistake
-//!   must not become amx deleting their configuration.
+//! amx edits nobody's settings. It did once, merging seven entries into
+//! `~/.claude/settings.json` and carrying the rest of the document through a
+//! JSON round trip, and the round trip cost a person their hand formatting
+//! every time. Writing files amx owns outright costs them nothing, and there
+//! is no document to fail to parse.
 //!
-//! The round trip does cost hand formatting: JSON is re-printed the way serde
-//! prints it. That is what the backup is for, and what makes `uninstall`
-//! restore the original bytes when nothing else has changed since.
+//! What survives from that door is the one rule worth keeping: **nothing of
+//! somebody's is written over without a copy kept beside it.** Whose a file is
+//! gets asked differently by each wire — an extension by the first line amx
+//! writes into it, a plugin by the manifest in its directory — because a first
+//! line cannot tell amx's `SKILL.md` from anybody else's.
 
-use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
+use anyhow::{Context, Result};
+use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -29,8 +29,11 @@ use crate::vendor::{Hooks, Wire};
 /// wiring order.
 ///
 /// The names come off the vendor's entry: this file writes what the table says
-/// and knows none of the words itself. The mapping each event drives lives
-/// with the hook command.
+/// and knows none of the words itself. Nothing in the crate proper asks any
+/// more — the wires ship written — but the tests that hold a shipped file to
+/// its entry ask event by event, and that is the whole of what keeps the two
+/// from drifting.
+#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 pub fn events(hooks: &Hooks) -> impl Iterator<Item = &'static str> {
     hooks.events.iter().map(|wiring| wiring.event)
 }
@@ -43,18 +46,6 @@ pub struct Report {
     pub backup: Option<PathBuf>,
     /// Whether the file needed changing at all.
     pub changed: bool,
-}
-
-/// The command a hook entry runs.
-pub fn hook_command(amx: &Path) -> String {
-    let path = amx.to_string_lossy();
-    // A path with a space in it is one argument, and the vendor runs this
-    // through a shell.
-    if path.contains(char::is_whitespace) {
-        format!("'{path}' _hook")
-    } else {
-        format!("{path} _hook")
-    }
 }
 
 /// The person's home directory, which every wire is written under.
@@ -78,11 +69,6 @@ pub fn consent_line(hooks: &Hooks, path: &Path, backup: bool) -> String {
         ""
     };
     match hooks.wire {
-        Wire::Settings(_) => format!(
-            "amx will add its {} hooks to {}{and_backup}.",
-            hooks.events.len(),
-            path.display()
-        ),
         Wire::File { .. } => format!(
             "amx will write its extension to {}{and_backup}.",
             path.display()
@@ -99,44 +85,18 @@ pub fn consent_line(hooks: &Hooks, path: &Path, backup: bool) -> String {
 pub enum Wired {
     /// The vendor reports nothing, so there is nothing to be wired.
     Nothing,
-    /// A settings wire: which of amx's events the file wires to the hook
-    /// command, and why the file could not be read if it could not.
-    Settings {
-        events: Vec<String>,
-        error: Option<String>,
-    },
     /// A file wire: whether a file stands at the path, and whether it is the
     /// one this amx ships.
     File { present: bool, current: bool },
 }
 
 /// Read what is wired for `hooks` under `home`.
-pub fn wired(hooks: Option<&Hooks>, home: &Path, command: &str) -> Wired {
+pub fn wired(hooks: Option<&Hooks>, home: &Path) -> Wired {
     let Some(hooks) = hooks else {
         return Wired::Nothing;
     };
     let path = wire_path(hooks, home);
     match hooks.wire {
-        Wire::Settings(_) => match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
-                Ok(value) => Wired::Settings {
-                    events: installed_events(hooks, &value, command),
-                    error: None,
-                },
-                Err(e) => Wired::Settings {
-                    events: Vec::new(),
-                    error: Some(e.to_string()),
-                },
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Wired::Settings {
-                events: Vec::new(),
-                error: None,
-            },
-            Err(e) => Wired::Settings {
-                events: Vec::new(),
-                error: Some(e.to_string()),
-            },
-        },
         Wire::File { body, .. } => match std::fs::read_to_string(&path) {
             Ok(text) => Wired::File {
                 present: true,
@@ -168,39 +128,10 @@ pub fn wired(hooks: Option<&Hooks>, home: &Path, command: &str) -> Wired {
     }
 }
 
-/// Where claude writes down the plugins it has been given, under a home, and
-/// the name amx's own is listed there under: the plugin as this repository's
-/// marketplace names it, at the marketplace it was added from.
-const INSTALLED_PLUGINS: &str = ".claude/plugins/installed_plugins.json";
-const PLUGIN: &str = "amx@amx";
-
-/// Whether this machine carries amx's hooks as a plugin instead.
-///
-/// `claude plugin install amx@amx` is the same seven events by another door:
-/// the plugin's own hooks file wires them, and nothing is written into the
-/// person's settings at all. A machine wired that way has to read green, or
-/// doctor would send somebody to repair wiring that is already there.
-///
-/// A file that is not there, or that does not parse, is answered no. It is
-/// claude's file to write and amx never touches it, so the only honest thing
-/// amx can say about one it cannot read is that it found no plugin in it.
-pub fn plugin_wired(home: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(home.join(INSTALLED_PLUGINS)) else {
-        return false;
-    };
-    let Ok(installed) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    installed["plugins"][PLUGIN]
-        .as_array()
-        .is_some_and(|installs| !installs.is_empty())
-}
-
 /// Wire `hooks` under `home`, whichever shape the wire is.
-pub fn install_hooks(hooks: &Hooks, home: &Path, command: &str, now: u64) -> Result<Report> {
+pub fn install_hooks(hooks: &Hooks, home: &Path, now: u64) -> Result<Report> {
     let path = wire_path(hooks, home);
     match hooks.wire {
-        Wire::Settings(_) => install(hooks, &path, command, now),
         Wire::File { body, .. } => install_file(&path, body, now),
         Wire::Plugin { files, .. } => install_plugin(&path, files, now),
     }
@@ -309,174 +240,11 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
 pub fn uninstall_hooks(hooks: &Hooks, home: &Path, now: u64) -> Result<Report> {
     let path = wire_path(hooks, home);
     match hooks.wire {
-        Wire::Settings(_) => uninstall(hooks, &path, now),
         Wire::File { body, .. } => uninstall_file(&path, body, now),
         Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
     }
 }
 
-/// Which of amx's events this settings document already wires to `command`.
-pub fn installed_events(hooks: &Hooks, settings: &Value, command: &str) -> Vec<String> {
-    events(hooks)
-        .filter(|event| {
-            settings["hooks"][*event]
-                .as_array()
-                .is_some_and(|groups| groups.iter().any(|group| runs(group, command)))
-        })
-        .map(|event| event.to_string())
-        .collect()
-}
-
-/// Add amx's hooks, and answer whether anything needed adding.
-///
-/// Entries amx recognises as its own are replaced rather than added to, so an
-/// amx that has moved on disk leaves one working entry behind and not two.
-pub fn merge(hooks: &Hooks, settings: &mut Value, command: &str) -> bool {
-    let mut changed = remove_hooks(settings, &|found| is_amx_hook(found) && found != command);
-
-    for wiring in hooks.events {
-        let groups = event_groups(settings, wiring.event);
-        if groups.iter().any(|group| runs(group, command)) {
-            continue;
-        }
-        let mut group = json!({ "hooks": [{ "type": "command", "command": command }] });
-        if wiring.matched {
-            group["matcher"] = json!(hooks.matcher);
-        }
-        groups.push(group);
-        changed = true;
-    }
-    changed
-}
-
-/// Take amx's hooks back out, and answer whether anything needed taking out.
-pub fn strip(settings: &mut Value) -> bool {
-    remove_hooks(settings, &is_amx_hook)
-}
-
-/// Whether a hook command is one of amx's.
-///
-/// The program's own name decides, not the string as a whole: an amx installed
-/// somewhere else is still amx, and a person's script that merely mentions amx
-/// is not.
-fn is_amx_hook(command: &str) -> bool {
-    let command = command.trim();
-    let (program, rest) = match command.strip_prefix('\'') {
-        Some(quoted) => match quoted.split_once('\'') {
-            Some(split) => split,
-            None => return false,
-        },
-        None => match command.split_once(char::is_whitespace) {
-            Some(split) => split,
-            None => return false,
-        },
-    };
-    rest.trim() == "_hook"
-        && Path::new(program)
-            .file_name()
-            .is_some_and(|name| name == "amx")
-}
-
-/// Whether one hook group runs `command`.
-fn runs(group: &Value, command: &str) -> bool {
-    group["hooks"]
-        .as_array()
-        .is_some_and(|hooks| hooks.iter().any(|hook| hook["command"] == command))
-}
-
-/// The groups wired to one event, making the shape on the way if it is not
-/// there. Anything already at these keys that is not the shape the vendor
-/// documents is replaced — there is nothing else it could be.
-fn event_groups<'a>(settings: &'a mut Value, event: &str) -> &'a mut Vec<Value> {
-    if !settings.is_object() {
-        *settings = json!({});
-    }
-    let root = settings.as_object_mut().expect("an object");
-    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
-    }
-    let by_event = hooks.as_object_mut().expect("an object");
-    let groups = by_event.entry(event).or_insert_with(|| json!([]));
-    if !groups.is_array() {
-        *groups = json!([]);
-    }
-    groups.as_array_mut().expect("an array")
-}
-
-/// Remove every hook entry whose command `doomed` claims, then tidy up what
-/// that emptied. A document nothing was removed from is not touched at all.
-fn remove_hooks(settings: &mut Value, doomed: &dyn Fn(&str) -> bool) -> bool {
-    let Some(by_event) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return false;
-    };
-
-    let mut removed = false;
-    for (_event, groups) in by_event.iter_mut() {
-        let Some(groups) = groups.as_array_mut() else {
-            continue;
-        };
-        for group in groups.iter_mut() {
-            let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
-                continue;
-            };
-            let before = hooks.len();
-            hooks.retain(|hook| !hook["command"].as_str().is_some_and(doomed));
-            removed |= hooks.len() != before;
-        }
-    }
-    if !removed {
-        return false;
-    }
-
-    // What amx left behind: groups with no hooks in them, and events with no
-    // groups. An empty `hooks` goes too, so a file that had none before an
-    // install has none after an uninstall.
-    for (_event, groups) in by_event.iter_mut() {
-        if let Some(groups) = groups.as_array_mut() {
-            groups.retain(|group| !group["hooks"].as_array().is_some_and(Vec::is_empty));
-        }
-    }
-    by_event.retain(|_event, groups| !groups.as_array().is_some_and(Vec::is_empty));
-    if by_event.is_empty()
-        && let Some(root) = settings.as_object_mut()
-    {
-        root.remove("hooks");
-    }
-    true
-}
-
-/// Install the hooks into a settings file, backing the file up first.
-pub fn install(hooks: &Hooks, path: &Path, command: &str, now: u64) -> Result<Report> {
-    let existing = read(path)?;
-    let mut settings = existing.clone().unwrap_or_else(|| json!({}));
-    if !settings.is_object() {
-        bail!("{} is not settings amx can read", path.display());
-    }
-
-    if !merge(hooks, &mut settings, command) {
-        return Ok(Report {
-            path: path.to_path_buf(),
-            backup: None,
-            changed: false,
-        });
-    }
-
-    let backup = back_up(path, now, existing.is_some())?;
-    write(path, &settings)?;
-    Ok(Report {
-        path: path.to_path_buf(),
-        backup,
-        changed: true,
-    })
-}
-
-/// Write amx's own file where the vendor loads it from.
-///
-/// A file already holding these bytes is left as it is. A file of amx's own
-/// from another version is written over — it is amx's to replace — and a file
-/// that is somebody else's is copied aside first, the way a settings file is,
-/// because the name is amx's to take and the bytes are not amx's to lose.
 pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     let existing = match std::fs::read_to_string(path) {
         Ok(text) => Some(text),
@@ -553,95 +321,6 @@ fn is_amx_file(text: &str, body: &str) -> bool {
 /// When the file is exactly what amx left behind, the backup goes back
 /// byte for byte and the person's own formatting with it. When it has been
 /// edited since, only amx's entries are removed and everything else stays —
-/// restoring a backup over a week of somebody's edits would be the worse
-/// outcome by far.
-pub fn uninstall(hooks: &Hooks, path: &Path, now: u64) -> Result<Report> {
-    let Some(current) = read(path)? else {
-        return Ok(Report {
-            path: path.to_path_buf(),
-            backup: None,
-            changed: false,
-        });
-    };
-
-    if let Some(backup) = untouched_since(hooks, path, &current)? {
-        std::fs::copy(&backup, path).with_context(|| {
-            format!("putting {} back over {}", backup.display(), path.display())
-        })?;
-        return Ok(Report {
-            path: path.to_path_buf(),
-            backup: Some(backup),
-            changed: true,
-        });
-    }
-
-    let mut settings = current.clone();
-    if !strip(&mut settings) {
-        return Ok(Report {
-            path: path.to_path_buf(),
-            backup: None,
-            changed: false,
-        });
-    }
-
-    let backup = back_up(path, now, true)?;
-    write(path, &settings)?;
-    Ok(Report {
-        path: path.to_path_buf(),
-        backup,
-        changed: true,
-    })
-}
-
-/// The backup to put back, when the file is still exactly what amx left
-/// behind.
-///
-/// "Exactly" is asked by re-running the merge over the backup: if that
-/// reproduces what is on disk, then nothing but amx has written here since,
-/// and the original bytes are safe to restore.
-fn untouched_since(hooks: &Hooks, path: &Path, current: &Value) -> Result<Option<PathBuf>> {
-    let Some(backup) = latest_backup(path)? else {
-        return Ok(None);
-    };
-    let Ok(text) = std::fs::read_to_string(&backup) else {
-        return Ok(None);
-    };
-    let Ok(mut replayed) = serde_json::from_str::<Value>(&text) else {
-        return Ok(None);
-    };
-
-    for command in amx_commands(current) {
-        merge(hooks, &mut replayed, &command);
-    }
-    Ok((replayed == *current).then_some(backup))
-}
-
-/// Every distinct amx command wired in this document.
-fn amx_commands(settings: &Value) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let Some(by_event) = settings["hooks"].as_object() else {
-        return found;
-    };
-    for groups in by_event.values() {
-        for group in groups.as_array().into_iter().flatten() {
-            for hook in group["hooks"].as_array().into_iter().flatten() {
-                if let Some(command) = hook["command"].as_str()
-                    && is_amx_hook(command)
-                    && !found.iter().any(|seen| seen == command)
-                {
-                    found.push(command.to_string());
-                }
-            }
-        }
-    }
-    found
-}
-
-/// Copy the file aside before changing it.
-///
-/// Opened with `create_new`, so a name a planted symlink already stands at is
-/// refused rather than copied through: the backup path is predictable, and a
-/// symlink waiting there before amx ever runs must not decide where the
 /// person's settings end up.
 fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
     if !exists {
@@ -713,35 +392,12 @@ fn backup_path(path: &Path, now: u64) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!("{name}.amx-backup-{now}"))
 }
-
-/// Read a settings document, telling "not there" from "not readable".
-fn read(path: &Path) -> Result<Option<Value>> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    if text.trim().is_empty() {
-        return Ok(Some(json!({})));
-    }
-    let parsed = serde_json::from_str(&text)
-        .with_context(|| format!("{} is not settings amx can read", path.display()))?;
-    Ok(Some(parsed))
-}
-
-/// Write a settings document the way the vendor writes one.
+/// Write a file, making the directories above it on the way.
 ///
 /// Staged beside the target and renamed over it, rather than written to the
 /// path directly: a rename replaces whatever is at that name without ever
 /// opening it, so a symlink standing at the path is replaced and never
 /// written through.
-fn write(path: &Path, settings: &Value) -> Result<()> {
-    let mut text = serde_json::to_string_pretty(settings).context("writing settings")?;
-    text.push('\n');
-    write_bytes(path, text.as_bytes())
-}
-
-/// Write a file the same way: staged beside its path and renamed over it.
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -778,9 +434,6 @@ mod tests {
     use crate::vendor::claude;
     use tempfile::TempDir;
 
-    const AMX: &str = "/home/dev/.cargo/bin/amx _hook";
-    const CLAUDE: &Hooks = &claude::HOOKS;
-
     fn hooks(settings: &Value, event: &str) -> Vec<String> {
         settings["hooks"][event]
             .as_array()
@@ -792,22 +445,6 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// Somebody's settings, with their own hook already in them.
-    fn a_persons_settings() -> Value {
-        json!({
-            "model": "opus",
-            "permissions": { "allow": ["Bash(git diff:*)"] },
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{ "type": "command", "command": "~/bin/audit.sh" }]
-                    }
-                ]
-            }
-        })
     }
 
     /// A file wire of the tests' own, shaped like pi's.
@@ -831,19 +468,19 @@ mod tests {
         let home = TempDir::new().unwrap();
         let path = wire_path(&FILE, home.path());
         assert_eq!(
-            wired(Some(&FILE), home.path(), AMX),
+            wired(Some(&FILE), home.path()),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_hooks(&FILE, home.path(), AMX, 1).unwrap();
+        let report = install_hooks(&FILE, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
         assert_eq!(
-            wired(Some(&FILE), home.path(), AMX),
+            wired(Some(&FILE), home.path()),
             Wired::File {
                 present: true,
                 current: true
@@ -851,7 +488,7 @@ mod tests {
         );
 
         // Installed twice is installed once.
-        let again = install_hooks(&FILE, home.path(), AMX, 2).unwrap();
+        let again = install_hooks(&FILE, home.path(), 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -863,14 +500,14 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
         assert_eq!(
-            wired(Some(&FILE), home.path(), AMX),
+            wired(Some(&FILE), home.path()),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_hooks(&FILE, home.path(), AMX, 1).unwrap();
+        let report = install_hooks(&FILE, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -887,7 +524,7 @@ mod tests {
         let theirs = "// somebody else's\n";
         std::fs::write(&path, theirs).unwrap();
 
-        let report = install_hooks(&FILE, home.path(), AMX, 7).unwrap();
+        let report = install_hooks(&FILE, home.path(), 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
@@ -911,7 +548,7 @@ mod tests {
         let report = uninstall_hooks(&FILE, home.path(), 1).unwrap();
         assert!(!report.changed);
 
-        install_hooks(&FILE, home.path(), AMX, 1).unwrap();
+        install_hooks(&FILE, home.path(), 1).unwrap();
         let report = uninstall_hooks(&FILE, home.path(), 2).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None);
@@ -938,21 +575,21 @@ mod tests {
         let (_, files) = plugin();
         let dir = wire_path(&claude::HOOKS, home.path());
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path(), AMX),
+            wired(Some(&claude::HOOKS), home.path()),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        let report = install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         for (name, body) in files {
             assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), body);
         }
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path(), AMX),
+            wired(Some(&claude::HOOKS), home.path()),
             Wired::File {
                 present: true,
                 current: true
@@ -960,7 +597,7 @@ mod tests {
         );
 
         // Written twice is written once.
-        let again = install_hooks(&claude::HOOKS, home.path(), AMX, 2).unwrap();
+        let again = install_hooks(&claude::HOOKS, home.path(), 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -972,17 +609,17 @@ mod tests {
         // every one of those would leave a backup behind at every upgrade.
         let home = TempDir::new().unwrap();
         let dir = wire_path(&claude::HOOKS, home.path());
-        install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
         std::fs::write(dir.join("SKILL.md"), "an older amx's skill\n").unwrap();
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path(), AMX),
+            wired(Some(&claude::HOOKS), home.path()),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 2).unwrap();
+        let report = install_hooks(&claude::HOOKS, home.path(), 2).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -1003,7 +640,7 @@ mod tests {
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
 
-        let report = install_hooks(&claude::HOOKS, home.path(), AMX, 7).unwrap();
+        let report = install_hooks(&claude::HOOKS, home.path(), 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_ne!(
@@ -1033,7 +670,7 @@ mod tests {
                 .changed
         );
 
-        install_hooks(&claude::HOOKS, home.path(), AMX, 1).unwrap();
+        install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
         let report = uninstall_hooks(&claude::HOOKS, home.path(), 2).unwrap();
         assert!(report.changed);
         assert!(!dir.exists(), "and the directory it emptied goes too");
@@ -1049,17 +686,6 @@ mod tests {
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
             "theirs\n"
         );
-    }
-
-    #[test]
-    fn install_quotes_a_path_the_shell_would_split() {
-        assert_eq!(
-            hook_command(Path::new("/home/dev/.cargo/bin/amx")),
-            "/home/dev/.cargo/bin/amx _hook"
-        );
-        let quoted = hook_command(Path::new("/home/dev/my tools/amx"));
-        assert_eq!(quoted, "'/home/dev/my tools/amx' _hook");
-        assert!(is_amx_hook(&quoted), "and it is still recognisably amx's");
     }
 
     #[test]
@@ -1084,33 +710,6 @@ mod tests {
         let asked = consent_line(&crate::vendor::pi::HOOKS, &extension, false);
         assert!(asked.contains("extension"), "{asked}");
         assert!(asked.contains(&extension.display().to_string()), "{asked}");
-    }
-
-    #[test]
-    fn install_writes_the_shape_the_vendor_reads() {
-        // Every event the vendor's entry names, each with a matcher exactly
-        // where that entry asks for one. Nothing here knows what any of them
-        // is called: an event this file spelled for itself is one that would
-        // go on being wired after the vendor renamed it.
-        let table = claude::VENDOR.hooks.expect("claude reports through hooks");
-        let mut settings = json!({});
-        assert!(merge(CLAUDE, &mut settings, AMX));
-
-        for wiring in table.events {
-            assert_eq!(hooks(&settings, wiring.event), [AMX], "{}", wiring.event);
-            let group = settings["hooks"][wiring.event][0].clone();
-            assert_eq!(group["hooks"][0]["type"], "command", "{}", wiring.event);
-            if wiring.matched {
-                assert_eq!(group["matcher"], table.matcher, "{}", wiring.event);
-            } else {
-                assert!(group.get("matcher").is_none(), "{}", wiring.event);
-            }
-        }
-        assert_eq!(
-            settings["hooks"].as_object().map(serde_json::Map::len),
-            Some(table.events.len()),
-            "and amx wires nothing the table does not name"
-        );
     }
 
     #[test]
@@ -1150,13 +749,13 @@ mod tests {
             "the plugin wires every event the entry names and nothing else"
         );
 
-        // On the PATH, which is the one amx doctor already insists on.
-        let command = hook_command(Path::new("amx"));
-        assert_eq!(command, "amx _hook");
+        // On the PATH, which is the one amx doctor already insists on: no
+        // wire carries the path this amx happens to stand at.
+        let command = "amx _hook";
         for wiring in table.events {
             assert_eq!(
                 hooks(&wiring_file, wiring.event),
-                [command.as_str()],
+                [command],
                 "{}",
                 wiring.event
             );
@@ -1170,279 +769,6 @@ mod tests {
         }
     }
 
-    /// What claude leaves under a home once the plugin has been installed,
-    /// in the shape measured off claude 2.1.263. `enabledPlugins` in the
-    /// settings stays `{}` there, so this file is the only witness.
-    fn installed_plugins(home: &Path, listed: Value) {
-        let path = home.join(INSTALLED_PLUGINS);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, serde_json::to_string_pretty(&listed).unwrap()).unwrap();
-    }
-
-    #[test]
-    fn the_plugin_is_wired_when_claude_has_been_given_it() {
-        let home = TempDir::new().unwrap();
-        assert!(
-            !plugin_wired(home.path()),
-            "a home with no plugins file has no plugin in it"
-        );
-
-        installed_plugins(
-            home.path(),
-            json!({
-                "version": 2,
-                "plugins": {
-                    "amx@amx": [{
-                        "scope": "user",
-                        "installPath": "/home/dev/.claude/plugins/cache/amx/amx",
-                        "version": "0.3.0",
-                    }],
-                },
-            }),
-        );
-        assert!(plugin_wired(home.path()));
-
-        // Somebody else's plugins are not amx's, and neither is an entry
-        // claude wrote and then emptied.
-        installed_plugins(
-            home.path(),
-            json!({ "version": 2, "plugins": { "focus@focus": [{"scope": "user"}] } }),
-        );
-        assert!(!plugin_wired(home.path()));
-        installed_plugins(
-            home.path(),
-            json!({ "version": 2, "plugins": { "amx@amx": [] } }),
-        );
-        assert!(!plugin_wired(home.path()));
-
-        // A file claude's own, which amx never writes, and which amx cannot
-        // read: no plugin found, and nothing said about their file.
-        std::fs::write(home.path().join(INSTALLED_PLUGINS), "{ not json").unwrap();
-        assert!(!plugin_wired(home.path()));
-    }
-
-    #[test]
-    fn the_marketplace_lists_the_plugin_from_the_repository_root() {
-        let market: Value =
-            serde_json::from_str(include_str!("../.claude-plugin/marketplace.json")).unwrap();
-        assert_eq!(market["name"], "amx");
-        assert_eq!(market["plugins"][0]["name"], "amx");
-        assert_eq!(
-            market["plugins"][0]["source"], "./",
-            "the plugin is this repository, not a directory inside it"
-        );
-    }
-
-    #[test]
-    fn install_twice_is_install_once() {
-        let mut settings = a_persons_settings();
-        assert!(merge(CLAUDE, &mut settings, AMX));
-        let after_first = settings.clone();
-
-        assert!(!merge(CLAUDE, &mut settings, AMX), "nothing left to do");
-        assert_eq!(settings, after_first);
-    }
-
-    #[test]
-    fn install_leaves_hooks_that_are_not_amxs_alone() {
-        let mut settings = a_persons_settings();
-        merge(CLAUDE, &mut settings, AMX);
-
-        assert_eq!(settings["model"], "opus");
-        assert_eq!(settings["permissions"]["allow"][0], "Bash(git diff:*)");
-        let pre_tool = hooks(&settings, "PreToolUse");
-        assert!(
-            pre_tool.contains(&"~/bin/audit.sh".to_string()),
-            "{pre_tool:?}"
-        );
-        assert!(pre_tool.contains(&AMX.to_string()), "{pre_tool:?}");
-    }
-
-    #[test]
-    fn install_replaces_an_amx_that_has_moved_rather_than_adding_a_second() {
-        let mut settings = a_persons_settings();
-        merge(CLAUDE, &mut settings, "/usr/local/bin/amx _hook");
-        merge(CLAUDE, &mut settings, AMX);
-
-        for event in events(CLAUDE) {
-            assert_eq!(
-                hooks(&settings, event)
-                    .iter()
-                    .filter(|c| is_amx_hook(c))
-                    .count(),
-                1,
-                "{event}"
-            );
-        }
-        assert_eq!(hooks(&settings, "Stop"), [AMX]);
-        assert!(hooks(&settings, "PreToolUse").contains(&"~/bin/audit.sh".to_string()));
-    }
-
-    #[test]
-    fn install_knows_its_own_hooks_from_everyone_elses() {
-        assert!(is_amx_hook("amx _hook"));
-        assert!(is_amx_hook("/usr/local/bin/amx _hook"));
-        assert!(is_amx_hook("'/home/dev/my tools/amx' _hook"));
-        assert!(is_amx_hook("  amx   _hook  "));
-
-        assert!(!is_amx_hook("amx-helper _hook"));
-        assert!(!is_amx_hook("myamx _hook"));
-        assert!(!is_amx_hook("amx ls"));
-        assert!(!is_amx_hook("~/bin/audit.sh --note 'amx _hook'"));
-        assert!(!is_amx_hook(""));
-    }
-
-    #[test]
-    fn install_reports_which_events_are_wired() {
-        let mut settings = json!({});
-        assert!(installed_events(CLAUDE, &settings, AMX).is_empty());
-
-        merge(CLAUDE, &mut settings, AMX);
-        let mut wired = installed_events(CLAUDE, &settings, AMX);
-        wired.sort();
-        let mut expected: Vec<String> = events(CLAUDE).map(|e| e.to_string()).collect();
-        expected.sort();
-        assert_eq!(wired, expected);
-
-        // An amx somewhere else is not this amx.
-        assert!(installed_events(CLAUDE, &settings, "/opt/amx _hook").is_empty());
-    }
-
-    #[test]
-    fn install_backs_the_file_up_before_it_changes_anything() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        let before = "{\n    \"model\": \"opus\"\n}\n";
-        std::fs::write(&path, before).unwrap();
-
-        let report = install(CLAUDE, &path, AMX, 1_700_000_000).unwrap();
-        assert!(report.changed);
-        let backup = report.backup.expect("a backup was taken");
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), before);
-
-        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(after["model"], "opus");
-        assert_eq!(hooks(&after, "Stop"), [AMX]);
-    }
-
-    #[test]
-    fn install_creates_settings_that_were_not_there() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nested/settings.json");
-
-        let report = install(CLAUDE, &path, AMX, 1).unwrap();
-        assert!(report.changed);
-        assert_eq!(report.backup, None, "there was nothing to back up");
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(hooks(&written, "Stop"), [AMX]);
-    }
-
-    #[test]
-    fn install_changes_nothing_when_there_is_nothing_to_change() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        install(CLAUDE, &path, AMX, 1).unwrap();
-        let after_first = std::fs::read_to_string(&path).unwrap();
-
-        let report = install(CLAUDE, &path, AMX, 2).unwrap();
-        assert!(!report.changed);
-        assert_eq!(report.backup, None, "an unchanged file needs no backup");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), after_first);
-    }
-
-    #[test]
-    fn install_refuses_settings_it_cannot_read_rather_than_replacing_them() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        let broken = "{ \"model\": \"opus\",,, }";
-        std::fs::write(&path, broken).unwrap();
-
-        let refused = install(CLAUDE, &path, AMX, 1).unwrap_err();
-        assert!(format!("{refused:#}").contains("settings.json"));
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            broken,
-            "somebody's editing mistake is not amx's to overwrite"
-        );
-    }
-
-    #[test]
-    fn uninstall_puts_the_original_bytes_back() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        // Hand formatting a round trip would not reproduce.
-        let before = "{\n    \"model\":   \"opus\"\n}\n";
-        std::fs::write(&path, before).unwrap();
-
-        install(CLAUDE, &path, AMX, 1).unwrap();
-        let report = uninstall(CLAUDE, &path, 2).unwrap();
-
-        assert!(report.changed);
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            before,
-            "byte for byte, formatting and all"
-        );
-    }
-
-    #[test]
-    fn uninstall_keeps_what_was_written_after_the_install() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, "{\"model\": \"opus\"}\n").unwrap();
-        install(CLAUDE, &path, AMX, 1).unwrap();
-
-        // Somebody edits their settings after amx was installed.
-        let mut settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        settings["env"] = json!({ "EDITOR": "emacsclient" });
-        settings["hooks"]["Stop"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"hooks": [{"type": "command", "command": "~/bin/chime"}]}));
-        write(&path, &settings).unwrap();
-
-        uninstall(CLAUDE, &path, 3).unwrap();
-
-        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            after["env"]["EDITOR"], "emacsclient",
-            "a week of edits is not amx's to undo"
-        );
-        assert_eq!(hooks(&after, "Stop"), ["~/bin/chime"]);
-        assert!(installed_events(CLAUDE, &after, AMX).is_empty());
-    }
-
-    #[test]
-    fn uninstall_without_a_backup_still_takes_the_hooks_out() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        let mut settings = a_persons_settings();
-        merge(CLAUDE, &mut settings, AMX);
-        write(&path, &settings).unwrap();
-
-        let report = uninstall(CLAUDE, &path, 1).unwrap();
-        assert!(report.changed);
-
-        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(installed_events(CLAUDE, &after, AMX).is_empty());
-        assert_eq!(hooks(&after, "PreToolUse"), ["~/bin/audit.sh"]);
-        assert_eq!(after["model"], "opus");
-    }
-
-    #[test]
-    fn uninstall_leaves_a_file_amx_never_touched_alone() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        let before = "{\n  \"model\": \"opus\"\n}\n";
-        std::fs::write(&path, before).unwrap();
-
-        let report = uninstall(CLAUDE, &path, 1).unwrap();
-        assert!(!report.changed);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-    }
-
     #[test]
     fn uninstall_takes_the_most_recent_backup() {
         let dir = TempDir::new().unwrap();
@@ -1450,8 +776,8 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         assert_eq!(latest_backup(&path).unwrap(), None);
 
-        install(CLAUDE, &path, AMX, 100).unwrap();
-        install(CLAUDE, &path, "/opt/amx _hook", 200).unwrap();
+        install_file(&path, "theirs\n", 100).unwrap();
+        install_file(&path, "and theirs again\n", 200).unwrap();
 
         assert_eq!(
             latest_backup(&path).unwrap(),
@@ -1544,7 +870,7 @@ mod tests {
         std::fs::write(&outside, "{}\n").unwrap();
         std::os::unix::fs::symlink(&outside, &path).unwrap();
 
-        let report = install(CLAUDE, &path, AMX, 1).unwrap();
+        let report = install_file(&path, "// installed by amx\n", 1).unwrap();
         assert!(report.changed);
 
         assert!(

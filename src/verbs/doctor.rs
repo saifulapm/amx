@@ -98,11 +98,6 @@ pub struct Findings {
     /// extension amx writes — and what is wired there now.
     pub wire: PathBuf,
     pub wired: install::Wired,
-    /// Whether the same wiring is on this machine as the amx plugin, which
-    /// writes into no settings file at all.
-    pub plugin: bool,
-    /// The hook command this amx would install.
-    pub command: String,
     /// This amx, and every amx the PATH finds in the order it looks — each
     /// a file, named once however many names it goes by.
     pub exe: PathBuf,
@@ -258,48 +253,11 @@ fn wiring_check(found: &Findings, vendor: Option<&'static Vendor>) -> Check {
     };
     let wire = found.wire.display();
     let what = match hooks.wire {
-        Wire::Settings(_) => "hooks",
         Wire::File { .. } => "extension",
         Wire::Plugin { .. } => "plugin",
     };
 
     match &found.wired {
-        install::Wired::Settings {
-            error: Some(why), ..
-        } => {
-            // amx does not write settings it cannot read, so there is nothing
-            // `--fix` can do here that would not risk the person's own file.
-            Check::wrong(
-                "hooks",
-                format!("{wire} cannot be read: {why}"),
-                format!("repair {wire} by hand"),
-            )
-        }
-        install::Wired::Settings { events, .. } => {
-            // The plugin is the same events by another door, and the door it
-            // did not come through has nothing missing from it.
-            if found.plugin {
-                return Check::ok(
-                    "hooks",
-                    format!("all {} wired through the amx plugin", hooks.events.len()),
-                );
-            }
-            let missing: Vec<&str> = install::events(hooks)
-                .filter(|event| !events.iter().any(|wired| wired == *event))
-                .collect();
-            if missing.is_empty() {
-                return Check::ok(
-                    "hooks",
-                    format!("all {} wired in {wire}", hooks.events.len()),
-                );
-            }
-            let what = if missing.len() == hooks.events.len() {
-                format!("none wired in {wire}")
-            } else {
-                format!("{} not wired in {wire}", missing.join(", "))
-            };
-            Check::wrong("hooks", what, "run `amx doctor --fix`")
-        }
         // The vendor's own word for what amx wrote there: pi loads an
         // extension, claude loads a plugin, and a person sent to look at one
         // under the other's name is a person looking for the wrong thing.
@@ -576,11 +534,8 @@ pub fn run(
         let mut answer = String::new();
         input.read_line(&mut answer)?;
         if answer.trim().eq_ignore_ascii_case("y") {
-            let wrote = install::install_hooks(hooks, &current.home, &current.command, now)?;
+            let wrote = install::install_hooks(hooks, &current.home, now)?;
             match hooks.wire {
-                Wire::Settings(_) => {
-                    writeln!(out, "wired the hooks into {}", wrote.path.display())?
-                }
                 Wire::File { .. } => {
                     writeln!(out, "wrote the extension to {}", wrote.path.display())?
                 }
@@ -592,7 +547,7 @@ pub fn run(
                 writeln!(out, "the file as it was is at {}", backup.display())?;
             }
             // Judge again: the machine is not what it was a moment ago.
-            current.wired = install::wired(Some(hooks), &current.home, &current.command);
+            current.wired = install::wired(Some(hooks), &current.home);
             checks = report(&current);
         } else {
             writeln!(out, "left {} alone", current.wire.display())?;
@@ -621,11 +576,9 @@ fn fixable(checks: &[Check]) -> bool {
 pub fn gather(config: &Config) -> Result<Findings> {
     let home = install::home()?;
     let exe = std::env::current_exe()?;
-    let command = install::hook_command(&exe);
     let hooks = hooks_of(registry::entry(&config.agent));
     let wire = hooks.map_or_else(|| home.clone(), |hooks| install::wire_path(hooks, &home));
-    let wired = install::wired(hooks, &home, &command);
-    let plugin = install::plugin_wired(&home);
+    let wired = install::wired(hooks, &home);
     let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
     // Only for the vendor whose screen amx answers by writing its store: any
@@ -655,8 +608,6 @@ pub fn gather(config: &Config) -> Result<Findings> {
         home,
         wire,
         wired,
-        plugin,
-        command,
         on_path: every_on_path("amx", std::env::var_os("PATH").as_deref()),
         exe: exe.canonicalize().unwrap_or(exe),
         state_error: usable(&state_root),
@@ -939,40 +890,20 @@ mod tests {
             .unwrap_or_else(|| panic!("{agent:?} draws no such screen"))
     }
 
-    const COMMAND: &str = "/home/dev/.cargo/bin/amx _hook";
-
-    /// Every event claude's entry names, wired.
+    /// Every file claude's plugin ships, standing where claude loads it.
     fn all_wired() -> install::Wired {
-        install::Wired::Settings {
-            events: install::events(&claude::HOOKS)
-                .map(str::to_string)
-                .collect(),
-            error: None,
+        install::Wired::File {
+            present: true,
+            current: true,
         }
     }
 
-    /// Nothing wired in a settings file that reads fine.
+    /// A machine with nothing of amx's written under it.
     fn none_wired() -> install::Wired {
-        install::Wired::Settings {
-            events: Vec::new(),
-            error: None,
+        install::Wired::File {
+            present: false,
+            current: false,
         }
-    }
-
-    /// A settings file amx could not read.
-    fn unreadable(why: &str) -> install::Wired {
-        install::Wired::Settings {
-            events: Vec::new(),
-            error: Some(why.to_string()),
-        }
-    }
-
-    /// Somebody's settings under a home of the test's own, where a fix writes.
-    fn a_home(dir: &TempDir, settings: &str) -> PathBuf {
-        let path = dir.path().join(".claude/settings.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, settings).unwrap();
-        path
     }
 
     fn healthy() -> Findings {
@@ -985,8 +916,6 @@ mod tests {
             home: PathBuf::from("/home/dev"),
             wire: PathBuf::from("/home/dev/.claude/settings.json"),
             wired: all_wired(),
-            plugin: false,
-            command: COMMAND.to_string(),
             exe: PathBuf::from("/home/dev/.cargo/bin/amx"),
             on_path: vec![PathBuf::from("/home/dev/.cargo/bin/amx")],
             state_root: PathBuf::from("/home/dev/.local/state/amx/agents"),
@@ -1208,25 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn doctor_names_the_events_that_are_not_wired() {
-        let mut found = healthy();
-        found.wired = install::Wired::Settings {
-            events: vec!["Stop".to_string(), "SessionStart".to_string()],
-            error: None,
-        };
-
-        let hooks = check(&found, "hooks");
-        assert!(hooks.found.contains("Notification"), "{}", hooks.found);
-        assert!(hooks.found.contains("PreToolUse"), "{}", hooks.found);
-        assert!(
-            !hooks.found.contains("Stop,"),
-            "not the ones that are: {}",
-            hooks.found
-        );
-        assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
-    }
-
-    #[test]
     fn doctor_says_a_vendor_that_reports_nothing_leaves_the_pane_to_read() {
         // Hooks are a vendor's own doing, and one that has none is not a
         // machine with something missing from it: there is nothing to wire and
@@ -1306,13 +1216,12 @@ mod tests {
         // The check resolves the vendor by name out of the table, where pi
         // carries no hooks yet, so the flow is driven at the install below
         // and the check is proved above.
-        let report =
-            install::install_hooks(&crate::vendor::pi::HOOKS, dir.path(), COMMAND, 1).unwrap();
+        let report = install::install_hooks(&crate::vendor::pi::HOOKS, dir.path(), 1).unwrap();
         assert!(report.changed);
         let written = std::fs::read_to_string(&extension).unwrap();
         assert!(written.starts_with("// installed by amx\n"));
         assert_eq!(
-            install::wired(Some(&crate::vendor::pi::HOOKS), dir.path(), COMMAND),
+            install::wired(Some(&crate::vendor::pi::HOOKS), dir.path()),
             install::Wired::File {
                 present: true,
                 current: true
@@ -1320,54 +1229,6 @@ mod tests {
         );
         let asked = install::consent_line(&crate::vendor::pi::HOOKS, &extension, false);
         assert!(asked.contains("extension"), "{asked}");
-    }
-
-    #[test]
-    fn doctor_reads_the_plugin_as_the_wiring_the_settings_would_have_carried() {
-        // The plugin wires the same events out of the repository's own hooks
-        // file, and writes nothing into anybody's settings. A machine wired
-        // that way is wired: doctor saying otherwise would send somebody to
-        // repair what is already there.
-        let mut found = healthy();
-        found.wired = none_wired();
-        found.plugin = true;
-
-        let hooks = check(&found, "hooks");
-        assert!(hooks.is_ok(), "{hooks:?}");
-        assert!(
-            hooks
-                .found
-                .contains(&claude::HOOKS.events.len().to_string()),
-            "how many events: {}",
-            hooks.found
-        );
-        assert!(
-            hooks.found.contains("plugin"),
-            "and which door they came through: {}",
-            hooks.found
-        );
-        assert_eq!(said(&found, false).0, exit::OK);
-
-        // Half a settings file and no plugin is still half a settings file.
-        found.plugin = false;
-        let hooks = check(&found, "hooks");
-        assert!(!hooks.is_ok(), "{hooks:?}");
-        assert!(hooks.remedy.as_deref().unwrap().contains("--fix"));
-    }
-
-    #[test]
-    fn doctor_reports_settings_it_cannot_read_without_offering_to_write_them() {
-        let mut found = healthy();
-        found.wired = unreadable("expected value at line 1 column 3");
-
-        let hooks = check(&found, "hooks");
-        let remedy = hooks.remedy.as_deref().unwrap();
-        assert!(hooks.found.contains("line 1"), "{}", hooks.found);
-        assert!(
-            !remedy.contains("--fix"),
-            "amx cannot fix this one: {remedy}"
-        );
-        assert!(remedy.contains("settings.json"), "{remedy}");
     }
 
     #[test]
@@ -1387,70 +1248,12 @@ mod tests {
         assert_eq!(code, exit::OK, "nothing is wrong any more: {printed}");
         assert!(printed.contains("will write"), "it asked first: {printed}");
         assert_eq!(
-            install::wired(Some(&claude::HOOKS), dir.path(), COMMAND),
+            install::wired(Some(&claude::HOOKS), dir.path()),
             install::Wired::File {
                 present: true,
                 current: true
             }
         );
-    }
-
-    #[test]
-    fn doctor_fix_writes_nothing_when_nobody_agrees() {
-        let dir = TempDir::new().unwrap();
-        let before = "{\"model\": \"opus\"}\n";
-        let settings = a_home(&dir, before);
-
-        let mut found = healthy();
-        found.home = dir.path().to_path_buf();
-        found.wire = settings.clone();
-        found.wired = none_wired();
-
-        let mut out = Vec::new();
-        let code = run(&found, true, 1, &mut "n\n".as_bytes(), &mut out).unwrap();
-
-        assert_eq!(code, exit::FAILURE, "the hooks are still not wired");
-        assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
-        assert!(
-            String::from_utf8(out).unwrap().contains("left"),
-            "it says so"
-        );
-    }
-
-    #[test]
-    fn doctor_fix_leaves_a_wired_machine_alone() {
-        let dir = TempDir::new().unwrap();
-        let settings = a_home(&dir, "{}\n");
-        install::install(&claude::HOOKS, &settings, COMMAND, 1).unwrap();
-        let before = std::fs::read_to_string(&settings).unwrap();
-
-        let mut found = healthy();
-        found.home = dir.path().to_path_buf();
-        found.wire = settings.clone();
-
-        let mut out = Vec::new();
-        assert_eq!(
-            run(&found, true, 2, &mut "".as_bytes(), &mut out).unwrap(),
-            exit::OK
-        );
-        assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
-    }
-
-    #[test]
-    fn doctor_fix_will_not_touch_settings_it_cannot_read() {
-        let dir = TempDir::new().unwrap();
-        let broken = "{ not json";
-        let settings = a_home(&dir, broken);
-
-        let mut found = healthy();
-        found.home = dir.path().to_path_buf();
-        found.wire = settings.clone();
-        found.wired = unreadable("expected value");
-
-        let mut out = Vec::new();
-        let code = run(&found, true, 1, &mut "y\n".as_bytes(), &mut out).unwrap();
-        assert_eq!(code, exit::FAILURE);
-        assert_eq!(std::fs::read_to_string(&settings).unwrap(), broken);
     }
 
     #[test]

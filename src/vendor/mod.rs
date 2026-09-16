@@ -140,16 +140,6 @@ pub struct Hooks {
 /// past that is whether the hook may answer — see [`Wire::listens`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wire {
-    /// One entry per event, merged into the vendor's own JSON settings file
-    /// beside whatever is already there, each running the hook command. The
-    /// path is relative to the home directory.
-    ///
-    /// No vendor reports this way any longer — claude was the last and now
-    /// loads a plugin instead. The variant and the machinery under it come out
-    /// next, and `expect` rather than `allow` so that the day somebody deletes
-    /// it the compiler asks for this attribute back.
-    #[expect(dead_code, reason = "claude's old door, removed in the next task")]
-    Settings(&'static str),
     /// A file of amx's own, written whole where the vendor loads extensions
     /// from, which reports through the hook command itself. The path is
     /// relative to the home directory, and the body is the file as it ships.
@@ -187,7 +177,6 @@ impl Wire {
     /// Where the wiring goes, under the home directory.
     pub fn path(&self) -> &'static str {
         match self {
-            Wire::Settings(path) => path,
             Wire::File { path, .. } => path,
             Wire::Plugin { dir, .. } => dir,
         }
@@ -791,7 +780,6 @@ mod tests {
                 "{hooks:?} is wired outside anybody's home"
             );
             match hooks.wire {
-                Wire::Settings(_) => {}
                 Wire::File { body, .. } => {
                     assert!(body.contains("_hook"), "{path} reports through nothing");
                 }

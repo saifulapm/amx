@@ -27,20 +27,18 @@ use crate::{exit, install, registry, store};
 /// Run the verb against the machine's own paths.
 pub fn from_env(vendor: Option<&str>) -> Result<i32> {
     let home = install::home()?;
-    let command = install::hook_command(&std::env::current_exe()?);
     let mut out = std::io::stdout().lock();
-    run(vendor, &home, &command, store::now(), &mut out)
+    run(vendor, &home, store::now(), &mut out)
 }
 
-/// Run the verb, with everything it touches named: the agent, the home its
-/// wiring goes under, and the hook command that wiring will run.
-pub fn run(
-    vendor: Option<&str>,
-    home: &Path,
-    command: &str,
-    now: u64,
-    out: &mut impl Write,
-) -> Result<i32> {
+/// Run the verb, with everything it touches named: the agent, and the home its
+/// wiring goes under.
+///
+/// The hook command is not among them. Every wire amx writes now runs `amx`
+/// off the PATH rather than the path this amx happens to stand at, which is
+/// the thing `doctor` insists on when it asks that there be one amx and this
+/// be it.
+pub fn run(vendor: Option<&str>, home: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
     let Some(name) = vendor else {
         writeln!(out, "name an agent to set up: {}", every_agent())?;
         return Ok(exit::USAGE);
@@ -65,7 +63,7 @@ pub fn run(
         install::consent_line(hooks, &path, path.exists())
     )?;
 
-    let wrote = install::install_hooks(hooks, home, command, now)?;
+    let wrote = install::install_hooks(hooks, home, now)?;
     if !wrote.changed {
         writeln!(
             out,
@@ -75,7 +73,6 @@ pub fn run(
         return Ok(exit::OK);
     }
     match hooks.wire {
-        Wire::Settings(_) => writeln!(out, "wired the hooks into {}", wrote.path.display())?,
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
         Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
     }
@@ -100,13 +97,11 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
 
-    const COMMAND: &str = "/home/dev/.cargo/bin/amx _hook";
-
     /// Run the verb over a home of the test's own, and answer with what it
     /// exited and what it printed.
     fn said(vendor: Option<&str>, home: &Path, now: u64) -> (i32, String) {
         let mut out = Vec::new();
-        let code = run(vendor, home, COMMAND, now, &mut out).unwrap();
+        let code = run(vendor, home, now, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
     }
 
