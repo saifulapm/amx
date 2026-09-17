@@ -886,17 +886,17 @@ mod tests {
         assert_eq!(family.len(), 3, "one row each: {lines:#?}");
         assert!(
             family[0].starts_with("   · parent-a1b"),
-            "the root is padded to the family's gutter: {:?}",
+            "a root keeps its column, whatever the family's depth: {:?}",
             family[0]
         );
         assert!(
-            family[1].starts_with(" ├─∙ scout-b2c"),
-            "the finished child wears the open connector and its own glyph: {:?}",
+            family[1].starts_with("   ├─∙ scout-b2c"),
+            "the connector starts in the column of the glyph it hangs from: {:?}",
             family[1]
         );
         assert!(
-            family[2].starts_with(" └─· review-c3d"),
-            "the last child closes the pair: {:?}",
+            family[2].starts_with("   └─· review-c3d"),
+            "the last child closes the pair under the same column: {:?}",
             family[2]
         );
         let column = |line: &str, word: &str| {
@@ -906,19 +906,19 @@ mod tests {
             line[..at].chars().count()
         };
         assert_eq!(
-            column(family[0], "running"),
             column(family[1], "find"),
-            "the summaries stand at one column: {family:#?}"
+            column(family[0], "running") + 2,
+            "a child's summary stands one level in from its parent's: {family:#?}"
         );
         assert_eq!(
             column(family[1], "find"),
             column(family[2], "reading"),
-            "including the last child's"
+            "and a sibling's stands at the same column"
         );
         assert_eq!(
             column(family[0], "parent-a1b"),
-            column(family[1], "scout-b2c"),
-            "and so do the names"
+            column(family[1], "scout-b2c") - 2,
+            "a child's name is one level right of its parent's"
         );
     }
 

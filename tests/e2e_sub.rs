@@ -227,3 +227,42 @@ fn sub_refuses_permission_unless_the_config_allows_it() {
         "names the key: {said:?}"
     );
 }
+
+#[test]
+fn sub_hands_the_parents_vendor_down_when_no_agent_is_named() {
+    // A subagent of a pi agent is pi. The parent's own command is the child's
+    // default whenever the caller names neither `--agent` nor `--model`, so a
+    // child typed inside a pane does not quietly run whatever the config file
+    // says the machine's agent is. Found live on 2026-09-17: a pi parent's
+    // child came up claude.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    amx.config(&format!("agent = \"{mock} --not-the-parent\"\n"));
+    let parent = a_parent(&amx, &mock);
+
+    // No `--agent`, unlike every other test here.
+    let out = amx
+        .amx_command(&["sub", "--bg", "scout"])
+        .env("AMX_ID", &parent)
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
+        .output()
+        .expect("running amx sub");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let child = id_on(&out);
+    assert_eq!(
+        amx.meta(&child)["agent"],
+        amx.meta(&parent)["agent"],
+        "the child runs what its parent runs"
+    );
+    assert_ne!(
+        amx.meta(&child)["agent"],
+        format!("{mock} --not-the-parent"),
+        "and not what the config file names"
+    );
+}

@@ -462,8 +462,8 @@ pub struct List {
     children: Vec<Vec<usize>>,
     /// The top-level rows, in that same order.
     tops: Vec<usize>,
-    /// How deep the deepest drawn row stands, which is the gutter every row is
-    /// padded to so the columns after it stand still.
+    /// How deep the deepest drawn row stands: the column every root's glyph
+    /// is padded to, and the most levels one row's gutter can indent.
     deepest: usize,
     /// Whether a directory holds a repository. A field so that a test can say
     /// what the disk looks like, and count what was asked of it.
@@ -1329,31 +1329,37 @@ impl List {
         }
     }
 
-    /// How deep the deepest row on this wall stands, which is the gutter every
-    /// row is padded to.
+    /// How deep the deepest row on this wall stands: the column every root is
+    /// padded to, and the most levels any one row's gutter indents.
     pub fn deepest(&self) -> usize {
         self.deepest
     }
 
-    /// The cells before an agent's glyph: its own connector and the rails of
-    /// the ancestors above it, padded out to the deepest row drawn so every
-    /// name stands at the same column.
+    /// The cells before an agent's glyph: a root's column, then one two-cell
+    /// level for each step of this row's own depth.
     ///
-    /// `├─` where a brother follows, `└─` on the last of them, `│ ` where a
-    /// connector from an ancestor passes the row on its way to a brother, and
-    /// spaces where neither: the gutter a person reads as the shape of the
-    /// family.
+    /// Every root keeps the same column whatever its family's depth, so a
+    /// wall's roots stand together. A child's connector then lands in the
+    /// column of the glyph it hangs from — `├─` where a brother follows,
+    /// `└─` on the last of them, `│ ` where a connector from an ancestor
+    /// passes the row on its way to a brother, and spaces where neither — so
+    /// the family reads as a tree and each level indents its own row.
     pub fn gutter(&self, item: Item) -> String {
         let n = match item {
             Item::Agent(n) => n,
             // The fold's own row stands one level under the parent whose
-            // children it holds back, and wears no connector of its own.
+            // children it holds back, at the column a child's glyph would
+            // take, and wears no connector of its own.
             Item::Sub(n, _) => {
-                return "  ".repeat(self.depth_of_row(n) + 1);
+                return "  ".repeat(self.deepest + self.depth_of_row(n) + 1);
             }
             _ => return String::new(),
         };
         let depth = self.depth_of_row(n);
+        let mut cells = "  ".repeat(self.deepest);
+        if depth == 0 {
+            return cells;
+        }
         // The path from the root down to this row, so each rail can ask the
         // ancestor whose connector it stands under.
         let mut path = vec![n];
@@ -1363,11 +1369,8 @@ impl List {
             here = parent;
         }
         path.reverse();
-        let mut cells = String::with_capacity(self.deepest * 2);
-        for level in 0..self.deepest {
-            if depth == 0 || level + 1 > depth {
-                cells.push_str("  ");
-            } else if level + 1 == depth {
+        for level in 0..depth {
+            if level + 1 == depth {
                 cells.push_str(match self.last_sibling(n) {
                     true => "└─",
                     false => "├─",
@@ -2422,8 +2425,14 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            ["Working (1)", "  parent-a1b", "├─scout-b2c", "└─review-c3d"],
-            "the children hang from the parent, in start order"
+            [
+                "Working (1)",
+                "  parent-a1b",
+                "  ├─scout-b2c",
+                "  └─review-c3d"
+            ],
+            "the children hang from the parent, in start order, each connector\
+             under the glyph it hangs from"
         );
         assert_eq!(
             list.counts(),
@@ -2447,9 +2456,10 @@ mod tests {
 
     #[test]
     fn view_nests_a_grandchild_under_the_row_it_hangs_from() {
-        // Two levels: the parent's own gutter is padded so its name stands at
-        // the same column as the child's and the grandchild's, and the rail
-        // under the child is the one a connector would pass down.
+        // Two levels: a root keeps its column whatever the family's depth, and
+        // each level then indents by two cells, so a connector starts in the
+        // column of the glyph it hangs from and the rail under the child is
+        // the one a connector would pass down.
         let mut grandchild = child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b");
         grandchild.meta.depth = 2;
         let list = listed(vec![
@@ -2462,10 +2472,10 @@ mod tests {
             [
                 "Working (1)",
                 "    parent-a1b",
-                "└─  helper-f6g",
-                "  └─scout-b2c",
+                "    └─helper-f6g",
+                "      └─scout-b2c",
             ],
-            "every gutter is as wide as the deepest row drawn"
+            "every root is padded to the family's depth and its own levels indent it"
         );
         assert_eq!(list.deepest(), 2);
     }
@@ -2488,7 +2498,7 @@ mod tests {
         assert_eq!(drawn[1], "  parent-a1b");
         assert_eq!(
             drawn.last().map(String::as_str),
-            Some("  … 3 sub"),
+            Some("    … 3 sub"),
             "the parent says how many of its own the fold held back"
         );
         assert_eq!(
@@ -2516,7 +2526,7 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            ["/src/api (1)", "  parent-a1b", "└─scout-b2c"],
+            ["/src/api (1)", "  parent-a1b", "  └─scout-b2c"],
             "one project heading for the family"
         );
     }

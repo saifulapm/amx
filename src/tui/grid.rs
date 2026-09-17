@@ -73,14 +73,16 @@ pub(super) struct Widths {
     pub summary: usize,
     /// How long it has worked.
     pub age: usize,
-    /// The deepest a drawn row nests, which is the gutter every row is padded
-    /// to. Read by the rows so one knows how many cells it must fill.
+    /// How deep the deepest drawn row stands: the column every root's glyph is
+    /// padded to, and what the summary gives up room for. Read by the rows so
+    /// one knows how far its own levels may indent.
     pub depth: usize,
 }
 
 /// The columns a row is cut into at this width, on this axis, with the vendor
 /// column where somebody has asked for one and `depth` the deepest a drawn row
-/// nests — each level of nesting adds [`NEST`] cells before the glyph.
+/// nests — a root is padded to that depth and then each of its own levels
+/// indents it by [`NEST`] cells.
 pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Widths {
     let name = match width >= WIDE {
         true => WIDE_NAME,
@@ -117,14 +119,15 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Wi
 /// connector, `├─`, `└─` or the `│ ` of a rail passing through.
 pub(super) const NEST: usize = 2;
 
-/// The cells every row spends on nesting, the deepest a drawn row stands.
+/// The cells the deepest row spends on nesting, which is what the width budget
+/// must leave for the gutter.
 ///
-/// One gutter for the whole wall rather than one per row: the rows are padded
-/// out to the deepest, so a name and every column after it stand at the same
-/// place whether the row is a root or a child. A wall of two gutters is two
-/// walls.
+/// A root is padded to the family's deepest ([`NEST`] per level) and then its
+/// own levels indent it by one more each, so the deepest row is the one with
+/// `depth` levels of its own and the budget is twice the padding. A shallower
+/// row spends less and stands further left: nesting indents with depth.
 pub(super) fn nest(depth: usize) -> usize {
-    NEST * depth
+    NEST * depth * 2
 }
 
 /// How many cells a path heading can spend on its path, with `suffix` being
@@ -359,8 +362,8 @@ mod tests {
             assert_eq!(deep.age, flat.age, "nor does the age column");
             assert_eq!(
                 flat.summary - deep.summary,
-                NEST * depth,
-                "the summary pays for {depth} levels of connector"
+                nest(depth),
+                "the summary pays for {depth} levels of nesting"
             );
             assert_eq!(deep.depth, depth, "and the rows are told how deep");
         }

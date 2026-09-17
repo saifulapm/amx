@@ -178,16 +178,34 @@ fn parent_of(root: &Path, env: &BTreeMap<String, String>, no_parent: bool) -> Op
 
 /// Hand the parent's dials down, where the child runs the same vendor.
 ///
-/// A claude parent hands its `model` and `effort` to a claude child and says
-/// nothing to a `--agent codex` child, where a claude model name means nothing.
-/// Anything the caller typed wins, and `--permission` is not here at all:
-/// widening it is a decision rather than an inheritance.
+/// The command first: a child of a pi agent is pi unless the caller says
+/// otherwise. Then a claude parent hands its `model` and `effort` to a claude
+/// child and says nothing to a `--agent codex` child, where a claude model
+/// name means nothing. Anything the caller typed wins, and `--permission` is
+/// not here at all: widening it is a decision rather than an inheritance.
 fn inherit(config: &Config, parent: Option<&Meta>, spawn_args: &mut NewArgs) -> Result<(), String> {
     let Some(parent) = parent else {
         return Ok(());
     };
-    // What this child would have launched as before any inheritance, which is
-    // the vendor the comparison is about.
+    let named = spawn_args.agent.clone().unwrap_or_default();
+    // The vendor is the first dial a child inherits: a subagent of a pi agent
+    // is pi. Only a default — an `--agent` names the command outright, and a
+    // `--model` still picks the harness the model belongs to the way it does
+    // for `new` — and it is the parent's whole command that rides, so a
+    // `claude --add-dir ..` parent hands the flag down with the vendor.
+    if named.command.is_none()
+        && named.model.is_none()
+        && let Some(command) = parent.agent.as_deref().filter(|agent| !agent.is_empty())
+    {
+        spawn_args.agent = Some(AgentArgs {
+            command: Some(command.to_string()),
+            model: None,
+            permission: None,
+            effort: None,
+        });
+    }
+    // What this child would have launched as now, which is the vendor the
+    // comparison is about.
     let launch = new::Launch::resolve(config, spawn_args)?;
     let theirs = registry::program(parent.agent.as_deref().unwrap_or_default());
     if registry::program(&launch.agent) != theirs {
