@@ -2,7 +2,7 @@
 #
 # Copy this to ~/.config/amx/config.toml and change what you want changed. A
 # copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Twenty-two keys, the keys you bind
+# the one amx uses when the key is left out. Twenty-five keys, the keys you bind
 # yourself and a table per harness; a key amx has never heard of is warned about
 # and ignored, and a file it cannot parse falls back to these defaults with a
 # warning, because losing an agent to a stray comma is the worse outcome.
@@ -24,6 +24,22 @@ max_agents = 5
 # A ceiling over every project on the machine at once. Left out, there is
 # none: a machine is as busy as the projects on it ask between them.
 # max_total = 10
+
+# How many live children one parent may have at once: the records whose parent
+# it is and which have not finished. 0 is no ceiling of its own. Children are
+# not counted toward max_agents or max_total — those are your ceiling on your
+# own wall, and a subagent is an agent's own work.
+max_children = 8
+
+# How deep a chain of subagents may go: 1 is a child and no grandchild, 0 is a
+# root that may not spawn at all. A spawn past this is refused before anything
+# is claimed. `amx new --no-parent` records no parent and is never bounded.
+subagent_depth = 1
+
+# Whether `amx sub` takes --permission from the caller. A model and an effort
+# the parent already chose are handed down, but widening the permission is a
+# decision, so it is off until you say so.
+subagents_may_escalate = false
 
 # Give each agent its own git worktree. Two agents editing one checkout is the
 # failure amx is arranged to avoid; `amx new --no-worktree` is the escape for

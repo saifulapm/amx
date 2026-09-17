@@ -1596,13 +1596,16 @@ was these words, and `true` and `false` still read as desktop and off.
 
 ## Configuration
 
-`~/.config/amx/config.toml`, twenty-two keys, the keys you bind yourself and a
+`~/.config/amx/config.toml`, twenty-five keys, the keys you bind yourself and a
 table per harness:
 
 ```toml
 agent = "claude"          # the command a new agent runs: claude, pi or your own
 max_agents = 5            # how many live agents in a project before `new` refuses
 max_total = 10            # a ceiling over every project on the machine
+max_children = 8          # live children one parent may have; 0 is no ceiling
+subagent_depth = 1        # a child may not spawn; 0 forbids children at all
+subagents_may_escalate = false  # whether `amx sub` takes --permission
 worktrees = true          # give each agent its own worktree in a repository
 notifications = "desktop" # to the desktop; also "terminal", "both", "off"
 trust = false             # answer claude's folder-trust screen for linked worktrees

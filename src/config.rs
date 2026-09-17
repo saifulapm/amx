@@ -1,6 +1,6 @@
-//! `~/.config/amx/config.toml` — twenty-two keys, the keys the person binds and
-//! a table per harness — with a project's own `<project>/.amx/config.toml` laid
-//! over it.
+//! `~/.config/amx/config.toml` — twenty-five keys, the keys the person binds
+//! and a table per harness — with a project's own `<project>/.amx/config.toml`
+//! laid over it.
 //!
 //! Config is a convenience, never a gate: a file that cannot be read or
 //! parsed degrades to the defaults with a warning on stderr, because losing
@@ -16,10 +16,13 @@ use std::path::{Path, PathBuf};
 
 /// Every key the file may carry, beside the harness tables. Anything else is
 /// warned about and ignored.
-pub const KNOWN_KEYS: [&str; 22] = [
+pub const KNOWN_KEYS: [&str; 25] = [
     "agent",
     "max_agents",
     "max_total",
+    "max_children",
+    "subagent_depth",
+    "subagents_may_escalate",
     "worktrees",
     "notifications",
     "trust",
@@ -155,6 +158,32 @@ pub struct Config {
     pub max_total: Option<usize>,
     /// Give new agents their own git worktree.
     pub worktrees: bool,
+    /// How deep a chain of subagents may go: 1 is a child and no grandchild,
+    /// 0 is a root that may not spawn at all.
+    ///
+    /// A spawn whose computed depth is past this is refused before anything
+    /// is claimed, the way a cap is, rather than after a pane a person then
+    /// has to clean up. `--no-parent` records no parent and so is never a
+    /// spawn this bounds.
+    pub subagent_depth: usize,
+    /// How many live children one parent may have at once. 0 is no ceiling
+    /// of its own, which is what an ancestor that spawns a handful at a time
+    /// wants.
+    ///
+    /// Counted over the records whose `parent` is that agent and which have
+    /// not reached a terminal phase, so a finished child is not a slot held
+    /// open. Children are not counted toward `max_agents` or `max_total`:
+    /// those are the person's ceiling on their own wall, and a subagent is an
+    /// agent's own work rather than one of the person's rows.
+    pub max_children: usize,
+    /// Whether `amx sub` takes `--permission` from the caller, which is the
+    /// one dial a child does not inherit for free.
+    ///
+    /// A model and an effort the parent already chose are handed down, but a
+    /// permission is the parent's own trust and the decision to widen it is
+    /// the person's. Off until they say so, the way `trust` stands behind the
+    /// vendor's own file.
+    pub subagents_may_escalate: bool,
     /// Where a notice about the transitions worth interrupting for goes: the
     /// desktop's notifier, the terminals the person is sitting at, both or
     /// neither.
@@ -288,6 +317,9 @@ impl Default for Config {
             max_agents: 5,
             max_total: None,
             worktrees: true,
+            subagent_depth: 1,
+            max_children: 8,
+            subagents_may_escalate: false,
             notifications: Delivery::Desktop,
             trust: false,
             model: None,
@@ -701,6 +733,11 @@ mod tests {
         assert_eq!(c.on_done, None);
         assert_eq!(c.on_failed, None);
         assert_eq!(c.on_stopped, None);
+        // A child may not spawn one of its own, eight live children is a
+        // parent's share, and escalation is a decision nobody has taken.
+        assert_eq!(c.subagent_depth, 1);
+        assert_eq!(c.max_children, 8);
+        assert!(!c.subagents_may_escalate);
         // No key of your own is bound until a table binds one.
         assert!(c.keys.is_empty());
         // No harness says anything about itself until a table of its own does.
@@ -856,6 +893,21 @@ mod tests {
         assert_eq!(c.on_stopped.as_deref(), Some("log-it"));
         assert_eq!(c.on_waiting, None);
         assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("subagent_depth = 2").unwrap();
+        assert_eq!(c.subagent_depth, 2);
+        assert_eq!(c.max_children, Config::default().max_children);
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("max_children = 3").unwrap();
+        assert_eq!(c.max_children, 3);
+        assert_eq!(c.subagent_depth, Config::default().subagent_depth);
+        assert!(w.is_empty(), "{w:?}");
+
+        let (c, w) = parse("subagents_may_escalate = true").unwrap();
+        assert!(c.subagents_may_escalate);
+        assert_eq!(c.max_children, Config::default().max_children);
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -928,6 +980,9 @@ mod tests {
                 on_done = "say done"
                 on_failed = "say failed"
                 on_stopped = "say stopped"
+                subagent_depth = 2
+                max_children = 3
+                subagents_may_escalate = true
             "#,
         )
         .unwrap();
@@ -953,10 +1008,13 @@ mod tests {
         assert_eq!(c.on_done.as_deref(), Some("say done"));
         assert_eq!(c.on_failed.as_deref(), Some("say failed"));
         assert_eq!(c.on_stopped.as_deref(), Some("say stopped"));
+        assert_eq!(c.subagent_depth, 2);
+        assert_eq!(c.max_children, 3);
+        assert!(c.subagents_may_escalate);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            22,
+            25,
             "a key this file does not name is a key nothing here proves"
         );
     }
