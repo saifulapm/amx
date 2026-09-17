@@ -45,10 +45,11 @@
 //! until it is adopted again.
 //!
 //! What amx did not do for this agent it does not claim: no worktree, no
-//! branch, no commit to measure a diff from, and no command it was launched
-//! with. `stop` takes its pane and nothing else, and there is nothing for
-//! `resume` or `fork` to start again — that agent was started by hand and can
-//! be again.
+//! branch, and no commit written down to measure a diff from — `diff` falls
+//! back to where the tree's branch left the main line — and no command it was
+//! launched with. `stop` takes its pane and nothing else, and there is nothing
+//! for `resume` or `fork` to start again — that agent was started by hand and
+//! can be again.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;

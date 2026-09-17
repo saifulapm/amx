@@ -58,6 +58,26 @@ pub fn head_commit(dir: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Where a directory's work began, read off its own history: the last commit
+/// its branch and the repository's main line still share.
+///
+/// The base for a session in a worktree amx did not cut when the record has
+/// none — an adopted agent, or one written before amx recorded a base for a
+/// tree it did not cut. It is branch-shaped rather than session-shaped: commits
+/// the branch already carried show up too, and `--from` is how a caller asks
+/// for something narrower. A directory in no repository, or one whose branch
+/// shares no history with the main line, is nothing to measure from.
+pub fn fork_point(dir: &Path) -> Result<Option<String>> {
+    let Some(repo) = repo_root(dir)? else {
+        return Ok(None);
+    };
+    let main = main_branch(&repo);
+    match git(dir, &["merge-base", "HEAD", &main]) {
+        Ok(shared) if !shared.is_empty() => Ok(Some(shared)),
+        _ => Ok(None),
+    }
+}
+
 /// The repository a worktree belongs to.
 ///
 /// Not the same question as [`repo_root`], which answers with the tree it was
@@ -889,6 +909,23 @@ mod tests {
         // whose first commit has not landed has none to name either.
         let plain = TempDir::new().unwrap();
         assert_eq!(head_commit(plain.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn worktree_finds_where_a_branch_left_the_main_line() {
+        let repo = a_repo();
+        let fork = setup(repo.path(), &["rev-parse", "HEAD"]);
+        // On the main line itself the fork point is HEAD: nothing has parted.
+        assert_eq!(fork_point(repo.path()).unwrap(), Some(fork.clone()));
+
+        // A branch's work begins where it left: the commit main stayed on.
+        setup(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
+        setup(repo.path(), &["commit", "-am", "second"]);
+        assert_eq!(fork_point(repo.path()).unwrap(), Some(fork));
+
+        let plain = TempDir::new().unwrap();
+        assert_eq!(fork_point(plain.path()).unwrap(), None);
     }
 
     #[test]

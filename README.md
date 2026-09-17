@@ -1251,10 +1251,11 @@ The id is worth writing down either way: a conversation amx still has an agent
 going on is one it refuses to adopt a second time. An agent whose record has
 ended is not in the way.
 
-What amx did not do for this agent it does not claim. There is no worktree, no
-branch and no commit to measure against, so `amx diff` has nothing to show and
-`amx stop` takes the pane and nothing else — the pane the agent is sitting in,
-so stopping an adopted agent is what ends it. amx holds no command it was
+What amx did not do for this agent it does not claim. There is no worktree and
+no branch written down, so `amx diff` measures it from where its directory's
+branch left the main line, if it is in a repository, and says there is nothing
+to compare otherwise. `amx stop` takes the pane and nothing else — the pane the
+agent is sitting in, so stopping an adopted agent is what ends it. amx holds no command it was
 launched with either, so `resume` and `fork` have nothing to start again: it was
 started by hand, and can be again.
 
@@ -1441,6 +1442,12 @@ in a checkout somebody already made — is measured from the commit its
 directory was standing on when it started. That commit is recorded at spawn
 the way a cut commit is, so the whole of what the directory has changed since
 reads as the agent's work.
+
+A record that carries neither — an adopted agent, or one written down before
+amx recorded a base for a tree it did not cut — is measured from the tree's
+own history instead: the last commit its branch and the repository's main line
+still share. That is branch-shaped rather than session-shaped, so work the
+branch already carried shows up too.
 
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent

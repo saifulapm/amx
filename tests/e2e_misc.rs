@@ -3,6 +3,7 @@
 mod common;
 
 use common::Harness;
+use serde_json::json;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -100,6 +101,31 @@ fn a_session_in_a_directory_git_has_never_heard_of_has_no_base() {
     let meta = amx.meta("fix-login-a1b");
     assert!(meta["worktree"].is_null(), "{meta}");
     assert!(meta["base"].is_null(), "nothing to measure from: {meta}");
+}
+
+#[test]
+fn diff_measures_a_record_with_no_base_from_the_branch_it_is_on() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    std::fs::write(repo.join("README.md"), "after\n").expect("the changed file");
+
+    // A record with no worktree, no branch and no base: what an adopted agent
+    // carries, and what every record written before amx recorded a base for a
+    // tree it did not cut carries.
+    amx.record("adopted-b2c", "%404");
+    amx.set_meta("adopted-b2c", json!({ "dir": repo }));
+
+    let out = amx.amx(&["diff", "adopted-b2c"]);
+    assert!(
+        out.status.success(),
+        "amx diff: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let patch = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        patch.contains("-before") && patch.contains("+after"),
+        "{patch}"
+    );
 }
 
 #[test]
@@ -269,7 +295,7 @@ fn diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
 }
 
 #[test]
-fn diff_says_so_when_the_agent_works_in_the_directory_as_it_is() {
+fn diff_measures_the_agent_that_works_in_the_directory_as_it_is() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     started(
@@ -279,13 +305,29 @@ fn diff_says_so_when_the_agent_works_in_the_directory_as_it_is() {
         &["--dir", &repo.to_string_lossy(), "--no-worktree"],
     );
 
+    // Nothing has changed yet, and an empty patch is an answer rather than the
+    // refusal it used to be.
     let out = amx.amx(&["diff", "no-tree-b2c"]);
-    assert_eq!(out.status.code(), Some(1));
-    let said = String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("no worktree"), "{said}");
     assert!(
-        said.contains(repo.to_string_lossy().as_ref()),
-        "and it names where the agent does work instead: {said}"
+        out.status.success(),
+        "amx diff: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "nothing changed yet"
+    );
+
+    // What the directory changes is the agent's work, measured from the commit
+    // it was standing on when the session started.
+    std::fs::write(repo.join("README.md"), "after\n").expect("the changed file");
+    let out = amx.amx(&["diff", "no-tree-b2c"]);
+    assert!(out.status.success());
+    let patch = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        patch.contains("-before") && patch.contains("+after"),
+        "{patch}"
     );
 }
 

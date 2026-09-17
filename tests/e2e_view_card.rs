@@ -1518,12 +1518,12 @@ fn alt_d_on_a_row_with_no_tree_says_what_the_verb_says() {
         screen(&amx, &view).contains("fix-login-a1b").then_some(())
     });
 
-    // An agent working in a directory of its own has nothing to compare, which
-    // is the answer `amx diff` gives it, in the words it gives it in.
+    // A directory in no repository has nothing to compare, which is the answer
+    // `amx diff` gives it, in the words it gives it in.
     press(&amx, &view, "M-d");
     amx.until("what the verb says of it", || {
         screen(&amx, &view)
-            .contains("has no worktree of its own")
+            .contains("no git worktree")
             .then_some(())
     });
 }

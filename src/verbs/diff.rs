@@ -3,15 +3,19 @@
 //! which is what somebody wants when the question is how far along it is.
 //!
 //! The work is measured from the commit the tree was cut from, recorded when it
-//! was cut. Not from the repository's HEAD, which has moved on since, and not
-//! from the agent's own HEAD, which would hide everything it has committed —
-//! what a person wants to see is the whole of this agent's work. A tree whose
-//! history has moved off that commit is measured from the last commit the two
-//! still share, which is [`worktree::diff`]'s own business.
+//! was cut, or from the commit a directory amx was pointed at was standing on
+//! when the session started. Not from the repository's HEAD, which has moved on
+//! since, and not from the agent's own HEAD, which would hide everything it has
+//! committed — what a person wants to see is the whole of this agent's work. A
+//! tree whose history has moved off that commit is measured from the last
+//! commit the two still share, which is [`worktree::diff`]'s own business.
 //!
-//! An agent working directly in a directory has nothing to compare, and a tree
-//! somebody has removed is not there to read. Both are ordinary answers to an
-//! ordinary question, so both say what happened rather than failing at git.
+//! A record that carries no base — an adopted agent, or one written before amx
+//! recorded one for a tree it did not cut — is measured from where the tree's
+//! branch left the repository's main line, read at the moment it is asked. A
+//! directory in no repository has nothing to compare, and a tree somebody has
+//! removed is not there to read. All are ordinary answers to an ordinary
+//! question, so they say what happened rather than failing at git.
 //!
 //! A patch is also something a person reads, and the `diff` key names what they
 //! read it with. At a terminal that command gets git's patch and the screen;
@@ -58,7 +62,7 @@ pub fn run(root: &Path, id: &str, stat: bool, out: &mut impl Write) -> Result<i3
     let meta = Agent::open(root, id)?.meta()?;
     let (tree, base) = work_of(&meta, id)?;
 
-    worktree::diff(tree, base, stat, out)?;
+    worktree::diff(tree, &base, stat, out)?;
     Ok(exit::OK)
 }
 
@@ -85,7 +89,7 @@ pub fn in_viewer(root: &Path, id: &str, viewer: &str) -> Result<i32> {
         .with_context(|| format!("running `{viewer}`"))?;
 
     let mut stdin = child.stdin.take().expect("stdin was asked for");
-    let handed = worktree::diff(tree, base, false, &mut stdin);
+    let handed = worktree::diff(tree, &base, false, &mut stdin);
     // The write end goes before the wait, or a viewer reading to the end of the
     // patch would wait for an end that never comes.
     drop(stdin);
@@ -113,14 +117,14 @@ pub fn in_viewer(root: &Path, id: &str, viewer: &str) -> Result<i32> {
 
 /// The tree an agent's work is in and the commit it is measured from, or the
 /// ordinary answer to why there is neither.
-fn work_of<'a>(meta: &'a Meta, id: &str) -> Result<(&'a Path, &'a str)> {
-    let (Some(tree), Some(base)) = (&meta.worktree, &meta.base) else {
-        bail!(
-            "`{id}` has no worktree of its own; it works in {}, \
-             so there is nothing to compare it against",
-            meta.dir.display()
-        );
-    };
+///
+/// The tree is the one amx cut, or the directory the agent runs in when amx
+/// cut none. The base is the commit the record keeps — the commit the tree was
+/// cut from, or the commit the directory was standing on when the session
+/// started — and where a record carries none, the commit the tree's own
+/// history says its branch left the main line.
+fn work_of<'a>(meta: &'a Meta, id: &str) -> Result<(&'a Path, String)> {
+    let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
 
     if !tree.exists() {
         match &meta.branch {
@@ -128,6 +132,18 @@ fn work_of<'a>(meta: &'a Meta, id: &str) -> Result<(&'a Path, &'a str)> {
             None => bail!("{} is gone", tree.display()),
         }
     }
+
+    let base = match &meta.base {
+        Some(base) => base.clone(),
+        None => match worktree::fork_point(tree)? {
+            Some(base) => base,
+            None => bail!(
+                "`{id}` works in {}, which is no git worktree, \
+                 so there is nothing to compare it against",
+                tree.display()
+            ),
+        },
+    };
 
     Ok((tree, base))
 }
@@ -159,6 +175,37 @@ mod tests {
                 worktree: worktree.map(Path::to_path_buf),
                 branch: worktree.map(|_| worktree::branch_for(id)),
                 base: worktree.map(|_| "0f1e2d3".to_string()),
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: now(),
+            },
+        )
+        .expect("the record")
+    }
+
+    /// A record of an agent amx cut no tree for: it runs in a directory of
+    /// somebody else's, with no branch, no worktree and no base written down.
+    /// What an adopted agent, or one recorded before amx wrote a base for a
+    /// tree it did not cut, carries.
+    fn record_in(root: &Path, id: &str, dir: &Path) -> Agent {
+        Agent::create(
+            root,
+            &Meta {
+                role: None,
+                parent: None,
+                depth: 0,
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: None,
+                model: None,
+                effort: None,
+                dir: dir.to_path_buf(),
+                worktree: None,
+                branch: None,
+                base: None,
                 socket: Socket::Name("amx".to_string()),
                 pane: PaneId::new("%1").unwrap(),
                 bg: false,
@@ -211,21 +258,53 @@ mod tests {
         tree
     }
 
+    /// A record of an agent in a checkout whose branch carries a commit the
+    /// main line does not, and no base written down: the fork point is the
+    /// only thing `diff` has to measure from.
+    fn a_record_with_no_base(root: &Path, id: &str) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "before\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-m", "first"]);
+        git(dir.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(dir.path().join("README.md"), "after\n").unwrap();
+        git(dir.path(), &["commit", "-am", "second"]);
+
+        record_in(root, id, dir.path());
+        dir
+    }
+
     fn refused(root: &Path, id: &str) -> String {
         let mut out = Vec::new();
         format!("{:#}", run(root, id, false, &mut out).unwrap_err())
     }
 
     #[test]
-    fn diff_has_nothing_to_compare_for_an_agent_without_a_tree() {
+    fn diff_resolves_a_base_for_an_agent_whose_record_has_none() {
         let root = TempDir::new().unwrap();
-        record(root.path(), "no-tree-b2c", None);
+        let _dir = a_record_with_no_base(root.path(), "adopted-b2c");
 
-        let said = refused(root.path(), "no-tree-b2c");
-        assert!(said.contains("no worktree"), "{said}");
+        let mut out = Vec::new();
+        run(root.path(), "adopted-b2c", false, &mut out).expect("a patch");
+        let patch = String::from_utf8(out).unwrap();
         assert!(
-            said.contains("/srv/app"),
-            "and it names where the work happens instead: {said}"
+            patch.contains("-before") && patch.contains("+after"),
+            "the branch's own work, measured from where it left main: {patch}"
+        );
+    }
+
+    #[test]
+    fn diff_has_nothing_to_compare_for_a_directory_outside_a_repository() {
+        let root = TempDir::new().unwrap();
+        let plain = TempDir::new().unwrap();
+        record_in(root.path(), "no-repo-b2c", plain.path());
+
+        let said = refused(root.path(), "no-repo-b2c");
+        assert!(said.contains("no git worktree"), "{said}");
+        assert!(
+            said.contains(&plain.path().display().to_string()),
+            "and it names the directory: {said}"
         );
     }
 
@@ -287,12 +366,13 @@ mod tests {
         // The same refusals the patch itself gets: a viewer started for a row
         // with nothing to compare would take the terminal to show nothing.
         let root = TempDir::new().unwrap();
-        record(root.path(), "no-tree-b2c", None);
+        let plain = TempDir::new().unwrap();
+        record_in(root.path(), "no-repo-b2c", plain.path());
         let said = format!(
             "{:#}",
-            in_viewer(root.path(), "no-tree-b2c", "cat").unwrap_err()
+            in_viewer(root.path(), "no-repo-b2c", "cat").unwrap_err()
         );
-        assert!(said.contains("no worktree"), "{said}");
+        assert!(said.contains("no git worktree"), "{said}");
 
         let said = format!(
             "{:#}",
