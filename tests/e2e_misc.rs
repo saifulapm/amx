@@ -129,6 +129,34 @@ fn diff_measures_a_record_with_no_base_from_the_branch_it_is_on() {
 }
 
 #[test]
+fn diff_from_names_the_commit_to_measure_from() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
+    git(&tree, &["commit", "-am", "the work"]);
+
+    // Measured from the commit the tree was cut from, the commit is the work.
+    let out = amx.amx(&["diff", "fix-login-a1b"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("+after"));
+
+    // Named instead, from HEAD, there is nothing left to show: the work is
+    // already in the commit the base points at.
+    let out = amx.amx(&["diff", "fix-login-a1b", "--from", "HEAD"]);
+    assert!(
+        out.status.success(),
+        "amx diff --from: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "nothing is measured from HEAD but the tree's own uncommitted work"
+    );
+}
+
+#[test]
 fn diff_shows_the_work_including_a_file_git_has_never_heard_of() {
     let amx = Harness::new();
     let repo = amx.a_repo();

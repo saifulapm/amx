@@ -322,6 +322,14 @@ pub enum Command {
         /// Summarise the patch instead of printing it.
         #[arg(long)]
         stat: bool,
+        /// Measure from this ref instead of the commit the record keeps.
+        ///
+        /// Any branch, tag or commit git will resolve. A tree amx cut is
+        /// measured from the commit it was cut from and a session from the
+        /// commit it started on; this names the base outright, for a record
+        /// that carries none or a caller who wants something narrower.
+        #[arg(long, value_name = "REF")]
+        from: Option<String>,
     },
 
     /// Restart a stopped agent, continuing its recorded session.

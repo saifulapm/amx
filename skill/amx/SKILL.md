@@ -25,7 +25,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx ls [--json]` | Every agent, one line each. |
 | `amx status <id> [--json]` | One agent, and which signal that state came from. |
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
-| `amx diff <id> [--stat]` | What it has changed, against the commit its tree was cut from, or the commit its directory was standing on when it started. |
+| `amx diff <id> [--stat] [--from <ref>]` | What it has changed, against the commit its tree was cut from, or the commit its directory was standing on when it started; `--from` names the base instead. |
 | `amx logs <id> [--lines N]` | The last of what its pane has printed, without attaching to it. |
 | `amx fork <id> ["<task>"]` | Start a second agent on a copy of its conversation. Prints the new id. |
 | `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |

@@ -1070,6 +1070,7 @@ amx answer <id> 1 --note "and keep the subtitle" # a note beside the choice
 amx interrupt <id>     # stop the turn it is in the middle of
 amx diff <id>          # its worktree, measured from where its work began
 amx diff <id> --stat   # the shape of it: a file per line, and the totals
+amx diff <id> --from main  # measured from a ref you name instead
 amx events --follow    # every agent's log, merged
 amx events <id> --json # one object per event, payloads whole
 ```
@@ -1448,6 +1449,10 @@ amx recorded a base for a tree it did not cut — is measured from the tree's
 own history instead: the last commit its branch and the repository's main line
 still share. That is branch-shaped rather than session-shaped, so work the
 branch already carried shows up too.
+
+`--from <ref>` names the base outright instead: any branch, tag or commit git
+will resolve. It is how a caller asks for something narrower than the branch,
+or reads a tree whose recorded commit no longer describes it.
 
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent

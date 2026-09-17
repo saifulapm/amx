@@ -37,12 +37,12 @@ use crate::{complain, exit, paths, worktree};
 /// alone, so `amx diff fix-login-a1b | head` is the same patch it always was.
 /// `--stat` is not a patch at all, and a viewer handed one has nothing to
 /// colour.
-pub fn from_env(id: &str, stat: bool) -> Result<i32> {
+pub fn from_env(id: &str, stat: bool, from: Option<&str>) -> Result<i32> {
     let root = paths::state_root()?;
     let reading = !stat && std::io::stdout().is_terminal();
     match reading.then(|| viewer(&root, id)).flatten() {
-        Some(viewer) => in_viewer(&root, id, &viewer),
-        None => run(&root, id, stat, &mut std::io::stdout().lock()),
+        Some(viewer) => in_viewer_with(&root, id, &viewer, from),
+        None => run_with(&root, id, stat, from, &mut std::io::stdout().lock()),
     }
 }
 
@@ -58,9 +58,23 @@ fn viewer(root: &Path, id: &str) -> Option<String> {
 }
 
 /// The verb, with the state directory named.
+///
+/// The recorded base, or the one the tree's history gives up: the patch the
+/// view's own key reads, which never names a ref of its own.
 pub fn run(root: &Path, id: &str, stat: bool, out: &mut impl Write) -> Result<i32> {
+    run_with(root, id, stat, None, out)
+}
+
+/// The same, measuring from a ref somebody named rather than the record.
+fn run_with(
+    root: &Path,
+    id: &str,
+    stat: bool,
+    from: Option<&str>,
+    out: &mut impl Write,
+) -> Result<i32> {
     let meta = Agent::open(root, id)?.meta()?;
-    let (tree, base) = work_of(&meta, id)?;
+    let (tree, base) = work_of(&meta, id, from)?;
 
     worktree::diff(tree, &base, stat, out)?;
     Ok(exit::OK)
@@ -77,8 +91,13 @@ pub fn run(root: &Path, id: &str, stat: bool, out: &mut impl Write) -> Result<i3
 /// The terminal is the viewer's own: whatever it draws, pages and asks is
 /// between it and the person, and amx is done when it is.
 pub fn in_viewer(root: &Path, id: &str, viewer: &str) -> Result<i32> {
+    in_viewer_with(root, id, viewer, None)
+}
+
+/// The same, measuring from a ref somebody named rather than the record.
+fn in_viewer_with(root: &Path, id: &str, viewer: &str, from: Option<&str>) -> Result<i32> {
     let meta = Agent::open(root, id)?.meta()?;
-    let (tree, base) = work_of(&meta, id)?;
+    let (tree, base) = work_of(&meta, id, from)?;
 
     let mut child = Command::new("sh")
         .arg("-c")
@@ -119,11 +138,11 @@ pub fn in_viewer(root: &Path, id: &str, viewer: &str) -> Result<i32> {
 /// ordinary answer to why there is neither.
 ///
 /// The tree is the one amx cut, or the directory the agent runs in when amx
-/// cut none. The base is the commit the record keeps — the commit the tree was
-/// cut from, or the commit the directory was standing on when the session
-/// started — and where a record carries none, the commit the tree's own
-/// history says its branch left the main line.
-fn work_of<'a>(meta: &'a Meta, id: &str) -> Result<(&'a Path, String)> {
+/// cut none. The base is the ref a caller named, else the commit the record
+/// keeps — the commit the tree was cut from, or the commit the directory was
+/// standing on when the session started — and where a record carries none, the
+/// commit the tree's own history says its branch left the main line.
+fn work_of<'a>(meta: &'a Meta, id: &str, from: Option<&str>) -> Result<(&'a Path, String)> {
     let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
 
     if !tree.exists() {
@@ -133,15 +152,18 @@ fn work_of<'a>(meta: &'a Meta, id: &str) -> Result<(&'a Path, String)> {
         }
     }
 
-    let base = match &meta.base {
-        Some(base) => base.clone(),
-        None => match worktree::fork_point(tree)? {
-            Some(base) => base,
-            None => bail!(
-                "`{id}` works in {}, which is no git worktree, \
-                 so there is nothing to compare it against",
-                tree.display()
-            ),
+    let base = match from {
+        Some(from) => from.to_string(),
+        None => match &meta.base {
+            Some(base) => base.clone(),
+            None => match worktree::fork_point(tree)? {
+                Some(base) => base,
+                None => bail!(
+                    "`{id}` works in {}, which is no git worktree, \
+                     so there is nothing to compare it against",
+                    tree.display()
+                ),
+            },
         },
     };
 

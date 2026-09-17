@@ -152,7 +152,9 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
             finish(verbs::attach::from_env(&aim))
         }
         Some(cli::Command::Logs { id, lines }) => finish(verbs::logs::from_env(id, *lines)),
-        Some(cli::Command::Diff { id, stat }) => finish(verbs::diff::from_env(id, *stat)),
+        Some(cli::Command::Diff { id, stat, from }) => {
+            finish(verbs::diff::from_env(id, *stat, from.as_deref()))
+        }
         Some(cli::Command::Resume { id, message, all }) => finish(verbs::resume::from_env(
             config,
             id.as_deref(),
