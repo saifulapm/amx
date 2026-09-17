@@ -22,6 +22,11 @@ mod notify;
 mod paths;
 mod pr;
 mod registry;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reached by the tests alone until `--role` lands")
+)]
+mod role;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod rules;
 mod spawn;
