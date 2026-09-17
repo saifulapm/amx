@@ -659,15 +659,15 @@ mod tests {
 
     #[test]
     fn logs_of_a_record_that_has_spoken_do_not_read_its_boot_bytes() {
-        // A vendor that announced a session has a record and a transcript to
-        // answer with; the bytes its boot kept are a drawing, not an account,
-        // and `amx logs` must not hand them back as the answer.
+        // A vendor that announced a transcript has one to answer with; the
+        // bytes its boot kept are a drawing, not an account, and `amx logs`
+        // must not hand them back as the answer.
         let root = TempDir::new().unwrap();
         let agent = without_a_pane(root.path(), "fix-login-a1b");
         agent
             .writer()
             .unwrap()
-            .update_meta(|meta| meta.session = Some("6f1c9f4e".to_string()))
+            .update_meta(|meta| meta.transcript = Some(PathBuf::from("/srv/transcript.jsonl")))
             .unwrap();
         std::fs::write(
             agent.dir().join(crate::store::OUTPUT),

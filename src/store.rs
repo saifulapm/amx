@@ -1052,7 +1052,7 @@ impl Agent {
     /// not text are read past rather than costing the file.
     ///
     /// `None` where there is no file, and where the vendor has spoken: a
-    /// record carrying a session has the record and its transcript to answer
+    /// record naming a transcript has the record and that transcript to answer
     /// with, and the boot bytes beside it are a drawing rather than an
     /// account. The file is a fallback for the one case with no other witness
     /// — a vendor that died before its first hook — and for a command, which
@@ -1104,15 +1104,21 @@ impl Agent {
         Some(crate::ansi::strip_ansi(&returned(whole)))
     }
 
-    /// Whether the vendor has said a word of its own: a session on the record
-    /// is the first hook that names one, and every reader afterwards has the
-    /// record and the transcript to weigh instead of boot bytes.
+    /// Whether the vendor has said a word of its own: the transcript a report
+    /// named is the account, and every reader afterwards has that to weigh
+    /// instead of boot bytes.
+    ///
+    /// Not `meta.session`: amx writes one at spawn for a vendor that opens
+    /// under the id it minted — pi takes `--session-id` — so a pi that died
+    /// before its first hook carries a session and never spoke. The transcript
+    /// pointer is written by a report and by nothing else, which is why it is
+    /// the one that answers here.
     ///
     /// A record with no `meta.json` reads as not having spoken, which is what
     /// the card's own fixtures are: a directory and an output file, nothing
     /// more.
     fn spoke(&self) -> bool {
-        self.meta().is_ok_and(|meta| meta.session.is_some())
+        self.meta().is_ok_and(|meta| meta.transcript.is_some())
     }
 
     /// The end of the transcript the record names, for a reader that wants
@@ -2561,14 +2567,15 @@ mod tests {
             Some("could not read the state file\n")
         );
 
-        // The first hook that names a session is the vendor saying it is
+        // The first report that names a transcript is the vendor saying it is
         // alive: from there the record and the transcript are the account,
-        // and boot paint is not read as either.
+        // and boot paint is not read as either. A session is not that signal:
+        // pi's is written at spawn, before it has said anything.
         let spoke = Agent::create(
             root.path(),
             &Meta {
                 agent: Some("claude".to_string()),
-                session: Some("6f1c9f4e".to_string()),
+                transcript: Some(std::path::PathBuf::from("/srv/transcript.jsonl")),
                 ..meta("port-it-b2c")
             },
         )
