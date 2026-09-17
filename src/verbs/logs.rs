@@ -17,13 +17,14 @@
 //!   statusline, mode footer — cut off the bottom, the same walk the card
 //!   takes, because none of it is the agent's work.
 //! * **The recorded answer**, once the pane is gone — or is another agent's,
-//!   which is the same loss — and the record is what is left, or **what a
-//!   command printed**, which its own boot kept beside the record for the same
-//!   moment: a command exits rather than answers, and the file is the whole of
-//!   what it said where the pane held a screenful. Whether an agent is still
-//!   running is not something a caller should have to know before it can ask.
-//!   An agent that left not even that gets a line naming what was missing, the
-//!   vendor's own gap included.
+//!   which is the same loss — and the record is what is left, or **what the
+//!   pane printed**, which its own boot kept beside the record for the same
+//!   moment: a command exits rather than answers, and a vendor that dies
+//!   before its first hook leaves nothing else, and the file is what either
+//!   said where the pane held a screenful. Whether an agent is still running
+//!   is not something a caller should have to know before it can ask. An agent
+//!   that left not even that gets a line naming what was missing, the vendor's
+//!   own gap included.
 //!
 //! `amx result` is still the one that hands back a turn's answer alone,
 //! verbatim, and blocks for it. This is the other question: what has been
@@ -187,11 +188,12 @@ fn screen(
 /// pipe, inert on a terminal.
 ///
 /// A command leaves no answer — it exits rather than answers — so what is left
-/// of one is what it printed, kept beside the record by its own boot; see
-/// [`Agent::output`]. It goes out the same way, and cut to length the same way
-/// the readings above it are, because it is the same question asked of a row
-/// whose pane has gone. A file with nothing in it is a command that printed
-/// nothing, and that is nothing to hand back.
+/// of one is what it printed, kept beside the record by its own boot; so does
+/// a vendor that died before its first hook, whose record holds no session and
+/// no transcript either; see [`Agent::output`]. It goes out the same way, and
+/// cut to length the same way the readings above it are, because it is the
+/// same question asked of a row whose pane has gone. A file with nothing in it
+/// is a row that printed nothing, and that is nothing to hand back.
 fn recorded(
     agent: &Agent,
     id: &str,
@@ -651,6 +653,29 @@ mod tests {
         // empty stdout on its own reads as amx having failed to look.
         std::fs::write(agent.dir().join(crate::store::OUTPUT), "").unwrap();
         let (code, said) = printed(root.path(), "build-a1b", LINES);
+        assert_eq!(code, exit::FAILURE);
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    #[test]
+    fn logs_of_a_record_that_has_spoken_do_not_read_its_boot_bytes() {
+        // A vendor that announced a session has a record and a transcript to
+        // answer with; the bytes its boot kept are a drawing, not an account,
+        // and `amx logs` must not hand them back as the answer.
+        let root = TempDir::new().unwrap();
+        let agent = without_a_pane(root.path(), "fix-login-a1b");
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.session = Some("6f1c9f4e".to_string()))
+            .unwrap();
+        std::fs::write(
+            agent.dir().join(crate::store::OUTPUT),
+            "could not read the state file\n",
+        )
+        .unwrap();
+
+        let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
         assert_eq!(code, exit::FAILURE);
         assert!(said.is_empty(), "{said:?}");
     }

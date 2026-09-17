@@ -50,9 +50,11 @@ pub const LIVE: &str = "live";
 /// [`Agent::heartbeat`]. The record's own file rather than any one vendor's:
 /// whichever wire can write here may beat.
 pub const HEARTBEAT: &str = "heartbeat";
-/// Everything a command has printed, written by tmux piping the command's own
-/// pane here — see [`crate::spawn::boot`]. A command's alone: an agent's pane
-/// is a vendor's drawing and is piped nowhere.
+/// What a pane has printed, written by tmux piping the pane here — see
+/// [`crate::spawn::boot`]. A command's whole output, and the first
+/// [`crate::spawn::BOOT_BYTES`] of an agent's pane: the account a vendor
+/// leaves when it dies before its first hook, and boot paint where it spoke —
+/// see [`Agent::output`].
 pub const OUTPUT: &str = "output";
 /// How much of a transcript's end [`Agent::transcript_tail`] reads. Enough for
 /// the last turn of any conversation, and a fixed cost however long the
@@ -1037,25 +1039,34 @@ impl Agent {
             .map(|since| since.as_secs())
     }
 
-    /// Everything the command has printed, where its boot piped the pane into
-    /// the record — see [`OUTPUT`]. The whole file, for the reader that wants
-    /// the whole of what the command said and reads it once: `amx logs` does,
-    /// and the card that is retaken every second reads
-    /// [`output_tail`](Self::output_tail) instead.
+    /// What the pane printed, where its boot piped it into the record — see
+    /// [`OUTPUT`]. The whole file, for the reader that wants the whole of it
+    /// and reads it once: `amx logs` does, and the card that is retaken every
+    /// second reads [`output_tail`](Self::output_tail) instead.
     ///
     /// As a terminal would have shown it, not as the bytes went by: the pane
     /// ends its lines `\r\n`, and a progress bar draws itself a hundred times
-    /// over one row with a `\r` between each — see [`returned`]. Bytes that
-    /// are not text are read past rather than costing the file.
+    /// over one row with a `\r` between each — see [`returned`] — and the
+    /// paint is walked off — see [`crate::ansi::strip_ansi`]. Bytes that are
+    /// not text are read past rather than costing the file.
     ///
-    /// `None` where there is no file: every agent, whose pane is piped
-    /// nowhere, and a command that has printed nothing yet.
+    /// `None` where there is no file, and where the vendor has spoken: a
+    /// record carrying a session has the record and its transcript to answer
+    /// with, and the boot bytes beside it are a drawing rather than an
+    /// account. The file is a fallback for the one case with no other witness
+    /// — a vendor that died before its first hook — and for a command, which
+    /// reports nothing at all.
     pub fn output(&self) -> Option<String> {
+        if self.spoke() {
+            return None;
+        }
         let bytes = std::fs::read(self.dir.join(OUTPUT)).ok()?;
-        Some(returned(&String::from_utf8_lossy(&bytes)))
+        Some(crate::ansi::strip_ansi(&returned(
+            &String::from_utf8_lossy(&bytes),
+        )))
     }
 
-    /// The end of what the command has printed, for the card that shows it.
+    /// The end of what the pane printed, for the card that shows it.
     ///
     /// A card is taken again every second it is open, and a `!cargo build`
     /// prints tens of megabytes over an hour: reading and walking all of that
@@ -1064,6 +1075,9 @@ impl Agent {
     /// paged through anyway, and the long command costs the view what a short
     /// one does.
     ///
+    /// Hidden and stripped the way [`output`](Self::output) is, and for the
+    /// same reasons.
+    ///
     /// The offset lands inside a row, and that half row is dropped rather than
     /// drawn: a card shows every row it is given, so half of one would be a row
     /// the command never printed. A tail with no row boundary in it at all is
@@ -1071,6 +1085,9 @@ impl Agent {
     /// [`output`](Self::output): as the terminal would have shown it, with the
     /// returns resolved, and `None` where there is no file.
     pub fn output_tail(&self) -> Option<String> {
+        if self.spoke() {
+            return None;
+        }
         let mut file = File::open(self.dir.join(OUTPUT)).ok()?;
         let from = file.metadata().ok()?.len().saturating_sub(OUTPUT_TAIL);
         file.seek(SeekFrom::Start(from)).ok()?;
@@ -1083,7 +1100,18 @@ impl Agent {
                 .split_once('\n')
                 .map_or(printed.as_ref(), |(_, rest)| rest),
         };
-        Some(returned(whole))
+        Some(crate::ansi::strip_ansi(&returned(whole)))
+    }
+
+    /// Whether the vendor has said a word of its own: a session on the record
+    /// is the first hook that names one, and every reader afterwards has the
+    /// record and the transcript to weigh instead of boot bytes.
+    ///
+    /// A record with no `meta.json` reads as not having spoken, which is what
+    /// the card's own fixtures are: a directory and an output file, nothing
+    /// more.
+    fn spoke(&self) -> bool {
+        self.meta().is_ok_and(|meta| meta.session.is_some())
     }
 
     /// The end of the transcript the record names, for a reader that wants
@@ -2463,7 +2491,7 @@ mod tests {
         assert_eq!(
             agent.output(),
             None,
-            "an agent's pane is piped nowhere, so there is no file"
+            "a record whose boot has piped nothing has no file"
         );
 
         assert_eq!(
@@ -2485,7 +2513,9 @@ mod tests {
         );
 
         // As the terminal showed it: the pane ends its lines the terminal's
-        // way, and a progress bar is one row however many times it drew.
+        // way, and a progress bar is one row however many times it drew. The
+        // paint goes too, because a reader is handed words and a terminal is
+        // an interpreter.
         std::fs::write(
             agent.dir().join(OUTPUT),
             b"\x1b[32mgreen\x1b[0m\r\n 1/3\r 2/3\r 3/3 done\r\nlast",
@@ -2493,9 +2523,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             agent.output().as_deref(),
-            Some("\x1b[32mgreen\x1b[0m\n 3/3 done\nlast"),
-            "colours kept, the return before each newline gone, and only the \
-             last draw of an overwritten row"
+            Some("green\n 3/3 done\nlast"),
+            "the paint stripped, the return before each newline gone, and \
+             only the last draw of an overwritten row"
         );
         assert_eq!(
             agent.output_tail().as_deref(),
@@ -2509,6 +2539,42 @@ mod tests {
             Some("café \u{fffd}\n"),
             "and a byte that is not text is read past, not the whole file lost"
         );
+    }
+
+    #[test]
+    fn store_reads_an_agents_dying_words_only_before_it_spoke() {
+        let root = TempDir::new().unwrap();
+        // A vendor that never got a session left no account but the bytes its
+        // boot kept: those are the dying words.
+        let quiet = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("claude".to_string()),
+                ..meta("fix-login-a1b")
+            },
+        )
+        .unwrap();
+        std::fs::write(quiet.dir().join(OUTPUT), "could not read the state file\n").unwrap();
+        assert_eq!(
+            quiet.output().as_deref(),
+            Some("could not read the state file\n")
+        );
+
+        // The first hook that names a session is the vendor saying it is
+        // alive: from there the record and the transcript are the account,
+        // and boot paint is not read as either.
+        let spoke = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("claude".to_string()),
+                session: Some("6f1c9f4e".to_string()),
+                ..meta("port-it-b2c")
+            },
+        )
+        .unwrap();
+        std::fs::write(spoke.dir().join(OUTPUT), "could not read the state file\n").unwrap();
+        assert_eq!(spoke.output(), None, "a record that spoke reads none of it");
+        assert_eq!(spoke.output_tail(), None, "and the card does not either");
     }
 
     #[test]

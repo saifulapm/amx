@@ -3700,13 +3700,13 @@ fn holding(view: &View) -> bool {
 ///
 /// That last one comes before everything else, because the file it is read
 /// from — see [`Agent::output_tail`] — is written for a command's record and
-/// for no other, and it holds what the command said where the pane holds a
-/// screenful. The end of it, since a card is taken again every second it is
-/// open and a build's log grows all the while. Nothing is cut off it: no
-/// vendor drew that pane, so there is no furniture on it, and every row of it
-/// is the command's own. While the command runs the card is the end of the
-/// file and follows what lands there; once it has ended the card opens on the
-/// top of what it has and pages down.
+/// for a record whose vendor never got as far as a session: it holds what
+/// either said where the pane is gone or empty. The end of it, since a card is
+/// taken again every second it is open and a build's log grows all the while.
+/// Nothing is cut off it: no vendor drew that pane, so there is no furniture
+/// on it, and every row of it is the row's own. While the command runs the
+/// card is the end of the file and follows what lands there; once it has ended
+/// the card opens on the top of what it has and pages down.
 ///
 /// The conversation comes first wherever the record names a transcript amx
 /// can read — see [`crate::conversation`] — because it is the agent's own
@@ -5255,6 +5255,33 @@ mod tests {
             assert!(card.answer, "read forward, {phase:?}");
             assert_eq!(card.body.anchor(), 0, "from the top, {phase:?}");
         }
+    }
+
+    #[test]
+    fn card_on_a_vendor_that_died_before_it_spoke_is_what_it_printed() {
+        // A vendor that never announced a session left no conversation and no
+        // answer; the bytes its boot kept are the last thing it said, and the
+        // card is those rather than an empty pane.
+        let root = TempDir::new().unwrap();
+        printed(
+            root.path(),
+            "fix-login-a1b",
+            "could not read the state file\n",
+        );
+        let mut view = reading(
+            "fix-login-a1b",
+            Phase::Failed,
+            State {
+                state: Phase::Failed,
+                exit: Some(1),
+                ..State::default()
+            },
+        );
+        view.meta.agent = Some("claude".to_string());
+
+        let (card, _) = card_of(&view, root.path(), 76, Theme::default());
+        assert_eq!(card.body.says(), "could not read the state file\n");
+        assert!(card.answer, "a dead vendor's card is read forward");
     }
 
     #[test]
