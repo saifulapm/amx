@@ -704,7 +704,7 @@ that starts after you have put a group in order joins the bottom of it, because
 a group you arranged by hand is not one amx goes on sorting under you. All of
 those and whichever way `ctrl+s` last gathered the fleet are written to
 `~/.local/state/amx/view.json` as you go, so the next view opens on the wall
-you left.
+you left and a view open beside this one is on it within the second.
 
 A line being typed in a band of its own hangs off a rule, and the rule is where
 the whole mode is said. Its near end names which line this is — a task, or a

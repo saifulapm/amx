@@ -1140,6 +1140,42 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
 }
 
 #[test]
+fn a_pin_in_one_view_is_on_the_other_by_its_next_reading() {
+    // Two views are two hands on one wall, through one file. What one pins
+    // should stand on the other within the second, without either being
+    // reopened.
+    let amx = Harness::new();
+    amx.play("one-a1b", "asks-a-question");
+    amx.play("two-b2c", "happy-turn");
+    amx.until_state("one-a1b", "waiting");
+    amx.until_state("two-b2c", "idle");
+
+    let left = amx.in_a_terminal(&[], &[]);
+    let right = amx.in_a_terminal(&[], &[]);
+    amx.until("both walls", || {
+        (screen(&amx, &left).contains("one-a1b") && screen(&amx, &right).contains("one-a1b"))
+            .then_some(())
+    });
+    assert!(
+        !screen(&amx, &right).contains("Pinned"),
+        "nothing is pinned yet:\n{}",
+        screen(&amx, &right)
+    );
+
+    // On the left, the cursor onto the agent that is asking, and the pin.
+    press(&amx, &left, "w");
+    press(&amx, &left, "C-t");
+    amx.until("the pin on the left", || {
+        screen(&amx, &left).contains("Pinned").then_some(())
+    });
+
+    // And on the right, on its own reading rather than on a reopen.
+    amx.until("the pin on the right", || {
+        screen(&amx, &right).contains("Pinned").then_some(())
+    });
+}
+
+#[test]
 fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);

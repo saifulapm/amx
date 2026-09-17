@@ -702,6 +702,12 @@ struct Screen {
     /// Where what somebody arranges is kept, where there is anywhere to keep
     /// it.
     remembering: Option<PathBuf>,
+    /// What this view last knew the file to hold, and how the file looked
+    /// when that was read or written. A change another view makes shows by
+    /// the stamp moving; a write this view makes is merged against what is on
+    /// disk rather than dropped over it.
+    published: Arrangement,
+    viewed_at: Option<(u64, SystemTime)>,
     /// Whether a `g` is standing there waiting for the second one that would
     /// make it a move to the top.
     ///
@@ -992,7 +998,9 @@ where
     // somebody said.
     if let Some(path) = remembering {
         let remembered = Remembered::read(path);
-        screen.list.arrange(remembered.arrangement);
+        screen.list.arrange(remembered.arrangement.clone());
+        screen.published = remembered.arrangement;
+        screen.viewed_at = stamped(path);
         screen.vendor = remembered.vendor;
         screen.sent = remembered.sent;
     }
@@ -1036,6 +1044,12 @@ where
         if refreshing && let Some((theme, warnings)) = watching.reread() {
             screen.repaint(theme);
             screen.say_of_the_theme(&warnings);
+        }
+        // Another view arranges the same wall through the same file, so what
+        // one of them pinned, slept or put in order should land on this one
+        // within the tick. A stamp that has not moved is nobody's change.
+        if refreshing {
+            screen.adopt_the_view();
         }
         screen.step();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
@@ -3572,19 +3586,52 @@ impl Screen {
     /// went is a view that closed, and somebody who spent a minute arranging
     /// a wall should not lose it to that.
     ///
-    /// Read before written, so the rest of the file is what it was: the offer
-    /// at the foot of this one lives in it too, and two views open at once are
-    /// two people arranging one wall.
-    fn keep(&self, changed: bool) {
-        let Some(path) = self.remembering.as_ref().filter(|_| changed) else {
+    /// Read before written, and the change merged rather than dropped over
+    /// what is there: two views open at once are two hands on one wall, and
+    /// the pin this view just made should not take the pin the other made a
+    /// second ago off it.
+    fn keep(&mut self, changed: bool) {
+        let Some(path) = self.remembering.clone().filter(|_| changed) else {
             return;
         };
-        let mut remembered = Remembered::read(path);
-        remembered.arrangement = self.list.arrangement();
+        let mut remembered = Remembered::read(&path);
+        let disk = remembered.arrangement.clone();
+        remembered.arrangement =
+            Arrangement::merged(&self.published, &self.list.arrangement(), &disk);
         remembered.vendor = self.vendor;
         // Nothing on the screen is waiting on this, and the one line the view
         // has to say things on is worth more than a failure nobody can act on.
-        let _ = remembered.write(path);
+        let _ = remembered.write(&path);
+        // The merged whole is the arrangement now, here and in the file: a
+        // change the other view made shows on this reading rather than the
+        // next, and the next change is merged against what was written.
+        self.published = remembered.arrangement.clone();
+        self.viewed_at = stamped(&path);
+        self.list.arrange(remembered.arrangement);
+    }
+
+    /// Take what another view has arranged, where the file moved since this
+    /// view last read or wrote it.
+    ///
+    /// Read whole rather than merged: whatever moved, this view did not make
+    /// it, and every change this view did make is already in the file. The
+    /// stamp is taken before the read, the way the theme's is: a second write
+    /// landing between the read and the stat would otherwise stand unseen
+    /// until the one after it.
+    fn adopt_the_view(&mut self) {
+        let Some(path) = self.remembering.clone() else {
+            return;
+        };
+        let now = stamped(&path);
+        if now == self.viewed_at {
+            return;
+        }
+        let remembered = Remembered::read(&path);
+        self.viewed_at = now;
+        self.published = remembered.arrangement.clone();
+        self.list.arrange(remembered.arrangement);
+        self.vendor = remembered.vendor;
+        self.sent = remembered.sent;
     }
 
     /// Keep a line that has just been sent, for a later line to bring back.
@@ -3594,12 +3641,13 @@ impl Screen {
     /// this one was closed on the agent it started, as from this one.
     fn remember_line(&mut self, asking: &Asking, line: &str) {
         self.sent.remember_line(asking, line);
-        let Some(path) = self.remembering.as_ref() else {
+        let Some(path) = self.remembering.clone() else {
             return;
         };
-        let mut remembered = Remembered::read(path);
+        let mut remembered = Remembered::read(&path);
         remembered.sent = self.sent.clone();
-        let _ = remembered.write(path);
+        let _ = remembered.write(&path);
+        self.viewed_at = stamped(&path);
     }
 }
 
@@ -5788,6 +5836,89 @@ mod tests {
         // reads, with nothing to bring back.
         std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
         assert_eq!(Remembered::read(&path).sent, act::Backlog::default());
+    }
+
+    #[test]
+    fn a_pin_in_one_view_lands_in_the_other_on_the_next_reading() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("view.json");
+        let fleet = || {
+            vec![
+                reading("one-a1b", Phase::Working, State::default()),
+                reading("two-b2c", Phase::Working, State::default()),
+            ]
+        };
+        let mut left = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        let mut right = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+
+        // The left view pins the row under its cursor and writes as it goes.
+        left.list.top();
+        while left.list.selected().is_none() {
+            left.list.down();
+        }
+        assert!(left.list.hold_or_let_go());
+        left.keep(true);
+        assert!(left.list.arrangement().has_pinned("one-a1b"));
+        assert!(Remembered::read(&path).arrangement.has_pinned("one-a1b"));
+
+        // The right view has not looked at the file yet.
+        assert!(!right.list.arrangement().has_pinned("one-a1b"));
+        right.adopt_the_view();
+        assert!(
+            right.list.arrangement().has_pinned("one-a1b"),
+            "a pin one view makes is on the other by its next reading"
+        );
+        assert!(right.published.has_pinned("one-a1b"));
+    }
+
+    #[test]
+    fn a_pin_this_view_makes_does_not_take_the_other_views_off_the_file() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("view.json");
+        let fleet = || {
+            vec![
+                reading("one-a1b", Phase::Working, State::default()),
+                reading("two-b2c", Phase::Working, State::default()),
+            ]
+        };
+
+        // The right view pins its own row and writes.
+        let mut right = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        right.list.bottom();
+        while right.list.selected().is_none() {
+            right.list.up();
+        }
+        assert!(right.list.hold_or_let_go());
+        right.keep(true);
+
+        // The left view opened before that and has not read since, so its
+        // arrangement knows nothing of the other pin.
+        let mut left = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        left.list.top();
+        while left.list.selected().is_none() {
+            left.list.down();
+        }
+        assert!(left.list.hold_or_let_go());
+        left.keep(true);
+
+        let on_disk = Remembered::read(&path).arrangement;
+        assert!(on_disk.has_pinned("one-a1b"), "the left view's own pin");
+        assert!(
+            on_disk.has_pinned("two-b2c"),
+            "and the pin the right view made before it"
+        );
     }
 
     #[test]

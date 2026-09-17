@@ -200,6 +200,41 @@ impl Arrangement {
             .unwrap_or_default()
     }
 
+    /// What the view file should hold: `disk` with the difference between
+    /// `published` and `local` laid over it.
+    ///
+    /// Two views are two hands on one wall, and each writes the whole
+    /// document. Writing `local` outright would drop whatever the other view
+    /// changed since this one last read it; writing this keeps both. Only the
+    /// fields that moved between `published` and `local` are taken, one field
+    /// at a time — an axis somebody turned, the ids pinned or let go, the
+    /// groups whose order somebody put in — so a change this view did not
+    /// make is never undone by it.
+    pub fn merged(published: &Arrangement, local: &Arrangement, disk: &Arrangement) -> Arrangement {
+        let mut merged = disk.clone();
+        if local.axis != published.axis {
+            merged.axis = local.axis;
+        }
+        for id in published.held.difference(&local.held) {
+            merged.held.remove(id);
+        }
+        for id in local.held.difference(&published.held) {
+            merged.held.insert(id.clone());
+        }
+        for id in published.asleep.difference(&local.asleep) {
+            merged.asleep.remove(id);
+        }
+        for id in local.asleep.difference(&published.asleep) {
+            merged.asleep.insert(id.clone());
+        }
+        for (group, order) in &local.order {
+            if published.order.get(group) != Some(order) {
+                merged.order.insert(*group, order.clone());
+            }
+        }
+        merged
+    }
+
     /// Whether this agent is one somebody pinned over the wall.
     ///
     /// By id, because a reader outside the view has an id and not a reading:
@@ -2951,6 +2986,75 @@ mod tests {
         assert_eq!(
             lines(&list),
             ["/src/web (1)", "busy-b2c", "", "/src/api (1) shut"]
+        );
+    }
+
+    #[test]
+    fn arranged_a_write_lays_only_this_views_change_over_the_file() {
+        // Two views, one file, and each writes the whole document. What this
+        // view changed since it last read is laid over what is there now, so
+        // a pin this one made and a pin the other made both stand.
+        let published = Arrangement {
+            held: ["gone-c3d".to_string()].into_iter().collect(),
+            ..Arrangement::default()
+        };
+        let local = Arrangement {
+            held: ["mine-a1b".to_string()].into_iter().collect(),
+            ..Arrangement::default()
+        };
+        let disk = Arrangement {
+            held: ["gone-c3d".to_string(), "theirs-b2c".to_string()]
+                .into_iter()
+                .collect(),
+            ..Arrangement::default()
+        };
+
+        let merged = Arrangement::merged(&published, &local, &disk);
+        assert_eq!(
+            merged.held.iter().collect::<Vec<_>>(),
+            ["mine-a1b", "theirs-b2c"],
+            "this view unpinned gone-c3d and pinned mine-a1b; theirs stays"
+        );
+
+        // A group order somebody put in is taken whole, and one this view did
+        // not touch is left as the file has it.
+        let published = Arrangement::default();
+        let mut local = Arrangement::default();
+        local
+            .order
+            .insert(Group::Working, vec!["b".into(), "a".into()]);
+        let mut disk = Arrangement::default();
+        disk.order.insert(Group::Completed, vec!["c".into()]);
+        let merged = Arrangement::merged(&published, &local, &disk);
+        assert_eq!(merged.order[&Group::Working], ["b", "a"]);
+        assert_eq!(merged.order[&Group::Completed], ["c"]);
+    }
+
+    #[test]
+    fn arranged_the_axis_is_taken_only_where_this_view_turned_it() {
+        let published = Arrangement {
+            axis: Axis::Project,
+            ..Arrangement::default()
+        };
+        let local = Arrangement {
+            axis: Axis::Repo,
+            ..Arrangement::default()
+        };
+        let disk = Arrangement {
+            axis: Axis::State,
+            ..Arrangement::default()
+        };
+
+        assert_eq!(
+            Arrangement::merged(&published, &local, &disk).axis,
+            Axis::Repo,
+            "this view turned it, so the file's older answer gives way"
+        );
+        let unturned = published.clone();
+        assert_eq!(
+            Arrangement::merged(&published, &unturned, &disk).axis,
+            Axis::State,
+            "and where this view did not, the file's answer stands"
         );
     }
 
