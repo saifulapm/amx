@@ -56,9 +56,10 @@ pub const HEARTBEAT: &str = "heartbeat";
 /// leaves when it dies before its first hook, and boot paint where it spoke —
 /// see [`Agent::output`].
 pub const OUTPUT: &str = "output";
-/// How much of a transcript's end [`Agent::transcript_tail`] reads. Enough for
-/// the last turn of any conversation, and a fixed cost however long the
-/// session has run.
+/// How much of a transcript's end [`Agent::transcript_tail`] reads. A fixed
+/// cost however long the session has run, at the price of a turn larger than
+/// it: a tool result or an answer that long is cut, and the half line the seek
+/// opens on is dropped.
 const TAIL: u64 = 64 * 1024;
 /// How much of a command's output [`Agent::output_tail`] reads. About three
 /// thousand rows of eighty columns, which is more than a card is ever paged

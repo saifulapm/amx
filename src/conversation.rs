@@ -120,23 +120,45 @@ fn branch(entries: Vec<Value>) -> Vec<Value> {
 /// answering with the last assistant text would serve the *previous* turn's
 /// answer as this one's. That is the unrecoverable direction to be wrong in,
 /// so it answers with nothing instead. The vendor's bookkeeping lines are not
-/// the end of anything and are read past.
+/// the end of anything and are read past, and neither is a turn that never
+/// reached the vendor — see [`synthetic`].
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
-    let entries: Vec<Value> = spoken(format, jsonl)
-        .into_iter()
-        .filter(|entry| voice(format, entry).is_some())
-        .collect();
-    let last = entries.last()?;
-    if voice(format, last) != Some(Voice::Assistant) {
+    last_answer(format, &spoken(format, jsonl))
+}
+
+/// The answer at the end of a walk already read, which is what
+/// [`answer`] and [`context_and_last_words`] both ask of it.
+fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
+    let last = entries
+        .iter()
+        .rev()
+        .find(|entry| voice(format, entry).is_some())?;
+    if voice(format, last) != Some(Voice::Assistant) || synthetic(format, last) {
         return None;
     }
-    let text: Vec<&str> = blocks(last)
+    answer_text(last)
+}
+
+/// What one assistant entry said, as the answer it would be: its text blocks
+/// joined, or nothing where it said nothing.
+fn answer_text(entry: &Value) -> Option<String> {
+    let text: Vec<&str> = blocks(entry)
         .iter()
         .filter(|block| block["type"] == "text")
         .filter_map(|block| block["text"].as_str())
         .collect();
     let text = text.join("\n").trim().to_string();
     (!text.is_empty()).then_some(text)
+}
+
+/// Whether an assistant entry is the vendor's note that the turn never reached
+/// it, rather than something the agent said.
+///
+/// claude writes `"model":"<synthetic>"` for "No response requested.", an API
+/// error, a session limit: bookkeeping about a turn that did not happen, and
+/// neither an answer nor a last word.
+fn synthetic(format: Transcript, entry: &Value) -> bool {
+    matches!(format, Transcript::Claude) && entry["message"]["model"] == "<synthetic>"
 }
 
 /// The newest thing said, as the one line a row has room for.
@@ -179,24 +201,39 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
 /// real turn never sends 0 tokens, so the sum itself tells the two apart for
 /// either vendor, and a tail holding no turn that sent anything answers
 /// `None`.
-pub fn usage_context(format: Transcript, jsonl: &str) -> Option<u64> {
-    let sum = |entry: &Value| {
-        let usage = &entry["message"]["usage"];
-        let field = |key: &str| usage[key].as_u64().unwrap_or(0);
-        match format {
-            Transcript::Claude => {
-                field("input_tokens")
-                    + field("cache_creation_input_tokens")
-                    + field("cache_read_input_tokens")
-            }
-            Transcript::Pi => field("input") + field("cacheRead") + field("cacheWrite"),
-        }
-    };
-    spoken(format, jsonl)
-        .into_iter()
+fn context_of(format: Transcript, entries: &[Value]) -> Option<u64> {
+    entries
+        .iter()
+        .rev()
         .filter(|entry| voice(format, entry) == Some(Voice::Assistant))
-        .filter_map(|entry| Some(sum(&entry)).filter(|total| *total > 0))
-        .next_back()
+        .map(|entry| usage_sum(format, entry))
+        .find(|total| *total > 0)
+}
+
+/// The input side of one entry's usage, a field it does not carry at 0.
+fn usage_sum(format: Transcript, entry: &Value) -> u64 {
+    let usage = &entry["message"]["usage"];
+    let field = |key: &str| usage[key].as_u64().unwrap_or(0);
+    match format {
+        Transcript::Claude => {
+            field("input_tokens")
+                + field("cache_creation_input_tokens")
+                + field("cache_read_input_tokens")
+        }
+        Transcript::Pi => field("input") + field("cacheRead") + field("cacheWrite"),
+    }
+}
+
+/// What the next turn would send back to the vendor and the reader's own words
+/// at the end of the last one, answered from one walk of the transcript.
+///
+/// `View::json()` asks both questions of the same 64 KiB tail, and asking each
+/// of [`context_of`] and [`last_answer`] separately walks that tail twice —
+/// which a program polling a wall of agents pays twice a second. This reads it
+/// once and answers both.
+pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, Option<String>) {
+    let entries = spoken(format, jsonl);
+    (context_of(format, &entries), last_answer(format, &entries))
 }
 
 /// The name the session goes under, where something has given it one.
@@ -641,6 +678,12 @@ mod tests {
         );
     }
 
+    /// The context half of the combined reader, which is the only reader the
+    /// tests below have to ask.
+    fn usage_context(format: Transcript, jsonl: &str) -> Option<u64> {
+        context_and_last_words(format, jsonl).0
+    }
+
     #[test]
     fn conversation_usage_context_sums_the_last_assistants_usage() {
         let claude = concat!(
@@ -686,6 +729,11 @@ mod tests {
             Some(822332),
             "the last turn that sent tokens, not the zero-sum entry after it"
         );
+        assert_eq!(
+            answer(Transcript::Claude, synthetic),
+            None,
+            "and the vendor's no-response note is not the agent's last words"
+        );
 
         let only_synthetic = "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\
              \"content\":[{\"type\":\"text\",\"text\":\"API Error: 529 Overloaded\"}],\
@@ -695,6 +743,23 @@ mod tests {
             usage_context(Transcript::Claude, only_synthetic),
             None,
             "a tail holding nothing else has no context to report"
+        );
+        assert_eq!(answer(Transcript::Claude, only_synthetic), None);
+    }
+
+    #[test]
+    fn conversation_answers_context_and_last_words_from_one_read() {
+        let claude = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"the importer is ported\"}],\
+             \"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":5}}}\n";
+        assert_eq!(
+            context_and_last_words(Transcript::Claude, claude),
+            (Some(105), Some("the importer is ported".to_string())),
+            "the two questions View::json() asks, from the one walk"
+        );
+        assert_eq!(
+            context_and_last_words(Transcript::Claude, CLAUDE).0,
+            usage_context(Transcript::Claude, CLAUDE),
+            "and the context agrees with the reader that answers it alone"
         );
     }
 

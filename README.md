@@ -1546,8 +1546,10 @@ long since anything was heard from one still going — and `worked` is the
 spans of work the record has added up. The table's column is the human reading
 of the same spans; programs read the fields. `context` is the input side of
 the conversation's usage, in tokens, off the last turn that sent any;
-`last_words` is what the reader last said, off the same transcript. Both are
-null where there is no transcript to read, or nothing on it yet.
+`last_words` is what the reader last said, off the same transcript — null
+too where the last turn ended without reaching the vendor, since that turn
+has no words. Both are null where there is no transcript to read, or nothing
+on it yet.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other

@@ -300,6 +300,10 @@ impl View {
     /// The same, over requests already read.
     fn json_beside(&self, prs: &[crate::pr::Pr]) -> serde_json::Value {
         let transcript = self.transcript();
+        let (context, last_words) = match &transcript {
+            Some((format, tail)) => crate::conversation::context_and_last_words(*format, tail),
+            None => (None, None),
+        };
         serde_json::json!({
             "id": self.meta.id,
             // Who this agent is a child of and how deep it stands, so a
@@ -381,12 +385,8 @@ impl View {
             // the transcript itself rather than kept on the record, the way
             // [`newest_said`] reads it. Null where there is no transcript to
             // read, or nothing on it yet worth either question.
-            "context": transcript
-                .as_ref()
-                .and_then(|(format, tail)| crate::conversation::usage_context(*format, tail)),
-            "last_words": transcript
-                .as_ref()
-                .and_then(|(format, tail)| crate::conversation::answer(*format, tail)),
+            "context": context,
+            "last_words": last_words,
         })
     }
 
