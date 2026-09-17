@@ -2921,6 +2921,10 @@ fn setup_writes_pis_subagent_tool_only_when_it_is_asked_for() {
         "it gives the agent the tool: {written}"
     );
     assert!(
+        written.contains("params.role") && written.contains("\"--role\""),
+        "and it can ask for a role by name: {written}"
+    );
+    assert!(
         !written.contains("\"_hook\""),
         "the tool reports nothing itself: {written}"
     );

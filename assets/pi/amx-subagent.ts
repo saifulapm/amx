@@ -97,6 +97,12 @@ export default function (pi: ExtensionAPI) {
           description: "The agent command to run the child with, instead of this one's.",
         }),
       ),
+      role: Type.Optional(
+        Type.String({
+          description:
+            "A role to spawn with, by name: its file supplies the dials and a brief, and anything passed here stands over them.",
+        }),
+      ),
       model: Type.Optional(
         Type.String({
           description:
@@ -110,6 +116,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       const args = ["sub", "--json", params.task];
       if (params.agent) args.push("--agent", params.agent);
+      if (params.role) args.push("--role", params.role);
       if (params.model) args.push("--model", params.model);
       if (params.effort) args.push("--effort", params.effort);
 

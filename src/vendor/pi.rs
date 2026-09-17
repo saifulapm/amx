@@ -316,6 +316,10 @@ mod tests {
         assert!(body.contains("\"subagent\""), "named what it is");
         assert!(body.contains("\"sub\""), "and it runs the verb");
         assert!(
+            body.contains("params.role") && body.contains("\"--role\""),
+            "and it can name a role for the child: {body}"
+        );
+        assert!(
             !body.contains("\"_hook\""),
             "the tool reports nothing; that is the other wire's work"
         );
