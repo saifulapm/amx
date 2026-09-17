@@ -80,7 +80,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 55] = [
     ("ctrl+g", "write the line in $EDITOR"),
     ("alt+↑ alt+↓", "lines sent before · ↑ ↓ too on a task line"),
     // arrange
-    ("ctrl+s", "gather them by state or by project"),
+    ("ctrl+s", "gather them by state, directory or repo"),
     ("ctrl+t", "pin it over the wall · again lets it go"),
     ("z", "put it under everything · again wakes it"),
     ("shift+↑", "move it up its group"),

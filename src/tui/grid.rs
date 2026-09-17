@@ -84,7 +84,7 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool) -> Widths {
     };
     let state = match axis {
         Axis::State => 0,
-        Axis::Project => STATE,
+        Axis::Project | Axis::Repo => STATE,
     };
     let vendor = match vendor {
         true => VENDOR,

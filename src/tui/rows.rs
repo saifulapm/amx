@@ -156,6 +156,11 @@ pub enum Axis {
     State,
     /// Under the project they are running in.
     Project,
+    /// Under the repository that holds them, with every worktree of it
+    /// together. Where [`Axis::Project`] reads amx's own worktree layout, this
+    /// asks git, so a `workflow run` tree heads the same repository as the
+    /// checkout beside it.
+    Repo,
 }
 
 /// How somebody has arranged the list, in terms that outlive the view they
@@ -402,13 +407,18 @@ pub struct List {
     /// The projects the headings name, in the order they are drawn.
     projects: Vec<PathBuf>,
     /// Which project each agent belongs to, worked out once per agent: the
-    /// reading is taken again every second, and the walk below reaches a disk.
-    /// An agent's directory does not move under it, so one answer per id is one
-    /// answer for as long as the view is open.
+    /// reading is taken again every second, and either walk below reaches a
+    /// disk — one reads directories, the other runs git. An agent's directory
+    /// does not move under it, so one answer per id is one answer for as long
+    /// as the view is open on that axis.
     roots: HashMap<String, PathBuf>,
     /// Whether a directory holds a repository. A field so that a test can say
     /// what the disk looks like, and count what was asked of it.
     probe: fn(&Path) -> bool,
+    /// How the repository axis reads a directory back to the repository that
+    /// holds it. A field for the same reason `probe` is: it runs git, and a
+    /// test over a fake disk should answer for itself.
+    repo_of: fn(&Path) -> Option<PathBuf>,
     /// What each agent's branch has open, by id. Taken with the reading rather
     /// than once per agent, because a check goes green while somebody is
     /// looking at the row — the look itself is a small file beside the record,
@@ -441,6 +451,7 @@ impl Default for List {
             projects: Vec::new(),
             roots: HashMap::new(),
             probe: holds_a_repository,
+            repo_of: main_repo_of,
             prs: HashMap::new(),
             asks: pr::of,
             home: std::env::home_dir(),
@@ -455,6 +466,17 @@ impl List {
     fn probing(probe: fn(&Path) -> bool, home: Option<PathBuf>) -> List {
         List {
             probe,
+            home,
+            ..List::default()
+        }
+    }
+
+    /// The same over a stated git, which is the seam the repository axis is
+    /// proven at: the question that axis asks is answered by a process.
+    #[cfg(test)]
+    fn probing_repos(repo_of: fn(&Path) -> Option<PathBuf>, home: Option<PathBuf>) -> List {
+        List {
+            repo_of,
             home,
             ..List::default()
         }
@@ -504,12 +526,19 @@ impl List {
     /// Gather them the other way. The cursor holds its agent across the turn,
     /// because turning the axis is a question about the fleet and not about
     /// the one agent somebody was looking at.
+    ///
+    /// Three ways now, so `ctrl+s` walks state, directory, repository and
+    /// back. The roots are dropped because what a directory resolves to is a
+    /// question each axis answers differently, and the next reading has to
+    /// ask the new one.
     pub fn turn(&mut self) {
         let on = self.on();
         self.axis = match self.axis {
             Axis::State => Axis::Project,
-            Axis::Project => Axis::State,
+            Axis::Project => Axis::Repo,
+            Axis::Repo => Axis::State,
         };
+        self.roots.clear();
         self.rebuild(on.agent());
         self.follow(&on);
     }
@@ -529,6 +558,11 @@ impl List {
     /// on, for the same reason it does across a turn of the axis.
     pub fn arrange(&mut self, arrangement: Arrangement) {
         let on = self.on();
+        // A turn somebody else made in another view is one this list has not
+        // read yet: the roots in hand answer the old axis's question.
+        if arrangement.axis != self.axis {
+            self.roots.clear();
+        }
         self.axis = arrangement.axis;
         self.held = arrangement.held;
         self.asleep = arrangement.asleep;
@@ -775,7 +809,7 @@ impl List {
     /// Nothing on the state axis, where the row above one is somebody else's
     /// repository and a heading is a word rather than a place.
     pub fn project_under_cursor(&self) -> Option<PathBuf> {
-        if self.axis != Axis::Project {
+        if self.axis == Axis::State {
             return None;
         }
         match self.items.get(self.cursor)? {
@@ -1072,7 +1106,7 @@ impl List {
                 self.projects.clear();
                 self.items = self.by_state(&order, keeping);
             }
-            Axis::Project => {
+            Axis::Project | Axis::Repo => {
                 let (projects, items) = self.by_project(&order, keeping);
                 self.projects = projects;
                 self.items = items;
@@ -1081,17 +1115,25 @@ impl List {
         self.settle();
     }
 
-    /// Which project each agent belongs to, for the ones not worked out yet.
-    /// Only on the axis that asks, because the walk reaches a disk.
+    /// Which repository each agent belongs to, for the ones not worked out
+    /// yet. Only on an axis that asks, because both walks reach a disk — one
+    /// reads directories, the other runs git.
     fn remember_the_roots(&mut self) {
-        if self.axis != Axis::Project {
+        let axis = self.axis;
+        if axis == Axis::State {
             return;
         }
+        let (probe, repo_of) = (self.probe, self.repo_of);
         let fresh: Vec<(String, PathBuf)> = self
             .views
             .iter()
             .filter(|view| !self.roots.contains_key(view.id()))
-            .map(|view| (view.id().to_string(), project_of(&view.meta, self.probe)))
+            .map(|view| {
+                (
+                    view.id().to_string(),
+                    root_of(axis, &view.meta, probe, repo_of),
+                )
+            })
             .collect();
         self.roots.extend(fresh);
     }
@@ -1620,6 +1662,43 @@ fn project_of(meta: &Meta, probe: fn(&Path) -> bool) -> PathBuf {
         .unwrap_or_else(|| meta.dir.clone())
 }
 
+/// Which repository an agent belongs to, with every worktree of it together.
+///
+/// [`project_of`] answers where an agent runs. This asks the other question:
+/// which repository holds the tree, however it was cut and wherever it lives.
+/// git answers that for any linked worktree — its own directory and the one
+/// the repository shares are two, and the shared one names the repository —
+/// so a tree `workflow run` cut and the checkout beside it head one
+/// repository, where the directory axis (which reads only amx's own worktree
+/// layout) heads each. A directory git cannot place, because it is gone or in
+/// no repository at all, falls back to the answer the directory axis gives.
+fn repo_root_of(
+    meta: &Meta,
+    probe: fn(&Path) -> bool,
+    repo_of: fn(&Path) -> Option<PathBuf>,
+) -> PathBuf {
+    let dir = meta.worktree.as_deref().unwrap_or(&meta.dir);
+    repo_of(dir).unwrap_or_else(|| project_of(meta, probe))
+}
+
+/// The repository the axis asks about, by whichever question that axis asks.
+fn root_of(
+    axis: Axis,
+    meta: &Meta,
+    probe: fn(&Path) -> bool,
+    repo_of: fn(&Path) -> Option<PathBuf>,
+) -> PathBuf {
+    match axis {
+        Axis::Repo => repo_root_of(meta, probe, repo_of),
+        _ => project_of(meta, probe),
+    }
+}
+
+/// A directory read back to the repository that holds it, as git answers.
+fn main_repo_of(dir: &Path) -> Option<PathBuf> {
+    crate::worktree::main_repo(dir).ok()
+}
+
 /// The repository a worktree of amx's own shape was cut from, read backwards.
 fn repo_of(tree: &Path) -> Option<PathBuf> {
     let repo = tree.parent()?.parent()?.parent()?;
@@ -1836,6 +1915,25 @@ mod tests {
     fn over_the_disk(views: Vec<View>) -> List {
         ASKED.with_borrow_mut(|asked| asked.clear());
         let mut list = List::probing(a_disk_with_repos, Some(PathBuf::from("/home/dev")));
+        list.turn();
+        list.show(views);
+        list
+    }
+
+    /// The repository a stated git says a directory belongs to: everything
+    /// under `/work/repo` is that repository, wherever in it the tree lives,
+    /// and `/tmp/scratch` belongs to none.
+    fn a_disk_that_answers_git(dir: &Path) -> Option<PathBuf> {
+        dir.starts_with("/work/repo")
+            .then(|| PathBuf::from("/work/repo"))
+    }
+
+    /// A list over that git, gathered by repository: the axis `ctrl+s`
+    /// reaches by turning twice.
+    fn over_the_repos(views: Vec<View>) -> List {
+        let mut list =
+            List::probing_repos(a_disk_that_answers_git, Some(PathBuf::from("/home/dev")));
+        list.turn();
         list.turn();
         list.show(views);
         list
@@ -2385,8 +2483,14 @@ mod tests {
             Some(PathBuf::from("/tmp/scratch"))
         );
 
-        // Gathered by state there is no project over the cursor for it to be
-        // standing in: the row above one belongs to whoever started it.
+        // Gathered by repository the cursor is still standing in a place,
+        // and only the state axis has none for it to stand in: the row above
+        // one there belongs to whoever started it.
+        list.turn();
+        assert_eq!(
+            list.project_under_cursor(),
+            Some(PathBuf::from("/tmp/scratch"))
+        );
         list.turn();
         assert_eq!(list.project_under_cursor(), None);
     }
@@ -2418,6 +2522,41 @@ mod tests {
                 "/bbb (1)",
                 "quiet-d4e",
             ]
+        );
+    }
+
+    #[test]
+    fn repo_axis_gathers_every_worktree_under_the_repository_it_shares() {
+        // The directory axis answers where an agent runs; this one answers
+        // which repository holds it. A tree `workflow run` cut, one amx cut,
+        // and the checkout beside them are one heading, because git says they
+        // share a repository and amx's own layout never enters into it.
+        let list = over_the_repos(vec![
+            at(
+                view("worker-a1b", Phase::Working, 10),
+                "/work/repo/workflow/plan/t1",
+            ),
+            in_a_worktree(
+                view("amx-b2c", Phase::Working, 20),
+                "/work/repo/.amx/worktrees/amx-b2c",
+            ),
+            at(view("plain-c3d", Phase::Idle, 30), "/work/repo/src"),
+            at(view("elsewhere-d4e", Phase::Idle, 40), "/tmp/scratch"),
+        ]);
+
+        assert_eq!(
+            lines(&list),
+            [
+                "/work/repo (3)",
+                "worker-a1b",
+                "amx-b2c",
+                "plain-c3d",
+                "",
+                "/tmp/scratch (1)",
+                "elsewhere-d4e",
+            ],
+            "a workflow worker, an amx worktree and a subdirectory are one \
+             repository, and a directory outside one is its own place"
         );
     }
 
@@ -2475,12 +2614,15 @@ mod tests {
     }
 
     #[test]
-    fn axis_turns_between_what_they_need_and_where_they_are() {
+    fn axis_turns_between_what_they_need_where_they_are_and_which_repo() {
         let mut list = over_the_disk(vec![
             at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
             at(view("busy-b2c", Phase::Working, 20), "/src/web"),
         ]);
         assert_eq!(list.axis(), Axis::Project);
+
+        list.turn();
+        assert_eq!(list.axis(), Axis::Repo);
 
         list.turn();
         assert_eq!(list.axis(), Axis::State);
@@ -2490,6 +2632,7 @@ mod tests {
         );
 
         list.turn();
+        assert_eq!(list.axis(), Axis::Project);
         assert_eq!(lines(&list)[0], "/src/api (1)");
     }
 
@@ -2539,6 +2682,7 @@ mod tests {
 
         // The same agents gathered by state are folded still: what somebody
         // opened is one heading rather than the fleet.
+        list.turn();
         list.turn();
         assert!(
             lines(&list).contains(&"… 2 more".to_string()),

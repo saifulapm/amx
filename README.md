@@ -378,8 +378,13 @@ a question all afternoon has not worked an afternoon — and stopped for good
 when the run ends. The `amx ls` table prints the same number. How long a
 question has been standing is on the card, in its title.
 
-`ctrl+s` gathers the same agents under the directory each one runs in, and the
-screen changes twice for it. A heading is a path rather than a word, and it is
+`ctrl+s` gathers the same agents three ways: under what they need, under the
+directory each one runs in, and under the repository that holds them. The last
+puts every worktree of a repository under one heading — the tree `workflow`
+`run` cut, one amx cut, and the checkout beside them — because git says they
+share a repository where the directory axis says only where each one runs.
+Either path axis changes the screen twice: a heading is a path rather than a
+word, and it is
 drawn the way a group's heading is: dim end to end, no weight on the last
 segment, no count while the rows are on the screen, and a path too long for the
 line loses its middle rather than its end — the end is the segment that says
@@ -433,7 +438,7 @@ table.
 | `backspace` | put the cursor on the agent you were last in, as `amx attach --last` goes back from a shell |
 | `/` | find by name, task or `#12`, as you type; `esc` clears it |
 | `v` | say which vendor, model and effort each row runs, and again to hide it |
-| `ctrl+s` | gather them by state or by project |
+| `ctrl+s` | gather them by state, directory or repository |
 | `ctrl+t` | pin it over the wall, and again to let it go |
 | `z` | put it under everything, and again to wake it |
 | `shift+↑` `shift+↓` | move it up or down its group |

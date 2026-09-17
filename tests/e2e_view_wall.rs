@@ -1126,7 +1126,13 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
         "and the state headings are gone with the axis:\n{drawn}"
     );
 
-    // And back, on the same key.
+    // And on again: the repository each tree shares, then once more back to
+    // what they need. `ctrl+s` walks three axes now.
+    press(&amx, &view, "C-s");
+    amx.until("the repository headings", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("~/repo") && !drawn.contains("Needs input")).then_some(drawn)
+    });
     press(&amx, &view, "C-s");
     amx.until("what they need again", || {
         screen(&amx, &view).contains("Needs input").then_some(())
