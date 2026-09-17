@@ -88,6 +88,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
+        Some(cli::Command::Sub(args)) => finish(verbs::sub::from_env(args)),
         Some(cli::Command::Ls { json, dir }) => finish(verbs::ls::from_env(
             *json,
             dir.as_deref().or(cli.dir.as_deref()),

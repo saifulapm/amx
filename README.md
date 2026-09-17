@@ -212,6 +212,39 @@ amx new "port the importer" -- --model opus --session-id "$uuid"
 vendor's own flag, and amx stands its dial down rather than send the flag
 twice.
 
+## Subagents
+
+`amx sub` starts an agent and waits for its answer in one call:
+
+```sh
+amx sub "find the auth middleware"                   # share this pane's directory
+amx sub --worktree "rewrite the parser"              # a tree of its own
+amx sub --dir /srv/app "read the deploy log"         # somewhere else
+amx sub --model opus --effort high "check the diff"  # dials, as `amx new` takes them
+amx sub --json "summarise the failure"               # one object on stdout
+amx sub --bg "kick off the long one"                 # the id, and no wait
+amx sub --timeout 120 "answer inside two minutes"    # your own deadline
+```
+
+A subagent is an ordinary amx agent whose record names a parent: `amx logs`,
+the card and the wall read it the way they read any other, and this verb is
+`amx new` plus `amx result` in one call. The child's answer goes to stdout and
+its id to stderr on one line, so a caller that reads a question on stdout knows
+who to `amx answer`. With `--json` both come back in one object,
+`{"id", "parent", "phase", "answer", "evidence"}`, and the exit codes are
+`result`'s: 0 an answer, 1 failed or stopped, 2 the child is asking a question,
+3 your own deadline.
+
+A child starts in the parent's directory and sees whatever is uncommitted
+there, because a subagent is an extension of the parent's work; `--worktree`
+cuts it a tree of its own through the machinery `amx new` uses. A model and an
+effort the parent already had are handed down when the child runs the same
+vendor, and anything on this command line wins. `--permission` is refused
+unless `subagents_may_escalate` is true, `subagent_depth` is how deep the chain
+may go, and `max_children` is how many live children one parent may have.
+`--bg` returns as soon as the id is known, without waiting for the answer, and
+`--no-parent` makes the spawn a peer rather than a child.
+
 ## A shell command as a row
 
 Not everything worth keeping an eye on is an agent. `--exec` runs a plain

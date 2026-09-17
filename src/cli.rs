@@ -38,6 +38,7 @@ impl Cli {
         use Command::*;
         Some(match self.command.as_ref()? {
             New(_) => "new",
+            Sub(_) => "sub",
             Ls { .. } => "ls",
             Status { .. } => "status",
             Send { .. } => "send",
@@ -73,6 +74,16 @@ impl Cli {
 pub enum Command {
     /// Start an agent on a task.
     New(NewArgs),
+
+    /// Start a subagent on a task and wait for its answer.
+    ///
+    /// A child is an ordinary agent whose record names the agent whose pane it
+    /// was started in: same spawn, same record, same view, and `amx logs` and
+    /// the card read it the way they read any other. This verb is `new` plus
+    /// `result` in one call, so a parent can ask a question and get the answer
+    /// back without a second command and without knowing an id it has not been
+    /// told yet.
+    Sub(SubArgs),
 
     /// List agents and their states.
     Ls {
@@ -553,6 +564,59 @@ pub struct NewArgs {
     pub vendor_args: Vec<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct SubArgs {
+    /// What the child should do.
+    #[arg(value_parser = a_task)]
+    pub task: String,
+
+    /// Cut the child a worktree of its own instead of sharing the parent's
+    /// directory.
+    ///
+    /// A subagent is an extension of the parent's work, so it runs where the
+    /// parent runs by default: it sees the uncommitted files and needs no
+    /// branch to answer one question. `--worktree` is for the child that will
+    /// change something, and `--dir` is for the one sent somewhere else.
+    #[arg(long)]
+    pub worktree: bool,
+
+    /// Run the child in this directory instead of the parent's.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+
+    /// Record no parent, even though this is being run inside a pane.
+    #[arg(long)]
+    pub no_parent: bool,
+
+    /// Print one JSON object instead of the answer and the id.
+    ///
+    /// `{"id", "parent", "phase", "answer", "evidence"}`, so a caller
+    /// driving amx from a program reads the child, its family and its answer
+    /// off one line.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Return as soon as the child's id is known, without waiting for it.
+    #[arg(long)]
+    pub bg: bool,
+
+    /// Give up waiting for the answer after this many seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+
+    /// The vendor and the dials for this one child.
+    ///
+    /// A model and an effort are inherited from the parent when the child runs
+    /// the same vendor; anything named here wins. `--permission` is refused
+    /// unless the `subagents_may_escalate` key says otherwise.
+    #[command(flatten)]
+    pub agent: Option<AgentArgs>,
+
+    /// Arguments passed to the agent command verbatim.
+    #[arg(last = true, value_name = "AGENT_ARGS")]
+    pub vendor_args: Vec<String>,
+}
+
 #[derive(Debug, Args, Default)]
 pub struct AdoptArgs {
     /// What the agent is working on, for the row to say. Without one the row
@@ -578,7 +642,7 @@ pub struct AdoptArgs {
 /// vendor's own and is passed through untouched, including the same words:
 /// `--model` before the separator turns amx's dial, `--model` after it is
 /// claude's flag, and a dial stands down rather than send the flag twice.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone, Default)]
 pub struct AgentArgs {
     /// The agent command to run instead of the configured one.
     #[arg(long = "agent", value_name = "COMMAND")]

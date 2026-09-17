@@ -21,6 +21,7 @@ pub mod setup;
 pub mod status;
 pub mod statusline;
 pub mod stop;
+pub mod sub;
 pub mod sweep;
 pub mod uninstall;
 pub mod wait;

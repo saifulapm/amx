@@ -20,9 +20,9 @@ use crate::{Severity, exit, ids, models, paths, registry, said, trust, worktree}
 /// What this spawn launches: the vendor's command, and where its dials are
 /// pointed for this one agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Launch {
-    agent: String,
-    dials: Dials,
+pub(crate) struct Launch {
+    pub(crate) agent: String,
+    pub(crate) dials: Dials,
 }
 
 impl Launch {
@@ -39,7 +39,7 @@ impl Launch {
     /// Which vendor runs is settled first, because a typed model picks the
     /// harness that offers it and the dials are read against whichever one
     /// that turns out to be.
-    fn resolve(config: &Config, args: &NewArgs) -> Result<Launch, String> {
+    pub(crate) fn resolve(config: &Config, args: &NewArgs) -> Result<Launch, String> {
         let named = args.agent.as_ref();
         let agent = match named.and_then(|named| named.command.clone()) {
             Some(command) => command,
