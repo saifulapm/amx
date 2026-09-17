@@ -1199,6 +1199,7 @@ amx interrupt <id>       # end the turn it is on, and leave the agent standing
 amx stop <id>            # asks what to do with the worktree and the branch
 amx stop <id> --force    # takes the defaults, asks nothing
 amx stop <id> --worktree keep --branch delete
+amx stop <id> --keep-children   # end it alone; its children carry on
 amx stop <id> --delete   # and forget the record too
 amx resume <id>          # start it again on the conversation it had
 amx resume <id> "and now the linter"   # and put this to it as its first turn
@@ -1231,6 +1232,11 @@ lose nothing: the worktree goes, the branch stays, the record stays. A
 worktree with uncommitted work in it is always kept, whatever you answer.
 `--delete` says the record goes; `--force` says every question takes its
 default. They are separate on purpose.
+
+A parent's children are ended with it, deepest first: they were started to
+answer its questions, and one left running has nobody to answer to.
+`--keep-children` leaves them running. Stopping a child never touches its
+parent, and a child whose parent's record has been removed is read as a root.
 
 A worktree that goes takes its key in the vendor's own store with it. claude
 writes a `projects` entry for every directory it is started in, and amx cuts a

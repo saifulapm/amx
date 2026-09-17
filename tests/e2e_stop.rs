@@ -162,6 +162,106 @@ fn stop_ends_the_agent_and_records_that_it_was_stopped() {
     );
 }
 
+/// A record that names `parent` at `depth`, over the pane `amx.play` made.
+fn a_child(amx: &Harness, id: &str, parent: &str, depth: u64) -> String {
+    let pane = amx.play(id, "happy-turn");
+    amx.set_meta(id, serde_json::json!({ "parent": parent, "depth": depth }));
+    pane
+}
+
+#[test]
+fn stopping_a_parent_takes_its_family_deepest_first() {
+    let amx = Harness::new();
+    let parent = amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
+    let grandchild = a_child(&amx, "grand-c3d", "child-b2c", 2);
+
+    let out = said(&stop(&amx, &["parent-a1b", "--force"]));
+
+    for pane in [&parent, &child, &grandchild] {
+        assert!(!amx.pane_alive(pane), "the family's panes go with it");
+    }
+    for id in ["parent-a1b", "child-b2c", "grand-c3d"] {
+        assert_eq!(amx.state(id)["state"], "stopped", "{id}");
+    }
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|line| line.ends_with(" stopped"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "parent-a1b stopped",
+            "grand-c3d stopped",
+            "child-b2c stopped"
+        ],
+        "the parent first, then the leaves"
+    );
+}
+
+#[test]
+fn keep_children_leaves_the_family_running() {
+    let amx = Harness::new();
+    let parent = amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
+
+    said(&stop(&amx, &["parent-a1b", "--force", "--keep-children"]));
+
+    assert!(!amx.pane_alive(&parent), "the parent goes");
+    assert!(amx.pane_alive(&child), "and the child is left to finish");
+    assert_ne!(amx.state("child-b2c")["state"], "stopped");
+}
+
+#[test]
+fn stopping_a_child_never_touches_its_parent() {
+    let amx = Harness::new();
+    let parent = amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
+
+    said(&stop(&amx, &["child-b2c", "--force"]));
+
+    assert!(!amx.pane_alive(&child));
+    assert!(
+        amx.pane_alive(&parent),
+        "the parent is not the child's to end"
+    );
+    assert_ne!(amx.state("parent-a1b")["state"], "stopped");
+}
+
+#[test]
+fn a_child_of_a_removed_parent_is_still_an_agent() {
+    // `stop --delete` takes the parent's record away. The child's record
+    // still names it, and what is left is an ordinary row rather than a
+    // record the reader drops.
+    let amx = Harness::new();
+    amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
+
+    said(&stop(
+        &amx,
+        &["parent-a1b", "--force", "--delete", "--keep-children"],
+    ));
+    assert!(!amx.agent_dir("parent-a1b").exists());
+
+    let status = amx.amx(&["status", "child-b2c", "--json"]);
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let row: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(row["id"], "child-b2c");
+    assert_eq!(
+        row["parent"], "parent-a1b",
+        "the record names the gone parent"
+    );
+    assert!(amx.pane_alive(&child), "and the child is left running");
+}
+
 #[test]
 fn an_agent_that_will_not_stop_when_asked_is_stopped_anyway() {
     let amx = Harness::new();

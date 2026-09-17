@@ -17,6 +17,7 @@
 //! without also telling amx they do not care what happens to a worktree.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -46,6 +47,40 @@ pub fn run(
 ) -> Result<i32> {
     let agent = Agent::open(root, &args.id)?;
     let meta = agent.meta()?;
+
+    stop_one(root, &args.id, out)?;
+
+    // The family goes with the parent, deepest first, unless somebody asked
+    // for it to stand: a child was started to answer the parent's questions,
+    // and one left running has nobody to answer to.
+    if !args.keep_children {
+        for child in descendants(root, &args.id)? {
+            stop_one(root, &child, out)?;
+        }
+    }
+
+    dispositions(&meta, args, input, out)?;
+
+    // Last, and only once everything it names has been said. The record is
+    // where the worktree and the branch are written down, so a line about
+    // either of them has to be printed while there is still a record to print
+    // it from.
+    if args.delete {
+        agent.remove()?;
+        writeln!(out, "removed {}'s record", args.id)?;
+    }
+    Ok(exit::OK)
+}
+
+/// End one agent: mark it stopped where it is not already, run whatever the
+/// person asked to run at that moment, and take its pane down.
+///
+/// A whole rung per agent rather than every record and then every pane,
+/// because the family is ended parent first: a child is written down as
+/// stopped while its parent is still there.
+fn stop_one(root: &Path, id: &str, out: &mut impl Write) -> Result<()> {
+    let agent = Agent::open(root, id)?;
+    let meta = agent.meta()?;
     let server = Server::from_socket(meta.socket.clone());
 
     // Recorded before the signal, so the exit the signal causes is read as
@@ -59,19 +94,41 @@ pub fn run(
     }
 
     end(&server, &meta.pane, &meta.id)?;
-    writeln!(out, "{} stopped", args.id)?;
+    writeln!(out, "{id} stopped")?;
+    Ok(())
+}
 
-    dispositions(&meta, args, input, out)?;
-
-    // Last, and only once everything it names has been said. The record is
-    // where the worktree and the branch are written down, so a line about
-    // either of them has to be printed while there is still a record to print
-    // it from.
-    if args.delete {
-        agent.remove()?;
-        writeln!(out, "removed {}'s record", args.id)?;
+/// Every agent whose record names its way back to `id`, deepest first.
+///
+/// Read off the records rather than kept anywhere: parenthood is a field, and
+/// a record whose parent has been removed is nobody's descendant. Deepest
+/// first so the family is ended from the leaves up, a child never left running
+/// after the thing it was answering to has gone.
+///
+/// A cycle — a record naming itself its own parent, or two naming each other —
+/// is walked once and stops there: an agent is written down once, and there is
+/// nothing below the record that repeats.
+fn descendants(root: &Path, id: &str) -> Result<Vec<String>> {
+    let mut records = Vec::new();
+    for other in store::list(root)? {
+        if let Ok(meta) = Agent::open(root, &other).and_then(|agent| agent.meta()) {
+            records.push(meta);
+        }
     }
-    Ok(exit::OK)
+
+    let mut found: Vec<(u32, String)> = Vec::new();
+    let mut seen = BTreeSet::from([id.to_string()]);
+    let mut frontier = vec![(id.to_string(), 0u32)];
+    while let Some((parent, depth)) = frontier.pop() {
+        for meta in &records {
+            if meta.parent.as_deref() == Some(parent.as_str()) && seen.insert(meta.id.clone()) {
+                found.push((depth + 1, meta.id.clone()));
+                frontier.push((meta.id.clone(), depth + 1));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(found.into_iter().map(|(_, id)| id).collect())
 }
 
 /// Run whatever somebody asked to have run when an agent is stopped.
