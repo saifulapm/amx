@@ -93,6 +93,17 @@ const NOT_INHERITED: [&str; 4] = ["TMUX", "TMUX_PANE", "PWD", "OLDPWD"];
 /// How long `_boot` waits for the record whose pane it is.
 const RECORD_PATIENCE: Duration = Duration::from_secs(10);
 
+/// How much of an agent's pane its boot keeps beside the record.
+///
+/// A command's pane is piped whole — nothing reports on a command and what it
+/// printed has nowhere else to go. An agent's is a vendor's full-screen
+/// drawing, repaints and cursor moves and all, and a file of the whole of it
+/// grows with the session and says nothing. So the first bytes are kept and
+/// the pipe stops there: a vendor that dies before its first hook says why
+/// before it draws anything, and pi's bad-model error is the first 96 bytes of
+/// its pane.
+pub const BOOT_BYTES: u64 = 64 * 1024;
+
 /// What the pane is handed at birth, apart from the environment: that rides
 /// [`BOOT_ENV`] instead, because this outlives the boot that reads it and the
 /// environment should not.
@@ -496,9 +507,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
     // pipe that cannot be attached costs the file and nothing else: the
     // command is what the row was started for, and a boot that died here
     // would be a row that never ran and never recorded why.
-    if meta.agent.is_none()
-        && let Err(e) = keep_output(&meta, &dir.join(crate::store::OUTPUT))
-    {
+    if let Err(e) = keep_output(&meta, &keeping_output(&meta, &dir)) {
         crate::warn!("amx: {id}: what it prints will not be kept: {e:#}");
     }
 
@@ -543,26 +552,39 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
     Err(command.exec()).context("starting the agent's command")
 }
 
-/// Keep everything the command prints in `path`, by asking tmux to pipe the
-/// command's own pane there.
+/// The shell command that keeps a pane's output in its record: the whole of a
+/// command's, the first [`BOOT_BYTES`] of an agent's.
 ///
-/// Only a command's pane, which is why this is asked of a record naming no
-/// vendor. Nothing reports on a command — there is no vendor in it and no hook
-/// behind it — so what it printed is on its screen and nowhere else, and a
-/// screen is the first thing a pane throws away. An agent's pane is the
-/// vendor's full-screen drawing, repaints and cursor moves and all, and a file
-/// of that is megabytes saying nothing.
+/// `>>` for a command, because a resumed command is the same record saying
+/// more; `>` for an agent, because a resume is a new boot whose words are its
+/// own.
+fn keeping_output(meta: &Meta, dir: &Path) -> String {
+    let path = quoted(&dir.join(crate::store::OUTPUT));
+    match meta.agent.is_none() {
+        true => format!("cat >> {path}"),
+        false => format!("head -c {BOOT_BYTES} > {path}"),
+    }
+}
+
+/// Keep what the pane prints in the record, by asking tmux to pipe the pane
+/// through `command`.
+///
+/// Nothing reports on a command — there is no vendor in it and no hook behind
+/// it — so what it printed is on its screen and nowhere else, and a screen is
+/// the first thing a pane throws away. So its whole output is kept. A vendor's
+/// pane is a full-screen drawing, and only its first [`BOOT_BYTES`] are: a
+/// vendor that dies before its first hook says why before it draws, and a
+/// vendor that draws on for an hour costs a record nothing.
 ///
 /// The pane is addressed on the server its record names rather than on
 /// whichever one this process can see: `_boot` runs in the pane, and the pane
 /// belongs to the server that made it.
 ///
 /// The pipe is a shell command the tmux server runs, so the path goes in as
-/// one word a shell reads whole, and `>>` rather than `>` because a resumed
-/// command is the same record saying more.
-fn keep_output(meta: &Meta, path: &Path) -> Result<()> {
+/// one word a shell reads whole — [`quoted`] is what makes it one.
+fn keep_output(meta: &Meta, command: &str) -> Result<()> {
     let server = Server::from_socket(meta.socket.clone());
-    server.pipe_pane(&meta.pane, &format!("cat >> {}", quoted(path)))
+    server.pipe_pane(&meta.pane, command)
 }
 
 /// A path as one word, whatever is in it.
@@ -1370,6 +1392,33 @@ mod tests {
     fn spawn_boot_gives_up_rather_than_waiting_for_a_record_that_is_not_coming() {
         let root = TempDir::new().unwrap();
         assert!(boot(root.path(), "../elsewhere").is_err(), "not an id");
+    }
+
+    #[test]
+    fn spawn_keeps_a_commands_output_whole_and_an_agents_bounded() {
+        // A command's pane is piped whole: nothing reports on it and what it
+        // printed has nowhere else to go. An agent's is a vendor's drawing,
+        // and only the start of it is kept, where a vendor that dies before
+        // its first hook says why. `>` for the agent: a resume is a new boot,
+        // not more of the same output.
+        let socket = crate::tmux::Socket::Name("amx".to_string());
+        let pane = PaneId::new("%1").unwrap();
+        let dir = Path::new("/srv/state/agents/fix-login-a1b");
+
+        let vendor = meta("fix-login-a1b", socket.clone(), pane.clone());
+        assert_eq!(
+            keeping_output(&vendor, dir),
+            format!("head -c {BOOT_BYTES} > '/srv/state/agents/fix-login-a1b/output'"),
+        );
+
+        let command = Meta {
+            agent: None,
+            ..meta("build-a1b", socket, pane)
+        };
+        assert_eq!(
+            keeping_output(&command, dir),
+            "cat >> '/srv/state/agents/fix-login-a1b/output'",
+        );
     }
 
     /// A record of a vendor agent, which is what a cap counts: a row with no

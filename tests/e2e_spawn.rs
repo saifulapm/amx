@@ -533,10 +533,10 @@ fn a_commands_output_is_kept_beside_its_record() {
 }
 
 #[test]
-fn an_agents_pane_is_piped_nowhere() {
-    // A vendor's pane is a full-screen drawing -- repaints, cursor moves and
-    // all -- and a file of that says nothing anybody can read. It is a
-    // command's output that has nowhere else to go.
+fn an_agents_pane_is_piped_into_its_record() {
+    // A vendor's pane is a full-screen drawing, so what is kept of it is
+    // bounded -- but kept it is, because the one moment it matters is the
+    // vendor that dies before it draws anything and says why on the way out.
     let amx = Harness::new();
     let mock = amx.mock();
     let id = id_of(&new(
@@ -555,8 +555,42 @@ fn an_agents_pane_is_piped_nowhere() {
         &amx.pane_of(&id),
         "#{pane_pipe}",
     ]);
-    assert_eq!(piped, "0", "nothing is reading the agent's pane");
-    assert!(!amx.agent_dir(&id).join("output").exists());
+    assert_eq!(piped, "1", "the agent's pane is piped into its record");
+    assert!(
+        amx.agent_dir(&id).join("output").exists(),
+        "and the file is there to catch its dying words"
+    );
+}
+
+#[test]
+fn a_vendor_that_dies_before_it_speaks_leaves_its_words_on_the_record() {
+    // Nothing reports on a vendor that exits before its first hook: no session
+    // and no transcript reach the record, and its pane is gone. The bytes its
+    // boot kept are the only account of why it went, and `amx logs` hands them
+    // back where it used to say it captured no answer.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let id = id_of(&new(
+        &amx,
+        "dies-before-its-first-hook",
+        &["--no-worktree", "--agent", &mock, "fix the login bug"],
+    ));
+
+    amx.until_state(&id, "failed");
+    assert!(
+        amx.meta(&id)["session"].is_null(),
+        "the vendor never spoke: {}",
+        amx.meta(&id)
+    );
+
+    // `head` flushes when the pane closes, which is a moment after `_exit`
+    // writes the state this waited for.
+    amx.until("the dying words to reach the record", || {
+        let out = amx.amx(&["logs", &id]);
+        String::from_utf8_lossy(&out.stdout)
+            .contains("could not read the state file")
+            .then_some(())
+    });
 }
 
 #[test]

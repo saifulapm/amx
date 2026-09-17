@@ -1,0 +1,4 @@
+# A vendor that dies before it ever speaks: no hook, so no session and no
+# transcript reach the record, and what it printed is the only account of why.
+print could not read the state file
+exit 2
