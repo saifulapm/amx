@@ -57,8 +57,10 @@ pub(super) fn colour(theme: Theme, phase: Phase) -> Style {
         // amx has no idea about. It stands still in the terminal's own, which
         // is what tells it from every other live row.
         Phase::Starting | Phase::Working | Phase::Unknown => Style::new(),
-        Phase::Idle => dim(),
-        Phase::Done => Style::new().fg(theme.done),
+        // The turn is over whether the process is still at its prompt or gone,
+        // and both read as ended, so both wear the colour of how it went. The
+        // glyph is what says a process is still there.
+        Phase::Idle | Phase::Done => Style::new().fg(theme.done),
         Phase::Failed => Style::new().fg(theme.failed),
         Phase::Stopped => Style::new().fg(theme.stopped),
     }

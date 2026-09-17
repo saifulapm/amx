@@ -384,7 +384,7 @@ fn row(
         spans.push(Span::styled(
             format!(
                 "{}{}",
-                grid::pad(phase.as_str(), widths.state),
+                grid::pad(phase.word(), widths.state),
                 " ".repeat(GAP)
             ),
             state_colour(theme, phase),
@@ -971,10 +971,11 @@ mod tests {
 
         // An agent still at work has nothing to say about how it went, so it
         // takes the terminal's own colour and the pulse does the talking. An
-        // agent that has finished its turn and is sitting there is quiet, and
-        // one amx cannot account for is neither: it stands still in the
-        // terminal's own, which is the one thing left to tell it from a row
-        // that is asking.
+        // agent whose turn is over — still at its prompt or gone — says how it
+        // went in green, and the shape says whether there is still a process
+        // to reach. One amx cannot account for is neither: it stands still in
+        // the terminal's own, which is the one thing left to tell it from a
+        // row that is asking.
         assert_eq!(
             painted(Phase::Starting),
             (pulse(0).into(), Color::Reset, plain)
@@ -983,10 +984,7 @@ mod tests {
             painted(Phase::Working),
             (pulse(0).into(), Color::Reset, plain)
         );
-        assert_eq!(
-            painted(Phase::Idle),
-            ("✻".into(), Color::Reset, Modifier::DIM)
-        );
+        assert_eq!(painted(Phase::Idle), ("✻".into(), theme().done, plain));
         assert_eq!(painted(Phase::Unknown), ("✻".into(), Color::Reset, plain));
     }
 

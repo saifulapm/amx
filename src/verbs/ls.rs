@@ -134,7 +134,7 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
         writeln!(
             out,
             "{:<8} {:<widest$}  {:>5}  {}",
-            view.phase().as_str(),
+            view.phase().word(),
             view.id(),
             worked(view),
             doing(view),

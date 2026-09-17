@@ -39,7 +39,7 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
 
 /// What a person reads.
 fn report(view: &View, now: u64, out: &mut impl Write) -> Result<()> {
-    writeln!(out, "{}  {}", view.id(), view.phase())?;
+    writeln!(out, "{}  {}", view.id(), view.phase().word())?;
     writeln!(out, "  evidence  {}", evidence(view, now))?;
     if let Some(question) = &view.state.question {
         say(out, "asking", question)?;
@@ -221,7 +221,7 @@ mod tests {
         parked.state.parked_at = 5_000;
         let text = printed_at(&parked, 5_040);
 
-        assert!(text.starts_with("fix-login-a1b  idle"), "{text}");
+        assert!(text.starts_with("fix-login-a1b  done"), "{text}");
         assert!(text.contains("let the process go 40s ago"), "{text}");
         assert!(text.contains("enter, attach or resume"), "{text}");
     }

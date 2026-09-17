@@ -719,8 +719,9 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
     );
     let resting = coloured_line(&amx, &view, "fix-login-c3d");
     assert!(
-        sgr_at(&resting, "✻").contains(&2),
-        "and the idle one is dim:\n{resting:?}"
+        resting.contains(&foreground("done")),
+        "and the one whose turn is over is painted done, at its prompt or \
+         not:\n{resting:?}"
     );
 
     // The working row is drawn a frame at a time, so watching it for a moment
@@ -1119,7 +1120,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     );
     // The heading no longer says the state, so every row carries it.
     assert!(row("ask-a1b").contains("waiting"), "{drawn}");
-    assert!(row("fix-login-b2c").contains("idle"), "{drawn}");
+    assert!(row("fix-login-b2c").contains("done"), "{drawn}");
     assert!(row("old-job-c3d").contains("done"), "{drawn}");
     assert!(
         !drawn.contains("Needs input"),
@@ -2664,7 +2665,7 @@ fn i_cuts_short_the_turn_the_row_under_the_cursor_is_on() {
         amx.capture(&pane).contains("⏵⏵").then_some(())
     });
     let row = amx.until("the row off the turn it was on", || {
-        row_of(&amx, &view, "port-import-c3d").filter(|row| row.contains("idle"))
+        row_of(&amx, &view, "port-import-c3d").filter(|row| row.contains("done"))
     });
     assert!(!row.contains("working"), "{row}");
 

@@ -347,14 +347,14 @@ for one thing more: an agent amx let go. One left idle for `park_after` with
 nobody attached loses its pane and keeps its record, so the row turns from `✻`
 to the dot in the colour it was already wearing, and `enter` brings it back.
 
-The colour on it says which state that process is in: amber for an agent
-stopped on a question, green for one that finished, red for one that failed,
-grey for one you stopped by hand, dim for one sitting idle at its prompt, and
-your terminal's own colour while it is coming up or working, or when amx cannot
-account for it. The name takes that amber or that red as well, so a row that is
-asking and a row that failed can be found down a column of names without the
-glyph being read; every other name is your terminal's own, dimmed like the
-heading over it. What those colours are is the theme's to say, under
+The colour on it says how the turn went: amber for an agent stopped on a
+question, green for one whose turn is over — still at its prompt or gone, the
+shape says which — red for one that failed, grey for one you stopped by hand,
+and your terminal's own colour while it is coming up or working, or when amx
+cannot account for it. The name takes that amber or that red as well, so a row
+that is asking and a row that failed can be found down a column of names
+without the glyph being read; every other name is your terminal's own, dimmed
+like the heading over it. What those colours are is the theme's to say, under
 [Themes](#themes).
 
 The wall says nothing at all with weight. Every name on it is as quiet as the
@@ -398,7 +398,7 @@ what state the row is in:
   ∙ tidy-imports-d4e  done      did what it was asked                         2m
 
  /srv/app
-  ✻ fix-login-a1b     idle      the login bug is fixed                        4m
+  ✻ fix-login-a1b     done      the login bug is fixed                        4m
 ```
 
 Eight cells, which is what `starting` needs and what the shorter words are

@@ -107,6 +107,24 @@ impl Phase {
             Phase::Unknown => "unknown",
         }
     }
+
+    /// What a reader is shown a state as, where a row or a table says it in a
+    /// word rather than by the group it was gathered under.
+    ///
+    /// The turn being over is one ending whether the vendor is still at its
+    /// prompt or the command has gone. What is left to say about it is how the
+    /// turn went, which is the colour, and whether a process is still there,
+    /// which is the glyph. So both read `done`, the word the header's counter
+    /// already uses for the group they share, rather than `idle` — which named
+    /// the one thing the glyph says better. The record still holds `idle`: it
+    /// is what `amx wait --for idle` and the `AMX_STATE` of an `on_idle`
+    /// command are matched on.
+    pub fn word(self) -> &'static str {
+        match self {
+            Phase::Idle => "done",
+            phase => phase.as_str(),
+        }
+    }
 }
 
 impl std::fmt::Display for Phase {
