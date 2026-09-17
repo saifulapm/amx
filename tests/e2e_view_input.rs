@@ -2245,12 +2245,15 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
 }
 
 #[test]
-fn header_model_dial_starts_the_harness_the_model_it_names_belongs_to() {
+fn header_model_dial_keeps_the_harness_the_row_names() {
     let amx = Harness::new();
-    // pi is what the file asks for, and claude is on the path beside it. What
-    // pi runs is a listing only a pi process could print, and the view starts
-    // none, so the models the dial offers are claude's.
-    let view = a_view_that_can_start_claude(&amx, "agent = \"pi\"\nworktrees = false\n");
+    // pi is what the file asks for, and the file has written down which
+    // models pi runs. The dial walks those and stays on pi: reaching for
+    // claude's list would make the model key a second vendor key.
+    let view = a_view_that_can_start_claude(
+        &amx,
+        "agent = \"pi\"\nworktrees = false\n\n[pi]\nmodels = [\"openai/gpt-5\", \"anthropic/claude-opus-4-1\"]\n",
+    );
     amx.until("the header", || {
         screen(&amx, &view)
             .contains("└ next  pi   model  default")
@@ -2260,26 +2263,23 @@ fn header_model_dial_starts_the_harness_the_model_it_names_belongs_to() {
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
         screen(&amx, &view)
-            .contains("└ next  claude   model  fable")
+            .contains("└ next  pi   model  openai/gpt-5")
             .then_some(())
     });
 
-    types(&amx, &view, "n");
-    types(&amx, &view, "port the importer");
-    press(&amx, &view, "Enter");
+    press(&amx, &view, "M-m");
+    amx.until("the next model, and still pi", || {
+        screen(&amx, &view)
+            .contains("└ next  pi   model  anthropic/claude-opus-4-1")
+            .then_some(())
+    });
 
-    let id = composed(&amx);
-    let command = command_of(&amx, &id);
-    assert_eq!(
-        command.first().map(String::as_str),
-        Some("claude"),
-        "the harness the model belongs to is the one that runs: {command:?}"
-    );
-    assert!(
-        command.windows(2).any(|pair| pair == ["--model", "fable"]),
-        "with the model the header named: {command:?}"
-    );
-    amx.until_state(&id, "idle");
+    press(&amx, &view, "M-m");
+    amx.until("the dial back at the sentinel", || {
+        screen(&amx, &view)
+            .contains("└ next  pi   model  default")
+            .then_some(())
+    });
 }
 
 #[test]

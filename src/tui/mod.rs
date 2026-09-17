@@ -58,7 +58,6 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
-use crate::vendor::Models;
 use crate::verbs::interrupt::{self, Cut};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
@@ -253,9 +252,11 @@ struct Profile {
     /// Where each vendor dial stands. [`registry::DEFAULT`] is the vendor's
     /// own behaviour, which amx says by passing no flag at all.
     model: String,
-    /// Every model the dial offers, each beside the vendor that runs it, which
-    /// is what makes the model dial reach past the vendor the file names.
-    models: Vec<(String, &'static str)>,
+    /// The config this view was opened under, kept whole because the model
+    /// dial reads a harness's list when the key is pressed rather than when
+    /// the view opens — a harness that prints its models costs a process, and
+    /// only the harness somebody turns the dial on should pay it.
+    config: Config,
     permission: String,
     effort: String,
     /// Whether the next agent is cut a worktree of its own.
@@ -307,7 +308,7 @@ impl Profile {
             agent: config.agent.clone(),
             configured: config.agent.clone(),
             model: effective(entry.and_then(|e| e.model), config.model.as_deref()),
-            models: offered(config),
+            config: config.clone(),
             permission: effective(
                 entry.and_then(|e| e.permission),
                 config.permission.as_deref(),
@@ -371,50 +372,37 @@ impl Profile {
         self.effort = effective(self.effort_dial(), Some(&self.effort));
     }
 
-    /// The next model on the dial, and under it the harness that runs it.
+    /// The next model the harness on the row runs, and nothing else.
     ///
-    /// The walk is over every harness's models rather than the one on the row,
-    /// because a model names the harness it belongs to: turning to one turns
-    /// the vendor with it, and the dials that vendor declares are settled again
+    /// A model belongs to the harness that runs it, so this dial walks the
+    /// list of the harness the row already names and never leaves it. Turning
+    /// to another harness is the vendor key's job, which settles the dials
     /// under it the way a turned vendor settles them. The sentinel is nobody's
-    /// model — it is the word for passing none — so it leaves the vendor where
-    /// it stands.
+    /// model — the word for passing none — so it sits at both ends of the
+    /// walk.
     ///
-    /// A dial the vendor on the row does not declare has nothing to offer, so
-    /// its key does nothing rather than inventing a value that vendor would
-    /// refuse.
+    /// The list is read here rather than when the view opened, so a harness
+    /// that prints its models pays for that process only when somebody turns
+    /// the dial on it; [`models::models_of`] keeps what it read for an hour.
+    ///
+    /// A harness amx has no entry for, or one that declares no model dial,
+    /// has nothing to offer, so its key does nothing rather than inventing a
+    /// value that vendor would refuse.
     fn cycle_model(&mut self) {
-        if self.model_dial().is_none() {
-            return;
-        }
-        let at = self
-            .models
-            .iter()
-            .position(|(model, _)| *model == self.model);
-        // Past the last model is the sentinel, and so is a model no list names:
-        // the dial is what the key offers, and it always begins where it began.
-        let next = at
-            .map_or(self.models.first(), |at| self.models.get(at + 1))
-            .map(|(model, vendor)| (model.clone(), *vendor));
-        let Some((model, vendor)) = next else {
-            self.model = registry::DEFAULT.to_string();
+        let Some(vendor) = registry::entry(&self.agent) else {
             return;
         };
-        self.model = model;
-        self.agent = self.spelled(vendor);
-        self.permission = effective(self.permission_dial(), Some(&self.permission));
-        self.effort = effective(self.effort_dial(), Some(&self.effort));
-    }
-
-    /// How this profile writes a harness: the command the file asked for where
-    /// that is the program it runs, because `agent = "claude --add-dir .."` is
-    /// how somebody says how claude is run here; the bare program where it is
-    /// another, because nothing in the file says how to run that one.
-    fn spelled(&self, vendor: &'static str) -> String {
-        match registry::program(&self.configured) == vendor {
-            true => self.configured.clone(),
-            false => vendor.to_string(),
+        if vendor.model.is_none() {
+            return;
         }
+        let list = models::models_of(vendor, &self.config);
+        let at = list.iter().position(|model| *model == self.model);
+        // Past the last model is the sentinel, and so is a model no list names:
+        // the dial is what the key offers, and it always begins where it began.
+        let next = at.map_or(list.first(), |at| list.get(at + 1));
+        self.model = next
+            .cloned()
+            .unwrap_or_else(|| registry::DEFAULT.to_string());
     }
 
     fn cycle_permission(&mut self) {
@@ -458,32 +446,6 @@ impl Profile {
             ..config.clone()
         }
     }
-}
-
-/// Every model some harness is the one to run, in the order the dial offers
-/// them: each harness's list in the table's order, every model beside the
-/// harness that runs it, and a model two of them both list kept under the
-/// first.
-///
-/// Only a list amx already holds, never one a harness would have to be run for.
-/// This is built while the view opens, and a process started there is a second
-/// somebody spends looking at a blank screen, for models most of them will
-/// never turn the dial to. So a harness that prints its models is on the dial
-/// only where somebody has written that harness's models down.
-fn offered(config: &Config) -> Vec<(String, &'static str)> {
-    let mut offered: Vec<(String, &'static str)> = Vec::new();
-    for vendor in registry::entries() {
-        let held = vendor.models == Models::Cycle || !config.harness(vendor.name).models.is_empty();
-        if !held {
-            continue;
-        }
-        for model in models::models_of(vendor, config) {
-            if !offered.iter().any(|(already, _)| *already == model) {
-                offered.push((model, vendor.name));
-            }
-        }
-    }
-    offered
 }
 
 /// A dial as the config states one: the sentinel is the vendor's own
@@ -4542,38 +4504,46 @@ mod tests {
     }
 
     #[test]
-    fn header_dials_the_model_dial_walks_every_harnesss_models() {
-        // pi is what the file asks for, and what pi runs is a listing only a pi
-        // process could print — which the view never starts. So the models on
-        // the dial are the ones another harness runs, and turning to one turns
-        // to that harness with it.
+    fn header_dials_the_model_dial_stays_on_the_harness_on_the_row() {
+        // alt+m walks the models of the harness the row names and no other's:
+        // a model belongs to the harness that runs it, and reaching for
+        // another harness's model would be the vendor key's job.
+        let told = |models: &[&str]| HarnessConfig {
+            models: models.iter().map(|model| model.to_string()).collect(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        };
         let config = Config {
-            agent: "pi".to_string(),
+            agent: "claude".to_string(),
+            harnesses: BTreeMap::from([
+                ("claude".to_string(), told(&["opus", "sonnet"])),
+                ("pi".to_string(), told(&["openai/gpt-5"])),
+            ]),
             ..Config::default()
         };
         let mut profile = Profile::open(&config, None, None, None);
         assert_eq!(profile.model, registry::DEFAULT);
 
-        for want in ["fable", "opus", "sonnet", "haiku"] {
+        for want in ["opus", "sonnet", registry::DEFAULT] {
             profile.cycle_model();
             assert_eq!(profile.model, want, "claude's own list, in its own order");
-            assert_eq!(profile.agent, "claude", "and claude is what runs it");
+            assert_eq!(profile.agent, "claude", "and the harness never moves");
         }
 
-        profile.cycle_model();
-        assert_eq!(
-            profile.model,
-            registry::DEFAULT,
-            "round again to the sentinel, which is nobody's model"
-        );
-        assert_eq!(
-            profile.agent, "claude",
-            "and says nothing about which harness runs"
-        );
+        // And under pi, pi's own models. The vendor key is the only door to
+        // another harness's list.
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "pi");
+        assert_eq!(profile.model, registry::DEFAULT);
+        for want in ["openai/gpt-5", registry::DEFAULT] {
+            profile.cycle_model();
+            assert_eq!(profile.model, want, "pi's own list");
+            assert_eq!(profile.agent, "pi", "and still pi");
+        }
     }
 
     #[test]
-    fn header_dials_offer_the_models_the_file_wrote_down_for_each_harness() {
+    fn header_dials_the_model_dial_takes_this_harnesss_written_models() {
         let told = |models: &[&str]| HarnessConfig {
             models: models.iter().map(|model| model.to_string()).collect(),
             args: Vec::new(),
@@ -4602,20 +4572,15 @@ mod tests {
         assert_eq!(profile.permission, "plan");
 
         profile.cycle_model();
-        assert_eq!(profile.model, "openai/gpt-5", "then the next table's");
         assert_eq!(
-            profile.agent, "pi",
-            "a harness the file named only in a table runs under its own name"
-        );
-        assert_eq!(
-            profile.permission,
+            profile.model,
             registry::DEFAULT,
-            "and a dial the harness that came with the model does not declare \
-             rests where a turned vendor would leave it"
+            "the file's list is the whole dial, and past it is the sentinel"
         );
-
-        profile.cycle_model();
-        assert_eq!(profile.model, registry::DEFAULT);
+        assert_eq!(
+            profile.agent, "claude --add-dir ..",
+            "and the harness line is the one the file wrote"
+        );
     }
 
     #[test]
