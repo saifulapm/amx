@@ -514,6 +514,60 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     );
 }
 
+/// Record an agent that has ended, a child of the agent this id names.
+fn a_child(amx: &Harness, id: &str, parent: &str, ago: u64, created: u64) {
+    finished(amx, id, "done", ago);
+    amx.set_meta(
+        id,
+        json!({ "parent": parent, "depth": 1, "created": created }),
+    );
+}
+
+#[test]
+fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
+    let amx = Harness::new();
+    finished(&amx, "parent-a1b", "done", 60);
+    a_child(&amx, "scout-b2c", "parent-a1b", 30, 10);
+    a_child(&amx, "review-c3d", "parent-a1b", 20, 20);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the family", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("scout-b2c") && drawn.contains("review-c3d")).then_some(drawn)
+    });
+
+    let parent = line_of(&drawn, "parent-a1b");
+    let scout = line_of(&drawn, "scout-b2c");
+    let review = line_of(&drawn, "review-c3d");
+    assert!(
+        parent < scout && scout < review,
+        "the parent comes first and its children under it:\n{drawn}"
+    );
+
+    let scout_line = row_of(&amx, &view, "scout-b2c").unwrap();
+    let review_line = row_of(&amx, &view, "review-c3d").unwrap();
+    assert!(
+        scout_line.contains("├─"),
+        "the first child opens the pair: {scout_line:?}"
+    );
+    assert!(
+        review_line.contains("└─"),
+        "and the last closes it: {review_line:?}"
+    );
+    assert!(
+        !row_of(&amx, &view, "parent-a1b").unwrap().contains("├─"),
+        "the parent wears no connector of its own"
+    );
+
+    // The heading and the header count the top-level agent, not the family: a
+    // child is drawn under its parent rather than as a group of its own.
+    assert!(
+        drawn.contains("1 done"),
+        "one top-level agent has ended:\n{drawn}"
+    );
+    assert!(!drawn.contains("3 done"), "{drawn}");
+}
+
 #[test]
 fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
     let amx = Harness::new();

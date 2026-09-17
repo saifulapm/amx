@@ -482,7 +482,7 @@ fn hints(screen: &Screen) -> Vec<Hint<'static>> {
     let list = &screen.list;
     let mut said = match list.items().get(list.cursor()) {
         Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
-        Some(Item::Fold(..)) => vec![enters(screen)],
+        Some(Item::Fold(..) | Item::Sub(..)) => vec![enters(screen)],
         // The cursor never rests on a blank; the arm is for the compiler.
         Some(Item::Blank) => Vec::new(),
         // An agent whose command has ended has no window to bring forward and
@@ -530,7 +530,7 @@ fn enters(screen: &Screen) -> Hint<'static> {
             true => ("enter", "opens it"),
             false => ("enter", "shuts it"),
         },
-        Some(Item::Fold(..)) => ("enter", "shows them"),
+        Some(Item::Fold(..) | Item::Sub(..)) => ("enter", "shows them"),
         _ => ("enter", "attach"),
     }
 }

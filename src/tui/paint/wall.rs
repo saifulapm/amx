@@ -53,7 +53,7 @@ pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment,
 
     let offset = first_drawn(list, area.height);
     let width = area.width as usize;
-    let widths = grid::widths(width, list.axis(), moment.vendor);
+    let widths = grid::widths(width, list.axis(), moment.vendor, list.deepest());
     let requests = request_column(list);
 
     let lines: Vec<Line> = list
@@ -153,10 +153,18 @@ fn line(
             Under::Project(_) => path_heading(list.title(under), tally, at.hovered, width, theme),
         },
         Item::Fold(_, hidden) => Line::styled(format!("{GUTTER}… {hidden} more"), dim()),
+        Item::Sub(n, hidden) => Line::styled(
+            format!(
+                "{GUTTER}{}… {hidden} sub",
+                list.gutter(Item::Sub(n, hidden))
+            ),
+            dim(),
+        ),
         Item::Agent(_) => match list.agent(item) {
             Some(view) => row(
                 view,
                 list.requests(view),
+                list.gutter(item),
                 at,
                 widths,
                 requests,
@@ -304,9 +312,11 @@ fn failures(tally: Tally) -> String {
 /// amx is free to speak over: the state, the name and the age are what the row
 /// is for, and a warning that took a column of its own would move every row
 /// under it for as long as it was up.
+#[allow(clippy::too_many_arguments)]
 fn row(
     view: &View,
     prs: &[Pr],
+    gutter: String,
     at: At,
     widths: Widths,
     requests: usize,
@@ -345,7 +355,7 @@ fn row(
 
     let asking = phase == Phase::Waiting;
     let mut spans = vec![
-        Span::raw(GUTTER),
+        Span::styled(format!("{GUTTER}{gutter}"), dim()),
         Span::styled(
             format!(
                 "{} ",
@@ -706,6 +716,13 @@ mod tests {
         view
     }
 
+    /// The same reading, a child of the agent with this id.
+    fn child_of(mut view: View, parent: &str) -> View {
+        view.meta.parent = Some(parent.to_string());
+        view.meta.depth = 1;
+        view
+    }
+
     /// A forge holding one failing request for the agent that is asking, and
     /// two for the one beside it — the second attempt and the first.
     fn a_forge(meta: &crate::store::Meta) -> Vec<Pr> {
@@ -833,6 +850,77 @@ mod tests {
     /// A screen with room for the bands above and below the list, the space
     /// between the header and it, and a group or two under that.
     const WALL: (u16, u16) = (80, 12);
+
+    #[test]
+    fn rows_draw_a_parent_and_its_children_as_one_family() {
+        // The mockup in the plan: a working parent, a finished child and one
+        // still reading, the children hung under the parent on connectors and
+        // every name and summary standing at the same column.
+        let mut scout = child_of(
+            view("scout-b2c", Phase::Done, Some("find auth"), 12),
+            "parent-a1b",
+        );
+        scout.meta.created = 10;
+        let mut review = child_of(
+            view("review-c3d", Phase::Working, Some("reading store.rs"), 5),
+            "parent-a1b",
+        );
+        review.meta.created = 20;
+        let lines = drawn(
+            vec![
+                view("parent-a1b", Phase::Working, Some("running tests"), 2),
+                scout,
+                review,
+            ],
+            None,
+            (100, 12),
+        );
+        let family: Vec<&String> = lines
+            .iter()
+            .filter(|line| {
+                ["parent-a1b", "scout-b2c", "review-c3d"]
+                    .iter()
+                    .any(|id| line.contains(id))
+            })
+            .collect();
+        assert_eq!(family.len(), 3, "one row each: {lines:#?}");
+        assert!(
+            family[0].starts_with("   · parent-a1b"),
+            "the root is padded to the family's gutter: {:?}",
+            family[0]
+        );
+        assert!(
+            family[1].starts_with(" ├─∙ scout-b2c"),
+            "the finished child wears the open connector and its own glyph: {:?}",
+            family[1]
+        );
+        assert!(
+            family[2].starts_with(" └─· review-c3d"),
+            "the last child closes the pair: {:?}",
+            family[2]
+        );
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the word on the row");
+            // The cells before the word, not the bytes: the connectors are
+            // multi-byte and a byte offset would say the columns parted.
+            line[..at].chars().count()
+        };
+        assert_eq!(
+            column(family[0], "running"),
+            column(family[1], "find"),
+            "the summaries stand at one column: {family:#?}"
+        );
+        assert_eq!(
+            column(family[1], "find"),
+            column(family[2], "reading"),
+            "including the last child's"
+        );
+        assert_eq!(
+            column(family[0], "parent-a1b"),
+            column(family[1], "scout-b2c"),
+            "and so do the names"
+        );
+    }
 
     #[test]
     fn glyphs_say_a_process_that_is_there_from_one_that_has_gone() {

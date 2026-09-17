@@ -294,6 +294,10 @@ pub enum Item {
     /// The heading, because a fold is opened one group at a time and the row
     /// somebody presses is the only thing that says which.
     Fold(Under, usize),
+    /// A parent whose own children the fold is holding back, and how many of
+    /// its descendants went with them. The parent, because opening a subtree
+    /// is opening the fold the same way the group's own row does.
+    Sub(usize, usize),
     /// The line that stands a heading off from the group above it.
     Blank,
 }
@@ -447,6 +451,20 @@ pub struct List {
     /// does not move under it, so one answer per id is one answer for as long
     /// as the view is open on that axis.
     roots: HashMap<String, PathBuf>,
+    /// The parent of each agent, where the parent is itself on the wall: the
+    /// record's `parent` read back to an index, and dropped where it names no
+    /// record, names the agent itself, or closes a loop. A child whose parent
+    /// is not drawn is a root, which is what a record a `stop --delete` left
+    /// behind reads as.
+    parents: Vec<Option<usize>>,
+    /// And the children of each agent, in the one reading order, so a row and
+    /// its subtree are laid down together.
+    children: Vec<Vec<usize>>,
+    /// The top-level rows, in that same order.
+    tops: Vec<usize>,
+    /// How deep the deepest drawn row stands, which is the gutter every row is
+    /// padded to so the columns after it stand still.
+    deepest: usize,
     /// Whether a directory holds a repository. A field so that a test can say
     /// what the disk looks like, and count what was asked of it.
     probe: fn(&Path) -> bool,
@@ -485,6 +503,10 @@ impl Default for List {
             waiting: 0,
             projects: Vec::new(),
             roots: HashMap::new(),
+            parents: Vec::new(),
+            children: Vec::new(),
+            tops: Vec::new(),
+            deepest: 0,
             probe: holds_a_repository,
             repo_of: main_repo_of,
             prs: HashMap::new(),
@@ -818,7 +840,10 @@ impl List {
 
     /// Whether the cursor is on the fold rather than on an agent.
     pub fn on_fold(&self) -> bool {
-        matches!(self.items.get(self.cursor), Some(Item::Fold(..)))
+        matches!(
+            self.items.get(self.cursor),
+            Some(Item::Fold(..) | Item::Sub(..))
+        )
     }
 
     /// Whether the cursor is on a heading rather than on anything under one.
@@ -908,15 +933,28 @@ impl List {
         over && self.requests(view).iter().any(|pr| asking(pr.standing))
     }
 
-    /// Whether an agent is drawn under this heading.
+    /// Whether an agent is drawn under this heading: by the top-level agent it
+    /// hangs from, so a child answers for the group and project its parent was
+    /// gathered into rather than for one of its own.
     fn belongs(&self, n: usize, under: Under) -> bool {
+        let anchor = self.anchor_of(n);
         match under {
-            Under::Group(group) => self.group(&self.views[n]) == group,
+            Under::Group(group) => self.group(&self.views[anchor]) == group,
             Under::Project(at) => self
                 .projects
                 .get(at)
-                .is_some_and(|root| *root == self.root_of(n)),
+                .is_some_and(|root| *root == self.root_of(anchor)),
         }
+    }
+
+    /// The top-level row an agent hangs from, which is itself where it hangs
+    /// from nothing.
+    fn anchor_of(&self, n: usize) -> usize {
+        let mut here = n;
+        while let Some(parent) = self.parents[here] {
+            here = parent;
+        }
+        here
     }
 
     /// Put the group the cursor is on away, or bring it back. The heading
@@ -962,15 +1000,29 @@ impl List {
     /// is a line of its own: a click on a fold opens it and leaves the cursor
     /// where it was.
     pub fn unfold_at(&mut self, at: usize) {
-        let Some(Item::Fold(under, _)) = self.items.get(at).copied() else {
-            return;
+        let key = match self.items.get(at).copied() {
+            Some(Item::Fold(under, _)) => self.key(under),
+            // A parent's own fold opens the same group or project its children
+            // were gathered into, so pressing it gives the subtree back.
+            Some(Item::Sub(n, _)) => self.key_of_row(n),
+            _ => None,
         };
-        let Some(key) = self.key(under) else {
+        let Some(key) = key else {
             return;
         };
         self.unfolded.insert(key);
         let on = self.on();
         self.rebuild(on.agent());
+    }
+
+    /// What heading a row is drawn under, in terms that outlive the next
+    /// reading: a state on the state axis, a project place on the others.
+    fn key_of_row(&self, n: usize) -> Option<Key> {
+        let anchor = self.anchor_of(n);
+        match self.axis {
+            Axis::State => Some(Key::Group(self.group(&self.views[anchor]))),
+            Axis::Project | Axis::Repo => Some(Key::Project(self.root_of(anchor))),
+        }
     }
 
     /// How many agents have stopped on a question, wherever their rows are.
@@ -1131,6 +1183,7 @@ impl List {
     fn rebuild(&mut self, keeping: Option<&str>) {
         self.remember_the_roots();
         let order = self.ordered();
+        self.plant(&order);
         self.counts = self.counted(&order);
         self.waiting = order
             .iter()
@@ -1173,6 +1226,163 @@ impl List {
         self.roots.extend(fresh);
     }
 
+    /// Read the `parent` each record names back to a row on this wall, and lay
+    /// the fleet out as the forest that follows.
+    ///
+    /// A parent that names no record on the wall — a narrowed-out one, one a
+    /// `stop --delete` took, the agent itself, one already met going up — is
+    /// dropped, and the child stands as a root. A loop is cut at the second
+    /// visit rather than walked, because a record somebody edited is not a
+    /// reason for a view to hang.
+    fn plant(&mut self, order: &[usize]) {
+        let kept: HashSet<usize> = order.iter().copied().collect();
+        let at: HashMap<&str, usize> = self
+            .views
+            .iter()
+            .enumerate()
+            .map(|(n, view)| (view.id(), n))
+            .collect();
+        self.parents = vec![None; self.views.len()];
+        self.children = vec![Vec::new(); self.views.len()];
+        for &n in order {
+            let Some(id) = self.views[n].meta.parent.as_deref() else {
+                continue;
+            };
+            let Some(&parent) = at.get(id) else {
+                continue;
+            };
+            if parent != n && kept.contains(&parent) {
+                self.parents[n] = Some(parent);
+            }
+        }
+        for &n in order {
+            let mut seen = HashSet::new();
+            let mut here = n;
+            while let Some(parent) = self.parents[here] {
+                if !seen.insert(here) {
+                    self.parents[here] = None;
+                    break;
+                }
+                here = parent;
+            }
+        }
+        for &n in order {
+            if let Some(parent) = self.parents[n] {
+                self.children[parent].push(n);
+            }
+        }
+        // A parent's children read in the order they were started, not in the
+        // order their own groups sort: a child is drawn under its parent
+        // whatever state it is in, so its state is not where it stands.
+        let created: Vec<u64> = self.views.iter().map(|view| view.meta.created).collect();
+        for children in &mut self.children {
+            children.sort_by_key(|&n| created[n]);
+        }
+        self.tops = order
+            .iter()
+            .copied()
+            .filter(|&n| self.parents[n].is_none())
+            .collect();
+        self.deepest = order
+            .iter()
+            .map(|&n| self.depth_of_row(n))
+            .max()
+            .unwrap_or(0);
+    }
+
+    /// How deep a row stands, counted from the roots the parents are laid back
+    /// to rather than trusted from the record: a child whose parent is gone is
+    /// drawn a root whatever depth it was written at.
+    fn depth_of_row(&self, n: usize) -> usize {
+        let mut depth = 0;
+        let mut here = n;
+        while let Some(parent) = self.parents[here] {
+            depth += 1;
+            here = parent;
+        }
+        depth
+    }
+
+    /// Every row under these roots, depth first: a parent and then its whole
+    /// subtree, so a group's members read the way the wall draws them.
+    fn nested(&self, roots: &[usize]) -> Vec<usize> {
+        let mut out = Vec::new();
+        for &n in roots {
+            self.push_subtree(n, &mut out);
+        }
+        out
+    }
+
+    fn push_subtree(&self, n: usize, out: &mut Vec<usize>) {
+        out.push(n);
+        for &child in &self.children[n] {
+            self.push_subtree(child, out);
+        }
+    }
+
+    /// Whether this row is the last of its siblings, which is the connector it
+    /// wears: `└─` for the last, `├─` for one with a brother after it.
+    fn last_sibling(&self, n: usize) -> bool {
+        match self.parents[n] {
+            Some(parent) => self.children[parent].last() == Some(&n),
+            None => self.tops.last() == Some(&n),
+        }
+    }
+
+    /// How deep the deepest row on this wall stands, which is the gutter every
+    /// row is padded to.
+    pub fn deepest(&self) -> usize {
+        self.deepest
+    }
+
+    /// The cells before an agent's glyph: its own connector and the rails of
+    /// the ancestors above it, padded out to the deepest row drawn so every
+    /// name stands at the same column.
+    ///
+    /// `├─` where a brother follows, `└─` on the last of them, `│ ` where a
+    /// connector from an ancestor passes the row on its way to a brother, and
+    /// spaces where neither: the gutter a person reads as the shape of the
+    /// family.
+    pub fn gutter(&self, item: Item) -> String {
+        let n = match item {
+            Item::Agent(n) => n,
+            // The fold's own row stands one level under the parent whose
+            // children it holds back, and wears no connector of its own.
+            Item::Sub(n, _) => {
+                return "  ".repeat(self.depth_of_row(n) + 1);
+            }
+            _ => return String::new(),
+        };
+        let depth = self.depth_of_row(n);
+        // The path from the root down to this row, so each rail can ask the
+        // ancestor whose connector it stands under.
+        let mut path = vec![n];
+        let mut here = n;
+        while let Some(parent) = self.parents[here] {
+            path.push(parent);
+            here = parent;
+        }
+        path.reverse();
+        let mut cells = String::with_capacity(self.deepest * 2);
+        for level in 0..self.deepest {
+            if depth == 0 || level + 1 > depth {
+                cells.push_str("  ");
+            } else if level + 1 == depth {
+                cells.push_str(match self.last_sibling(n) {
+                    true => "└─",
+                    false => "├─",
+                });
+            } else {
+                let ancestor = path[level + 1];
+                cells.push_str(match self.last_sibling(ancestor) {
+                    true => "  ",
+                    false => "│ ",
+                });
+            }
+        }
+        cells
+    }
+
     /// Every agent a narrowing left, in the one order both axes draw them in:
     /// by what they need, and inside that the order somebody put the group in,
     /// then the order the agents were started in — except the finished ones,
@@ -1204,24 +1414,32 @@ impl List {
         order
     }
 
-    /// How many agents each state has, off the order the lines are laid out
-    /// from.
+    /// How many top-level agents each state has, off the order the lines are
+    /// laid out from.
     ///
-    /// The same agents the lines are made of, so a count and the rows under a
-    /// heading cannot disagree, and what a narrowing hid is out of both for
-    /// the one reason. That order is every agent the narrowing left whichever
-    /// way they are about to be gathered, which is what makes the count the
-    /// same on either axis.
+    /// The top-level agents only: a child is drawn under its parent and its
+    /// parent's heading, so counting it again under its own group would say
+    /// the fleet holds more than the wall shows a heading for.
     fn counted(&self, order: &[usize]) -> Vec<(Group, usize)> {
         Group::ALL
             .into_iter()
             .filter_map(|group| {
                 let count = order
                     .iter()
-                    .filter(|&&n| self.group(&self.views[n]) == group)
+                    .filter(|&&n| self.parents[n].is_none() && self.group(&self.views[n]) == group)
                     .count();
                 (count > 0).then_some((group, count))
             })
+            .collect()
+    }
+
+    /// The top-level rows among a reading, which is where a heading's rows
+    /// begin.
+    fn tops_in(&self, order: &[usize]) -> Vec<usize> {
+        order
+            .iter()
+            .copied()
+            .filter(|&n| self.parents[n].is_none())
             .collect()
     }
 
@@ -1229,30 +1447,28 @@ impl List {
     fn by_state(&self, order: &[usize], keeping: Option<&str>) -> Vec<Item> {
         let mut items = Vec::new();
         for group in Group::ALL {
-            let members: Vec<usize> = order
+            let roots: Vec<usize> = order
                 .iter()
                 .copied()
-                .filter(|&n| self.group(&self.views[n]) == group)
+                .filter(|&n| self.parents[n].is_none() && self.group(&self.views[n]) == group)
                 .collect();
-            if members.is_empty() {
+            if roots.is_empty() {
                 continue;
             }
-
+            let members = self.nested(&roots);
             let shut = self.shut.contains(&Key::Group(group));
             if !items.is_empty() {
                 items.push(Item::Blank);
             }
-            items.push(Item::Heading(
-                Under::Group(group),
-                self.tally(&members, shut),
-            ));
+            let under = Under::Group(group);
+            items.push(Item::Heading(under, self.tally(&roots, shut)));
             if shut {
                 continue;
             }
-
-            self.fold(
-                Under::Group(group),
+            self.tree(
+                under,
                 &Key::Group(group),
+                &roots,
                 &members,
                 keeping,
                 &mut items,
@@ -1261,8 +1477,9 @@ impl List {
         items
     }
 
-    /// Put a group's rows on the list, folding the ones past [`FOLD_AT`] away
-    /// behind a count on a row of their own.
+    /// Put a heading's rows on the list: every top-level agent and then its
+    /// whole subtree, with the rows past [`FOLD_AT`] folded away behind a
+    /// count on a row of their own.
     ///
     /// Nothing here asks how tall the screen is. A group is as long as it is,
     /// and the list scrolls.
@@ -1270,23 +1487,72 @@ impl List {
     /// The heading is handed in both ways round because the two do not answer
     /// each other yet: `Under::Project` is a place in a table this walk is
     /// still building, so the key it would read back is the last reading's.
-    fn fold(
+    fn tree(
         &self,
         under: Under,
         key: &Key,
+        roots: &[usize],
         members: &[usize],
         keeping: Option<&str>,
         items: &mut Vec<Item>,
     ) {
-        let shown = match members.len() > FOLD_AT && !self.unfolded.contains(key) {
-            true => self.worth_the_room(members, FOLD_AT, keeping),
-            false => members.to_vec(),
+        let shown: HashSet<usize> = match members.len() > FOLD_AT && !self.unfolded.contains(key) {
+            true => self
+                .worth_the_room(members, FOLD_AT, keeping)
+                .into_iter()
+                .collect(),
+            false => members.iter().copied().collect(),
         };
-        let hidden = members.len() - shown.len();
-        items.extend(shown.into_iter().map(Item::Agent));
-        if hidden > 0 {
-            items.push(Item::Fold(under, hidden));
+        for &root in roots {
+            if shown.contains(&root) {
+                self.subtree_rows(root, &shown, items);
+            }
         }
+        // What the fold's own row counts is the top-level agents it held
+        // back, whole families at a time: a drawn parent already says how many
+        // of its own children went with it.
+        let more: usize = roots
+            .iter()
+            .filter(|root| !shown.contains(root))
+            .map(|&root| 1 + self.descendants(root))
+            .sum();
+        if more > 0 {
+            items.push(Item::Fold(under, more));
+        }
+    }
+
+    /// Draw a parent and the children the fold kept, and say on a row under it
+    /// how many of its descendants were held back.
+    fn subtree_rows(&self, n: usize, shown: &HashSet<usize>, items: &mut Vec<Item>) {
+        items.push(Item::Agent(n));
+        for &child in &self.children[n] {
+            if shown.contains(&child) {
+                self.subtree_rows(child, shown, items);
+            }
+        }
+        let hidden = self.hidden_under(n, shown);
+        if hidden > 0 {
+            items.push(Item::Sub(n, hidden));
+        }
+    }
+
+    /// How many of a parent's descendants the fold held back.
+    fn hidden_under(&self, n: usize, shown: &HashSet<usize>) -> usize {
+        self.children[n]
+            .iter()
+            .map(|&child| match shown.contains(&child) {
+                true => self.hidden_under(child, shown),
+                false => 1 + self.descendants(child),
+            })
+            .sum()
+    }
+
+    /// Every row under this one, itself not counted.
+    fn descendants(&self, n: usize) -> usize {
+        self.children[n]
+            .iter()
+            .map(|&child| 1 + self.descendants(child))
+            .sum()
     }
 
     /// Which rows a fold keeps: the ones a person came to scan for. A failure
@@ -1295,6 +1561,9 @@ impl List {
     /// folding it away would land the cursor on whoever came up in its place,
     /// and the card with it. What is left over fills whatever room is left,
     /// and everything kept is drawn in the order the group already reads in.
+    ///
+    /// A kept row's ancestors come with it, over the room if need be: a child
+    /// cannot stand on the wall without the parent it hangs from.
     ///
     /// Whether anybody has read a row plays no part. It used to, and a card
     /// marks its row read, so reading one made the row under the cursor fall
@@ -1306,7 +1575,7 @@ impl List {
             self.views[n].phase() == Phase::Failed || !self.requests(&self.views[n]).is_empty()
         };
         let room = room.max(members.iter().filter(|&&n| cursor(n)).count());
-        let chosen: HashSet<usize> = members
+        let mut chosen: HashSet<usize> = members
             .iter()
             .copied()
             .filter(|&n| cursor(n))
@@ -1324,6 +1593,13 @@ impl List {
             )
             .take(room)
             .collect();
+        for &n in &chosen.clone() {
+            let mut here = n;
+            while let Some(parent) = self.parents[here] {
+                chosen.insert(parent);
+                here = parent;
+            }
+        }
         members
             .iter()
             .copied()
@@ -1331,14 +1607,20 @@ impl List {
             .collect()
     }
 
-    /// What a heading answers for. The failures are counted whether the group
-    /// is open or shut: a group says how many of its agents failed even while
-    /// their rows are on the screen, because the count is what somebody
-    /// scanning a screenful of headings reads instead of the rows.
-    fn tally(&self, members: &[usize], shut: bool) -> Tally {
+    /// What a heading answers for: the top-level agents under it, and what it
+    /// says of their failures.
+    ///
+    /// The failures are counted whether the group is open or shut: a group
+    /// says how many of its agents failed even while their rows are on the
+    /// screen, because the count is what somebody scanning a screenful of
+    /// headings reads instead of the rows. A child that failed is counted
+    /// under the parent it is drawn beneath, so a heading answers for the
+    /// rows it stands over rather than for a group of its own.
+    fn tally(&self, roots: &[usize], shut: bool) -> Tally {
         Tally {
-            members: members.len(),
-            failures: members
+            members: roots.len(),
+            failures: self
+                .nested(roots)
                 .iter()
                 .filter(|&&n| self.views[n].phase() == Phase::Failed)
                 .count(),
@@ -1354,39 +1636,40 @@ impl List {
     /// past [`FOLD_AT`] agents folds the way a group does: sixty rows under
     /// one path is as long a wall as sixty under one heading.
     fn by_project(&self, order: &[usize], keeping: Option<&str>) -> (Vec<PathBuf>, Vec<Item>) {
-        let mut roots: Vec<(PathBuf, Vec<usize>)> = Vec::new();
-        for &n in order {
+        let mut projects: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+        for &n in &self.tops_in(order) {
             let root = self.root_of(n);
-            match roots.iter_mut().find(|(at, _)| at == &root) {
+            match projects.iter_mut().find(|(at, _)| at == &root) {
                 Some((_, members)) => members.push(n),
-                None => roots.push((root, vec![n])),
+                None => projects.push((root, vec![n])),
             }
         }
 
         // `order` is already the reading order, so a project's first agent is
         // its most urgent one, and that is what the project sorts by.
-        roots.sort_by(|(here, ours), (there, theirs)| {
+        projects.sort_by(|(here, ours), (there, theirs)| {
             self.rank(&self.views[ours[0]])
                 .cmp(&self.rank(&self.views[theirs[0]]))
                 .then_with(|| here.cmp(there))
         });
 
-        let mut projects = Vec::new();
+        let mut roots = Vec::new();
         let mut items = Vec::new();
-        for (root, members) in roots {
+        for (root, tops) in projects {
             let key = Key::Project(root.clone());
             let shut = self.shut.contains(&key);
+            let members = self.nested(&tops);
             if !items.is_empty() {
                 items.push(Item::Blank);
             }
-            let under = Under::Project(projects.len());
-            items.push(Item::Heading(under, self.tally(&members, shut)));
+            let under = Under::Project(roots.len());
+            items.push(Item::Heading(under, self.tally(&tops, shut)));
             if !shut {
-                self.fold(under, &key, &members, keeping, &mut items);
+                self.tree(under, &key, &tops, &members, keeping, &mut items);
             }
-            projects.push(root);
+            roots.push(root);
         }
-        (projects, items)
+        (roots, items)
     }
 
     /// Which project an agent is drawn under: the walk's answer where it has
@@ -1826,6 +2109,13 @@ mod tests {
         view
     }
 
+    /// The same reading, a child of the agent with this id.
+    fn child_of(mut view: View, parent: &str) -> View {
+        view.meta.parent = Some(parent.to_string());
+        view.meta.depth = 1;
+        view
+    }
+
     /// A forge where three of the branches have a request on them, so the
     /// number on the row is read from something rather than made up here. Two
     /// are still asking somebody for something and the third is in.
@@ -1899,8 +2189,13 @@ mod tests {
                     tally.members,
                     if tally.shut { " shut" } else { "" }
                 ),
-                Item::Agent(_) => list.agent(*item).unwrap().id().to_string(),
+                Item::Agent(_) => {
+                    format!("{}{}", list.gutter(*item), list.agent(*item).unwrap().id())
+                }
                 Item::Fold(_, hidden) => format!("… {hidden} more"),
+                Item::Sub(n, hidden) => {
+                    format!("{}… {hidden} sub", list.gutter(Item::Sub(*n, *hidden)))
+                }
                 Item::Blank => String::new(),
             })
             .collect()
@@ -2112,6 +2407,117 @@ mod tests {
             lines(&list),
             ["Completed (3)", "stopped-c3d", "failed-b2c", "done-a1b"],
             "newest ending first"
+        );
+    }
+
+    #[test]
+    fn view_draws_a_child_under_its_parent_with_a_connector() {
+        // The parent is working and its children are done: a child is drawn
+        // under its parent whatever group its own state would have put it in,
+        // and the last of a pair wears the closed connector.
+        let list = listed(vec![
+            view("parent-a1b", Phase::Working, 10),
+            child_of(view("scout-b2c", Phase::Done, 20), "parent-a1b"),
+            child_of(view("review-c3d", Phase::Done, 30), "parent-a1b"),
+        ]);
+        assert_eq!(
+            lines(&list),
+            ["Working (1)", "  parent-a1b", "├─scout-b2c", "└─review-c3d"],
+            "the children hang from the parent, in start order"
+        );
+        assert_eq!(
+            list.counts(),
+            [(Group::Working, 1)],
+            "the heading and the header count the top-level agent once"
+        );
+        assert_eq!(list.deepest(), 1, "one level of connector was drawn");
+    }
+
+    #[test]
+    fn view_draws_a_child_of_a_missing_parent_as_a_root() {
+        // The parent's record was swept: the child is read as a root, with no
+        // connector and no gutter reserved for a row that is not there.
+        let list = listed(vec![child_of(
+            view("scout-b2c", Phase::Working, 20),
+            "gone-a1b",
+        )]);
+        assert_eq!(lines(&list), ["Working (1)", "scout-b2c"]);
+        assert_eq!(list.deepest(), 0);
+    }
+
+    #[test]
+    fn view_nests_a_grandchild_under_the_row_it_hangs_from() {
+        // Two levels: the parent's own gutter is padded so its name stands at
+        // the same column as the child's and the grandchild's, and the rail
+        // under the child is the one a connector would pass down.
+        let mut grandchild = child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b");
+        grandchild.meta.depth = 2;
+        let list = listed(vec![
+            view("parent-a1b", Phase::Working, 10),
+            child_of(view("helper-f6g", Phase::Done, 30), "parent-a1b"),
+            child_of(grandchild, "helper-f6g"),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "Working (1)",
+                "    parent-a1b",
+                "└─  helper-f6g",
+                "  └─scout-b2c",
+            ],
+            "every gutter is as wide as the deepest row drawn"
+        );
+        assert_eq!(list.deepest(), 2);
+    }
+
+    #[test]
+    fn view_folds_a_family_whole_and_says_how_many_went_with_it() {
+        // One parent and more children than the fold has room for: the parent
+        // is drawn, the children that fit are drawn under it, and the rest are
+        // counted on a row of their own rather than left to look like none.
+        let mut views = vec![view("parent-a1b", Phase::Working, 10)];
+        for n in 0..FOLD_AT + 2 {
+            views.push(child_of(
+                view(&format!("kid-{n}"), Phase::Working, 20 + n as u64),
+                "parent-a1b",
+            ));
+        }
+        let list = listed(views);
+        let drawn = lines(&list);
+        assert_eq!(drawn[0], "Working (1)");
+        assert_eq!(drawn[1], "  parent-a1b");
+        assert_eq!(
+            drawn.last().map(String::as_str),
+            Some("  … 3 sub"),
+            "the parent says how many of its own the fold held back"
+        );
+        assert_eq!(
+            drawn.iter().filter(|line| line.contains("kid-")).count(),
+            FOLD_AT - 1,
+            "the parent and the children that fit are what the fold kept"
+        );
+        assert!(
+            !drawn.iter().any(|line| line.contains("more")),
+            "no top-level row was hidden"
+        );
+    }
+
+    #[test]
+    fn view_asks_the_disk_for_a_childs_project() {
+        // A child runs in its parent's directory unless it was given one, and
+        // the project axis gathers it where its parent stands: a nested row
+        // never heads a project of its own.
+        let list = over_the_disk(vec![
+            at(view("parent-a1b", Phase::Working, 10), "/src/api"),
+            at(
+                child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b"),
+                "/src/api",
+            ),
+        ]);
+        assert_eq!(
+            lines(&list),
+            ["/src/api (1)", "  parent-a1b", "└─scout-b2c"],
+            "one project heading for the family"
         );
     }
 
