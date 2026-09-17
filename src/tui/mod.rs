@@ -2447,6 +2447,19 @@ impl Screen {
             KeyCode::Char('w') if chord(key) == KeyModifiers::CONTROL => {
                 composer.delete_word_back()
             }
+            // The mark that opened the find taken back: on a find line with
+            // nothing left on it, backspace is the second way out of the
+            // filter, the way it is in vim. Esc does the same, and a line
+            // somebody has emptied a character at a time ends on the key
+            // their fingers would reach for next anyway.
+            KeyCode::Backspace
+                if chord(key).is_empty()
+                    && composer.text.is_empty()
+                    && matches!(composer.asking, Asking::Find) =>
+            {
+                self.widen();
+                return Ok(Doing::Carry);
+            }
             KeyCode::Backspace => composer.delete_back(),
             KeyCode::Delete => composer.delete_forward(),
             // Where the next character lands, moved by hand: one character
@@ -5538,6 +5551,39 @@ mod tests {
         assert!(matches!(screen.mode, Mode::List), "back on the agents");
         assert_eq!(showing_ids(&screen), ["port-b2c"], "still narrowed");
         assert!(screen.list.narrowing().is_some());
+    }
+
+    #[test]
+    fn find_backspace_on_an_empty_line_leaves_the_find() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(a_fleet_to_search());
+        let press = |screen: &mut Screen, key: KeyEvent| {
+            screen.act(key, root.path(), &config, None).unwrap();
+        };
+
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert!(matches!(screen.mode, Mode::List), "the mark is taken back");
+        assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+
+        // A backspace with a character to take takes the character: the way
+        // out is the key after the last one, not the one that empties the
+        // line.
+        press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char('p')));
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert!(
+            matches!(&screen.mode, Mode::Typing(line) if matches!(line.asking, Asking::Find)),
+            "one character back is still the find"
+        );
+        assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+        press(&mut screen, KeyEvent::from(KeyCode::Backspace));
+        assert!(
+            matches!(screen.mode, Mode::List),
+            "and the next one is the way out"
+        );
+        assert!(screen.list.narrowing().is_none());
     }
 
     #[test]
