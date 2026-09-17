@@ -251,6 +251,11 @@ may go, and `max_children` is how many live children one parent may have.
 `--bg` returns as soon as the id is known, without waiting for the answer, and
 `--no-parent` makes the spawn a peer rather than a child.
 
+An agent can raise one itself when its front carries the tool: `amx setup pi
+--subagent` writes pi a `subagent` tool that runs this verb and hands the
+answer back. It is opt-in because it gives the agent something to do rather
+than reporting what it did.
+
 ## A shell command as a row
 
 Not everything worth keeping an eye on is an agent. `--exec` runs a plain
