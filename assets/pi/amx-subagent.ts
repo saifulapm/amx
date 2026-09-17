@@ -99,7 +99,8 @@ export default function (pi: ExtensionAPI) {
       ),
       model: Type.Optional(
         Type.String({
-          description: "The model for the child, when it runs this one's agent.",
+          description:
+            "The model for the child, when it runs this one's agent: the provider/id its own list prints, or the bare id alone. Naming a model also picks the vendor, so name the agent beside it to keep this one's.",
         }),
       ),
       effort: Type.Optional(
