@@ -40,7 +40,28 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let colours = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
-    let env = spawn::env_snapshot(std::env::vars());
+    let mut env = spawn::env_snapshot(std::env::vars());
+    // A named parent rides the same way a pane's own does: `new` reads the
+    // lineage off `AMX_ID`, and the pane the child gets has its own id put
+    // there over this one.
+    if let Some(id) = &args.parent {
+        if Agent::open(root, id)
+            .and_then(|agent| agent.meta())
+            .is_err()
+        {
+            writeln!(
+                err,
+                "{}",
+                said(
+                    Severity::Warned,
+                    &format!("amx sub: no agent `{id}` to be the parent of this one"),
+                    colours
+                )
+            )?;
+            return Ok(exit::USAGE);
+        }
+        env.insert(crate::hook::ID_ENV.to_string(), id.clone());
+    }
     let parent = parent_of(root, &env, args.no_parent);
 
     if args.context == Some(StartContext::Digest) && parent.is_none() {
@@ -75,6 +96,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     // default would, unless the caller typed one.
     if let Some(role) = new::fill_role(&dir, &mut spawn_args)
         && !args.worktree
+        && !args.no_worktree
         && let Some(worktree) = role.worktree
     {
         spawn_args.no_worktree = !worktree;
@@ -176,16 +198,16 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
 ///
 /// A child shares the parent's directory — `--worktree` is the child that will
 /// change something — while a spawn from outside a pane is an ordinary `amx
-/// new` and cuts a tree by default.
+/// new` and cuts a tree by default, unless `--no-worktree` says otherwise.
 fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
     NewArgs {
         task: Some(args.task.clone()),
         file: None,
         edit: false,
-        name: None,
+        name: args.name.clone(),
         role: args.role.clone(),
         dir: None,
-        no_worktree: has_parent && !args.worktree,
+        no_worktree: args.no_worktree || (has_parent && !args.worktree),
         no_parent: args.no_parent,
         base: None,
         branch: None,

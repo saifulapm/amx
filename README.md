@@ -231,6 +231,8 @@ amx sub --json "summarise the failure"               # one object on stdout
 amx sub --bg "kick off the long one"                 # the id, and no wait
 amx sub --timeout 120 "answer inside two minutes"    # your own deadline
 amx sub --context digest "review what I have"        # the parent's task and last word first
+amx sub --name t1-review --parent wf-t1 "read the diff"  # from no pane: the id, and whose child it is
+amx sub --no-worktree --dir /srv/app "read the diff"     # from no pane, in the directory as it is
 ```
 
 A subagent is an ordinary amx agent whose record names a parent: `amx logs`,
@@ -250,7 +252,12 @@ vendor, and anything on this command line wins. `--permission` is refused
 unless `subagents_may_escalate` is true, `subagent_depth` is how deep the chain
 may go, and `max_children` is how many live children one parent may have.
 `--bg` returns as soon as the id is known, without waiting for the answer, and
-`--no-parent` makes the spawn a peer rather than a child. `--context digest`
+`--no-parent` makes the spawn a peer rather than a child. A program driving amx
+from no pane has the other three things a pane gives for free: `--name` is the
+child's id, as on `amx new`; `--parent <id>` records whose child it is, an agent
+live or ended, refused with exit 64 when amx has no record of it; and
+`--no-worktree` runs it in the directory as it is, where a parentless `sub` is
+otherwise an ordinary spawn that cuts a tree. `--context digest`
 starts the child with the parent's task, and the parent's latest word on it,
 written in front of the child's own task; `fresh`, the default, is the task
 alone, and `digest` with no parent is refused. The digest is a state rather

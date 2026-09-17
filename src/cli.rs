@@ -646,6 +646,18 @@ pub struct SubArgs {
     #[arg(long)]
     pub dir: Option<PathBuf>,
 
+    /// Run the child in the directory as it is, without a worktree of its own.
+    ///
+    /// A child of a pane already does; this is for the spawn from outside any
+    /// pane, which is otherwise an ordinary `amx new` and cuts a tree. A
+    /// program reading a checkout's live diff wants the checkout, not a copy.
+    #[arg(long, conflicts_with = "worktree")]
+    pub no_worktree: bool,
+
+    /// Name the child instead of deriving a name from the task.
+    #[arg(long)]
+    pub name: Option<String>,
+
     /// Spawn the child with a role's dials and brief.
     ///
     /// A role is a file amx reads — `~/.config/amx/agents/<name>.md`, or the
@@ -655,6 +667,16 @@ pub struct SubArgs {
     /// directory knows.
     #[arg(long, value_name = "NAME")]
     pub role: Option<String>,
+
+    /// Record this agent as the parent, instead of the pane's own.
+    ///
+    /// For a caller outside any pane -- a program dispatching a reader for a
+    /// worker's diff, or a fresh worker to take over from one that died --
+    /// which has no `$AMX_ID` to record and knows whose child this is. The
+    /// agent may have ended: a record is enough. An id amx has no record of
+    /// is refused, exit 64, before anything is claimed.
+    #[arg(long, value_name = "ID", conflicts_with = "no_parent")]
+    pub parent: Option<String>,
 
     /// Record no parent, even though this is being run inside a pane.
     #[arg(long)]

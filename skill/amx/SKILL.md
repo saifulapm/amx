@@ -18,6 +18,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx new --exec "<command>"` | Run a shell command as a row of its own, `done` or `failed` by its exit code. |
 | `amx rename <id> "<name>"` | Call it something else on the user's wall. The id is what you keep addressing. |
 | `amx result <id> [--timeout N]` | Block until the turn ends, then print what it said. |
+| `amx sub [--name ID] [--parent ID] [--no-worktree] [--json] [--bg] "<task>"` | Start a child and wait for its answer in one call: `new` plus `result`. Its record names the parent -- your pane, or `--parent`. |
 | `amx wait <id>... [--any] [--for STATE] [--timeout N]` | One clock over several agents: block until each has settled, printing `<id> <state>` as each does. `--any` comes back with the first. |
 | `amx answer <id> <key>` | Answer the question it stopped on. |
 | `amx send <id> "<text>"` | Give a working or idle agent its next turn. |

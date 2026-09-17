@@ -329,3 +329,135 @@ fn sub_hands_the_parents_vendor_down_when_no_agent_is_named() {
         "and not what the config file names"
     );
 }
+
+/// `amx stop` on a parent that has no worktree, so it asks nothing.
+fn stopped(amx: &Harness, id: &str) {
+    let out = amx
+        .amx_command(&["stop", id])
+        .output()
+        .expect("running amx stop");
+    assert!(
+        out.status.success(),
+        "amx stop: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn sub_from_outside_takes_a_name_and_a_parent_that_has_ended() {
+    // A program driving amx from no pane -- workflow dispatching a task's
+    // reader -- names the child and the agent it belongs to, and the parent
+    // may be one that has already ended: the worker whose diff is read, or
+    // the dead worker a fresh one takes over from.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let parent = a_parent(&amx, &mock);
+    stopped(&amx, &parent);
+
+    let out = a_sub_from_outside(
+        &amx,
+        &mock,
+        &[
+            "--bg",
+            "--name",
+            "wf-t1-review-a1b2",
+            "--parent",
+            &parent,
+            "scout",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(id_on(&out), "wf-t1-review-a1b2", "the name is the id");
+    let meta = amx.meta("wf-t1-review-a1b2");
+    assert_eq!(meta["parent"], parent);
+    assert_eq!(meta["depth"], 1);
+}
+
+#[test]
+fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
+    // In a checkout, where a parentless sub would otherwise cut a tree.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    let repo_s = repo.to_string_lossy().to_string();
+    let cut = a_sub_from_outside(&amx, &mock, &["--bg", "--dir", &repo_s, "scout"]);
+    assert_eq!(cut.status.code(), Some(0));
+    assert_ne!(
+        amx.meta(&id_on(&cut))["worktree"],
+        Value::Null,
+        "without the flag a tree is cut, which is what the flag is against"
+    );
+
+    let out = a_sub_from_outside(
+        &amx,
+        &mock,
+        &["--bg", "--no-worktree", "--dir", &repo_s, "scout"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let meta = amx.meta(&id_on(&out));
+    assert_eq!(meta["worktree"], Value::Null, "no tree of its own");
+    assert_eq!(meta["dir"], repo_s);
+
+    // A role with an opinion does not undo a typed flag.
+    std::fs::create_dir_all(repo.join(".amx/agents")).unwrap();
+    std::fs::write(
+        repo.join(".amx/agents/reader.md"),
+        "---\nworktree: true\n---\n\nread only\n",
+    )
+    .unwrap();
+    let out = a_sub_from_outside(
+        &amx,
+        &mock,
+        &[
+            "--bg",
+            "--role",
+            "reader",
+            "--no-worktree",
+            "--dir",
+            &repo_s,
+            "scout",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        amx.meta(&id_on(&out))["worktree"],
+        Value::Null,
+        "the flag stands over the role"
+    );
+}
+
+#[test]
+fn sub_refuses_a_parent_amx_has_no_record_of() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let out = a_sub_from_outside(&amx, &mock, &["--bg", "--parent", "nope", "scout"]);
+    assert_eq!(
+        out.status.code(),
+        Some(64),
+        "usage, before anything is claimed"
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("nope"), "names the id: {said}");
+    assert!(
+        amx.amx_command(&["ls", "--json"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "[]")
+            .unwrap_or(false),
+        "nothing was started"
+    );
+}
