@@ -2578,3 +2578,106 @@ fn mode(path: &Path) -> u32 {
         .permissions()
         .mode()
 }
+
+/// A role file written under this harness's own config, where the person's
+/// roles stand.
+fn a_role(amx: &Harness, name: &str, text: &str) {
+    let dir = amx.home().join(".config/amx/agents");
+    std::fs::create_dir_all(&dir).expect("a directory for roles");
+    std::fs::write(dir.join(format!("{name}.md")), text).expect("writing the role");
+}
+
+#[test]
+fn new_spawns_on_a_roles_dials_and_hands_the_brief_before_the_task() {
+    // A role is a named recipe: its frontmatter is a default for the dials and
+    // its body is a brief. The vendor is handed the brief and then the task;
+    // the record keeps the task alone, because what somebody asked for is the
+    // task and the role is how they asked.
+    let amx = Harness::new();
+    a_role(
+        &amx,
+        "scout",
+        "---\ndescription: fast recon\nagent: claude\nmodel: fable\neffort: low\n---\nYou are a scout.\n",
+    );
+
+    let out = new_as_claude(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--role",
+            "scout",
+            "find the auth middleware",
+        ],
+    );
+    let id = id_of(&out);
+
+    let meta = amx.meta(&id);
+    assert_eq!(
+        meta["task"], "find the auth middleware",
+        "the record keeps the task"
+    );
+    assert_eq!(meta["agent"], "claude", "the role's agent");
+    assert_eq!(meta["model"], "fable", "and its model");
+    assert_eq!(meta["effort"], "low", "and its effort");
+
+    let command = command_of(&amx, &id);
+    assert_eq!(
+        command.last().map(String::as_str),
+        Some("You are a scout.\n\nfind the auth middleware"),
+        "the brief rides in front of the task: {command:?}"
+    );
+}
+
+#[test]
+fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
+    let amx = Harness::new();
+    a_role(
+        &amx,
+        "scout",
+        "---\ndescription: fast recon\nagent: claude\nmodel: fable\n---\nYou are a scout.\n",
+    );
+
+    // The role is a default: what the caller typed stands.
+    let out = new_as_claude(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--role",
+            "scout",
+            "--model",
+            "opus",
+            "find the auth middleware",
+        ],
+    );
+    assert_eq!(amx.meta(&id_of(&out))["model"], "opus");
+
+    // A name amx does not know is a command line to fix, and the roles it does
+    // know are named so the next try is the right one.
+    let out = new_as_claude(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--role",
+            "nobody",
+            "find the auth middleware",
+        ],
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{said}");
+    assert!(said.contains("no role `nobody`"), "{said}");
+    assert!(said.contains("scout"), "the ones it knows: {said}");
+}
+
+#[test]
+fn a_role_is_refused_beside_a_shell_command() {
+    // A role is a vendor recipe: model, effort, a brief for an agent. A shell
+    // command has none of those, so the pair is a command line nobody meant.
+    let amx = Harness::new();
+
+    let out = amx.amx(&["new", "--exec", "--role", "scout", "echo hi"]);
+
+    assert_eq!(out.status.code(), Some(64));
+}

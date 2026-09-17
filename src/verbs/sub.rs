@@ -56,6 +56,16 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     let config = &config;
 
     let mut spawn_args = as_new(args, parent.is_some());
+
+    // The role's dials before the parent's, so a role beats an inheritance and
+    // a typed flag beats both. Its `worktree` stands where the verb's own
+    // default would, unless the caller typed one.
+    if let Some(role) = new::fill_role(&dir, &mut spawn_args)
+        && !args.worktree
+        && let Some(worktree) = role.worktree
+    {
+        spawn_args.no_worktree = !worktree;
+    }
     match spawn_args
         .agent
         .as_ref()
@@ -154,6 +164,7 @@ fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
         file: None,
         edit: false,
         name: None,
+        role: args.role.clone(),
         dir: None,
         no_worktree: has_parent && !args.worktree,
         no_parent: args.no_parent,

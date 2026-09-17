@@ -1568,6 +1568,7 @@ pub fn start(
         file: None,
         edit: false,
         name: None,
+        role: None,
         dir: None,
         no_worktree: false,
         no_parent: false,

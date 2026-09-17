@@ -451,7 +451,7 @@ pub enum Command {
     Park { id: String },
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 pub struct NewArgs {
     /// What the agent should do.
     #[arg(
@@ -483,6 +483,16 @@ pub struct NewArgs {
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
     pub name: Option<String>,
+
+    /// Spawn with a role's dials and brief.
+    ///
+    /// A role is a file amx reads: `~/.config/amx/agents/<name>.md`, with a
+    /// repository's `.amx/agents/<name>.md` over it. It is a default rather
+    /// than a lock — anything typed on this command line stands — and its
+    /// body, the brief, goes in front of the task the agent is handed. A name
+    /// amx does not know lists the roles this directory has.
+    #[arg(long, value_name = "NAME")]
+    pub role: Option<String>,
 
     /// Run in this directory instead of the current one.
     #[arg(long)]
@@ -559,7 +569,7 @@ pub struct NewArgs {
     /// There is no vendor here, which is why amx's four agent flags are
     /// refused beside it, and nothing is passed through: the command is the
     /// whole of what runs.
-    #[arg(long, conflicts_with_all = ["AgentArgs", "vendor_args"])]
+    #[arg(long, conflicts_with_all = ["AgentArgs", "vendor_args", "role"])]
     pub exec: bool,
 
     /// The vendor and the dials for this one spawn, `None` when the caller
@@ -591,6 +601,16 @@ pub struct SubArgs {
     /// Run the child in this directory instead of the parent's.
     #[arg(long)]
     pub dir: Option<PathBuf>,
+
+    /// Spawn the child with a role's dials and brief.
+    ///
+    /// A role is a file amx reads — `~/.config/amx/agents/<name>.md`, or the
+    /// project's `.amx/agents/<name>.md` over it — and a default rather than a
+    /// lock: what the parent hands down is beaten by it, and anything typed on
+    /// this command line beats both. An unknown name lists the roles this
+    /// directory knows.
+    #[arg(long, value_name = "NAME")]
+    pub role: Option<String>,
 
     /// Record no parent, even though this is being run inside a pane.
     #[arg(long)]

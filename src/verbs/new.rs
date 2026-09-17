@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::NewArgs;
 use crate::config::Config;
+use crate::role::{self, Role};
 use crate::spawn::{self, Dials, Handoff};
 use crate::store::{Meta, now};
 use crate::vendor::{Models, Vendor};
@@ -394,6 +395,51 @@ fn run_aloud(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<i32> {
+    // The role it names, if any, and before anything is made: a role is a
+    // default for the dials, its brief goes in front of the task, and a name
+    // amx does not know is a command line to fix rather than a pane to clean
+    // up.
+    let mut args_with_role = args.clone();
+    let mut brief = String::new();
+    if let Some(name) = args.role.clone() {
+        let (personal, project) = role_places(dir)?;
+        let (found, warnings) = role::for_name(&personal, &project, &name);
+        for warning in warnings {
+            writeln!(
+                problems,
+                "{}",
+                said(
+                    Severity::Warned,
+                    &format!("amx new: {warning}"),
+                    to_terminal
+                )
+            )?;
+        }
+        let Some(role) = found else {
+            let known = role::names_under(&personal, &project);
+            writeln!(
+                problems,
+                "{}",
+                said(
+                    Severity::Warned,
+                    &format!("amx new: no role `{name}`: {}", known.join(", ")),
+                    to_terminal
+                )
+            )?;
+            return Ok(exit::USAGE);
+        };
+        brief = role.brief.clone();
+        fill_from_role(&role, &mut args_with_role);
+    }
+    let args = &args_with_role;
+    // What the vendor is handed: the brief, when there is one, and then the
+    // task. The record keeps the task alone — what somebody asked for is the
+    // task, and the role is how they asked.
+    let lined = match brief.is_empty() {
+        true => task.to_string(),
+        false => format!("{brief}\n\n{task}"),
+    };
+
     // Before anything is made: a dial the vendor would not take is a
     // malformed command line, and there is nothing to clean up if it is
     // answered here.
@@ -474,6 +520,7 @@ fn run_aloud(
         config,
         args,
         task,
+        &lined,
         &launch,
         &lineage,
         &id,
@@ -491,9 +538,55 @@ fn run_aloud(
     }
 }
 
+/// The two places a spawn in `dir` may be asked for a role: the person's,
+/// beside their config file, and the project's, under its `.amx`.
+fn role_places(dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    let config = paths::config_file()?;
+    let beside = config
+        .parent()
+        .context("the config file has no directory")?;
+    Ok((
+        role::agents_under(beside),
+        role::project_dir(&spawn::project_of(dir)),
+    ))
+}
+
+/// Fill the dials `args` left empty from `role`. A role is a default: what the
+/// caller typed stands.
+fn fill_from_role(role: &Role, args: &mut NewArgs) {
+    let named = args.agent.get_or_insert_with(Default::default);
+    if named.command.is_none() {
+        named.command = role.agent.clone();
+    }
+    if named.model.is_none() {
+        named.model = role.model.clone();
+    }
+    if named.effort.is_none() {
+        named.effort = role.effort.clone();
+    }
+    if role.worktree == Some(false) && !args.no_worktree {
+        args.no_worktree = true;
+    }
+}
+
+/// The role `args` names filled into the dials it left empty, and nothing said
+/// about it.
+///
+/// `verbs::sub` runs this before inheriting from the parent, so a role's dials
+/// beat a parent's and a typed flag beats both. The refusal for a name amx
+/// does not know, and the warning for a file it cannot read, are said by
+/// `run_aloud`, which reads the role again on the way past.
+pub(crate) fn fill_role(dir: &Path, args: &mut NewArgs) -> Option<Role> {
+    let name = args.role.clone()?;
+    let (personal, project) = role_places(dir).ok()?;
+    let (found, _) = role::for_name(&personal, &project, &name);
+    let role = found?;
+    fill_from_role(&role, args);
+    Some(role)
+}
+
 /// How many minted ids to try to claim before giving up.
 const MAX_CLAIMS: usize = 8;
-
 /// Claim an id by making its directory. The mkdir is the uniqueness check:
 /// two spawns in flight can both believe a name is free, but the directory
 /// can only be made by one of them, and nothing the loser has to clean up
@@ -532,6 +625,7 @@ fn start(
     config: &Config,
     args: &NewArgs,
     task: &str,
+    lined: &str,
     launch: &Launch,
     lineage: &Lineage,
     id: &str,
@@ -580,7 +674,7 @@ fn start(
         agent_dir,
         &Handoff {
             task: task.to_string(),
-            command: launched(args, task, launch, id, config.trust),
+            command: launched(args, lined, launch, id, config.trust),
         },
     )?;
 
@@ -979,6 +1073,7 @@ mod tests {
             file: None,
             edit: false,
             name: None,
+            role: None,
             dir: None,
             no_worktree: false,
             no_parent: false,
@@ -1005,6 +1100,7 @@ mod tests {
             file: None,
             edit: false,
             name: None,
+            role: None,
             dir: None,
             no_worktree: false,
             no_parent: false,

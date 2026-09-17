@@ -259,6 +259,12 @@ which is `amx new`'s rule too — `--model opus` inside a pi pane starts a claud
 child — so name `--agent pi` beside it to keep the vendor and change only the
 model.
 
+`--role <name>` spawns one of your own recipes instead of spelling the dials
+out: a file under `~/.config/amx/agents/`, or the project's `.amx/agents/` over
+it, whose frontmatter sets `agent`, `model`, `effort` and `worktree` and whose
+body is a brief put in front of the task. A role is a default — anything typed
+here wins — and a name amx does not know lists the roles it can see.
+
 An agent can raise one itself when its front carries the tool: `amx setup pi
 --subagent` writes pi a `subagent` tool that runs this verb and hands the
 answer back. The tool takes `task`, and `agent`, `model` and `effort` when the
