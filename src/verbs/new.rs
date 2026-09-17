@@ -431,6 +431,16 @@ fn run_aloud(
         brief = role.brief.clone();
         fill_from_role(&role, &mut args_with_role);
     }
+    // A preamble a caller handed down rides behind the role's and in front of
+    // the task: a subagent's digest of its parent, which the vendor reads and
+    // the record does not keep.
+    if let Some(context) = &args.context_brief {
+        if !brief.is_empty() {
+            brief.push_str("\n\n");
+        }
+        brief.push_str(context);
+    }
+
     let args = &args_with_role;
     // What the vendor is handed: the brief, when there is one, and then the
     // task. The record keeps the task alone — what somebody asked for is the
@@ -1090,6 +1100,7 @@ mod tests {
                 effort: effort.map(str::to_string),
             }),
             vendor_args: Vec::new(),
+            context_brief: None,
         }
     }
 
@@ -1112,6 +1123,7 @@ mod tests {
             exec: true,
             agent: None,
             vendor_args: Vec::new(),
+            context_brief: None,
         }
     }
 

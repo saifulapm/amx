@@ -230,6 +230,7 @@ amx sub --model opus --effort high "check the diff"  # dials, as `amx new` takes
 amx sub --json "summarise the failure"               # one object on stdout
 amx sub --bg "kick off the long one"                 # the id, and no wait
 amx sub --timeout 120 "answer inside two minutes"    # your own deadline
+amx sub --context digest "review what I have"        # the parent's task and last word first
 ```
 
 A subagent is an ordinary amx agent whose record names a parent: `amx logs`,
@@ -249,7 +250,12 @@ vendor, and anything on this command line wins. `--permission` is refused
 unless `subagents_may_escalate` is true, `subagent_depth` is how deep the chain
 may go, and `max_children` is how many live children one parent may have.
 `--bg` returns as soon as the id is known, without waiting for the answer, and
-`--no-parent` makes the spawn a peer rather than a child.
+`--no-parent` makes the spawn a peer rather than a child. `--context digest`
+starts the child with the parent's task, and the parent's latest word on it,
+written in front of the child's own task; `fresh`, the default, is the task
+alone, and `digest` with no parent is refused. The digest is a state rather
+than a log: a child that wants the parent's whole conversation reads it with
+`amx logs $AMX_PARENT`.
 
 A model is named the way `amx new` names one and read the same way: from the
 vendor's own list, so pi's are the `provider/id` pairs `pi --list-models`

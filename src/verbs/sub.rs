@@ -21,7 +21,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::cli::{AgentArgs, NewArgs, SubArgs};
+use crate::cli::{AgentArgs, Context as StartContext, NewArgs, SubArgs};
 use crate::config::Config;
 use crate::store::{Agent, Meta, Phase};
 use crate::verbs::{new, result};
@@ -42,6 +42,19 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
 
     let env = spawn::env_snapshot(std::env::vars());
     let parent = parent_of(root, &env, args.no_parent);
+
+    if args.context == Some(StartContext::Digest) && parent.is_none() {
+        writeln!(
+            err,
+            "{}",
+            said(
+                Severity::Warned,
+                "amx sub: --context digest needs a parent, and there is none here",
+                colours
+            )
+        )?;
+        return Ok(exit::USAGE);
+    }
 
     // The parent's directory unless the caller named one: a child is an
     // extension of the parent's work and shares the checkout it is about.
@@ -93,6 +106,12 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             )?;
             return Ok(exit::USAGE);
         }
+    }
+
+    if args.context == Some(StartContext::Digest)
+        && let Some(parent) = &parent
+    {
+        spawn_args.context_brief = Some(digest_of(parent));
     }
 
     if let Some(parent) = &parent
@@ -175,7 +194,28 @@ fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
         exec: false,
         agent: args.agent.clone(),
         vendor_args: args.vendor_args.clone(),
+        context_brief: None,
     }
+}
+
+/// The short read of a parent a `--context digest` child is handed: its task,
+/// and its latest word where the transcript has one.
+///
+/// A state rather than a log. The child can still read the whole of the
+/// parent's conversation with `amx logs $AMX_PARENT`, which its pane names.
+fn digest_of(parent: &Meta) -> String {
+    let mut digest = format!(
+        "Your parent agent, {}, is working on this task:\n\n{}",
+        parent.id, parent.task
+    );
+    if let Some(format) =
+        crate::conversation::format_of(parent.agent.as_deref().unwrap_or_default())
+        && let Some(tail) = Agent::transcript_tail(parent)
+        && let Some(words) = crate::conversation::answer(format, &tail)
+    {
+        digest.push_str(&format!("\n\nIts latest word on it:\n\n{words}"));
+    }
+    digest
 }
 
 /// The agent whose pane this was typed in, where `$AMX_ID` names one.

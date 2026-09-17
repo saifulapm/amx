@@ -1579,6 +1579,9 @@ pub fn start(
         exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,
+        // The view types a task, and a digest is a subagent's preamble: there
+        // is nobody above it to read one from.
+        context_brief: None,
     };
 
     spawned(root, &dir, &config, &args, "started")

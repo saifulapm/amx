@@ -93,6 +93,69 @@ fn sub_spawns_a_child_and_prints_its_answer_and_its_id() {
 }
 
 #[test]
+fn sub_context_digest_puts_the_parents_task_and_last_word_in_the_brief() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let parent = a_parent(&amx, &mock);
+
+    // The parent's last word comes off the transcript its first hook names,
+    // which is a moment after `amx new` has returned.
+    let transcript = amx.until("the parent to announce a transcript", || {
+        amx.meta(&parent)["transcript"].as_str().map(str::to_string)
+    });
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"the importer is ported\"}],\"usage\":{\"input_tokens\":9}}}\n",
+    )
+    .unwrap();
+
+    let out = a_sub(
+        &amx,
+        &parent,
+        &mock,
+        &["--context", "digest", "scout the auth middleware"],
+    );
+    assert!(
+        out.status.success(),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let child = id_on(&out);
+    assert_eq!(
+        amx.meta(&child)["task"],
+        "scout the auth middleware",
+        "the record keeps the task alone"
+    );
+
+    let shown = amx.until("the child's vendor to say how it was called", || {
+        let screen = amx.capture(&amx.pane_of(&child));
+        screen.contains("argv:").then_some(screen)
+    });
+    assert!(
+        shown.contains("the parent"),
+        "the parent's task is in the brief: {shown}"
+    );
+    assert!(
+        shown.contains("the importer is ported"),
+        "and so is its last word: {shown}"
+    );
+    assert!(
+        shown.contains("scout the auth middleware"),
+        "and the child's own task comes last: {shown}"
+    );
+}
+
+#[test]
+fn sub_context_digest_outside_a_pane_is_refused() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let out = a_sub_from_outside(&amx, &mock, &["--context", "digest", "scout"]);
+    assert_eq!(out.status.code(), Some(64), "a usage refusal");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("parent"), "names what is missing: {said:?}");
+}
+
+#[test]
 fn sub_json_carries_the_id_and_the_answer_in_one_object() {
     let amx = Harness::new();
     let mock = amx.mock();

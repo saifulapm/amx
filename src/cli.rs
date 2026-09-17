@@ -580,6 +580,12 @@ pub struct NewArgs {
     /// Arguments passed to the agent command verbatim.
     #[arg(last = true, value_name = "AGENT_ARGS")]
     pub vendor_args: Vec<String>,
+
+    /// A preamble the vendor reads and the record does not keep, set by a verb
+    /// that puts one in front of the task — a subagent's digest of its parent
+    /// (see `SubArgs::context`). Never on the command line.
+    #[arg(skip)]
+    pub context_brief: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -615,6 +621,15 @@ pub struct SubArgs {
     /// Record no parent, even though this is being run inside a pane.
     #[arg(long)]
     pub no_parent: bool,
+
+    /// What of the parent's context the child starts with.
+    ///
+    /// `fresh`, the default, is the child's own task alone. `digest` puts the
+    /// parent's task and its latest word on it in front of that task — a
+    /// state, not the parent's conversation, which the child can still read
+    /// with `amx logs $AMX_PARENT`. `digest` with no parent is refused.
+    #[arg(long, value_name = "WHEN")]
+    pub context: Option<Context>,
 
     /// Print one JSON object instead of the answer and the id.
     ///
@@ -828,6 +843,15 @@ pub fn text_of(path: &Path) -> Result<String, String> {
 /// it is closed on is read the same way the same editor's file would have been.
 pub fn a_text(text: &str) -> Result<String, String> {
     a_task(text.strip_suffix('\n').unwrap_or(text))
+}
+
+/// What a child is handed of its parent's context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Context {
+    /// Its own task alone, as every child has started.
+    Fresh,
+    /// The parent's task and latest word, in front of the task.
+    Digest,
 }
 
 /// What becomes of a worktree or a branch when its agent stops.
