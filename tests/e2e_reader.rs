@@ -282,6 +282,9 @@ fn a_record_that_has_gone_quiet_falls_back_to_the_screen() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
+    // The record says idle before the vendor has drawn the prompt under it,
+    // and this test is about what that prompt reads as.
+    amx.until_shown("fix-login-a1b", "⏵⏵");
     amx.set_state(
         "fix-login-a1b",
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -301,6 +304,9 @@ fn a_still_screen_does_not_end_a_turn_the_record_says_is_running() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
+    // The same wait: the record says idle a keystroke before the prompt is on
+    // the pane, and the reading under test is of that prompt.
+    amx.until_shown("fix-login-a1b", "⏵⏵");
     amx.set_state(
         "fix-login-a1b",
         json!({ "state": "working", "since": 1, "last_event": 1 }),

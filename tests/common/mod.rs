@@ -421,6 +421,18 @@ impl Harness {
         })
     }
 
+    /// Wait until the pane itself shows `needle`.
+    ///
+    /// A scenario delivers its hooks before it draws the screen under them, so
+    /// a record that has reached a phase is not yet a pane that looks like it.
+    /// A test that reads the screen rather than the record waits here first.
+    pub fn until_shown(&self, id: &str, needle: &str) {
+        let pane = self.pane_of(id);
+        self.until(&format!("{id} to show {needle:?}"), || {
+            self.capture(&pane).contains(needle).then_some(())
+        });
+    }
+
     /// Poll until `f` has an answer. Polling rather than sleeping: a fixed
     /// wait is either slower than the machine or shorter than a bad day.
     pub fn until<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
