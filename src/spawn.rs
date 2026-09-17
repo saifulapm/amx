@@ -1376,6 +1376,7 @@ mod tests {
     /// vendor is a shell command and fills no place.
     fn meta(id: &str, socket: crate::tmux::Socket, pane: PaneId) -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),

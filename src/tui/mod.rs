@@ -4117,6 +4117,7 @@ mod tests {
         let agent = Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),
@@ -4313,6 +4314,7 @@ mod tests {
         let agent = Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),
@@ -4842,6 +4844,7 @@ mod tests {
     fn reading(id: &str, phase: Phase, state: State) -> View {
         View::new(
             Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),
@@ -7567,6 +7570,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let agent = Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),
@@ -8078,6 +8082,7 @@ diff --git a/src/bar.rs b/src/bar.rs
     fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
         let tree = crate::worktree::create(repo, id, None).unwrap();
         let meta = Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),
@@ -9134,6 +9139,7 @@ diff --git a/src/bar.rs b/src/bar.rs
         let agent = Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),

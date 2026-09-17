@@ -446,6 +446,7 @@ mod tests {
     fn asking(question: Option<&str>, options: &[&str], kind: Option<Kind>) -> View {
         View {
             meta: Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: "fix-login-a1b".to_string(),

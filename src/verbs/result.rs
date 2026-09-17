@@ -416,6 +416,7 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let waited_on = |id: &str, ended_on: &str| {
             let meta = Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),

@@ -236,6 +236,7 @@ mod tests {
     fn reading(phase: Phase, evidence: Evidence) -> View {
         View {
             meta: Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: "fix-login-a1b".to_string(),

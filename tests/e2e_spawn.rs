@@ -2620,6 +2620,19 @@ fn new_spawns_on_a_roles_dials_and_hands_the_brief_before_the_task() {
     assert_eq!(meta["agent"], "claude", "the role's agent");
     assert_eq!(meta["model"], "fable", "and its model");
     assert_eq!(meta["effort"], "low", "and its effort");
+    assert_eq!(meta["role"], "scout", "and the role is named on the record");
+
+    // And the reading says so, both ways.
+    let json: Value =
+        serde_json::from_slice(&amx.amx(&["status", &id, "--json"]).stdout).expect("one object");
+    assert_eq!(json["role"], "scout");
+    let printed = String::from_utf8_lossy(&amx.amx(&["status", &id]).stdout).into_owned();
+    assert!(
+        printed
+            .lines()
+            .any(|line| line.contains("role") && line.contains("scout")),
+        "the reading names the role: {printed}"
+    );
 
     let command = command_of(&amx, &id);
     assert_eq!(

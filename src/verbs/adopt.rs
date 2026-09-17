@@ -143,6 +143,7 @@ pub fn run(
     let agent = Agent::create(
         root,
         &Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.clone(),
@@ -996,6 +997,7 @@ mod tests {
         Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),

@@ -695,6 +695,7 @@ fn start(
     spawn::record(
         root,
         &Meta {
+            role: args.role.clone(),
             id: id.to_string(),
             task: task.to_string(),
             agent: vendor_written(args.exec, &launch.agent),

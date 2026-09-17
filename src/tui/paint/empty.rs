@@ -86,6 +86,7 @@ mod tests {
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
         View {
             meta: Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),

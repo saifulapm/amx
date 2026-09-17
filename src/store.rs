@@ -304,6 +304,11 @@ pub struct Meta {
     /// the two fields were not there to write.
     #[serde(default)]
     pub depth: u32,
+    /// The role this spawn was asked for, by name — the file it read its dials
+    /// and its brief out of. `None` from a spawn that named none, from a shell
+    /// command, and from a record written before amx kept this.
+    #[serde(default)]
+    pub role: Option<String>,
     /// Where the agent runs — its worktree, or the directory it was asked for.
     pub dir: PathBuf,
     /// The worktree amx made for it, if it made one.
@@ -1363,6 +1368,7 @@ mod tests {
 
     fn meta(id: &str) -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),
@@ -1419,6 +1425,21 @@ mod tests {
         let older = agent.meta().unwrap();
         assert_eq!(older.parent, None);
         assert_eq!(older.depth, 0);
+    }
+
+    #[test]
+    fn store_reads_a_record_with_no_role_as_none() {
+        // `role` is newer still, and the same law holds: a record an older amx
+        // wrote names no role rather than failing to read.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+
+        let text = std::fs::read_to_string(agent.dir().join(META)).unwrap();
+        let mut document: serde_json::Value = serde_json::from_str(&text).unwrap();
+        document.as_object_mut().unwrap().remove("role");
+        std::fs::write(agent.dir().join(META), document.to_string()).unwrap();
+
+        assert_eq!(agent.meta().unwrap().role, None);
     }
 
     #[test]

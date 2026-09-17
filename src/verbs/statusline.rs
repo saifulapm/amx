@@ -107,6 +107,7 @@ mod tests {
 
     fn meta(id: &str) -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),

@@ -184,6 +184,7 @@ fn start(
     spawn::record(
         root,
         &Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),
@@ -509,6 +510,7 @@ mod tests {
 
     fn meta(id: &str, session: Option<&str>) -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),

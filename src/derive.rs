@@ -307,6 +307,9 @@ impl View {
             // view does. Null and 0 for a root.
             "parent": self.meta.parent,
             "depth": self.meta.depth,
+            // The role the spawn was asked for, by name, where it named one:
+            // the file its dials and brief came out of.
+            "role": self.meta.role,
             "state": self.verdict.phase.as_str(),
             "evidence": self.verdict.evidence,
             "rule": self.verdict.rule,
@@ -2567,6 +2570,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     fn meta() -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: "fix-login-a1b".to_string(),

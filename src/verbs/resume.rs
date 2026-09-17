@@ -634,6 +634,7 @@ mod tests {
     fn read_as(phase: Phase, evidence: Evidence) -> derive::View {
         derive::View {
             meta: Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: "fix-login-a1b".to_string(),

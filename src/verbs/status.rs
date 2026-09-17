@@ -56,6 +56,9 @@ fn report(view: &View, now: u64, out: &mut impl Write) -> Result<()> {
     if let Some(exit) = view.state.exit {
         writeln!(out, "  exit      {exit}")?;
     }
+    if let Some(role) = &view.meta.role {
+        say(out, "role", role)?;
+    }
     // The task is free text typed by whoever spawned the agent, so it goes
     // the way of every other word amx did not author.
     say(out, "task", &view.meta.task)?;
@@ -135,6 +138,7 @@ mod tests {
     fn view(phase: Phase, evidence: Evidence, rule: Option<&str>, age: u64) -> View {
         View {
             meta: Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: "fix-login-a1b".to_string(),

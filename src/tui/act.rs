@@ -2531,6 +2531,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
         let meta = Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: "fix-login-a1b".to_string(),
@@ -2581,6 +2582,7 @@ mod tests {
         Agent::create(
             root,
             &Meta {
+                role: None,
                 parent: None,
                 depth: 0,
                 id: id.to_string(),

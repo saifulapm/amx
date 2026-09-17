@@ -193,6 +193,7 @@ mod tests {
 
     fn meta(id: &str, created: u64) -> Meta {
         Meta {
+            role: None,
             parent: None,
             depth: 0,
             id: id.to_string(),
