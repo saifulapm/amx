@@ -462,6 +462,10 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
     let out = amx.amx(&["setup", "pi"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
+        !printed.contains("keeping a copy"),
+        "the consent line must not promise a copy it will not keep: {printed}"
+    );
+    assert!(
         !printed.contains("the file as it was is at"),
         "an older amx's file is amx's to replace, and no copy is kept: {printed}"
     );

@@ -135,6 +135,28 @@ pub fn install_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
     }
 }
 
+/// Whether wiring `wire` under `home` would keep a copy of what stands there.
+///
+/// The consent line is printed before the write, so it cannot read the report:
+/// it has to know the rule [`install_file`] and [`install_plugin`] apply. A
+/// file that is amx's own, a directory whose manifest says it is amx's, a name
+/// with nothing at it, and a file already equal to what amx ships are each
+/// written over or skipped with no copy kept; anything else standing there is
+/// copied aside first.
+pub fn would_keep_a_copy(wire: &Wire, home: &Path) -> bool {
+    let path = wire_path(wire, home);
+    match *wire {
+        Wire::File { body, .. } => std::fs::read_to_string(&path)
+            .is_ok_and(|text| text != body && !is_amx_file(&text, body)),
+        Wire::Plugin { files, .. } => {
+            !is_amx_plugin(&path)
+                && files.iter().any(|(name, body)| {
+                    std::fs::read_to_string(path.join(name)).is_ok_and(|text| text != *body)
+                })
+        }
+    }
+}
+
 /// The file whose contents say a plugin directory is amx's.
 ///
 /// A plugin wire writes several files, and a first line is not enough to tell
@@ -512,6 +534,57 @@ mod tests {
             "an older amx's file is amx's to replace"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
+    }
+
+    #[test]
+    fn install_knows_whether_it_would_keep_a_copy_before_it_writes() {
+        // The consent line is printed before the write and cannot read the
+        // report, so the prediction has to agree with what install_file and
+        // install_plugin would do: a missing file, amx's own file, and a file
+        // already equal to amx's are written over or skipped with no copy;
+        // somebody else's is copied aside.
+        let home = TempDir::new().unwrap();
+        let path = wire_path(&FILE.wire, home.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(
+            !would_keep_a_copy(&FILE.wire, home.path()),
+            "nothing stands there"
+        );
+
+        std::fs::write(&path, file_body()).unwrap();
+        assert!(
+            !would_keep_a_copy(&FILE.wire, home.path()),
+            "already what amx ships"
+        );
+
+        std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
+        assert!(
+            !would_keep_a_copy(&FILE.wire, home.path()),
+            "an older amx's file is amx's to replace"
+        );
+
+        std::fs::write(&path, "// somebody else's\n").unwrap();
+        assert!(
+            would_keep_a_copy(&FILE.wire, home.path()),
+            "somebody else's file is copied aside"
+        );
+
+        // And a plugin's: a directory with amx's manifest is rewritten whole,
+        // an empty one holds nothing to copy, and somebody else's is copied
+        // file by file before amx's goes over it.
+        let ours = TempDir::new().unwrap();
+        install_wire(&claude::HOOKS.wire, ours.path(), 1).unwrap();
+        assert!(!would_keep_a_copy(&claude::HOOKS.wire, ours.path()));
+
+        let theirs = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, theirs.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            !would_keep_a_copy(&claude::HOOKS.wire, theirs.path()),
+            "an empty directory holds nothing to copy"
+        );
+        std::fs::write(dir.join("SKILL.md"), "their own copy\n").unwrap();
+        assert!(would_keep_a_copy(&claude::HOOKS.wire, theirs.path()));
     }
 
     #[test]

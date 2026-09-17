@@ -119,7 +119,8 @@ fn wire_one(wire: &Wire, home: &Path, now: u64, out: &mut impl Write) -> Result<
     {
         return Ok(false);
     }
-    writeln!(out, "{}", install::consent_line(wire, &path, path.exists()))?;
+    let keep = install::would_keep_a_copy(wire, home);
+    writeln!(out, "{}", install::consent_line(wire, &path, keep))?;
     let wrote = install::install_wire(wire, home, now)?;
     match wire {
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
