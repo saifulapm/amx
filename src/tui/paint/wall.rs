@@ -165,6 +165,7 @@ fn line(
                 view,
                 list.requests(view),
                 list.gutter(item),
+                widths.name.saturating_sub(grid::NEST * list.depth(item)),
                 at,
                 widths,
                 requests,
@@ -317,6 +318,7 @@ fn row(
     view: &View,
     prs: &[Pr],
     gutter: String,
+    name_room: usize,
     at: At,
     widths: Widths,
     requests: usize,
@@ -331,7 +333,9 @@ fn row(
     let worked = derive::in_words(view.verdict.worked);
     // The one word on a row a person typed rather than amx minting it, so it
     // is neutralised here as well as where it was written down.
-    let name = grid::pad(&inert(rows::called(view)), widths.name);
+    // The name column a child gives up to the connector that indents it, so
+    // the state, the age and the summary stay under its parent's.
+    let name = grid::pad(&inert(rows::called(view)), name_room);
     // The pull request is not one of the design's columns, so it is paid for
     // the way the state word is: out of the summary, which is the column that
     // gives way. Name, age and count stay where they are whether or not there
@@ -906,19 +910,70 @@ mod tests {
             line[..at].chars().count()
         };
         assert_eq!(
+            column(family[0], "running"),
             column(family[1], "find"),
-            column(family[0], "running") + 2,
-            "a child's summary stands one level in from its parent's: {family:#?}"
+            "a child pays for its connector out of its own name, so the \
+             summaries still stand at one column: {family:#?}"
         );
         assert_eq!(
             column(family[1], "find"),
             column(family[2], "reading"),
-            "and a sibling's stands at the same column"
+            "including the last child's"
         );
         assert_eq!(
             column(family[0], "parent-a1b"),
             column(family[1], "scout-b2c") - 2,
-            "a child's name is one level right of its parent's"
+            "and the names indent with the connector"
+        );
+    }
+
+    #[test]
+    fn a_child_pays_for_its_connector_out_of_its_own_name() {
+        // The connector indents a child, and the two cells it takes come out
+        // of the child's name rather than out of the wall: a name too long for
+        // what is left is cut, so the state, the age and the summary still
+        // stand under the parent's.
+        let mut loud = child_of(
+            view(
+                "a-child-name-far-too-long-1a2b",
+                Phase::Done,
+                Some("find auth"),
+                12,
+            ),
+            "parent-a1b",
+        );
+        loud.meta.created = 10;
+        let lines = drawn(
+            vec![
+                view("parent-a1b", Phase::Working, Some("running tests"), 2),
+                loud,
+            ],
+            None,
+            (100, 12),
+        );
+        let root = lines
+            .iter()
+            .find(|line| line.contains("parent-a1b"))
+            .unwrap_or_else(|| panic!("the parent's row: {lines:#?}"));
+        let child = lines
+            .iter()
+            .find(|line| line.contains("└─"))
+            .unwrap_or_else(|| panic!("the child's row: {lines:#?}"));
+        let column = |line: &str, word: &str| {
+            line[..line
+                .find(word)
+                .unwrap_or_else(|| panic!("{word} on {line:?}"))]
+                .chars()
+                .count()
+        };
+        assert_eq!(
+            column(root, "running"),
+            column(child, "find"),
+            "the summaries stand at one column however long the child's name"
+        );
+        assert!(
+            !child.contains("a-child-name-far-too-long-1a2b"),
+            "the name was cut to pay for the connector: {child:?}"
         );
     }
 

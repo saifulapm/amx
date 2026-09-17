@@ -57,7 +57,9 @@ const SHORTEST_RULE: usize = 8;
 /// axis gathered this way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Widths {
-    /// What the agent is called.
+    /// What the agent is called, at a root. A child gives up two cells of it
+    /// per level of its own depth, so the columns after the name stay under its
+    /// parent's; the row cuts its name to fit.
     pub name: usize,
     /// What runs it — the vendor, the model and the effort. Nothing until
     /// somebody asks for it: most walls run one vendor on one model, and a
@@ -119,15 +121,14 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Wi
 /// connector, `├─`, `└─` or the `│ ` of a rail passing through.
 pub(super) const NEST: usize = 2;
 
-/// The cells the deepest row spends on nesting, which is what the width budget
-/// must leave for the gutter.
+/// The cells every root spends on nesting, which is what the summary gives up
+/// for a family.
 ///
-/// A root is padded to the family's deepest ([`NEST`] per level) and then its
-/// own levels indent it by one more each, so the deepest row is the one with
-/// `depth` levels of its own and the budget is twice the padding. A shallower
-/// row spends less and stands further left: nesting indents with depth.
+/// A root is padded to the family's deepest, one [`NEST`] per level; a child's
+/// own levels are paid for by its name, which gives up the same two cells per
+/// level, so a name and every column after it stay under the row's parent.
 pub(super) fn nest(depth: usize) -> usize {
-    NEST * depth * 2
+    NEST * depth
 }
 
 /// How many cells a path heading can spend on its path, with `suffix` being

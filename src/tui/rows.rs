@@ -1335,6 +1335,16 @@ impl List {
         self.deepest
     }
 
+    /// How deep this item stands: the number of two-cell levels its gutter
+    /// indents, which is also the room its name gives up so the columns after
+    /// it stay under its parent's. A heading or a fold stands nowhere.
+    pub(super) fn depth(&self, item: Item) -> usize {
+        match item {
+            Item::Agent(n) => self.depth_of_row(n),
+            _ => 0,
+        }
+    }
+
     /// The cells before an agent's glyph: a root's column, then one two-cell
     /// level for each step of this row's own depth.
     ///
