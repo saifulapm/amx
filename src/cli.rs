@@ -398,17 +398,25 @@ pub enum Command {
 
     /// Wire an agent's hooks, so what it does reports back to amx.
     ///
-    /// The agent is named, and never guessed: `amx setup claude` adds amx's
-    /// hooks to `~/.claude/settings.json` beside whatever is already there,
-    /// `amx setup pi` writes amx's extension where pi loads one from. Either
-    /// file is copied aside before it is touched, and `amx uninstall` puts
-    /// the copy back.
+    /// The agent is named, and never guessed: `amx setup claude` writes amx's
+    /// plugin where claude loads one from, `amx setup pi` writes amx's
+    /// extension where pi loads one from. Either file is copied aside before
+    /// it is touched, and `amx uninstall` puts the copy back.
     ///
     /// A machine usually has more than one agent on it, so a bare `amx setup`
     /// prints the agents amx has an entry for and writes nothing.
     Setup {
         /// Which agent to wire: `claude` or `pi`.
         vendor: Option<String>,
+
+        /// Also write what this agent offers beyond reporting.
+        ///
+        /// A wire of its own, and one a person asks for by name: today only
+        /// pi has one, the `subagent` tool that hands a task to `amx sub`.
+        /// `amx uninstall` takes it back out, and a vendor without one says
+        /// so rather than writing something else.
+        #[arg(long)]
+        subagent: bool,
     },
 
     /// Remove amx's hooks and state, restoring the settings backup.
@@ -1789,6 +1797,7 @@ mod tests {
                 hooks: None,
                 wire: PathBuf::new(),
                 wired: crate::install::Wired::Nothing,
+                opt_in: Vec::new(),
             }],
             exe: PathBuf::new(),
             on_path: Vec::new(),

@@ -92,6 +92,12 @@ amx setup claude   # amx's plugin into ~/.claude/skills/amx
 amx setup pi       # amx's extension into ~/.pi/agent/extensions/amx.ts
 ```
 
+Reporting is not the only wire an agent can carry. `amx setup pi --subagent`
+also writes pi a `subagent` tool, which hands a task to `amx sub` and returns
+the child's answer; it is opt-in because it gives the agent something to do
+rather than reporting what it did. `amx uninstall` takes it back out like any
+other wire, and a vendor that carries no such tool says so when asked.
+
 Anything of yours standing at one of those names is copied aside before amx
 writes over it, and the copy is named. The agent is never guessed — a machine
 usually has more than one on it, and the one

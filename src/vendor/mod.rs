@@ -114,6 +114,12 @@ pub struct Hooks {
     /// How amx's hook command reaches this vendor: what `install` writes,
     /// where, and what `uninstall` takes back out.
     pub wire: Wire,
+    /// Wires a person opts into, empty from a vendor that ships none. They are
+    /// written only by `amx setup <vendor> --subagent`, repaired by doctor
+    /// only where they already stand, and never a fault when absent — unlike
+    /// the reporting wire above, which a vendor that reports at all always
+    /// carries.
+    pub opt_in: &'static [Wire],
     /// The moments this vendor reports, in the order the entries are wired.
     /// Every one of them, and never a moment twice: a vendor with no way to
     /// say a thing leaves the moment out, and amx hears nothing of it.
@@ -779,6 +785,17 @@ mod tests {
                 !std::path::Path::new(path).is_absolute(),
                 "{hooks:?} is wired outside anybody's home"
             );
+            // An opt-in wire adds something the agent may do rather than
+            // reporting what it did, so it is held to the same place under the
+            // home and not to reporting.
+            for wire in hooks.opt_in {
+                let path = wire.path();
+                assert!(!path.is_empty(), "{hooks:?} carries an empty opt-in path");
+                assert!(
+                    !std::path::Path::new(path).is_absolute(),
+                    "{path} is written outside anybody's home"
+                );
+            }
             match hooks.wire {
                 Wire::File { body, .. } => {
                     assert!(body.contains("_hook"), "{path} reports through nothing");

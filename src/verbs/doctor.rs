@@ -170,6 +170,9 @@ pub struct VendorWiring {
     /// Where this agent's wiring goes, under the home.
     pub wire: PathBuf,
     pub wired: install::Wired,
+    /// The wires a person opts into, each with where it would go and what is
+    /// there now. Empty is the usual state: most machines never ask.
+    pub opt_in: Vec<(PathBuf, install::Wired)>,
 }
 
 /// The server amx would use, and where its own process is standing.
@@ -225,6 +228,7 @@ impl Setup {
 pub fn report(found: &Findings) -> Vec<Check> {
     let mut checks = vec![tmux_check(found), vendor_check(found), config_check(found)];
     checks.extend(found.wirings.iter().map(wiring_check));
+    checks.extend(found.wirings.iter().flat_map(opt_in_checks));
     checks.extend([amx_check(found), state_check(found), env_check(found)]);
     checks.extend(server_check(found));
     checks.push(setup_check(found));
@@ -323,6 +327,36 @@ fn wiring_check(found: &VendorWiring) -> Check {
             setup_with(who),
         ),
     }
+}
+
+/// The lines about the wires a person opted into.
+///
+/// A vendor with one is judged only where it already stands: an absent opt-in
+/// file is a machine that never asked for the tool, which is not a fault and
+/// not something to send anybody to fix. A stale one is: it is amx's file, an
+/// older amx wrote it, and an upgrade of the reporting wire alone leaves the
+/// tool calling a verb whose shape has moved.
+fn opt_in_checks(found: &VendorWiring) -> Vec<Check> {
+    found
+        .opt_in
+        .iter()
+        .filter_map(|(path, wired)| {
+            let at = path.display();
+            let what = "extension";
+            match wired {
+                install::Wired::File { present: false, .. } | install::Wired::Nothing => None,
+                install::Wired::File { current: true, .. } => Some(Check::ok(
+                    "hooks",
+                    format!("{}: the {what} at {at}", found.vendor),
+                )),
+                install::Wired::File { .. } => Some(Check::wrong(
+                    "hooks",
+                    format!("{}: {at} is not the {what} this amx ships", found.vendor),
+                    format!("run `amx setup {} --subagent`", found.vendor),
+                )),
+            }
+        })
+        .collect()
 }
 
 /// The line that wires this check's agent.
@@ -635,8 +669,15 @@ fn wirings(agent: &str, home: &Path, path: Option<&OsStr>) -> Vec<VendorWiring> 
             VendorWiring {
                 vendor: vendor.name,
                 hooks,
-                wire: hooks.map_or_else(|| home.to_path_buf(), |h| install::wire_path(h, home)),
-                wired: install::wired(hooks, home),
+                wire: hooks
+                    .map_or_else(|| home.to_path_buf(), |h| install::wire_path(&h.wire, home)),
+                wired: hooks.map_or(install::Wired::Nothing, |h| install::wired(&h.wire, home)),
+                opt_in: hooks.map_or_else(Vec::new, |h| {
+                    h.opt_in
+                        .iter()
+                        .map(|wire| (install::wire_path(wire, home), install::wired(wire, home)))
+                        .collect()
+                }),
             }
         })
         .collect()
@@ -996,12 +1037,26 @@ mod tests {
             hooks,
             wire: hooks.map_or_else(
                 || PathBuf::from("/home/dev"),
-                |h| install::wire_path(h, Path::new("/home/dev")),
+                |h| install::wire_path(&h.wire, Path::new("/home/dev")),
             ),
             wired: install::Wired::File {
                 present: there,
                 current: there,
             },
+            opt_in: hooks.map_or_else(Vec::new, |h| {
+                h.opt_in
+                    .iter()
+                    .map(|wire| {
+                        (
+                            install::wire_path(wire, Path::new("/home/dev")),
+                            install::Wired::File {
+                                present: there,
+                                current: there,
+                            },
+                        )
+                    })
+                    .collect()
+            }),
         }
     }
 
@@ -1266,6 +1321,7 @@ mod tests {
             hooks: None,
             wire: PathBuf::from("/home/dev"),
             wired: install::Wired::Nothing,
+            opt_in: Vec::new(),
         });
         assert!(
             hooks.is_ok(),
@@ -1345,6 +1401,7 @@ mod tests {
                 present: false,
                 current: false,
             },
+            opt_in: Vec::new(),
         };
         let hooks = wiring_check(&found);
         assert!(!hooks.is_ok());

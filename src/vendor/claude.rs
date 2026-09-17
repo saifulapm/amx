@@ -204,6 +204,9 @@ pub const HOOKS: Hooks = Hooks {
             ("SKILL.md", include_str!("../../skill/amx/SKILL.md")),
         ],
     },
+    // Nothing a person opts into: claude's wiring is the plugin above, and a
+    // second thing for it to load would be one nobody asked for.
+    opt_in: &[],
     events: &[
         Wiring {
             moment: Moment::Started,

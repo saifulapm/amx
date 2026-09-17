@@ -2865,3 +2865,152 @@ fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
         "the key amx would have answered it with: {printed}"
     );
 }
+
+/// Where the two files pi loads sit under this harness's home.
+fn pi_tool(amx: &Harness) -> PathBuf {
+    amx.home().join(".pi/agent/extensions/amx-subagent.ts")
+}
+
+/// Doctor's lines about pi's hooks, in the order they were printed: whether
+/// each passed, and what it said.
+///
+/// More than one now that pi can carry an opt-in wire, so a test about the
+/// tool reads the line naming the tool's own file rather than the first.
+fn pi_hooks_lines(printed: &str) -> Vec<(bool, String)> {
+    printed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let verdict = fields.next()?;
+            let named = fields.next()? == "hooks" && fields.next()? == "pi:";
+            named.then(|| (verdict == "ok", line.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn setup_writes_pis_subagent_tool_only_when_it_is_asked_for() {
+    // The tool is a capability, not plumbing: `amx setup pi` wires what amx
+    // reads and stops there. `--subagent` is a person saying they want the
+    // agent to have it, and it lands as a file of its own so pi loads it on
+    // its own.
+    let amx = Harness::new();
+    let hook = amx.home().join(".pi/agent/extensions/amx.ts");
+    let tool = pi_tool(&amx);
+
+    let out = amx.amx(&["setup", "pi"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(hook.exists(), "the reporting wire is written");
+    assert!(!tool.exists(), "and nothing was opted into");
+
+    let out = amx.amx(&["setup", "pi", "--subagent"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{printed}");
+    assert!(
+        printed.contains(&tool.display().to_string()),
+        "it names the file it wrote: {printed}"
+    );
+    let written = std::fs::read_to_string(&tool).expect("the tool");
+    assert!(written.starts_with("// installed by amx\n"), "{written}");
+    assert!(
+        written.contains("registerTool") && written.contains("\"subagent\""),
+        "it gives the agent the tool: {written}"
+    );
+    assert!(
+        !written.contains("\"_hook\""),
+        "the tool reports nothing itself: {written}"
+    );
+
+    // Asked again, nothing is written and it says so.
+    let out = amx.amx(&["setup", "pi", "--subagent"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{printed}");
+    assert!(printed.contains("nothing to do"), "{printed}");
+
+    // Uninstall takes both back out, and names them.
+    let out = amx.amx(&["uninstall"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{printed}");
+    assert!(printed.contains(&tool.display().to_string()), "{printed}");
+    assert!(!hook.exists() && !tool.exists(), "both went");
+}
+
+#[test]
+fn setup_refuses_the_subagent_flag_for_a_vendor_that_carries_none() {
+    // The flag is the same on every vendor, so the one that has no such wire
+    // says so — and writes nothing at all, rather than wiring what was not
+    // asked for.
+    let amx = Harness::new();
+
+    let out = amx.amx(&["setup", "claude", "--subagent"]);
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(64), "{printed}");
+    assert!(printed.contains("no subagent"), "{printed}");
+    assert!(
+        printed.contains("pi"),
+        "it names who carries one: {printed}"
+    );
+    assert_eq!(
+        std::fs::read_dir(amx.home()).unwrap().count(),
+        0,
+        "and nothing under the home was written"
+    );
+}
+
+#[test]
+fn doctor_judges_the_opt_in_wire_only_where_it_stands() {
+    // An absent tool file is a machine that never asked, which is not a fault
+    // and not something to send anybody to fix. One that is there and stale
+    // is: amx wrote it, and the verb it calls has moved on.
+    let amx = Harness::new();
+    amx.config("agent = \"pi\"\n");
+    let tool = pi_tool(&amx);
+
+    let out = amx.amx(&["setup", "pi", "--subagent"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let printed = String::from_utf8_lossy(&amx.amx(&["doctor"]).stdout).into_owned();
+    let named = pi_hooks_lines(&printed)
+        .into_iter()
+        .find(|(_, line)| line.contains("amx-subagent.ts"))
+        .unwrap_or_else(|| panic!("doctor said nothing about the tool:\n{printed}"));
+    assert!(named.0, "the tool this amx ships is green: {}", named.1);
+
+    // An older amx's file is amx's, and doctor says so with the verb that
+    // writes it again.
+    std::fs::write(&tool, "// installed by amx\n// an older one\n").unwrap();
+    let printed = String::from_utf8_lossy(&amx.amx(&["doctor"]).stdout).into_owned();
+    let named = pi_hooks_lines(&printed)
+        .into_iter()
+        .find(|(_, line)| line.contains("amx-subagent.ts"))
+        .unwrap_or_else(|| panic!("doctor said nothing about the tool:\n{printed}"));
+    assert!(!named.0, "{}", named.1);
+    assert!(
+        printed.contains("amx setup pi --subagent"),
+        "and the remedy names the flag: {printed}"
+    );
+
+    // With the file gone, doctor says nothing about it at all.
+    std::fs::remove_file(&tool).unwrap();
+    let printed = String::from_utf8_lossy(&amx.amx(&["doctor"]).stdout).into_owned();
+    assert!(
+        !printed.contains("amx-subagent.ts"),
+        "an opt-in file that was never asked for is nobody's fault: {printed}"
+    );
+    let reporting = pi_hooks_lines(&printed)
+        .into_iter()
+        .find(|(_, line)| line.contains("amx.ts"))
+        .unwrap_or_else(|| panic!("doctor said nothing about pi's wire:\n{printed}"));
+    assert!(
+        reporting.0,
+        "and the reporting wire is still judged: {}",
+        reporting.1
+    );
+}

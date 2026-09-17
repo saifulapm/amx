@@ -5,6 +5,13 @@
 //! `uninstall` is its mirror: that one walks the whole table and takes every
 //! vendor's wiring out, this one takes a name and wires that one.
 //!
+//! A vendor carries one reporting wire and, sometimes, wires a person opts
+//! into. Reporting is not a choice — an agent amx cannot hear is an agent amx
+//! cannot show — but a tool is: `--subagent` is somebody saying the agent may
+//! have it. The opt-in wires are written by name, never with the rest, and a
+//! vendor that carries none is refused rather than quietly wired with
+//! something else.
+//!
 //! The name is not optional and is never guessed. A machine usually has more
 //! than one agent on it, and the one a config happens to name is not evidence
 //! about the others — amx wiring an agent nobody asked it to would be writing
@@ -27,10 +34,10 @@ use crate::vendor::Wire;
 use crate::{exit, install, registry, store};
 
 /// Run the verb against the machine's own paths.
-pub fn from_env(vendor: Option<&str>) -> Result<i32> {
+pub fn from_env(vendor: Option<&str>, subagent: bool) -> Result<i32> {
     let home = install::home()?;
     let mut out = std::io::stdout().lock();
-    run(vendor, &home, store::now(), &mut out)
+    run(vendor, subagent, &home, store::now(), &mut out)
 }
 
 /// Run the verb, with everything it touches named: the agent, and the home its
@@ -40,7 +47,13 @@ pub fn from_env(vendor: Option<&str>) -> Result<i32> {
 /// off the PATH rather than the path this amx happens to stand at, which is
 /// the thing `doctor` insists on when it asks that there be one amx and this
 /// be it.
-pub fn run(vendor: Option<&str>, home: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
+pub fn run(
+    vendor: Option<&str>,
+    subagent: bool,
+    home: &Path,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<i32> {
     let Some(name) = vendor else {
         writeln!(out, "name an agent to set up: {}", every_agent())?;
         return Ok(exit::USAGE);
@@ -57,42 +70,81 @@ pub fn run(vendor: Option<&str>, home: &Path, now: u64, out: &mut impl Write) ->
         )?;
         return Ok(exit::OK);
     };
+    // Asked for a tool this vendor does not carry, which is a different thing
+    // from a vendor amx wires nothing into at all: it is wired, and there is
+    // nothing of the kind here. Naming who does carry one is the whole of the
+    // help, since the flag is the same on every vendor.
+    if subagent && hooks.opt_in.is_empty() {
+        writeln!(
+            out,
+            "amx has no subagent to wire for `{}`: {}",
+            entry.name,
+            every_opt_in()
+        )?;
+        return Ok(exit::USAGE);
+    }
 
-    // Read before saying anything. The sentence below is about a write that
-    // is going to happen, and promises a copy of what it goes over; on a
-    // machine already wired it would be followed immediately by "nothing to
-    // do", which is two lines contradicting each other and a copy nobody took.
-    let path = install::wire_path(hooks, home);
-    if install::wired(Some(hooks), home)
+    // The reporting wire, and then whatever opt-in wires were asked for. Read
+    // before saying anything: the sentence below is about a write that is
+    // going to happen, and promises a copy of what it goes over; on a machine
+    // already wired it would be followed immediately by "nothing to do",
+    // which is two lines contradicting each other and a copy nobody took.
+    let mut wires: Vec<&Wire> = vec![&hooks.wire];
+    if subagent {
+        wires.extend(hooks.opt_in.iter());
+    }
+    let mut wrote = false;
+    for wire in wires {
+        wrote |= wire_one(wire, home, now, out)?;
+    }
+    if !wrote {
+        writeln!(
+            out,
+            "nothing to do: {} is already that",
+            install::wire_path(&hooks.wire, home).display()
+        )?;
+    }
+    Ok(exit::OK)
+}
+
+/// Write one wire, unless it is already what amx ships. Says what it is about
+/// to write first, and keeps a copy of whatever stood there.
+fn wire_one(wire: &Wire, home: &Path, now: u64, out: &mut impl Write) -> Result<bool> {
+    let path = install::wire_path(wire, home);
+    if install::wired(wire, home)
         == (install::Wired::File {
             present: true,
             current: true,
         })
     {
-        writeln!(out, "nothing to do: {} is already that", path.display())?;
-        return Ok(exit::OK);
+        return Ok(false);
     }
-
-    writeln!(
-        out,
-        "{}",
-        install::consent_line(hooks, &path, path.exists())
-    )?;
-    let wrote = install::install_hooks(hooks, home, now)?;
-    match hooks.wire {
+    writeln!(out, "{}", install::consent_line(wire, &path, path.exists()))?;
+    let wrote = install::install_wire(wire, home, now)?;
+    match wire {
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
         Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
     }
     if let Some(backup) = wrote.backup {
         writeln!(out, "the file as it was is at {}", backup.display())?;
     }
-    Ok(exit::OK)
+    Ok(true)
 }
 
 /// Every agent amx has an entry for, as a sentence names them.
 fn every_agent() -> String {
     registry::entries()
         .iter()
+        .map(|vendor| vendor.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Every agent that carries an opt-in wire, as a sentence names them.
+fn every_opt_in() -> String {
+    registry::entries()
+        .iter()
+        .filter(|vendor| vendor.hooks.as_ref().is_some_and(|h| !h.opt_in.is_empty()))
         .map(|vendor| vendor.name)
         .collect::<Vec<_>>()
         .join(", ")
@@ -107,8 +159,13 @@ mod tests {
     /// Run the verb over a home of the test's own, and answer with what it
     /// exited and what it printed.
     fn said(vendor: Option<&str>, home: &Path, now: u64) -> (i32, String) {
+        said_with(vendor, false, home, now)
+    }
+
+    /// The same, with the opt-in wire asked for or not.
+    fn said_with(vendor: Option<&str>, subagent: bool, home: &Path, now: u64) -> (i32, String) {
         let mut out = Vec::new();
-        let code = run(vendor, home, now, &mut out).unwrap();
+        let code = run(vendor, subagent, home, now, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
     }
 
@@ -120,7 +177,7 @@ mod tests {
         // a manifest there, so it is copied aside rather than lost.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::claude::VENDOR.hooks.expect("claude reports");
-        let dir = install::wire_path(&hooks, home.path());
+        let dir = install::wire_path(&hooks.wire, home.path());
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
@@ -158,7 +215,7 @@ mod tests {
     fn setup_writes_pis_extension_where_pi_loads_one() {
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::pi::VENDOR.hooks.expect("pi reports");
-        let extension = install::wire_path(&hooks, home.path());
+        let extension = install::wire_path(&hooks.wire, home.path());
 
         let (code, printed) = said(Some("pi"), home.path(), 1);
 
@@ -189,6 +246,58 @@ mod tests {
                 "and it does not first say it is about to: {printed}"
             );
         }
+    }
+
+    #[test]
+    fn setup_writes_pis_subagent_only_when_asked_and_uninstall_takes_it_back() {
+        // The tool is a capability, not plumbing: `amx setup pi` alone wires
+        // what amx reads, and a person asks for the rest by name. The opt-in
+        // file is named after the wire and reports nothing — it is the tool
+        // that calls `amx sub`.
+        let home = TempDir::new().unwrap();
+        let hooks = crate::vendor::pi::VENDOR.hooks.expect("pi reports");
+        let hook = install::wire_path(&hooks.wire, home.path());
+        let tool = install::wire_path(&hooks.opt_in[0], home.path());
+
+        said(Some("pi"), home.path(), 1);
+        assert!(hook.exists(), "the reporting wire is written");
+        assert!(!tool.exists(), "and nothing opted into was");
+
+        let (code, printed) = said_with(Some("pi"), true, home.path(), 2);
+        assert_eq!(code, exit::OK, "{printed}");
+        assert!(printed.contains(&tool.display().to_string()), "{printed}");
+        let written = std::fs::read_to_string(&tool).expect("the tool");
+        assert!(written.starts_with("// installed by amx\n"), "{written}");
+        assert!(written.contains("\"subagent\""), "{written}");
+        assert!(written.contains("\"sub\""), "it runs the child: {written}");
+
+        let (code, printed) = said_with(Some("pi"), true, home.path(), 3);
+        assert_eq!(code, exit::OK, "{printed}");
+        assert!(printed.contains("nothing to do"), "{printed}");
+
+        install::uninstall_wire(&hooks.opt_in[0], home.path(), 4).unwrap();
+        assert!(!tool.exists(), "and it comes back out on its own");
+    }
+
+    #[test]
+    fn setup_refuses_a_subagent_for_a_vendor_that_carries_none() {
+        // The flag is the same on every vendor, so a vendor without the wire
+        // has to say so rather than write something else or nothing at all.
+        let home = TempDir::new().unwrap();
+
+        let (code, printed) = said_with(Some("claude"), true, home.path(), 1);
+
+        assert_eq!(code, exit::USAGE, "{printed}");
+        assert!(printed.contains("no subagent"), "{printed}");
+        assert!(
+            printed.contains("pi"),
+            "it names who carries one: {printed}"
+        );
+        assert_eq!(
+            std::fs::read_dir(home.path()).unwrap().count(),
+            0,
+            "and writes nothing"
+        );
     }
 
     #[test]

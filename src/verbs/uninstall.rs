@@ -37,13 +37,17 @@ pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Re
 
     for vendor in registry::entries() {
         let Some(hooks) = &vendor.hooks else { continue };
-        let report = install::uninstall_hooks(hooks, home, now)?;
-        let path = report.path.display();
-        match (hooks.wire, report.changed) {
-            (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
-            (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
-            (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
-            (Wire::Plugin { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
+        // Every wire the vendor carries, the reporting one and whatever a
+        // person opted into: the tool leaves with amx like everything else.
+        for wire in std::iter::once(&hooks.wire).chain(hooks.opt_in.iter()) {
+            let report = install::uninstall_wire(wire, home, now)?;
+            let path = report.path.display();
+            match (wire, report.changed) {
+                (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
+                (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
+                (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
+                (Wire::Plugin { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
+            }
         }
     }
 
@@ -128,8 +132,8 @@ mod tests {
 
     /// amx's plugin, written where claude loads one from under a home.
     fn plugin_with_amx(home: &Path) -> PathBuf {
-        let dir = install::wire_path(&claude::HOOKS, home);
-        install::install_hooks(&claude::HOOKS, home, 1).unwrap();
+        let dir = install::wire_path(&claude::HOOKS.wire, home);
+        install::install_wire(&claude::HOOKS.wire, home, 1).unwrap();
         dir
     }
 
@@ -256,7 +260,7 @@ mod tests {
     fn uninstall_says_so_when_there_was_nothing_of_amxs_to_remove() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let dir = install::wire_path(&claude::HOOKS, home.path());
+        let dir = install::wire_path(&claude::HOOKS.wire, home.path());
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();

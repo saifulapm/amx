@@ -196,11 +196,29 @@ pub const VENDOR: Vendor = Vendor {
 /// `tests/mock_pi/pi` delivers these the way the extension does, step by step
 /// out of a scenario, so the suite drives pi's entry through them on a machine
 /// with no pi on it.
+/// The tool a person opts into with `amx setup pi --subagent`: a second
+/// extension beside `amx.ts`, and a file of its own so pi loads it on its own.
+/// It shares no module with the reporting wire — it reads `$AMX_BIN`, which
+/// the pane carries — and it reports nothing: what it does is register
+/// `subagent`, which runs `amx sub` and hands back the child's answer.
+///
+/// pi loads every `.ts` file directly under the extensions directory, so this
+/// is a file beside `amx.ts` rather than a directory of amx's own; a helper
+/// module would have to live in a subdirectory, which is a thing this tool
+/// does not need.
+pub const SUBAGENT: Wire = Wire::File {
+    path: ".pi/agent/extensions/amx-subagent.ts",
+    body: include_str!("../../assets/pi/amx-subagent.ts"),
+};
+
 pub const HOOKS: Hooks = Hooks {
     wire: Wire::File {
         path: ".pi/agent/extensions/amx.ts",
         body: include_str!("../../assets/pi/amx.ts"),
     },
+    // The one thing a person can opt into: a tool that hands a task to
+    // `amx sub`, which is a capability rather than the plumbing amx.ts is.
+    opt_in: &[SUBAGENT],
     events: &[
         Wiring {
             moment: Moment::Started,
@@ -277,6 +295,29 @@ mod tests {
         assert!(
             body.contains(&format!("\"{}\"", crate::store::HEARTBEAT)),
             "and it beats on the record while a turn runs"
+        );
+    }
+
+    #[test]
+    fn pi_ships_the_subagent_tool_as_a_wire_of_its_own() {
+        // A second file beside the reporting one, so pi loads it on its own
+        // and a person who runs a subagent extension of their own does not
+        // have amx putting one in by the reporting wire alone.
+        let Wire::File { path, body } = SUBAGENT else {
+            panic!("the tool is not a file pi loads")
+        };
+        assert_eq!(path, ".pi/agent/extensions/amx-subagent.ts");
+        assert!(HOOKS.opt_in.contains(&SUBAGENT), "it is opted into by name");
+        assert!(
+            body.starts_with("// installed by amx\n"),
+            "the first line is how uninstall knows the file is amx's"
+        );
+        assert!(body.contains("registerTool"), "it gives the agent a tool");
+        assert!(body.contains("\"subagent\""), "named what it is");
+        assert!(body.contains("\"sub\""), "and it runs the verb");
+        assert!(
+            !body.contains("\"_hook\""),
+            "the tool reports nothing; that is the other wire's work"
         );
     }
 

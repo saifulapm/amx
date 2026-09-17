@@ -54,21 +54,22 @@ pub fn home() -> Result<PathBuf> {
     std::env::home_dir().context("no home directory")
 }
 
-/// Where this vendor's wiring goes, given a home directory: its settings file,
-/// or the file amx writes where it loads extensions from.
-pub fn wire_path(hooks: &Hooks, home: &Path) -> PathBuf {
-    home.join(hooks.wire.path())
+/// Where one wire goes, given a home directory: the settings file a vendor
+/// reads its hooks out of, the file amx writes where it loads extensions from,
+/// or the directory of a plugin amx wrote.
+pub fn wire_path(wire: &Wire, home: &Path) -> PathBuf {
+    home.join(wire.path())
 }
 
 /// The one line a person is asked to agree to before amx writes under their
 /// home: what it will write, where, and whether a copy is kept.
-pub fn consent_line(hooks: &Hooks, path: &Path, backup: bool) -> String {
+pub fn consent_line(wire: &Wire, path: &Path, backup: bool) -> String {
     let and_backup = if backup {
         ", keeping a copy of the file as it is now"
     } else {
         ""
     };
-    match hooks.wire {
+    match *wire {
         Wire::File { .. } => format!(
             "amx will write its extension to {}{and_backup}.",
             path.display()
@@ -90,13 +91,10 @@ pub enum Wired {
     File { present: bool, current: bool },
 }
 
-/// Read what is wired for `hooks` under `home`.
-pub fn wired(hooks: Option<&Hooks>, home: &Path) -> Wired {
-    let Some(hooks) = hooks else {
-        return Wired::Nothing;
-    };
-    let path = wire_path(hooks, home);
-    match hooks.wire {
+/// Read what is wired at one wire, under `home`.
+pub fn wired(wire: &Wire, home: &Path) -> Wired {
+    let path = wire_path(wire, home);
+    match *wire {
         Wire::File { body, .. } => match std::fs::read_to_string(&path) {
             Ok(text) => Wired::File {
                 present: true,
@@ -128,10 +126,10 @@ pub fn wired(hooks: Option<&Hooks>, home: &Path) -> Wired {
     }
 }
 
-/// Wire `hooks` under `home`, whichever shape the wire is.
-pub fn install_hooks(hooks: &Hooks, home: &Path, now: u64) -> Result<Report> {
-    let path = wire_path(hooks, home);
-    match hooks.wire {
+/// Wire one wire under `home`, whichever shape it is.
+pub fn install_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
+    let path = wire_path(wire, home);
+    match *wire {
         Wire::File { body, .. } => install_file(&path, body, now),
         Wire::Plugin { files, .. } => install_plugin(&path, files, now),
     }
@@ -236,10 +234,10 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
     let _ = std::fs::remove_dir(dir);
 }
 
-/// Take `hooks` back out from under `home`, whichever shape the wire is.
-pub fn uninstall_hooks(hooks: &Hooks, home: &Path, now: u64) -> Result<Report> {
-    let path = wire_path(hooks, home);
-    match hooks.wire {
+/// Take one wire back out from under `home`, whichever shape it is.
+pub fn uninstall_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
+    let path = wire_path(wire, home);
+    match *wire {
         Wire::File { body, .. } => uninstall_file(&path, body, now),
         Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
     }
@@ -466,21 +464,21 @@ mod tests {
     #[test]
     fn install_writes_a_file_wire_whole_and_reads_it_back() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE, home.path());
+        let path = wire_path(&FILE.wire, home.path());
         assert_eq!(
-            wired(Some(&FILE), home.path()),
+            wired(&FILE.wire, home.path()),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_hooks(&FILE, home.path(), 1).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
         assert_eq!(
-            wired(Some(&FILE), home.path()),
+            wired(&FILE.wire, home.path()),
             Wired::File {
                 present: true,
                 current: true
@@ -488,7 +486,7 @@ mod tests {
         );
 
         // Installed twice is installed once.
-        let again = install_hooks(&FILE, home.path(), 2).unwrap();
+        let again = install_wire(&FILE.wire, home.path(), 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -496,18 +494,18 @@ mod tests {
     #[test]
     fn install_replaces_an_older_amx_file_without_keeping_it() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE, home.path());
+        let path = wire_path(&FILE.wire, home.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
         assert_eq!(
-            wired(Some(&FILE), home.path()),
+            wired(&FILE.wire, home.path()),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_hooks(&FILE, home.path(), 1).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -519,17 +517,17 @@ mod tests {
     #[test]
     fn install_keeps_a_copy_of_a_file_that_is_somebody_elses_and_uninstall_puts_it_back() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE, home.path());
+        let path = wire_path(&FILE.wire, home.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let theirs = "// somebody else's\n";
         std::fs::write(&path, theirs).unwrap();
 
-        let report = install_hooks(&FILE, home.path(), 7).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
 
-        let report = uninstall_hooks(&FILE, home.path(), 8).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), 8).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, Some(backup));
         assert_eq!(
@@ -542,21 +540,21 @@ mod tests {
     #[test]
     fn uninstall_removes_amxs_file_and_leaves_anyone_elses() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE, home.path());
+        let path = wire_path(&FILE.wire, home.path());
 
         // Nothing there is nothing to do.
-        let report = uninstall_hooks(&FILE, home.path(), 1).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), 1).unwrap();
         assert!(!report.changed);
 
-        install_hooks(&FILE, home.path(), 1).unwrap();
-        let report = uninstall_hooks(&FILE, home.path(), 2).unwrap();
+        install_wire(&FILE.wire, home.path(), 1).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), 2).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None);
         assert!(!path.exists());
 
         // A file that is not amx's is not amx's to remove.
         std::fs::write(&path, "// theirs\n").unwrap();
-        let report = uninstall_hooks(&FILE, home.path(), 3).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), 3).unwrap();
         assert!(!report.changed);
         assert!(path.exists());
     }
@@ -573,23 +571,23 @@ mod tests {
     fn install_writes_a_plugin_whole_and_reads_it_back() {
         let home = TempDir::new().unwrap();
         let (_, files) = plugin();
-        let dir = wire_path(&claude::HOOKS, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path()),
+            wired(&claude::HOOKS.wire, home.path()),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         for (name, body) in files {
             assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), body);
         }
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path()),
+            wired(&claude::HOOKS.wire, home.path()),
             Wired::File {
                 present: true,
                 current: true
@@ -597,7 +595,7 @@ mod tests {
         );
 
         // Written twice is written once.
-        let again = install_hooks(&claude::HOOKS, home.path(), 2).unwrap();
+        let again = install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -608,18 +606,18 @@ mod tests {
         // one an older amx wrote is amx's to overwrite. Keeping a copy of
         // every one of those would leave a backup behind at every upgrade.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS, home.path());
-        install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
         std::fs::write(dir.join("SKILL.md"), "an older amx's skill\n").unwrap();
         assert_eq!(
-            wired(Some(&claude::HOOKS), home.path()),
+            wired(&claude::HOOKS.wire, home.path()),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_hooks(&claude::HOOKS, home.path(), 2).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -635,12 +633,12 @@ mod tests {
         // itself tells them apart. The directory answers instead: one with no
         // manifest of amx's in it is not amx's, and what is in it is kept.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
 
-        let report = install_hooks(&claude::HOOKS, home.path(), 7).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_ne!(
@@ -649,7 +647,7 @@ mod tests {
             "and amx's own is what stands there now"
         );
 
-        let report = uninstall_hooks(&claude::HOOKS, home.path(), 8).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 8).unwrap();
         assert!(report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -661,17 +659,17 @@ mod tests {
     #[test]
     fn uninstall_removes_amxs_plugin_and_leaves_anyone_elses() {
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
 
         // Nothing there is nothing to do.
         assert!(
-            !uninstall_hooks(&claude::HOOKS, home.path(), 1)
+            !uninstall_wire(&claude::HOOKS.wire, home.path(), 1)
                 .unwrap()
                 .changed
         );
 
-        install_hooks(&claude::HOOKS, home.path(), 1).unwrap();
-        let report = uninstall_hooks(&claude::HOOKS, home.path(), 2).unwrap();
+        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
         assert!(report.changed);
         assert!(!dir.exists(), "and the directory it emptied goes too");
 
@@ -680,7 +678,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(dir.join(MANIFEST), "{\"name\": \"theirs\"}\n").unwrap();
         std::fs::write(dir.join("SKILL.md"), "theirs\n").unwrap();
-        let report = uninstall_hooks(&claude::HOOKS, home.path(), 3).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
         assert!(!report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -694,20 +692,20 @@ mod tests {
         // names it in full because that is the thing being agreed to.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
         let plugin = Path::new("/home/dev").join(table.wire.path());
-        assert_eq!(wire_path(&table, Path::new("/home/dev")), plugin);
+        assert_eq!(wire_path(&table.wire, Path::new("/home/dev")), plugin);
 
-        let asked = consent_line(&table, &plugin, true);
+        let asked = consent_line(&table.wire, &plugin, true);
         assert!(asked.contains(&plugin.display().to_string()), "{asked}");
         assert!(asked.contains("plugin"), "{asked}");
         assert!(
             asked.contains("copy"),
             "a person is told about the backup: {asked}"
         );
-        assert!(!consent_line(&table, &plugin, false).contains("copy"));
+        assert!(!consent_line(&table.wire, &plugin, false).contains("copy"));
 
         // A file wire is a different sentence about a different write.
         let extension = Path::new("/home/dev").join(crate::vendor::pi::HOOKS.wire.path());
-        let asked = consent_line(&crate::vendor::pi::HOOKS, &extension, false);
+        let asked = consent_line(&crate::vendor::pi::HOOKS.wire, &extension, false);
         assert!(asked.contains("extension"), "{asked}");
         assert!(asked.contains(&extension.display().to_string()), "{asked}");
     }
