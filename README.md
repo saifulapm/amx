@@ -251,10 +251,20 @@ may go, and `max_children` is how many live children one parent may have.
 `--bg` returns as soon as the id is known, without waiting for the answer, and
 `--no-parent` makes the spawn a peer rather than a child.
 
+A model is named the way `amx new` names one and read the same way: from the
+vendor's own list, so pi's are the `provider/id` pairs `pi --list-models`
+prints and the bare id matches one of them, and a word nobody lists is refused
+with the lists named. Naming a model settles the vendor before anything else,
+which is `amx new`'s rule too — `--model opus` inside a pi pane starts a claude
+child — so name `--agent pi` beside it to keep the vendor and change only the
+model.
+
 An agent can raise one itself when its front carries the tool: `amx setup pi
 --subagent` writes pi a `subagent` tool that runs this verb and hands the
-answer back. It is opt-in because it gives the agent something to do rather
-than reporting what it did.
+answer back. The tool takes `task`, and `agent`, `model` and `effort` when the
+agent wants one of them to differ, and puts them on this command line. It is
+opt-in because it gives the agent something to do rather than reporting what it
+did.
 
 ## A shell command as a row
 
