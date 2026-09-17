@@ -137,6 +137,7 @@ amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx new --file brief.md                # the task, read out of a file
 amx new --file -                       # the task, read off a pipe
 amx new --edit                         # the task, written in your editor
+amx new --no-parent "be my peer"       # in an agent's pane: a root, not a child
 amx rename importer auth               # what the wall calls it, afterwards
 ```
 
@@ -161,6 +162,11 @@ empty file in `$VISUAL`, `$EDITOR` or `vi`, the way the view's own `ctrl+g`
 does, and what you leave in it is the task. Quit the editor without writing
 anything and you get the refusal an empty task always gets; quit it unhappily —
 `:cq` in vim — and nothing is started at all.
+
+`--no-parent` says a spawn typed inside an agent's pane is nobody's child. An
+agent started by amx carries its own id in the pane's environment, and `amx
+new` typed there records that id as its parent; `--no-parent` is the escape for
+the one that wants a peer instead.
 
 `--name` and `amx rename` name different things. `--name` is the id itself,
 chosen rather than cut out of the task, and it is what the pane, the branch and

@@ -4117,6 +4117,8 @@ mod tests {
         let agent = Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some("claude".to_string()),
@@ -4311,6 +4313,8 @@ mod tests {
         let agent = Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: None,
@@ -4838,6 +4842,8 @@ mod tests {
     fn reading(id: &str, phase: Phase, state: State) -> View {
         View::new(
             Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "port the importer".to_string(),
                 agent: None,
@@ -7561,6 +7567,8 @@ diff --git a/src/bar.rs b/src/bar.rs
         let agent = Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: None,
@@ -8070,6 +8078,8 @@ diff --git a/src/bar.rs b/src/bar.rs
     fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
         let tree = crate::worktree::create(repo, id, None).unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
@@ -9124,6 +9134,8 @@ diff --git a/src/bar.rs b/src/bar.rs
         let agent = Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "port the importer".to_string(),
                 agent: vendor.map(str::to_string),

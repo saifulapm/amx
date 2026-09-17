@@ -306,6 +306,8 @@ mod tests {
     /// record — which is what lets one test name a phase and get it.
     fn record(root: &Path, id: &str, phase: Phase) {
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: Some("claude".to_string()),

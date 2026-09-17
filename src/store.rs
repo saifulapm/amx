@@ -287,6 +287,23 @@ pub struct Meta {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// The agent whose pane this one was started in, where it was started in
+    /// one. A subagent is an ordinary agent whose record names a parent, and
+    /// `None` is a root: an agent a person's own shell started, one that said
+    /// `--no-parent`, or a record written before this field existed.
+    ///
+    /// The parent's own record is where its directory is read from, and a
+    /// parent that has been removed — `stop --delete`, `clear`, `sweep` —
+    /// leaves a child that reads as a root, because a reader that finds no
+    /// record for it has nothing to draw it under.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// How deep in a family this agent stands: 0 for a root, 1 for a child of
+    /// one, and one more than whatever [`parent`](Meta::parent) names. Written
+    /// beside the parent and read as 0 from a record an older amx wrote, where
+    /// the two fields were not there to write.
+    #[serde(default)]
+    pub depth: u32,
     /// Where the agent runs — its worktree, or the directory it was asked for.
     pub dir: PathBuf,
     /// The worktree amx made for it, if it made one.
@@ -1346,6 +1363,8 @@ mod tests {
 
     fn meta(id: &str) -> Meta {
         Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
@@ -1378,6 +1397,28 @@ mod tests {
         assert_eq!(reopened.meta().unwrap(), written);
         assert_eq!(reopened.state().unwrap().state, Phase::Starting);
         assert!(reopened.events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn store_reads_a_record_with_no_family_as_a_root_at_zero() {
+        // Parent and depth are new fields, and a record outlives the version
+        // of amx that wrote it: one from an older amx names no parent and
+        // stands at depth 0.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let fresh = agent.meta().unwrap();
+        assert_eq!(fresh.parent, None);
+        assert_eq!(fresh.depth, 0);
+
+        let text = std::fs::read_to_string(agent.dir().join(META)).unwrap();
+        let mut document: serde_json::Value = serde_json::from_str(&text).unwrap();
+        document.as_object_mut().unwrap().remove("parent");
+        document.as_object_mut().unwrap().remove("depth");
+        std::fs::write(agent.dir().join(META), document.to_string()).unwrap();
+
+        let older = agent.meta().unwrap();
+        assert_eq!(older.parent, None);
+        assert_eq!(older.depth, 0);
     }
 
     #[test]

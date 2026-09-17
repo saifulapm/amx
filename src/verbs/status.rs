@@ -135,6 +135,8 @@ mod tests {
     fn view(phase: Phase, evidence: Evidence, rule: Option<&str>, age: u64) -> View {
         View {
             meta: Meta {
+                parent: None,
+                depth: 0,
                 id: "fix-login-a1b".to_string(),
                 task: "fix the login bug".to_string(),
                 agent: None,

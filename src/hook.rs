@@ -797,6 +797,8 @@ mod tests {
 
     fn meta() -> Meta {
         Meta {
+            parent: None,
+            depth: 0,
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
@@ -2228,6 +2230,8 @@ mod tests {
         let allowed = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "port-cli-batch-c3d".to_string(),
                 ..meta()
             },
@@ -2388,6 +2392,8 @@ mod tests {
         let agent = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
                 ..meta()
             },
@@ -2423,6 +2429,8 @@ mod tests {
         let adopted = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 session: Some("abc-123".to_string()),
                 ..meta()
             },
@@ -2518,6 +2526,8 @@ mod tests {
         let agent = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 session: Some("abc-123".to_string()),
                 ..meta()
             },
@@ -2581,6 +2591,8 @@ mod tests {
         let stopped = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 session: Some("abc-123".to_string()),
                 created: 1,
                 ..meta()
@@ -2595,6 +2607,8 @@ mod tests {
         let adopted = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "adopted-app-b2c".to_string(),
                 session: Some("abc-123".to_string()),
                 created: 2,
@@ -2629,6 +2643,8 @@ mod tests {
         let pi = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "their-pi-a1b".to_string(),
                 agent: Some("pi".to_string()),
                 model: None,
@@ -2668,6 +2684,8 @@ mod tests {
         Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "their-claude-b2c".to_string(),
                 agent: Some("claude".to_string()),
                 model: None,

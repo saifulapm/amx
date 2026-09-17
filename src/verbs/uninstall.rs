@@ -98,6 +98,8 @@ mod tests {
         let agent = Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: vendor.map(str::to_string),

@@ -1780,6 +1780,8 @@ mod tests {
     fn view(id: &str, phase: Phase, at: u64) -> View {
         View {
             meta: Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: None,

@@ -104,6 +104,48 @@ impl Launch {
     }
 }
 
+/// Where a spawn stands in a family: the agent whose pane it was typed in,
+/// where `$AMX_ID` names a record in this state root, and the depth that puts
+/// it at — one more than its parent's.
+///
+/// Parentage is a rule rather than a flag: `_boot` puts an agent's own id in
+/// its pane, every process in the pane inherits it, and `amx new` typed there
+/// is a child. `--no-parent` is the escape for an agent that wants a peer,
+/// and a person's own shell has no `AMX_ID` and records neither.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Lineage {
+    parent: Option<String>,
+    depth: u32,
+}
+
+impl Lineage {
+    /// What the environment this spawn was typed in says about its family.
+    ///
+    /// An id that names no record here — an `AMX_ID` somebody exported by
+    /// hand, or a parent since removed — records nothing, the way a person's
+    /// own shell does.
+    fn of(
+        root: &Path,
+        env: &std::collections::BTreeMap<String, String>,
+        args: &NewArgs,
+    ) -> Lineage {
+        if args.no_parent {
+            return Lineage::default();
+        }
+        let Some(parent) = env.get(crate::hook::ID_ENV) else {
+            return Lineage::default();
+        };
+        let Ok(meta) = crate::store::Agent::open(root, parent).and_then(|agent| agent.meta())
+        else {
+            return Lineage::default();
+        };
+        Lineage {
+            parent: Some(parent.clone()),
+            depth: meta.depth + 1,
+        }
+    }
+}
+
 /// The command a spawn that named no agent runs: the harness the typed model
 /// belongs to, else the configured agent as it stands.
 ///
@@ -371,6 +413,27 @@ fn run_aloud(
         }
     };
 
+    // Where this spawn stands in a family, read off the environment it was
+    // typed in. A spawn past the configured depth is refused here, before a
+    // tree is cut or an id is claimed, the way a cap is: there is nothing to
+    // clean up and nobody has to answer for a pane that should not exist.
+    let lineage = Lineage::of(root, &env, args);
+    if lineage.depth as usize > config.subagent_depth {
+        writeln!(
+            problems,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!(
+                    "amx new: subagent_depth is {} and this spawn would be at depth {}",
+                    config.subagent_depth, lineage.depth
+                ),
+                to_terminal
+            )
+        )?;
+        return Ok(exit::BLOCKED);
+    }
+
     // Asked before anything is made, the same as a base git cannot resolve:
     // `--with-changes` where the last commit already holds all of it is a
     // command nobody meant, and answering it here leaves no id, no tree and no
@@ -412,6 +475,7 @@ fn run_aloud(
         args,
         task,
         &launch,
+        &lineage,
         &id,
         problems,
         to_terminal,
@@ -469,6 +533,7 @@ fn start(
     args: &NewArgs,
     task: &str,
     launch: &Launch,
+    lineage: &Lineage,
     id: &str,
     problems: &mut impl Write,
     to_terminal: bool,
@@ -541,6 +606,8 @@ fn start(
             agent: vendor_written(args.exec, &launch.agent),
             model: dial_written(args.exec, &launch.dials.model),
             effort: dial_written(args.exec, &launch.dials.effort),
+            parent: lineage.parent.clone(),
+            depth: lineage.depth,
             dir: cwd,
             worktree: tree.map(|tree| tree.path.clone()),
             branch: tree.map(|tree| tree.branch.clone()),
@@ -914,6 +981,7 @@ mod tests {
             name: None,
             dir: None,
             no_worktree: false,
+            no_parent: false,
             base: None,
             branch: None,
             pr: None,
@@ -939,6 +1007,7 @@ mod tests {
             name: None,
             dir: None,
             no_worktree: false,
+            no_parent: false,
             base: None,
             branch: None,
             pr: None,

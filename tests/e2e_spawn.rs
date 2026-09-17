@@ -662,6 +662,125 @@ fn the_agent_gets_the_environment_new_was_run_with() {
     );
 }
 
+/// `amx new` with an agent's own id already in the environment, the way a
+/// pane amx started carries it.
+fn spawned_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Output {
+    amx.amx_command(&[&["new"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("AMX_ID", parent)
+        .output()
+        .expect("running amx new")
+}
+
+#[test]
+fn new_inside_a_pane_records_that_pane_as_the_parent() {
+    // Parentage is a rule rather than a flag: a pane amx started carries its
+    // own id in the environment, so a spawn typed inside it is a child, and a
+    // person's own shell, with no AMX_ID, is nobody's.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let parent = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "the parent"],
+    ));
+
+    let child = id_of(&spawned_inside(
+        &amx,
+        "a-dispatched-worker",
+        &parent,
+        &["--no-worktree", "--agent", &mock, "the child"],
+    ));
+
+    let theirs = amx.meta(&child);
+    assert_eq!(theirs["parent"], parent, "the record names the pane");
+    assert_eq!(theirs["depth"], 1, "one below its parent");
+    let ours = amx.meta(&parent);
+    assert_eq!(
+        ours["parent"],
+        Value::Null,
+        "a person's shell is nobody's child"
+    );
+    assert_eq!(ours["depth"], 0);
+}
+
+#[test]
+fn a_childs_pane_is_told_its_parent_and_its_depth() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let parent = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "the parent"],
+    ));
+    let child = id_of(&spawned_inside(
+        &amx,
+        "a-dispatched-worker",
+        &parent,
+        &["--no-worktree", "--agent", &mock, "the child"],
+    ));
+
+    let env = pane_env(&amx, &child);
+    assert_eq!(
+        env.get("AMX_PARENT").map(String::as_str),
+        Some(parent.as_str()),
+        "a child can name its parent: {env:?}"
+    );
+    assert_eq!(
+        env.get("AMX_PARENT_DIR").map(String::as_str),
+        Some(amx.agent_dir(&parent).to_string_lossy().as_ref()),
+        "and read the record itself: {env:?}"
+    );
+    assert_eq!(env.get("AMX_DEPTH").map(String::as_str), Some("1"));
+}
+
+#[test]
+fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let root = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "the root"],
+    ));
+    let child = id_of(&spawned_inside(
+        &amx,
+        "a-dispatched-worker",
+        &root,
+        &["--no-worktree", "--agent", &mock, "the child"],
+    ));
+
+    let grandchild = spawned_inside(
+        &amx,
+        "a-dispatched-worker",
+        &child,
+        &["--no-worktree", "--agent", &mock, "the grandchild"],
+    );
+    assert_eq!(
+        grandchild.status.code(),
+        Some(2),
+        "the default subagent_depth is 1: {}",
+        String::from_utf8_lossy(&grandchild.stderr)
+    );
+    let said = String::from_utf8_lossy(&grandchild.stderr);
+    assert!(said.contains("subagent_depth"), "names the key: {said:?}");
+    assert_eq!(
+        std::fs::read_dir(amx.state_root()).unwrap().count(),
+        2,
+        "and nothing was claimed"
+    );
+
+    // --no-parent is the escape: it records no parent and is never bounded.
+    let peer = id_of(&spawned_inside(
+        &amx,
+        "a-dispatched-worker",
+        &child,
+        &["--no-parent", "--no-worktree", "--agent", &mock, "a peer"],
+    ));
+    assert_eq!(amx.meta(&peer)["parent"], Value::Null);
+    assert_eq!(amx.meta(&peer)["depth"], 0);
+}
+
 #[test]
 fn every_pane_a_harness_starts_carries_what_its_table_sets() {
     // A second account of one vendor, or a proxy in front of it, is written

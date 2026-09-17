@@ -1876,6 +1876,8 @@ mod tests {
     /// question is answered, without a tmux server in it.
     fn recorded(root: &Path, asking: &State) -> Agent {
         let meta = crate::store::Meta {
+            parent: None,
+            depth: 0,
             id: "pick-a1b".to_string(),
             task: "port the importer".to_string(),
             agent: None,

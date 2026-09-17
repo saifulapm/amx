@@ -1570,6 +1570,7 @@ pub fn start(
         name: None,
         dir: None,
         no_worktree: false,
+        no_parent: false,
         base: turned.base,
         branch: turned.branch,
         pr: turned.pr,
@@ -2526,6 +2527,8 @@ mod tests {
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: Some("claude".to_string()),
@@ -2574,6 +2577,8 @@ mod tests {
         Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some("claude".to_string()),

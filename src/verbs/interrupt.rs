@@ -236,6 +236,8 @@ mod tests {
     fn reading(phase: Phase, evidence: Evidence) -> View {
         View {
             meta: Meta {
+                parent: None,
+                depth: 0,
                 id: "fix-login-a1b".to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some("claude".to_string()),
@@ -363,6 +365,8 @@ mod tests {
         // `result` waiting on this agent must not read one.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
             pane: PaneId::new("%404").unwrap(),
             ..reading(Phase::Idle, Evidence::LetGo).meta

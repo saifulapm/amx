@@ -446,6 +446,8 @@ mod tests {
     fn asking(question: Option<&str>, options: &[&str], kind: Option<Kind>) -> View {
         View {
             meta: Meta {
+                parent: None,
+                depth: 0,
                 id: "fix-login-a1b".to_string(),
                 task: "fix the login bug".to_string(),
                 agent: None,
@@ -728,6 +730,8 @@ mod tests {
         // it — and one command puts the agent back.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
             pane: PaneId::new("%404").unwrap(),
             ..asking(None, &[], None).meta

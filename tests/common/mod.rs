@@ -103,9 +103,16 @@ impl Harness {
             // reach the developer's agents, and must not be reached by them.
             .env("AMX_TMUX_SOCKET", &self.socket)
             // Whether the suite itself is being run from inside tmux is not a
-            // test's business; the tests that care say so themselves.
+            // test's business; the tests that care say so themselves. Nor is
+            // whether it is being run from inside an agent's pane: parentage
+            // is read off `AMX_ID`, and a suite run from an amx pane must not
+            // turn every spawn in it into a child.
             .env_remove("TMUX")
-            .env_remove("TMUX_PANE");
+            .env_remove("TMUX_PANE")
+            .env_remove("AMX_ID")
+            .env_remove("AMX_PARENT")
+            .env_remove("AMX_PARENT_DIR")
+            .env_remove("AMX_DEPTH");
         command
     }
 

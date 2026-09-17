@@ -129,6 +129,8 @@ mod tests {
     /// A record on disk, and the meta that names it.
     fn agent(root: &Path, dir: &Path, worktree: Option<PathBuf>) -> (Agent, Meta) {
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,

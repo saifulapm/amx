@@ -143,6 +143,8 @@ pub fn run(
     let agent = Agent::create(
         root,
         &Meta {
+            parent: None,
+            depth: 0,
             id: id.clone(),
             task,
             // Which vendor is in the pane is the pane's word, not the config's,
@@ -994,6 +996,8 @@ mod tests {
         Agent::create(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some(a_vendor().name.to_string()),

@@ -59,6 +59,17 @@ pub const AGENT_DIR_ENV: &str = "AMX_AGENT_DIR";
 /// agent is saying for the record's readers to find: see `store::LIVE`.
 pub const RECORD_DIR_ENV: &str = "AMX_DIR";
 
+/// Where a child is told the id of the agent whose pane it was started in.
+pub const PARENT_ENV: &str = "AMX_PARENT";
+
+/// Where a child is told the directory that parent's record is kept in, so it
+/// can `amx logs $AMX_PARENT` and read the record itself.
+pub const PARENT_DIR_ENV: &str = "AMX_PARENT_DIR";
+
+/// Where a child is told how deep in a family it stands: 0 for a root, 1 for a
+/// child of one.
+pub const DEPTH_ENV: &str = "AMX_DEPTH";
+
 /// What that directory is called, inside the one the agent's record is kept
 /// in.
 const SCRATCH: &str = "scratch";
@@ -512,7 +523,19 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         command.env_remove(marker);
     }
 
-    for (name, value) in pane_env(&env, &std::env::current_exe()?, id, &dir, &scratch(&dir)?) {
+    let parent = meta
+        .parent
+        .as_deref()
+        .and_then(|parent| crate::paths::agent_dir_in(root, parent).ok());
+    for (name, value) in pane_env(
+        &env,
+        &std::env::current_exe()?,
+        id,
+        &dir,
+        &scratch(&dir)?,
+        meta.parent.as_deref().zip(parent.as_deref()),
+        meta.depth,
+    ) {
         command.env(name, value);
     }
 
@@ -553,13 +576,19 @@ fn quoted(path: &Path) -> String {
 /// Over the top, because those three are about this pane and this pane only.
 /// The snapshot is whatever environment `new` was typed in, and that is often
 /// another agent's pane — a spawn from inside one would otherwise hand the new
-/// agent the old one's id and the old one's directory to write in.
+/// agent the old one's id, the old one's directory to write in, and the old
+/// one's parent to call its own. `parent` is the id and record directory of
+/// the agent whose pane this one was started in, where there is one, and the
+/// three family variables are removed rather than left alone when there is
+/// not.
 fn pane_env(
     snapshot: &BTreeMap<String, String>,
     bin: &Path,
     id: &str,
     record: &Path,
     scratch: &Path,
+    parent: Option<(&str, &Path)>,
+    depth: u32,
 ) -> BTreeMap<String, String> {
     let mut env = snapshot.clone();
     env.insert("AMX_BIN".to_string(), bin.to_string_lossy().into_owned());
@@ -572,6 +601,21 @@ fn pane_env(
         AGENT_DIR_ENV.to_string(),
         scratch.to_string_lossy().into_owned(),
     );
+    match parent {
+        Some((parent, dir)) => {
+            env.insert(PARENT_ENV.to_string(), parent.to_string());
+            env.insert(
+                PARENT_DIR_ENV.to_string(),
+                dir.to_string_lossy().into_owned(),
+            );
+            env.insert(DEPTH_ENV.to_string(), depth.to_string());
+        }
+        None => {
+            env.remove(PARENT_ENV);
+            env.remove(PARENT_DIR_ENV);
+            env.remove(DEPTH_ENV);
+        }
+    }
     env
 }
 
@@ -1332,6 +1376,8 @@ mod tests {
     /// vendor is a shell command and fills no place.
     fn meta(id: &str, socket: crate::tmux::Socket, pane: PaneId) -> Meta {
         Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: Some("claude".to_string()),
@@ -1377,6 +1423,8 @@ mod tests {
         let pane = PaneId::new("%1").unwrap();
 
         let cut = Meta {
+            parent: None,
+            depth: 0,
             dir: tree.clone(),
             worktree: Some(tree),
             ..meta("fix-login-a1b", socket.clone(), pane.clone())
@@ -1428,6 +1476,8 @@ mod tests {
             ("third-c3d", beta.path()),
         ] {
             let of_theirs = Meta {
+                parent: None,
+                depth: 0,
                 dir: dir.to_path_buf(),
                 ..meta(id, socket.clone(), placed(&server.0, id))
             };
@@ -1491,6 +1541,8 @@ mod tests {
             ("fix-login-c3d", Some("claude".to_string()), Phase::Working),
         ] {
             let of_theirs = Meta {
+                parent: None,
+                depth: 0,
                 agent,
                 dir: project.path().to_path_buf(),
                 ..meta(id, socket.clone(), placed(&server.0, id))
@@ -1527,6 +1579,8 @@ mod tests {
 
         for id in ["today-b2c", "yesterday-a1b"] {
             let of_theirs = Meta {
+                parent: None,
+                depth: 0,
                 dir: project.path().to_path_buf(),
                 ..meta(id, socket.clone(), pane.clone())
             };
@@ -1611,6 +1665,9 @@ mod tests {
             ("AMX_ID", "fix-login-a1b"),
             ("AMX_DIR", "/state/agents/fix-login-a1b"),
             ("AMX_AGENT_DIR", "/state/agents/fix-login-a1b/scratch"),
+            ("AMX_PARENT", "fix-login-a1b"),
+            ("AMX_PARENT_DIR", "/state/agents/fix-login-a1b"),
+            ("AMX_DEPTH", "3"),
         ]));
 
         let env = pane_env(
@@ -1619,6 +1676,8 @@ mod tests {
             "port-it-b2c",
             Path::new("/state/agents/port-it-b2c"),
             Path::new("/state/agents/port-it-b2c/scratch"),
+            None,
+            0,
         );
 
         assert_eq!(
@@ -1633,6 +1692,32 @@ mod tests {
         assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
         assert_eq!(env.get("AMX_BIN").unwrap(), "/usr/local/bin/amx");
         assert_eq!(env.get("PATH").unwrap(), "/usr/bin", "and the rest stands");
+        // A root is nobody's child: the spawner's own family does not become
+        // the agent's.
+        assert_eq!(env.get(PARENT_ENV), None, "{env:?}");
+        assert_eq!(env.get(PARENT_DIR_ENV), None, "{env:?}");
+        assert_eq!(env.get(DEPTH_ENV), None, "{env:?}");
+    }
+
+    #[test]
+    fn a_childs_pane_is_told_its_parent_and_its_depth() {
+        let inherited = env_snapshot(vars(&[("PATH", "/usr/bin")]));
+        let env = pane_env(
+            &inherited,
+            Path::new("/usr/local/bin/amx"),
+            "port-it-b2c",
+            Path::new("/state/agents/port-it-b2c"),
+            Path::new("/state/agents/port-it-b2c/scratch"),
+            Some(("fix-login-a1b", Path::new("/state/agents/fix-login-a1b"))),
+            1,
+        );
+
+        assert_eq!(env.get(PARENT_ENV).unwrap(), "fix-login-a1b");
+        assert_eq!(
+            env.get(PARENT_DIR_ENV).unwrap(),
+            "/state/agents/fix-login-a1b"
+        );
+        assert_eq!(env.get(DEPTH_ENV).unwrap(), "1");
     }
 
     /// A config whose only harness table is `name`'s, holding `env`.

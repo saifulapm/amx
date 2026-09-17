@@ -389,6 +389,8 @@ mod tests {
     fn a_swept_agent(root: &Path, repo: &Path, id: &str) -> Meta {
         let tree = worktree::create(repo, id, None).unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,

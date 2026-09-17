@@ -1630,6 +1630,8 @@ mod tests {
     fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
         View {
             meta: Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 task: "fix the login bug".to_string(),
                 agent: Some("claude".to_string()),

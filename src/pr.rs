@@ -1008,6 +1008,8 @@ mod tests {
     #[test]
     fn a_look_hands_back_nothing_for_an_agent_with_no_branch_of_its_own() {
         let meta = Meta {
+            parent: None,
+            depth: 0,
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,

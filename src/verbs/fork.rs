@@ -184,6 +184,8 @@ fn start(
     spawn::record(
         root,
         &Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: task.to_string(),
             agent: launched,
@@ -507,6 +509,8 @@ mod tests {
 
     fn meta(id: &str, session: Option<&str>) -> Meta {
         Meta {
+            parent: None,
+            depth: 0,
             id: id.to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
@@ -857,6 +861,8 @@ mod tests {
     fn a_record(session: Option<&str>, dir: &Path) -> (TempDir, Meta) {
         let root = TempDir::new().unwrap();
         let meta = Meta {
+            parent: None,
+            depth: 0,
             dir: dir.to_path_buf(),
             ..meta("fix-login-a1b", session)
         };

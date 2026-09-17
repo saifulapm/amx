@@ -302,6 +302,11 @@ impl View {
         let transcript = self.transcript();
         serde_json::json!({
             "id": self.meta.id,
+            // Who this agent is a child of and how deep it stands, so a
+            // program drawing its own wall can nest the rows the way the
+            // view does. Null and 0 for a root.
+            "parent": self.meta.parent,
+            "depth": self.meta.depth,
             "state": self.verdict.phase.as_str(),
             "evidence": self.verdict.evidence,
             "rule": self.verdict.rule,
@@ -2562,6 +2567,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     fn meta() -> Meta {
         Meta {
+            parent: None,
+            depth: 0,
             id: "fix-login-a1b".to_string(),
             task: "fix the login bug".to_string(),
             agent: None,
@@ -2584,6 +2591,32 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     /// the record for what the agent is saying now.
     fn an_agent(root: &TempDir) -> Agent {
         Agent::create(root.path(), &meta()).expect("a record")
+    }
+
+    #[test]
+    fn a_view_prints_who_an_agent_is_a_child_of() {
+        // `--json` is what a program drawing its own wall reads, so it carries
+        // the two fields it would nest a row by.
+        let mut child = meta();
+        child.parent = Some("scout-a1b".to_string());
+        child.depth = 2;
+        let view = View::new(
+            child,
+            state(Phase::Working, 1_000),
+            verdict(Phase::Working, Evidence::Hooks, None),
+        );
+        assert_eq!(view.json()["parent"], "scout-a1b");
+        assert_eq!(view.json()["depth"], 2);
+
+        // A root prints null and 0, which is what a record from an older amx
+        // reads as.
+        let root = View::new(
+            meta(),
+            state(Phase::Working, 1_000),
+            verdict(Phase::Working, Evidence::Hooks, None),
+        );
+        assert_eq!(root.json()["parent"], serde_json::Value::Null);
+        assert_eq!(root.json()["depth"], 0);
     }
 
     fn verdict(phase: Phase, evidence: Evidence, rule: Option<&str>) -> Verdict {
@@ -2744,6 +2777,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // So the question answers for itself, on a vendor that reports as much
         // as on one that does not.
         let vendor = Meta {
+            parent: None,
+            depth: 0,
             agent: Some("claude".to_string()),
             model: None,
             effort: None,
@@ -3133,6 +3168,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let agent = an_agent(&root);
         let session = root.path().join("session.jsonl");
         let keeping_one = Meta {
+            parent: None,
+            depth: 0,
             agent: Some("claude".to_string()),
             model: None,
             effort: None,
@@ -3221,6 +3258,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let session = root.path().join("session.jsonl");
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
         let keeping_one = Meta {
+            parent: None,
+            depth: 0,
             agent: Some("claude".to_string()),
             model: None,
             effort: None,
@@ -3303,6 +3342,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         );
         let pane = a_pane_showing(&server.0, &meta().id, A_SHELL);
         let meta = Meta {
+            parent: None,
+            depth: 0,
             socket: server.0.socket().clone(),
             pane,
             ..meta()
@@ -3382,6 +3423,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // `logs` gives one too.
         let ran = |agent: Option<&str>| {
             answers_on_the_pane(vendor_of(&Meta {
+                parent: None,
+                depth: 0,
                 agent: agent.map(str::to_string),
                 model: None,
                 effort: None,
@@ -3459,6 +3502,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // record that names no vendor as well as about one that does.
         let started_by = [
             Meta {
+                parent: None,
+                depth: 0,
                 agent: Some("claude".to_string()),
                 model: None,
                 effort: None,
@@ -3583,6 +3628,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             a_record(
                 root.path(),
                 &Meta {
+                    parent: None,
+                    depth: 0,
                     id: id.to_string(),
                     // Both are claude agents: a record naming no vendor is a
                     // command, and a command's row is its own output.
@@ -3634,6 +3681,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             a_record(
                 root.path(),
                 &Meta {
+                    parent: None,
+                    depth: 0,
                     id: id.to_string(),
                     agent: Some("claude".to_string()),
                     model: None,
@@ -3704,6 +3753,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             a_record(
                 root.path(),
                 &Meta {
+                    parent: None,
+                    depth: 0,
                     id: id.to_string(),
                     agent: Some(agent.to_string()),
                     model: None,
@@ -3764,6 +3815,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         a_record(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 socket,
                 created: 1_000,
                 ..meta()
@@ -3802,6 +3855,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         a_record(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 created: 900,
                 ..meta()
             },
@@ -3820,6 +3875,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let broken = Agent::create(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "broken-a1b".to_string(),
                 ..meta()
             },
@@ -3829,6 +3886,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         a_record(
             root.path(),
             &Meta {
+                parent: None,
+                depth: 0,
                 id: "fine-b2c".to_string(),
                 ..meta()
             },
@@ -4041,6 +4100,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         a_record(
             root,
             &Meta {
+                parent: None,
+                depth: 0,
                 id: id.to_string(),
                 ..meta()
             },
@@ -4230,6 +4291,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // A record that names a vendor is read against that vendor's screens,
         // whatever its pane happens to have on it.
         let agent = Meta {
+            parent: None,
+            depth: 0,
             agent: Some("claude".to_string()),
             model: None,
             effort: None,
@@ -4335,6 +4398,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
         let view = View::new(
             Meta {
+                parent: None,
+                depth: 0,
                 created: 1_000,
                 ..meta()
             },
@@ -5215,6 +5280,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         let session = root.path().join("session.jsonl");
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).expect("a transcript");
         let meta = Meta {
+            parent: None,
+            depth: 0,
             agent: Some("claude".to_string()),
             model: None,
             effort: None,
