@@ -105,13 +105,32 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Interrupt { id }) => finish(verbs::interrupt::from_env(id)),
         Some(cli::Command::Rename { id, name }) => finish(verbs::rename::from_env(id, name)),
-        Some(cli::Command::Result { id, timeout }) => finish(verbs::result::from_env(id, *timeout)),
+        Some(cli::Command::Result {
+            id,
+            children,
+            json,
+            timeout,
+        }) => match children {
+            Some(parent) => finish(verbs::result::family_from_env(parent, *timeout, *json)),
+            None => finish(verbs::result::from_env(
+                id.as_deref()
+                    .expect("an id or --children, and clap refuses both"),
+                *timeout,
+            )),
+        },
         Some(cli::Command::Wait {
             ids,
+            children,
             any,
             state,
             timeout,
-        }) => finish(verbs::wait::from_env(ids, *any, *state, *timeout)),
+        }) => finish(verbs::wait::from_env(
+            ids,
+            children.as_deref(),
+            *any,
+            *state,
+            *timeout,
+        )),
         Some(cli::Command::Attach {
             id,
             next,

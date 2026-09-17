@@ -39,6 +39,7 @@ const LOOK: Duration = Duration::from_secs(1);
 /// Run the verb against the machine.
 pub fn from_env(
     ids: &[String],
+    children: Option<&str>,
     any: bool,
     state: Option<Phase>,
     timeout: Option<u64>,
@@ -48,6 +49,7 @@ pub fn from_env(
     run(
         &root,
         ids,
+        children,
         any,
         state,
         timeout.map(Duration::from_secs),
@@ -64,12 +66,17 @@ pub fn from_env(
 pub fn run(
     root: &Path,
     ids: &[String],
+    children: Option<&str>,
     any: bool,
     state: Option<Phase>,
     timeout: Option<Duration>,
     out: &mut impl Write,
 ) -> Result<i32> {
-    let mut pending = taken(ids);
+    let named = match children {
+        Some(parent) => children_of(root, parent)?,
+        None => taken(ids),
+    };
+    let mut pending = named;
     for id in &pending {
         Agent::open(root, id)?;
     }
@@ -125,13 +132,36 @@ fn taken(ids: &[String]) -> Vec<String> {
     taken
 }
 
+/// The ids of every agent whose record names `parent`, in the order they
+/// were created.
+///
+/// The parent itself is opened first, so an id nobody knows is refused the
+/// way a named id is rather than reading as a family of none. A child whose
+/// record has been removed is simply not here: the records are the list, and
+/// nothing keeps a second one.
+pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
+    Agent::open(root, parent)?;
+    let mut children: Vec<(u64, String)> = Vec::new();
+    for id in store::list(root)? {
+        let Ok(agent) = Agent::open(root, &id) else {
+            continue;
+        };
+        let Ok(meta) = agent.meta() else { continue };
+        if meta.parent.as_deref() == Some(parent) {
+            children.push((meta.created, id));
+        }
+    }
+    children.sort();
+    Ok(children.into_iter().map(|(_, id)| id).collect())
+}
+
 /// Whether this reading is what the wait was for.
 ///
 /// With no `--for`, the five phases where the agent is not in the middle of
 /// something: its turn is over, or it is stopped on a question. `Starting` and
 /// `Working` are agents still going, and `Unknown` is amx not knowing — a
 /// reading nobody can act on is not an agent that is ready.
-fn settled(phase: Phase, wanted: Option<Phase>) -> bool {
+pub(crate) fn settled(phase: Phase, wanted: Option<Phase>) -> bool {
     match wanted {
         Some(wanted) => phase == wanted,
         None => matches!(
@@ -273,6 +303,7 @@ mod tests {
         let refused = run(
             root.path(),
             &ids(&["a", "nope"]),
+            None,
             false,
             None,
             None,
@@ -296,7 +327,7 @@ mod tests {
         timeout: Option<Duration>,
     ) -> (i32, String) {
         let mut out = Vec::new();
-        let code = run(root, &ids(named), any, state, timeout, &mut out).unwrap();
+        let code = run(root, &ids(named), None, any, state, timeout, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
     }
 

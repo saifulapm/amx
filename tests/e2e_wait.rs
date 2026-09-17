@@ -187,3 +187,108 @@ fn a_state_nobody_knows_is_a_command_line_to_fix() {
     );
     assert_eq!(stdout(&out), "", "nothing was waited on");
 }
+
+#[test]
+fn wait_children_covers_a_parents_whole_family_with_one_clock() {
+    // The fan-in for a parent that fanned out with `amx sub --bg`: the records
+    // that name the parent are the ids, in the order they were made.
+    let amx = Harness::new();
+    amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    amx.play("kid-one-b2c", "happy-turn");
+    amx.until_state("kid-one-b2c", "idle");
+    amx.play("kid-two-c3d", "ends-without-an-answer");
+    started("kid-two-c3d", &amx);
+    amx.set_meta("kid-one-b2c", json!({ "parent": "parent-a1b", "depth": 1 }));
+    amx.set_meta("kid-two-c3d", json!({ "parent": "parent-a1b", "depth": 1 }));
+
+    let out = amx.amx(&["wait", "--children", "parent-a1b", "--timeout", "20"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "kid-one-b2c idle\nkid-two-c3d done\n");
+}
+
+#[test]
+fn wait_children_of_a_childless_parent_prints_nothing() {
+    let amx = Harness::new();
+    amx.play("lonely-a1b", "happy-turn");
+    amx.until_state("lonely-a1b", "idle");
+
+    let out = amx.amx(&["wait", "--children", "lonely-a1b", "--timeout", "5"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn wait_children_refuses_a_parent_nobody_knows() {
+    let amx = Harness::new();
+    let out = amx.amx(&["wait", "--children", "never-made-abc", "--timeout", "5"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("never-made-abc"), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn result_children_hands_every_childs_answer_back() {
+    let amx = Harness::new();
+    amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    amx.play("kid-one-b2c", "happy-turn");
+    amx.until_state("kid-one-b2c", "idle");
+    amx.play("kid-two-c3d", "happy-turn");
+    amx.until_state("kid-two-c3d", "idle");
+    amx.set_meta("kid-one-b2c", json!({ "parent": "parent-a1b", "depth": 1 }));
+    amx.set_meta("kid-two-c3d", json!({ "parent": "parent-a1b", "depth": 1 }));
+
+    let out = amx.amx(&["result", "--children", "parent-a1b", "--timeout", "20"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "kid-one-b2c idle\nthe tests pass now\nkid-two-c3d idle\nthe tests pass now\n"
+    );
+
+    // The program's reading: one object keyed by child id.
+    let out = amx.amx(&[
+        "result",
+        "--children",
+        "parent-a1b",
+        "--json",
+        "--timeout",
+        "20",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let object: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one json object");
+    assert_eq!(object["kid-one-b2c"]["answer"], "the tests pass now");
+    assert_eq!(object["kid-one-b2c"]["phase"], "idle");
+    assert_eq!(object["kid-two-c3d"]["answer"], "the tests pass now");
+}
+
+#[test]
+fn result_children_surfaces_a_waiting_childs_question() {
+    let amx = Harness::new();
+    amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    amx.play("kid-asks-b2c", "asks-a-question");
+    amx.until_state("kid-asks-b2c", "waiting");
+    amx.set_meta(
+        "kid-asks-b2c",
+        json!({ "parent": "parent-a1b", "depth": 1 }),
+    );
+
+    let out = amx.amx(&[
+        "result",
+        "--children",
+        "parent-a1b",
+        "--json",
+        "--timeout",
+        "5",
+    ]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    let object: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one json object");
+    assert_eq!(object["kid-asks-b2c"]["phase"], "waiting");
+    assert!(
+        object["kid-asks-b2c"]["question"]
+            .as_str()
+            .is_some_and(|question| !question.is_empty()),
+        "the question rides in the collection: {object}"
+    );
+}

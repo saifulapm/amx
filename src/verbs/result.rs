@@ -106,6 +106,102 @@ pub fn run(
     }
 }
 
+/// Run the verb over a parent's whole family, against the machine.
+pub fn family_from_env(parent: &str, timeout: Option<u64>, json: bool) -> Result<i32> {
+    let root = paths::state_root()?;
+    let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let mut out = std::io::stdout().lock();
+    run_family(
+        &root,
+        parent,
+        timeout.map(Duration::from_secs),
+        json,
+        to_terminal,
+        &mut out,
+    )
+}
+
+/// `result` over a parent's children: wait for the family the way `wait`
+/// does, then hand each answer back.
+///
+/// The whole family is read once it has settled, so a child that failed or
+/// stopped is in the answer as itself rather than as an empty line. The code
+/// is the most actionable ending found — `3` the call did not finish, `2` a
+/// child is on a question, `1` a child failed, `0` every child answered —
+/// and the answers are printed whatever the number says.
+pub fn run_family(
+    root: &Path,
+    parent: &str,
+    timeout: Option<Duration>,
+    json: bool,
+    to_terminal: bool,
+    out: &mut impl Write,
+) -> Result<i32> {
+    let children = crate::verbs::wait::children_of(root, parent)?;
+    let deadline = timeout.map(|patience| Instant::now() + patience);
+
+    let mut pending = children.clone();
+    while !pending.is_empty() {
+        pending.retain(|id| {
+            derive::view(root, id, store::now())
+                .map(|view| !crate::verbs::wait::settled(view.phase(), None))
+                .unwrap_or(true)
+        });
+        if pending.is_empty() || deadline.is_some_and(|at| Instant::now() >= at) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    let timed_out = !pending.is_empty();
+
+    let mut waiting = false;
+    let mut failed = false;
+    let mut family = serde_json::Map::new();
+    for id in &children {
+        let view = derive::view(root, id, store::now())?;
+        let phase = view.phase();
+        let answer = view.state.result.clone().or_else(|| transcript(&view));
+        let question = view.state.question.clone();
+        match phase {
+            Phase::Waiting => waiting = true,
+            Phase::Failed | Phase::Stopped => failed = true,
+            Phase::Idle | Phase::Done if answer.is_none() => failed = true,
+            _ => {}
+        }
+        if json {
+            family.insert(
+                id.clone(),
+                serde_json::json!({
+                    "phase": phase.as_str(),
+                    "answer": answer,
+                    "evidence": view.verdict.evidence,
+                    "question": question,
+                }),
+            );
+        } else {
+            writeln!(out, "{id} {phase}")?;
+            if let Some(question) = &question {
+                send::line(&send::rendered(question, to_terminal), out)?;
+            } else if let Some(answer) = &answer {
+                send::line(&send::rendered(answer, to_terminal), out)?;
+            }
+        }
+    }
+    if json {
+        send::line(&serde_json::Value::Object(family).to_string(), out)?;
+    }
+
+    Ok(if timed_out {
+        exit::TIMEOUT
+    } else if waiting {
+        exit::BLOCKED
+    } else if failed {
+        exit::FAILURE
+    } else {
+        exit::OK
+    })
+}
+
 /// What one reading means to a caller waiting on an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Settled {

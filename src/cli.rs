@@ -169,8 +169,26 @@ pub enum Command {
     },
 
     /// Wait for the agent's turn to end and print its answer.
+    ///
+    /// With `--children`, wait for and print the answers of every child of
+    /// the named agent instead, one after another. `--json` keys them by
+    /// child id; a child stopped on a question is in the collection with its
+    /// question rather than hidden. The code is the most actionable thing
+    /// found: 3 the timeout ran out, 2 a question, 1 a failure, 0 every
+    /// answer.
     Result {
-        id: String,
+        /// The agent whose answer to wait for.
+        #[arg(required_unless_present = "children", conflicts_with = "children")]
+        id: Option<String>,
+
+        /// Collect every child of this agent's answers instead.
+        #[arg(long, value_name = "ID")]
+        children: Option<String>,
+
+        /// Print one JSON object keyed by child id. Read with `--children`.
+        #[arg(long)]
+        json: bool,
+
         /// Give up after this many seconds.
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<u64>,
@@ -186,10 +204,22 @@ pub enum Command {
     ///
     /// `--for <state>` waits for one named phase instead of for an ending, so
     /// `--for working` is how a caller confirms a fleet started.
+    ///
+    /// `--children <id>` waits on every child of that agent instead of on
+    /// named ids, which is the fan-in for a parent that fanned out with
+    /// `amx sub --bg`.
     Wait {
         /// The agents to wait on.
-        #[arg(num_args = 1.., required = true)]
+        #[arg(
+            num_args = 1..,
+            required_unless_present = "children",
+            conflicts_with = "children"
+        )]
         ids: Vec<String>,
+
+        /// Wait on every child of this agent instead of on named ids.
+        #[arg(long, value_name = "ID")]
+        children: Option<String>,
 
         /// Come back as soon as one of them has settled.
         #[arg(long)]
@@ -1257,6 +1287,7 @@ mod tests {
         let cli = parse(&["amx", "wait", "a", "b", "c"]).unwrap();
         let Some(Command::Wait {
             ids,
+            children,
             any,
             state,
             timeout,
@@ -1265,6 +1296,7 @@ mod tests {
             panic!("expected wait");
         };
         assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(children, None);
         assert!(!any, "every agent named, unless the caller says otherwise");
         assert_eq!(state, None, "a turn that is over, whichever way it ended");
         assert_eq!(timeout, None);
@@ -1285,6 +1317,33 @@ mod tests {
         for phase in PHASES {
             assert!(refusal.contains(phase.as_str()), "{refusal}");
         }
+    }
+
+    #[test]
+    fn wait_and_result_take_a_parents_children_instead_of_ids() {
+        let cli = parse(&["amx", "wait", "--children", "p"]).unwrap();
+        let Some(Command::Wait { ids, children, .. }) = cli.command else {
+            panic!("expected wait");
+        };
+        assert!(ids.is_empty());
+        assert_eq!(children.as_deref(), Some("p"));
+
+        let cli = parse(&["amx", "result", "--children", "p", "--json"]).unwrap();
+        let Some(Command::Result {
+            id, children, json, ..
+        }) = cli.command
+        else {
+            panic!("expected result");
+        };
+        assert_eq!(id, None);
+        assert_eq!(children.as_deref(), Some("p"));
+        assert!(json);
+
+        // One of the two is required, and both together is neither.
+        assert!(parse(&["amx", "result"]).is_err());
+        assert!(parse(&["amx", "wait"]).is_err());
+        assert!(parse(&["amx", "wait", "--children", "p", "a"]).is_err());
+        assert!(parse(&["amx", "result", "a", "--children", "p"]).is_err());
     }
 
     #[test]

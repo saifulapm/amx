@@ -1513,6 +1513,8 @@ esac
 amx wait a b c --timeout 900          # every one of them, a line each as each settles
 ready=$(amx wait a b c --any)         # the first to settle, and nothing about the rest
 amx wait a b c --for working          # they all started
+amx wait --children "$parent"         # every child the parent fanned out with --bg
+amx result --children "$parent" --json # their answers, keyed by child id
 ```
 
 `result` blocks until the turn ends and prints what the agent said, verbatim.
@@ -1535,6 +1537,16 @@ out with what settled already printed, `64` for a state amx has no reading for
 and `1`, before waiting at all, for an id that names no agent. What the agents
 said is not here: `wait` says whose answer is ready, and `amx result` on the id
 it named hands that answer back, returning at once for an agent that has ended.
+
+A parent that fanned out with `amx sub --bg` has ids it may not have kept, so
+both verbs read the family off the records: `--children <id>` is every agent
+whose record names that parent, in the order they were made, and it conflicts
+with naming ids yourself. `amx wait --children <parent>` is the same clock over
+the family; `amx result --children <parent>` waits and hands each answer back,
+one block per child, or one object keyed by child id under `--json`. A child
+stopped on a question is in the collection with its question rather than
+hidden, and the code is the most actionable thing found: `3` the timeout ran
+out, `2` a question, `1` a failure, `0` every answer.
 
 When the caller is itself an agent, hand it `skill/amx/SKILL.md`, which is
 this loop written for one.
