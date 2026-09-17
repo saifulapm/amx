@@ -34,7 +34,7 @@ use crate::tmux::Server;
 use crate::verbs::answer::Answered;
 use crate::verbs::clear::Taken;
 use crate::verbs::resume::Comeback;
-use crate::{derive, exit, registry, spawn, store, verbs, worktree};
+use crate::{derive, exit, models, registry, spawn, store, verbs, worktree};
 
 /// A line somebody is typing, and what it is for.
 pub struct Composer {
@@ -1153,7 +1153,7 @@ fn answering(
         if typed.starts_with(AGENT) {
             return vendors(typed);
         }
-        if let Some(values) = dialled(&agent, typed) {
+        if let Some(values) = dialled(&agent, typed, config) {
             return values;
         }
         // A branch is read where the agent will run, the same as a path is:
@@ -1231,10 +1231,27 @@ fn vendors(typed: &str) -> Vec<Entry> {
 /// that suggested a word the spawn would refuse would be offering somebody a
 /// refusal. A dial this vendor does not declare has no values to offer, which
 /// is the same silence `turned` refuses the token in.
-fn dialled(agent: &str, typed: &str) -> Option<Vec<Entry>> {
+///
+/// The model is the one dial answered from somewhere other than its cycle: a
+/// vendor that prints its models holds more than a cycle could name, and the
+/// file may say which of them this harness runs. It is read out of the same
+/// [`models::models_of`] the model key walks, sentinel and all, so no line can
+/// offer a model the key cannot reach or miss one it can.
+fn dialled(agent: &str, typed: &str, config: &Config) -> Option<Vec<Entry>> {
     let vendor = registry::entry(agent);
+    if typed.starts_with(MODEL) {
+        // No model dial, no values, the same silence `turned` refuses the
+        // token with.
+        let _model = vendor?.model?;
+        return Some(
+            std::iter::once(registry::DEFAULT.to_string())
+                .chain(models::models_of(vendor?, config))
+                .map(|value| worded(format!("{MODEL}{value}")))
+                .filter(|entry| entry.spelled.starts_with(typed))
+                .collect(),
+        );
+    }
     let (dial, cycle): (&str, &[&str]) = match typed {
-        _ if typed.starts_with(MODEL) => (MODEL, vendor?.model?.cycle),
         _ if typed.starts_with(PERMISSION) => (PERMISSION, vendor?.permission?.cycle),
         _ if typed.starts_with(EFFORT) => (EFFORT, vendor?.effort?.cycle),
         _ if typed.starts_with(WORKTREE) => (WORKTREE, &TREE),
@@ -3915,6 +3932,40 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("m:");
         assert!(suggest(&line, &config, a_project(), &[]).is_none());
+    }
+
+    #[test]
+    fn composer_offers_the_models_the_model_key_walks() {
+        // A harness whose models are the file's to name: the line offers what
+        // the model key would walk, sentinel and all, so the two doors into
+        // the same harness never disagree about what it runs.
+        let told = Config {
+            agent: "pi".to_string(),
+            harnesses: std::collections::BTreeMap::from([(
+                "pi".to_string(),
+                crate::config::HarnessConfig {
+                    models: vec![
+                        "openai/gpt-5".to_string(),
+                        "anthropic/claude-opus-5".to_string(),
+                    ],
+                    ..Default::default()
+                },
+            )]),
+            ..Config::default()
+        };
+        let mut line = Composer::new(Asking::Task);
+        line.insert("m:");
+        let found = suggest(&line, &told, a_project(), &[]).expect("pi's models");
+        assert_eq!(
+            offered(&found),
+            ["m:default", "m:openai/gpt-5", "m:anthropic/claude-opus-5"],
+            "the sentinel and then the file's list, which is what the key walks"
+        );
+
+        // And a word typed part of the way narrows to the model it spells.
+        line.insert("openai/");
+        let found = suggest(&line, &told, a_project(), &[]).expect("the one left");
+        assert_eq!(offered(&found), ["m:openai/gpt-5"]);
     }
 
     /// git as these tests run it, in a repository of its own.
