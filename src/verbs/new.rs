@@ -716,7 +716,16 @@ fn start(
             dir: cwd,
             worktree: tree.map(|tree| tree.path.clone()),
             branch: tree.map(|tree| tree.branch.clone()),
-            base: tree.map(|tree| tree.base.clone()),
+            // A tree amx cut is measured from the commit it was cut from; a
+            // directory amx was pointed at has no cut, so its base is the
+            // commit it was standing on when the session started — the whole
+            // of what it has changed since. A command is said no to: it runs
+            // against the checkout as it is, with no conversation to measure.
+            base: match tree {
+                Some(tree) => Some(tree.base.clone()),
+                None if !args.exec => worktree::head_commit(dir)?,
+                None => None,
+            },
             socket: server.socket().clone(),
             pane,
             // Nothing is out of sight any more: an agent is a session nobody

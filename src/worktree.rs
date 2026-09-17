@@ -44,6 +44,20 @@ pub fn repo_root(dir: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
+/// The commit `dir` is standing on, or `None` where it is in no repository.
+///
+/// What a session in a worktree amx did not cut is measured from: its work is
+/// the whole of what the directory has changed since the agent started, so the
+/// base is the commit that was checked out then. A directory git has never
+/// heard of, and a repository whose first commit has not landed, are both
+/// nothing to measure from.
+pub fn head_commit(dir: &Path) -> Result<Option<String>> {
+    match git(dir, &["rev-parse", "--verify", "HEAD^{commit}"]) {
+        Ok(commit) if !commit.is_empty() => Ok(Some(commit)),
+        _ => Ok(None),
+    }
+}
+
 /// The repository a worktree belongs to.
 ///
 /// Not the same question as [`repo_root`], which answers with the tree it was
@@ -863,6 +877,18 @@ mod tests {
 
         let elsewhere = TempDir::new().unwrap();
         assert_eq!(repo_root(elsewhere.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn worktree_names_the_commit_a_directory_is_standing_on() {
+        let repo = a_repo();
+        let head = setup(repo.path(), &["rev-parse", "HEAD"]);
+        assert_eq!(head_commit(repo.path()).unwrap(), Some(head));
+
+        // A directory git has never heard of is on no commit, and a repository
+        // whose first commit has not landed has none to name either.
+        let plain = TempDir::new().unwrap();
+        assert_eq!(head_commit(plain.path()).unwrap(), None);
     }
 
     #[test]

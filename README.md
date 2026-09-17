@@ -1436,6 +1436,12 @@ and `diff --stat` show the agent's work rather than the base's own undone: a
 file it added deleted, a line it changed changed back. The record keeps the
 commit the tree was cut from either way.
 
+An agent amx cut no tree for — `--no-worktree`, `worktrees = false`, or a run
+in a checkout somebody already made — is measured from the commit its
+directory was standing on when it started. That commit is recorded at spawn
+the way a cut commit is, so the whole of what the directory has changed since
+reads as the agent's work.
+
 `.amx/` is kept out of the repository's status through `.git/info/exclude`, so
 nothing about this shows up in a diff of yours. `--no-worktree` runs the agent
 in the directory as it is, and `worktrees = false` makes that the default.

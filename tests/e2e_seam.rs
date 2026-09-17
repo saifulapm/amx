@@ -168,8 +168,23 @@ fn a_worker_runs_where_it_was_put_and_cuts_nothing_of_its_own() {
 
     assert_eq!(row["dir"], dir.to_string_lossy().as_ref());
     assert!(
-        row["worktree"].is_null() && row["branch"].is_null() && row["base"].is_null(),
-        "the caller owns the branch and the commit it came from: {row}"
+        row["worktree"].is_null() && row["branch"].is_null(),
+        "the caller owns the branch: {row}"
+    );
+    // The commit is still written down, so `amx diff` has something to measure
+    // the worker's work from even though amx cut nothing here.
+    let head = std::process::Command::new("git")
+        .current_dir(&dir)
+        .args(["rev-parse", "HEAD"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("running git");
+    let head = String::from_utf8_lossy(&head.stdout).trim_end().to_string();
+    assert_eq!(
+        row["base"].as_str(),
+        Some(head.as_str()),
+        "the commit the caller's directory is on: {row}"
     );
     assert!(!dir.join(".amx").exists(), "and nothing was cut inside it");
 

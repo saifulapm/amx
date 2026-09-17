@@ -69,6 +69,40 @@ fn kinds_of(printed: &str, id: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_session_in_a_worktree_amx_did_not_cut_is_measured_from_where_it_started() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    started(
+        &amx,
+        "fix-login-a1b",
+        "works-without-end",
+        &["--dir", &repo.to_string_lossy(), "--no-worktree"],
+    );
+
+    let meta = amx.meta("fix-login-a1b");
+    assert!(meta["worktree"].is_null(), "amx cut no tree: {meta}");
+    assert_eq!(meta["base"].as_str(), Some(head.as_str()), "{meta}");
+}
+
+#[test]
+fn a_session_in_a_directory_git_has_never_heard_of_has_no_base() {
+    let amx = Harness::new();
+    let plain = amx.home().join("plain");
+    std::fs::create_dir_all(&plain).expect("a directory to work in");
+    started(
+        &amx,
+        "fix-login-a1b",
+        "works-without-end",
+        &["--dir", &plain.to_string_lossy(), "--no-worktree"],
+    );
+
+    let meta = amx.meta("fix-login-a1b");
+    assert!(meta["worktree"].is_null(), "{meta}");
+    assert!(meta["base"].is_null(), "nothing to measure from: {meta}");
+}
+
+#[test]
 fn diff_shows_the_work_including_a_file_git_has_never_heard_of() {
     let amx = Harness::new();
     let repo = amx.a_repo();
