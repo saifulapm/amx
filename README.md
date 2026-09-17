@@ -260,10 +260,7 @@ child — so name `--agent pi` beside it to keep the vendor and change only the
 model.
 
 `--role <name>` spawns one of your own recipes instead of spelling the dials
-out: a file under `~/.config/amx/agents/`, or the project's `.amx/agents/` over
-it, whose frontmatter sets `agent`, `model`, `effort` and `worktree` and whose
-body is a brief put in front of the task. A role is a default — anything typed
-here wins — and a name amx does not know lists the roles it can see.
+out; see [Roles](#roles) below.
 
 An agent can raise one itself when its front carries the tool: `amx setup pi
 --subagent` writes pi a `subagent` tool that runs this verb and hands the
@@ -271,6 +268,42 @@ answer back. The tool takes `task`, and `agent`, `model` and `effort` when the
 agent wants one of them to differ, and puts them on this command line. It is
 opt-in because it gives the agent something to do rather than reporting what it
 did.
+
+## Roles
+
+A role is a named spawn recipe: the dials and a brief, written down once.
+`amx new --role scout "<task>"` and `amx sub --role scout "<task>"` spawn on
+it, and the pi `subagent` tool takes a `role` too, so an agent can ask for one
+by name.
+
+A role is a file: `~/.config/amx/agents/<role>.md`, with a repository's
+`.amx/agents/<role>.md` standing over the person's of the same name — whole,
+not key by key, because a role is one voice.
+
+```md
+---
+description: fast recon, returns compressed context
+agent: pi --approve
+model: opencode-go/glm-5.3
+effort: high
+worktree: false
+---
+
+You are a scout. Investigate quickly and report findings another agent can
+use without re-reading the files.
+```
+
+`description` is for listings; `agent`, `model`, `effort` and `worktree` are
+the dials `amx new` takes; the body is the brief, put in front of the task the
+agent is handed. The record keeps the task alone — that is what somebody asked
+for, and the role is how they asked — and `amx status` names the role.
+
+A role is a default and never a lock. A flag typed on the command line wins
+over it, and for `amx sub` the role wins over what the parent hands down; name
+`--agent pi` beside a different `--model` to keep the vendor and change only
+the model. `permission` is not a role key — escalation stays a config
+decision. A name amx does not know exits 64 and lists the roles it can see,
+and an unknown key in the file is a warning with the rest still applying.
 
 ## A shell command as a row
 
