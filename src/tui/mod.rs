@@ -5275,8 +5275,15 @@ mod tests {
         // the anchors the walk would hold are a vendor's, and a command that
         // prints a rule and a prompt is printing its own work.
         let root = TempDir::new().unwrap();
-        let output = "make: entering\n\n────\n❯ \n────\n  statusline\n";
-        printed(root.path(), "build-a1b", output);
+        printed(
+            root.path(),
+            "build-a1b",
+            "make: entering\n\n────\n❯ \n────\n  statusline\n",
+        );
+        // Off the grid the bytes are laid on: the blank the prompt row ends in
+        // and the row the last newline opened are cells the command left alone,
+        // so they are not part of the reading.
+        let output = "make: entering\n\n────\n❯\n────\n  statusline";
 
         // While it runs, read up from the end, where what is landing is.
         let running = reading("build-a1b", Phase::Working, State::default());
@@ -5327,7 +5334,7 @@ mod tests {
         view.meta.agent = Some("claude".to_string());
 
         let (card, _) = card_of(&view, root.path(), 76, Theme::default());
-        assert_eq!(card.body.says(), "could not read the state file\n");
+        assert_eq!(card.body.says(), "could not read the state file");
         assert!(card.answer, "a dead vendor's card is read forward");
     }
 
@@ -5346,8 +5353,9 @@ mod tests {
         let running = reading("build-a1b", Phase::Working, State::default());
         let (card, _) = card_of(&running, root.path(), 76, Theme::default());
         let says = card.body.says();
+        let rows: Vec<&str> = log.lines().map(str::trim_end).collect();
         assert!(
-            says.len() <= crate::store::OUTPUT_TAIL as usize && log.ends_with(&says),
+            says.len() <= crate::store::OUTPUT_TAIL as usize && rows.join("\n").ends_with(&says),
             "a quarter megabyte of the log at most, and the end of it"
         );
         assert_eq!(
