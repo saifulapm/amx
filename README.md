@@ -709,6 +709,14 @@ whatever is on it. The row under the card says which of the two it is reading:
 more, or `enter sends it` — `answers it` at a question — with `alt+enter
 newline` behind it, and `esc closes it` pinned to the end of both.
 
+A line sent to an agent in the middle of a turn is held by the vendor until
+that turn ends, and the vendor draws it in the composer band the card cuts
+off. So the card says it itself: what you sent and the agent has not taken
+yet stands as a row under the body, the first line of it behind the prompt's
+own `❯` with `· queued` after it, in the colour a question wears. It goes the
+moment the vendor reports the prompt went in. `amx status <id>` prints the
+same thing as a `queued` line under `doing`.
+
 `alt+↑` brings back the last line you sent, and again the one before it, back
 to the oldest; `alt+↓` walks forward again, and the step past the newest gives
 back whatever you were typing when you started. A task line takes `↑` and `↓`
@@ -1058,7 +1066,7 @@ amx ls --dir /srv/app  # only the agents working under that directory
 amx ls --dir .         # only this project's
 amx --dir /srv/app     # the same narrowing at the front door, drawn or printed
 amx status <id>        # one agent, and which signal that state came from
-amx status <id> --json
+amx status <id> --json #   a `queued` line for each message it has not taken yet
 amx rename <id> auth   # call it something else on the wall; the id stays
 amx attach <id>        # hand this terminal to its pane
 amx attach --next      # the agent after this one on the wall
