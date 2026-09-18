@@ -546,6 +546,7 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
 
     let scout_line = row_of(&amx, &view, "scout-b2c").unwrap();
     let review_line = row_of(&amx, &view, "review-c3d").unwrap();
+    let parent_line = row_of(&amx, &view, "parent-a1b").unwrap();
     assert!(
         review_line.contains("├─"),
         "the newest child opens the pair: {review_line:?}"
@@ -555,8 +556,24 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
         "and the oldest closes it: {scout_line:?}"
     );
     assert!(
-        !row_of(&amx, &view, "parent-a1b").unwrap().contains("├─"),
+        !parent_line.contains("├─"),
         "the parent wears no connector of its own"
+    );
+
+    // Nothing in front of the parent: a root stands at the column the wall
+    // starts at whether or not a family hangs from it, and the connector then
+    // starts in the column of the glyph it hangs from.
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    assert_eq!(
+        indent(&parent_line),
+        1,
+        "the root is padded nothing for its family: {parent_line:?}"
+    );
+    assert_eq!(
+        indent(&review_line),
+        indent(&parent_line),
+        "and the child's connector starts under its parent's glyph: \
+         {review_line:?} against {parent_line:?}"
     );
 
     // The heading and the header count the top-level agent, not the family: a
@@ -2009,7 +2026,60 @@ fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
 }
 
 #[test]
-fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
+fn the_wheel_scrolls_the_wall_and_the_keys_move_the_cursor() {
+    let amx = Harness::new();
+    // More agents than a terminal this tall has band for, each a minute older
+    // than the one before it so they are drawn in the order they are named.
+    for n in 0..25u64 {
+        finished(&amx, &format!("row-{n:02}-a1b"), "done", 60 + n * 60);
+    }
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let first = line_of(
+        &amx.until("a wall taller than the band", || {
+            let drawn = screen(&amx, &view);
+            drawn.contains("row-00-a1b").then_some(drawn)
+        }),
+        "row-00-a1b",
+    );
+
+    // Three lines of wheel over the list scroll the window three rows down:
+    // the heading and the first two rows are off the top, and the third row
+    // is drawn on the line the heading was on.
+    for _ in 0..3 {
+        mouse(&amx, &view, 65, 5, first as u16 + 1, true);
+    }
+    let scrolled = amx.until("three rows of wall scrolled away", || {
+        let drawn = screen(&amx, &view);
+        (drawn.lines().position(|line| line.contains("row-02-a1b")) == Some(first - 1))
+            .then_some(drawn)
+    });
+    assert!(
+        !scrolled.contains("row-00-a1b"),
+        "the row the cursor is on is off the top:\n{scrolled}"
+    );
+
+    // And the cursor is still on it, which the next key says: `j` moves to the
+    // row under the one the wheel left it on, and the window comes back up to
+    // that row and no further.
+    press(&amx, &view, "j");
+    let walked = amx.until("the cursor's row back on the screen", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("row-01-a1b").then_some(drawn)
+    });
+    assert_eq!(
+        line_of(&walked, "row-01-a1b"),
+        first - 1,
+        "on the first drawn line:\n{walked}"
+    );
+    assert!(
+        coloured_line(&amx, &view, "row-01-a1b").contains(&bar()),
+        "and the cursor is on it"
+    );
+}
+
+#[test]
+fn the_wheel_pages_the_card_under_the_pointer_and_leaves_the_cursor_alone() {
     let amx = Harness::new();
     amx.record("tall-b2c", "%404");
     let at = now() - 100;
@@ -2029,21 +2099,6 @@ fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
     amx.until("both rows", || {
         let drawn = screen(&amx, &view);
         (drawn.contains("tall-b2c") && drawn.contains("short-a1b")).then_some(())
-    });
-
-    // Wheel-down over the list walks the selection down, and wheel-up back.
-    let over_rows = screen_row_of(&amx, &view, "short-a1b");
-    mouse(&amx, &view, 65, 5, over_rows, true);
-    amx.until("the bar to walk down", || {
-        coloured_line(&amx, &view, "short-a1b")
-            .contains(&bar())
-            .then_some(())
-    });
-    mouse(&amx, &view, 64, 5, over_rows, true);
-    amx.until("and back up", || {
-        coloured_line(&amx, &view, "tall-b2c")
-            .contains(&bar())
-            .then_some(())
     });
 
     // With the card open, the wheel pages it where the pointer is over it:
@@ -2075,6 +2130,31 @@ fn the_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
     amx.until("the edge again", || {
         (screen(&amx, &view).matches("said 0").count() == 2).then_some(())
     });
+
+    // The wall behind the card is the wheel's where the pointer is off it, and
+    // two rows in a band this tall have nowhere to scroll to. The wheel over
+    // the card follows the one over the rows, so a card paged again is the
+    // view having read both: the cursor and the card are where they were.
+    let over_rows = screen_row_of(&amx, &view, "short-a1b");
+    mouse(&amx, &view, 65, 5, over_rows, true);
+    mouse(&amx, &view, 65, 5, inside, true);
+    amx.until("the card paged past its top again", || {
+        (screen(&amx, &view).matches("said 0").count() == 1).then_some(())
+    });
+    // The row rather than the card's rule below it, which names the agent
+    // too: only a row carries what the agent said.
+    let rows = coloured(&amx, &view);
+    assert!(
+        rows.lines().any(|line| line.contains("tall-b2c")
+            && line.contains("said 0")
+            && line.contains(&bar())),
+        "the wheel over the rows moved no cursor:\n{rows}"
+    );
+    assert_eq!(
+        card_rule(&screen(&amx, &view)).as_deref(),
+        Some("tall-b2c"),
+        "and took the card nowhere"
+    );
 }
 
 #[test]
