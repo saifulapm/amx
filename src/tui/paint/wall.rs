@@ -501,7 +501,7 @@ fn request_column(list: &List) -> usize {
 const GAP: usize = 2;
 
 /// One line of it, so a paragraph of an answer cannot take over a row.
-fn first_line(text: &str) -> &str {
+pub(super) fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("").trim()
 }
 
@@ -595,7 +595,7 @@ pub(super) fn resting(phase: Phase) -> &'static str {
 /// is none of those things. So the shape says which kind of row it is — the
 /// one thing a wall mixing the two could not say at all — and the colour goes
 /// on saying how it is going.
-fn icon(phase: Phase, evidence: &Evidence, beat: usize, command: bool) -> &'static str {
+pub(super) fn icon(phase: Phase, evidence: &Evidence, beat: usize, command: bool) -> &'static str {
     match (command, evidence, phase) {
         (true, _, _) => COMMAND_GLYPH,
         (_, Evidence::LetGo, _) => ENDED,

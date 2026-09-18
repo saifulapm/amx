@@ -198,9 +198,9 @@ fn card_stands_at_the_foot_and_moves_no_row_of_the_list() {
         carded
             .lines()
             .nth(top)
-            .is_some_and(|rule| rule.starts_with("ask-a1b · claude ┈") && rule.ends_with('┈')),
-        "on a rule carrying the name of the agent it is a look at and what it \
-         runs:\n{carded}"
+            .is_some_and(|rule| rule.starts_with("✻ ask-a1b · claude ┈") && rule.ends_with('┈')),
+        "on a rule carrying the mark of the agent it is a look at, its name \
+         and what it runs:\n{carded}"
     );
 }
 
@@ -290,7 +290,7 @@ fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
         let drawn = screen(&amx, &view);
         drawn
             .lines()
-            .any(|line| line.starts_with("older-job-b2c · claude ┈"))
+            .any(|line| line.starts_with("∙ older-job-b2c · claude ┈"))
             .then_some(())
     });
 }
@@ -321,7 +321,7 @@ fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
         let drawn = screen(&amx, &view);
         card_lines(&drawn)
             .first()
-            .is_some_and(|rule| rule.starts_with("fix-login-a1b · claude · opus · high ┈"))
+            .is_some_and(|rule| rule.starts_with("∙ fix-login-a1b · claude · opus · high ┈"))
             .then_some(())
     });
 
@@ -332,9 +332,65 @@ fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
         let drawn = screen(&amx, &view);
         card_lines(&drawn)
             .first()
-            .is_some_and(|rule| rule.starts_with("build-c3d · sh ┈"))
+            .is_some_and(|rule| rule.starts_with("$ build-c3d · sh ┈"))
             .then_some(())
     });
+}
+
+#[test]
+fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
+    let amx = Harness::new();
+    // A turn under way as a reader finds one: the vendor spinning a line over
+    // its composer, and a record whose account of the same turn is older than
+    // the pane by ten minutes.
+    let mut rows = vec![
+        "● Read(src/importer.rs)",
+        "  ⎿  Read 210 lines",
+        "",
+        "✽ Nesting… (15s · ↓ 1.3k tokens)",
+    ];
+    rows.extend_from_slice(&CHROME);
+    let pane = a_pane_showing(&amx, &rows);
+    amx.record("port-cli-b2c", &pane);
+    let quiet_since = now() - 600;
+    amx.set_state(
+        "port-cli-b2c",
+        json!({
+            "state": "working",
+            "summary": "Running Read",
+            "since": quiet_since,
+            "last_event": quiet_since,
+        }),
+    );
+
+    let view = amx.in_a_terminal(&[], &[]);
+    card_on(&amx, &view, "port-cli-b2c");
+    let ruled = amx.until("the rule to say what the agent is doing", || {
+        let drawn = screen(&amx, &view);
+        card_lines(&drawn)
+            .first()
+            .map(|rule| (*rule).to_string())
+            .filter(|rule| rule.contains("Nesting"))
+    });
+
+    // The wall's own line for the row, at the far end of the rule: the card is
+    // standing on the row it was opened from, so the rule is the only place
+    // left saying how the turn is going.
+    assert!(
+        ruled.trim_end().ends_with("Nesting… (15s · ↓ 1.3k tokens)"),
+        "the vendor's line whole, at the far end of the rule:\n{ruled}"
+    );
+    // And the mark the row wears in front of the name, a frame of the pulse a
+    // working row breathes through.
+    let mark = ruled.chars().next().expect("a mark on the rule");
+    assert!(
+        "·✢*✶✻✽".contains(mark),
+        "a frame of the working pulse opens the rule: {ruled:?}"
+    );
+    assert!(
+        ruled.starts_with(&format!("{mark} port-cli-b2c · claude ┈")),
+        "with the name and what it runs after it: {ruled:?}"
+    );
 }
 
 #[test]
@@ -367,7 +423,7 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
         panic!("no card in:\n{carded}")
     };
     assert!(
-        ruled.starts_with("ask-a1b · claude ┈"),
+        ruled.starts_with("✻ ask-a1b · claude ┈"),
         "the card opens on a rule saying whose it is and what it runs: {ruled}"
     );
     assert!(
@@ -431,13 +487,13 @@ fn card_tail_cuts_the_chrome_claude_draws_under_its_pane() {
         );
     }
     // The spinner line is claude's too and is cut from the card with the rest
-    // of the chrome. It is on the row by then, because a working row says what
-    // the vendor's own line says it is doing, so once on the screen is the
-    // whole of it and twice would be the card drawing it again.
-    assert_eq!(
-        carded.matches("still thinking").count(),
-        1,
-        "the row says it and the card does not:\n{carded}"
+    // of the chrome. What says the agent is still at it is the row, and the
+    // card's own rule, which reads that line rather than drawing it again;
+    // what the card is showing is what the agent said.
+    let showing = card_lines(&carded)[1..].join("\n");
+    assert!(
+        !showing.contains("still thinking"),
+        "the vendor's spinner is chrome rather than a row of the card:\n{carded}"
     );
 }
 
@@ -732,7 +788,11 @@ fn card_on(amx: &Harness, view: &str, id: &str) -> String {
         let drawn = screen(amx, view);
         drawn
             .lines()
-            .any(|line| line.starts_with(id) && line.contains('┈'))
+            // The rule, which is the one line off the list carrying both the
+            // agent's name and the card's own dashes. Read for the name rather
+            // than the front of the line: the rule opens on the mark the row
+            // wears, and a working agent's pulses.
+            .any(|line| line.contains(id) && line.contains('┈'))
             .then_some(drawn)
     })
 }
@@ -776,7 +836,7 @@ fn card_line_brings_back_the_message_sent_on_alt_up_and_the_plain_arrows_still_m
         let drawn = screen(&amx, &view);
         drawn
             .lines()
-            .any(|line| line.starts_with("beta-b2c") && line.contains('┈'))
+            .any(|line| line.contains("beta-b2c") && line.contains('┈'))
             .then_some(drawn)
     });
     assert!(
@@ -1586,12 +1646,18 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         .lines()
         .find(|line| line.contains("more"))
         .expect("the indicator");
+    let mark = saying.chars().next().expect("a mark on the rule");
+    assert!(
+        "·✢*✶✻✽".contains(mark),
+        "the rule opens on a frame of the working pulse: {saying:?}"
+    );
     assert!(
         saying.contains('↑')
-            && saying.starts_with("fix-login-a1b · ")
+            && saying.starts_with(&format!("{mark} fix-login-a1b · "))
             && saying.contains("· what it has changed"),
-        "at the far end of the card's own rule, past the agent's name, what it \
-         runs and what the card is a reading of, pointing at the top: {paged}"
+        "at the far end of the card's own rule, past the agent's mark, its \
+         name, what it runs and what the card is a reading of, pointing at the \
+         top: {paged}"
     );
 
     // A page back is the top again, with the indicator gone.
@@ -1682,7 +1748,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
         .find(|line| line.contains("more"))
         .expect("the indicator");
     let marker = saying
-        .strip_prefix("tall-b2c · claude ")
+        .strip_prefix("∙ tall-b2c · claude ")
         .unwrap_or_else(|| panic!("the indicator is not on the card's rule: {paged}"));
     assert!(
         marker.trim_start_matches('┈').starts_with(" ↑"),

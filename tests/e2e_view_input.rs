@@ -2348,7 +2348,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
         let drawn = screen(&amx, &view);
         (drawn
             .lines()
-            .any(|line| line.starts_with("fix-login-a1b · claude ┈"))
+            .any(|line| line.starts_with("✻ fix-login-a1b · claude ┈"))
             && drawn.contains("❯ reply"))
         .then_some(())
     });

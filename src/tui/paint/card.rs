@@ -37,8 +37,10 @@ use super::input::{COMPOSER_CAP, behind, rows_of, typed_rows};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
+use super::wall::{first_line, icon};
 use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
+use crate::derive::{Evidence, View};
 use crate::furniture::{Furniture, cut};
 use crate::pr::Pr;
 use crate::store::{Ask, Kind, Phase};
@@ -918,6 +920,11 @@ pub fn body_width(band: u16) -> u16 {
 /// not a look at that at all.
 const CHANGED: &str = "what it has changed";
 
+/// What the rule says a turn nothing has been heard from yet is doing. A turn
+/// under way is doing something whether or not anything has said what, and the
+/// far end of the rule going bare would read as an agent that had stopped.
+const THINKING: &str = "thinking…";
+
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
@@ -938,10 +945,17 @@ const ASKED_TALL: u16 = 3;
 /// carry for itself. `runs` is what that row runs, in the same case: already
 /// spelled the way the rule says it, because the words are the wall's and the
 /// card is only reading them out.
+///
+/// `on` is the reading the row was drawn from and `beat` the frame the wall is
+/// pulsing on, for the mark at the front of the rule and the words at the end
+/// of it: both are about the agent rather than about the card, so both are read
+/// off the list the same way the row above them is.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float(
     frame: &mut Frame,
     card: &Card<Body>,
+    on: Option<&View>,
+    beat: usize,
     called: &str,
     runs: &str,
     showing: Option<Showing>,
@@ -1038,6 +1052,8 @@ pub(super) fn float(
     frame.render_widget(
         Paragraph::new(rule(
             card,
+            on,
+            beat,
             called,
             runs,
             held,
@@ -1094,24 +1110,29 @@ pub(super) fn float(
     );
 }
 
-/// The card's rule: the edge the band hangs off, and the three things said on
-/// it.
+/// The card's rule: the edge the band hangs off, and the things said on it.
 ///
-/// At its front, what the list calls the agent, in the colour that agent's row
-/// says its state in — the card stands away from its row now, so the name is
-/// what says which agent this is a look at. After it, what that agent runs, in
-/// the words the wall's own column says them in. After that, on a card that is
-/// a reading of a patch, that it is one: the row says what the agent is doing,
-/// and this is not that, and which hunk of it is under the cursor where
-/// somebody has stepped to one. And at the far end, how far a paged body
-/// stands from its natural edge. All of those are dim, because they are facts
-/// about what the card is showing rather than about the agent.
+/// At its front, the mark the agent's own row wears and what the list calls the
+/// agent, in the colour that row says its state in — the card stands away from
+/// its row now, so the mark and the name are what say which agent this is a
+/// look at and how it is going. The mark pulses on the wall's own beat, so a
+/// card over a turn under way breathes with the row it came off.
+///
+/// After the name, what that agent runs, in the words the wall's own column
+/// says them in. After that, on a card that is a reading of a patch, that it is
+/// one: the row says what the agent is doing, and this is not that, and which
+/// hunk of it is under the cursor where somebody has stepped to one. And at the
+/// far end, what the agent is doing while it is doing anything, and how far a
+/// paged body stands from its natural edge. All of those are dim, because they
+/// are facts about what the card is showing rather than about the agent.
 ///
 /// The same rule the band a line is typed in draws, in the same character and
 /// the same dim, because the card is that band with something else in it.
 #[allow(clippy::too_many_arguments)]
 fn rule(
     card: &Card<Body>,
+    on: Option<&View>,
+    beat: usize,
     called: &str,
     runs: &str,
     held: usize,
@@ -1120,7 +1141,20 @@ fn rule(
     width: usize,
     theme: Theme,
 ) -> Line<'static> {
-    let named = fit(&inert(called), width);
+    // What the row this card was opened from is marked with. The card's own
+    // phase, because that is what the name beside it is painted for; the rest
+    // is the record's, and a list that has lost the row has neither — so the
+    // mark falls back to the shape a state rests on.
+    let mark = format!(
+        "{} ",
+        icon(
+            card.phase,
+            on.map_or(&Evidence::Unknown, |view| &view.verdict.evidence),
+            beat,
+            on.is_some_and(|view| view.meta.agent.is_none()),
+        )
+    );
+    let named = fit(&inert(called), width.saturating_sub(width_of(&mark)));
     let hunk = match at {
         Some(at) => format!("{SEPARATOR}hunk {} of {}", at + 1, card.body.hunks().len()),
         None => String::new(),
@@ -1134,7 +1168,7 @@ fn rule(
     let changed = match card.changes {
         true => fit(
             &format!("{SEPARATOR}{CHANGED}{hunk}{noted}"),
-            width.saturating_sub(width_of(&named)),
+            width.saturating_sub(width_of(&mark) + width_of(&named)),
         ),
         false => String::new(),
     };
@@ -1148,32 +1182,64 @@ fn rule(
             format!(" {edge} {held} more")
         }
     };
+    // What the agent is doing, before the count, for as long as it is doing
+    // anything: the row it came off says that at its own far end, and a card
+    // open over a turn under way is the one place a person cannot see the row.
+    // The wall's own line for it — the vendor's spinner where a reader was at
+    // the pane, the record's summary otherwise — so the card and the row say
+    // one thing rather than two.
+    let doing = match card.phase {
+        Phase::Starting | Phase::Working => format!(
+            " {}",
+            on.and_then(|view| view.state.summary.as_deref())
+                .map(|said| inert(first_line(said)))
+                .filter(|said| !said.is_empty())
+                .unwrap_or_else(|| THINKING.to_string())
+        ),
+        _ => String::new(),
+    };
+    // One cell of the rule itself is kept back from both of the things that
+    // give way, because the rule is what says this line is the card's edge and
+    // words long enough to reach the last cell would take that away with the
+    // dashes.
+    let edge = width_of(&mark)
+        + width_of(&named)
+        + width_of(&changed)
+        + 1
+        + width_of(&more)
+        + width_of(RULE);
+    let doing = fit(&doing, width.saturating_sub(edge));
     // What the agent runs stands between its name and what the card is
     // showing, and takes the room the rest of the rule has left: a launch
     // command is a path as often as a word, and a rule that let one of those
     // crowd out what the card is showing would be saying the least useful
-    // thing on it at the cost of the most. One cell of the rule itself is
-    // kept back from it, because the rule is what says this line is the
-    // card's edge, and a path long enough to reach the last cell would take
-    // that away with the dashes.
+    // thing on it at the cost of the most. What the agent is doing is served
+    // before it for the same reason — how a turn is going is what somebody
+    // opened the card to read, and how it was started is the quietest fact on
+    // the line.
     let runs = match runs.is_empty() {
         true => String::new(),
         false => fit(
             &format!("{SEPARATOR}{runs}"),
-            width.saturating_sub(
-                width_of(&named) + width_of(&changed) + 1 + width_of(&more) + width_of(RULE),
-            ),
+            width.saturating_sub(edge + width_of(&doing)),
         ),
     };
     // A cell of wall between the label and the rule, so the words are not
     // running into the dashes.
-    let said = width_of(&named) + width_of(&runs) + width_of(&changed) + 1 + width_of(&more);
+    let said = width_of(&mark)
+        + width_of(&named)
+        + width_of(&runs)
+        + width_of(&changed)
+        + 1
+        + width_of(&doing)
+        + width_of(&more);
     Line::from(vec![
-        Span::styled(named, colour(theme, card.phase)),
+        Span::styled(format!("{mark}{named}"), colour(theme, card.phase)),
         Span::styled(runs, dim()),
         Span::styled(changed, dim()),
         Span::raw(" "),
         Span::styled(RULE.repeat(width.saturating_sub(said)), dim()),
+        Span::styled(doing, dim()),
         Span::styled(more, dim()),
     ])
 }
@@ -1617,6 +1683,7 @@ mod tests {
     use crate::tui::act::Asking;
     use crate::tui::paint::draw;
     use crate::tui::paint::header::space_rows;
+    use crate::tui::paint::wall::{LIVE, pulse, set};
     use crate::tui::rows::FOLD_AT;
     use crate::tui::{Mode, Screen};
     use ratatui::Terminal;
@@ -2316,7 +2383,10 @@ index e69de29..0000000
             answer: false,
             listening: true,
         };
-        let size = (70, 24);
+        // Wide enough for the whole rule: the mark, the name, what the agent
+        // runs, what the card is showing, and what the agent is doing at the
+        // far end, which is the one of them that gives way last.
+        let size = (80, 24);
         let ruled = |screen: &Screen| {
             let drawn = painted(screen, size);
             let at = drawn
@@ -2332,9 +2402,12 @@ index e69de29..0000000
         let screen = showing(vec![agent], Some(patch()));
         let (at, rule) = ruled(&screen);
         assert!(
-            rule.starts_with("fix-login-a1b · claude · opus · high · what it has changed"),
-            "the rule names the agent, then what it runs, and what the card is \
-             showing after both: {rule:?}"
+            rule.starts_with(&format!(
+                "{} fix-login-a1b · claude · opus · high · what it has changed",
+                pulse(0)
+            )),
+            "the rule marks the agent and names it, then what it runs, and \
+             what the card is showing after both: {rule:?}"
         );
         assert!(
             cells(&screen, size)[(column_of(&rule, "claude") as u16, at)]
@@ -2349,7 +2422,10 @@ index e69de29..0000000
         let plain = view("fix-login-a1b", Phase::Working, None, 3);
         let (_, rule) = ruled(&showing(vec![plain], Some(patch())));
         assert!(
-            rule.starts_with("fix-login-a1b · claude · what it has changed"),
+            rule.starts_with(&format!(
+                "{} fix-login-a1b · claude · what it has changed",
+                pulse(0)
+            )),
             "{rule:?}"
         );
 
@@ -2360,8 +2436,77 @@ index e69de29..0000000
             Some(patch()),
         ));
         assert!(
-            rule.starts_with("fix-login-a1b · sh · what it has changed"),
-            "{rule:?}"
+            rule.starts_with("$ fix-login-a1b · sh · what it has changed"),
+            "marked for the kind of row it is, as the wall marks it: {rule:?}"
+        );
+    }
+
+    #[test]
+    fn card_rule_marks_the_state_and_says_what_the_agent_is_doing() {
+        let size = (80, 20);
+        let looked = |agent: View| {
+            let card = Card {
+                id: agent.meta.id.clone(),
+                phase: agent.phase(),
+                question: None,
+                options: Vec::new(),
+                walked: false,
+                kind: None,
+                body: "$ cargo test".to_string(),
+                changes: false,
+                answer: false,
+                listening: true,
+            };
+            let mut screen = showing(vec![agent], Some(card));
+            // The frame the pulse is largest at, so the glyph on the rule is
+            // the one a reader would see on the row beside it.
+            screen.beat = LIVE;
+            painted(&screen, size)
+                .into_iter()
+                .find(|line| line.contains(RULE))
+                .expect("the card's rule")
+        };
+
+        // A turn under way: the row's own mark in front of the name, and what
+        // the wall says the agent is doing at the far end of the rule.
+        let working = looked(view(
+            "fix-login-a1b",
+            Phase::Working,
+            Some("Running Bash"),
+            3,
+        ));
+        assert!(
+            working.starts_with(&format!("{} fix-login-a1b · claude ┈", pulse(LIVE))),
+            "the rule opens on the glyph the row pulses: {working:?}"
+        );
+        assert!(
+            working.ends_with("Running Bash"),
+            "and says what the agent is doing at its far end: {working:?}"
+        );
+
+        // A turn that has said nothing yet is still a turn, and the rule says
+        // so rather than leaving the far end of it bare.
+        let quiet = looked(view("fix-login-a1b", Phase::Working, None, 3));
+        assert!(
+            quiet.ends_with("thinking…"),
+            "a working agent with nothing to say is thinking: {quiet:?}"
+        );
+
+        // And a turn that is over has the ended mark and nothing at that end:
+        // what it said is on the card, and the rule is not a second row.
+        let done = looked(view(
+            "old-job-b2c",
+            Phase::Done,
+            Some("did what it was asked"),
+            60,
+        ));
+        assert!(
+            done.starts_with("∙ old-job-b2c · claude ┈"),
+            "the rule of an agent whose pane has gone: {done:?}"
+        );
+        assert!(
+            done.ends_with(RULE),
+            "run out to the far end, with nothing said at it: {done:?}"
         );
     }
 
@@ -2392,7 +2537,7 @@ index e69de29..0000000
         let drawn = painted(&screen, size);
         let rule = drawn
             .iter()
-            .find(|line| line.starts_with("fix-login-a1b · "))
+            .find(|line| line.starts_with(&format!("{} fix-login-a1b · ", pulse(0))))
             .expect("the card's rule");
         assert!(
             rule.contains(RULE),
@@ -2529,7 +2674,7 @@ index e69de29..0000000
         assert!(
             drawn
                 .iter()
-                .any(|row| row.starts_with("ask-a1b · claude ┈")),
+                .any(|row| row.starts_with(&format!("{} ask-a1b · claude ┈", set()[LIVE]))),
             "the rule stands: {drawn:?}"
         );
         assert!(
@@ -2595,9 +2740,11 @@ index e69de29..0000000
             panic!("no card in: {screen:?}")
         };
         assert!(
-            ruled.starts_with("ask-a1b · claude ┈") && ruled.ends_with('┈'),
-            "the card opens on a rule carrying the name of the agent it is a \
-             look at and what it runs, run out to the far end: {ruled:?}"
+            ruled.starts_with(&format!("{} ask-a1b · claude ┈", set()[LIVE]))
+                && ruled.ends_with('┈'),
+            "the card opens on a rule carrying the mark of the agent it is a \
+             look at, its name and what it runs, run out to the far end: \
+             {ruled:?}"
         );
         assert!(
             asked.starts_with("  Which fixture should the port keep?"),
@@ -2859,9 +3006,10 @@ index e69de29..0000000
             panic!("no card in: {screen:?}")
         };
         assert_eq!(
-            column_of(ruled, "ask-a1b"),
+            column_of(ruled, &format!("{} ask-a1b", set()[LIVE])),
             0,
-            "the rule stands in the band's own column: {ruled:?}"
+            "the rule stands in the band's own column, marked the way the row \
+             it came off is: {ruled:?}"
         );
         assert_eq!(
             column_of(line, "❯"),

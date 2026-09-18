@@ -301,6 +301,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         float(
             frame,
             card,
+            // The reading behind it and the frame the wall is pulsing on, for
+            // the mark the rule opens with and the words at the end of it.
+            on,
+            screen.beat,
             // What the list calls it, which is what its rule says. The id
             // where the list has lost the agent the card was taken from, so
             // the rule is never bare.
