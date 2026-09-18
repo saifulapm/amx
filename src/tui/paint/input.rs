@@ -1946,8 +1946,11 @@ mod tests {
                 .position(|line| line.starts_with(front))
                 .unwrap_or_else(|| panic!("nothing begins {front:?} in: {painted:?}"))
         };
-        assert!(at("Needs input") < at("ask-a1b · claude ┈"), "{painted:?}");
-        assert!(at("ask-a1b · claude ┈") < at("TASK"), "{painted:?}");
+        assert!(
+            at("Needs input") < at("✻ ask-a1b · claude ┈"),
+            "{painted:?}"
+        );
+        assert!(at("✻ ask-a1b · claude ┈") < at("TASK"), "{painted:?}");
         // And the row the card was opened from is one of the rows it is
         // standing on, so the rule is the only thing left naming that agent.
         assert!(
