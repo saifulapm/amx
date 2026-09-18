@@ -53,7 +53,7 @@ pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment,
 
     let offset = first_drawn(list, area.height);
     let width = area.width as usize;
-    let widths = grid::widths(width, list.axis(), moment.vendor, list.deepest());
+    let widths = grid::widths(width, list.axis(), moment.vendor, list.root_pad());
     let requests = request_column(list);
 
     let lines: Vec<Line> = list
@@ -859,8 +859,9 @@ mod tests {
     #[test]
     fn rows_draw_a_parent_and_its_children_as_one_family() {
         // The mockup in the plan: a working parent, a finished child and one
-        // still reading, the children hung under the parent on connectors and
-        // every name and summary standing at the same column.
+        // still reading, the children hung under the parent on connectors,
+        // newest first, and every name and summary standing at the same
+        // column.
         let mut scout = child_of(
             view("scout-b2c", Phase::Done, Some("find auth"), 12),
             "parent-a1b",
@@ -895,13 +896,14 @@ mod tests {
             family[0]
         );
         assert!(
-            family[1].starts_with("   ├─∙ scout-b2c"),
-            "the connector starts in the column of the glyph it hangs from: {:?}",
+            family[1].starts_with("   ├─· review-c3d"),
+            "the newest child opens the pair, its connector in the column of \
+             the glyph it hangs from: {:?}",
             family[1]
         );
         assert!(
-            family[2].starts_with("   └─· review-c3d"),
-            "the last child closes the pair under the same column: {:?}",
+            family[2].starts_with("   └─∙ scout-b2c"),
+            "the oldest closes the pair under the same column: {:?}",
             family[2]
         );
         let column = |line: &str, word: &str| {
@@ -912,19 +914,81 @@ mod tests {
         };
         assert_eq!(
             column(family[0], "running"),
-            column(family[1], "find"),
+            column(family[1], "reading"),
             "a child pays for its connector out of its own name, so the \
              summaries still stand at one column: {family:#?}"
         );
         assert_eq!(
-            column(family[1], "find"),
-            column(family[2], "reading"),
+            column(family[1], "reading"),
+            column(family[2], "find"),
             "including the last child's"
         );
         assert_eq!(
             column(family[0], "parent-a1b"),
-            column(family[1], "scout-b2c") - 2,
+            column(family[1], "review-c3d") - 2,
             "and the names indent with the connector"
+        );
+    }
+
+    #[test]
+    fn rows_stand_a_root_one_level_in_however_deep_the_family_goes() {
+        // A grandchild takes the family to two levels. A root still stands one
+        // level in: the wall spends two cells on there being a family at all,
+        // not two per level, so one deep family does not push every root on
+        // the screen across.
+        let mut helper = child_of(
+            view("helper-f6g", Phase::Done, Some("ran the suite"), 12),
+            "parent-a1b",
+        );
+        helper.meta.created = 20;
+        let mut scout = child_of(
+            view("scout-b2c", Phase::Working, Some("reading store.rs"), 5),
+            "helper-f6g",
+        );
+        scout.meta.created = 30;
+        scout.meta.depth = 2;
+        let lines = drawn(
+            vec![
+                view("parent-a1b", Phase::Working, Some("running tests"), 2),
+                helper,
+                scout,
+            ],
+            None,
+            (100, 12),
+        );
+        let family: Vec<&String> = lines
+            .iter()
+            .filter(|line| {
+                ["parent-a1b", "helper-f6g", "scout-b2c"]
+                    .iter()
+                    .any(|id| line.contains(id))
+            })
+            .collect();
+        assert_eq!(family.len(), 3, "one row each: {lines:#?}");
+        assert!(
+            family[0].starts_with("   · parent-a1b"),
+            "the root stands one level in: {:?}",
+            family[0]
+        );
+        assert!(
+            family[1].starts_with("   └─∙ helper-f6g"),
+            "its child a level under it: {:?}",
+            family[1]
+        );
+        assert!(
+            family[2].starts_with("     └─· scout-b2c"),
+            "and the grandchild a level under that: {:?}",
+            family[2]
+        );
+        let column = |line: &str, word: &str| {
+            let at = line.find(word).expect("the word on the row");
+            line[..at].chars().count()
+        };
+        assert_eq!(
+            column(family[0], "running"),
+            column(family[2], "reading"),
+            "and every level is still paid for by the name, so the summaries \
+             stand at one column: {family:#?}"
         );
     }
 
