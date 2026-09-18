@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::derive::{self, Evidence, View};
-use crate::store::{Phase, now};
+use crate::store::{Agent, Phase, now};
 use crate::verbs::send;
 use crate::{exit, paths};
 
@@ -32,13 +32,19 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&view.json())?)?;
     } else {
-        report(&view, now, out)?;
+        // What was sent and not yet taken, which only a working agent holds:
+        // an idle one took it, and one that has ended will never.
+        let queued = match view.phase() {
+            Phase::Working => send::queued(&Agent::open(root, id)?.events()?),
+            _ => Vec::new(),
+        };
+        report(&view, &queued, now, out)?;
     }
     Ok(exit::OK)
 }
 
 /// What a person reads.
-fn report(view: &View, now: u64, out: &mut impl Write) -> Result<()> {
+fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}  {}", view.id(), view.phase().word())?;
     writeln!(out, "  evidence  {}", evidence(view, now))?;
     if let Some(question) = &view.state.question {
@@ -52,6 +58,11 @@ fn report(view: &View, now: u64, out: &mut impl Write) -> Result<()> {
     }
     if let Some(summary) = &view.state.summary {
         say(out, "doing", summary)?;
+    }
+    // Held behind the turn under way, so a caller who sent it and sees the
+    // agent still working knows it arrived and knows it has not been read.
+    for message in queued {
+        say(out, "queued", message.lines().next().unwrap_or_default())?;
     }
     if let Some(exit) = view.state.exit {
         writeln!(out, "  exit      {exit}")?;
@@ -177,11 +188,32 @@ mod tests {
         printed_at(view, 0)
     }
 
+    #[test]
+    fn reader_status_says_what_was_sent_and_not_yet_taken() {
+        let view = view(Phase::Working, Evidence::Hooks, None, 1);
+        let queued = [
+            "and the linter".to_string(),
+            "then the docs\nwith care".to_string(),
+        ];
+        let mut out = Vec::new();
+        report(&view, &queued, 0, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let doing = text.find("  doing").expect("a doing line");
+        let first = text
+            .find("  queued    and the linter")
+            .expect("the first, in order");
+        let second = text
+            .find("  queued    then the docs")
+            .expect("the second, first line only");
+        assert!(doing < first && first < second, "{text}");
+        assert!(!text.contains("with care"), "{text}");
+    }
+
     /// The same report, read at a given moment: what amx did to a pane is
     /// dated from the record rather than from the last thing the agent said.
     fn printed_at(view: &View, now: u64) -> String {
         let mut out = Vec::new();
-        report(view, now, &mut out).unwrap();
+        report(view, &[], now, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 

@@ -263,6 +263,30 @@ fn submissions(events: &[Event]) -> usize {
         .count()
 }
 
+/// What has been sent and not yet taken: the text of every `send` after the
+/// last prompt the agent submitted, oldest first.
+///
+/// A vendor mid-turn holds a message until the turn ends, and says nothing
+/// about holding it that amx can read off the pane: claude draws it in the
+/// composer band a card cuts off. The log is the one place the fact is
+/// written, by `deliver` on the way in and by the vendor's `Prompted` moment
+/// — or a reader's `READ_PROMPT` — on the way out. With no submission on the
+/// log at all, everything sent is still waiting.
+pub fn queued(events: &[Event]) -> Vec<String> {
+    let taken = events
+        .iter()
+        .rposition(|event| {
+            (submitted(event) || event.kind == derive::READ_PROMPT)
+                && event.payload["agent_id"].is_null()
+        })
+        .map_or(0, |at| at + 1);
+    events[taken..]
+        .iter()
+        .filter(|event| event.kind == SEND)
+        .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
+        .collect()
+}
+
 /// Exit `BLOCKED`, with the pending question — and the choices under it —
 /// where the answer would have gone.
 ///
@@ -553,6 +577,39 @@ mod tests {
             Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
         ];
         assert_eq!(submissions(&mixed), 1);
+    }
+
+    #[test]
+    fn send_lists_what_was_sent_after_the_last_prompt_was_taken() {
+        let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+
+        assert!(queued(&[]).is_empty());
+        // Nothing has ever been taken, so everything sent is waiting.
+        assert_eq!(queued(&[sent("carry on")]), ["carry on"]);
+        // Taken, and then two more behind the turn, oldest first.
+        assert_eq!(
+            queued(&[
+                sent("carry on"),
+                Event::new(SUBMITTED, json!({})),
+                sent("and the linter"),
+                sent("then the docs"),
+            ]),
+            ["and the linter", "then the docs"]
+        );
+        // A reader's word that a turn began is the same edge.
+        assert_eq!(
+            queued(&[sent("carry on"), Event::new(derive::READ_PROMPT, json!({}))]),
+            Vec::<String>::new()
+        );
+        // A subagent's prompt rides the same log and takes nothing of this
+        // agent's.
+        assert_eq!(
+            queued(&[
+                sent("carry on"),
+                Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
+            ]),
+            ["carry on"]
+        );
     }
 
     #[test]
