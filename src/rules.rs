@@ -389,14 +389,15 @@ impl Rule {
         };
 
         let text = screen.joined(from, to);
-        let options = match marked {
+        let (options, at) = match marked {
             Some((run, mark)) => screen.marked_below(run, mark),
-            None => screen.options_below(to),
+            None => (screen.options_below(to), None),
         };
         (!text.is_empty()).then(|| Question {
             // Nothing was read off a mark where nothing was read, and a list
             // amx did not number is not one to offer numbers for.
             walked: marked.is_some() && !options.is_empty(),
+            marked: at,
             options,
             text,
         })
@@ -638,7 +639,11 @@ impl Screen {
     /// and the wrap is read the way prose is: a row opening in lower case is
     /// the rest of the row above it, since a choice is a label and a label
     /// starts with a capital.
-    fn marked_below(&self, run: (usize, usize), mark: &str) -> Vec<String> {
+    ///
+    /// Beside the choices, which of them the mark is on, counting from one:
+    /// that is where the vendor's cursor stands, and where a walk to another
+    /// row starts from.
+    fn marked_below(&self, run: (usize, usize), mark: &str) -> (Vec<String>, Option<usize>) {
         let (from, to) = run;
         let rows = &self.shown[from..=to];
         let Some(column) = rows
@@ -646,10 +651,11 @@ impl Screen {
             .filter_map(|row| column_of(row, mark))
             .next_back()
         else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
 
         let mut options: Vec<String> = Vec::new();
+        let mut marked = None;
         for row in rows {
             let (at, label) = labelled(row, mark);
             if label.is_empty() {
@@ -657,12 +663,15 @@ impl Screen {
             }
             if at >= column + 2 && !wrapped(row) {
                 options.push(label.to_string());
+                if row.contains(mark) {
+                    marked = Some(options.len());
+                }
             } else if let Some(above) = options.last_mut() {
                 above.push(' ');
                 above.push_str(label);
             }
         }
-        options
+        (options, marked)
     }
 }
 

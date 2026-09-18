@@ -2971,6 +2971,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             ..State::default()
         };
         let seen = Question {
+            marked: None,
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
             walked: false,

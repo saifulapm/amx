@@ -1082,9 +1082,8 @@ glyph is in is the list, and amx numbers it itself. The gate reads back two
 choices in the order the vendor draws them — `No, exit`, then `Yes, I trust this
 folder` — and the record says they are amx's numbers rather than the vendor's.
 So the row a person reads offers `1-2` instead of a walk typed blind, `amx
-answer <id> 2` is the `Up Down Enter` that reaches the row that trusts the
-folder, and `enter`, `y` and `n` are refused with the two digits offered in
-their place. `esc` still cancels. The walk is still an answer: `down enter` is
+answer <id> 2` is the walk that reaches the row that trusts the folder, and
+`enter`, `y` and `n` are refused with the two digits offered in their place. `esc` still cancels. The walk is still an answer: `down enter` is
 what it always was, for a caller reading the rows rather than their numbers.
 
 Two things the mark does not do. A run the vendor numbered itself is read off
@@ -1099,3 +1098,22 @@ a label under the label, both at the same column — `Yes, I trust this` over
 from a choice. A row opening in lower case is the rest of the row above it, the
 way the prose reader already treats one, and that is what keeps this gate at two
 choices rather than three at the narrowest width driven.
+
+### The list wraps
+
+Driven by hand on 2026-09-18 against 2.1.276 at 100 columns, from a fresh
+directory: `Down` on `No, exit` moves the cursor to `Yes, I trust this folder`,
+and `Up` on `No, exit` moves it to `Yes` as well — the list wraps at both ends,
+where 2.1.259 clamped (measured 2026-09-05). A walk that goes to the top first
+therefore lands wherever the cursor was standing sends it: `Up Up Down` from
+`Yes` ends on `No, exit`, and the `Enter` after it ends the agent with exit 1
+while the record says `Yes, I trust this folder` was answered. Seen twice that
+way before it was driven.
+
+`amx answer` now reads the pane at the moment it answers: the rule's mark says
+which row the cursor is on (`Question.marked`, counting from one), and the walk
+is the difference — `Down Enter` from the first row to the second, `Enter`
+where the cursor already stands there, `Up Enter` back. Only a pane amx cannot
+read falls back to the top-first walk, which is still right for pi's clamped
+lists. Bursts of arrows in one `send-keys` call were also tried and are not
+the cause: one call and a call each landed alike.

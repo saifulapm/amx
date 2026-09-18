@@ -175,6 +175,13 @@ pub struct Question {
     /// from the top, and everything offering an answer has to know which of
     /// the two it is looking at.
     pub walked: bool,
+    /// Which of those choices the vendor's mark was on when the screen was
+    /// read, counting from one, on a walked list. The cursor a walk starts
+    /// from: measured on claude 2.1.276 on 2026-09-18, the trust gate's list
+    /// wraps at both ends where 2.1.259's clamped, so a walk that goes to the
+    /// top first lands wherever the cursor was standing sent it. `None` where
+    /// the list was not read off a mark.
+    pub marked: Option<usize>,
 }
 
 /// What kind of thing an agent has stopped to ask.
@@ -2105,6 +2112,7 @@ mod tests {
             ..State::default()
         };
         let seen = Question {
+            marked: None,
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
             walked: false,
@@ -2137,6 +2145,7 @@ mod tests {
         // The mark travels with the question and with nothing else, because it
         // is what decides whether the next reading of the pane may replace it.
         let seen = Question {
+            marked: None,
             text: "Run echo hi?".to_string(),
             options: vec!["Allow once".to_string(), "Deny".to_string()],
             walked: false,
@@ -2206,6 +2215,7 @@ mod tests {
         // screen.
         let mut read = State::default();
         read.correct(Some(&Question {
+            marked: None,
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string(), "No".to_string()],
             walked: false,
@@ -2232,6 +2242,7 @@ mod tests {
         // written where it is true, absent where it is not, and off every
         // record written before it existed.
         let seen = Question {
+            marked: None,
             text: "Run echo hi?".to_string(),
             options: vec!["Allow once".to_string(), "Deny".to_string()],
             walked: true,
@@ -2248,6 +2259,7 @@ mod tests {
         // answer to how they are taken, so a reading that changes nothing else
         // still corrects the record.
         let numbered = Question {
+            marked: None,
             walked: false,
             ..seen.clone()
         };
@@ -2291,6 +2303,7 @@ mod tests {
             ..State::default()
         };
         let later = Question {
+            marked: None,
             text: "Which branch should I push to?".to_string(),
             options: Vec::new(),
             walked: false,
@@ -2327,11 +2340,13 @@ mod tests {
         // ended up asking for a key with the selector's answers under it.
         let mut typed_at = State::default();
         typed_at.correct(Some(&Question {
+            marked: None,
             text: "Enter Cerebras API key".to_string(),
             options: Vec::new(),
             walked: false,
         }));
         typed_at.correct(Some(&Question {
+            marked: None,
             text: "Project trust".to_string(),
             options: vec!["Trust".to_string(), "Do not trust".to_string()],
             walked: false,
@@ -2352,6 +2367,7 @@ mod tests {
 
         // And what it does learn is written without claiming to have heard it.
         let seen = Question {
+            marked: None,
             text: "Do you want to proceed?".to_string(),
             options: vec!["Yes".to_string()],
             walked: false,

@@ -215,6 +215,15 @@ pub fn given(
         Ok(read) => read,
         Err(refused) => return Ok(Answered::No(refused)),
     };
+    // A walk to a numbered row starts from wherever the cursor stands now, so
+    // the pane is read for it at the last moment before the keys go in.
+    let answer = match answer {
+        Answer::Picked(at, _) => Answer::Picked(
+            at,
+            to_the_row(at, view.state.options.len(), marked_now(server, view)),
+        ),
+        answer => answer,
+    };
     reply(
         agent,
         server,
@@ -490,7 +499,7 @@ fn at_a_walked_list(key: &str, state: &State) -> Result<Answer, String> {
     }
     let rows = state.options.len();
     match one_choice(key) {
-        Some(at) if at <= rows => Ok(Answer::Picked(at, to_the_row(at, rows))),
+        Some(at) if at <= rows => Ok(Answer::Picked(at, to_the_row(at, rows, None))),
         Some(_) => Err(format!(
             "this screen lists {rows} choices, and `{key}` is not one of them: press {}",
             digits(rows)
@@ -509,16 +518,41 @@ fn at_a_walked_list(key: &str, state: &State) -> Result<Answer, String> {
 }
 
 /// The keys that reach the row at this number on a list of this many rows, and
-/// take it.
+/// take it, from the row the cursor is standing on where the pane says which.
 ///
-/// Up to the top first, because where the cursor is standing is not on the
-/// record: pi opens it on the first row and a person at the pane may have moved
-/// it since. The list clamps at both ends, so an `Up` too many costs nothing —
-/// see [`TO_THE_TOP`] — and one for every row is always enough.
-fn to_the_row(at: usize, rows: usize) -> Vec<String> {
-    let up = std::iter::repeat_n(TO_THE_TOP.to_string(), rows.saturating_sub(1));
-    let down = std::iter::repeat_n(DOWN_A_ROW.to_string(), at.saturating_sub(1));
-    up.chain(down).chain([TAKE_IT.to_string()]).collect()
+/// From a row that is known, the walk is the difference and nothing more,
+/// which is the only walk that lands on a list that wraps: measured on claude
+/// 2.1.276 on 2026-09-18, an `Up` on the trust gate's first row goes to its
+/// last, where 2.1.259 stayed put. So a walk that went to the top first
+/// landed on `No, exit` from `Yes` and on `Yes` from `No`, and the record
+/// said it had trusted the folder while the agent exited.
+///
+/// Where nobody has read the pane, up to the top first: pi opens its lists on
+/// the first row, clamps at both ends (0.85.1, 2026-09-14), and a person at
+/// the pane may have moved the cursor since.
+fn to_the_row(at: usize, rows: usize, from: Option<usize>) -> Vec<String> {
+    let moves: Vec<String> = match from {
+        Some(from) if from >= at => vec![TO_THE_TOP.to_string(); from - at],
+        Some(from) => vec![DOWN_A_ROW.to_string(); at - from],
+        None => std::iter::repeat_n(TO_THE_TOP.to_string(), rows.saturating_sub(1))
+            .chain(std::iter::repeat_n(
+                DOWN_A_ROW.to_string(),
+                at.saturating_sub(1),
+            ))
+            .collect(),
+    };
+    moves.into_iter().chain([TAKE_IT.to_string()]).collect()
+}
+
+/// Which row of a walked list the vendor's cursor is on right now, read off
+/// the pane rather than the record: the record says where it was when a reader
+/// last looked, and a person at the pane may have moved it since. `None` where
+/// the pane cannot be read or draws no mark, and the walk goes to the top first.
+fn marked_now(server: &Server, view: &derive::View) -> Option<usize> {
+    let screen = server.capture(&view.meta.pane).ok()?;
+    crate::rules::of(view.meta.agent.as_deref().unwrap_or_default())
+        .asking(&screen)?
+        .marked
 }
 
 /// The digits that reach a row of a list of this many, named the way a usage
@@ -1570,7 +1604,7 @@ mod tests {
         // are the ones the reader left on the state itself.
         let dialog = a_walked_dialog();
         assert_eq!(
-            Answer::Picked(2, to_the_row(2, 3)).said(&dialog),
+            Answer::Picked(2, to_the_row(2, 3, None)).said(&dialog),
             "Allow always"
         );
 
@@ -1618,6 +1652,26 @@ mod tests {
             *typist.0.borrow(),
             vec![vec!["Down"], vec!["settle"], vec!["Enter"]],
         );
+    }
+
+    #[test]
+    fn surfaces_a_walk_starts_from_the_row_the_cursor_is_on() {
+        // Measured on claude 2.1.276 on 2026-09-18: the trust gate's list
+        // wraps, so `Up Up Down` from `Yes` lands on `No, exit` and the agent
+        // exits on the take. From a row the pane names, the walk is the
+        // difference and nothing else.
+        let walk = |keys: &[&str]| -> Vec<String> { keys.iter().map(|k| k.to_string()).collect() };
+        assert_eq!(to_the_row(2, 2, Some(1)), walk(&["Down", "Enter"]));
+        assert_eq!(to_the_row(2, 2, Some(2)), walk(&["Enter"]));
+        assert_eq!(to_the_row(1, 2, Some(2)), walk(&["Up", "Enter"]));
+        assert_eq!(to_the_row(4, 5, Some(2)), walk(&["Down", "Down", "Enter"]));
+        assert_eq!(
+            to_the_row(1, 5, Some(4)),
+            walk(&["Up", "Up", "Up", "Enter"])
+        );
+        // Nobody read the pane: to the top first, as before, for a list that
+        // clamps.
+        assert_eq!(to_the_row(2, 3, None), walk(&["Up", "Up", "Down", "Enter"]));
     }
 
     #[test]
