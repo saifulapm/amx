@@ -1152,12 +1152,17 @@ fn rule(
     // showing, and takes the room the rest of the rule has left: a launch
     // command is a path as often as a word, and a rule that let one of those
     // crowd out what the card is showing would be saying the least useful
-    // thing on it at the cost of the most.
+    // thing on it at the cost of the most. One cell of the rule itself is
+    // kept back from it, because the rule is what says this line is the
+    // card's edge, and a path long enough to reach the last cell would take
+    // that away with the dashes.
     let runs = match runs.is_empty() {
         true => String::new(),
         false => fit(
             &format!("{SEPARATOR}{runs}"),
-            width.saturating_sub(width_of(&named) + width_of(&changed) + 1 + width_of(&more)),
+            width.saturating_sub(
+                width_of(&named) + width_of(&changed) + 1 + width_of(&more) + width_of(RULE),
+            ),
         ),
     };
     // A cell of wall between the label and the rule, so the words are not
@@ -2357,6 +2362,45 @@ index e69de29..0000000
         assert!(
             rule.starts_with("fix-login-a1b · sh · what it has changed"),
             "{rule:?}"
+        );
+    }
+
+    #[test]
+    fn card_rule_keeps_a_dash_however_long_the_launch_command_is() {
+        // A launch command is a path as often as a word, and a path can be
+        // longer than the rule. The rule is what says the line is the card's
+        // edge, so the path gives way before the last dash does.
+        let size = (60, 20);
+        let mut agent = view("fix-login-a1b", Phase::Working, None, 3);
+        agent.meta.agent = Some(
+            "/home/somebody/.local/state/workflow/worktrees/amx/a-long-run-name/_integration/tests/mock_claude/claude"
+                .to_string(),
+        );
+        let card = Card {
+            id: "fix-login-a1b".to_string(),
+            phase: Phase::Working,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: "$ cargo test".to_string(),
+            changes: false,
+            answer: false,
+            listening: true,
+        };
+        let screen = showing(vec![agent], Some(card));
+        let drawn = painted(&screen, size);
+        let rule = drawn
+            .iter()
+            .find(|line| line.starts_with("fix-login-a1b · "))
+            .expect("the card's rule");
+        assert!(
+            rule.contains(RULE),
+            "the rule keeps at least one dash past the launch command: {rule:?}"
+        );
+        assert!(
+            rule.contains('…'),
+            "and it is the command that was cut: {rule:?}"
         );
     }
 
