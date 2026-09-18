@@ -143,7 +143,6 @@ amx new --dir /srv/app "tail the log"  # somewhere other than here
 amx new --file brief.md                # the task, read out of a file
 amx new --file -                       # the task, read off a pipe
 amx new --edit                         # the task, written in your editor
-amx new --no-parent "be my peer"       # in an agent's pane: a root, not a child
 amx rename importer auth               # what the wall calls it, afterwards
 ```
 
@@ -169,10 +168,10 @@ does, and what you leave in it is the task. Quit the editor without writing
 anything and you get the refusal an empty task always gets; quit it unhappily —
 `:cq` in vim — and nothing is started at all.
 
-`--no-parent` says a spawn typed inside an agent's pane is nobody's child. An
-agent started by amx carries its own id in the pane's environment, and `amx
-new` typed there records that id as its parent; `--no-parent` is the escape for
-the one that wants a peer instead.
+`new` is always a root, whichever pane it is typed in. An agent started by
+amx carries its own id in the pane's environment, and `amx new` typed there
+still records no parent: a child is asked for with `amx sub`, and nothing is
+one by accident.
 
 `--name` and `amx rename` name different things. `--name` is the id itself,
 chosen rather than cut out of the task, and it is what the pane, the branch and
@@ -1274,7 +1273,6 @@ amx interrupt <id>       # end the turn it is on, and leave the agent standing
 amx stop <id>            # asks what to do with the worktree and the branch
 amx stop <id> --force    # takes the defaults, asks nothing
 amx stop <id> --worktree keep --branch delete
-amx stop <id> --keep-children   # end it alone; its children carry on
 amx stop <id> --delete   # and forget the record too
 amx resume <id>          # start it again on the conversation it had
 amx resume <id> "and now the linter"   # and put this to it as its first turn
@@ -1308,10 +1306,10 @@ worktree with uncommitted work in it is always kept, whatever you answer.
 `--delete` says the record goes; `--force` says every question takes its
 default. They are separate on purpose.
 
-A parent's children are ended with it, deepest first: they were started to
-answer its questions, and one left running has nobody to answer to.
-`--keep-children` leaves them running. Stopping a child never touches its
-parent, and a child whose parent's record has been removed is read as a root.
+`stop` ends the one agent it names. A parent's children carry on, because a
+child is never its parent's to end, and stopping a child never touches its
+parent either; a family is stopped one id at a time. A child whose parent's
+record has been removed is read as a root.
 
 A worktree that goes takes its key in the vendor's own store with it. claude
 writes a `projects` entry for every directory it is started in, and amx cuts a

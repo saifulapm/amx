@@ -297,10 +297,10 @@ pub struct Meta {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// The agent whose pane this one was started in, where it was started in
-    /// one. A subagent is an ordinary agent whose record names a parent, and
-    /// `None` is a root: an agent a person's own shell started, one that said
-    /// `--no-parent`, or a record written before this field existed.
+    /// The agent `amx sub` named as this one's parent, where it named one.
+    /// A subagent is an ordinary agent whose record names a parent, and
+    /// `None` is a root: anything `amx new` started, a `sub --no-parent`, or
+    /// a record written before this field existed.
     ///
     /// The parent's own record is where its directory is read from, and a
     /// parent that has been removed — `stop --delete`, `clear`, `sweep` —

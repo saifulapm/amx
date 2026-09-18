@@ -33,7 +33,7 @@ max_children = 8
 
 # How deep a chain of subagents may go: 1 is a child and no grandchild, 0 is a
 # root that may not spawn at all. A spawn past this is refused before anything
-# is claimed. `amx new --no-parent` records no parent and is never bounded.
+# is claimed. Only `amx sub` records a parent, so only a sub is bounded.
 subagent_depth = 1
 
 # Whether `amx sub` takes --permission from the caller. A model and an effort

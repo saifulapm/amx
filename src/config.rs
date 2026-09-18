@@ -163,8 +163,8 @@ pub struct Config {
     ///
     /// A spawn whose computed depth is past this is refused before anything
     /// is claimed, the way a cap is, rather than after a pane a person then
-    /// has to clean up. `--no-parent` records no parent and so is never a
-    /// spawn this bounds.
+    /// has to clean up. Only `amx sub` records a parent, so only a sub is
+    /// a spawn this bounds.
     pub subagent_depth: usize,
     /// How many live children one parent may have at once. 0 is no ceiling
     /// of its own, which is what an ancestor that spawns a handful at a time
