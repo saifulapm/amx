@@ -178,8 +178,9 @@ the place where the thing being asked should be.
 nowhere else on the screen, and it is one word, so no width can break it: the
 question reads back whole at 54 and at 24 columns, *Quick safety check: Is this
 a project you created or one you trust? …* to the full stop. The options list
-is still empty, and that is the reading rather than a gap — the options are the
-numbered choices, and this screen numbers nothing.
+came back empty on this pass — the options were the numbered choices, and this
+screen numbers nothing — and that is what the 2.1.276 pass at the foot of the
+file answered, by reading the rows off the cursor glyph.
 
 **Every key the answer grammar allowed was wrong.** `amx answer` took `y`, `n`,
 `1`–`9`, `enter` and `esc` at a screen of this kind. Driven one key per fresh
@@ -204,7 +205,8 @@ the cursor and answers nothing while the record would say the question was
 answered. A bare `enter` is refused too, at a screen whose rows the record
 carries no numbers for: it takes whichever row the vendor opened on, and here
 that is the exit. What a waiting row prints is read off the same record, so
-this screen is offered the walk rather than `1-9`, and a key whose effect on
+this screen was offered the walk rather than `1-9` — `1-2` since the 2.1.276
+pass put the rows on the record — and a key whose effect on
 the screen amx cannot check leaves the record saying `waiting` — so the screen
 can be answered again rather than refused with *nothing to answer* while it is
 still on the pane.
@@ -1051,3 +1053,49 @@ should have: it is a vendor dialog amx has no verb for and no rule stands on it.
        ● High effort (default) ←/→ to adjust
 
        Enter to set as default · s to use this session only · Esc to cancel
+
+## What the 2.1.276 pass found
+
+Driven on 2026-09-18 against the claude on this machine, `claude --version`
+reporting `2.1.276 (Claude Code)`. One screen, the folder-trust gate, raised the
+way the passes above raised it: claude started in a folder its own store held no
+decision for, in a tmux pane of 30 rows at 220, 54 and 24 columns.
+
+The screen has not moved since 2.1.259. The 54-column and 24-column captures
+came back row for row the two in `## folder_trust` above, and 220 columns is the
+same box with the sentence on one row and the rest of it unchanged, down to
+where the cursor opens:
+
+     Security guide
+
+     ❯ No, exit
+       Yes, I trust this folder
+
+     Enter to confirm · Esc to cancel
+
+The 220-column capture is held whole in `src/rules.rs` as
+`TRUST_SCREEN_276_220`.
+
+What moved is the reading. The rule carries `marks = "❯"` now, which is what
+pi's four selectors have carried since 2026-09-14: the run of rows the cursor
+glyph is in is the list, and amx numbers it itself. The gate reads back two
+choices in the order the vendor draws them — `No, exit`, then `Yes, I trust this
+folder` — and the record says they are amx's numbers rather than the vendor's.
+So the row a person reads offers `1-2` instead of a walk typed blind, `amx
+answer <id> 2` is the `Up Down Enter` that reaches the row that trusts the
+folder, and `enter`, `y` and `n` are refused with the two digits offered in
+their place. `esc` still cancels. The walk is still an answer: `down enter` is
+what it always was, for a caller reading the rows rather than their numbers.
+
+Two things the mark does not do. A run the vendor numbered itself is read off
+its numbers, so the 2.1.226 captures in `src/rules.rs` — `❯ 1. Yes, I trust this
+folder` over `2. No, exit` — read back exactly as they did, unwalked, with the
+digits the vendor drew. And the question is unmoved: `asks` still anchors on
+`quick`, and the sentence reads whole at every width.
+
+The 24-column capture is where the wrap had to be read. claude hangs the rest of
+a label under the label, both at the same column — `Yes, I trust this` over
+`folder` — where pi wraps to the left of it and the indent is what tells a wrap
+from a choice. A row opening in lower case is the rest of the row above it, the
+way the prose reader already treats one, and that is what keeps this gate at two
+choices rather than three at the narrowest width driven.

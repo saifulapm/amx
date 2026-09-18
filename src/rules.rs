@@ -368,7 +368,13 @@ impl Rule {
         let marked = self
             .marks
             .as_deref()
-            .and_then(|mark| Some((screen.run_of(mark)?, mark)));
+            .and_then(|mark| Some((screen.run_of(mark)?, mark)))
+            // A run the vendor numbered is read off its numbers, mark or no
+            // mark. The numbers are keys a caller can press, and numbering the
+            // same rows again would offer a walk in their place — which is what
+            // a vendor drawing a cursor over a numbered list, as claude did
+            // until 2.1.259, would otherwise get.
+            .filter(|&(run, _)| !screen.numbered(run));
         let choices = marked
             .map(|(run, _)| run.0)
             .or_else(|| screen.first_option());
@@ -610,6 +616,13 @@ impl Screen {
         Some((from, to))
     }
 
+    /// Whether the run at `run` is a list the vendor numbered itself.
+    fn numbered(&self, (from, to): (usize, usize)) -> bool {
+        self.shown[from..=to]
+            .iter()
+            .any(|row| matches!(option_on(row), Some((1, _))))
+    }
+
     /// The choices of the run at `run`, in the order they are drawn.
     ///
     /// The mark and the space after it are what the list is measured by: a row
@@ -618,6 +631,13 @@ impl Screen {
     /// it, joined with one space. That is how the vendor wraps a label too long
     /// for the pane, and it is the only thing that tells a wrap from a choice
     /// on a screen with no numbers on it.
+    ///
+    /// Except where a vendor hangs its wrap under the label instead, as claude
+    /// does on the trust gate at 24 columns — `Yes, I trust this` over
+    /// `folder`, both at the label's own column. There the indent says nothing
+    /// and the wrap is read the way prose is: a row opening in lower case is
+    /// the rest of the row above it, since a choice is a label and a label
+    /// starts with a capital.
     fn marked_below(&self, run: (usize, usize), mark: &str) -> Vec<String> {
         let (from, to) = run;
         let rows = &self.shown[from..=to];
@@ -635,7 +655,7 @@ impl Screen {
             if label.is_empty() {
                 continue;
             }
-            if at >= column + 2 {
+            if at >= column + 2 && !wrapped(row) {
                 options.push(label.to_string());
             } else if let Some(above) = options.last_mut() {
                 above.push(' ');
@@ -1131,6 +1151,30 @@ mod tests {
 
  Enter to confirm · Esc
  to cancel
+";
+
+    /// The same screen as v2.1.276 draws it, at 220 columns on 2026-09-18, on a
+    /// folder the vendor's store has no decision for. Nothing under the
+    /// question has moved since 2.1.259: the rows are still unnumbered, the
+    /// cursor still opens on the exit, and the sentence is the 2.1.240 one. The
+    /// same version at 54 and 24 columns came back row for row the same as the
+    /// two captures above.
+    const TRUST_SCREEN_276_220: &str = "\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/amx-trust-276b
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
 ";
 
     /// The plan-mode approval screen claude's ExitPlanMode tool draws once a
@@ -2886,22 +2930,26 @@ Only showing models from configured providers. Use /login to add providers.
              from your team). If not, take a moment to review what's in this folder \
              first.";
         let numbered: &[&str] = &["Yes, I trust this folder", "No, exit"];
-        // 2.1.259 numbers nothing on this screen, and `options` is the
-        // numbered choices: there is no list left to read off it.
-        let unnumbered: &[&str] = &[];
-        for (what, screen, options) in [
-            ("2.1.226 at 220 columns", TRUST_SCREEN_220, numbered),
-            ("2.1.226 at 54 columns", TRUST_SCREEN_54, numbered),
-            ("2.1.259 at 54 columns", TRUST_SCREEN_259_54, unnumbered),
-            ("2.1.259 at 24 columns", TRUST_SCREEN_259_24, unnumbered),
+        // 2.1.259 and 2.1.276 number nothing on this screen, so the rows are
+        // read off the cursor glyph and amx numbers them itself, in the order
+        // the vendor draws them. The exit is first there, which is a fact a
+        // caller pressing a digit needs and the reason the numbers are the
+        // drawn order rather than the older screen's.
+        let marked: &[&str] = &["No, exit", "Yes, I trust this folder"];
+        for (what, screen, options, walked) in [
+            ("2.1.226 at 220 columns", TRUST_SCREEN_220, numbered, false),
+            ("2.1.226 at 54 columns", TRUST_SCREEN_54, numbered, false),
+            ("2.1.259 at 54 columns", TRUST_SCREEN_259_54, marked, true),
+            ("2.1.259 at 24 columns", TRUST_SCREEN_259_24, marked, true),
+            ("2.1.276 at 220 columns", TRUST_SCREEN_276_220, marked, true),
         ] {
             let asked = asked(claude(), screen);
             assert_eq!(asked.text, whole, "{what}");
             assert_eq!(asked.options, options, "{what}");
-            assert!(
-                !asked.walked,
-                "{what}: claude's document marks no screen, so nothing here is \
-                 a list amx numbered"
+            assert_eq!(
+                asked.walked, walked,
+                "{what}: a list amx numbered off the mark is walked, and one \
+                 the vendor numbered itself is not"
             );
         }
     }
@@ -3863,10 +3911,9 @@ Only showing models from configured providers. Use /login to add providers.
     fn rules_which_screens_mark_a_choice_is_the_documents_to_say() {
         // Which screens draw a marked list rather than a numbered one is a
         // fact about the vendor, so it is written in that vendor's own
-        // document. claude numbers what it asks — the one screen of its own
-        // that does not is its 2.1.259 trust gate, which takes a walk and no
-        // digit at all — and a rule that says nothing reads numbers the way it
-        // always has.
+        // document. claude numbers what it asks but for its trust gate, which
+        // has drawn a cursor and no digits since 2.1.259, and a rule that says
+        // nothing reads numbers the way it always has.
         let marks = |screens: &'static Ruleset| -> Vec<&'static str> {
             screens
                 .rules()
@@ -3885,7 +3932,11 @@ Only showing models from configured providers. Use /login to add providers.
             ],
             "every screen pi draws a selector on"
         );
-        assert!(marks(claude()).is_empty(), "claude numbers what it asks");
+        assert_eq!(
+            marks(claude()),
+            ["folder_trust"],
+            "the one screen claude draws a cursor on instead of numbers"
+        );
     }
 
     #[test]

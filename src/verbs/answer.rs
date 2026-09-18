@@ -539,11 +539,14 @@ fn digits(rows: usize) -> String {
 /// Whether the screen showing is a list the vendor puts no numbers on, where
 /// the key that takes what is highlighted takes a row amx cannot see.
 ///
-/// The trust gate is the one this was measured on, and the record says as much:
-/// the choices a reader hands back are the numbered ones, and 2.1.259 numbers
-/// none of that screen's. Everywhere else the highlighted row is either one amx
-/// has read and numbered, or a prompt whose one answer is `Enter` — and a
-/// refusal there would leave that prompt with nothing that answers it.
+/// The trust gate is the one this was measured on. Its rows are read off the
+/// cursor glyph now and the record comes back walked, with numbers of amx's own
+/// on it, so this is what is left for the gate a reader counted no rows on at
+/// all: no digit means anything there, and `Enter` takes whichever row the
+/// vendor opened on — the exit, on 2.1.259 and 2.1.276. Everywhere else the
+/// highlighted row is either one amx has read and numbered, or a prompt whose
+/// one answer is `Enter` — and a refusal there would leave that prompt with
+/// nothing that answers it.
 fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
     kind == Some(Kind::Trust) && state.options.is_empty()
 }
@@ -1674,6 +1677,41 @@ mod tests {
             answer(&given("enter"), Some(Kind::Trust), &numbered),
             Ok(Answer::Key("Enter".to_string())),
             "including the trust screen of a vendor that still numbers its rows"
+        );
+    }
+
+    #[test]
+    fn surfaces_claudes_own_gate_takes_a_digit_now_its_rows_are_read() {
+        // The gate numbers neither of its rows, and since 2026-09-18 the rule
+        // reads both off the cursor glyph: `No, exit` first, the way 2.1.259
+        // and 2.1.276 draw them. A digit is then the walk that reaches the row
+        // the caller meant, which is the answer the walk was standing in for.
+        let gate = walked(
+            "Quick safety check: Is this a project you created or one you trust?",
+            &["No, exit", "Yes, I trust this folder"],
+            Kind::Trust,
+        );
+        assert_eq!(typed(&gate, &given("1")), keys(&["Up", "Enter"]));
+        assert_eq!(
+            typed(&gate, &given("2")),
+            keys(&["Up", "Down", "Enter"]),
+            "the row that trusts the folder, from wherever the cursor was"
+        );
+
+        // The walk itself still answers it, for a caller who reads the rows
+        // rather than their numbers.
+        assert_eq!(typed(&gate, &given("down enter")), keys(&["Down", "Enter"]));
+
+        // And the keys the screen swallows are refused as they were, with the
+        // numbers amx counted offered in their place. `enter` among them: the
+        // cursor opens on the exit.
+        for swallowed in ["enter", "y", "n", "3"] {
+            let refused = answer(&given(swallowed), Some(Kind::Trust), &gate).expect_err(swallowed);
+            assert!(refused.contains("press 1-2"), "{swallowed}: {refused}");
+        }
+        assert_eq!(
+            answer(&given("esc"), Some(Kind::Trust), &gate),
+            Ok(Answer::Key("Escape".to_string()))
         );
     }
 

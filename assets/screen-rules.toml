@@ -210,9 +210,19 @@ hint = ["/effort"]
 # drop the `Quick safety check:` prefix it drifted in on, the question goes
 # quiet rather than wrong.
 #
-# The choices read back empty here, and that is the reading rather than a gap:
-# they are the numbered ones, and this screen numbers nothing. Neither row is
-# reachable with a key `amx answer` has anyway — see docs/claude-screens.md.
+# `marks` is the cursor glyph, and it is what puts the two rows on the record.
+# The choices read back empty while the rule said nothing: they were the
+# numbered ones, and this screen has numbered nothing since 2.1.259, so a
+# waiting row listed a question with no answer under it and the only grammar
+# left was a walk typed blind. With the mark, the run it is in is the list —
+# `No, exit` and then `Yes, I trust this folder`, in the order the vendor draws
+# them — amx numbers it itself, and `amx answer <id> 1` is the walk that reaches
+# the row the caller means. Reconfirmed at 2.1.276 on 2026-09-18, unchanged at
+# 220, 54 and 24 columns.
+#
+# The mark leaves the wording alone: where the vendor numbers its rows, as
+# 2.1.226 did, the numbers are keys the caller can press and the run is read off
+# those instead — see `Rule::question`.
 #
 # `setup` says this screen stands in front of the work rather than inside it:
 # the vendor draws it before there is a session to speak of and will do nothing
@@ -233,6 +243,7 @@ any = ["enter to confirm"]
 within = 19
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 asks = { sentence = "quick" }
+marks = "❯"
 
 # claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
 # columns. It takes forcing: a machine whose claude runs in auto mode approves
