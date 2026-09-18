@@ -1191,17 +1191,21 @@ fn rule(
             format!(" {edge} {held} more")
         }
     };
-    // The state of a turn under way, before the count, and never the summary:
+    // How the turn is going, before the count, and never the row's summary:
     // the card under this rule is what the agent is doing, at length, and the
-    // row's summary said again at the far end of the rule was a second row
-    // (Saiful, 2026-09-18). What the rule says is the one thing the card
-    // cannot show — that the turn is still running, and whether the vendor
-    // is holding it open for shells it started.
+    // summary said again at the far end of the rule was a second row (Saiful,
+    // 2026-09-18). The vendor's own spinner line where a reader found one on
+    // the pane, the shells the vendor is holding the turn open for where it
+    // is, and thinking where neither has anything to say.
     let doing = match card.phase {
         Phase::Starting | Phase::Working => format!(
             " {}",
             match on.map_or(0, |view| view.state.background) {
-                0 => THINKING.to_string(),
+                0 => on
+                    .and_then(|view| view.doing.as_deref())
+                    .map(inert)
+                    .filter(|said| !said.is_empty())
+                    .unwrap_or_else(|| THINKING.to_string()),
                 n => shells_running(n),
             }
         ),
@@ -1747,6 +1751,7 @@ mod tests {
                 // hands both clocks the same one.
                 worked: age,
             },
+            doing: None,
         }
     }
 
@@ -2492,6 +2497,16 @@ index e69de29..0000000
             working.ends_with("thinking…"),
             "and the far end says the turn is running, never the summary — the \
              card under the rule is what the agent is doing: {working:?}"
+        );
+
+        // The vendor's own line about the turn, where a reader found one
+        // spinning on the pane, whether or not the record names a tool.
+        let mut spinning = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
+        spinning.doing = Some("Nesting… (15s · ↓ 1.3k tokens)".to_string());
+        let spinning = looked(spinning);
+        assert!(
+            spinning.ends_with("Nesting… (15s · ↓ 1.3k tokens)"),
+            "the spinner line whole, at the far end: {spinning:?}"
         );
 
         // A turn the vendor ended with shells still running says so, since

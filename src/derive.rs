@@ -191,6 +191,13 @@ pub struct View {
     pub meta: Meta,
     pub state: State,
     pub verdict: Verdict,
+    /// The line the vendor spins while a turn runs, as the reader found it on
+    /// the pane: `Nesting… (15s · ↓ 1.3k tokens)`. Kept apart from the summary,
+    /// which the transcript's last row wins while a tool runs, for the one
+    /// place that wants the vendor's own words about the turn and nothing
+    /// else — the card's rule (Saiful, 2026-09-18). `None` where no reader was
+    /// at the pane or no line was spinning on it.
+    pub doing: Option<String>,
 }
 
 impl View {
@@ -219,6 +226,7 @@ impl View {
             meta,
             state,
             verdict,
+            doing: None,
         }
     }
 
@@ -787,11 +795,13 @@ fn wants_the_screen(
 /// opens with. One that names neither has no line to find, and is not charged
 /// a capture for it.
 ///
-/// A record that names a tool stands, fresh or not: `Running Bash` is the
-/// answer the row wants while a tool runs, and the quiet after one is inside
-/// the window [`FRESH`] was measured to cover.
+/// Read whether or not the record names a tool. The row keeps `Running Bash`
+/// while a tool runs — see [`seen`], which lets the line onto the row only
+/// where the record says nothing — but the card's rule wants the vendor's own
+/// words about the turn the whole way through it, and that line is on the
+/// pane the whole time (Saiful, 2026-09-18).
 fn wants_the_doing(screens: &Ruleset, state: &State) -> bool {
-    state.state == Phase::Working && state.summary.is_none() && screens.furniture().spins()
+    state.state == Phase::Working && screens.furniture().spins()
 }
 
 /// When anything was last heard from the agent: the record, and the beat on
@@ -1545,14 +1555,22 @@ fn seen(agent: &Agent, meta: Meta, mut state: State, reading: Reading) -> View {
                 .or_else(|| newest_said(agent, &meta, &state))
         })
         .flatten();
+    // The spinner line goes onto the row only where the record names no tool
+    // or the hooks have gone quiet: fresh hooks naming `Running Bash` are the
+    // answer the row wants while that tool runs. It goes onto the view whole
+    // either way, for the card's rule.
+    let spinning = reading.doing.clone();
+    let stands = reading.verdict.evidence != Evidence::Hooks || state.summary.is_none();
     if let Some(line) = fresher.or_else(|| {
         reading
             .doing
-            .filter(|_| !a_rewrite_stands(agent, &meta, &state))
+            .filter(|_| stands && !a_rewrite_stands(agent, &meta, &state))
     }) {
         state.summary = Some(line);
     }
-    View::new(meta, state, reading.verdict)
+    let mut view = View::new(meta, state, reading.verdict);
+    view.doing = spinning;
+    view
 }
 
 /// The newest thing said in the transcript the record names, as the one line a
@@ -3116,13 +3134,29 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_says_what_an_agent_is_doing_only_where_it_read_it() {
-        // Fresh hooks and a record that names what is being run, so no screen
-        // is captured at all and the record's own account of the turn stands.
+        // Fresh hooks and a record that names what is being run: the line is
+        // read, since the card's rule wants the vendor's words the whole turn,
+        // but the row keeps the record's own account while that tool runs.
         let mut running = state(Phase::Working, 1_000);
         running.summary = Some("Running Bash".to_string());
         let fresh = reading(&running, true, Some(A_WORKING_SCREEN), 1_000);
         assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
-        assert_eq!(fresh.doing, None);
+        assert_eq!(
+            fresh.doing.as_deref(),
+            Some("Forging… (22s · ↓ 1.3k tokens)")
+        );
+        let root = TempDir::new().unwrap();
+        let view = seen(&an_agent(&root), meta(), running.clone(), fresh);
+        assert_eq!(
+            view.state.summary.as_deref(),
+            Some("Running Bash"),
+            "the row keeps the tool the fresh hooks named"
+        );
+        assert_eq!(
+            view.doing.as_deref(),
+            Some("Forging… (22s · ↓ 1.3k tokens)"),
+            "and the view carries the vendor's line beside it"
+        );
 
         // And a screen with no turn running on it says nothing about one: a
         // question, a prompt nobody is at, and a shell amx cannot account for.
@@ -4709,6 +4743,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             meta: meta(),
             state: State::default(),
             verdict: claimed("folder_trust"),
+            doing: None,
         };
         assert_eq!(read.kind(), Some(Kind::Trust));
         assert_eq!(read.json()["kind"], "trust");
@@ -4721,6 +4756,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
                 ..State::default()
             },
             verdict: claimed("permission_prompt"),
+            doing: None,
         };
         assert_eq!(told.kind(), Some(Kind::Question));
     }

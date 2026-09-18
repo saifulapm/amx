@@ -2175,6 +2175,7 @@ mod tests {
                 age: 1,
                 worked: 1,
             },
+            doing: None,
         }
     }
 

@@ -1119,6 +1119,7 @@ mod tests {
                 age: 40,
                 worked: 40,
             },
+            doing: None,
         }
     }
 

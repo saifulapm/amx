@@ -664,6 +664,7 @@ mod tests {
                 age: 3_640,
                 worked: 12,
             },
+            doing: None,
         }
     }
 

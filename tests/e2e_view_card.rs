@@ -365,25 +365,25 @@ fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
 
     let view = amx.in_a_terminal(&[], &[]);
     card_on(&amx, &view, "port-cli-b2c");
-    let ruled = amx.until("the rule to say the turn is running", || {
+    let ruled = amx.until("the rule to say how the turn is going", || {
         let drawn = screen(&amx, &view);
         card_lines(&drawn)
             .first()
             .map(|rule| (*rule).to_string())
-            .filter(|rule| rule.contains("thinking"))
+            .filter(|rule| rule.contains("Nesting"))
     });
 
-    // The state of the turn at the far end of the rule, and never the row's
-    // summary or the vendor's spinner words: the card under the rule is what
-    // the agent is doing, and the rule says the one thing it cannot — that
-    // the turn is still running (Saiful, 2026-09-18).
+    // The vendor's own spinner line at the far end of the rule, and never the
+    // row's summary — the record names `Running Read` and the rule does not
+    // say so: the card under it is what the agent is doing, and the rule says
+    // how the turn is going in the vendor's words (Saiful, 2026-09-18).
     assert!(
-        ruled.trim_end().ends_with("thinking…"),
-        "the turn's state at the far end of the rule:\n{ruled}"
+        ruled.trim_end().ends_with("Nesting… (15s · ↓ 1.3k tokens)"),
+        "the vendor's line whole, at the far end of the rule:\n{ruled}"
     );
     assert!(
-        !ruled.contains("Nesting") && !ruled.contains("Running"),
-        "and neither the spinner line nor the summary: {ruled:?}"
+        !ruled.contains("Running Read"),
+        "and not the record's summary: {ruled:?}"
     );
     // And the mark the row wears in front of the name, a frame of the pulse a
     // working row breathes through.
@@ -1930,8 +1930,10 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
     }
     // The pane is not under the record: what it shows is the same turn in
     // the vendor's dress, and the words of it are on the record already. The
-    // spinner line is on the row, because a working row says what the vendor
-    // says it is doing, and once on the screen is the whole of it.
+    // spinner line is on the row and at the far end of the card's rule,
+    // because both say how the turn is going in the vendor's words, and the
+    // body under the rule is the record's alone.
+    let body = card_lines(&carded)[1..].join("\n");
     for pictured in [
         "i ported the importer",
         "still thinking",
@@ -1939,7 +1941,7 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
         "execute amx-v2",
     ] {
         assert!(
-            !card.contains(pictured),
+            !body.contains(pictured),
             "{pictured} is the pane's, not the record's:\n{carded}"
         );
     }

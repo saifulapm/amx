@@ -440,6 +440,7 @@ mod tests {
                 // hands both clocks the same one.
                 worked: age,
             },
+            doing: None,
         }
     }
 

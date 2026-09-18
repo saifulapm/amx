@@ -169,6 +169,7 @@ mod tests {
                 age,
                 worked: age,
             },
+            doing: None,
         }
     }
 

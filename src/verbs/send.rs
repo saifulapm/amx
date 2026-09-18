@@ -479,6 +479,7 @@ mod tests {
                 age: 3,
                 worked: 3,
             },
+            doing: None,
         }
     }
 
