@@ -89,7 +89,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     let (config, _) = crate::config::for_dir(&dir);
     let config = &config;
 
-    let mut spawn_args = as_new(args, parent.is_some());
+    let mut spawn_args = as_new(args, parent.as_ref());
 
     // The role's dials before the parent's, so a role beats an inheritance and
     // a typed flag beats both. Its `worktree` stands where the verb's own
@@ -196,10 +196,13 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
 /// The two spawns `amx sub` makes: the child that records a parent and the
 /// top-level one a person's own shell gets.
 ///
-/// A child shares the parent's directory — `--worktree` is the child that will
-/// change something — while a spawn from outside a pane is an ordinary `amx
-/// new` and cuts a tree by default, unless `--no-worktree` says otherwise.
-fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
+/// This is the one place a parent is handed to `new`: `new` typed in a pane
+/// records none of its own. A child shares the parent's directory —
+/// `--worktree` is the child that will change something — while a spawn from
+/// outside a pane is an ordinary `amx new` and cuts a tree by default, unless
+/// `--no-worktree` says otherwise.
+fn as_new(args: &SubArgs, parent: Option<&Meta>) -> NewArgs {
+    let has_parent = parent.is_some();
     NewArgs {
         task: Some(args.task.clone()),
         file: None,
@@ -208,7 +211,6 @@ fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
         role: args.role.clone(),
         dir: None,
         no_worktree: args.no_worktree || (has_parent && !args.worktree),
-        no_parent: args.no_parent,
         base: None,
         branch: None,
         pr: None,
@@ -217,6 +219,7 @@ fn as_new(args: &SubArgs, has_parent: bool) -> NewArgs {
         agent: args.agent.clone(),
         vendor_args: args.vendor_args.clone(),
         context_brief: None,
+        parent: parent.map(|parent| parent.id.clone()),
     }
 }
 

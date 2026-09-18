@@ -105,14 +105,13 @@ impl Launch {
     }
 }
 
-/// Where a spawn stands in a family: the agent whose pane it was typed in,
-/// where `$AMX_ID` names a record in this state root, and the depth that puts
+/// Where a spawn stands in a family: the agent `amx sub` named as its parent,
+/// where that id names a record in this state root, and the depth that puts
 /// it at — one more than its parent's.
 ///
-/// Parentage is a rule rather than a flag: `_boot` puts an agent's own id in
-/// its pane, every process in the pane inherits it, and `amx new` typed there
-/// is a child. `--no-parent` is the escape for an agent that wants a peer,
-/// and a person's own shell has no `AMX_ID` and records neither.
+/// A child is asked for, never inherited: `amx new` is a root whatever pane
+/// it is typed in, and `amx sub` is the one verb that reads the pane's
+/// `AMX_ID` (or its `--parent`) and hands the id in on `NewArgs::parent`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Lineage {
     parent: Option<String>,
@@ -120,20 +119,12 @@ struct Lineage {
 }
 
 impl Lineage {
-    /// What the environment this spawn was typed in says about its family.
+    /// What the parent this spawn was asked for says about its family.
     ///
-    /// An id that names no record here — an `AMX_ID` somebody exported by
-    /// hand, or a parent since removed — records nothing, the way a person's
-    /// own shell does.
-    fn of(
-        root: &Path,
-        env: &std::collections::BTreeMap<String, String>,
-        args: &NewArgs,
-    ) -> Lineage {
-        if args.no_parent {
-            return Lineage::default();
-        }
-        let Some(parent) = env.get(crate::hook::ID_ENV) else {
+    /// An id that names no record here — a parent since removed — records
+    /// nothing, the way a spawn that named none does.
+    fn of(root: &Path, args: &NewArgs) -> Lineage {
+        let Some(parent) = &args.parent else {
             return Lineage::default();
         };
         let Ok(meta) = crate::store::Agent::open(root, parent).and_then(|agent| agent.meta())
@@ -476,11 +467,11 @@ fn run_aloud(
         }
     };
 
-    // Where this spawn stands in a family, read off the environment it was
-    // typed in. A spawn past the configured depth is refused here, before a
+    // Where this spawn stands in a family, read off the parent it was asked
+    // for. A spawn past the configured depth is refused here, before a
     // tree is cut or an id is claimed, the way a cap is: there is nothing to
     // clean up and nobody has to answer for a pane that should not exist.
-    let lineage = Lineage::of(root, &env, args);
+    let lineage = Lineage::of(root, args);
     if lineage.depth as usize > config.subagent_depth {
         writeln!(
             problems,
@@ -1103,7 +1094,6 @@ mod tests {
             role: None,
             dir: None,
             no_worktree: false,
-            no_parent: false,
             base: None,
             branch: None,
             pr: None,
@@ -1117,6 +1107,7 @@ mod tests {
             }),
             vendor_args: Vec::new(),
             context_brief: None,
+            parent: None,
         }
     }
 
@@ -1131,7 +1122,6 @@ mod tests {
             role: None,
             dir: None,
             no_worktree: false,
-            no_parent: false,
             base: None,
             branch: None,
             pr: None,
@@ -1140,6 +1130,7 @@ mod tests {
             agent: None,
             vendor_args: Vec::new(),
             context_brief: None,
+            parent: None,
         }
     }
 

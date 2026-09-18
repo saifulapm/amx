@@ -540,16 +540,6 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_worktree: bool,
 
-    /// Record no parent, even inside an agent's pane.
-    ///
-    /// Parentage is a rule rather than a flag: a spawn typed in an agent's
-    /// pane carries that pane's id in its environment, and records it as its
-    /// parent. This is the explicit escape for the agent that wants a peer
-    /// rather than a child — the one a person's own shell gets for free, by
-    /// having no `AMX_ID` to record.
-    #[arg(long)]
-    pub no_parent: bool,
-
     /// Cut the worktree from this ref instead of from what is checked out.
     ///
     /// Any branch, tag or commit git will resolve. It is what the agent starts
@@ -624,6 +614,12 @@ pub struct NewArgs {
     /// (see `SubArgs::context`). Never on the command line.
     #[arg(skip)]
     pub context_brief: Option<String>,
+
+    /// The agent this one is a child of, set by `amx sub` and by nothing
+    /// else: `new` typed in a pane is a root whatever the pane's `AMX_ID`
+    /// says, and a child is asked for by name. Never on the command line.
+    #[arg(skip)]
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Args)]

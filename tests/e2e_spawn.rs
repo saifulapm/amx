@@ -706,11 +706,28 @@ fn spawned_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) ->
         .expect("running amx new")
 }
 
+/// `amx sub --bg` typed in `parent`'s pane: the one verb that records a
+/// parent. The id is the line it leaves on stderr.
+fn sub_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Output {
+    amx.amx_command(&[&["sub", "--bg"], args].concat())
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .env("AMX_ID", parent)
+        .output()
+        .expect("running amx sub")
+}
+
+fn id_on(out: &Output) -> String {
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "amx sub: {said}");
+    assert_eq!(said.lines().count(), 1, "one line on stderr: {said:?}");
+    said.trim().to_string()
+}
+
 #[test]
-fn new_inside_a_pane_records_that_pane_as_the_parent() {
-    // Parentage is a rule rather than a flag: a pane amx started carries its
-    // own id in the environment, so a spawn typed inside it is a child, and a
-    // person's own shell, with no AMX_ID, is nobody's.
+fn new_inside_a_pane_is_still_a_root() {
+    // A child is asked for with `amx sub`, never inherited: a pane amx started
+    // carries its own id in the environment, and `amx new` typed inside it
+    // records no parent all the same.
     let amx = Harness::new();
     let mock = amx.mock();
     let parent = id_of(&new(
@@ -727,8 +744,12 @@ fn new_inside_a_pane_records_that_pane_as_the_parent() {
     ));
 
     let theirs = amx.meta(&child);
-    assert_eq!(theirs["parent"], parent, "the record names the pane");
-    assert_eq!(theirs["depth"], 1, "one below its parent");
+    assert_eq!(
+        theirs["parent"],
+        Value::Null,
+        "the pane's id is not a parent"
+    );
+    assert_eq!(theirs["depth"], 0, "a root beside the one it was typed in");
     let ours = amx.meta(&parent);
     assert_eq!(
         ours["parent"],
@@ -747,7 +768,7 @@ fn a_childs_pane_is_told_its_parent_and_its_depth() {
         "a-dispatched-worker",
         &["--no-worktree", "--agent", &mock, "the parent"],
     ));
-    let child = id_of(&spawned_inside(
+    let child = id_on(&sub_inside(
         &amx,
         "a-dispatched-worker",
         &parent,
@@ -777,14 +798,14 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
         "a-dispatched-worker",
         &["--no-worktree", "--agent", &mock, "the root"],
     ));
-    let child = id_of(&spawned_inside(
+    let child = id_on(&sub_inside(
         &amx,
         "a-dispatched-worker",
         &root,
         &["--no-worktree", "--agent", &mock, "the child"],
     ));
 
-    let grandchild = spawned_inside(
+    let grandchild = sub_inside(
         &amx,
         "a-dispatched-worker",
         &child,
@@ -804,12 +825,12 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
         "and nothing was claimed"
     );
 
-    // --no-parent is the escape: it records no parent and is never bounded.
+    // `amx new` typed in the same pane is a root, and a root is never bounded.
     let peer = id_of(&spawned_inside(
         &amx,
         "a-dispatched-worker",
         &child,
-        &["--no-parent", "--no-worktree", "--agent", &mock, "a peer"],
+        &["--no-worktree", "--agent", &mock, "a peer"],
     ));
     assert_eq!(amx.meta(&peer)["parent"], Value::Null);
     assert_eq!(amx.meta(&peer)["depth"], 0);

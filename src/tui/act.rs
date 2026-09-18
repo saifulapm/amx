@@ -1588,7 +1588,6 @@ pub fn start(
         role: None,
         dir: None,
         no_worktree: false,
-        no_parent: false,
         base: turned.base,
         branch: turned.branch,
         pr: turned.pr,
@@ -1599,6 +1598,7 @@ pub fn start(
         // The view types a task, and a digest is a subagent's preamble: there
         // is nobody above it to read one from.
         context_brief: None,
+        parent: None,
     };
 
     spawned(root, &dir, &config, &args, "started")
