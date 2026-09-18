@@ -671,6 +671,10 @@ struct Screen {
     /// far one page is. The paint owns the clamp: only it knows the rows the
     /// body was given.
     scroll: paint::Scroll,
+    /// Where the window over the list stands, and whether it owes the cursor a
+    /// move. The paint owns this clamp too, for the same reason: how far the
+    /// window can be scrolled is a question about the band it is drawn in.
+    wall: paint::WallScroll,
     /// Which page of the keys the overlay is showing. The paint owns the clamp
     /// here too, for the same reason: only it knows how many pages a screen
     /// this shape made of them.
@@ -1361,6 +1365,13 @@ impl Screen {
     /// second walk of a disk. One entry each, in the order the agents were
     /// read: a word offered twice is a choice between two things that look
     /// identical.
+    ///
+    /// A reading that has lost the row the cursor was on moves the cursor, and
+    /// the window follows it there the way it follows a keypress. Only that
+    /// reading: an agent that came or went above the cursor leaves it on its
+    /// own row, and a window that came back to the cursor every time the clock
+    /// read the records would be a wall nobody could scroll away from for a
+    /// second.
     fn showing(&mut self, views: Vec<View>) {
         self.projects.clear();
         for view in &views {
@@ -1369,7 +1380,12 @@ impl Screen {
                 self.projects.push(project);
             }
         }
+        let on = self.list.selected().map(|view| view.id().to_string());
         self.list.show(views);
+        let still = self.list.selected().map(|view| view.id());
+        if on.is_some() && on.as_deref() != still {
+            self.wall.follow.set(true);
+        }
     }
 
     /// Paint in what the palette file says now.
@@ -3310,6 +3326,12 @@ impl Screen {
     /// The cursor has moved. A diff belongs to the agent it was taken of, so
     /// it does not follow the cursor onto the next one.
     ///
+    /// The window over the list is told to come after it, which it does at the
+    /// next frame and by as little as it can: a cursor still on a drawn row
+    /// moves nothing. Every cursor move comes through here, which is why this
+    /// is where the window hears about one — and why the wheel, which moves no
+    /// cursor, does not come through here at all.
+    ///
     /// The page goes with the press wherever the cursor lands, the end of the
     /// list included: the arrows retake the card, exactly as they did before
     /// there was a page to keep. The card up is put back where it opens
@@ -3318,6 +3340,7 @@ impl Screen {
     /// and one onto a heading holds the card it found — and a card left at
     /// nothing is a conversation thrown back to its first words.
     fn moved(&mut self) {
+        self.wall.follow.set(true);
         self.scroll
             .open_at(self.card.as_ref().map_or(0, Card::opens_at));
         if self.look == Look::Changes {
@@ -3336,6 +3359,26 @@ impl Screen {
         self.list
             .narrow(vec![Narrow::State(None), Narrow::Name(None)]);
         self.follow_the_cursor();
+    }
+
+    /// One line of the wall under the pointer, the way a page scrolls.
+    ///
+    /// The cursor stays where somebody left it, card and all: a wheel is a
+    /// look somewhere else on the list, not a move to another agent, and a
+    /// wheel that took the card with it would be a hand on the mouse answering
+    /// questions nobody asked. Only the paint clamps it, so a wheel past
+    /// either end of the list lands on the end.
+    ///
+    /// The pointer's row goes, because the rows moved under it: the line it
+    /// was resting on is not the line it is over now, and the next movement
+    /// says which one that is.
+    fn scrolled(&mut self, up: bool) {
+        let top = self.wall.top.get();
+        self.wall.top.set(match up {
+            true => top.saturating_sub(1),
+            false => top.saturating_add(1),
+        });
+        self.hover = None;
     }
 
     /// A whole page into the card's body, or back toward its natural edge.
@@ -3477,8 +3520,9 @@ impl Screen {
 
     /// What the mouse does: the list takes it. A click on a row is enter on
     /// it — the cursor lands and the agent's window comes forward — a click
-    /// on a heading or the fold keeps its toggle, the wheel is the walk — or
-    /// a page, when the pointer is over an open card — and the pointer
+    /// on a heading or the fold keeps its toggle, the wheel scrolls the wall
+    /// a line at a time — or pages the card, when the pointer is over one —
+    /// and the pointer
     /// resting on a row or a heading tints it without moving the cursor,
     /// and is where `ctrl+x` is read.
     /// Nothing else is clickable, and the clicks and the wheel are the
@@ -3531,11 +3575,7 @@ impl Screen {
                 if self.card.is_some() && self.map.over_the_card(mouse.column, mouse.row) {
                     self.paged(up);
                 } else {
-                    match up {
-                        true => self.list.up(),
-                        false => self.list.down(),
-                    }
-                    self.moved();
+                    self.scrolled(up);
                 }
             }
             _ => {}
@@ -10919,8 +10959,149 @@ diff --git a/src/bar.rs b/src/bar.rs
         );
     }
 
+    /// More finished agents than a band in one of these frames is tall, so
+    /// there is a list to scroll and a cursor that can leave the screen.
+    fn a_tall_wall() -> Vec<View> {
+        (0..20)
+            .map(|n| finished_saying(&format!("row-{n:02}-a1b"), "did what it was asked"))
+            .collect()
+    }
+
     #[test]
-    fn mouse_wheel_walks_the_list_and_pages_the_card_under_the_pointer() {
+    fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(a_tall_wall());
+        a_frame(&mut screen);
+        let on = screen.list.cursor();
+
+        // The pointer resting on a row, and three lines of wheel under it: the
+        // window is three rows down the list, the cursor is where it was —
+        // off the top of the band now — and the line the pointer was on goes
+        // with the rows that moved out from under it.
+        screen
+            .moused(
+                mouse(MouseEventKind::Moved, 5, 5),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(screen.hover.is_some(), "the pointer is on a row");
+        for _ in 0..3 {
+            screen
+                .moused(
+                    mouse(MouseEventKind::ScrollDown, 5, 5),
+                    root.path(),
+                    &config,
+                    None,
+                )
+                .unwrap();
+        }
+        a_frame(&mut screen);
+        assert_eq!(screen.wall.top.get(), 3, "three lines, three rows");
+        assert_eq!(screen.list.cursor(), on, "and no cursor moved");
+        assert_eq!(screen.hover, None, "the rows moved under the pointer");
+
+        // A click lands on the row the frame drew rather than on the row the
+        // list would have drawn there unscrolled: the band opens on row 3 of
+        // the screen, which is the item the window stands on.
+        // The reach past the landing has no record to carry a window back
+        // from, which is not what this is about: the cursor is.
+        let _ = click(&mut screen, 5, 3, root.path(), &config);
+        assert_eq!(
+            screen.list.selected().unwrap().id(),
+            "row-02-a1b",
+            "the third item, which is what the first drawn line says"
+        );
+        a_frame(&mut screen);
+        assert_eq!(
+            screen.wall.top.get(),
+            3,
+            "and the cursor it landed on is on the screen, so nothing followed"
+        );
+
+        // Wheel-up past the top is the top, not a window over rows there are
+        // none of.
+        for _ in 0..9 {
+            screen
+                .moused(
+                    mouse(MouseEventKind::ScrollUp, 5, 5),
+                    root.path(),
+                    &config,
+                    None,
+                )
+                .unwrap();
+        }
+        a_frame(&mut screen);
+        assert_eq!(screen.wall.top.get(), 0);
+    }
+
+    #[test]
+    fn keys_move_the_cursor_and_the_window_comes_after_it() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(a_tall_wall());
+        let items = screen.list.items().len();
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+        };
+        a_frame(&mut screen);
+
+        // G is the end of the list, and the window is on its last page: the
+        // wheel has nowhere further down to go from there.
+        press(&mut screen, KeyCode::Char('G'));
+        a_frame(&mut screen);
+        assert_eq!(screen.list.cursor(), items - 1);
+        let bottom = screen.wall.top.get();
+        assert!(bottom > 0, "the end of this list is off the first page");
+        screen.scrolled(false);
+        a_frame(&mut screen);
+        assert_eq!(screen.wall.top.get(), bottom, "the last page is the last");
+
+        // gg is the top of it, window and all.
+        press(&mut screen, KeyCode::Char('g'));
+        press(&mut screen, KeyCode::Char('g'));
+        a_frame(&mut screen);
+        assert_eq!(screen.list.cursor(), 0);
+        assert_eq!(screen.wall.top.get(), 0);
+
+        // How tall the band was, which is what the last page says: `j` walked
+        // one line past the last drawn one moves the window by that one row
+        // and no more, and the rows before it moved it nothing at all.
+        let visible = items - bottom;
+        while screen.list.cursor() < visible - 1 {
+            press(&mut screen, KeyCode::Char('j'));
+        }
+        a_frame(&mut screen);
+        assert_eq!(screen.wall.top.get(), 0, "the last drawn line is still one");
+        press(&mut screen, KeyCode::Char('j'));
+        a_frame(&mut screen);
+        assert_eq!(screen.list.cursor(), visible);
+        assert_eq!(screen.wall.top.get(), 1, "one row of cursor, one of window");
+
+        // And `k` back over the first drawn line is the same row the other
+        // way: the rows down to it move nothing, and the one past it moves
+        // the window one.
+        while screen.list.cursor() > 1 {
+            press(&mut screen, KeyCode::Char('k'));
+        }
+        a_frame(&mut screen);
+        assert_eq!(
+            screen.wall.top.get(),
+            1,
+            "the first drawn line is still one"
+        );
+        press(&mut screen, KeyCode::Char('k'));
+        a_frame(&mut screen);
+        assert_eq!(screen.list.cursor(), 0);
+        assert_eq!(screen.wall.top.get(), 0);
+    }
+
+    #[test]
+    fn mouse_wheel_pages_the_card_under_the_pointer_and_scrolls_the_list_beside_it() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let long: String = (0..40).map(|n| format!("said {n}\n")).collect();
@@ -10937,14 +11118,16 @@ diff --git a/src/bar.rs b/src/bar.rs
                 .unwrap();
         };
 
-        // No card up: the wheel is the walk.
+        // No card up: the wheel is the window, and two rows in twenty of band
+        // are a list with nowhere to scroll to and a cursor that stays put
+        // either way.
         wheel(&mut screen, MouseEventKind::ScrollDown, 5, 5);
-        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
-        wheel(&mut screen, MouseEventKind::ScrollUp, 5, 5);
+        a_frame_of(&mut screen, (60, 20));
         assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+        assert_eq!(screen.wall.top.get(), 0);
 
         // A card over the bottom of the band: the wheel pages it where the
-        // pointer is over it, and walks the list where it is not.
+        // pointer is over it, and leaves it alone where it is not.
         screen
             .act(
                 KeyEvent::from(KeyCode::Char(' ')),
@@ -10966,9 +11149,15 @@ diff --git a/src/bar.rs b/src/bar.rs
         wheel(&mut screen, MouseEventKind::ScrollDown, 5, 4);
         assert_eq!(
             screen.list.selected().unwrap().id(),
-            "done-b2c",
-            "over the list the wheel is still the walk, card in tow"
+            "done-a1b",
+            "over the list the wheel moves no cursor"
         );
+        assert_eq!(
+            screen.card.as_ref().map(|card| card.id.as_str()),
+            Some("done-a1b"),
+            "and takes the card nowhere"
+        );
+        assert_eq!(screen.scroll.away.get(), 0, "nor pages it");
     }
 
     #[test]

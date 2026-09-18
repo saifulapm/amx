@@ -69,6 +69,7 @@ pub use header::title;
 /// send and holds what acted against it.
 pub(super) use help::HELP;
 pub use input::Notice;
+pub use wall::WallScroll;
 
 /// Where the last frame put things, written back by a draw that is otherwise
 /// a pure reading of the view, because the mouse arrives in the screen's own
@@ -268,10 +269,15 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     };
 
     frame.render_widget(Paragraph::new(header(screen, top)), top);
+    // Where the window stands over the list, clamped to a band this tall and
+    // brought after the cursor where a move is owed one. Answered once and
+    // handed to both the rows and the map, so the mouse reads back the rows
+    // the frame drew.
+    let offset = first_drawn(&screen.list, middle.height, &screen.wall);
     // What this frame put where, for the mouse to read back.
     screen.map.keep(
         (!helping).then_some(middle),
-        first_drawn(&screen.list, middle.height),
+        offset,
         (carding > 0).then_some(carded),
     );
     match &screen.mode {
@@ -282,6 +288,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             frame,
             &screen.list,
             middle,
+            offset,
             Moment {
                 beat: screen.beat,
                 armed: screen.armed(),

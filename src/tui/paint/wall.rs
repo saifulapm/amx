@@ -26,6 +26,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 use super::empty;
@@ -44,14 +45,20 @@ use crate::tui::rows::{self, Group, Item, List, Tally, Under};
 /// last rows of it rather than taking rows off it, so the rows are drawn where
 /// they were drawn before it opened and none of them moves while somebody walks
 /// the list with it up.
-pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment, theme: Theme) {
+pub(super) fn agents(
+    frame: &mut Frame,
+    list: &List,
+    area: Rect,
+    offset: usize,
+    moment: Moment,
+    theme: Theme,
+) {
     if list.is_empty() {
         let nothing = empty::nothing(list, area.width as usize);
         frame.render_widget(Paragraph::new(nothing), area);
         return;
     }
 
-    let offset = first_drawn(list, area.height);
     let width = area.width as usize;
     let widths = grid::widths(width, list.axis(), moment.vendor, list.root_pad());
     let requests = request_column(list);
@@ -84,12 +91,51 @@ pub(super) fn agents(frame: &mut Frame, list: &List, area: Rect, moment: Moment,
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The first item a band this tall draws: enough of the top scrolled away to
-/// keep the cursor on the screen. Shared with the map the mouse reads, so a
-/// click lands on the row the frame actually drew there.
-pub(super) fn first_drawn(list: &List, visible: u16) -> usize {
-    list.cursor()
-        .saturating_sub((visible.max(1) as usize).saturating_sub(1))
+/// Where the wall stands: which item the band's first row holds, and whether
+/// the window owes the cursor a move.
+///
+/// Cells for the reason [`Scroll`](super::Scroll)'s are: only the paint knows
+/// how tall the band is this frame, so only the paint can say which page is the
+/// last one, and a draw is otherwise a reading of the view and nothing else.
+///
+/// Two things move the window and nothing else does. The wheel moves `top` and
+/// leaves the cursor where it was, the way a page scrolls under a hand. A
+/// cursor move sets `follow`, and the window comes after it by as little as it
+/// can.
+#[derive(Default)]
+pub struct WallScroll {
+    /// The item the band's first row holds, clamped afresh every frame.
+    pub top: Cell<usize>,
+    /// Whether the window owes the cursor a move: set where the cursor went,
+    /// and cleared by the frame that answered it.
+    pub follow: Cell<bool>,
+}
+
+/// The first item a band this tall draws, which is where the window stands
+/// once this frame has had its say about it.
+///
+/// Clamped here rather than where the wheel and the keys are read, because only
+/// this knows how tall the band is: a `top` left past the last page is put back
+/// on it, so a wheel that ran off the end of a list, and a list that lost the
+/// rows the window was over, both come back to rows there are.
+///
+/// A window that owes the cursor a move makes it here, and by the least it can:
+/// the cursor comes to the first drawn line when it walked off the top of the
+/// window and to the last when it walked off the foot, and the window holds
+/// still for a cursor anywhere inside it.
+///
+/// Shared with the map the mouse reads, so a click lands on the row the frame
+/// actually drew there.
+pub(super) fn first_drawn(list: &List, visible: u16, scroll: &WallScroll) -> usize {
+    let visible = visible.max(1) as usize;
+    let last = list.items().len().saturating_sub(visible);
+    let mut top = scroll.top.get().min(last);
+    if scroll.follow.replace(false) {
+        let cursor = list.cursor();
+        top = top.clamp(cursor.saturating_sub(visible - 1), cursor.min(last));
+    }
+    scroll.top.set(top);
+    top
 }
 
 /// What the clock has made of the list at the moment it is drawn: which frame
@@ -2394,5 +2440,67 @@ mod tests {
         assert_eq!(fit("👋👋👋👋", 8), "👋👋👋👋");
         assert_eq!(fit("👋👋👋👋", 4), "👋…");
         assert_eq!(fit("ab👋cd", 5), "ab👋…");
+    }
+
+    /// More agents than any band here is tall, all in one state so they stand
+    /// under one heading and none of them is folded away.
+    fn twenty() -> Vec<View> {
+        (0..20)
+            .map(|n| view(&format!("row-{n:02}"), Phase::Done, Some("did it"), 60))
+            .collect()
+    }
+
+    #[test]
+    fn the_window_holds_where_it_was_left_and_never_past_the_last_page() {
+        let screen = showing(twenty(), None);
+        let items = screen.list.items().len();
+
+        // Nothing has scrolled it, so it stands on the top of the list.
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 0);
+
+        // Three lines of wheel, and it holds three rows down: the cursor is
+        // off the top of the band and the window does not care.
+        screen.wall.top.set(3);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 3);
+
+        // Past the end, and it lands on the last page rather than over rows
+        // the list has none of — and holds there, so the next wheel-up is a
+        // line off the end rather than a line off wherever it had run to.
+        screen.wall.top.set(900);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
+        assert_eq!(screen.wall.top.get(), items - 6);
+
+        // A band taller than the list has one page, and it is the top.
+        screen.wall.top.set(4);
+        assert_eq!(first_drawn(&screen.list, 60, &screen.wall), 0);
+    }
+
+    #[test]
+    fn the_window_follows_the_cursor_by_the_least_it_can() {
+        let mut screen = showing(twenty(), None);
+        let items = screen.list.items().len();
+
+        // The cursor at the end of the list, with the window on the top of
+        // it: the window comes down until the cursor is on its last line, and
+        // not one row further.
+        screen.list.bottom();
+        screen.wall.follow.set(true);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
+        assert!(!screen.wall.follow.get(), "the frame answered it");
+
+        // A cursor inside the window moves it nothing.
+        screen.list.up();
+        screen.wall.follow.set(true);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
+
+        // And a cursor off the top brings the window to it, the same way.
+        screen.list.top();
+        screen.wall.follow.set(true);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 0);
+
+        // A window the wheel carried away from the cursor stays carried away:
+        // nothing owes the cursor a move until something moves it.
+        screen.wall.top.set(items - 6);
+        assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
     }
 }
