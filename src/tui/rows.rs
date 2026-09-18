@@ -437,6 +437,12 @@ pub struct List {
     /// under it when they said so.
     order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
+    /// Which of the two path axes was shown last, so that the turn out of the
+    /// state axis shows the other one. Repository to begin with, because the
+    /// directory axis is the one a first `ctrl+s` has always reached. Not kept
+    /// in the [`Arrangement`]: it is where in a walk somebody is, which is
+    /// worth nothing to the next view that opens.
+    last_path: Axis,
     filters: Filters,
     /// How many agents each group has, worked out where the lines are.
     counts: Vec<(Group, usize)>,
@@ -498,6 +504,7 @@ impl Default for List {
             asleep: BTreeSet::new(),
             order: BTreeMap::new(),
             axis: Axis::default(),
+            last_path: Axis::Repo,
             filters: Filters::default(),
             counts: Vec::new(),
             waiting: 0,
@@ -584,16 +591,24 @@ impl List {
     /// because turning the axis is a question about the fleet and not about
     /// the one agent somebody was looking at.
     ///
-    /// Three ways now, so `ctrl+s` walks state, directory, repository and
-    /// back. The roots are dropped because what a directory resolves to is a
-    /// question each axis answers differently, and the next reading has to
-    /// ask the new one.
+    /// Three ways now, and the state axis stands between the other two:
+    /// `ctrl+s` walks state, directory, state, repository. The two path axes
+    /// routinely head the same paths — a fleet where nothing was cut by
+    /// `workflow run` heads the same list either way — so a turn straight
+    /// from one to the other reads as a key that did nothing. The roots are
+    /// dropped because what a directory resolves to is a question each axis
+    /// answers differently, and the next reading has to ask the new one.
     pub fn turn(&mut self) {
         let on = self.on();
         self.axis = match self.axis {
-            Axis::State => Axis::Project,
-            Axis::Project => Axis::Repo,
-            Axis::Repo => Axis::State,
+            Axis::State => match self.last_path {
+                Axis::Repo => Axis::Project,
+                _ => Axis::Repo,
+            },
+            path => {
+                self.last_path = path;
+                Axis::State
+            }
         };
         self.roots.clear();
         self.rebuild(on.agent());
@@ -2282,10 +2297,11 @@ mod tests {
     }
 
     /// A list over that git, gathered by repository: the axis `ctrl+s`
-    /// reaches by turning twice.
+    /// reaches by turning three times, through the state axis in between.
     fn over_the_repos(views: Vec<View>) -> List {
         let mut list =
             List::probing_repos(a_disk_that_answers_git, Some(PathBuf::from("/home/dev")));
+        list.turn();
         list.turn();
         list.turn();
         list.show(views);
@@ -2968,16 +2984,16 @@ mod tests {
             Some(PathBuf::from("/tmp/scratch"))
         );
 
-        // Gathered by repository the cursor is still standing in a place,
-        // and only the state axis has none for it to stand in: the row above
-        // one there belongs to whoever started it.
+        // Gathered by repository, two turns on, the cursor is still standing
+        // in a place, and only the state axis has none for it to stand in:
+        // the row above one there belongs to whoever started it.
+        list.turn();
+        assert_eq!(list.project_under_cursor(), None);
         list.turn();
         assert_eq!(
             list.project_under_cursor(),
             Some(PathBuf::from("/tmp/scratch"))
         );
-        list.turn();
-        assert_eq!(list.project_under_cursor(), None);
     }
 
     #[test]
@@ -3100,24 +3116,42 @@ mod tests {
 
     #[test]
     fn axis_turns_between_what_they_need_where_they_are_and_which_repo() {
-        let mut list = over_the_disk(vec![
+        let mut list = List::probing(a_disk_with_repos, Some(PathBuf::from("/home/dev")));
+        list.show(vec![
             at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
             at(view("busy-b2c", Phase::Working, 20), "/src/web"),
         ]);
-        assert_eq!(list.axis(), Axis::Project);
-
-        list.turn();
-        assert_eq!(list.axis(), Axis::Repo);
-
-        list.turn();
         assert_eq!(list.axis(), Axis::State);
+
+        // The two path axes are routinely the same paths, and a turn between
+        // them looks like a key that did nothing. The state axis stands
+        // between them, so every turn moves the wall somebody is looking at.
+        let walk: Vec<Axis> = (0..6)
+            .map(|_| {
+                list.turn();
+                list.axis()
+            })
+            .collect();
+        assert_eq!(
+            walk,
+            [
+                Axis::Project,
+                Axis::State,
+                Axis::Repo,
+                Axis::State,
+                Axis::Project,
+                Axis::State,
+            ]
+        );
         assert_eq!(
             lines(&list),
             ["Needs input (1)", "ask-a1b", "", "Working (1)", "busy-b2c"]
         );
 
+        // And the press after the walk shows the path axis it did not show
+        // last, rather than the one it just came from.
         list.turn();
-        assert_eq!(list.axis(), Axis::Project);
+        assert_eq!(list.axis(), Axis::Repo);
         assert_eq!(lines(&list)[0], "/src/api (1)");
     }
 
@@ -3167,7 +3201,6 @@ mod tests {
 
         // The same agents gathered by state are folded still: what somebody
         // opened is one heading rather than the fleet.
-        list.turn();
         list.turn();
         assert!(
             lines(&list).contains(&"… 2 more".to_string()),
