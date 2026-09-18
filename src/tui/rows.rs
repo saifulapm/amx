@@ -478,6 +478,15 @@ pub struct List {
     /// holds it. A field for the same reason `probe` is: it runs git, and a
     /// test over a fake disk should answer for itself.
     repo_of: fn(&Path) -> Option<PathBuf>,
+    /// And how a repository heading reads the branch its root is on, which is
+    /// the other question that axis asks git.
+    branch_at: fn(&Path) -> Option<String>,
+    /// What each of those roots has checked out, by root. Beside the roots
+    /// and dropped with them, because a turn of the axis is what changes which
+    /// directories the headings stand for. Taken only on the repository axis,
+    /// and a root on no branch is remembered as such rather than asked about
+    /// again every second.
+    branches: HashMap<PathBuf, Option<String>>,
     /// What each agent's branch has open, by id. Taken with the reading rather
     /// than once per agent, because a check goes green while somebody is
     /// looking at the row — the look itself is a small file beside the record,
@@ -516,6 +525,8 @@ impl Default for List {
             deepest: 0,
             probe: holds_a_repository,
             repo_of: main_repo_of,
+            branch_at: crate::worktree::branch_at,
+            branches: HashMap::new(),
             prs: HashMap::new(),
             asks: pr::of,
             home: std::env::home_dir(),
@@ -536,11 +547,16 @@ impl List {
     }
 
     /// The same over a stated git, which is the seam the repository axis is
-    /// proven at: the question that axis asks is answered by a process.
+    /// proven at: both questions that axis asks are answered by a process.
     #[cfg(test)]
-    fn probing_repos(repo_of: fn(&Path) -> Option<PathBuf>, home: Option<PathBuf>) -> List {
+    fn probing_repos(
+        repo_of: fn(&Path) -> Option<PathBuf>,
+        branch_at: fn(&Path) -> Option<String>,
+        home: Option<PathBuf>,
+    ) -> List {
         List {
             repo_of,
+            branch_at,
             home,
             ..List::default()
         }
@@ -611,6 +627,7 @@ impl List {
             }
         };
         self.roots.clear();
+        self.branches.clear();
         self.rebuild(on.agent());
         self.follow(&on);
     }
@@ -634,6 +651,7 @@ impl List {
         // read yet: the roots in hand answer the old axis's question.
         if arrangement.axis != self.axis {
             self.roots.clear();
+            self.branches.clear();
         }
         self.axis = arrangement.axis;
         self.held = arrangement.held;
@@ -826,9 +844,24 @@ impl List {
         match under {
             Under::Group(group) => group.title().to_string(),
             Under::Project(n) => match self.projects.get(n) {
-                Some(root) => shorten(root, self.home.as_deref()),
+                Some(root) => self.path_title(root),
                 None => String::new(),
             },
+        }
+    }
+
+    /// What a path heading says: the directory the way a person writes it,
+    /// and on the repository axis the branch that root is checked out on.
+    ///
+    /// The branch is what tells the two path axes apart on a fleet where they
+    /// head the same paths, and it is the one thing on the heading that says
+    /// something about the repository rather than about where it sits. Only
+    /// the repository axis has branches in hand, so only it says one.
+    fn path_title(&self, root: &Path) -> String {
+        let path = shorten(root, self.home.as_deref());
+        match self.branches.get(root).and_then(Option::as_deref) {
+            Some(branch) => format!("{path} ({branch})"),
+            None => path,
         }
     }
 
@@ -1239,6 +1272,27 @@ impl List {
             })
             .collect();
         self.roots.extend(fresh);
+        if axis == Axis::Repo {
+            self.remember_the_branches();
+        }
+    }
+
+    /// What each repository heading is checked out on, for the roots not asked
+    /// about yet. Once per root rather than once per agent, since a repository
+    /// full of agents is one branch.
+    fn remember_the_branches(&mut self) {
+        let branch_at = self.branch_at;
+        let fresh: Vec<PathBuf> = self
+            .roots
+            .values()
+            .filter(|root| !self.branches.contains_key(*root))
+            .cloned()
+            .collect();
+        for root in fresh {
+            self.branches
+                .entry(root)
+                .or_insert_with_key(|root| branch_at(root));
+        }
     }
 
     /// Read the `parent` each record names back to a row on this wall, and lay
@@ -2296,11 +2350,20 @@ mod tests {
             .then(|| PathBuf::from("/work/repo"))
     }
 
+    /// What that git says each root has checked out: `/work/repo` is on
+    /// `main`, and a root it could not place is on nothing it can name.
+    fn a_branch_at(root: &Path) -> Option<String> {
+        (root == Path::new("/work/repo")).then(|| "main".to_string())
+    }
+
     /// A list over that git, gathered by repository: the axis `ctrl+s`
     /// reaches by turning three times, through the state axis in between.
     fn over_the_repos(views: Vec<View>) -> List {
-        let mut list =
-            List::probing_repos(a_disk_that_answers_git, Some(PathBuf::from("/home/dev")));
+        let mut list = List::probing_repos(
+            a_disk_that_answers_git,
+            a_branch_at,
+            Some(PathBuf::from("/home/dev")),
+        );
         list.turn();
         list.turn();
         list.turn();
@@ -3048,7 +3111,7 @@ mod tests {
         assert_eq!(
             lines(&list),
             [
-                "/work/repo (3)",
+                "/work/repo (main) (3)",
                 "worker-a1b",
                 "amx-b2c",
                 "plain-c3d",
@@ -3059,6 +3122,35 @@ mod tests {
             "a workflow worker, an amx worktree and a subdirectory are one \
              repository, and a directory outside one is its own place"
         );
+    }
+
+    #[test]
+    fn repo_axis_names_the_branch_each_repository_has_checked_out() {
+        // The two path axes head the same paths often enough that the branch
+        // is what tells a repository heading from a directory one.
+        let mut list = over_the_repos(vec![
+            at(view("busy-a1b", Phase::Working, 10), "/work/repo/src"),
+            at(view("loose-b2c", Phase::Idle, 20), "/tmp/scratch"),
+        ]);
+
+        assert_eq!(
+            lines(&list),
+            [
+                "/work/repo (main) (1)",
+                "busy-a1b",
+                "",
+                "/tmp/scratch (1)",
+                "loose-b2c",
+            ],
+            "a root git cannot name a branch at is the bare path"
+        );
+
+        // And the directory axis, two turns on, says where they run and
+        // nothing about a branch.
+        list.turn();
+        list.turn();
+        assert_eq!(list.axis(), Axis::Project);
+        assert_eq!(lines(&list)[0], "/work/repo/src (1)");
     }
 
     #[test]

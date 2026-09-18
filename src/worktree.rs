@@ -333,6 +333,23 @@ pub fn main_branch(repo: &Path) -> String {
     }
 }
 
+/// What a directory has checked out, where that is a branch.
+///
+/// Not the same question as [`main_branch`], which answers what the repository
+/// merges into. This one is what a heading over a repository says it is on
+/// right now, which is the half of `~/Sites/github/abc (main)` a path cannot
+/// give.
+///
+/// A tree in the middle of a rebase, or sat on a commit, is on no branch and
+/// has no name to say; `symbolic-ref` failing is how git says so, and so is a
+/// directory that is no repository at all — which is what a root the repository
+/// axis fell back to can be.
+pub fn branch_at(repo: &Path) -> Option<String> {
+    git(repo, &["symbolic-ref", "--short", "HEAD"])
+        .ok()
+        .filter(|branch| !branch.is_empty())
+}
+
 /// The commit a ref names, whatever kind of ref it is: a branch, a tag, a
 /// remote-tracking name, or a commit written out.
 ///
@@ -1198,6 +1215,24 @@ mod tests {
         let old = a_repo();
         setup(old.path(), &["branch", "-m", "master"]);
         assert_eq!(main_branch(old.path()), "master");
+    }
+
+    #[test]
+    fn worktree_names_the_branch_a_directory_has_checked_out() {
+        let repo = a_repo();
+        assert_eq!(branch_at(repo.path()), Some("main".to_string()));
+
+        // A heading has a path to fall back on, so a root with no branch to
+        // name says nothing rather than something that is not a branch.
+        setup(repo.path(), &["checkout", "-q", "--detach"]);
+        assert_eq!(branch_at(repo.path()), None, "a detached HEAD is on none");
+
+        let outside = TempDir::new().unwrap();
+        assert_eq!(
+            branch_at(outside.path()),
+            None,
+            "and neither is a directory"
+        );
     }
 
     #[test]
