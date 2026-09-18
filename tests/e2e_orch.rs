@@ -41,6 +41,9 @@ fn offered(said: &str) -> String {
 }
 
 /// The keys an offer names, as a person reads them off it.
+///
+/// A range of digits is as many keys as it spans: `1-2` is two rows to choose
+/// between and `1-2` is not itself a key anybody can press.
 fn keys_offered(offer: &str) -> Vec<String> {
     offer
         .split_once('<')
@@ -48,8 +51,19 @@ fn keys_offered(offer: &str) -> Vec<String> {
         .1
         .trim_end_matches('>')
         .split('|')
-        .map(str::to_string)
+        .flat_map(each_key)
         .collect()
+}
+
+/// One offered key, or every digit of a range written as one.
+fn each_key(offered: &str) -> Vec<String> {
+    let range = offered
+        .split_once('-')
+        .and_then(|(from, to)| Some((from.parse::<u32>().ok()?, to.parse::<u32>().ok()?)));
+    match range {
+        Some((from, to)) => (from..=to).map(|digit| digit.to_string()).collect(),
+        None => vec![offered.to_string()],
+    }
 }
 
 #[test]
@@ -583,15 +597,16 @@ fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
 #[test]
 fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
     // The cursor opens on `No, exit`, so `enter` here is the key that ends the
-    // agent, and a screen numbering none of its choices gives amx nothing to
-    // see that with. Refusing it is what keeps the grammar off the row the
-    // vendor happened to highlight.
+    // agent. The numbers on this screen are amx's own, read off the cursor
+    // glyph, and none of them says where the vendor left that cursor standing.
+    // Refusing it is what keeps the grammar off the row the vendor happened to
+    // highlight, and the two rows amx counted are offered in its place.
     let amx = Harness::new();
     let pane = parked_on_the_gate(&amx, "trusts-b2c");
 
     let out = amx.amx(&["answer", "trusts-b2c", "enter"]);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
-    assert!(stderr(&out).contains("down enter"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("press 1-2"), "{}", stderr(&out));
     assert!(
         amx.capture(&pane).contains("Enter to confirm"),
         "the gate is still up, and the agent is still behind it"
@@ -636,11 +651,13 @@ fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
 }
 
 #[test]
-fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_walk() {
+fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_amx_counted() {
     // The same gate, from the other side: what a person is told to type at it.
-    // `1`, `2` and `y` do nothing there and `enter` ends the agent, so an offer
-    // of `y|n|1-9|enter|esc` names eight keys, seven of which do nothing and
-    // one of which is the exit.
+    // The vendor numbers neither row, so the numbers are amx's own, read off
+    // the cursor glyph — two rows, two digits, and each digit the walk that
+    // reaches the row it stands for. An offer of `y|n|1-9|enter|esc` named
+    // eight keys, seven of which do nothing to this screen and one of which is
+    // the exit.
     let amx = Harness::new();
     parked_on_the_gate(&amx, "trusts-b2c");
 
@@ -648,8 +665,8 @@ fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_walk()
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let offer = offered(&stdout(&out));
     assert!(offer.starts_with("amx answer trusts-b2c"), "{offer:?}");
-    assert!(!offer.contains("1-9"), "no digit reaches a row: {offer:?}");
-    assert!(offer.contains("down enter"), "{offer:?}");
+    assert!(offer.contains("1-2"), "the rows it counted: {offer:?}");
+    assert!(!offer.contains("1-9"), "and no digit past them: {offer:?}");
 
     // And every key it does offer is one `amx answer` takes. An offer amx then
     // refuses is worse than none: it is the sentence a person reads before

@@ -1698,8 +1698,9 @@ mod tests {
             "the row that trusts the folder, from wherever the cursor was"
         );
 
-        // The walk itself still answers it, for a caller who reads the rows
-        // rather than their numbers.
+        // A walk is still read as one, here as at any other list: the digits
+        // are what this screen is offered, and nothing about the keys they
+        // stand for has changed.
         assert_eq!(typed(&gate, &given("down enter")), keys(&["Down", "Enter"]));
 
         // And the keys the screen swallows are refused as they were, with the
