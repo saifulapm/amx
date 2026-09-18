@@ -37,7 +37,7 @@ use super::input::{COMPOSER_CAP, behind, rows_of, typed_rows};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
-use super::wall::{first_line, icon};
+use super::wall::icon;
 use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
 use crate::derive::{Evidence, View};
@@ -925,6 +925,15 @@ const CHANGED: &str = "what it has changed";
 /// far end of the rule going bare would read as an agent that had stopped.
 const THINKING: &str = "thinking…";
 
+/// What the rule says of a turn the vendor ended with shells still running:
+/// the record's own count, in the record's own words.
+fn shells_running(n: u32) -> String {
+    match n {
+        1 => "1 shell running".to_string(),
+        n => format!("{n} shells running"),
+    }
+}
+
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
 const ASKED_TALL: u16 = 3;
@@ -1182,19 +1191,19 @@ fn rule(
             format!(" {edge} {held} more")
         }
     };
-    // What the agent is doing, before the count, for as long as it is doing
-    // anything: the row it came off says that at its own far end, and a card
-    // open over a turn under way is the one place a person cannot see the row.
-    // The wall's own line for it — the vendor's spinner where a reader was at
-    // the pane, the record's summary otherwise — so the card and the row say
-    // one thing rather than two.
+    // The state of a turn under way, before the count, and never the summary:
+    // the card under this rule is what the agent is doing, at length, and the
+    // row's summary said again at the far end of the rule was a second row
+    // (Saiful, 2026-09-18). What the rule says is the one thing the card
+    // cannot show — that the turn is still running, and whether the vendor
+    // is holding it open for shells it started.
     let doing = match card.phase {
         Phase::Starting | Phase::Working => format!(
             " {}",
-            on.and_then(|view| view.state.summary.as_deref())
-                .map(|said| inert(first_line(said)))
-                .filter(|said| !said.is_empty())
-                .unwrap_or_else(|| THINKING.to_string())
+            match on.map_or(0, |view| view.state.background) {
+                0 => THINKING.to_string(),
+                n => shells_running(n),
+            }
         ),
         _ => String::new(),
     };
@@ -2480,8 +2489,19 @@ index e69de29..0000000
             "the rule opens on the glyph the row pulses: {working:?}"
         );
         assert!(
-            working.ends_with("Running Bash"),
-            "and says what the agent is doing at its far end: {working:?}"
+            working.ends_with("thinking…"),
+            "and the far end says the turn is running, never the summary — the \
+             card under the rule is what the agent is doing: {working:?}"
+        );
+
+        // A turn the vendor ended with shells still running says so, since
+        // that is the one thing about it the card cannot show.
+        let mut held = view("fix-login-a1b", Phase::Working, Some("2 shells running"), 3);
+        held.state.background = 2;
+        let held = looked(held);
+        assert!(
+            held.ends_with("2 shells running"),
+            "the shells the turn is held open for: {held:?}"
         );
 
         // A turn that has said nothing yet is still a turn, and the rule says

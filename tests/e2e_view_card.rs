@@ -365,20 +365,25 @@ fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
 
     let view = amx.in_a_terminal(&[], &[]);
     card_on(&amx, &view, "port-cli-b2c");
-    let ruled = amx.until("the rule to say what the agent is doing", || {
+    let ruled = amx.until("the rule to say the turn is running", || {
         let drawn = screen(&amx, &view);
         card_lines(&drawn)
             .first()
             .map(|rule| (*rule).to_string())
-            .filter(|rule| rule.contains("Nesting"))
+            .filter(|rule| rule.contains("thinking"))
     });
 
-    // The wall's own line for the row, at the far end of the rule: the card is
-    // standing on the row it was opened from, so the rule is the only place
-    // left saying how the turn is going.
+    // The state of the turn at the far end of the rule, and never the row's
+    // summary or the vendor's spinner words: the card under the rule is what
+    // the agent is doing, and the rule says the one thing it cannot — that
+    // the turn is still running (Saiful, 2026-09-18).
     assert!(
-        ruled.trim_end().ends_with("Nesting… (15s · ↓ 1.3k tokens)"),
-        "the vendor's line whole, at the far end of the rule:\n{ruled}"
+        ruled.trim_end().ends_with("thinking…"),
+        "the turn's state at the far end of the rule:\n{ruled}"
+    );
+    assert!(
+        !ruled.contains("Nesting") && !ruled.contains("Running"),
+        "and neither the spinner line nor the summary: {ruled:?}"
     );
     // And the mark the row wears in front of the name, a frame of the pulse a
     // working row breathes through.
