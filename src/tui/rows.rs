@@ -468,9 +468,6 @@ pub struct List {
     children: Vec<Vec<usize>>,
     /// The top-level rows, in that same order.
     tops: Vec<usize>,
-    /// How deep the deepest drawn row stands: the most levels one row's
-    /// gutter can indent, and whether the roots are padded at all.
-    deepest: usize,
     /// Whether a directory holds a repository. A field so that a test can say
     /// what the disk looks like, and count what was asked of it.
     probe: fn(&Path) -> bool,
@@ -522,7 +519,6 @@ impl Default for List {
             parents: Vec::new(),
             children: Vec::new(),
             tops: Vec::new(),
-            deepest: 0,
             probe: holds_a_repository,
             repo_of: main_repo_of,
             branch_at: crate::worktree::branch_at,
@@ -1354,11 +1350,6 @@ impl List {
             .copied()
             .filter(|&n| self.parents[n].is_none())
             .collect();
-        self.deepest = order
-            .iter()
-            .map(|&n| self.depth_of_row(n))
-            .max()
-            .unwrap_or(0);
     }
 
     /// How deep a row stands, counted from the roots the parents are laid back
@@ -1400,15 +1391,14 @@ impl List {
         }
     }
 
-    /// The levels every root is padded by: one where any family is drawn, and
-    /// none where none is.
+    /// The levels every root is padded by, which is none of them.
     ///
-    /// One rather than the family's depth. The padding is there so a child's
-    /// connector has a column to start in, and one level buys that for a
-    /// family however deep it runs; paying a level per level would push every
-    /// root on the wall across the screen for one grandchild.
+    /// A child's connector starts in the column of its parent's glyph rather
+    /// than beside it, so a family needs no room in front of the roots and a
+    /// root stands at the same column whether or not anything hangs from it.
+    /// Padding them moved the whole wall the moment one agent spawned a sub.
     pub fn root_pad(&self) -> usize {
-        self.deepest.min(1)
+        0
     }
 
     /// How deep this item stands: the number of two-cell levels its gutter
@@ -1421,15 +1411,16 @@ impl List {
         }
     }
 
-    /// The cells before an agent's glyph: a root's column, then one two-cell
+    /// The cells before an agent's glyph: nothing at a root, then one two-cell
     /// level for each step of this row's own depth.
     ///
-    /// Every root keeps the same column, the one level [`List::root_pad`]
-    /// buys, so a wall's roots stand together. A child's connector then lands
-    /// in the column of the glyph it hangs from — `├─` where a brother follows,
-    /// `└─` on the last of them, `│ ` where a connector from an ancestor
-    /// passes the row on its way to a brother, and spaces where neither — so
-    /// the family reads as a tree and each level indents its own row.
+    /// Every root stands at the same column, the one the wall starts at, so
+    /// none of them moves when a family is drawn beside it. A child's
+    /// connector lands in the column of the glyph it hangs from — `├─` where a
+    /// brother follows, `└─` on the last of them, `│ ` where a connector from
+    /// an ancestor passes the row on its way to a brother, and spaces where
+    /// neither — so the family reads as a tree and each level indents its own
+    /// row.
     pub fn gutter(&self, item: Item) -> String {
         let n = match item {
             Item::Agent(n) => n,
@@ -1437,12 +1428,12 @@ impl List {
             // children it holds back, at the column a child's glyph would
             // take, and wears no connector of its own.
             Item::Sub(n, _) => {
-                return "  ".repeat(self.root_pad() + self.depth_of_row(n) + 1);
+                return "  ".repeat(self.depth_of_row(n) + 1);
             }
             _ => return String::new(),
         };
         let depth = self.depth_of_row(n);
-        let mut cells = "  ".repeat(self.root_pad());
+        let mut cells = String::new();
         if depth == 0 {
             return cells;
         }
@@ -2291,6 +2282,25 @@ mod tests {
             .collect()
     }
 
+    /// What stands before each agent's glyph, by id and sorted by it, for the
+    /// tests about which column a row starts in rather than which order the
+    /// rows come in.
+    fn gutters(list: &List) -> Vec<(String, String)> {
+        let mut cells: Vec<(String, String)> = list
+            .items()
+            .iter()
+            .filter(|item| matches!(item, Item::Agent(_)))
+            .map(|item| {
+                (
+                    list.agent(*item).unwrap().id().to_string(),
+                    list.gutter(*item),
+                )
+            })
+            .collect();
+        cells.sort();
+        cells
+    }
+
     fn listed(views: Vec<View>) -> List {
         let mut list = List::default();
         list.show(views);
@@ -2522,12 +2532,7 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            [
-                "Working (1)",
-                "  parent-a1b",
-                "  ├─review-c3d",
-                "  └─scout-b2c"
-            ],
+            ["Working (1)", "parent-a1b", "├─review-c3d", "└─scout-b2c"],
             "the children hang from the parent, newest first like the wall's \
              own rows, each connector under the glyph it hangs from"
         );
@@ -2536,10 +2541,35 @@ mod tests {
             [(Group::Working, 1)],
             "the heading and the header count the top-level agent once"
         );
+    }
+
+    #[test]
+    fn view_leaves_a_root_where_it_was_when_a_family_is_drawn() {
+        // The fault Saiful drove into: a root moved across the wall the moment
+        // one agent spawned a sub. The root's column is the wall's, family or
+        // no family, and the child's connector starts in it.
+        let alone = listed(vec![view("other-d4e", Phase::Working, 40)]);
+        let family = listed(vec![
+            view("other-d4e", Phase::Working, 40),
+            view("parent-a1b", Phase::Working, 10),
+            child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b"),
+        ]);
         assert_eq!(
-            list.root_pad(),
-            1,
-            "a family is drawn, so the roots stand one level in"
+            lines(&alone)[1],
+            "other-d4e",
+            "a root on a wall with no family stands at the wall's own column"
+        );
+        assert_eq!(family.root_pad(), 0, "and no root is padded for a family");
+        assert_eq!(
+            gutters(&family),
+            [
+                ("other-d4e", String::new()),
+                ("parent-a1b", String::new()),
+                ("scout-b2c", "└─".to_string()),
+            ]
+            .map(|(id, cells)| (id.to_string(), cells)),
+            "both roots are padded nothing, and the child's connector starts \
+             in the column of its parent's glyph"
         );
     }
 
@@ -2552,15 +2582,14 @@ mod tests {
             "gone-a1b",
         )]);
         assert_eq!(lines(&list), ["Working (1)", "scout-b2c"]);
-        assert_eq!(list.root_pad(), 0, "no family, so no padding");
     }
 
     #[test]
     fn view_nests_a_grandchild_under_the_row_it_hangs_from() {
-        // Two levels: a root stands one level in whatever the family's depth,
-        // and each level then indents by two cells, so a connector starts in
-        // the column of the glyph it hangs from and the rail under the child is
-        // the one a connector would pass down.
+        // Two levels: the root stands where every root stands, and each level
+        // then indents by two cells, so a connector starts in the column of the
+        // glyph it hangs from and the rail under the child is the one a
+        // connector would pass down.
         let mut grandchild = child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b");
         grandchild.meta.depth = 2;
         let list = listed(vec![
@@ -2570,22 +2599,12 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            [
-                "Working (1)",
-                "  parent-a1b",
-                "  └─helper-f6g",
-                "    └─scout-b2c",
-            ],
-            "every root stands one level in and its own levels indent it"
-        );
-        assert_eq!(
-            list.root_pad(),
-            1,
-            "a second level under one parent does not push the roots further in"
+            ["Working (1)", "parent-a1b", "└─helper-f6g", "  └─scout-b2c"],
+            "the root is padded nothing and its own levels indent each row"
         );
         assert_eq!(
             list.gutter(Item::Sub(0, 1)),
-            "    ",
+            "  ",
             "a fold stands one level under the parent it holds children back \
              from, at the column their glyphs take"
         );
@@ -2606,10 +2625,10 @@ mod tests {
         let list = listed(views);
         let drawn = lines(&list);
         assert_eq!(drawn[0], "Working (1)");
-        assert_eq!(drawn[1], "  parent-a1b");
+        assert_eq!(drawn[1], "parent-a1b");
         assert_eq!(
             drawn.last().map(String::as_str),
-            Some("    … 3 sub"),
+            Some("  … 3 sub"),
             "the parent says how many of its own the fold held back"
         );
         assert_eq!(
@@ -2637,7 +2656,7 @@ mod tests {
         ]);
         assert_eq!(
             lines(&list),
-            ["/src/api (1)", "  parent-a1b", "  └─scout-b2c"],
+            ["/src/api (1)", "parent-a1b", "└─scout-b2c"],
             "one project heading for the family"
         );
     }

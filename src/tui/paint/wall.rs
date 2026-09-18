@@ -891,18 +891,18 @@ mod tests {
             .collect();
         assert_eq!(family.len(), 3, "one row each: {lines:#?}");
         assert!(
-            family[0].starts_with("   · parent-a1b"),
-            "a root keeps its column, whatever the family's depth: {:?}",
+            family[0].starts_with(" · parent-a1b"),
+            "a root keeps the wall's own column, whatever the family: {:?}",
             family[0]
         );
         assert!(
-            family[1].starts_with("   ├─· review-c3d"),
+            family[1].starts_with(" ├─· review-c3d"),
             "the newest child opens the pair, its connector in the column of \
              the glyph it hangs from: {:?}",
             family[1]
         );
         assert!(
-            family[2].starts_with("   └─∙ scout-b2c"),
+            family[2].starts_with(" └─∙ scout-b2c"),
             "the oldest closes the pair under the same column: {:?}",
             family[2]
         );
@@ -931,11 +931,11 @@ mod tests {
     }
 
     #[test]
-    fn rows_stand_a_root_one_level_in_however_deep_the_family_goes() {
-        // A grandchild takes the family to two levels. A root still stands one
-        // level in: the wall spends two cells on there being a family at all,
-        // not two per level, so one deep family does not push every root on
-        // the screen across.
+    fn rows_stand_a_root_at_the_glyph_column_however_deep_the_family_goes() {
+        // A grandchild takes the family to two levels. The root stands at the
+        // column every root stands at, and so does the root beside it: the
+        // wall spends nothing on there being a family, so a sub spawning does
+        // not push every row on the screen across.
         let mut helper = child_of(
             view("helper-f6g", Phase::Done, Some("ran the suite"), 12),
             "parent-a1b",
@@ -947,11 +947,13 @@ mod tests {
         );
         scout.meta.created = 30;
         scout.meta.depth = 2;
+        let alone = view("other-d4e", Phase::Working, Some("nesting"), 1);
         let lines = drawn(
             vec![
                 view("parent-a1b", Phase::Working, Some("running tests"), 2),
                 helper,
                 scout,
+                alone.clone(),
             ],
             None,
             (100, 12),
@@ -966,19 +968,32 @@ mod tests {
             .collect();
         assert_eq!(family.len(), 3, "one row each: {lines:#?}");
         assert!(
-            family[0].starts_with("   · parent-a1b"),
-            "the root stands one level in: {:?}",
+            family[0].starts_with(" · parent-a1b"),
+            "the root stands at the glyph column: {:?}",
             family[0]
         );
         assert!(
-            family[1].starts_with("   └─∙ helper-f6g"),
+            family[1].starts_with(" └─∙ helper-f6g"),
             "its child a level under it: {:?}",
             family[1]
         );
         assert!(
-            family[2].starts_with("     └─· scout-b2c"),
+            family[2].starts_with("   └─· scout-b2c"),
             "and the grandchild a level under that: {:?}",
             family[2]
+        );
+        let other = |lines: &[String]| {
+            lines
+                .iter()
+                .find(|line| line.contains("other-d4e"))
+                .unwrap_or_else(|| panic!("the other root: {lines:#?}"))
+                .clone()
+        };
+        assert_eq!(
+            other(&lines),
+            other(&drawn(vec![alone], None, (100, 12))),
+            "and the root with nothing under it is drawn the same row whether \
+             or not the family is on the wall"
         );
         let column = |line: &str, word: &str| {
             let at = line.find(word).expect("the word on the row");

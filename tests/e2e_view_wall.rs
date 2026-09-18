@@ -546,6 +546,7 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
 
     let scout_line = row_of(&amx, &view, "scout-b2c").unwrap();
     let review_line = row_of(&amx, &view, "review-c3d").unwrap();
+    let parent_line = row_of(&amx, &view, "parent-a1b").unwrap();
     assert!(
         review_line.contains("├─"),
         "the newest child opens the pair: {review_line:?}"
@@ -555,8 +556,24 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
         "and the oldest closes it: {scout_line:?}"
     );
     assert!(
-        !row_of(&amx, &view, "parent-a1b").unwrap().contains("├─"),
+        !parent_line.contains("├─"),
         "the parent wears no connector of its own"
+    );
+
+    // Nothing in front of the parent: a root stands at the column the wall
+    // starts at whether or not a family hangs from it, and the connector then
+    // starts in the column of the glyph it hangs from.
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    assert_eq!(
+        indent(&parent_line),
+        1,
+        "the root is padded nothing for its family: {parent_line:?}"
+    );
+    assert_eq!(
+        indent(&review_line),
+        indent(&parent_line),
+        "and the child's connector starts under its parent's glyph: \
+         {review_line:?} against {parent_line:?}"
     );
 
     // The heading and the header count the top-level agent, not the family: a
