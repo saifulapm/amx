@@ -1181,12 +1181,21 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
         "and the state headings are gone with the axis:\n{drawn}"
     );
 
-    // And on again: the repository each tree shares, then once more back to
-    // what they need. `ctrl+s` walks three axes now.
+    // And on again: what they need, because the state axis stands between the
+    // two path axes, then the repository each tree shares, then once more back
+    // to what they need.
+    press(&amx, &view, "C-s");
+    amx.until("what they need in between", || {
+        screen(&amx, &view).contains("Needs input").then_some(())
+    });
     press(&amx, &view, "C-s");
     amx.until("the repository headings", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("~/repo") && !drawn.contains("Needs input")).then_some(drawn)
+        // A repository heading names the branch its root is on, and it is the
+        // whole line: the header says where the next agent would run, and that
+        // is `~/repo` too.
+        let whole = drawn.lines().any(|line| line.trim_end() == "~/repo (main)");
+        (whole && !drawn.contains("Needs input")).then_some(drawn)
     });
     press(&amx, &view, "C-s");
     amx.until("what they need again", || {
