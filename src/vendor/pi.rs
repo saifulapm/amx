@@ -235,6 +235,14 @@ pub const HOOKS: Hooks = Hooks {
             event: "tool_execution_start",
             matched: false,
         },
+        // Reported for a user message only — the extension filters the
+        // role — which is the moment a message steered into a running turn
+        // is delivered, since pi starts no new agent for it.
+        Wiring {
+            moment: Moment::Taken,
+            event: "message_start",
+            matched: false,
+        },
         Wiring {
             moment: Moment::Notified,
             event: "ui_prompt_start",
@@ -333,6 +341,9 @@ mod tests {
         );
         assert_eq!(HOOKS.moment("ui_prompt_start"), Some(Moment::Notified));
         assert_eq!(HOOKS.moment("ui_prompt_end"), Some(Moment::Refused));
+        // A message steered into a running turn is delivered with no new
+        // agent_start; the user message pi then starts is the word it went in.
+        assert_eq!(HOOKS.moment("message_start"), Some(Moment::Taken));
         assert_eq!(HOOKS.moment("Stop"), None, "claude's names are not pi's");
     }
 

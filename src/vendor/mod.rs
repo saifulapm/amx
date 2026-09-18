@@ -65,6 +65,10 @@ pub enum Moment {
     Started,
     /// A prompt has been sent, and a turn is under way.
     Prompted,
+    /// A message the agent was holding behind the turn went in, and the turn
+    /// goes on. Only a vendor that steers a message into a running turn has
+    /// one: claude says `Prompted` again for it, pi says nothing else.
+    Taken,
     /// A tool is about to run.
     Calling,
     /// Leave to run one is being asked for.
@@ -80,9 +84,10 @@ pub enum Moment {
 impl Moment {
     /// Every moment amx listens for. A vendor that reports at all names all of
     /// them: what amx does with an event it was never told about is nothing.
-    pub const ALL: [Moment; 7] = [
+    pub const ALL: [Moment; 8] = [
         Moment::Started,
         Moment::Prompted,
+        Moment::Taken,
         Moment::Calling,
         Moment::Asked,
         Moment::Refused,

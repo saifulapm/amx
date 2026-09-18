@@ -2592,6 +2592,47 @@ fn a_message_a_pi_takes_is_confirmed_by_its_own_word() {
 }
 
 #[test]
+fn a_message_a_pi_holds_behind_its_turn_is_queued_until_it_goes_in() {
+    // A message sent to a pi mid-turn is steered: held until the turn gets to
+    // it, and delivered with no new agent_start. The user message pi then
+    // starts is its one word that the text went in, and it is what takes the
+    // queued line off amx status (Saiful, 2026-09-18: the row never cleared).
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-message-mid-turn");
+    amx.until_state(id, "working");
+
+    let out = amx.amx(&["send", id, "hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a send to a working agent is queued, not failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let report = |amx: &Harness| {
+        let out = amx.amx(&["status", id]);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    amx.until("the message held on the record", || {
+        report(&amx).contains("queued    hi").then_some(())
+    });
+    amx.until("the message to go in", || {
+        (!report(&amx).contains("queued")).then_some(())
+    });
+    let kinds = amx.event_kinds(id);
+    assert!(
+        kinds.iter().any(|kind| kind == "message_start"),
+        "pi's word for it, on the record: {kinds:?}"
+    );
+    assert_eq!(
+        amx.state(id)["state"],
+        "working",
+        "and the turn goes on as it was"
+    );
+}
+
+#[test]
 fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
     // The other half of the same word. A pi that never reports a turn
     // beginning is a message amx cannot say arrived, and a caller told that

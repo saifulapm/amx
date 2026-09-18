@@ -47,9 +47,13 @@ use crate::{complain, exit, paths, store, warn};
 pub const SEND: &str = "send";
 
 /// Whether this event is a vendor saying a message was taken: the moment the
-/// table calls `Prompted`, under whichever vendor's word for it arrived.
+/// table calls `Prompted`, or the `Taken` a vendor that steers a message into
+/// a running turn says instead, under whichever vendor's word for it arrived.
 fn submitted(event: &Event) -> bool {
-    crate::vendor::moment_of(&event.kind) == Some(Moment::Prompted)
+    matches!(
+        crate::vendor::moment_of(&event.kind),
+        Some(Moment::Prompted | Moment::Taken)
+    )
 }
 
 /// How long a send waits for the agent to take what it was given. Long enough
@@ -595,6 +599,14 @@ mod tests {
                 sent("then the docs"),
             ]),
             ["and the linter", "then the docs"]
+        );
+        // pi's word that a message steered into a running turn went in.
+        assert_eq!(
+            queued(&[
+                sent("carry on"),
+                Event::new("message_start", json!({ "role": "user" }))
+            ]),
+            Vec::<String>::new()
         );
         // A reader's word that a turn began is the same edge.
         assert_eq!(

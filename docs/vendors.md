@@ -238,7 +238,9 @@ file can name, so its wire is a file: `Wire::File` at
 `amx setup pi` where pi loads a global extension from and removed by `amx
 uninstall`. That file runs `amx _hook` once per moment with the payload on
 stdin, under pi's own event names — `session_start`, `agent_start`,
-`tool_execution_start`, `ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
+`tool_execution_start`, `message_start` (a user message only, which lands as
+`Taken`: the word that a message steered into a running turn went in),
+`ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
 and the keys claude's payloads carry, so `hook` reads it with no arm of its
 own. `ui_prompt_start` lands as `Notified` and `ui_prompt_end` as `Refused`;
 there is no `Asked`, because pi asks leave for nothing. `Transcript` comes

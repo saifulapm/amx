@@ -485,6 +485,10 @@ fn shells_running(count: u32) -> String {
 ///   and the transcript it writes, and moves nothing. Only this moment may set
 ///   the session id — every payload carries one, and a subagent's is not the
 ///   agent's.
+/// * [`Taken`](Moment::Taken) is a message the agent was holding behind the
+///   turn going in. The turn goes on as it was, so it moves nothing here; it
+///   is on the log for `send` and the card, which count what was sent
+///   against what was taken.
 /// * [`Prompted`](Moment::Prompted) and [`Calling`](Moment::Calling) mean the
 ///   agent is working, and the tool call says what it is doing. The one tool
 ///   that is not work is the one that draws a [`menu`]: it waits, and its
@@ -597,6 +601,8 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.source = None;
             Screen::Clear
         }
+
+        Moment::Taken => Screen::Clear,
 
         Moment::Calling if menu(payload) => {
             state.state = Phase::Waiting;

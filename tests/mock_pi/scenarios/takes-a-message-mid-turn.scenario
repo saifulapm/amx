@@ -1,0 +1,14 @@
+# A turn under way that takes what somebody sends it only when it gets to it:
+# pi starts no new agent for a message steered into a running turn, and the
+# user message it then starts, three seconds on, is its one word that the
+# text went in.
+screen boot
+hook session_start {}
+sleep 50
+hook agent_start {}
+transcript {"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"tell me about this","timestamp":1}}
+screen working
+sleep 3000
+hook message_start {"role":"user"}
+transcript {"type":"message","id":"u2","parentId":"u1","message":{"role":"user","content":"hi","timestamp":2}}
+sleep 600000

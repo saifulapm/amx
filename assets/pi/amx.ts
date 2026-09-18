@@ -275,6 +275,14 @@ export default function (pi: ExtensionAPI) {
     report("ui_prompt_end", { ...about(ctx), kind: event.kind });
   });
 
+  // A user message beginning is a message going in — the one word pi has for
+  // a message it held behind a running turn, since it starts no new agent for
+  // it. Only the user's: the assistant's and a tool's are the turn itself.
+  pi.on("message_start", (event, ctx) => {
+    if (!watched || event.message?.role !== "user") return;
+    report("message_start", { ...about(ctx), role: "user" });
+  });
+
   pi.on("message_update", (event) => {
     if (!watched || event.message?.role !== "assistant") return;
     stream(textOf(event.message));
