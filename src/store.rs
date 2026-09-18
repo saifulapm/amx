@@ -372,6 +372,17 @@ pub struct State {
     pub since: u64,
     /// One line about what it is doing.
     pub summary: Option<String>,
+    /// How many background shells were still running when the turn ended.
+    ///
+    /// claude ends a turn with the shells it started still going, and lists
+    /// them on the payload that says the turn ended. The model is done and the
+    /// work it started is not, and everything that reads an ended turn as an
+    /// idle agent is wrong about this one: the vendor's own nudge a minute
+    /// later, and the rule that reads the prompt on the pane. The count is what
+    /// tells them otherwise — see [`crate::hook::apply`] and
+    /// [`crate::derive::read`]. It is counted at the end of the turn and
+    /// cleared by the next thing the agent does.
+    pub background: u32,
     /// The question it is waiting on.
     pub question: Option<String>,
     /// The choices that question offers, in the order the screen lists them.
@@ -676,6 +687,7 @@ struct Wire {
     seq: u64,
     since: u64,
     summary: Option<String>,
+    background: u32,
     question: Option<Asked>,
     result: Option<String>,
     source: Option<Source>,
@@ -782,6 +794,7 @@ impl From<State> for Wire {
             seq,
             since,
             summary,
+            background,
             question,
             options,
             walked,
@@ -807,6 +820,7 @@ impl From<State> for Wire {
             seq,
             since,
             summary,
+            background,
             question: match (question, kind) {
                 // Nothing outstanding. Options with no question over them are
                 // not written at all, which is what keeps an answered question
@@ -876,6 +890,7 @@ impl From<Wire> for State {
             seq: wire.seq,
             since: wire.since,
             summary: wire.summary,
+            background: wire.background,
             question,
             options,
             walked,
@@ -1603,6 +1618,28 @@ mod tests {
         // never let go.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
         assert_eq!(agent.state().unwrap().parked_at, 0);
+    }
+
+    #[test]
+    fn store_keeps_the_count_of_shells_a_turn_left_running() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        let ended = writer
+            .update_state(|s| {
+                s.state = Phase::Working;
+                s.background = 2;
+            })
+            .unwrap();
+        assert_eq!(ended.background, 2);
+        assert_eq!(written(&agent)["background"], 2);
+        assert_eq!(agent.state().unwrap().background, 2);
+
+        // And a document from before the field existed reads as an agent with
+        // nothing of its own left running.
+        std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
+        assert_eq!(agent.state().unwrap().background, 0);
     }
 
     #[test]

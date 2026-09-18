@@ -452,6 +452,30 @@ fn typed(payload: &Value, what: &str) -> bool {
     payload["notification_type"] == what
 }
 
+/// How many background shells the vendor says are still running.
+///
+/// It lists every shell the session has started, finished ones included, so
+/// what is counted is the ones it marks as running. A payload that lists none,
+/// and one from a vendor that has never listed any, are both an agent with
+/// nothing of its own left to do.
+fn running_shells(payload: &Value) -> u32 {
+    let Some(tasks) = payload["background_tasks"].as_array() else {
+        return 0;
+    };
+    tasks
+        .iter()
+        .filter(|task| task["status"] == "running")
+        .count() as u32
+}
+
+/// The line a row says that with.
+fn shells_running(count: u32) -> String {
+    match count {
+        1 => "1 shell running".to_string(),
+        many => format!("{many} shells running"),
+    }
+}
+
 /// What one payload means for the record.
 ///
 /// Every moment below is one the vendor's entry names; what any of them is
@@ -479,7 +503,11 @@ fn typed(payload: &Value, what: &str) -> bool {
 ///   which it is not.
 /// * [`Ended`](Moment::Ended) ends the turn, and its payload is the freshest
 ///   place the answer ever exists — the transcript is written asynchronously
-///   and lags it.
+///   and lags it. Unless that payload lists shells the session still has
+///   running, which is the model finishing and the turn going on: the count
+///   goes on the record and the phase stays working, and so does the nudge a
+///   minute later that would otherwise end it — see
+///   [`crate::store::State`]'s `background`.
 /// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
 ///   not the agent's state.
 /// * A record that has already ended stays ended. A late hook is a hook about
@@ -559,6 +587,9 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Working;
             state.summary = None;
             state.asks(None);
+            // A count of shells was about the turn that ended, and this is the
+            // next one.
+            state.background = 0;
             // A new turn retires the last one's answer. A turn that ends
             // without one would otherwise leave the previous answer on the
             // record, and `result` would hand it to a caller as this turn's.
@@ -571,6 +602,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.state = Phase::Waiting;
             // Not running anything: the menu is what it is doing.
             state.summary = None;
+            state.background = 0;
             state.asks_all(asked(&payload["tool_input"]));
             state.kind = Some(Kind::Question);
             // Nothing else will say this agent is waiting. The vendor notifies
@@ -581,6 +613,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
         Moment::Calling => {
             state.state = Phase::Working;
+            state.background = 0;
             if let Some(tool) = payload["tool_name"].as_str() {
                 state.summary = Some(format!("Running {tool}"));
             }
@@ -655,6 +688,16 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // session rather than about anything to answer, so they are not the
         // question, and whatever amx thought was outstanding is not on that
         // screen either.
+        //
+        // Over a turn that left shells running it is none of that. The vendor
+        // is saying its own side is idle, which the stop it repeats already
+        // said and which is not the whole of what this agent is doing. So
+        // nothing on the record moves — this is the nudge that put the record
+        // back to idle a minute after the count said otherwise.
+        Moment::Notified if typed(payload, claude::HOOKS.idle_notice) && state.background > 0 => {
+            return None;
+        }
+
         Moment::Notified if typed(payload, claude::HOOKS.idle_notice) => {
             state.state = Phase::Idle;
             state.summary = None;
@@ -697,12 +740,26 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         }
 
         Moment::Ended => {
-            state.state = Phase::Idle;
-            state.summary = None;
             state.asks(None);
-            if let Some(answer) = payload["last_assistant_message"].as_str() {
-                state.result = Some(answer.to_string());
-                state.source = Some(Source::Payload);
+            state.background = running_shells(payload);
+            // The model has finished and the shells it started have not, and
+            // the payload says so. A turn is what a caller waits on and what
+            // the park timer ends, and both are about the agent rather than
+            // about the model: `_park` took the pane off an agent whose shells
+            // were still going, twice on 2026-09-18, ten minutes after a stop.
+            // So the count stands in the phase, and the answer this payload
+            // carries is not written down — an answer is what the turn came
+            // to, and this turn has not come to it yet.
+            if state.background > 0 {
+                state.state = Phase::Working;
+                state.summary = Some(shells_running(state.background));
+            } else {
+                state.state = Phase::Idle;
+                state.summary = None;
+                if let Some(answer) = payload["last_assistant_message"].as_str() {
+                    state.result = Some(answer.to_string());
+                    state.source = Some(Source::Payload);
+                }
             }
             Screen::Clear
         }
@@ -2014,7 +2071,90 @@ mod tests {
             "the payload beats the transcript, which lags it"
         );
         assert_eq!(state.question, None);
+        assert_eq!(state.background, 0, "it left nothing of its own running");
         assert_eq!(notice, None, "an idle agent is on the wall already");
+    }
+
+    #[test]
+    fn hook_a_turn_that_left_shells_running_is_still_a_turn() {
+        // claude ends a turn with the shells it started still going, and lists
+        // them on the payload that says so. Reading that as an idle agent set
+        // the park timer, and `_park` took the pane off a run whose shells
+        // were still going ten minutes later, twice on 2026-09-18.
+        let (state, _, notice) = fold(json!({
+            "hook_event_name": "Stop",
+            "stop_hook_active": false,
+            "last_assistant_message": "I started the build.",
+            "background_tasks": [
+                { "id": "bash_1", "status": "running" },
+                { "id": "bash_2", "status": "completed" },
+                { "id": "bash_3", "status": "running" }
+            ]
+        }));
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.background, 2, "the finished one is not one of them");
+        assert_eq!(state.summary.as_deref(), Some("2 shells running"));
+        assert_eq!(
+            state.result, None,
+            "an answer is what a turn came to, and this one has not"
+        );
+        assert_eq!(parks_in(&state, 3_600), None, "and nothing takes its pane");
+        assert_eq!(notice, None, "a working agent is on the wall already");
+
+        // One of them is one shell, not one shells.
+        let (one, _, _) = fold(json!({
+            "hook_event_name": "Stop",
+            "background_tasks": [{ "id": "bash_1", "status": "running" }]
+        }));
+        assert_eq!(one.summary.as_deref(), Some("1 shell running"));
+    }
+
+    #[test]
+    fn hook_the_idle_nudge_over_a_running_shell_moves_nothing() {
+        // The nudge is the vendor saying its own side is idle, which the stop
+        // it repeats already said. Taking it as the turn being over is how the
+        // record went idle a minute after the count said otherwise.
+        let mut state = State {
+            state: Phase::Working,
+            summary: Some("2 shells running".to_string()),
+            background: 2,
+            ..State::default()
+        };
+        let before = state.clone();
+        let notice = apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state, before, "the shells are still running");
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn hook_the_next_thing_the_agent_does_retires_the_shell_count() {
+        // The count is about the turn that ended. A prompt or a tool call is
+        // the agent working again, and what it is doing now is what the row
+        // says.
+        let ended = State {
+            state: Phase::Working,
+            summary: Some("2 shells running".to_string()),
+            background: 2,
+            ..State::default()
+        };
+
+        for payload in [
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion" }),
+        ] {
+            let mut state = ended.clone();
+            apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.background, 0, "{payload}");
+        }
     }
 
     #[test]

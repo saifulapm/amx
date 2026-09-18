@@ -1022,6 +1022,14 @@ pub fn read(
     };
 
     match rules.claim(&screen, state.state, held) {
+        // A prompt with shells still running behind it is not a turn that is
+        // over. The vendor draws the same prompt either way — it has finished
+        // and what it started has not — so the count the stop wrote is the
+        // only thing that tells the two screens apart, and it is what the row
+        // goes on saying. See [`crate::store::State`]'s `background`.
+        Claim::Ruled(rule) if rule.state == Phase::Idle && state.background > 0 => {
+            told(Phase::Working, Evidence::Hooks, Some(&rule.name))
+        }
         Claim::Ruled(rule) => Reading {
             verdict: Verdict {
                 phase: rule.state,
@@ -2672,6 +2680,23 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         )
     }
 
+    /// The same reading over a screen that has held still long enough for a
+    /// quiescent rule to end a turn on it — see [`SETTLED_LOOKS`].
+    fn settled(state: &State, screen: &str, now: u64) -> Verdict {
+        read(
+            state,
+            0,
+            true,
+            || Some(screen.to_string()),
+            rules::of("claude"),
+            true,
+            now,
+            SETTLED_LOOKS,
+            None,
+        )
+        .verdict
+    }
+
     fn decided(state: &State, alive: bool, screen: Option<&str>, now: u64) -> Verdict {
         reading(state, alive, screen, now).verdict
     }
@@ -4002,6 +4027,27 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(verdict.evidence, Evidence::Hooks);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
         assert_eq!(verdict.age, 100);
+    }
+
+    #[test]
+    fn reader_leaves_a_turn_whose_shells_are_still_running_at_work() {
+        // The prompt a finished turn sits at and the prompt a turn that left
+        // shells running sits at are the same bytes: the vendor has finished
+        // and what it started has not. The count the stop wrote is the only
+        // thing that tells the two apart, so the rule that reads the prompt
+        // names the screen and does not end the turn.
+        let mut running = state(Phase::Working, 1_000);
+        running.background = 2;
+
+        let verdict = settled(&running, IDLE_SCREEN, 1_100);
+        assert_eq!(verdict.phase, Phase::Working);
+        assert_eq!(verdict.evidence, Evidence::Hooks);
+        assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
+
+        // With nothing running the same screen after the same wait ends it.
+        let verdict = settled(&state(Phase::Working, 1_000), IDLE_SCREEN, 1_100);
+        assert_eq!(verdict.phase, Phase::Idle);
+        assert_eq!(verdict.evidence, Evidence::Screen);
     }
 
     #[test]
