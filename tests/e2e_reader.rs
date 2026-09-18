@@ -141,9 +141,11 @@ fn a_menu_records_the_question_it_is_asking() {
 #[test]
 fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
     // The stand-in paints the gate the way 2.1.259 draws it: choices with no
-    // numbers on them and the cursor opening on the exit. `Yes, I trust this
-    // folder` is a row that reads like an answer, and the place the record
-    // must not put it is where the question goes.
+    // numbers on them and the cursor opening on the exit. The numbers come off
+    // the cursor glyph instead, so both rows are choices here, in the order the
+    // vendor drew them. `Yes, I trust this folder` is a row that reads like an
+    // answer, and the place the record must not put it is where the question
+    // goes.
     let amx = Harness::new();
     let pane = amx.play("trusts-b2c", "stops-on-trust");
     amx.until("the gate to be drawn", || {
@@ -162,14 +164,13 @@ fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
     assert_eq!(agent["question"], text);
     assert_eq!(
         agent["options"],
-        json!([]),
-        "the choices a reader hands back are the numbered ones, and the vendor \
-         numbers none of these"
+        json!(["No, exit", "Yes, I trust this folder"]),
+        "the choices a reader hands back are the ones it counted off the mark"
     );
 
-    // Written whole, even with no choices to write under it: the words alone
-    // are how the record says a hook carried a question, and nothing was ever
-    // heard from this one.
+    // Written whole, under the choices rather than in place of them: the words
+    // alone are how the record says a hook carried a question, and nothing was
+    // ever heard from this one.
     assert_eq!(amx.state("trusts-b2c")["question"]["text"], text);
 }
 
