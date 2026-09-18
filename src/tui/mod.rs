@@ -1096,9 +1096,12 @@ where
                 // Where the terminal has just come back from, for the wall to
                 // mark the row with. Only where it went: a lend tmux refused
                 // is a row nobody has been to, and the last one somebody did
-                // come back from is still the answer to where they were.
-                if screen.notice.is_none() {
-                    screen.lent = Some(id);
+                // come back from is still the answer to where they were. The
+                // pointer is retired either way — the terminal was handed over
+                // before tmux said anything.
+                match screen.notice.is_none() {
+                    true => screen.went_into(id),
+                    false => screen.hover = None,
                 }
                 // Whoever had the terminal had the title with it, so the
                 // view says what it is called again rather than trusting a
@@ -1754,8 +1757,39 @@ impl Screen {
         true
     }
 
+    /// Where somebody has just gone: the row the wall marks as the one they
+    /// were in, and the end of what the view knows about the pointer.
+    ///
+    /// Mouse capture is off for as long as another client has the terminal, so
+    /// the line the view was holding is about a screen the pointer has crossed
+    /// unwatched — and a space after a `ctrl+z` back would open the row that
+    /// screen's last session happened to sit on.
+    fn went_into(&mut self, id: String) {
+        self.lent = Some(id);
+        self.hover = None;
+    }
+
     /// What one key does.
+    ///
+    /// The pointer is retired on the way out, whatever the key was: hands on
+    /// the keyboard are hands off the mouse, and a pointer parked on a row
+    /// while somebody walks the list with `j` is not where they are looking.
+    /// Otherwise a keyboard user previews or stops the row their hand happened
+    /// to leave the mouse over. The next movement brings the pointer back.
     fn act(
+        &mut self,
+        key: KeyEvent,
+        root: &Path,
+        config: &Config,
+        here: Option<&Here>,
+    ) -> Result<Doing> {
+        let doing = self.acting(key, root, config, here);
+        self.hover = None;
+        doing
+    }
+
+    /// The key itself, read by whatever the view is in the middle of.
+    fn acting(
         &mut self,
         key: KeyEvent,
         root: &Path,
@@ -2681,7 +2715,7 @@ impl Screen {
             // Inside tmux the client has gone to the agent and this view is
             // still drawing behind it, so where somebody went is known now
             // rather than when a lend comes back.
-            Reach::There => self.lent = Some(id.to_string()),
+            Reach::There => self.went_into(id.to_string()),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => {
                 return Ok(Doing::Lend {
@@ -2711,7 +2745,7 @@ impl Screen {
         // about.
         self.acted();
         match reached {
-            Reach::There => self.lent = Some(id),
+            Reach::There => self.went_into(id),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
@@ -2748,7 +2782,7 @@ impl Screen {
         let reached = reach(root, config, here, view)?;
         self.acted();
         match reached {
-            Reach::There => self.lent = Some(id),
+            Reach::There => self.went_into(id),
             Reach::Say(notice) => self.notice = Some(notice),
             Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
         }
@@ -10735,6 +10769,87 @@ diff --git a/src/bar.rs b/src/bar.rs
         assert_eq!(carded(&screen), None);
         press(&mut screen, KeyCode::Char(' '));
         assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
+    }
+
+    #[test]
+    fn a_key_press_retires_the_pointer_and_the_next_movement_brings_it_back() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+            finished_saying("done-c3d", "the third answer"),
+        ]);
+        a_frame_of(&mut screen, (60, 24));
+
+        let resting = |screen: &mut Screen, row| {
+            screen
+                .moused(
+                    mouse(MouseEventKind::Moved, 5, row),
+                    root.path(),
+                    &config,
+                    None,
+                )
+                .unwrap();
+        };
+        let press = |screen: &mut Screen, code| {
+            screen
+                .act(KeyEvent::from(code), root.path(), &config, None)
+                .unwrap();
+            a_frame_of(screen, (60, 24));
+        };
+        let carded = |screen: &Screen| screen.card.as_ref().map(|card| card.id.clone());
+
+        // The pointer is parked on the last row and the hands are back on the
+        // keyboard: `j` walks the cursor and the pointer stops counting.
+        resting(&mut screen, 6);
+        assert_eq!(screen.hover, Some(3), "the third agent's line is hovered");
+        press(&mut screen, KeyCode::Char('j'));
+        assert_eq!(screen.hover, None, "the key press retired the pointer");
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+
+        // So space opens the row the cursor walked to, not the one somebody
+        // left the pointer over.
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
+        assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
+
+        // And the next movement is a pointer again: space after it opens the
+        // row it came to rest on.
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(carded(&screen), None, "space closed the card");
+        resting(&mut screen, 6);
+        assert_eq!(screen.hover, Some(3));
+        press(&mut screen, KeyCode::Char(' '));
+        assert_eq!(screen.list.selected().unwrap().id(), "done-c3d");
+        assert_eq!(carded(&screen).as_deref(), Some("done-c3d"));
+    }
+
+    #[test]
+    fn going_into_an_agent_retires_the_pointer() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![
+            finished_saying("done-a1b", "the first answer"),
+            finished_saying("done-b2c", "the second answer"),
+        ]);
+        a_frame(&mut screen);
+        screen
+            .moused(
+                mouse(MouseEventKind::Moved, 5, 5),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert_eq!(screen.hover, Some(2));
+
+        // Whoever went in had the terminal, and mouse capture was off for as
+        // long as they did: the line the view was holding is about a screen
+        // that has been somebody else's since.
+        screen.went_into("done-b2c".to_string());
+        assert_eq!(screen.lent.as_deref(), Some("done-b2c"));
+        assert_eq!(screen.hover, None);
     }
 
     #[test]
