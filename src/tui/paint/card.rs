@@ -87,6 +87,11 @@ pub struct Card<B = String> {
     /// brought back on it. Only the agent that can be neither sent to nor
     /// started again is past listening.
     pub listening: bool,
+    /// What was sent to it and not yet taken, oldest first — see
+    /// [`crate::verbs::send::queued`]. Only a working agent holds any: the
+    /// vendor keeps a message behind the turn under way and draws it in the
+    /// composer band the card cuts off, so this is the one place it shows.
+    pub queued: Vec<String>,
 }
 
 impl<B> Card<B> {
@@ -149,6 +154,7 @@ impl Card<String> {
             changes: self.changes,
             answer: self.answer,
             listening: self.listening,
+            queued: self.queued,
         }
     }
 }
@@ -879,8 +885,42 @@ pub(super) fn card_rows(
         + listed
         + usize::from(added(card, showing).is_some())
         + answering.map_or(0, |line| line_rows(line, width) + GAP_ROW)
+        + queued_rows(card)
         + shown;
     rows.min(u16::MAX as usize) as u16
+}
+
+/// How many rows the card spends on what was sent and not yet taken: one per
+/// message, and no more than the newest few, because they are a note about
+/// the turn and not the turn.
+fn queued_rows(card: &Card<Body>) -> usize {
+    card.queued.len().min(QUEUED_TALL)
+}
+
+/// The most queued messages the card will list.
+const QUEUED_TALL: usize = 3;
+
+/// The word a queued row ends on, dim, after the message itself.
+const QUEUED: &str = " · queued";
+
+/// The newest rows of what was sent and not yet taken, each the first line of
+/// the message behind the composer's own glyph, in the colour a question
+/// wears — a thing the agent has not read yet — and the word that says why
+/// it is here after it.
+fn queued(card: &Card<Body>, width: usize, theme: Theme) -> Vec<Line<'static>> {
+    let newest = card.queued.len().saturating_sub(QUEUED_TALL);
+    card.queued[newest..]
+        .iter()
+        .map(|message| {
+            let first = inert(message.lines().next().unwrap_or_default());
+            let room = width.saturating_sub(width_of(PROMPT) + width_of(QUEUED));
+            Line::from(vec![
+                Span::styled(PROMPT, Style::new().fg(theme.waiting)),
+                Span::styled(fit(&first, room), Style::new().fg(theme.waiting)),
+                Span::styled(QUEUED, dim()),
+            ])
+        })
+        .collect()
 }
 
 /// How many rows the line at the foot of the card takes: as many as it has
@@ -1046,6 +1086,10 @@ pub(super) fn float(
     let listed = take(choices.len() as u16);
     let added = added(card, showing);
     let adding = take(u16::from(added.is_some()));
+    // What was sent and not yet taken, under everything else the card says
+    // and above the line: the last thing that happened to this agent, held
+    // where the eye lands before typing the next.
+    let waiting = take(queued_rows(card) as u16);
 
     // What is left is the body's window, which is what the offset is clamped
     // against and what one press moves by.
@@ -1074,13 +1118,14 @@ pub(super) fn float(
         ruled,
     );
 
-    let [requesting, tabbing, asking, listing, adds, screen] = Layout::vertical([
+    let [requesting, tabbing, asking, listing, adds, screen, sent] = Layout::vertical([
         Constraint::Length(opened),
         Constraint::Length(tabbed),
         Constraint::Length(asked),
         Constraint::Length(listed),
         Constraint::Length(adding),
         Constraint::Min(0),
+        Constraint::Length(waiting),
     ])
     .areas(said);
 
@@ -1117,6 +1162,11 @@ pub(super) fn float(
         Paragraph::new(body(card, screen.height as usize, held, at, &notes, theme)),
         screen,
     );
+    if waiting > 0 {
+        let rows = queued(card, sent.width as usize, theme);
+        let newest = rows.len().saturating_sub(waiting as usize);
+        frame.render_widget(Paragraph::new(rows[newest..].to_vec()), sent);
+    }
 }
 
 /// The card's rule: the edge the band hangs off, and the things said on it.
@@ -1786,6 +1836,7 @@ mod tests {
             changes: false,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         }
     }
 
@@ -2264,6 +2315,7 @@ index e69de29..0000000
                 changes: true,
                 answer: false,
                 listening: true,
+                queued: Vec::new(),
             }),
         );
         let size = (60, 24);
@@ -2323,6 +2375,7 @@ index e69de29..0000000
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         };
         let screen = showing(
             vec![view("fix-login-a1b", Phase::Working, None, 3)],
@@ -2396,6 +2449,7 @@ index e69de29..0000000
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         };
         // Wide enough for the whole rule: the mark, the name, what the agent
         // runs, what the card is showing, and what the agent is doing at the
@@ -2470,6 +2524,7 @@ index e69de29..0000000
                 changes: false,
                 answer: false,
                 listening: true,
+                queued: Vec::new(),
             };
             let mut screen = showing(vec![agent], Some(card));
             // The frame the pulse is largest at, so the glyph on the rule is
@@ -2567,6 +2622,7 @@ index e69de29..0000000
             changes: false,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         };
         let screen = showing(vec![agent], Some(card));
         let drawn = painted(&screen, size);
@@ -2869,6 +2925,7 @@ index e69de29..0000000
             changes: false,
             answer: true,
             listening: false,
+            queued: Vec::new(),
         }
     }
 
@@ -3450,6 +3507,7 @@ index e69de29..0000000
                 changes: true,
                 answer: false,
                 listening: true,
+                queued: Vec::new(),
             }),
             (60, 14),
         );
@@ -3485,6 +3543,7 @@ index e69de29..0000000
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         }
     }
 
@@ -3555,6 +3614,7 @@ index e69de29..0000000
                     changes: false,
                     answer: true,
                     listening: true,
+                    queued: Vec::new(),
                 }),
             )
         };
@@ -3953,5 +4013,40 @@ index e69de29..0000000
         // card that measured before it cut would spend its height on the
         // vendor's furniture. Two with the rule over it.
         assert_eq!(card_rows(&card.read(), None, &[], None, 60), 2);
+    }
+
+    #[test]
+    fn view_card_counts_a_row_for_each_message_not_yet_taken_up_to_three() {
+        let with = |queued: Vec<String>| {
+            let mut card = asking(&[], None);
+            card.phase = Phase::Working;
+            card.question = None;
+            card.body = "what the agent said".to_string();
+            card.queued = queued;
+            card.read()
+        };
+        // The rule, the one row said, and one per message.
+        let two = with(vec![
+            "and the linter".to_string(),
+            "then the docs".to_string(),
+        ]);
+        assert_eq!(card_rows(&two, None, &[], None, 60), 4);
+
+        let five = with((1..=5).map(|n| format!("message {n}")).collect());
+        assert_eq!(card_rows(&five, None, &[], None, 60), 5);
+        // And the rows are the newest, each behind the prompt's glyph with the
+        // word that says why it is on the card.
+        let rows: Vec<String> = queued(&five, 60, Theme::default())
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "❯ message 3 · queued",
+                "❯ message 4 · queued",
+                "❯ message 5 · queued"
+            ]
+        );
     }
 }

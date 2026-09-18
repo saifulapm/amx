@@ -2118,6 +2118,54 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
 }
 
 #[test]
+fn card_says_a_reply_is_queued_until_the_agent_takes_it() {
+    // A reply typed at an agent mid-turn is held by the vendor until the turn
+    // ends, in the composer band the card cuts off — so the card says it from
+    // the record, and stops saying it the moment the vendor reports the
+    // prompt went in (Saiful, 2026-09-18: people thought the reply was lost).
+    let amx = Harness::new();
+    amx.play("port-cli-b2c", "takes-a-message-mid-turn");
+    amx.until_state("port-cli-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    card_on(&amx, &view, "port-cli-b2c");
+    types(&amx, &view, "and the linter");
+    amx.until("the words on the line", || {
+        screen(&amx, &view)
+            .contains("❯ and the linter")
+            .then_some(())
+    });
+    press(&amx, &view, "Enter");
+
+    let carded = amx.until("the reply held on the card", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("❯ and the linter · queued").then_some(drawn)
+    });
+    // Under the rule, as a row of the card, and above the line.
+    let rule = card_rule(&carded).expect("the rule");
+    let queued = carded
+        .lines()
+        .position(|line| line.contains("· queued"))
+        .expect("the queued row");
+    let line = carded
+        .lines()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|line| line.trim_start().starts_with('❯'))
+        .expect("the line");
+    assert!(
+        rule < queued && queued < line,
+        "between the rule and the line:\n{carded}"
+    );
+
+    // The vendor's own word that the prompt went in takes the row away.
+    amx.until("the row to go once the agent takes it", || {
+        let drawn = screen(&amx, &view);
+        (!drawn.contains("· queued")).then_some(())
+    });
+}
+
+#[test]
 fn card_line_on_a_command_that_has_ended_says_nothing_is_listening() {
     // A command amx ran has no vendor to take a first turn, so there is
     // nothing a line typed at it could do — and the card says so rather than

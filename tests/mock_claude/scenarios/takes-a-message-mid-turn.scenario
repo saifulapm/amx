@@ -1,0 +1,10 @@
+# A turn under way that takes what somebody sends it only when the turn is
+# over: the second UserPromptSubmit is the vendor's own word, four seconds on,
+# that the queued message went in.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "run the tests"}
+print working on it
+sleep 4000
+hook UserPromptSubmit {"prompt": "and the linter"}
+print on the linter
+sleep 600000

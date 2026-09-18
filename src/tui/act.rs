@@ -2136,6 +2136,7 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
         changes: true,
         answer: false,
         listening: listening(root, view),
+        queued: Vec::new(),
     })
 }
 

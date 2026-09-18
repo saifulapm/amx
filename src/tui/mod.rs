@@ -3848,6 +3848,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 // all there and the start of it is where a reader begins.
                 answer: view.phase().is_terminal(),
                 listening,
+                queued: Vec::new(),
             },
             Freshness::Files(printed.into_iter().collect()),
         );
@@ -3861,6 +3862,21 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
     let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
 
     let working = view.phase() == Phase::Working;
+    // What was sent to it and not yet taken, which only a turn under way
+    // holds: the vendor keeps it behind the turn and draws it in the band the
+    // card cuts off, so the record is where the card reads it from.
+    let queued = match (&agent, working) {
+        (Some(agent), true) => agent
+            .events()
+            .map(|events| verbs::send::queued(&events))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    // And the log it was read from, so a send or a submission moves the card.
+    let log = agent
+        .as_ref()
+        .filter(|_| working)
+        .map(|agent| as_read(agent.events_path()));
 
     let recorded = view.meta.transcript.clone().map(as_read);
     // The stream is read for as long as a turn runs, and for no other agent.
@@ -3893,8 +3909,9 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
                 // answer.
                 answer: !working,
                 listening,
+                queued,
             },
-            Freshness::Files(recorded.into_iter().chain(streaming).collect()),
+            Freshness::Files(recorded.into_iter().chain(streaming).chain(log).collect()),
         );
     }
 
@@ -3948,6 +3965,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
             changes: false,
             answer: answered,
             listening,
+            queued,
         },
         // Every card that reaches here is a question, a capture, or the words
         // the record itself holds — and the record is read again on the wall's
@@ -6224,6 +6242,7 @@ mod tests {
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         });
         press(&mut screen, ctrl('f'));
         assert!(
@@ -6275,6 +6294,7 @@ mod tests {
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         });
         let press = |screen: &mut Screen, code| {
             screen
@@ -6332,6 +6352,7 @@ diff --git a/src/bar.rs b/src/bar.rs
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         });
         screen.scroll.open_at(0);
 
@@ -6375,6 +6396,7 @@ diff --git a/src/bar.rs b/src/bar.rs
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         });
         screen.scroll.open_at(0);
         screen.mode = Mode::Typing(Composer::new(Asking::Reply));
@@ -6581,6 +6603,7 @@ diff --git a/src/bar.rs b/src/bar.rs
             changes: true,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         });
         screen.scroll.away.set(5);
 

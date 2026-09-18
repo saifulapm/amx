@@ -893,6 +893,7 @@ mod tests {
             changes: false,
             answer: false,
             listening: true,
+            queued: Vec::new(),
         }
     }
 
