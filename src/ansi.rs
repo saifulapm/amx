@@ -6,11 +6,13 @@
 //! rule matching against them. The card wants both: what claude drew, drawn
 //! the way claude drew it.
 //!
-//! **One walk, two collectors.** [`strip_ansi`] and [`painted`] are two ways of
-//! reading the same private [`walk`], so neither re-implements the grammar and
-//! the two cannot drift apart. The law between them is stated as a property
-//! test at the bottom of this file: `strip_ansi(s)` is `painted(s)` with the
-//! style thrown away and the rows joined by newlines.
+//! **One walk, three collectors.** [`strip_ansi`], [`painted`] and
+//! [`laid_out`] are three ways of reading the same private [`walk`], so none
+//! re-implements the grammar and they cannot drift apart. The law between the
+//! first two is stated as a property test at the bottom of this file:
+//! `strip_ansi(s)` is `painted(s)` with the style thrown away and the rows
+//! joined by newlines. The third reads the motion the other two drop, because
+//! a drawing is not a stream of words.
 //!
 //! **This is not a display sanitiser.** It removes *escapes*;
 //! [`crate::tmux::sanitize`] removes *characters a terminal must not be handed*
@@ -49,7 +51,7 @@ pub fn strip_ansi(screen: &str) -> String {
     walk(screen, |event| match event {
         Event::Text(run) => out.push_str(run),
         Event::Newline => out.push('\n'),
-        Event::Sgr(_) => {}
+        Event::Control { .. } => {}
     });
     out
 }
@@ -78,7 +80,7 @@ pub fn painted(screen: &str) -> Vec<Vec<Painted>> {
             // padding of such a box and not the text in it.
             rows.push(Vec::new());
         }
-        Event::Sgr(params) => {
+        Event::Control { params, end: 'm' } => {
             let mut next = style.clone();
             apply(&mut next, params);
             // A parameter that changed nothing — and a real capture is full of
@@ -88,6 +90,9 @@ pub fn painted(screen: &str) -> Vec<Vec<Painted>> {
                 style = next;
             }
         }
+        // Motion moves a cursor, and a collector gathering runs in the order
+        // they were written has none to move.
+        Event::Control { .. } => {}
     });
     close(&mut rows, &style, &mut run);
     rows
@@ -107,10 +112,39 @@ fn close(rows: &mut [Vec<Painted>], style: &Painted, run: &mut String) {
     }
 }
 
+/// A capture read as the screen it drew rather than as the order it was
+/// written in.
+///
+/// [`strip_ansi`] keeps the characters in the order they arrived, which is the
+/// right reading of a stream of lines and the wrong one of a drawing: a vendor
+/// that puts its cursor where each word goes has `Accessing` and `workspace:`
+/// gathered into `Accessingworkspace:`, the motion between them dropped along
+/// with the cells it skipped. This lays the same walk out on a [`Grid`] and
+/// hands back what is standing on it at the end — the last draw of every cell,
+/// in the row and the column it was drawn at.
+///
+/// The motion a boot draws with, and no more: CR, LF, BS, CUP (`H`, `f`),
+/// CUU/CUD/CUF/CUB (`A`-`D`), CHA (`G`), VPA (`d`), EL (`K`) and ED (`J`).
+/// Paint, private modes and control strings put nothing in a cell and are let
+/// by, as they are in [`strip_ansi`].
+pub fn laid_out(raw: &str) -> String {
+    let mut grid = Grid::new(raw.len());
+    walk(raw, |event| match event {
+        Event::Text(text) => grid.write(text),
+        Event::Newline => grid.newline(),
+        Event::Control { params, end } => grid.moved(params, end),
+    });
+    grid.read()
+}
+
 // ── the walk ────────────────────────────────────────────────────────────────
 
 /// `ESC`, the seven-bit introducer everything below is built on.
 const ESC: char = '\u{1b}';
+
+/// `BS`, which arrives as a character rather than a sequence and still moves
+/// the cursor.
+const BS: char = '\u{8}';
 
 /// `BEL`, which every terminal worth the name takes as a string terminator
 /// even though ECMA-48 spells that `ST`.
@@ -128,16 +162,18 @@ const SOS_8: char = '\u{98}';
 const ST_8: char = '\u{9c}';
 
 /// What the walk hands a collector. Text arrives borrowed from the screen, so
-/// neither collector pays for a copy it does not keep.
+/// no collector pays for a copy it does not keep.
 enum Event<'a> {
     /// A run of text with no escape and no newline in it.
     Text(&'a str),
     /// A row boundary. Structure rather than text, and the paint in force
     /// crosses it the way it does on a terminal.
     Newline,
-    /// A `CSI … m` sequence's parameters, without its introducer or its final
-    /// byte. `ESC[m` arrives as the empty string.
-    Sgr(&'a str),
+    /// A complete control sequence: its parameters, without the introducer,
+    /// and the final byte that says what it does. `ESC[m` arrives as the empty
+    /// string and `'m'`. A collector that only paints reads the `m` ones; one
+    /// that lays cells out reads the motion as well.
+    Control { params: &'a str, end: char },
 }
 
 /// What the character just read opened, if anything.
@@ -210,10 +246,10 @@ fn walk(screen: &str, mut emit: impl FnMut(Event<'_>)) {
         match opened {
             Opened::Newline => emit(Event::Newline),
             Opened::Csi => {
-                let (end, params) = scan_csi(screen, i);
-                i = end;
-                if let Some(params) = params {
-                    emit(Event::Sgr(params));
+                let (goes_on, sequence) = scan_csi(screen, i);
+                i = goes_on;
+                if let Some((params, end)) = sequence {
+                    emit(Event::Control { params, end });
                 }
             }
             Opened::Str => i = scan_string(screen, i),
@@ -228,9 +264,11 @@ fn walk(screen: &str, mut emit: impl FnMut(Event<'_>)) {
 
 /// A control sequence from just past its introducer: parameters and
 /// intermediates, then a final byte in `@`..=`~`. Answers with where the walk
-/// goes on and, where the final byte is `m`, the parameters an SGR wants. One
-/// that never ends is read to the end of the screen.
-fn scan_csi(screen: &str, from: usize) -> (usize, Option<&str>) {
+/// goes on and, where the sequence finished, the parameters and that final
+/// byte. One that never ends is read to the end of the screen and reported as
+/// nothing, because half a sequence says nothing about what the whole one
+/// would have done.
+fn scan_csi(screen: &str, from: usize) -> (usize, Option<(&str, char)>) {
     let mut i = from;
     while let Some(c) = screen[i..].chars().next() {
         if c == ESC {
@@ -238,7 +276,7 @@ fn scan_csi(screen: &str, from: usize) -> (usize, Option<&str>) {
         }
         let end = i + c.len_utf8();
         if ('\u{40}'..='\u{7e}').contains(&c) {
-            return (end, (c == 'm').then(|| &screen[from..i]));
+            return (end, Some((&screen[from..i], c)));
         }
         i = end;
     }
@@ -361,6 +399,214 @@ fn number(param: &str) -> Option<u16> {
 /// One colour component, which has to fit a byte.
 fn component(param: &str) -> Option<u8> {
     u8::try_from(number(param)?).ok()
+}
+
+// ── the grid ────────────────────────────────────────────────────────────────
+
+/// Cells a capture may fill beyond one for each byte in it — see [`Grid`].
+const SLACK: usize = 64 * 1024;
+
+/// The cells a drawing has filled, and the cursor filling them.
+///
+/// **Unbounded in shape.** No width and no height is assumed: a capture is
+/// bytes off a pane whose size nobody wrote down, so a cell addressed past the
+/// end of a row, or past the last row, makes the grid bigger rather than being
+/// clipped to a screen this reader cannot know.
+///
+/// **Bounded in what it will hold.** A cell is only ever filled by a character
+/// that was in the capture, so a capture of n bytes needs at most n of them,
+/// and [`SLACK`] over that is room for the blanks a drawing skips past. A jump
+/// further out than that is bytes gone wrong rather than a screen — twelve
+/// bytes of `ESC[999999999;999999999H` would otherwise pad a gigabyte of rows
+/// — and what is drawn out there is dropped. Nothing a pane really printed
+/// reaches the bound, and reading a capture stays a scan of it.
+struct Grid {
+    rows: Vec<Vec<char>>,
+    row: usize,
+    col: usize,
+    /// What the grid holds: every row's cells, and one for each row.
+    held: usize,
+    /// The most it may hold.
+    cap: usize,
+}
+
+impl Grid {
+    /// An empty grid for a capture of `capture` bytes.
+    fn new(capture: usize) -> Grid {
+        Grid {
+            rows: Vec::new(),
+            row: 0,
+            col: 0,
+            held: 0,
+            cap: capture + SLACK,
+        }
+    }
+
+    /// Draw a run of text, a character to a cell, with the two motions that
+    /// arrive as characters rather than as sequences: a carriage return to the
+    /// first column, and a backspace one cell to the left of where it was.
+    fn write(&mut self, text: &str) {
+        for c in text.chars() {
+            match c {
+                '\r' => self.col = 0,
+                BS => self.col = self.col.saturating_sub(1),
+                _ => self.put(c),
+            }
+        }
+    }
+
+    /// A newline: down a row and back to the first column.
+    ///
+    /// **A terminal moves down and no further**, and the captures this reads
+    /// are a pty's, where the line discipline has already put a return in
+    /// front of every newline — so on those bytes the two readings agree.
+    /// Where they part is a file written straight rather than through a pane,
+    /// and there a line feed that kept its column would walk every line of it
+    /// diagonally down the screen. This is a reader of both.
+    fn newline(&mut self) {
+        self.row = self.row.saturating_add(1);
+        self.col = 0;
+    }
+
+    /// One character where the cursor is, with the rows and the cells in front
+    /// of it grown as blanks. The cursor moves on whether or not the cell fit.
+    fn put(&mut self, c: char) {
+        let rows = (self.row + 1).saturating_sub(self.rows.len());
+        let width = self.rows.get(self.row).map_or(0, Vec::len);
+        let cells = (self.col + 1).saturating_sub(width);
+        if self.held.saturating_add(rows).saturating_add(cells) <= self.cap {
+            self.held += rows + cells;
+            if self.rows.len() < self.row + 1 {
+                self.rows.resize_with(self.row + 1, Vec::new);
+            }
+            let row = &mut self.rows[self.row];
+            if row.len() < self.col + 1 {
+                row.resize(self.col + 1, ' ');
+            }
+            row[self.col] = c;
+        }
+        self.col = self.col.saturating_add(1);
+    }
+
+    /// What a control sequence moves or erases. A private parameter string is
+    /// a mode however it ends, and a final byte this grid does not know draws
+    /// no cell: both are let by.
+    fn moved(&mut self, params: &str, end: char) {
+        if params.starts_with(['<', '=', '>', '?']) {
+            return;
+        }
+        match end {
+            'H' | 'f' => {
+                self.row = at(params, 0);
+                self.col = at(params, 1);
+            }
+            'A' => self.row = self.row.saturating_sub(count(params, 0)),
+            'B' => self.row = self.row.saturating_add(count(params, 0)),
+            'C' => self.col = self.col.saturating_add(count(params, 0)),
+            'D' => self.col = self.col.saturating_sub(count(params, 0)),
+            'G' => self.col = at(params, 0),
+            'd' => self.row = at(params, 0),
+            'K' => match mode(params) {
+                0 => self.cut(self.row, self.col),
+                1 => self.blank(self.row, self.col),
+                2 => self.cut(self.row, 0),
+                _ => {}
+            },
+            // Rows are dropped where nothing under the cursor can be seen
+            // again; a row above it stays a row, emptied, because the rows
+            // under it are still where they were drawn.
+            'J' => match mode(params) {
+                0 => {
+                    self.cut(self.row, self.col);
+                    self.keep_rows(self.row + 1);
+                }
+                1 => {
+                    self.blank(self.row, self.col);
+                    for row in 0..self.row.min(self.rows.len()) {
+                        self.cut(row, 0);
+                    }
+                }
+                2 | 3 => self.keep_rows(0),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Drop what a row holds from `from` on.
+    fn cut(&mut self, row: usize, from: usize) {
+        if let Some(cells) = self.rows.get_mut(row) {
+            self.held -= cells.len().saturating_sub(from);
+            cells.truncate(from);
+        }
+    }
+
+    /// Blank a row up to and including `to`, which costs it no cells: what is
+    /// past there was drawn where it stands and stays there.
+    fn blank(&mut self, row: usize, to: usize) {
+        if let Some(cells) = self.rows.get_mut(row) {
+            for cell in cells.iter_mut().take(to + 1) {
+                *cell = ' ';
+            }
+        }
+    }
+
+    /// Drop every row past `keep`.
+    fn keep_rows(&mut self, keep: usize) {
+        while self.rows.len() > keep {
+            if let Some(cells) = self.rows.pop() {
+                self.held -= cells.len() + 1;
+            }
+        }
+    }
+
+    /// The grid as text: a row to a line, with the blanks a drawing left at
+    /// the end of a row and under its last one dropped. Nobody asked to read
+    /// the part of a screen nothing was drawn on.
+    fn read(&self) -> String {
+        let mut rows: Vec<String> = self
+            .rows
+            .iter()
+            .map(|cells| {
+                let mut line: String = cells.iter().collect();
+                line.truncate(line.trim_end_matches(' ').len());
+                line
+            })
+            .collect();
+        while rows.last().is_some_and(String::is_empty) {
+            rows.pop();
+        }
+        rows.join("\n")
+    }
+}
+
+/// The `i`th parameter as a count: how far a cursor walks, or which row or
+/// column it is put on. Missing, empty, zero, or not a number at all — a
+/// parameter longer than one will read as, an intermediate byte — is the 1
+/// ECMA-48 gives a parameter left out.
+fn count(params: &str, i: usize) -> usize {
+    params
+        .split(';')
+        .nth(i)
+        .and_then(|param| param.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1)
+}
+
+/// The `i`th parameter as a row or a column: the same count, 1-based on the
+/// wire and 0-based on the grid.
+fn at(params: &str, i: usize) -> usize {
+    count(params, i) - 1
+}
+
+/// Which of an erase's forms a sequence asked for, which is the 0 ECMA-48
+/// gives a parameter left out.
+fn mode(params: &str) -> usize {
+    params
+        .split(';')
+        .next()
+        .and_then(|param| param.parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -557,6 +803,120 @@ mod tests {
         let rows = painted("\u{1b}[1m\u{1b}[0m\nword");
         assert!(rows[0].is_empty(), "{rows:?}");
         assert_eq!(rows[1][0].text, "word");
+    }
+
+    // ── the grid ────────────────────────────────────────────────────────────
+
+    /// Two frames of a boot, drawn the way a vendor draws one: the cursor put
+    /// where each word goes rather than spaces printed up to it, and the second
+    /// frame written over the first. Shaped after the claude boot whose reading
+    /// came back as `Accessingworkspace:` on 2026-09-18.
+    const BOOT: &str = concat!(
+        // A title, a word placed further along the same row, and a status row
+        // under it.
+        "\u{1b}[2J\u{1b}[H",
+        "\u{1b}[1;1HAccessing",
+        "\u{1b}[1;17Hworkspace:",
+        "\u{1b}[2;3Hreading the files",
+        // The second frame: the status row rewritten in place, shorter, with
+        // what the longer first draw left standing erased.
+        "\u{1b}[2;3Hready\u{1b}[K",
+        // And the title row finished off with a row address, a column address
+        // and a walk right.
+        "\u{1b}[1d\u{1b}[1G\u{1b}[27Cin ~/Sites",
+    );
+
+    #[test]
+    fn a_boot_drawn_with_motion_reads_as_the_last_frame_of_it() {
+        assert_eq!(
+            laid_out(BOOT),
+            "Accessing       workspace: in ~/Sites\n  ready",
+            "the cells the cursor skipped are spaces, not nothing"
+        );
+        assert_eq!(
+            strip_ansi(BOOT),
+            "Accessingworkspace:reading the filesreadyin ~/Sites",
+            "which is the reading this exists to replace"
+        );
+    }
+
+    #[test]
+    fn a_return_draws_over_the_row_it_returns_to() {
+        assert_eq!(laid_out(" 1/3\r 2/3\r 3/3 done\r\nlast"), " 3/3 done\nlast");
+        // A shorter draw over a longer one leaves the tail of the longer one
+        // showing, which is what a terminal does and why a progress bar pads.
+        assert_eq!(laid_out("loading......\rdone"), "doneing......");
+        // And a backspace steps back over one cell without erasing it.
+        assert_eq!(laid_out("ab\u{8}c"), "ac");
+    }
+
+    #[test]
+    fn the_cursor_walks_every_way_the_grid_knows() {
+        // Down two, right three, up one, left one, then a word.
+        assert_eq!(laid_out("\u{1b}[2B\u{1b}[3C\u{1b}[A\u{1b}[Dxy"), "\n  xy");
+        // A row address and a column address, both 1-based.
+        assert_eq!(laid_out("\u{1b}[3d\u{1b}[5Gx"), "\n\n    x");
+        // A parameter left out is the 1 ECMA-48 says it stands for.
+        assert_eq!(laid_out("a\u{1b}[Bb"), "a\n b");
+    }
+
+    #[test]
+    fn erasing_takes_the_cells_with_it() {
+        // To the end of the row, from the start of it, and all of it.
+        assert_eq!(laid_out("abcdef\u{1b}[1;4H\u{1b}[K"), "abc");
+        assert_eq!(laid_out("abcdef\u{1b}[1;3H\u{1b}[1K"), "   def");
+        assert_eq!(laid_out("abcdef\u{1b}[2K"), "");
+        // And the screen, from the cursor down, to the cursor, and whole.
+        assert_eq!(laid_out("one\ntwo\nthree\u{1b}[2;2H\u{1b}[J"), "one\nt");
+        assert_eq!(
+            laid_out("one\ntwo\nthree\u{1b}[2;2H\u{1b}[1J"),
+            "\n  o\nthree"
+        );
+        assert_eq!(laid_out("one\ntwo\u{1b}[2Jafter"), "\n   after");
+    }
+
+    #[test]
+    fn nothing_that_draws_no_cell_reaches_the_grid() {
+        // Paint, a private mode, a control string and an unknown sequence.
+        assert_eq!(laid_out("\u{1b}[1;31mred\u{1b}[0m"), "red");
+        assert_eq!(laid_out("\u{1b}[?25lhidden\u{1b}[?25h"), "hidden");
+        assert_eq!(laid_out("\u{1b}]0;title\u{7}text"), "text");
+        assert_eq!(laid_out("a\u{1b}[5Zb"), "ab");
+        // A private parameter string is a mode however it ends.
+        assert_eq!(laid_out("a\u{1b}[?3;4Hb"), "ab");
+    }
+
+    #[test]
+    fn a_reading_ends_at_the_last_cell_with_anything_in_it() {
+        assert_eq!(laid_out("one\ntwo\n"), "one\ntwo");
+        assert_eq!(laid_out("row   \u{1b}[10Cx\u{1b}[1;5H\u{1b}[K"), "row");
+        assert_eq!(laid_out("\n\n\n"), "");
+        assert_eq!(laid_out(""), "");
+    }
+
+    #[test]
+    fn a_jump_further_than_the_capture_could_fill_costs_nothing() {
+        // A row and a column further out than the whole capture could put a
+        // character on: the cell is dropped rather than the rows padded out to
+        // it. 32k of them, so a grid that grew to meet one would not finish.
+        let hostile = "\u{1b}[999999999;999999999Hx".repeat(32 * 1024);
+        assert_eq!(laid_out(&hostile), "");
+        // What is drawn out there is lost, and the drawing goes on once the
+        // cursor is somewhere the capture could have filled.
+        assert_eq!(laid_out("\u{1b}[999999;999999Hgone\u{1b}[1;1Hhere"), "here");
+    }
+
+    #[test]
+    fn the_grid_survives_the_hostile_fixtures() {
+        for screen in FIXTURES {
+            let out = laid_out(screen);
+            assert!(!out.contains('\u{1b}'), "an escape reached {screen:?}");
+            for end in 0..=screen.len() {
+                if screen.is_char_boundary(end) {
+                    laid_out(&screen[..end]);
+                }
+            }
+        }
     }
 
     // ── the pinned divergences ──────────────────────────────────────────────

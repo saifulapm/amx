@@ -933,32 +933,6 @@ pub struct Agent {
     dir: PathBuf,
 }
 
-/// What a terminal would have left of lines written over themselves.
-///
-/// A carriage return takes the cursor back to the column the line began in,
-/// so what is printed after one stands in place of what came before it: a
-/// progress bar that drew itself a hundred times over one row printed one row,
-/// and a line ending `\r\n` ended. What a longer earlier draw left showing
-/// past the end of a shorter later one is not kept — the last draw is the one
-/// the eye was on — and the colours an overwritten draw set go with it.
-fn returned(printed: &str) -> String {
-    printed
-        .split_inclusive('\n')
-        .map(|line| {
-            let (body, end) = match line.strip_suffix('\n') {
-                Some(body) => (body, "\n"),
-                None => (line, ""),
-            };
-            let kept = body
-                .trim_end_matches('\r')
-                .rsplit('\r')
-                .next()
-                .unwrap_or("");
-            format!("{kept}{end}")
-        })
-        .collect()
-}
-
 impl Agent {
     /// Make the directory and write the opening record.
     pub fn create(root: &Path, meta: &Meta) -> Result<Agent> {
@@ -1045,11 +1019,13 @@ impl Agent {
     /// and reads it once: `amx logs` does, and the card that is retaken every
     /// second reads [`output_tail`](Self::output_tail) instead.
     ///
-    /// As a terminal would have shown it, not as the bytes went by: the pane
-    /// ends its lines `\r\n`, and a progress bar draws itself a hundred times
-    /// over one row with a `\r` between each — see [`returned`] — and the
-    /// paint is walked off — see [`crate::ansi::strip_ansi`]. Bytes that are
-    /// not text are read past rather than costing the file.
+    /// As a terminal would have shown it, not as the bytes went by: the bytes
+    /// are laid out on a grid and the cells read back — see
+    /// [`crate::ansi::laid_out`] — so a progress bar that drew itself a
+    /// hundred times over one row is one row, a vendor that put its cursor
+    /// where each word goes keeps the space between them, and the paint is
+    /// walked off. Bytes that are not text are read past rather than costing
+    /// the file.
     ///
     /// `None` where there is no file, and where the vendor has spoken: a
     /// record naming a transcript has the record and that transcript to answer
@@ -1062,9 +1038,7 @@ impl Agent {
             return None;
         }
         let bytes = std::fs::read(self.dir.join(OUTPUT)).ok()?;
-        Some(crate::ansi::strip_ansi(&returned(
-            &String::from_utf8_lossy(&bytes),
-        )))
+        Some(crate::ansi::laid_out(&String::from_utf8_lossy(&bytes)))
     }
 
     /// The end of what the pane printed, for the card that shows it.
@@ -1076,15 +1050,15 @@ impl Agent {
     /// paged through anyway, and the long command costs the view what a short
     /// one does.
     ///
-    /// Hidden and stripped the way [`output`](Self::output) is, and for the
+    /// Hidden and laid out the way [`output`](Self::output) is, and for the
     /// same reasons.
     ///
     /// The offset lands inside a row, and that half row is dropped rather than
     /// drawn: a card shows every row it is given, so half of one would be a row
     /// the command never printed. A tail with no row boundary in it at all is
     /// kept as it stands — half a row is more than none. Otherwise this is
-    /// [`output`](Self::output): as the terminal would have shown it, with the
-    /// returns resolved, and `None` where there is no file.
+    /// [`output`](Self::output): as the terminal would have shown it, off the
+    /// grid the bytes are laid on, and `None` where there is no file.
     pub fn output_tail(&self) -> Option<String> {
         if self.spoke() {
             return None;
@@ -1101,7 +1075,7 @@ impl Agent {
                 .split_once('\n')
                 .map_or(printed.as_ref(), |(_, rest)| rest),
         };
-        Some(crate::ansi::strip_ansi(&returned(whole)))
+        Some(crate::ansi::laid_out(whole))
     }
 
     /// Whether the vendor has said a word of its own: the transcript a report
@@ -2510,12 +2484,12 @@ mod tests {
         std::fs::write(agent.dir().join(OUTPUT), "one\ntwo\n").unwrap();
         assert_eq!(
             agent.output().as_deref(),
-            Some("one\ntwo\n"),
+            Some("one\ntwo"),
             "the whole of what the command printed, first line and last"
         );
         assert_eq!(
             agent.output_tail().as_deref(),
-            Some("one\ntwo\n"),
+            Some("one\ntwo"),
             "and a file shorter than the cap is the tail, whole"
         );
 
@@ -2543,8 +2517,41 @@ mod tests {
         std::fs::write(agent.dir().join(OUTPUT), b"caf\xc3\xa9 \xff\n").unwrap();
         assert_eq!(
             agent.output().as_deref(),
-            Some("café \u{fffd}\n"),
+            Some("café \u{fffd}"),
             "and a byte that is not text is read past, not the whole file lost"
+        );
+    }
+
+    #[test]
+    fn store_reads_a_boot_as_the_screen_it_drew() {
+        // Two frames of a boot, drawn the way a vendor draws one: the cursor
+        // put where each word goes rather than spaces printed up to it, and
+        // the second frame written over the first. Read in the order the bytes
+        // went by, this came back as `Accessingworkspace:` in one long line.
+        let boot = concat!(
+            "\u{1b}[2J\u{1b}[H",
+            "\u{1b}[1;1HAccessing",
+            "\u{1b}[1;17Hworkspace:",
+            "\u{1b}[2;3Hreading the files",
+            "\u{1b}[2;3Hready\u{1b}[K",
+        );
+        let screen = "Accessing       workspace:\n  ready";
+
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("claude".to_string()),
+                ..meta("fix-login-a1b")
+            },
+        )
+        .unwrap();
+        std::fs::write(agent.dir().join(OUTPUT), boot).unwrap();
+        assert_eq!(agent.output().as_deref(), Some(screen));
+        assert_eq!(
+            agent.output_tail().as_deref(),
+            Some(screen),
+            "and the card reads the same screen the log does"
         );
     }
 
@@ -2564,7 +2571,7 @@ mod tests {
         std::fs::write(quiet.dir().join(OUTPUT), "could not read the state file\n").unwrap();
         assert_eq!(
             quiet.output().as_deref(),
-            Some("could not read the state file\n")
+            Some("could not read the state file")
         );
 
         // The first report that names a transcript is the vendor saying it is
@@ -2598,8 +2605,9 @@ mod tests {
         std::fs::write(agent.dir().join(OUTPUT), &printed).unwrap();
 
         let tail = agent.output_tail().unwrap();
+        let rows: Vec<&str> = printed.lines().map(str::trim_end).collect();
         assert!(
-            tail.len() <= OUTPUT_TAIL as usize && printed.ends_with(&tail),
+            tail.len() <= OUTPUT_TAIL as usize && rows.join("\n").ends_with(&tail),
             "a quarter megabyte of it at most, and the end of it"
         );
         assert_eq!(
@@ -2613,7 +2621,7 @@ mod tests {
             "and ending on the last row the command printed"
         );
         assert!(
-            agent.output().unwrap().starts_with("row 1 "),
+            agent.output().unwrap().starts_with("row 1\n"),
             "while the reader that wants all of it still gets the first row"
         );
     }
