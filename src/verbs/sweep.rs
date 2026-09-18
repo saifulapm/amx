@@ -314,9 +314,6 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
             delete: true,
             worktree: Some(Disposition::Delete),
             branch: Some(Disposition::Delete),
-            // Sweeping clears one ended record away; it is not a stop aimed
-            // at a live family, and a child still running is left to finish.
-            keep_children: true,
         },
         &mut std::io::empty(),
         out,

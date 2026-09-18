@@ -170,7 +170,7 @@ fn a_child(amx: &Harness, id: &str, parent: &str, depth: u64) -> String {
 }
 
 #[test]
-fn stopping_a_parent_takes_its_family_deepest_first() {
+fn stopping_a_parent_leaves_its_children_running() {
     let amx = Harness::new();
     let parent = amx.play("parent-a1b", "happy-turn");
     amx.until_state("parent-a1b", "idle");
@@ -179,39 +179,18 @@ fn stopping_a_parent_takes_its_family_deepest_first() {
 
     let out = said(&stop(&amx, &["parent-a1b", "--force"]));
 
-    for pane in [&parent, &child, &grandchild] {
-        assert!(!amx.pane_alive(pane), "the family's panes go with it");
+    assert!(!amx.pane_alive(&parent), "the parent goes");
+    for pane in [&child, &grandchild] {
+        assert!(amx.pane_alive(pane), "a child is never its parent's to end");
     }
-    for id in ["parent-a1b", "child-b2c", "grand-c3d"] {
-        assert_eq!(amx.state(id)["state"], "stopped", "{id}");
+    for id in ["child-b2c", "grand-c3d"] {
+        assert_ne!(amx.state(id)["state"], "stopped", "{id}");
     }
     let lines: Vec<&str> = out
         .lines()
         .filter(|line| line.ends_with(" stopped"))
         .collect();
-    assert_eq!(
-        lines,
-        [
-            "parent-a1b stopped",
-            "grand-c3d stopped",
-            "child-b2c stopped"
-        ],
-        "the parent first, then the leaves"
-    );
-}
-
-#[test]
-fn keep_children_leaves_the_family_running() {
-    let amx = Harness::new();
-    let parent = amx.play("parent-a1b", "happy-turn");
-    amx.until_state("parent-a1b", "idle");
-    let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
-
-    said(&stop(&amx, &["parent-a1b", "--force", "--keep-children"]));
-
-    assert!(!amx.pane_alive(&parent), "the parent goes");
-    assert!(amx.pane_alive(&child), "and the child is left to finish");
-    assert_ne!(amx.state("child-b2c")["state"], "stopped");
+    assert_eq!(lines, ["parent-a1b stopped"], "the one it was asked for");
 }
 
 #[test]
@@ -241,10 +220,7 @@ fn a_child_of_a_removed_parent_is_still_an_agent() {
     amx.until_state("parent-a1b", "idle");
     let child = a_child(&amx, "child-b2c", "parent-a1b", 1);
 
-    said(&stop(
-        &amx,
-        &["parent-a1b", "--force", "--delete", "--keep-children"],
-    ));
+    said(&stop(&amx, &["parent-a1b", "--force", "--delete"]));
     assert!(!amx.agent_dir("parent-a1b").exists());
 
     let status = amx.amx(&["status", "child-b2c", "--json"]);

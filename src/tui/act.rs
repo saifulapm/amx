@@ -2033,9 +2033,6 @@ pub fn stop(root: &Path, view: &View) -> Result<String> {
         delete: false,
         worktree: None,
         branch: None,
-        // The row under the cursor is the parent of whatever is drawn under
-        // it, and ending a parent ends its family like `amx stop` does.
-        keep_children: false,
     };
     let mut said = Vec::new();
     let mut nobody = std::io::empty();

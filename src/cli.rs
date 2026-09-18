@@ -808,15 +808,6 @@ pub struct StopArgs {
     /// What to do with the agent's branch.
     #[arg(long, value_enum)]
     pub branch: Option<Disposition>,
-
-    /// Leave the agent's live children running when it is stopped.
-    ///
-    /// A stopped parent's children are ended with it, deepest first: they were
-    /// started to answer its questions, and one left running has nobody to
-    /// answer to. This is the escape for the child somebody wants to watch to
-    /// the end.
-    #[arg(long)]
-    pub keep_children: bool,
 }
 
 /// A task with something in it.
