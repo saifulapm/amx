@@ -176,10 +176,19 @@
 # with one calling `ctx.ui.setStatus`, which drew `gate: armed` beneath it. The
 # last row is then not a footer this walk knows, no anchor is found, and the
 # screen keeps every row it has.
+#
+# `thinking` is the row pi draws for a reasoning run while thinking is hidden
+# (`hideThinkingBlock`, the label `hiddenThinkingLabel` defaults to): it is the
+# last row above the spinner for as long as the model is reasoning, and text or
+# a tool row lands under it the moment the reasoning ends. Read 2026-09-18 on
+# 0.85.1, `assistant-message.js`. On the same version the spinner is drawn
+# into the composer's top border — `── ⠙ Working ───` — so the frame is read
+# past the rule as well as at the head of a row.
 [furniture]
 mode = ["↑", "$0.", "0.0%/"]
 spinner = []
 frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+thinking = ["Thinking..."]
 rule = "─"
 statusline = 1
 bottom = 1

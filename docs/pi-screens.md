@@ -913,3 +913,34 @@ Saiful ruled that this is not an answer a person can give.
 The numbers under that reading are amx's own rather than the vendor's, so the
 record says which it has: `walked` beside `options`, on the wire only where it
 is true, and a record written before this pass reads with it off.
+
+## What the 2026-09-18 pass found
+
+Driven on 0.85.1 at 80 columns with a turn that reasons, runs `sleep 30` and
+answers, captured every five seconds.
+
+**The spinner is in the border.** The status line pi drew on a row of its own
+is drawn into the composer's top border now: `── ⠙ Working ───…`, the frame two
+cells in after the rule. `Furniture::framed` read a frame only at the head of a
+row, so `derive::doing` found nothing on a running pi and the card's rule said
+`thinking…` for the whole turn. The frame is read past a run of the vendor's
+rule as well (`Furniture::unruled`), and the words come back with the rule
+taken off both ends: `Working`, or whatever an extension set.
+
+**`Thinking...` is a row.** With `hideThinkingBlock` on (Saiful's setting), pi
+draws `Thinking...` — `hiddenThinkingLabel`'s default in
+`assistant-message.js` — for a reasoning run and nothing else of it. It is the
+last row above the spinner for as long as the model reasons; the moment text
+or a tool row lands under it the reasoning is over, while the border still
+says `Working`. `[furniture].thinking` names the row, and `doing` answers it
+whenever it is the last thing drawn above the spinner, so the card's rule says
+`Thinking...` while pi thinks and `Working` once it is running a tool or
+writing. Thinking that is not hidden draws in italics through the same
+component and carries no such row; that pi reads `Working` throughout.
+
+**The stats line has changed shape.** `Muse (1M context) │ ◈ 0% │ probe (main)
+│ ◖ medium` carries none of the three `mode` fragments (`↑`, `$0.`, `0.0%/`),
+so the furniture walk finds no footer on this machine's pi and keeps the whole
+screen. Not re-measured here; the thinking row is read against the spinner
+rather than the cut so that it does not depend on the walk.
+

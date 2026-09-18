@@ -532,14 +532,26 @@ fn forget_the_placeholder(screens: &Ruleset, state: &mut State) {
 /// Read but not recorded. A line that says an agent has been at something for
 /// 22 seconds is true for a second, and a record carrying it would have every
 /// later reader repeat it as news.
+///
+/// Where the last thing drawn above that line is the vendor's word for a
+/// reasoning run still hidden — pi's `Thinking...`, see
+/// [`Furniture::thinking`] — that word is the answer: the turn is thinking
+/// until something is drawn under it, and the status line says `Working`
+/// either way.
 fn doing(screens: &Ruleset, capture: &str) -> Option<String> {
+    let furniture = screens.furniture();
     let rows: Vec<&str> = capture.lines().collect();
     let floor = rows.len().saturating_sub(crate::rules::FLOOR_LINES);
-    let line = rows[floor..]
+    let at = rows[floor..]
         .iter()
-        .rev()
-        .find(|row| screens.furniture().spinning(row))?;
-    Some(unglyphed(line))
+        .rposition(|row| furniture.spinning(row))?
+        + floor;
+    if let Some(above) = rows[..at].iter().rev().find(|row| !row.trim().is_empty())
+        && furniture.thinking(above)
+    {
+        return Some(above.trim().to_string());
+    }
+    Some(unglyphed(furniture.unruled(rows[at])))
 }
 
 /// What a screen a rule read as a finished turn says the agent last said.
@@ -3130,6 +3142,47 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             doing(&second, A_WORKING_SCREEN),
             None,
             "and its fragments are on no screen claude draws"
+        );
+    }
+
+    #[test]
+    fn reader_reads_pis_spinner_out_of_the_border_and_its_thinking_row_above_it() {
+        // pi 0.85.1 draws its status into the composer's top border, and with
+        // thinking hidden it draws `Thinking...` for the run until text or a
+        // tool row follows (Saiful's setting; 2026-09-18).
+        let pi = rules::of("pi");
+        let thinking = "\
+ First think about the sky.
+ Thinking...
+
+── ⠙ Working ───────────────────────────────
+────────────────────────────────────────────
+Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
+";
+        assert_eq!(doing(pi, thinking).as_deref(), Some("Thinking..."));
+
+        let running = "\
+ First think about the sky.
+ Thinking...
+ $ sleep 30; echo done (timeout 40s)
+ Elapsed 6.0s
+
+── ⠼ Working ───────────────────────────────
+────────────────────────────────────────────
+Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
+";
+        assert_eq!(
+            doing(pi, running).as_deref(),
+            Some("Working"),
+            "a row under Thinking... is the thinking over, and the border says what it says"
+        );
+
+        // A status line an extension wrote, and the one pi draws on a row of
+        // its own, still read as they did.
+        let compacting = " ⠼ Compacting context... (escape to cancel)\n────────\n";
+        assert_eq!(
+            doing(pi, compacting).as_deref(),
+            Some("Compacting context... (escape to cancel)")
         );
     }
 

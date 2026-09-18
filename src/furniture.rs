@@ -43,6 +43,14 @@ pub struct Furniture {
     /// leaves this out.
     #[serde(default)]
     pub frames: Vec<String>,
+    /// The row the vendor draws while a model reasons and the reasoning is
+    /// hidden, whole and trimmed, any one of them. pi with `hideThinkingBlock`
+    /// draws `Thinking...` and nothing else of the run until text or a tool
+    /// row follows it (2026-09-18, 0.85.1): while that row is the last thing
+    /// above the spinner the turn is thinking, and once anything is under it
+    /// the thinking is over. A vendor that draws no such row leaves this out.
+    #[serde(default)]
+    pub thinking: Vec<String>,
     /// The rule the vendor draws its composer's box with.
     pub rule: char,
     /// How many rows of statusline the walk will step over to reach the
@@ -274,9 +282,26 @@ impl Furniture {
     /// A row one of the vendor's spinner frames opens. Read from what the row
     /// opens with, the same way the mode footer is: a frame the vendor indents
     /// still opens the row, and the same glyph mid-sentence opens nothing.
+    ///
+    /// A run of the vendor's own rule in front of the frame is not the row
+    /// opening: pi 0.85.1 draws its spinner into the composer's top border,
+    /// `── ⠙ Working ───`, and that is the same status line it drew on a row
+    /// of its own before (2026-09-18).
     fn framed(&self, row: &str) -> bool {
-        let drawn = row.trim_start();
+        let drawn = self.unruled(row);
         self.frames.iter().any(|frame| drawn.starts_with(frame))
+    }
+
+    /// A row with the vendor's rule taken off both ends of it, and the space
+    /// beside the rule with it: what a status line drawn into a border says.
+    pub fn unruled<'a>(&self, row: &'a str) -> &'a str {
+        row.trim().trim_matches(self.rule).trim()
+    }
+
+    /// Whether this row is the vendor's word for a reasoning run still hidden.
+    pub fn thinking(&self, row: &str) -> bool {
+        let drawn = row.trim();
+        self.thinking.iter().any(|label| label == drawn)
     }
 }
 
