@@ -395,6 +395,13 @@ fn run_aloud(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<i32> {
+    // Somewhere to run in, before anything else is read: tmux opens a pane
+    // whose directory is gone in the home directory and says nothing, so an
+    // agent pointed at a worktree a run has since removed asked to trust
+    // /home/saiful (2026-09-18) and was recorded as running where it was not.
+    if !dir.is_dir() {
+        bail!("{} is not a directory to run in", dir.display());
+    }
     // The role it names, if any, and before anything is made: a role is a
     // default for the dials, its brief goes in front of the task, and a name
     // amx does not know is a command line to fix rather than a pane to clean
@@ -1212,6 +1219,38 @@ mod tests {
         assert!(
             refusal.contains("--effort") && refusal.contains("xhigh"),
             "{refusal}"
+        );
+    }
+
+    #[test]
+    fn new_refuses_a_directory_that_is_gone() {
+        // tmux opens a pane whose directory is missing in the home directory
+        // and says nothing, so an agent pointed at a worktree a run had since
+        // removed asked to trust the home directory (2026-09-18). The refusal
+        // comes before anything is minted or made.
+        let root = tempfile::TempDir::new().unwrap();
+        let gone = root.path().join("worktrees").join("t1");
+        let (mut out, mut problems) = (Vec::new(), Vec::new());
+        let refused = run_aloud(
+            root.path(),
+            &gone,
+            std::collections::BTreeMap::new(),
+            &Config::default(),
+            &spawn(None, [None, None, None]),
+            "tell me about the last commit",
+            &mut out,
+            &mut problems,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("is not a directory to run in") && refused.contains("t1"),
+            "{refused}"
+        );
+        assert!(
+            std::fs::read_dir(root.path()).unwrap().count() == 0,
+            "nothing was written under the root"
         );
     }
 
