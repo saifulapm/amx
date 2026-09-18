@@ -540,19 +540,19 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
     let scout = line_of(&drawn, "scout-b2c");
     let review = line_of(&drawn, "review-c3d");
     assert!(
-        parent < scout && scout < review,
-        "the parent comes first and its children under it:\n{drawn}"
+        parent < review && review < scout,
+        "the parent comes first and its children under it, newest first:\n{drawn}"
     );
 
     let scout_line = row_of(&amx, &view, "scout-b2c").unwrap();
     let review_line = row_of(&amx, &view, "review-c3d").unwrap();
     assert!(
-        scout_line.contains("├─"),
-        "the first child opens the pair: {scout_line:?}"
+        review_line.contains("├─"),
+        "the newest child opens the pair: {review_line:?}"
     );
     assert!(
-        review_line.contains("└─"),
-        "and the last closes it: {review_line:?}"
+        scout_line.contains("└─"),
+        "and the oldest closes it: {scout_line:?}"
     );
     assert!(
         !row_of(&amx, &view, "parent-a1b").unwrap().contains("├─"),
