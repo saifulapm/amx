@@ -108,6 +108,42 @@ pub fn repo_of(worktree: &Path) -> Option<PathBuf> {
     is_amx_tree(worktree).then(|| worktree.ancestors().nth(3).map(Path::to_path_buf))?
 }
 
+/// The repository a linked worktree belongs to, read off the tree's own
+/// `.git` rather than asked of git.
+///
+/// [`main_repo`] is this question wherever a subprocess is affordable, and
+/// [`repo_of`] is it for a tree amx laid down itself. Neither serves the wall,
+/// which works out the project behind every agent on every reading: a `git
+/// rev-parse` a row a second is not a reading. git writes a linked worktree's
+/// `.git` as a file holding `gitdir: <repo>/.git/worktrees/<name>`, so the
+/// repository is three components back up that path, and a checkout's `.git`
+/// is a directory this never opens.
+///
+/// Only an absolute `gitdir`, which is what git writes unless somebody turns
+/// `worktree.useRelativePaths` on. A relative one is a repository this cannot
+/// name, and naming none is what the caller already handles.
+pub fn repo_of_linked(dir: &Path) -> Option<PathBuf> {
+    let pointer = dir.join(".git");
+    if !pointer.is_file() {
+        return None;
+    }
+    let said = std::fs::read_to_string(&pointer).ok()?;
+    let gitdir = Path::new(said.trim().strip_prefix("gitdir:")?.trim());
+    // `<repo>/.git/worktrees/<name>`, read back up: the tree's own name, the
+    // directory holding every tree's, and the repository's git directory.
+    let holds = gitdir.parent()?;
+    let git_dir = holds.parent()?;
+    (gitdir.is_absolute()
+        && holds.file_name()? == WORKTREES_IN_GIT
+        && git_dir.file_name()? == ".git")
+        .then(|| git_dir.parent())
+        .flatten()
+        .map(Path::to_path_buf)
+}
+
+/// What git calls the directory it keeps one record a linked worktree in.
+const WORKTREES_IN_GIT: &str = "worktrees";
+
 /// The branch amx gives an agent's tree.
 pub fn branch_for(id: &str) -> String {
     format!("amx/{id}")

@@ -737,20 +737,24 @@ fn named(agents: Vec<Meta>) -> Vec<String> {
     ids
 }
 
-/// The project an agent belongs to: the repository its worktree was cut from,
-/// and the directory it runs in otherwise.
+/// The project an agent belongs to: the repository behind the tree it works
+/// in, and the directory it runs in where there is no repository.
 ///
-/// A worktree of amx's own shape is `<repo>/.amx/worktrees/<id>`, so the
-/// repository is three components back up the path: string work, no disk, and
-/// the same law `stop` and the view read a tree by. It is what a person means
-/// by the project an agent belongs to — a worktree agent of `~/code/amx` is an
-/// agent of `~/code/amx`, whatever directory it happens to run in.
+/// Two readings, because there are two kinds of tree and one of them outlives
+/// its directory. A worktree of amx's own shape is `<repo>/.amx/worktrees/<id>`
+/// and is read off the path alone, so the answer holds once the tree has gone.
+/// Any other linked worktree — `workflow run` cuts its own, under
+/// `~/.local/state/workflow`, in a layout of its own — is read off the `.git`
+/// git left in it. Neither starts a process: this is asked of every agent on
+/// every reading the wall takes.
+///
+/// It is what a person means by the project an agent belongs to. A worktree
+/// agent of `~/code/amx` is an agent of `~/code/amx`, whatever directory it
+/// happens to run in and whoever cut the tree.
 pub fn project_dir(meta: &Meta) -> PathBuf {
     let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
-    crate::worktree::is_amx_tree(tree)
-        .then(|| tree.ancestors().nth(3))
-        .flatten()
-        .map(Path::to_path_buf)
+    crate::worktree::repo_of(tree)
+        .or_else(|| crate::worktree::repo_of_linked(tree))
         .unwrap_or_else(|| meta.dir.clone())
 }
 
@@ -1486,6 +1490,41 @@ mod tests {
         // names.
         let plain = meta("port-it-b2c", socket, pane);
         assert_eq!(project_dir(&plain), plain.dir);
+    }
+
+    #[test]
+    fn spawn_an_agent_of_a_tree_somebody_else_cut_belongs_to_that_repository_too() {
+        // `workflow run` cuts its trees under `~/.local/state/workflow`, in a
+        // layout of its own and nowhere near the checkout. They are worktrees
+        // of the repository all the same, so the agents in them are the
+        // project's agents, and the wall and `amx ls --dir <checkout>` have to
+        // say so. What git left in the tree is what says which repository.
+        let home = TempDir::new().unwrap();
+        let repo = home.path().join("code/amx");
+        let tree = home.path().join("state/workflow/worktrees/amx/t3");
+        std::fs::create_dir_all(repo.join(".git/worktrees/t3")).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git/worktrees/t3").display()),
+        )
+        .unwrap();
+
+        let socket = crate::tmux::Socket::Name("amx".to_string());
+        let pane = PaneId::new("%1").unwrap();
+        let worker = Meta {
+            dir: tree.clone(),
+            worktree: None,
+            ..meta("wf-t3-a1b", socket.clone(), pane.clone())
+        };
+        assert_eq!(project_dir(&worker), repo);
+
+        // A directory git has never heard of is its own project, and so is a
+        // tree whose `.git` points somewhere that is not a worktree's.
+        std::fs::write(tree.join(".git"), "gitdir: /srv/elsewhere\n").unwrap();
+        assert_eq!(project_dir(&worker), tree);
+        std::fs::remove_file(tree.join(".git")).unwrap();
+        assert_eq!(project_dir(&worker), tree);
     }
 
     #[test]
