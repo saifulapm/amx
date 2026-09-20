@@ -321,6 +321,10 @@ fn bring_back(
     writer.update_state(|state| {
         *state = State {
             seq: state.seq,
+            // Nobody is asking this session for anything, so nothing after the
+            // session opens will say the agent is there. What only this
+            // command knows goes on the record for the hook that opens it.
+            opens_idle: message.is_none(),
             ..State::default()
         }
     })?;

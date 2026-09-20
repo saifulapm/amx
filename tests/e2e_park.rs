@@ -234,11 +234,11 @@ fn resume_gives_a_parked_agent_its_pane_back() {
     });
     assert!(amx.pane_alive(&pane));
 
-    // The idle the agent was parked in belonged to the turn before this one.
-    // What the record reads now is a run at its beginning, on the session the
-    // vendor announced when it picked the conversation up.
+    // Nobody asked the conversation it picked up for anything, so the agent is
+    // back where parking found it: at its prompt, on the session the vendor
+    // announced, with the idle it was parked in belonging to the turn before.
     let agent = row(&amx, id);
-    assert_eq!(agent["state"], "starting", "{agent}");
+    assert_eq!(agent["state"], "idle", "{agent}");
     assert_ne!(
         agent["evidence"], "parked",
         "nothing amx let go is outstanding any more: {agent}"

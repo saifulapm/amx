@@ -480,6 +480,19 @@ pub struct State {
     /// The screen the last reader found on the pane, and when a reader first
     /// found it. `None` until something has looked.
     pub still: Option<Still>,
+    /// Whether the session this record is waiting to hear open has nobody
+    /// asking it for anything: `amx resume <id>` with no message.
+    ///
+    /// Every other boot has a first turn in it — `new` puts the task in the
+    /// argv, a resume with a message puts the message there — and the record's
+    /// `starting` lasts the second until the vendor says it is working. A
+    /// resume with no message has no such moment. The vendor restores the
+    /// conversation, draws its prompt and waits, and the only thing it says is
+    /// that the session opened; the pane is then the one witness left, and a
+    /// pi whose footer somebody replaced is a pane no rule here can read. So
+    /// the record carries what only `resume` knew: nothing is coming. See
+    /// [`crate::hook::apply`], which spends it the moment the session opens.
+    pub opens_idle: bool,
 }
 
 /// A screen a reader saw, and the moment it went up.
@@ -706,6 +719,7 @@ struct Wire {
     seen: u64,
     worked: u64,
     still: Option<Still>,
+    opens_idle: bool,
 }
 
 /// A phase this build knows, or [`Phase::Unknown`] for one it does not.
@@ -818,6 +832,7 @@ impl From<State> for Wire {
             seen,
             worked,
             still,
+            opens_idle,
         } = state;
 
         Wire {
@@ -871,6 +886,7 @@ impl From<State> for Wire {
             seen,
             worked,
             still,
+            opens_idle,
         }
     }
 }
@@ -914,6 +930,7 @@ impl From<Wire> for State {
             seen: wire.seen,
             worked: wire.worked,
             still: wire.still,
+            opens_idle: wire.opens_idle,
         }
     }
 }

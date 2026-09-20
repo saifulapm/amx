@@ -584,6 +584,16 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             if let Some(transcript) = payload["transcript_path"].as_str() {
                 meta.transcript = Some(transcript.into());
             }
+            // The one session opening that is also the whole of the news: an
+            // `amx resume` with no message, where the vendor restores the
+            // conversation, draws its prompt and waits for somebody. No turn
+            // is coming to move this on, so the record would sit at `starting`
+            // until a reader recognised the pane — and a prompt screen is the
+            // one screen a person's own footer can hide. `resume` wrote down
+            // that nothing is coming; this is where it is spent.
+            if std::mem::take(&mut state.opens_idle) {
+                state.state = Phase::Idle;
+            }
             Screen::Clear
         }
 

@@ -394,6 +394,43 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
 }
 
 #[test]
+fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
+    // Nobody asked the resumed session for anything, so no turn is coming to
+    // move the record off `starting`: the vendor restores the conversation,
+    // draws its prompt and waits. Left there, the pane is the only witness —
+    // and a prompt screen is the one screen a person's own footer can hide,
+    // which is how four pi agents sat in `starting` for good (#62TPETHQ). The
+    // session opening is the whole of the news, so it is where the record
+    // says the agent is there.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+
+    resume(&amx, &[id]);
+    until_continued(&amx, id);
+    assert_eq!(
+        amx.state(id)["state"],
+        "idle",
+        "at its prompt, with no reading of the pane in it"
+    );
+
+    // A resume carrying a message is the other case: the message is a first
+    // turn riding the argv, and the record is that turn's until the vendor
+    // says otherwise. The stand-in announces the session and works on
+    // nothing, which is a turn amx is still waiting on.
+    amx.amx(&["stop", id, "--force"]);
+    resume(&amx, &[id, "and now the linter"]);
+    until_continued(&amx, id);
+    assert_eq!(
+        amx.state(id)["state"],
+        "starting",
+        "a turn was asked for, and the session opening is not the end of it"
+    );
+}
+
+#[test]
 fn resume_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
     // A record that has lost its pane is a record to bring back, and one that
     // lost it to another agent has lost it as surely as one whose pane is
@@ -667,7 +704,9 @@ fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
 
     said(&resume(&amx, &[id]));
     until_continued(&amx, id);
-    assert_eq!(amx.state(id)["state"], "starting");
+    // Nobody asked the session it picked up for anything, so it is sitting at
+    // its prompt rather than on its way to work.
+    assert_eq!(amx.state(id)["state"], "idle");
 }
 
 #[test]
