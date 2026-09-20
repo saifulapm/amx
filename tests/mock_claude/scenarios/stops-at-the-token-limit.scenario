@@ -1,0 +1,11 @@
+# A turn that ended with nothing to hand back and a reason for it. The Stop
+# hook carries no answer, and the transcript's last message is empty with the
+# vendor's own `stop_reason` on it — the only place the reason is written down,
+# since the hook says the turn ended and no more than that.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "summarise the change"}
+transcript {"type":"user","timestamp":"@NOW@","message":{"content":"summarise the change"}}
+transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[],"stop_reason":"max_tokens"}}
+hook Stop {"stop_hook_active": false}
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

@@ -139,6 +139,55 @@ fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
     answer_text(last)
 }
 
+/// Why the last turn ended with nothing to show for it, where the vendor
+/// wrote a reason worth repeating.
+///
+/// A turn that captured no answer is a failure a caller has to act on, and
+/// what it should do next depends on why: a reply cut off at the model's token
+/// limit is asked again shorter, a provider that failed is asked again at all,
+/// and an aborted turn is nobody's to retry. The vendor writes all three in
+/// the transcript and nowhere else — the pane has scrolled and the hooks say
+/// only that the turn ended — so this is the one place they can be read.
+///
+/// An ordinary ending answers `None`: `stop` and `toolUse`, and claude's
+/// `end_turn` and `tool_use`, say nothing about why there are no words, and a
+/// reason neither vendor's table names is repeated as the vendor spelled it
+/// rather than guessed at.
+pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
+    let entries = spoken(format, jsonl);
+    let last = entries
+        .iter()
+        .rev()
+        .find(|entry| voice(format, entry).is_some())?;
+    if voice(format, last) != Some(Voice::Assistant) {
+        return None;
+    }
+    let message = &last["message"];
+    let reason = message["stopReason"]
+        .as_str()
+        .or_else(|| message["stop_reason"].as_str())?;
+    match reason {
+        "stop" | "toolUse" | "end_turn" | "tool_use" => None,
+        "length" | "max_tokens" => Some("it stopped at the model's token limit".to_string()),
+        "aborted" => Some("the turn was aborted".to_string()),
+        "error" => Some(match message["errorMessage"].as_str() {
+            Some(said) => format!("the provider failed: {}", one_line(said)),
+            None => "the provider failed".to_string(),
+        }),
+        other => Some(format!("the vendor stopped on `{other}`")),
+    }
+}
+
+/// A vendor's error, as much of it as a sentence of amx's own has room for:
+/// its first line, and no more of that than reads at a glance.
+fn one_line(said: &str) -> String {
+    let line = said.lines().next().unwrap_or_default().trim();
+    match line.char_indices().nth(160) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_string(),
+    }
+}
+
 /// What one assistant entry said, as the answer it would be: its text blocks
 /// joined, or nothing where it said nothing.
 fn answer_text(entry: &Value) -> Option<String> {
@@ -572,6 +621,67 @@ mod tests {
             answer(Transcript::Pi, PI).as_deref(),
             Some("Hello. You are in /srv/app.")
         );
+    }
+
+    #[test]
+    fn conversation_says_why_a_turn_that_said_nothing_ended() {
+        // The reasons a live pi wrote over 9000 turns on this machine:
+        // `toolUse` and `stop` are how a turn ends, and `error`, `aborted` and
+        // `length` are the three a caller with no answer has to act on.
+        fn pi_ended(on: &str) -> Option<String> {
+            why_it_stopped(
+                Transcript::Pi,
+                &format!(
+                    "{}{}\n",
+                    PI,
+                    format_args!(
+                        "{{\"type\":\"message\",\"id\":\"ff\",\"parentId\":\"c9\",\"message\":{{\"role\":\"assistant\",\"content\":[],{on}}}}}"
+                    )
+                ),
+            )
+        }
+
+        assert_eq!(why_it_stopped(Transcript::Pi, PI), None, "an ordinary end");
+        assert_eq!(why_it_stopped(Transcript::Claude, CLAUDE), None);
+        assert_eq!(
+            pi_ended("\"stopReason\":\"length\"").as_deref(),
+            Some("it stopped at the model's token limit")
+        );
+        assert_eq!(
+            pi_ended("\"stopReason\":\"aborted\"").as_deref(),
+            Some("the turn was aborted")
+        );
+        assert_eq!(
+            pi_ended("\"stopReason\":\"error\",\"errorMessage\":\"400: upstream request failed\\nand a second line nobody needs\"").as_deref(),
+            Some("the provider failed: 400: upstream request failed"),
+            "the first line of the vendor's own error, and not the rest of it"
+        );
+        assert_eq!(
+            pi_ended("\"stopReason\":\"error\"").as_deref(),
+            Some("the provider failed"),
+            "the reason alone, where the vendor wrote no message with it"
+        );
+        assert_eq!(
+            pi_ended("\"stopReason\":\"refusal\"").as_deref(),
+            Some("the vendor stopped on `refusal`"),
+            "a reason amx has no word for is repeated as the vendor spelled it"
+        );
+
+        // claude's own spelling, and a turn still running says nothing: the
+        // question is only asked of a turn that ended with no answer.
+        let cut_short = format!(
+            "{CLAUDE}{}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[],\"stop_reason\":\"max_tokens\"}}"
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Claude, &cut_short).as_deref(),
+            Some("it stopped at the model's token limit")
+        );
+        let running = format!(
+            "{CLAUDE}{}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"1\"}]}}"
+        );
+        assert_eq!(why_it_stopped(Transcript::Claude, &running), None);
     }
 
     #[test]

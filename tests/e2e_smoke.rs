@@ -123,6 +123,24 @@ fn an_answer_the_payload_did_not_carry_comes_from_the_transcript() {
 }
 
 #[test]
+fn a_turn_that_captured_no_answer_says_why_the_vendor_stopped() {
+    // "captured no answer" tells a caller that something went wrong and
+    // nothing about what to do next. The vendor wrote the reason in the
+    // transcript and nowhere else, so `result` reads it out of there: a reply
+    // cut off at the token limit is asked again shorter, where a provider
+    // that failed is asked again at all.
+    let amx = Harness::new();
+    amx.play("summarise-d4e", "stops-at-the-token-limit");
+    amx.until_state("summarise-d4e", "idle");
+
+    let out = amx.amx(&["result", "summarise-d4e"]);
+    assert_eq!(out.status.code(), Some(1), "no answer is a failure");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("captured no answer"), "{said}");
+    assert!(said.contains("token limit"), "and why: {said}");
+}
+
+#[test]
 fn hooks_from_a_pane_amx_knows_nothing_about_are_ignored() {
     // A claude somebody started themselves fires the same hooks. They must
     // cost nothing and change nothing.

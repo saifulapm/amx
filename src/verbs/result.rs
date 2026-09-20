@@ -334,10 +334,16 @@ fn cut_short(event: &Event) -> bool {
 /// cannot trust that has nothing to branch on.
 fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let Some(answer) = view.state.result.clone().or_else(|| transcript(view)) else {
-        complain!(
-            "amx: {} ended its turn, but amx captured no answer",
-            view.id()
-        );
+        match why_it_stopped(view) {
+            Some(why) => complain!(
+                "amx: {} ended its turn, but amx captured no answer: {why}",
+                view.id()
+            ),
+            None => complain!(
+                "amx: {} ended its turn, but amx captured no answer",
+                view.id()
+            ),
+        }
         return Ok(exit::FAILURE);
     };
     send::line(&send::rendered(&answer, to_terminal), out)?;
@@ -347,10 +353,28 @@ fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
 /// The transcript's own last word, read at the end of the turn, by the shape
 /// the record's vendor writes it in.
 fn transcript(view: &View) -> Option<String> {
+    read_transcript(view, crate::conversation::answer)
+}
+
+/// Why the vendor's own last message says there are no words, where it says
+/// anything about it: a reply cut off at the token limit, a provider that
+/// failed, a turn somebody aborted.
+///
+/// Asked only once the record and the transcript have both come up empty, so
+/// the cost of a second read is a cost paid on the failing path alone.
+fn why_it_stopped(view: &View) -> Option<String> {
+    read_transcript(view, crate::conversation::why_it_stopped)
+}
+
+/// The record's transcript, read by whichever question is being asked of it.
+fn read_transcript(
+    view: &View,
+    ask: fn(crate::vendor::Transcript, &str) -> Option<String>,
+) -> Option<String> {
     let path = view.meta.transcript.as_ref()?;
     let text = std::fs::read_to_string(path).ok()?;
     let format = crate::conversation::format_of(view.meta.agent.as_deref().unwrap_or_default())?;
-    crate::conversation::answer(format, &text)
+    ask(format, &text)
 }
 
 #[cfg(test)]
