@@ -86,6 +86,29 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             .map(|meta| meta.dir.clone())
             .unwrap_or(std::env::current_dir().context("no working directory")?),
     };
+    // A parent that has stopped may have had a worktree, and a worktree that
+    // has been removed is a directory nothing can run in. Said here, where the
+    // parent is still in hand: `new` would name the path alone, and the path
+    // is not what the caller typed — the parent is.
+    if args.dir.is_none()
+        && let Some(parent) = &parent
+        && !dir.is_dir()
+    {
+        writeln!(
+            err,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!(
+                    "amx sub: {} ran in {}, which is not there any more: name a directory with --dir",
+                    parent.id,
+                    dir.display()
+                ),
+                colours
+            )
+        )?;
+        return Ok(exit::USAGE);
+    }
     let (config, _) = crate::config::for_dir(&dir);
     let config = &config;
 

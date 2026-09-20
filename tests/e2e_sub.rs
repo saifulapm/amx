@@ -442,6 +442,70 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
 }
 
 #[test]
+fn sub_refuses_a_parent_whose_directory_has_gone() {
+    // A parent that has stopped may have had a worktree, and a run that has
+    // since removed it leaves a record naming a path nothing can run in. The
+    // child inherits that path, so the refusal has to name the parent it came
+    // from rather than the path alone: `--dir` is what the caller does next.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let gone = amx.home().join("a-tree-a-run-removed");
+    std::fs::create_dir_all(&gone).unwrap();
+
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--no-worktree",
+            "--dir",
+            &gone.to_string_lossy(),
+            "--agent",
+            &mock,
+            "the parent",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parent = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    stopped(&amx, &parent);
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    let out = a_sub_from_outside(&amx, &mock, &["--bg", "--parent", &parent, "scout"]);
+    assert_eq!(
+        out.status.code(),
+        Some(64),
+        "usage, before anything is claimed"
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains(&parent), "names the parent: {said}");
+    assert!(said.contains("--dir"), "says what to do instead: {said}");
+
+    // Named a directory, the same call runs: the parent's is only a default.
+    let out = a_sub_from_outside(
+        &amx,
+        &mock,
+        &[
+            "--bg",
+            "--parent",
+            &parent,
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "scout",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn sub_refuses_a_parent_amx_has_no_record_of() {
     let amx = Harness::new();
     let mock = amx.mock();
