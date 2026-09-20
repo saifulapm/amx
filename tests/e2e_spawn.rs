@@ -805,23 +805,34 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
         &["--no-worktree", "--agent", &mock, "the child"],
     ));
 
-    let grandchild = sub_inside(
+    // The default is 2, which is an orchestrator's worker and the one helper
+    // that worker asks for: a run dispatches its workers as children, so a
+    // worker's advisor is already a grandchild.
+    let grandchild = id_on(&sub_inside(
         &amx,
         "a-dispatched-worker",
         &child,
         &["--no-worktree", "--agent", &mock, "the grandchild"],
+    ));
+    assert_eq!(amx.meta(&grandchild)["depth"], 2);
+
+    let deeper = sub_inside(
+        &amx,
+        "a-dispatched-worker",
+        &grandchild,
+        &["--no-worktree", "--agent", &mock, "one deeper"],
     );
     assert_eq!(
-        grandchild.status.code(),
+        deeper.status.code(),
         Some(2),
-        "the default subagent_depth is 1: {}",
-        String::from_utf8_lossy(&grandchild.stderr)
+        "and no deeper than that: {}",
+        String::from_utf8_lossy(&deeper.stderr)
     );
-    let said = String::from_utf8_lossy(&grandchild.stderr);
+    let said = String::from_utf8_lossy(&deeper.stderr);
     assert!(said.contains("subagent_depth"), "names the key: {said:?}");
     assert_eq!(
         std::fs::read_dir(amx.state_root()).unwrap().count(),
-        2,
+        3,
         "and nothing was claimed"
     );
 

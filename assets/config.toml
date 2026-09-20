@@ -31,10 +31,13 @@ max_agents = 5
 # own wall, and a subagent is an agent's own work.
 max_children = 8
 
-# How deep a chain of subagents may go: 1 is a child and no grandchild, 0 is a
-# root that may not spawn at all. A spawn past this is refused before anything
-# is claimed. Only `amx sub` records a parent, so only a sub is bounded.
-subagent_depth = 1
+# How deep a chain of subagents may go: 2 is a child and a grandchild, 1 stops
+# at the child, 0 is a root that may not spawn at all. Two, because an
+# orchestrator dispatches its workers as children, so the advisor a worker asks
+# for one answer from is already a grandchild. A spawn past this is refused
+# before anything is claimed. Only `amx sub` records a parent, so only a sub is
+# bounded.
+subagent_depth = 2
 
 # Whether `amx sub` takes --permission from the caller. A model and an effort
 # the parent already chose are handed down, but widening the permission is a

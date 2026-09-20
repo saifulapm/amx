@@ -158,13 +158,19 @@ pub struct Config {
     pub max_total: Option<usize>,
     /// Give new agents their own git worktree.
     pub worktrees: bool,
-    /// How deep a chain of subagents may go: 1 is a child and no grandchild,
-    /// 0 is a root that may not spawn at all.
+    /// How deep a chain of subagents may go: 2 is a child and a grandchild,
+    /// 1 is a child and no grandchild, 0 is a root that may not spawn at all.
     ///
     /// A spawn whose computed depth is past this is refused before anything
     /// is claimed, the way a cap is, rather than after a pane a person then
     /// has to clean up. Only `amx sub` records a parent, so only a sub is
     /// a spawn this bounds.
+    ///
+    /// Two, because one refused the ordinary case. An orchestrator dispatches
+    /// its workers as children, so a worker asking for the advisor it needs to
+    /// answer one question is already asking at depth 2, and it was refused
+    /// before anything was claimed. A chain deeper than a worker's own helper
+    /// is what this is still here to stop.
     pub subagent_depth: usize,
     /// How many live children one parent may have at once. 0 is no ceiling
     /// of its own, which is what an ancestor that spawns a handful at a time
@@ -317,7 +323,7 @@ impl Default for Config {
             max_agents: 5,
             max_total: None,
             worktrees: true,
-            subagent_depth: 1,
+            subagent_depth: 2,
             max_children: 8,
             subagents_may_escalate: false,
             notifications: Delivery::Desktop,
@@ -733,9 +739,10 @@ mod tests {
         assert_eq!(c.on_done, None);
         assert_eq!(c.on_failed, None);
         assert_eq!(c.on_stopped, None);
-        // A child may not spawn one of its own, eight live children is a
-        // parent's share, and escalation is a decision nobody has taken.
-        assert_eq!(c.subagent_depth, 1);
+        // A worker may ask for the one helper it needs and no deeper, eight
+        // live children is a parent's share, and escalation is a decision
+        // nobody has taken.
+        assert_eq!(c.subagent_depth, 2);
         assert_eq!(c.max_children, 8);
         assert!(!c.subagents_may_escalate);
         // No key of your own is bound until a table binds one.
@@ -894,8 +901,8 @@ mod tests {
         assert_eq!(c.on_waiting, None);
         assert!(w.is_empty(), "{w:?}");
 
-        let (c, w) = parse("subagent_depth = 2").unwrap();
-        assert_eq!(c.subagent_depth, 2);
+        let (c, w) = parse("subagent_depth = 3").unwrap();
+        assert_eq!(c.subagent_depth, 3);
         assert_eq!(c.max_children, Config::default().max_children);
         assert!(w.is_empty(), "{w:?}");
 
@@ -980,7 +987,7 @@ mod tests {
                 on_done = "say done"
                 on_failed = "say failed"
                 on_stopped = "say stopped"
-                subagent_depth = 2
+                subagent_depth = 3
                 max_children = 3
                 subagents_may_escalate = true
             "#,
@@ -1008,7 +1015,7 @@ mod tests {
         assert_eq!(c.on_done.as_deref(), Some("say done"));
         assert_eq!(c.on_failed.as_deref(), Some("say failed"));
         assert_eq!(c.on_stopped.as_deref(), Some("say stopped"));
-        assert_eq!(c.subagent_depth, 2);
+        assert_eq!(c.subagent_depth, 3);
         assert_eq!(c.max_children, 3);
         assert!(c.subagents_may_escalate);
         assert!(w.is_empty(), "{w:?}");
