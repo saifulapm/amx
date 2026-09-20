@@ -407,8 +407,12 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
     let mut command: Vec<String> = Vec::new();
 
     while let Some(word) = words.next() {
-        // Only the last word is the task, which is where `new` put it.
-        if words.peek().is_none() && word == handoff.task {
+        // Only the last word is the task, which is where `new` put it — at the
+        // end of it, because a role's brief and a subagent's digest ride in
+        // front of the task in the same word while the record keeps the task
+        // alone. So the task is a suffix of that word, not the whole of it; an
+        // empty task is a suffix of everything and names nothing.
+        if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&handoff.task) {
             break;
         }
         let Some(value_is_a_word_of_its_own) = names_a_session(&word, spec) else {
@@ -862,6 +866,27 @@ mod tests {
         assert_eq!(
             continuing(&started, "abc"),
             ["claude", "--model", "--resume=abc"]
+        );
+    }
+
+    #[test]
+    fn resume_drops_a_task_a_role_put_its_brief_in_front_of() {
+        // A role dispatch hands the vendor `brief\n\ntask` in one word and
+        // records the task alone, so the word the task has to be found in is
+        // longer than the task. It still goes: the session already had it, and
+        // handing it over again asks the agent for the work twice.
+        let started = handoff(
+            &["claude", "You are a scout.\n\nfix the login bug"],
+            "fix the login bug",
+        );
+        assert_eq!(continuing(&started, "abc"), ["claude", "--resume=abc"]);
+
+        // An agent started on no task at all ends on a word that is not one,
+        // and an empty suffix must not take it.
+        let started = handoff(&["claude", "--model", "opus"], "");
+        assert_eq!(
+            continuing(&started, "abc"),
+            ["claude", "--model", "opus", "--resume=abc"]
         );
     }
 
