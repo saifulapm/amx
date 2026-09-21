@@ -341,7 +341,7 @@ impl Furniture {
         let Some(last) = said.iter().rev().find(|row| !blank(row)) else {
             return false;
         };
-        let drawn = last.trim_start();
+        let drawn = spaced(last.trim_start());
         self.interrupted
             .iter()
             .any(|opening| drawn.starts_with(opening))
@@ -374,6 +374,24 @@ impl Furniture {
 /// A row with nothing on it.
 fn blank(row: &str) -> bool {
     row.trim().is_empty()
+}
+
+/// A row with the gaps a vendor holds open written as the spaces they look
+/// like.
+///
+/// claude pads its tool-result rows with a NON-BREAKING space — `⎿ \u{a0}` —
+/// so that the glyph and the words after it cannot be split by a wrap. On a
+/// screen, and in anything that captures one, that is a space; to a string
+/// comparison it is not, and the first anchor written across that gap was read
+/// off a live pane by eye and matched nothing at all (2026-09-21). An anchor
+/// is measured or it is nothing, and a character a person cannot see is one
+/// they cannot measure, so the gap is folded before the anchor is tried.
+///
+/// Only where an anchor spans one. The footer and the panel are found by a run
+/// of glyphs with no gap in them, and folding a row nothing is about to read
+/// would be work on every row of every capture.
+fn spaced(row: &str) -> String {
+    row.replace('\u{a0}', " ")
 }
 
 #[cfg(test)]
@@ -748,6 +766,50 @@ mod tests {
 
     fn claude() -> &'static Furniture {
         crate::rules::of("claude").furniture()
+    }
+
+    #[test]
+    fn furniture_reads_an_interrupt_across_the_gap_the_vendor_holds_open() {
+        // Saiful's `tell-me-about-this-f1n`, captured off the live pane on
+        // 2026-09-21. The gap between the glyph and the words is a NON-BREAKING
+        // space, so the anchor first written here — read off a pane by eye,
+        // with two ordinary spaces in it — matched nothing, and the row went on
+        // saying `working` until a quiescent rule timed the prompt out.
+        //
+        // Written as the escape rather than as the character, because the whole
+        // fault was that the two look alike.
+        let interrupted = [
+            "❯ Tell me about this project",
+            "",
+            "● Skill(mem)",
+            "  ⎿ \u{a0}Initializing…",
+            "  ⎿ \u{a0}Error: Unknown skill: mem. Did you mean new?",
+            "  ⎿ \u{a0}Interrupted · What should Claude do instead?",
+            "",
+            "────────────────────────────────────────",
+            "❯\u{a0}",
+            "────────────────────────────────────────",
+            "  Haiku 4.5 │ ◈ 9% │ amx (main) │ ◖ thinking",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ];
+        assert!(
+            interrupted[5].contains('\u{a0}'),
+            "the row this is about carries the gap it is about"
+        );
+        assert!(claude().cut_by_hand(&interrupted));
+
+        // And the rows above it are tool results wearing the same gap, which
+        // are not interrupts: what makes the last one the news is the word.
+        let finished = [
+            "● Skill(mem)",
+            "  ⎿ \u{a0}Error: Unknown skill: mem. Did you mean new?",
+            "",
+            "────────────────────────────────────────",
+            "❯\u{a0}",
+            "────────────────────────────────────────",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ];
+        assert!(!claude().cut_by_hand(&finished));
     }
 
     fn second() -> Furniture {

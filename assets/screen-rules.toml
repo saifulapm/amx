@@ -162,6 +162,17 @@ placeholders = [
 # 40 columns. What is written here is what the row OPENS with at the narrowest
 # measured, which is the anchor law's own answer to a phrase that shortens.
 #
+# THE GAP IN IT IS NOT THE GAP IT LOOKS LIKE. claude pads every tool-result row
+# with a NON-BREAKING space — the row is `⎿`, an ordinary space, then U+00A0 —
+# so that the glyph and the words cannot be split by a wrap. This anchor was
+# first written with two ordinary spaces in it, read off a live pane by eye,
+# and matched nothing at all: Saiful interrupted an agent and watched the row
+# say `working` until a quiescent rule timed the prompt out (2026-09-21). The
+# walk folds that gap before it tries an anchor — see `furniture::spaced` — so
+# what is written here is what a person reads off the screen. A character
+# nobody can see is a character nobody can measure, which is the third thing
+# the anchor law has now cost.
+#
 # The row stays in the transcript for as long as the session does, so the
 # opening alone would claim a screen about a turn interrupted an hour ago. What
 # makes it this turn's news is that it is the LAST row the agent earned: the
