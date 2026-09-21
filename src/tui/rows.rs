@@ -270,8 +270,8 @@ pub enum Under {
 }
 
 /// What a heading is answerable for: the agents gathered under it, the
-/// failures among them, and whether they are on the screen or put away behind
-/// it.
+/// failures among them, what each of them is doing, and whether they are on
+/// the screen or put away behind it.
 ///
 /// The counts are what a narrowing left, always: a heading may not claim
 /// members that opening it could not reach.
@@ -279,7 +279,29 @@ pub enum Under {
 pub struct Tally {
     pub members: usize,
     pub failures: usize,
+    /// How many rows under this heading are in each group, by that group's
+    /// place in [`Group::ALL`].
+    ///
+    /// Every row, children included, where `members` counts the top-level ones
+    /// a heading stands over. The two answer different questions: `members` is
+    /// how many rows come back when a shut group is opened, and this is how
+    /// much work is under there — and a child is work.
+    pub states: [usize; Group::ALL.len()],
     pub shut: bool,
+}
+
+impl Tally {
+    /// What each group under this heading is doing, in the header band's own
+    /// grammar, loudest first and saying nothing about a group with nobody in
+    /// it.
+    pub fn doing(&self) -> Vec<(Group, usize)> {
+        Group::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|&(at, _)| self.states[at] > 0)
+            .map(|(at, group)| (group, self.states[at]))
+            .collect()
+    }
 }
 
 /// One line of the list. Every one of them but the blank is a place the
@@ -729,15 +751,15 @@ impl List {
     /// is not on the screen: an arrangement is made of the agents it was made
     /// among.
     pub fn move_by(&mut self, by: isize) -> bool {
-        let Some(view) = self.selected() else {
+        let Some(Item::Agent(n)) = self.items.get(self.cursor).copied() else {
             return false;
         };
-        let id = view.id().to_string();
-        let group = self.group(view);
+        let id = self.views[n].id().to_string();
+        let group = self.family(n);
         let mut members: Vec<String> = self
             .ordered()
             .into_iter()
-            .filter(|&n| self.group(&self.views[n]) == group)
+            .filter(|&n| self.family(n) == group)
             .map(|n| self.views[n].id().to_string())
             .collect();
 
@@ -773,8 +795,8 @@ impl List {
 
     /// Where an agent comes in the reading order, which is where its group
     /// comes.
-    fn rank(&self, view: &View) -> usize {
-        let group = self.group(view);
+    fn rank(&self, n: usize) -> usize {
+        let group = self.family(n);
         Group::ALL
             .iter()
             .position(|other| *other == group)
@@ -786,7 +808,7 @@ impl List {
     fn seat(&self, n: usize) -> usize {
         let view = &self.views[n];
         self.order
-            .get(&self.group(view))
+            .get(&self.family(n))
             .and_then(|ids| ids.iter().position(|id| id == view.id()))
             .unwrap_or(usize::MAX)
     }
@@ -946,20 +968,56 @@ impl List {
 
     /// Whether a narrowing left this agent on the screen, with everything on
     /// its row that a narrowing may be written against.
-    fn keeps(&self, view: &View) -> bool {
+    fn keeps(&self, n: usize) -> bool {
+        let view = &self.views[n];
         self.filters
-            .keeps(view, self.group(view), self.requests(view))
+            .keeps(view, self.family(n), self.requests(view))
     }
 
-    /// Which group an agent is drawn under: where somebody put it, what it is
-    /// doing, and what its work is waiting on out in the world.
-    fn group(&self, view: &View) -> Group {
+    /// What one agent is doing: where somebody put it, what state it is in, and
+    /// what its work is waiting on out in the world.
+    ///
+    /// About that row alone. Which heading it is drawn under is [`family`]'s
+    /// question, and for a row with anything hanging off it the two differ.
+    fn group(&self, n: usize) -> Group {
+        let view = &self.views[n];
         Group::of(
             view.phase(),
             self.holding(view),
             self.sleeping(view),
             self.reviewable(view),
         )
+    }
+
+    /// Which heading a row is drawn under, which is what its whole family is
+    /// doing rather than what it is doing alone.
+    ///
+    /// A parent is drawn with its children under it, so the heading over it
+    /// answers for all of them. A row whose own turn ended while a child of it
+    /// is still working has not finished — the work is going on, one level
+    /// down — and `c` clears a group of them at a word. That was the trap: a
+    /// parent under `Completed` with a working child under it is a family
+    /// somebody takes without ever seeing the row that was still running.
+    ///
+    /// So the family stands where its most urgent member stands, which is the
+    /// first group of [`Group::ALL`] anybody in it is in.
+    ///
+    /// Bar the two lines of that table a person wrote themselves. Pinning a row
+    /// and putting one to sleep are things said about the one row they were
+    /// said on: a child somebody pinned does not pin the family over the wall,
+    /// and one they put to sleep does not take the family under it.
+    fn family(&self, n: usize) -> Group {
+        let mine = self.group(n);
+        if self.children[n].is_empty() || matches!(mine, Group::Pinned | Group::Asleep) {
+            return mine;
+        }
+        let urgency = |group: &Group| Group::ALL.iter().position(|other| other == group);
+        self.nested(&[n])
+            .into_iter()
+            .map(|at| self.group(at))
+            .filter(|group| !matches!(group, Group::Pinned | Group::Asleep))
+            .min_by_key(urgency)
+            .unwrap_or(mine)
     }
 
     /// Whether this agent's work is standing in front of a reviewer: its turn
@@ -983,7 +1041,7 @@ impl List {
     fn belongs(&self, n: usize, under: Under) -> bool {
         let anchor = self.anchor_of(n);
         match under {
-            Under::Group(group) => self.group(&self.views[anchor]) == group,
+            Under::Group(group) => self.family(anchor) == group,
             Under::Project(at) => self
                 .projects
                 .get(at)
@@ -1064,7 +1122,7 @@ impl List {
     fn key_of_row(&self, n: usize) -> Option<Key> {
         let anchor = self.anchor_of(n);
         match self.axis {
-            Axis::State => Some(Key::Group(self.group(&self.views[anchor]))),
+            Axis::State => Some(Key::Group(self.family(anchor))),
             Axis::Project | Axis::Repo => Some(Key::Project(self.root_of(anchor))),
         }
     }
@@ -1185,7 +1243,7 @@ impl List {
         let showing: Vec<(Group, String)> = self
             .ordered()
             .into_iter()
-            .map(|n| (self.group(&self.views[n]), self.views[n].id().to_string()))
+            .map(|n| (self.group(n), self.views[n].id().to_string()))
             .filter(|(_, id)| self.drawn(id))
             .collect();
         needing_you(&showing)
@@ -1226,6 +1284,15 @@ impl List {
     /// read across that seam could be somebody else's.
     fn rebuild(&mut self, keeping: Option<&str>) {
         self.remember_the_roots();
+        // The forest twice: once over the whole fleet and once over what the
+        // narrowing left. Which heading a row stands under is what its family
+        // is doing — see [`List::family`] — and that is a question asked of
+        // every row while the narrowing is still being decided, so the
+        // relation has to be there before the order is. The second planting is
+        // the one the wall is drawn from, where a parent the narrowing took is
+        // a parent its children no longer hang off.
+        let fleet: Vec<usize> = (0..self.views.len()).collect();
+        self.plant(&fleet);
         let order = self.ordered();
         self.plant(&order);
         self.counts = self.counted(&order);
@@ -1475,14 +1542,12 @@ impl List {
     /// somebody arranging the list is arranging the fleet, not one screen of
     /// it.
     fn ordered(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.views.len())
-            .filter(|&n| self.keeps(&self.views[n]))
-            .collect();
+        let mut order: Vec<usize> = (0..self.views.len()).filter(|&n| self.keeps(n)).collect();
         order.sort_by(|&a, &b| {
-            self.rank(&self.views[a])
-                .cmp(&self.rank(&self.views[b]))
+            self.rank(a)
+                .cmp(&self.rank(b))
                 .then_with(|| self.seat(a).cmp(&self.seat(b)))
-                .then_with(|| match self.group(&self.views[a]) {
+                .then_with(|| match self.family(a) {
                     Group::Completed => ended(&self.views[b])
                         .cmp(&ended(&self.views[a]))
                         .then_with(|| self.views[a].id().cmp(self.views[b].id())),
@@ -1506,7 +1571,7 @@ impl List {
             .filter_map(|group| {
                 let count = order
                     .iter()
-                    .filter(|&&n| self.parents[n].is_none() && self.group(&self.views[n]) == group)
+                    .filter(|&&n| self.parents[n].is_none() && self.family(n) == group)
                     .count();
                 (count > 0).then_some((group, count))
             })
@@ -1530,7 +1595,7 @@ impl List {
             let roots: Vec<usize> = order
                 .iter()
                 .copied()
-                .filter(|&n| self.parents[n].is_none() && self.group(&self.views[n]) == group)
+                .filter(|&n| self.parents[n].is_none() && self.family(n) == group)
                 .collect();
             if roots.is_empty() {
                 continue;
@@ -1697,13 +1762,21 @@ impl List {
     /// under the parent it is drawn beneath, so a heading answers for the
     /// rows it stands over rather than for a group of its own.
     fn tally(&self, roots: &[usize], shut: bool) -> Tally {
+        let under = self.nested(roots);
+        let mut states = [0; Group::ALL.len()];
+        for &n in &under {
+            let group = self.group(n);
+            if let Some(at) = Group::ALL.iter().position(|other| *other == group) {
+                states[at] += 1;
+            }
+        }
         Tally {
             members: roots.len(),
-            failures: self
-                .nested(roots)
+            failures: under
                 .iter()
                 .filter(|&&n| self.views[n].phase() == Phase::Failed)
                 .count(),
+            states,
             shut,
         }
     }
@@ -1728,8 +1801,8 @@ impl List {
         // `order` is already the reading order, so a project's first agent is
         // its most urgent one, and that is what the project sorts by.
         projects.sort_by(|(here, ours), (there, theirs)| {
-            self.rank(&self.views[ours[0]])
-                .cmp(&self.rank(&self.views[theirs[0]]))
+            self.rank(ours[0])
+                .cmp(&self.rank(theirs[0]))
                 .then_with(|| here.cmp(there))
         });
 
@@ -1861,10 +1934,7 @@ pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, Stri
     list.show(views.to_vec());
     list.ordered()
         .into_iter()
-        .map(|n| {
-            let view = &list.views[n];
-            (list.group(view), view.id().to_string())
-        })
+        .map(|n| (list.group(n), list.views[n].id().to_string()))
         .collect()
 }
 
@@ -2308,6 +2378,21 @@ mod tests {
         list
     }
 
+    /// A tally's per-group counts written the way a person says them, so a
+    /// test names the groups it means rather than counting places along
+    /// [`Group::ALL`].
+    fn states(counts: &[(Group, usize)]) -> [usize; Group::ALL.len()] {
+        let mut states = [0; Group::ALL.len()];
+        for (group, count) in counts {
+            let at = Group::ALL
+                .iter()
+                .position(|other| other == group)
+                .expect("a group in the table");
+            states[at] = *count;
+        }
+        states
+    }
+
     /// The wall as a reader outside the view reads it down: the group each
     /// agent was gathered under, and the agent. What [`lines`] is to a screen.
     fn walled(order: &[(Group, String)]) -> Vec<String> {
@@ -2571,6 +2656,46 @@ mod tests {
             .map(|(id, cells)| (id.to_string(), cells)),
             "both roots are padded nothing, and the child's connector starts \
              in the column of its parent's glyph"
+        );
+    }
+
+    #[test]
+    fn a_parent_waits_for_its_family_before_it_is_one_of_the_completed() {
+        // Saiful's wall, 2026-09-19: `wf-v1-mzl9` sat under Completed with a
+        // working child hanging off it. `c` takes a group at a word, and the
+        // row still running was two lines under the heading somebody was
+        // about to clear.
+        let working = listed(vec![
+            view("parent-a1b", Phase::Done, 10),
+            child_of(view("review-b2c", Phase::Working, 20), "parent-a1b"),
+        ]);
+        assert_eq!(
+            lines(&working),
+            ["Working (1)", "parent-a1b", "└─review-b2c"],
+            "a family with work still in it stands where the work is"
+        );
+        assert_eq!(working.counts(), [(Group::Working, 1)]);
+
+        // And the heading over it is the most urgent thing in it, not merely
+        // the opposite of finished: a child that has stopped on a question is
+        // what somebody at the wall has to act on.
+        let asking = listed(vec![
+            view("parent-a1b", Phase::Done, 10),
+            child_of(view("review-b2c", Phase::Waiting, 20), "parent-a1b"),
+        ]);
+        assert_eq!(
+            lines(&asking),
+            ["Needs input (1)", "parent-a1b", "└─review-b2c"]
+        );
+
+        // The child finishes and the family is finished with it.
+        let done = listed(vec![
+            view("parent-a1b", Phase::Done, 10),
+            child_of(view("review-b2c", Phase::Done, 20), "parent-a1b"),
+        ]);
+        assert_eq!(
+            lines(&done),
+            ["Completed (1)", "parent-a1b", "└─review-b2c"]
         );
     }
 
@@ -3531,11 +3656,15 @@ mod tests {
         };
         list.up();
 
+        // Three finished rows, one of which failed: `Completed` is the whole
+        // of what is under there, and the tally says so in the words the
+        // heading band counts the fleet in.
         assert_eq!(
             heading(&list),
             Tally {
                 members: 3,
                 failures: 1,
+                states: states(&[(Group::Completed, 3)]),
                 shut: false
             }
         );
@@ -3546,6 +3675,7 @@ mod tests {
             Tally {
                 members: 3,
                 failures: 1,
+                states: states(&[(Group::Completed, 3)]),
                 shut: true
             },
             "and it answers for the same agents when they are behind it"

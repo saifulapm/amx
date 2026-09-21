@@ -420,6 +420,18 @@ sitting at its prompt, one whose command exited, one amx has lost track of —
 because a turn at a prompt has ended as surely as a turn that exited, and
 reading down two headings to find that out is one heading too many.
 
+An agent with children is gathered with them. A parent is drawn with its whole
+family under it, so the heading over it answers for all of them: a row whose
+own turn ended while a child of it is still working stands under Working, and
+a family reaches Completed when the last of it has. `c` clears a group at a
+word, and a parent under Completed with a working child two lines below it is a
+family you take without ever seeing the row that was still running. The heading
+is the most urgent thing under it, so a child stopped on a question puts the
+family under Needs input. `ctrl+t` and `z` are the exceptions, because they are
+the two things you said about one row rather than about the work: a child you
+pinned does not pin its parent over the wall, and one you put to sleep does not
+take the family under it.
+
 A heading is a line as quiet as the rows under it: a blank row, then the
 group's name at the left margin, capitalised the way a sentence is rather than
 shouted in caps, and nothing drawn across the rest of the line. There is no
@@ -499,16 +511,21 @@ word, and it is
 drawn the way a group's heading is: dim end to end, no weight on the last
 segment, no count while the rows are on the screen, and a path too long for the
 line loses its middle rather than its end — the end is the segment that says
-which worktree of a project this is. And every row grows a state word between
-its name and what the agent said, because the heading over it no longer says
-what state the row is in:
+which worktree of a project this is. At the far edge of it, what the rows under
+it are doing, in the words the header band counts the whole fleet in — so the
+two rows teach one language and every word of them is one `s:` takes. A path
+says which repository a screenful of rows is in and nothing about how it is
+going, and without that count a wall gathered by directory is one you read
+every row of to answer the question you gathered it to ask. And every row grows
+a state word between its name and what the agent said, because the heading over
+it no longer says what state the row is in:
 
 ```
- ~/code/amx
+ ~/code/amx                                              1 waiting     1 done
   ✻ port-import-b2c   waiting   Which fixture should the port keep?          29s
   ∙ tidy-imports-d4e  done      did what it was asked                         2m
 
- /srv/app
+ /srv/app                                                              1 done
   ✻ fix-login-a1b     done      the login bug is fixed                        4m
 ```
 

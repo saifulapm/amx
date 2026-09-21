@@ -31,7 +31,7 @@ use std::sync::OnceLock;
 
 use super::empty;
 use super::style::{colour, dim, name_colour, request_colour};
-use super::text::inert;
+use super::text::{inert, width_of};
 use crate::derive::{self, Evidence, View};
 use crate::pr::Pr;
 use crate::store::Phase;
@@ -294,6 +294,13 @@ fn heading(group: Group, tally: Tally, hovered: bool, theme: Theme) -> Line<'sta
 /// is [`grid::elide`]'s business: the end is the segment that says which
 /// worktree of a project this is, and cutting there would leave every one of
 /// them reading the same.
+///
+/// And at the far edge, what the rows under it are doing. A path says which
+/// repository a screenful of rows is in and nothing about how it is going, so
+/// a wall gathered by directory is one a person reads every row of to answer
+/// the question they gathered it to ask. The header band already answers it
+/// for the whole fleet in these words; this is the same sentence about one
+/// heading's worth of them, standing where the header's own stands.
 fn path_heading(
     title: String,
     tally: Tally,
@@ -302,16 +309,48 @@ fn path_heading(
     theme: Theme,
 ) -> Line<'static> {
     let failed = failures(tally);
-    let path = grid::elide(&title, grid::path_room(width, failed.trim()));
+    let doing = doing(tally);
+    let spent = match doing.is_empty() {
+        true => 0,
+        false => width_of(&doing) + APART,
+    };
+    let path = grid::elide(
+        &title,
+        grid::path_room(width, failed.trim()).saturating_sub(spent),
+    );
     let label = match hovered {
         true => Style::new(),
         false => dim(),
     };
+    let said = format!("{path}{}", count(tally));
+    let stood = width_of(&said) + width_of(&failed) + width_of(&doing);
     Line::from(vec![
-        Span::styled(format!("{path}{}", count(tally)), label),
+        Span::styled(said, label),
         Span::styled(failed, Style::new().fg(theme.failed)),
+        Span::raw(" ".repeat(width.saturating_sub(stood))),
+        Span::styled(doing, dim()),
     ])
 }
+
+/// What the rows under a heading are doing, in the words the header band
+/// counts the whole fleet in — so the two rows teach one language, and every
+/// word of them is one the list can be narrowed by.
+///
+/// A group with nobody in it is left out rather than said as a zero: what a
+/// heading is for is the work that is there.
+fn doing(tally: Tally) -> String {
+    tally
+        .doing()
+        .into_iter()
+        .map(|(group, count)| format!("{count} {}", group.state()))
+        .collect::<Vec<String>>()
+        .join(&" ".repeat(APART))
+}
+
+/// The air between one count and the next, and between the path and the first
+/// of them. The header band's own, for the same reason: a count is a reading
+/// with nothing between it and the next to say.
+const APART: usize = 3;
 
 /// How many agents a heading answers for, said only where the rows it stands
 /// over are not on the screen to be counted.
@@ -1603,7 +1642,7 @@ mod tests {
             (60, 10),
         );
 
-        assert_eq!(screen[2], "/src/api", "{screen:?}");
+        assert!(screen[2].starts_with("/src/api"), "{screen:?}");
         assert!(screen[3].contains("ask-a1b"), "{:?}", screen[3]);
         assert!(
             screen[3].contains("waiting"),
@@ -1612,7 +1651,7 @@ mod tests {
         );
         assert!(screen[4].contains("done"), "{:?}", screen[4]);
         assert_eq!(screen[5], "", "the next project stands off from this one");
-        assert_eq!(screen[6], "/src/web", "{screen:?}");
+        assert!(screen[6].starts_with("/src/web"), "{screen:?}");
 
         // One column, so the states read down the screen rather than wandering
         // with the length of the name above them. Counted in characters: the
@@ -1622,6 +1661,74 @@ mod tests {
             line[..at].chars().count()
         };
         assert_eq!(column(&screen[3], "waiting"), column(&screen[4], "done"));
+    }
+
+    #[test]
+    fn a_path_heading_says_at_its_far_edge_what_the_rows_under_it_are_doing() {
+        // A path says which repository a screenful of rows is in and nothing
+        // about how it is going, so a wall gathered by directory is one a
+        // person reads every row of to answer the question they gathered it
+        // to ask.
+        let wide = (70, 12);
+        let screen = painted(
+            &by_project(vec![
+                at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
+                at(view("busy-b2c", Phase::Working, None, 3), "/src/api"),
+                at(
+                    view("fix-login-c3d", Phase::Done, Some("fixed it"), 30),
+                    "/src/api",
+                ),
+                at(
+                    view("done-d4e", Phase::Done, Some("shipped it"), 30),
+                    "/src/api",
+                ),
+            ]),
+            wide,
+        );
+
+        // The header band's own words, so the two rows teach one language and
+        // every word of them is one `s:` takes.
+        let heading = |screen: &[String]| {
+            screen
+                .iter()
+                .find(|line| line.starts_with("/src/api"))
+                .unwrap_or_else(|| panic!("no heading in: {screen:?}"))
+                .clone()
+        };
+        let said = heading(&screen);
+        assert!(
+            said.ends_with("1 waiting   1 working   2 done"),
+            "what is under it stands at the far edge, loudest first: {said:?}"
+        );
+        assert_eq!(
+            said.chars().count(),
+            wide.0 as usize,
+            "run out to the edge of the wall, where the header's own counts \
+             stand: {said:?}"
+        );
+
+        // A group with nobody in it is left out rather than said as a zero.
+        for word in ["pinned", "review", "asleep"] {
+            assert!(!said.contains(word), "{word}: {said:?}");
+        }
+
+        // A child is work, so it is counted: a heading answers for the rows it
+        // stands over rather than for the tops alone.
+        let family = painted(
+            &by_project(vec![
+                at(
+                    view("parent-a1b", Phase::Done, Some("done"), 30),
+                    "/src/api",
+                ),
+                at(
+                    child_of(view("scout-b2c", Phase::Working, None, 3), "parent-a1b"),
+                    "/src/api",
+                ),
+            ]),
+            wide,
+        );
+        let said = heading(&family);
+        assert!(said.ends_with("1 working   1 done"), "{said:?}");
     }
 
     #[test]
@@ -1858,7 +1965,10 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(painted(&screen, size)[2], "/src/api · 1 failed");
+        assert_eq!(
+            painted(&screen, size)[2],
+            "/src/api · 1 failed                       1 waiting   1 done"
+        );
         assert_eq!(word_colour(&screen, size, 2, "· 1 failed"), theme().failed);
         for word in ["/src/api", "api"] {
             let painted = word_modifier(&screen, size, 2, word);
@@ -1871,7 +1981,10 @@ mod tests {
 
         screen.list.up();
         screen.list.shut_or_open();
-        assert_eq!(painted(&screen, size)[2], "/src/api 2 · 1 failed");
+        assert_eq!(
+            painted(&screen, size)[2],
+            "/src/api 2 · 1 failed                     1 waiting   1 done"
+        );
     }
 
     #[test]

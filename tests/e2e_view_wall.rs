@@ -1177,15 +1177,16 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
             .unwrap_or_else(|| panic!("no row for {id} in:\n{drawn}"))
             .to_string()
     };
-    // A heading is the whole of its line now, so the project it stands over is
-    // what the line reads rather than what it starts with: ~ heads the agents
-    // outside any repository, not the ones under ~/repo as well.
+    // A heading opens on the project it stands over and ends on what the rows
+    // under it are doing, so the project is the line's first word rather than
+    // the whole of it: ~ heads the agents outside any repository, not the ones
+    // under ~/repo as well.
     let headings = |text: &str| {
         let heading = text.to_string();
         drawn
             .lines()
             .enumerate()
-            .filter(move |(_, line)| line.trim_end() == heading)
+            .filter(move |(_, line)| line.split_whitespace().next() == Some(heading.as_str()))
     };
     let at = |text: &str| match headings(text).next() {
         Some((at, _)) => at,
@@ -1218,10 +1219,10 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     press(&amx, &view, "C-s");
     amx.until("the repository headings", || {
         let drawn = screen(&amx, &view);
-        // A repository heading names the branch its root is on, and it is the
-        // whole line: the header says where the next agent would run, and that
+        // A repository heading names the branch its root is on, and it opens
+        // the line: the header says where the next agent would run, and that
         // is `~/repo` too.
-        let whole = drawn.lines().any(|line| line.trim_end() == "~/repo (main)");
+        let whole = drawn.lines().any(|line| line.starts_with("~/repo (main)"));
         (whole && !drawn.contains("Needs input")).then_some(drawn)
     });
     press(&amx, &view, "C-s");
@@ -1582,7 +1583,9 @@ fn a_path_heading_reads_the_way_a_group_heading_does() {
     press(&amx, &view, "C-s");
     let drawn = amx.until("the heading over the repository, whole", || {
         let drawn = screen(&amx, &view);
-        let whole = drawn.lines().any(|line| line.trim_end() == "~/repo");
+        let whole = drawn
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("~/repo"));
         whole.then_some(drawn)
     });
 
@@ -1625,7 +1628,7 @@ fn a_path_too_long_for_its_heading_loses_its_middle_and_not_its_end() {
     let line = amx.until("the heading over the deep path, whole", || {
         screen(&amx, &view)
             .lines()
-            .find(|line| line.starts_with("/srv/") && line.ends_with("legacy-shim"))
+            .find(|line| line.starts_with("/srv/") && line.contains("legacy-shim"))
             .map(str::to_string)
     });
 
