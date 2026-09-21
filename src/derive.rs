@@ -554,6 +554,27 @@ fn doing(screens: &Ruleset, capture: &str) -> Option<String> {
     Some(unglyphed(furniture.unruled(rows[at])))
 }
 
+/// Whether this screen is a turn somebody cut short in the pane itself.
+///
+/// See [`crate::furniture::Furniture::cut_by_hand`], which is where the shape
+/// of it lives: the vendor's own word for an interrupted turn, and nothing
+/// under it but the chrome.
+fn cut_by_hand_in_the_pane(rules: &Ruleset, capture: &str) -> bool {
+    let rows: Vec<&str> = capture.lines().collect();
+    rules.furniture().cut_by_hand(&rows)
+}
+
+/// Whether this screen still says the vendor has a shell of its own running.
+///
+/// A vendor that never says either way is taken at the record's word, because
+/// a count nothing can check is still the only account there is: reading
+/// silence as `no shells` would end every turn that left one running on the
+/// vendors amx has not measured a footer for.
+fn still_has_a_shell(rules: &Ruleset, capture: &str) -> bool {
+    let rows: Vec<&str> = capture.lines().collect();
+    rules.furniture().shells_running(&rows).unwrap_or(true)
+}
+
 /// What a screen a rule read as a finished turn says the agent last said.
 ///
 /// The pane with the vendor's own furniture cut off the bottom of it, which is
@@ -1013,7 +1034,26 @@ pub fn read(
         return told(Phase::Stopped, Evidence::Gone, None);
     }
 
-    if quiet <= FRESH && !cut_short(state) {
+    // The screen, where anything below this wants one. Taken once, because it
+    // is a call out to tmux: inside the freshness window it is taken for the
+    // two things the record cannot carry — see below — and outside it, it is
+    // what every rule reads.
+    let fresh = quiet <= FRESH && !cut_short(state);
+    let wanted = !fresh || wants_the_question(rules, state) || wants_the_doing(rules, state);
+    let seen = wanted.then(capture).flatten();
+
+    // And whether the pane says somebody ended this turn in the pane itself.
+    // The vendor sends nothing when a person presses esc in front of it, so
+    // this row is the only account of that turn ending there is — which makes
+    // the hooks not the fresher witness here but the older one, about a turn
+    // this row says is over. Without it, esc in a pane and `ctrl+z` back left
+    // the row saying `working` for the rest of the freshness window and then
+    // for as long again as a quiescent rule waits (Saiful, 2026-09-21).
+    let by_hand = seen
+        .as_deref()
+        .is_some_and(|screen| cut_by_hand_in_the_pane(rules, screen));
+
+    if fresh && !by_hand {
         // The hooks decide the phase. Two things the record cannot carry are
         // read off the pane on the first look rather than on the one after
         // the freshness runs out. A record that says waiting and cannot say
@@ -1024,21 +1064,22 @@ pub fn read(
         // the record never will — see [`wants_the_doing`].
         let mut reading = told(state.state, Evidence::Hooks, None);
         if wants_the_question(rules, state) {
-            reading.asking = capture().and_then(|screen| rules.asking(&screen));
+            reading.asking = seen.as_deref().and_then(|screen| rules.asking(screen));
         } else if wants_the_doing(rules, state) {
-            reading.doing = capture().and_then(|screen| doing(rules, &screen));
+            reading.doing = seen.as_deref().and_then(|screen| doing(rules, screen));
         }
         return reading;
     }
 
-    let Some(screen) = capture() else {
+    let Some(screen) = seen else {
         return told(Phase::Unknown, Evidence::Unknown, None);
     };
 
-    // A turn amx cut short has ended already, so a quiescent rule has nothing
-    // left to tell apart and is handed its patience as served — see
-    // [`cut_short`]. Every other rule reads the screen it always did.
-    let held = match cut_short(state) {
+    // A turn that has been cut short has ended already, so a quiescent rule
+    // has nothing left to tell apart and is handed its patience as served —
+    // see [`cut_short`], and the row above that says the same of a turn ended
+    // by a key amx never saw. Every other rule reads the screen it always did.
+    let held = match cut_short(state) || by_hand {
         true => SETTLED_LOOKS,
         false => held,
     };
@@ -1046,10 +1087,25 @@ pub fn read(
     match rules.claim(&screen, state.state, held) {
         // A prompt with shells still running behind it is not a turn that is
         // over. The vendor draws the same prompt either way — it has finished
-        // and what it started has not — so the count the stop wrote is the
-        // only thing that tells the two screens apart, and it is what the row
-        // goes on saying. See [`crate::store::State`]'s `background`.
-        Claim::Ruled(rule) if rule.state == Phase::Idle && state.background > 0 => {
+        // and what it started has not — so the count the stop wrote is what
+        // tells the two screens apart, and it is what the row goes on saying.
+        // See [`crate::store::State`]'s `background`.
+        //
+        // For as long as the screen agrees. Nothing is sent when somebody
+        // stops a background shell from inside the pane, so the count is about
+        // the second the turn ended and goes stale the moment they do — and a
+        // row that said `working` until the agent died was the whole of what
+        // amx made of it (Saiful, 2026-09-21). claude says on its mode footer
+        // how many shells it still has, which is chrome and so is about this
+        // second; where it has stopped saying so, the count is spent and this
+        // prompt is the prompt it looks like. A vendor that says neither is
+        // taken at the count, which is where this stood before the footer was
+        // measured — see [`crate::furniture::Furniture::shells_running`].
+        Claim::Ruled(rule)
+            if rule.state == Phase::Idle
+                && state.background > 0
+                && still_has_a_shell(rules, &screen) =>
+        {
             told(Phase::Working, Evidence::Hooks, Some(&rule.name))
         }
         Claim::Ruled(rule) => Reading {
@@ -2457,6 +2513,56 @@ mod tests {
 ✻ Worked for 2m 26s
 ❯
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+";
+
+    /// The same prompt with the vendor's own count of the shells it still has
+    /// on its mode footer, as claude 2.1.278 draws it. The one thing on a
+    /// screen that says a count a Stop hook wrote is still true.
+    const A_SCREEN_WITH_A_SHELL: &str = "\
+✻ Worked for 2m 26s · 1 shell still running
+❯
+  ⏵⏵ bypass permissions on · 1 shell
+";
+
+    /// And the same screen once the shell is stopped, which is the footer with
+    /// no tail on it at all.
+    const A_SCREEN_WITH_NO_SHELL: &str = "\
+✻ Worked for 2m 26s
+❯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+    /// A turn somebody pressed esc on in the pane itself, as claude 2.1.278
+    /// draws it: the vendor's own row for an interrupted tool call, and
+    /// nothing under it but the chrome. No hook is sent about any of it.
+    const AN_INTERRUPTED_SCREEN: &str = "\
+● Bash(sleep 120)
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  Opus 5 │ ◈ 2% │ amx-measure (HEAD)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+    /// The same row with a turn under way over it, which is where it sits for
+    /// the rest of the session: a screen about something else.
+    const A_SCREEN_PAST_AN_INTERRUPT: &str = "\
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ carry on
+
+● Read(src/main.rs)
+
+✢ Forging… (22s · ↓ 1.3k tokens)
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  Opus 5 │ ◈ 2% │ amx-measure (HEAD)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
 ";
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
@@ -4135,14 +4241,14 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     #[test]
     fn reader_leaves_a_turn_whose_shells_are_still_running_at_work() {
         // The prompt a finished turn sits at and the prompt a turn that left
-        // shells running sits at are the same bytes: the vendor has finished
-        // and what it started has not. The count the stop wrote is the only
-        // thing that tells the two apart, so the rule that reads the prompt
-        // names the screen and does not end the turn.
+        // shells running sits at are nearly the same bytes: the vendor has
+        // finished and what it started has not. The count the stop wrote is
+        // what tells the two apart, so the rule that reads the prompt names
+        // the screen and does not end the turn.
         let mut running = state(Phase::Working, 1_000);
         running.background = 2;
 
-        let verdict = settled(&running, IDLE_SCREEN, 1_100);
+        let verdict = settled(&running, A_SCREEN_WITH_A_SHELL, 1_100);
         assert_eq!(verdict.phase, Phase::Working);
         assert_eq!(verdict.evidence, Evidence::Hooks);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
@@ -4151,6 +4257,74 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let verdict = settled(&state(Phase::Working, 1_000), IDLE_SCREEN, 1_100);
         assert_eq!(verdict.phase, Phase::Idle);
         assert_eq!(verdict.evidence, Evidence::Screen);
+    }
+
+    #[test]
+    fn reader_spends_a_shell_count_the_screen_has_stopped_agreeing_with() {
+        // Nothing is sent when somebody stops a background shell from inside
+        // the pane, so the count is about the second the turn ended. Without
+        // this the row said `working` for as long as the agent lived.
+        let mut running = state(Phase::Working, 1_000);
+        running.background = 2;
+
+        let verdict = settled(&running, A_SCREEN_WITH_NO_SHELL, 1_100);
+        assert_eq!(verdict.phase, Phase::Idle, "the count is spent");
+        assert_eq!(verdict.evidence, Evidence::Screen);
+
+        // And the same screen with the vendor's own count on its footer keeps
+        // the turn where the hooks left it.
+        let verdict = settled(&running, A_SCREEN_WITH_A_SHELL, 1_100);
+        assert_eq!(verdict.phase, Phase::Working);
+
+        // The patience is the quiescent rule's own, unchanged: one look at a
+        // still prompt ends nothing, count or no count.
+        let verdict = decided(&running, true, Some(A_SCREEN_WITH_NO_SHELL), 1_100);
+        assert_eq!(verdict.phase, Phase::Working);
+        assert_eq!(verdict.evidence, Evidence::Hooks);
+    }
+
+    #[test]
+    fn reader_takes_a_vendor_that_says_nothing_about_its_shells_at_the_count() {
+        // A screen with no footer amx has measured a shell tail on says
+        // nothing either way, and silence is not `no shells`: reading it as
+        // one would end every turn that left a shell running on every vendor
+        // amx has not measured one for.
+        let rules = rules::of("pi");
+        assert!(
+            rules
+                .furniture()
+                .shells_running(&["⏵⏵ bypass permissions on (shift+tab to cycle)"])
+                .is_none()
+        );
+        assert!(still_has_a_shell(rules, A_SCREEN_WITH_NO_SHELL));
+    }
+
+    #[test]
+    fn reader_ends_a_turn_somebody_cut_short_in_the_pane_on_the_first_look() {
+        // claude fires no hook for an interrupt, so a key pressed in front of
+        // it leaves the record saying a turn is running and nothing but the
+        // pane to say otherwise. The vendor's own row for it is that word, so
+        // the freshness window does not hold the row at `working` and the
+        // quiescent rule under it is handed its patience as served.
+        let running = state(Phase::Working, 1_000);
+        let verdict = decided(&running, true, Some(AN_INTERRUPTED_SCREEN), 1_001);
+        assert_eq!(verdict.phase, Phase::Idle);
+        assert_eq!(verdict.evidence, Evidence::Screen);
+        assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"));
+
+        // The row stays in the transcript for the rest of the session, so what
+        // makes it this turn's news is being the last row the agent earned.
+        // With a turn under way over it, the hooks decide as they always did.
+        let verdict = decided(&running, true, Some(A_SCREEN_PAST_AN_INTERRUPT), 1_001);
+        assert_eq!(verdict.phase, Phase::Working);
+        assert_eq!(verdict.evidence, Evidence::Hooks);
+
+        // And a vendor that leaves no such row waits the way it always did.
+        assert!(
+            !rules::of("pi")
+                .furniture()
+                .cut_by_hand(&AN_INTERRUPTED_SCREEN.lines().collect::<Vec<&str>>())
+        );
     }
 
     #[test]

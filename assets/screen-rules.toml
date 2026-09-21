@@ -139,6 +139,68 @@ placeholders = [
 # the spinner over the composer met this row instead and stopped there, so on
 # the mid-turn capture `● Wibbling… (20s)` sat directly on top of the hint row
 # with no blank between, and both of them came through onto the card.
+#
+# `interrupted` is no part of that walk either. It is what the row claude
+# leaves in its transcript when somebody presses esc in front of it OPENS with,
+# and it is the only account of that turn ending there is: the vendor sends
+# nothing at all when a person interrupts it. Without it, esc in a pane and
+# `ctrl+z` back left the row saying `working` for the rest of the freshness
+# window and then for as long again as a quiescent rule waits — see
+# `crate::derive` (Saiful, 2026-09-21).
+#
+# Measured against a live claude 2.1.278 on 2026-09-21, a blocking `sleep`
+# interrupted with esc, at 100, 54, 40, 30 and 24 columns:
+#
+#   100  ⎿  Interrupted · What should Claude do instead?
+#    54  ⎿  Interrupted · What should Claude do instead?
+#    40  ⎿  Interrupte· What should Claude do
+#    30  ⎿  Interrup· What should
+#    24  ⎿  Interrup· What
+#
+# It truncates from the middle rather than wrapping, so the head of the row
+# survives every width and the word itself does not: `Interrupted` is gone by
+# 40 columns. What is written here is what the row OPENS with at the narrowest
+# measured, which is the anchor law's own answer to a phrase that shortens.
+#
+# The row stays in the transcript for as long as the session does, so the
+# opening alone would claim a screen about a turn interrupted an hour ago. What
+# makes it this turn's news is that it is the LAST row the agent earned: the
+# walk cuts the chrome, and anything under the row — the next prompt somebody
+# typed, the answer to it — is a screen about something else. See
+# `Furniture::cut_by_hand`.
+#
+# `shells` is no part of that walk. It is what the mode footer carries on its
+# TAIL while claude still has a shell of its own running, and it is the one
+# thing on a screen that says the count a Stop hook wrote is still true — see
+# `crate::store::State`'s `background`. Nothing is sent when somebody stops a
+# background shell from inside the pane, so without this the count stood and
+# the row said `working` for as long as the agent lived (Saiful, 2026-09-21).
+#
+# Measured against a live claude 2.1.278 on 2026-09-21, one `sleep` in the
+# background, at 100, 54, 40, 30 and 24 columns, and the same five again with
+# the shell killed:
+#
+#          running                               idle
+#   100  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab to cycle)
+#    54  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab to cycle)
+#    40  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab
+#    30  ⏵⏵ bypass permissions on ·            ⏵⏵ bypass permissions on
+#    24  ⏵⏵ bypass      · 1                    ⏵⏵ bypass
+#
+# The tail REPLACES the cycle hint rather than standing after it, and the word
+# `shell` is truncated away below 40 columns. So both fragments are named: the
+# word, which is what the tail says wherever there is room to say it, and the
+# separator, which is the mark that there is a tail at all and is the only
+# thing left of it at 30 and 24.
+#
+# What the separator costs is a footer whose tail is about something else.
+# claude 2.1.240 put `· ← 2 agents` there, measured on 2026-08-24, and that
+# footer would read here as a shell still running. That is the harmless way
+# round: this is asked only of a record whose Stop hook already counted shells,
+# and the answer it leads to is the count standing, which is what the count did
+# before this was measured at all. The other way round — a screen read as no
+# shells while one runs — ends a turn that has not ended, and is what the word
+# alone would have done at 30 columns.
 [furniture]
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]
@@ -148,6 +210,8 @@ bottom = 2
 beneath = ["● ", "◯ "]
 panel = 8
 hint = ["/effort"]
+interrupted = ["⎿  Interrup"]
+shells = ["shell", "·"]
 
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.

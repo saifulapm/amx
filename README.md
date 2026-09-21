@@ -1322,6 +1322,15 @@ the next `send`. claude says nothing about a turn it was interrupted out of,
 but amx ended that one itself, so the row does not wait a word out: it reads
 idle as soon as the prompt is back on the pane.
 
+Pressing `esc` in the pane yourself is the same interrupt and amx never sees
+the key, so the same silence used to leave the row saying `working` for the
+freshness window and then for as long again while a quiescent rule waited out
+the prompt. claude leaves a row of its own where the turn stopped —
+`⎿ Interrupted · What should Claude do instead?` — and that row being the last
+thing on the pane is what says the interrupt is the news rather than something
+that happened an hour ago. So the row reads idle on the next look, whichever
+way the turn was cut short.
+
 A turn is the only thing that key can cut short, so `interrupt` exits `0`
 having sent one and refuses in two other ways. An agent stopped on a question
 is not working, and `esc` there dismisses the question, which is an answer

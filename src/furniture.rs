@@ -74,6 +74,26 @@ pub struct Furniture {
     /// row the walk steps over when it is there rather than one it requires.
     #[serde(default)]
     pub hint: Vec<String>,
+    /// What the row the vendor leaves behind when somebody cuts a turn short
+    /// in its own pane opens with, after whatever it indents by, any one of
+    /// them.
+    ///
+    /// Nothing is sent when a person presses esc, so this row is the only
+    /// account of that turn ending there is — see [`crate::derive`]. A vendor
+    /// that leaves no such row leaves this out, and amx waits the way it
+    /// always did.
+    #[serde(default)]
+    pub interrupted: Vec<String>,
+    /// What the vendor's mode footer carries while it still has a shell of its
+    /// own running, any one of them.
+    ///
+    /// Not part of the walk: the footer is one row whatever is on its tail.
+    /// This is the one thing on a screen that says a count a hook wrote is
+    /// still true — see [`crate::derive`] and [`crate::store::State`]'s
+    /// `background`. A vendor that says nothing about its shells leaves this
+    /// out, and a reader asked about one is told it cannot say.
+    #[serde(default)]
+    pub shells: Vec<String>,
 }
 
 /// The vendor's own furniture, cut off the bottom of a capture.
@@ -302,6 +322,52 @@ impl Furniture {
     pub fn thinking(&self, row: &str) -> bool {
         let drawn = row.trim();
         self.thinking.iter().any(|label| label == drawn)
+    }
+
+    /// Whether this screen is a turn somebody cut short in the pane itself and
+    /// nothing has happened on since.
+    ///
+    /// The last row the agent earned, chrome cut: the vendor leaves its word
+    /// for an interrupted turn in the transcript, where it stays for as long
+    /// as the session does, so the row being *last* is the whole of what says
+    /// the interrupt is the news rather than a thing that happened an hour
+    /// ago. Anything at all after it — the next prompt somebody typed, the
+    /// answer to it — and this is a screen about something else.
+    pub fn cut_by_hand(&self, rows: &[&str]) -> bool {
+        if self.interrupted.is_empty() {
+            return false;
+        }
+        let said = self.cut(rows);
+        let Some(last) = said.iter().rev().find(|row| !blank(row)) else {
+            return false;
+        };
+        let drawn = last.trim_start();
+        self.interrupted
+            .iter()
+            .any(|opening| drawn.starts_with(opening))
+    }
+
+    /// Whether this screen says the vendor still has a shell of its own
+    /// running, or `None` from a vendor that never says either way.
+    ///
+    /// Read off the mode footer and nowhere else. It is the vendor's own
+    /// chrome, redrawn every frame, so it is about this second — where the
+    /// count on the record is about the second a turn ended, and goes stale
+    /// the moment somebody stops a shell from inside the pane.
+    ///
+    /// The lowest footer on the capture, because the walk finds the footer
+    /// from the bottom and for the reason it does: a screen may quote another
+    /// pane's footer, and a quotation is above the real one.
+    pub fn shells_running(&self, rows: &[&str]) -> Option<bool> {
+        if self.shells.is_empty() {
+            return None;
+        }
+        let footer = rows.iter().rposition(|row| self.mode_footer(row))?;
+        Some(
+            self.shells
+                .iter()
+                .any(|fragment| rows[footer].contains(fragment)),
+        )
     }
 }
 
