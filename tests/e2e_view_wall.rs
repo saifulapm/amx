@@ -975,16 +975,26 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
     );
 
     let view = amx.in_a_terminal(&[], &[]);
-    let row = amx.until("the row to say what the pane says", || {
-        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("Nesting"))
+    let row = amx.until("the row", || {
+        row_of(&amx, &view, "port-cli-b2c").filter(|row| row.contains("Running Read"))
     });
     assert!(
-        row.contains("Nesting… (15s · ↓ 1.3k tokens)"),
-        "the vendor's line whole, less the glyph it pulses in front of it:\n{row}"
+        !row.contains("Nesting"),
+        "the vendor's spinner line is its own chrome — a gerund it picked and \
+         a clock the row keeps in its own column — so the row goes on saying \
+         what the hooks said:\n{row}"
     );
+
+    // The card's rule is where it belongs, and it is what the rule says about
+    // a turn under way the whole way through one.
+    let carded = card_on(&amx, &view, "port-cli-b2c");
+    let ruled = carded
+        .lines()
+        .find(|line| line.contains("port-cli-b2c") && line.contains('┈'))
+        .unwrap_or_else(|| panic!("no rule in:\n{carded}"));
     assert!(
-        !row.contains("Running Read"),
-        "the record's account of the same turn is the older one:\n{row}"
+        ruled.contains("Nesting… (15s · ↓ 1.3k tokens)"),
+        "the vendor's line whole, less the glyph it pulses in front of it:\n{ruled}"
     );
 
     // Read and not written down: the line is about the second it was read in,

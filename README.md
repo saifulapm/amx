@@ -1672,10 +1672,11 @@ answer for a program.
 A screen with a turn running on it says more than which state the agent is in.
 claude spins one line above its composer for as long as the turn lasts, and
 that line — `Forging… (22s · ↓ 1.3k tokens)` — says the turn is running and how
-long for, in place of the tool call the record last wrote down. Before the
-first tool call there is nothing written down at all, so the line is read from
-the first look rather than after the hooks go quiet. It is read and not
-recorded: it is true for a second, and the next reading takes it again.
+long for. It goes on the card's rule and nowhere else. It is the vendor's own
+chrome rather than a word about the work: a gerund the vendor picked, a clock
+the row already keeps in its own column, a token count. A row with nothing else
+to say says nothing, which is the truth. It is read and not recorded either
+way: it is true for a second, and the next reading takes it again.
 
 The transcript is fresher than any of that. A vendor writes each thing it says
 and each tool it calls to the session file at the moment it happens, while a
@@ -1689,8 +1690,10 @@ recorded, like the line over the composer.
 So a working row says, newest account first: what the vendor is streaming as
 the row is drawn — pi streams the words of the answer it is writing, and a
 tool running has no stream — else the newest line of its transcript, else the
-line it spins over its composer, else the `Running Bash` its last tool hook
-left on the record.
+`Running Bash` its last tool hook left on the record. A command's row is the
+one exception, and the line over its composer is the whole of what it has:
+nothing is ever reported about a command, so the last row it printed is the
+only account of it there is.
 
 ## Vendors
 

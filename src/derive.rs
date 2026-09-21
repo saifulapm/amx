@@ -1567,21 +1567,22 @@ fn seen(agent: &Agent, meta: Meta, mut state: State, reading: Reading) -> View {
                 .or_else(|| newest_said(agent, &meta, &state))
         })
         .flatten();
-    // The spinner line goes onto the row only where the record names no tool
-    // or the hooks have gone quiet: fresh hooks naming `Running Bash` are the
-    // answer the row wants while that tool runs. It goes onto the view whole
-    // either way, for the card's rule.
-    let spinning = reading.doing.clone();
-    let stands = reading.verdict.evidence != Evidence::Hooks || state.summary.is_none();
-    if let Some(line) = fresher.or_else(|| {
-        reading
-            .doing
-            .filter(|_| stands && !a_rewrite_stands(agent, &meta, &state))
-    }) {
+    // An agent's spinner line goes onto the view for the card's rule and no
+    // further. It is the vendor's own chrome rather than a word about the
+    // work: a gerund the vendor picked, a clock the row already keeps in its
+    // own column, a token count. A row with nothing else to say says nothing,
+    // which is the truth, rather than saying `Slithering…`.
+    //
+    // A command's is the opposite thing under the same name — see
+    // [`read_a_command`]. What it holds is the last row the command printed,
+    // which is everything anything knows about it: no hook writes a summary
+    // for a command, and there is no chrome on its pane to tell from the work.
+    let printed = runs_a_command(&meta, &state);
+    if let Some(line) = fresher.or_else(|| reading.doing.clone().filter(|_| printed)) {
         state.summary = Some(line);
     }
     let mut view = View::new(meta, state, reading.verdict);
-    view.doing = spinning;
+    view.doing = reading.doing;
     view
 }
 
@@ -3050,18 +3051,25 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             "the glyph is the vendor's pulse rather than a word about the turn"
         );
 
+        // Onto the card's rule and no further. It is the vendor's chrome — a
+        // gerund it picked, a clock the row keeps in its own column — so the
+        // row goes on saying what the last tool call wrote.
         let root = TempDir::new().unwrap();
         let view = seen(&an_agent(&root), meta(), told, reading);
-        assert_eq!(view.line(), Some("Forging… (22s · ↓ 1.3k tokens)"));
-        assert_eq!(view.json()["summary"], "Forging… (22s · ↓ 1.3k tokens)");
+        assert_eq!(
+            view.doing.as_deref(),
+            Some("Forging… (22s · ↓ 1.3k tokens)")
+        );
+        assert_eq!(view.line(), Some("Running Bash"));
     }
 
     #[test]
     fn reader_reads_the_spinner_line_while_the_hooks_are_fresh_and_name_no_tool() {
         // The prompt went in a second ago: the hooks are fresh, the record
         // says working, and nothing on it says what is being run because no
-        // tool has been called yet. The row sat empty for the whole of that
-        // window; the vendor's line is up the whole time, so it is read now.
+        // tool has been called yet. The vendor's line is up the whole time, so
+        // it is read now — for the card's rule, which is the one place the
+        // vendor's own words about a turn under way belong.
         let told = state(Phase::Working, 1_000);
         let fresh = reading(&told, true, Some(A_WORKING_SCREEN), 1_001);
         assert_eq!(fresh.verdict.phase, Phase::Working);
@@ -3075,9 +3083,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             Some("Forging… (22s · ↓ 1.3k tokens)")
         );
         let root = TempDir::new().unwrap();
+        let view = seen(&an_agent(&root), meta(), told.clone(), fresh);
         assert_eq!(
-            seen(&an_agent(&root), meta(), told.clone(), fresh).line(),
+            view.doing.as_deref(),
             Some("Forging… (22s · ↓ 1.3k tokens)")
+        );
+        assert_eq!(
+            view.line(),
+            None,
+            "and a row with nothing to say says nothing rather than saying \
+             the gerund the vendor is spinning"
         );
 
         // A pane the vendor has not drawn its line on yet says nothing, and
@@ -3324,18 +3339,18 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
         // Nothing said this turn leaves the row where it was: a transcript
         // holding only what the person typed says nothing a reader wants, and
-        // a record naming no transcript is not read for one.
+        // a record naming no transcript is not read for one. The vendor's
+        // spinner line is on the pane either way and is no answer here — it is
+        // the card rule's, not the row's.
         std::fs::write(
             &session,
             "{\"type\":\"user\",\"message\":{\"content\":\"port the importer\"}}\n",
         )
         .unwrap();
         for meta in [&keeping_one, &meta()] {
-            assert_eq!(
-                row(meta, Some(A_WORKING_SCREEN), 1_100).as_deref(),
-                Some("Forging… (22s · ↓ 1.3k tokens)")
-            );
-            assert_eq!(row(meta, None, 1_000).as_deref(), Some("Running Bash"));
+            for screen in [Some(A_WORKING_SCREEN), None] {
+                assert_eq!(row(meta, screen, 1_000).as_deref(), Some("Running Bash"));
+            }
         }
 
         // And the vendor's own stream comes first of all: it is the sentence
