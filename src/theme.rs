@@ -11,6 +11,7 @@
 //! palette with a warning, because a view painted in the wrong colours is a
 //! view, and no view at all is not.
 
+use crate::shade::Shade;
 use anyhow::{Context, Result, anyhow};
 use ratatui::style::Color;
 use std::path::{Path, PathBuf};
@@ -21,10 +22,50 @@ use std::time::SystemTime;
 pub const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
 
 /// The themes that ship inside the binary, by the name `theme` may call them.
-const SHIPPED: [(&str, &str); 2] = [
+const SHIPPED: [(&str, &str); 3] = [
     ("default", include_str!("../assets/themes/default.toml")),
+    ("light", include_str!("../assets/themes/light.toml")),
     ("terminal", include_str!("../assets/themes/terminal.toml")),
 ];
+
+/// The name that stands for whichever of the two the terminal turns out to be.
+///
+/// Not a palette: nothing here can be read out of a file, and a person who
+/// wrote `auto.toml` would be writing a file amx never opens. It is a name
+/// resolved to one of the two below before anything is loaded at all — see
+/// [`for_the_shade`].
+///
+/// The default, because the alternative is amx painting the palette somebody
+/// configured on another machine onto whatever terminal they have opened it
+/// on, and one of those two machines is the one they are looking at.
+pub const AUTO: &str = "auto";
+
+/// Which palette [`AUTO`] names on a terminal of this shade.
+///
+/// Any other name is itself. A theme named by hand is a decision already made,
+/// and reading the terminal to overrule it would make the config key a
+/// suggestion.
+pub fn for_the_shade(named: &str, shade: Shade) -> &str {
+    match (named == AUTO, shade) {
+        (false, _) => named,
+        (true, Shade::Light) => "light",
+        (true, Shade::Dark) => "default",
+    }
+}
+
+/// The same, asking the terminal what shade it is only where the name is
+/// [`AUTO`].
+///
+/// Lazy on purpose, and this is the only door the view comes through. Asking
+/// costs a write to the terminal and a wait on its answer — see
+/// [`crate::shade`] — and somebody who named a palette has already answered
+/// the question it would be asking.
+pub fn chosen(named: &str, ask: impl FnOnce() -> Shade) -> &str {
+    match named == AUTO {
+        true => for_the_shade(named, ask()),
+        false => named,
+    }
+}
 
 /// The colours the view paints with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,11 +507,64 @@ mod tests {
     #[test]
     fn a_name_nothing_ships_is_not_a_theme_amx_has() {
         assert!(shipped("solarized").is_none());
+        assert!(
+            shipped(AUTO).is_none(),
+            "`auto` is a name resolved before anything is loaded, not a file: \
+             a palette under it would be one amx never opens"
+        );
         assert_eq!(
             SHIPPED.len(),
-            2,
+            3,
             "a theme this file does not name is one nothing here proves"
         );
+    }
+
+    #[test]
+    fn auto_names_the_shipped_palette_for_the_shade_the_terminal_is() {
+        assert_eq!(for_the_shade(AUTO, Shade::Light), "light");
+        assert_eq!(for_the_shade(AUTO, Shade::Dark), "default");
+
+        // And a name somebody wrote is that name, whatever the terminal turns
+        // out to be: reading the screen to overrule them would make the config
+        // key a suggestion.
+        for named in ["default", "light", "terminal", "solarized", "./mine.toml"] {
+            for shade in [Shade::Light, Shade::Dark] {
+                assert_eq!(for_the_shade(named, shade), named, "{named} {shade:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_light_theme_is_a_palette_for_a_page_rather_than_a_pane() {
+        // Every one of the six carries on white, which is the whole of what
+        // this file is for: the fault it was written against was a row under
+        // the cursor that could not be read at all.
+        let (light, w) = parse(shipped("light").unwrap()).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        for (role, colour) in [
+            ("waiting", light.waiting),
+            ("done", light.done),
+            ("failed", light.failed),
+            ("stopped", light.stopped),
+            ("accent", light.accent),
+        ] {
+            let Color::Rgb(r, g, b) = colour else {
+                panic!("{role} is a name, and a name is whatever the terminal says");
+            };
+            let against = 2126 * u32::from(r) + 7152 * u32::from(g) + 722 * u32::from(b);
+            assert!(
+                against < 10_000 * 128,
+                "{role} is too light to read on a light background: {colour:?}"
+            );
+        }
+
+        // And the cursor's bar is a shade above the page rather than below it,
+        // so the row's own text still carries against it.
+        let Color::Rgb(r, g, b) = light.cursor else {
+            panic!("the bar is measured, like the rest of them");
+        };
+        let bar = 2126 * u32::from(r) + 7152 * u32::from(g) + 722 * u32::from(b);
+        assert!(bar > 10_000 * 128, "{:?}", light.cursor);
     }
 
     #[test]

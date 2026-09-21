@@ -88,7 +88,12 @@ A value is a colour the way a terminal names one, in any of three spellings:
 `theme` in `~/.config/amx/config.toml` is a name, and a name is looked up in
 this order:
 
-1. A name amx ships — `default`, `terminal` — is answered out of the binary.
+0. `auto`, which is the value amx uses when the key is left out, is not a
+   palette at all: the terminal is asked what shade its background is and the
+   answer is read as `light` or `default`. It is resolved before anything below
+   runs, so an `auto.toml` in the themes directory is a file amx never opens.
+1. A name amx ships — `default`, `light`, `terminal` — is answered out of the
+   binary.
 2. A name with a `/` in it is a path, taken exactly as written. A theme kept
    in a repository, or synced between machines, is reached this way.
 3. Anything else is a file of that name in `~/.config/amx/themes/`, with
@@ -117,12 +122,35 @@ handed back.
 A shipped theme lives in the binary, so there is nothing to watch; switching
 `theme` in the config is read on the same clock.
 
-## The two that ship
+## The three that ship
 
 `default` is measured off claude's own palette — a view sitting beside
-claude's panes should not be a different shade of the same idea. `terminal`
-names no colour of its own: every value is a named colour, so the view wears
-whatever the terminal does, light or dark.
+claude's panes should not be a different shade of the same idea. `light` is
+the same six roles at the other end of the contrast, measured for a white
+background off GitHub's own light palette: the colours picked to carry on a
+dark terminal dissolve into a light one, and the off-black the cursor's bar is
+painted in takes the row's own text down with it. `terminal` names no colour of
+its own: every value is a named colour, so the view wears whatever the terminal
+does, light or dark.
+
+## Asking the terminal which one
+
+`auto` writes xterm's `OSC 11 ; ? ST` — the escape that asks a terminal for its
+background colour — and reads the answer back, then weighs it by Rec. 709
+luminance: over halfway is `light`, under it is `default`. A terminal that does
+not know the escape says nothing, and `COLORFGBG` answers instead where the
+environment carries it; with neither, `default`, which is what amx painted for
+everybody before there was a choice.
+
+The ask happens once, at the moment the view takes the terminal and before it
+has read a key off it, because the answer arrives on stdin. Two hundred
+milliseconds is the whole of what a silent terminal costs, and a byte that
+cannot be a reply — a letter, which is somebody typing — ends the wait on the
+spot rather than being eaten by it.
+
+None of this runs unless the name is `auto`. A theme named by hand is a
+decision already made, and reading the screen to overrule it would make the
+config key a suggestion.
 
 ## What a theme cannot touch, on purpose
 

@@ -84,10 +84,15 @@ trust = false
 # nothing runs and nothing is spent.
 # summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 
-# Which palette the view paints in: a theme amx ships (default, terminal), a
-# file in ~/.config/amx/themes by name, or a path to one. The file is re-read
-# when it changes, so a theme switch lands in a running view.
-theme = "default"
+# Which palette the view paints in: a theme amx ships (auto, default, light,
+# terminal), a file in ~/.config/amx/themes by name, or a path to one. The file
+# is re-read when it changes, so a theme switch lands in a running view.
+#
+# `auto` is the odd one and the one amx paints with when this key is left out:
+# it is not a palette but the terminal being asked what shade its background is,
+# answered with `light` or `default`. A name written here is a decision already
+# made and is never overruled.
+theme = "auto"
 
 # Seconds an idle agent nobody is watching keeps its pane. A vendor at its
 # prompt holds a couple of hundred megabytes to do nothing with, so after this

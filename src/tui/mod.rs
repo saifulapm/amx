@@ -839,7 +839,15 @@ struct Painting {
 
 impl Painting {
     /// The theme of that name, wherever this machine keeps its themes.
+    ///
+    /// `auto` is not a name on disk: it is the terminal being asked what shade
+    /// it is and answering with one of the two amx ships — see
+    /// [`crate::theme::AUTO`]. Asked here, which is after the terminal has been
+    /// taken into raw mode and before the loop has read a key off it, because
+    /// the answer arrives on stdin and anywhere else it would land in the
+    /// middle of somebody's typing.
     fn of(named: &str) -> Painting {
+        let named = crate::theme::chosen(named, crate::shade::of_the_terminal);
         // Stamped before the read rather than after it, so that an edit
         // landing between the two is one reread rather than a palette the
         // view holds until the next edit. `Watch` says why.

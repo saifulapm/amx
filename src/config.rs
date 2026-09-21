@@ -227,6 +227,11 @@ pub struct Config {
     /// `~/.config/amx/themes`, or a path to one. A name rather than an
     /// `Option`, because there is a palette amx paints in when nobody has
     /// chosen and it has a name of its own.
+    ///
+    /// That name is `auto`, and it is the one value here that is not a palette:
+    /// it asks the terminal what shade it is and paints the shipped theme for
+    /// it — see [`crate::theme::AUTO`]. A name written here is a decision
+    /// already made and is never overruled.
     pub theme: String,
     /// How many seconds an idle agent nobody is attached to keeps its pane.
     ///
@@ -332,7 +337,7 @@ impl Default for Config {
             permission: None,
             effort: None,
             summary_command: None,
-            theme: "default".to_string(),
+            theme: crate::theme::AUTO.to_string(),
             park_after: 3600,
             copy: Vec::new(),
             link: Vec::new(),
@@ -721,8 +726,10 @@ mod tests {
         // Nothing is run at the end of a turn until somebody says what to run.
         assert_eq!(c.summary_command, None);
         // A theme, unlike a dial, has a value that means the default one, so
-        // there is a name here rather than an absence.
-        assert_eq!(c.theme, "default");
+        // there is a name here rather than an absence — and that value is the
+        // terminal being asked what shade it is rather than a palette chosen
+        // on whichever machine the file was written on.
+        assert_eq!(c.theme, crate::theme::AUTO);
         // An hour of sitting idle with nobody attached, and the pane goes.
         assert_eq!(c.park_after, 3600);
         // A fresh tree is furnished with nothing until somebody says what, and
@@ -791,8 +798,14 @@ mod tests {
     #[test]
     fn the_theme_the_defaults_name_is_one_amx_ships() {
         // The one config value that has to mean something to another module.
-        // A default naming a theme nobody has would warn on every start.
-        assert!(crate::theme::shipped(&Config::default().theme).is_some());
+        // A default naming a theme nobody has would warn on every start, and
+        // `auto` names one of the two whichever shade the terminal turns out
+        // to be.
+        let named = Config::default().theme;
+        for shade in [crate::shade::Shade::Light, crate::shade::Shade::Dark] {
+            let chosen = crate::theme::chosen(&named, || shade);
+            assert!(crate::theme::shipped(chosen).is_some(), "{shade:?}");
+        }
     }
 
     #[test]

@@ -1789,7 +1789,7 @@ worktrees = true          # give each agent its own worktree in a repository
 notifications = "desktop" # to the desktop; also "terminal", "both", "off"
 trust = false             # answer claude's folder-trust screen for linked worktrees
 park_after = 3600         # seconds an idle agent nobody is watching keeps its pane
-theme = "default"         # which palette the view paints in
+theme = "auto"            # which palette: auto, default, light, terminal, or yours
 
 # The dials. A key left out is a flag amx does not pass, which leaves the
 # choice to the vendor.
@@ -2031,10 +2031,22 @@ cannot be read or understood degrades to the default palette whole, with a
 warning, under the same law as the config — a view painted wrong is a view,
 and no view at all is not.
 
-Two themes ship in the binary. `default` is measured off claude's own
-palette, so the wall and the panes beside it read as one thing. `terminal`
-names no colour of its own: every value is one of your terminal's named
-colours, so the view follows whatever your terminal wears, light or dark.
+Three themes ship in the binary. `default` is measured off claude's own
+palette, so the wall and the panes beside it read as one thing. `light` is the
+same six roles measured for a white background: the colours that carry on a
+dark terminal dissolve into a light one, and the off-black the cursor's bar
+wears takes the row's own text down with it, which is a line of the wall you
+cannot read at all. `terminal` names no colour of its own: every value is one
+of your terminal's named colours, so the view follows whatever your terminal
+wears, light or dark.
+
+`auto` is what amx paints with when you have not said, and it is not a palette:
+it asks the terminal for its background colour — xterm's `OSC 11` — and reads
+the answer as `light` or `default`, falling back to `COLORFGBG` and then to
+`default` where the terminal says nothing. It is asked once, as the view takes
+the terminal, and a silent one costs two hundred milliseconds. Naming a theme
+yourself turns the question off: a name in the config is a decision already
+made.
 
 The file is live. The view stats it once a second, beside the reading it is
 already taking, and an edit repaints the open view on the next pass — no
