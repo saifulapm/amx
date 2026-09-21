@@ -46,9 +46,14 @@ use crate::{complain, exit, paths, store, warn};
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
 
-/// Whether this event is a vendor saying a message was taken: the moment the
+/// Whether this event is a vendor saying it has the message: the moment the
 /// table calls `Prompted`, or the `Taken` a vendor that steers a message into
 /// a running turn says instead, under whichever vendor's word for it arrived.
+///
+/// That the vendor has it, and not that it has answered it — see [`queued`],
+/// which is about the difference. This is what a send waits on, and having it
+/// is the whole of what a send can ask for: the paste landed and the vendor
+/// took it off the composer.
 fn submitted(event: &Event) -> bool {
     matches!(
         crate::vendor::moment_of(&event.kind),
@@ -267,24 +272,67 @@ fn submissions(events: &[Event]) -> usize {
         .count()
 }
 
-/// What has been sent and not yet taken: the text of every `send` after the
-/// last prompt the agent submitted, oldest first.
+/// What has been sent and not yet answered: the text of every `send` the
+/// vendor is still holding, oldest first.
 ///
-/// A vendor mid-turn holds a message until the turn ends, and says nothing
-/// about holding it that amx can read off the pane: claude draws it in the
-/// composer band a card cuts off. The log is the one place the fact is
-/// written, by `deliver` on the way in and by the vendor's `Prompted` moment
-/// — or a reader's `READ_PROMPT` — on the way out. With no submission on the
-/// log at all, everything sent is still waiting.
+/// A vendor mid-turn holds a message until it is ready for it, and says
+/// nothing about holding it that amx can read off the pane: claude draws it in
+/// the composer band a card cuts off. The log is the one place the fact is
+/// written, by `deliver` on the way in and by the vendor's own moments — or a
+/// reader's [`derive::READ_PROMPT`] — on the way out. With nothing on the log
+/// at all, everything sent is still waiting.
+///
+/// **The two vendors say different things at that moment, so the turn is what
+/// is counted rather than the word.** pi reports the message it has *started
+/// on* — the moment its table calls `Taken` — and until then the message is
+/// waiting, which is exactly what this wants. claude reports only that it has
+/// the message. Measured at 2.1.278 on 2026-09-21: a prompt typed twelve
+/// seconds into a running turn fired `UserPromptSubmit` seven milliseconds
+/// later, the model did not see it for another thirty-one seconds, and it
+/// arrived folded into the turn already running rather than as a turn of its
+/// own — one `Stop` for both, and no second prompt event when the vendor
+/// picked it up. claude's own composer says `Press up to edit queued messages`
+/// for the whole of that half-minute, and amx said nothing at all: the row's
+/// `· queued` came and went inside one frame (Saiful, 2026-09-21).
+///
+/// So a prompt the vendor reports while a turn is already running is a message
+/// it is holding, and the end of that turn is what says it has been answered.
+/// A turn ending is also the only thing here that can go wrong in the safe
+/// direction: a `Stop` amx missed would leave a message listed as waiting when
+/// it has been answered, and a reader watching the prompt come back — see
+/// [`derive::READ_TURN_END`] — is the second way out of that.
 pub fn queued(events: &[Event]) -> Vec<String> {
-    let taken = events
-        .iter()
-        .rposition(|event| {
-            (submitted(event) || event.kind == derive::READ_PROMPT)
-                && event.payload["agent_id"].is_null()
-        })
-        .map_or(0, |at| at + 1);
-    events[taken..]
+    let mut running = false;
+    let mut answered = 0;
+    for (at, event) in events.iter().enumerate() {
+        // A subagent's events ride the same log and are not the agent's turn.
+        if !event.payload["agent_id"].is_null() {
+            continue;
+        }
+        // Which edge of a turn this event is, where it is one at all: a turn
+        // beginning, or a turn ending. Either way everything sent before it
+        // has been answered; what they disagree about is what the next prompt
+        // the vendor reports will mean.
+        let edge = match crate::vendor::moment_of(&event.kind) {
+            // The vendor saying it has started on the message, which is the
+            // one word that means the message is no longer waiting whenever
+            // it arrives.
+            Some(Moment::Taken) => Some(true),
+            // And the vendor saying it has the message, which means that only
+            // where there was no turn for it to be held behind.
+            Some(Moment::Prompted) if running => None,
+            Some(Moment::Prompted) => Some(true),
+            Some(Moment::Ended) => Some(false),
+            _ if event.kind == derive::READ_PROMPT => Some(true),
+            _ if event.kind == derive::READ_TURN_END => Some(false),
+            _ => None,
+        };
+        if let Some(began) = edge {
+            running = began;
+            answered = at + 1;
+        }
+    }
+    events[answered..]
         .iter()
         .filter(|event| event.kind == SEND)
         .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
@@ -622,6 +670,53 @@ mod tests {
             ]),
             ["carry on"]
         );
+    }
+
+    #[test]
+    fn send_goes_on_listing_a_message_the_vendor_is_only_holding() {
+        let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+        let ended = || Event::new("Stop", json!({}));
+
+        // claude reports a prompt seven milliseconds after it is typed and
+        // does not give it to the model until the turn it is already on is
+        // over — measured at 2.1.278 on 2026-09-21, thirty-one seconds apart,
+        // with one `Stop` for both and no second prompt event when it picked
+        // the message up. So the word arriving mid-turn is the vendor saying
+        // it has the message, not that it has answered it.
+        let holding = vec![
+            Event::new(SUBMITTED, json!({})),
+            sent("and the linter"),
+            Event::new(SUBMITTED, json!({})),
+        ];
+        assert_eq!(queued(&holding), ["and the linter"]);
+
+        // The end of that turn is what says it has been answered.
+        let mut answered = holding.clone();
+        answered.push(ended());
+        assert!(queued(&answered).is_empty());
+
+        // And the next one begins a turn of its own, because there is none for
+        // it to be held behind.
+        let mut again = answered.clone();
+        again.extend([sent("then the docs"), Event::new(SUBMITTED, json!({}))]);
+        assert!(queued(&again).is_empty());
+
+        // A reader watching the prompt come back is the same edge, and is the
+        // way out of a `Stop` amx never heard: without it a missed stop would
+        // leave every message after it listed as waiting for ever.
+        let mut watched = holding.clone();
+        watched.push(Event::new(derive::READ_TURN_END, json!({})));
+        assert!(queued(&watched).is_empty());
+
+        // pi says the other thing, and it means what it always did: its
+        // `Taken` is the vendor having started on the message, so it is no
+        // longer waiting whenever it arrives.
+        let steered = vec![
+            Event::new(SUBMITTED, json!({})),
+            sent("and the linter"),
+            Event::new("message_start", json!({ "role": "user" })),
+        ];
+        assert!(queued(&steered).is_empty());
     }
 
     #[test]

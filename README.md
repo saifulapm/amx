@@ -729,13 +729,22 @@ whatever is on it. The row under the card says which of the two it is reading:
 more, or `enter sends it` — `answers it` at a question — with `alt+enter
 newline` behind it, and `esc closes it` pinned to the end of both.
 
-A line sent to an agent in the middle of a turn is held by the vendor until
-that turn ends, and the vendor draws it in the composer band the card cuts
-off. So the card says it itself: what you sent and the agent has not taken
+A line sent to an agent in the middle of a turn is held by the vendor until it
+is ready for it, and the vendor draws it in the composer band the card cuts
+off. So the card says it itself: what you sent and the agent has not answered
 yet stands as a row under the body, the first line of it behind the prompt's
-own `❯` with `· queued` after it, in the colour a question wears. It goes the
-moment the vendor reports the prompt went in. `amx status <id>` prints the
-same thing as a `queued` line under `doing`.
+own `❯` with `· queued` after it, in the colour a question wears. `amx status
+<id>` prints the same thing as a `queued` line under `doing`.
+
+It goes when the turn it was held behind is over. The two vendors say
+different things at the moment they take a message, so the turn is what is
+counted rather than the word: pi reports the message it has *started* on, and
+claude reports only that it has the message — measured at 2.1.278, a prompt
+typed twelve seconds into a turn was reported seven milliseconds later and the
+model did not see it for another thirty-one seconds, folded into the turn
+already running. claude's own composer says `Press up to edit queued messages`
+for the whole of that half-minute; the row now says the same thing for the same
+half-minute, where before it came and went inside one frame.
 
 `alt+↑` brings back the last line you sent, and again the one before it, back
 to the oldest; `alt+↓` walks forward again, and the step past the newest gives
@@ -1092,7 +1101,7 @@ amx ls --dir /srv/app  # only the agents working under that directory
 amx ls --dir .         # only this project's
 amx --dir /srv/app     # the same narrowing at the front door, drawn or printed
 amx status <id>        # one agent, and which signal that state came from
-amx status <id> --json #   a `queued` line for each message it has not taken yet
+amx status <id> --json #   a `queued` line for each message it has not answered
 amx rename <id> auth   # call it something else on the wall; the id stays
 amx attach <id>        # hand this terminal to its pane
 amx attach --next      # the agent after this one on the wall
