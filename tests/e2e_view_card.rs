@@ -422,7 +422,7 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
     );
 
     // Not a box. A rule with the agent's name on it, and what the card says
-    // standing two cells in under the chevron its line begins with.
+    // hanging off the same edge the rule's mark and the line's chevron do.
     let card = card_lines(&carded);
     let [ruled, asked, ..] = card.as_slice() else {
         panic!("no card in:\n{carded}")
@@ -432,7 +432,7 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
         "the card opens on a rule saying whose it is and what it runs: {ruled}"
     );
     assert!(
-        asked.starts_with("  Claude needs your permission"),
+        asked.starts_with("Claude needs your permission"),
         "and what the agent is asking stands under it: {asked}"
     );
     for cell in ['╭', '╮', '╯', '│', '╰'] {
@@ -566,8 +566,12 @@ fn card_tail_keeps_the_paint_the_agent_drew_its_screen_in() {
         painted.contains("38;5;208"),
         "the colour claude chose is the colour the card draws it in:\n{painted:?}"
     );
+    // Either spelling of bold: a row that opens in the band's own first
+    // column opens on tmux's whole state for that cell — `0;1` — where one
+    // that began two cells in had the reset behind it already and wrote the
+    // weight on its own.
     assert!(
-        painted.contains("\u{1b}[1m"),
+        painted.contains("\u{1b}[1m") || painted.contains("\u{1b}[0;1m"),
         "and so is the weight:\n{painted:?}"
     );
 }
@@ -1724,7 +1728,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "BSpace");
     let unmoved = amx.until("the card, unmoved", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("\n  did what it was asked") && !drawn.contains("❯ x")).then_some(drawn)
+        (drawn.contains("\ndid what it was asked") && !drawn.contains("❯ x")).then_some(drawn)
     });
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
 
@@ -1765,7 +1769,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "Up");
     let followed = amx.until("the first card again", || {
         let drawn = screen(&amx, &view);
-        drawn.contains("\n  did what it was asked").then_some(drawn)
+        drawn.contains("\ndid what it was asked").then_some(drawn)
     });
     assert!(!followed.contains("more"), "{followed}");
 }

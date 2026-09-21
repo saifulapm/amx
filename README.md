@@ -522,8 +522,8 @@ table.
 | --- | ------------ |
 | `↑` `↓` `j` `k` | walk the agents |
 | `gg` `G` | the top of the list, and the foot |
-| `space` `l` | the card, and the line on it for an answer or a message |
-| `enter` `→` | put its session in front of you, or shut the group under the cursor |
+| `space` | the card, and the line on it for an answer or a message |
+| `enter` `→` `l` | put its session in front of you, or shut the group under the cursor |
 | `esc` | put the card away, or leave a line alone |
 | `n` | start an agent, and the cursor goes to its row |
 | `alt+n` | start the line and go to the agent it started |
@@ -600,8 +600,11 @@ waiting on you` instead.
 `space` opens the card, and the card is not a box. It stands at the foot of the
 list, where the line you type stands, and is drawn the way that band is: a rule
 across the screen with the agent's own name at the front of it, in the colour
-its row says its state in, and everything the card says under that, two cells
-in beneath the chevron. On a card holding a patch the rule says that too, after
+its row says its state in, and everything the card says under that, hanging off
+the same edge the mark and the line's own chevron hang off — a card's body is a
+photograph of a terminal, and a photograph held in from the edge is one whose
+left margin is amx's rather than the vendor's. On a card holding a patch the
+rule says that too, after
 the name; on one you have paged, it says how far from its edge it stands at the
 far end. Nothing above it moves. A card hung under its own row moves every row
 below it down, so walking the cursor with one open shakes the wall you are

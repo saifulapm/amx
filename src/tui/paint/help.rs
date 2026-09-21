@@ -54,9 +54,9 @@ pub(in crate::tui) const HELP: [(&str, &str); 55] = [
     ("?", "these keys"),
     ("q ctrl+c", "close the view"),
     // look
-    ("space l", "the card, and an answer or a message on it"),
+    ("space", "the card, and an answer or a message on it"),
     ("v", "which vendor, model and effort each one runs"),
-    ("enter →", "bring its window forward · shut a group"),
+    ("enter → l", "bring its window forward · shut a group"),
     ("d", "what it has changed"),
     ("o", "open its pull request in the browser"),
     ("alt+d", "the patch in the viewer the config names"),

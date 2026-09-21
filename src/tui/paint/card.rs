@@ -868,7 +868,7 @@ pub(super) fn card_rows(
     answering: Option<&Composer>,
     width: u16,
 ) -> u16 {
-    let inner = body_width(width);
+    let inner = width;
     let asked = card
         .question
         .as_deref()
@@ -943,17 +943,6 @@ const RULE_ROW: usize = 1;
 /// says and what somebody is saying back to it do not run together. The one
 /// row the card gives up first when the band is short.
 const GAP_ROW: usize = 1;
-
-/// How far in everything the card says stands: the two cells the line under it
-/// spends on its own chevron, so a row of the card and the words being typed
-/// about it start in one column.
-const INDENT: u16 = 2;
-
-/// How wide a card's body is on a band this wide: everything the card says
-/// stands in under the chevron.
-pub fn body_width(band: u16) -> u16 {
-    band.saturating_sub(INDENT)
-}
 
 /// What a card holding a patch says it is, which is the one thing the row it
 /// came off cannot: the row says what the agent is doing, and this card is
@@ -1046,12 +1035,13 @@ pub(super) fn float(
         Constraint::Length(typing),
     ])
     .areas(area);
-    let said = Rect {
-        x: between.x + INDENT,
-        width: between.width.saturating_sub(INDENT),
-        ..between
-    }
-    .intersection(between);
+    // Everything between the rule and the line stands in the band's own
+    // columns, which is where the rule's mark and the line's chevron stand.
+    // The body is a photograph of a terminal, and a photograph held two cells
+    // in from the edge is one whose own left margin is amx's rather than the
+    // vendor's: every chevron the captured screen draws stood two columns off
+    // the chevron of the line being typed under it.
+    let said = between;
 
     // What the card is for comes first and the pane takes what is left.
     let mut room = said.height;
@@ -2838,7 +2828,7 @@ index e69de29..0000000
              {ruled:?}"
         );
         assert!(
-            asked.starts_with("  Which fixture should the port keep?"),
+            asked.starts_with("Which fixture should the port keep?"),
             "and what the agent is asking stands under it: {asked:?}"
         );
         assert!(
@@ -3084,7 +3074,7 @@ index e69de29..0000000
     }
 
     #[test]
-    fn card_stands_its_rows_in_under_the_chevron_its_line_begins_with() {
+    fn card_stands_its_rows_in_the_band_column_the_rule_and_the_line_stand_in() {
         let screen = painted(
             &answering(
                 asking(&["the sqlite one", "the docker one"], Some(Kind::Question)),
@@ -3108,13 +3098,13 @@ index e69de29..0000000
             0,
             "and so does the line at its foot: {line:?}"
         );
-        // Bar the blank row the line stands off the rest by, which says
-        // nothing and stands nowhere.
+        // And so does everything between them. Bar the blank row the line
+        // stands off the rest by, which says nothing and stands nowhere.
         for row in said.iter().filter(|row| !row.is_empty()) {
             assert!(
-                row.starts_with("  ") && !row.starts_with("   "),
-                "and what the card says stands two cells in, under that \
-                 chevron: {row:?}"
+                !row.starts_with(' '),
+                "and what the card says hangs off the same edge, so a \
+                 photograph of a terminal keeps its own left margin: {row:?}"
             );
         }
         assert!(
@@ -3326,7 +3316,7 @@ index e69de29..0000000
             2,
             "the rule and the one line it has: {screen:?}"
         );
-        assert!(card[1].starts_with("  did what it was asked"), "{screen:?}");
+        assert!(card[1].starts_with("did what it was asked"), "{screen:?}");
 
         let top = screen
             .iter()
@@ -3979,7 +3969,7 @@ index e69de29..0000000
             lines[row]
         );
         assert!(
-            lines[row].starts_with("  #40"),
+            lines[row].starts_with("#40"),
             "on the card rather than on the row above it: {lines:?}"
         );
         assert_eq!(word_colour(&screen, size, row as u16, "#7"), theme().done);

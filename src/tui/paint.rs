@@ -61,7 +61,7 @@ use wall::{Moment, agents, first_drawn};
 
 #[cfg(test)]
 pub(super) use card::walks;
-pub use card::{Body, Card, Hunk, Scroll, body_width};
+pub use card::{Body, Card, Hunk, Scroll};
 pub use header::title;
 /// The table the keys overlay is drawn from, which is also the list of what
 /// amx binds: [`keyname`](super::keyname) reads it to refuse a spelling of a

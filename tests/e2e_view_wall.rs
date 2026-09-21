@@ -1955,7 +1955,7 @@ fn barred(amx: &Harness, view: &str, id: &str) -> bool {
 }
 
 #[test]
-fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
+fn space_opens_the_card_on_the_row_under_the_pointer() {
     let amx = Harness::new();
     finished(&amx, "first-a1b", "done", 60);
     finished(&amx, "second-b2c", "done", 120);
@@ -1989,7 +1989,7 @@ fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
         "the cursor landed where the pointer was"
     );
 
-    // The same of `l`, with the pointer back on the first row.
+    // The same again, with the pointer back on the first row.
     press(&amx, &view, "Escape");
     amx.until("the card away", || {
         card_rule(&screen(&amx, &view)).is_none().then_some(())
@@ -2002,7 +2002,7 @@ fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
         screen_row_of(&amx, &view, "first-a1b"),
         true,
     );
-    press(&amx, &view, "l");
+    press(&amx, &view, "Space");
     amx.until("the first row's card", || {
         (card_rule(&screen(&amx, &view)).as_deref() == Some("first-a1b")).then_some(())
     });
@@ -2251,7 +2251,7 @@ fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
 }
 
 #[test]
-fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
+fn the_vim_letters_walk_the_bar_and_a_card_takes_them_as_text() {
     // Every card opens with a line at its foot, and every letter is text the
     // moment one is open: these letters are keys on the wall and characters
     // over a card, which is why esc is what comes back out.
@@ -2282,7 +2282,7 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
             .then_some(())
     });
 
-    // l goes in to the card and esc comes back out. The view still has the
+    // Space goes in to the card and esc comes back out. The view still has the
     // terminal either way: an attach would have handed it to tmux, and the
     // wall would be gone rather than standing over a card.
     let carded = |drawn: &str| {
@@ -2290,7 +2290,7 @@ fn the_vim_letters_walk_the_bar_and_go_in_and_out_of_the_card() {
             .lines()
             .any(|line| line.starts_with("∙ done-a1b · claude ┈"))
     };
-    press(&amx, &view, "l");
+    press(&amx, &view, "Space");
     amx.until("the card", || carded(&screen(&amx, &view)).then_some(()));
 
     // And h, which used to close it, is a character of the line the card

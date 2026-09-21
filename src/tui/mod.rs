@@ -1533,12 +1533,13 @@ impl Screen {
         }
     }
 
-    /// How wide a card's body is this frame: the band the last frame drew the
-    /// list in, less the name column. Eighty columns before anything has been
-    /// drawn, which is a card wrapped for a terminal nobody has measured yet
-    /// and redrawn to the real one at the next reading.
+    /// How wide a card's body is this frame, which is the band the last frame
+    /// drew the list in: what the card says stands in the band's own columns.
+    /// Eighty columns before anything has been drawn, which is a card wrapped
+    /// for a terminal nobody has measured yet and redrawn to the real one at
+    /// the next reading.
     fn body_width(&self) -> u16 {
-        paint::body_width(self.map.width().unwrap_or(80))
+        self.map.width().unwrap_or(80)
     }
 
     /// Whether the card on the screen is the card this pass would take anyway:
@@ -1780,9 +1781,17 @@ impl Screen {
     /// the line the view was holding is about a screen the pointer has crossed
     /// unwatched — and a space after a `ctrl+z` back would open the row that
     /// screen's last session happened to sit on.
+    ///
+    /// The card goes too, for the same reason the pointer does. A card is a
+    /// look at a pane from outside it, and somebody who has just gone into that
+    /// pane is not outside it any more: the whole of what the card was standing
+    /// in for is now the screen in front of them. Left up, it is what they come
+    /// back out to — a stale photograph of the screen they were just on, in
+    /// front of the wall they pressed `ctrl+z` to get back to.
     fn went_into(&mut self, id: String) {
         self.lent = Some(id);
         self.hover = None;
+        self.look_away();
     }
 
     /// What one key does.
@@ -1959,16 +1968,6 @@ impl Screen {
                     false => self.look_away(),
                 }
             }
-            // The letter vim goes in with, beside the space above it. Not
-            // enter — an attach hands the terminal to tmux and leaves the view
-            // altogether, which is not something a letter this easy to hit
-            // should do. Nothing comes back out this way: a card ends with a
-            // line, so the letters over one are characters and esc is the key
-            // that closes it.
-            KeyCode::Char('l') if plain => {
-                self.land_on_the_pointer();
-                self.look_closer(root);
-            }
             // One layer a press, innermost first: the card is in front of the
             // list, so it goes before the list changes under it. A narrowing
             // outlives the line it was typed on, so the key that drops one has
@@ -1981,7 +1980,12 @@ impl Screen {
             // The same key, read where the cursor is: a heading opens and
             // shuts the group under it, the fold gives back what it is holding,
             // and a row brings its agent forward.
-            KeyCode::Enter | KeyCode::Right if plain => {
+            //
+            // `l` is the third spelling of it, and it is the letter vim walks
+            // right with: a person who reaches for `l` on a row is reaching for
+            // the thing to the right of it, which is the agent itself. The card
+            // is what space is for, and space is the only key that opens one.
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if plain => {
                 if self.list.on_heading() {
                     self.list.shut_or_open();
                     self.follow_the_cursor();
@@ -5754,7 +5758,7 @@ mod tests {
             press(&mut screen, KeyEvent::from(key));
         }
         press(&mut screen, KeyEvent::from(KeyCode::Enter));
-        press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
         assert!(screen.card.is_some(), "a card over the narrowed wall");
 
         // One layer a press, innermost first: the card is what is in front of
@@ -5904,9 +5908,9 @@ mod tests {
         };
         let line = |screen: &Screen| screen.answering().expect("the card's line").text.clone();
 
-        press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
+        press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
         let opened_on = screen.card.as_ref().map(|card| card.id.clone());
-        assert!(opened_on.is_some(), "l opens the card");
+        assert!(opened_on.is_some(), "space opens the card");
 
         // Back through the replies sent, newest first, and forward again to
         // the empty line the walk began on.
@@ -6151,37 +6155,55 @@ mod tests {
     }
 
     #[test]
-    fn keys_l_opens_the_card_and_esc_closes_it_without_either_attaching() {
+    fn keys_l_goes_in_the_way_enter_does_and_leaves_the_card_to_space() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
-        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
-        let press = |screen: &mut Screen, key: KeyEvent| {
-            screen.act(key, root.path(), &config, None).unwrap()
+        let press = |screen: &mut Screen, key: KeyCode| {
+            screen
+                .act(KeyEvent::from(key), root.path(), &config, None)
+                .unwrap()
         };
+        // `l` is the letter vim walks right with, and what is to the right of a
+        // row is the agent on it. So it is enter's third spelling: whatever
+        // enter makes of the row under the cursor, this makes of it too — here,
+        // the same reach for a pane, which on a record no state directory has
+        // fails the same way for both.
+        let went_in = |key| {
+            let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+            let reached = screen.act(KeyEvent::from(key), root.path(), &config, None);
+            let said = match reached {
+                Ok(_) => String::new(),
+                Err(e) => format!("{e:#}"),
+            };
+            (said, screen.card.is_some())
+        };
+        assert_eq!(
+            went_in(KeyCode::Char('l')),
+            went_in(KeyCode::Enter),
+            "the same key, spelt twice"
+        );
+        assert!(!went_in(KeyCode::Char('l')).1, "and it opens no card");
 
-        // Neither of them is enter: an attach hands the terminal to tmux and
-        // leaves the view, which is not something a letter this easy to hit
-        // should do.
-        let doing = press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
-        assert!(matches!(doing, Doing::Carry), "l does not attach");
-        assert!(screen.card.is_some(), "l opens the card");
+        // The card is space's alone, which is what it was before `l` was ever
+        // a second way to open one.
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        press(&mut screen, KeyCode::Char(' '));
+        assert!(screen.card.is_some(), "space opens the card");
 
-        // Pressed again it is a character of what is being typed at the card:
-        // the card opened with the line at its foot, and every letter is text
-        // for as long as one is up.
-        let doing = press(&mut screen, KeyEvent::from(KeyCode::Char('l')));
-        assert!(matches!(doing, Doing::Carry));
+        // Over one, `l` is a character of what is being typed: the card opened
+        // with the line at its foot, and every letter is text for as long as
+        // one is up.
+        press(&mut screen, KeyCode::Char('l'));
         assert!(screen.card.is_some(), "and leaves it open");
         assert_eq!(screen.answering().expect("the card's line").text, "l");
 
         // Which is why esc is the way out rather than h: it closes the line
         // and the card together, whatever has been typed on it.
-        let doing = press(&mut screen, KeyEvent::from(KeyCode::Esc));
-        assert!(matches!(doing, Doing::Carry), "esc does not attach either");
+        press(&mut screen, KeyCode::Esc);
         assert!(screen.card.is_none(), "esc closes the card");
         assert!(matches!(screen.mode, Mode::List), "and the line with it");
 
-        press(&mut screen, KeyEvent::from(KeyCode::Esc));
+        press(&mut screen, KeyCode::Esc);
         assert!(screen.card.is_none(), "and pressed again leaves it closed");
     }
 
@@ -9961,8 +9983,9 @@ diff --git a/src/bar.rs b/src/bar.rs
              at the foot under a rule of its own: {screen}"
         );
         assert!(
-            screen.contains("\n  wrote the tests"),
-            "with what it said standing in under that rule: {screen}"
+            screen.contains("\nwrote the tests"),
+            "with what it said standing under that rule, off the same edge: \
+             {screen}"
         );
     }
 
@@ -10778,7 +10801,7 @@ diff --git a/src/bar.rs b/src/bar.rs
     }
 
     #[test]
-    fn space_and_l_open_the_card_on_the_row_under_the_pointer() {
+    fn space_opens_the_card_on_the_row_under_the_pointer() {
         let root = TempDir::new().unwrap();
         let config = Config::default();
         let mut screen = watching(vec![
@@ -10827,14 +10850,12 @@ diff --git a/src/bar.rs b/src/bar.rs
         press(&mut screen, KeyCode::Char(' '));
         assert_eq!(carded(&screen), None, "space closed the card");
 
-        // `l` only ever opens, and it opens the pointer's row too.
+        // And with no pointer on the list, the key is the cursor's as it was
+        // before there was a pointer to read.
         resting(&mut screen, 5);
-        press(&mut screen, KeyCode::Char('l'));
+        press(&mut screen, KeyCode::Char(' '));
         assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
         assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
-
-        // And with no pointer on the list, both keys are the cursor's as
-        // they were before there was a pointer to read.
         resting(&mut screen, 0);
         press(&mut screen, KeyCode::Char(' '));
         assert_eq!(carded(&screen), None);
@@ -10921,6 +10942,31 @@ diff --git a/src/bar.rs b/src/bar.rs
         screen.went_into("done-b2c".to_string());
         assert_eq!(screen.lent.as_deref(), Some("done-b2c"));
         assert_eq!(screen.hover, None);
+    }
+
+    #[test]
+    fn going_into_an_agent_puts_away_the_card_it_was_gone_into_from() {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(' ')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+        assert!(screen.card.is_some(), "the card somebody went in from");
+
+        // A card is a look at a pane from outside it, and whoever went into
+        // that pane is inside it now. Left up, it is what they come back out
+        // to on the `ctrl+z`: a photograph of the screen they were just on,
+        // taken before they were on it.
+        screen.went_into("done-a1b".to_string());
+        assert!(screen.card.is_none(), "and it went in with them");
+        assert!(matches!(screen.look, Look::Away));
+        assert!(matches!(screen.mode, Mode::List), "and the line with it");
     }
 
     #[test]
