@@ -2,30 +2,35 @@
 //!
 //! Not a band: it stands where the list stands, because a person who has asked
 //! what the keys are is not reading the wall. The table of every key is here,
-//! and beside it how that table is stood in columns on a terminal of any shape,
-//! and what it gives up first when there is not room for all of it.
+//! and beside it how that table is stood on a terminal of any shape.
 //!
 //! It is drawn as the wall it replaces. A group of keys carries the heading a
 //! group of agents carries — the label uppercase and bold, a dim rule run out
 //! to the number under it — so the overlay reads as the same screen showing
-//! something else rather than as a manual somebody opened. What the two bands
-//! above it say does not change, and the row under it already says how to get
-//! back, so neither is said again here.
+//! something else rather than as a manual somebody opened.
 //!
-//! What it does say for itself is the page it is on. A screen too short for
-//! every key gives up none of them: they are paged, and the foot of each page
-//! names the key that turns it, because a key nobody can reach is a key the
-//! screen may as well not list.
+//! **One column, scrolled, with a way to search it.** It was two columns
+//! paged with `pgup` and `pgdn`, and that was a wall of fifty-five keys with
+//! no sign that there was a second screenful and no key anybody guessed for
+//! reaching it (Saiful, 2026-09-21). So: one column, walked with the keys that
+//! walk the list — `j` and `k`, the arrows, the half and whole pages, `gg` and
+//! `G` — and a row at the top that says which of them are on the screen out of
+//! how many there are. Fifty-five keys is a document, and a document nobody
+//! can tell the length of is one nobody scrolls.
+//!
+//! And `/`, which narrows them as it is typed, on the spelling of a key and on
+//! what it does alike. Somebody at this screen is looking for one key and has
+//! a word for what they want it to do; reading five headings to find out which
+//! list that word is under is the work the search is here to not do.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::cell::Cell;
-use std::ops::Range;
 
 use super::style::{bold, dim};
-use super::text::{RULE, fit, said, width_of};
+use super::text::{RULE, fit, width_of};
 use crate::tui::grid;
 use crate::tui::keyname::Bound;
 
@@ -108,7 +113,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 55] = [
 
 /// What the keys are for, and how many of [`HELP`] each of those answers for.
 ///
-/// A flat list of thirty-odd is a list somebody reads all of to find one, so
+/// A flat list of fifty-odd is a list somebody reads all of to find one, so
 /// the table is cut into what a person is trying to do: get about the wall,
 /// read one agent, put work in, arrange what is already there, and set what
 /// the next agent runs. Five short lists are five places to not look.
@@ -133,15 +138,6 @@ const _: () = {
     assert!(under == HELP.len());
 };
 
-/// The width from which the groups stand in two columns.
-///
-/// The same width the rows change shape at, and for the same reason: below it
-/// there is not room for two of anything. Two columns here are a key column
-/// and a stub of a description against it, and the half a person came for is
-/// the half that goes — so the second column is given up whole rather than
-/// squeezed, and the one that is left says what every key does in full.
-const WIDE: usize = 100;
-
 /// The key column, sized for the widest pair of keys a row names and the space
 /// that holds the description off it.
 const KEY: usize = 12;
@@ -155,157 +151,301 @@ const INDENT: usize = 2;
 const COUNT: usize = 2;
 const GAP: usize = 2;
 
+/// The widest the one column is let grow.
+///
+/// A key and a sentence about it on a 200-column terminal is a line whose two
+/// halves are half a screen apart, and the eye loses which description belongs
+/// to which key somewhere in the middle. So the column stops, and the rest of
+/// the screen is margin.
+const WIDEST: usize = 72;
+
+/// What the keys screen is showing, and what somebody is looking for on it.
+///
+/// The clamps are the paint's, the way the card's are: only the paint knows
+/// how many rows a screen this shape gave the keys, so the keys that scroll
+/// only add and subtract and this is where the answer is kept between frames.
+#[derive(Debug, Default)]
+pub struct Keymap {
+    /// How far down the keys the screen stands, in rows.
+    away: Cell<usize>,
+    /// The rows the keys had last frame, which is what one page moves by.
+    page: Cell<usize>,
+    /// What somebody has typed to narrow them, once they have pressed `/`.
+    ///
+    /// `None` and `Some("")` are different states: the first is a screen
+    /// nobody is searching and the second is an open line with nothing on it
+    /// yet, which narrows nothing but takes the next letter.
+    finding: Option<String>,
+    /// How many keys somebody bound themselves, which the paint writes here
+    /// for the row over the keys to count them in: what a narrowing left is
+    /// only worth saying against the whole of what there was.
+    yours: Cell<usize>,
+}
+
+impl Keymap {
+    /// Open at the top, with nothing being looked for.
+    ///
+    /// The question is what the keys are, not where somebody stopped reading
+    /// them the last time they asked.
+    pub fn opened(&mut self) {
+        self.away.set(0);
+        self.finding = None;
+    }
+
+    /// Whether somebody is typing what they are looking for, which is what
+    /// decides whether a letter is a search or a key.
+    pub fn finding(&self) -> bool {
+        self.finding.is_some()
+    }
+
+    /// Open the find line, or leave it open if it already is.
+    pub fn find(&mut self) {
+        self.finding.get_or_insert_with(String::new);
+        self.away.set(0);
+    }
+
+    /// Put a letter on it, and go back to the top: what somebody has just
+    /// narrowed to is a list they have not read any of yet.
+    pub fn typed(&mut self, letter: char) {
+        if let Some(finding) = self.finding.as_mut() {
+            finding.push(letter);
+            self.away.set(0);
+        }
+    }
+
+    /// Take the last letter off it. The line stays open with nothing on it,
+    /// because a line that closed itself on the last backspace would be a
+    /// screen that jumped out from under somebody mid-word.
+    pub fn rubbed(&mut self) {
+        if let Some(finding) = self.finding.as_mut() {
+            finding.pop();
+            self.away.set(0);
+        }
+    }
+
+    /// Drop what was being looked for and give every key back.
+    pub fn found_nothing(&mut self) {
+        self.finding = None;
+        self.away.set(0);
+    }
+
+    /// Close the line and keep the narrowing, which is what `enter` on it
+    /// means: somebody has typed what they wanted and is about to read it.
+    pub fn kept(&mut self) {
+        if self.finding.as_deref() == Some("") {
+            self.finding = None;
+        }
+    }
+
+    /// What is being looked for, which is nothing where the line is shut.
+    fn sought(&self) -> &str {
+        self.finding.as_deref().unwrap_or_default()
+    }
+
+    /// Move `by` rows, either way. The clamp is the paint's, so a press past
+    /// the end lands where the press before it did.
+    pub fn scrolled(&self, up: bool, by: usize) {
+        let away = self.away.get();
+        self.away.set(match up {
+            true => away.saturating_sub(by),
+            false => away.saturating_add(by),
+        });
+    }
+
+    /// The rows one page key moves by, which is the rows the keys were given.
+    pub fn page(&self) -> usize {
+        self.page.get().max(1)
+    }
+
+    /// The top of them, and the foot. The foot is anywhere past the end: the
+    /// paint clamps it to the last screenful there is.
+    pub fn to_the_end(&self, foot: bool) {
+        self.away.set(match foot {
+            true => usize::MAX,
+            false => 0,
+        });
+    }
+}
+
+/// One line of the screen before it knows how wide it is.
+enum Row {
+    /// A group's label and how many keys are under it here.
+    Heading(&'static str, usize),
+    /// A key, and what it does.
+    Key(&'static str, &'static str),
+    /// A key somebody bound themselves, against the command it runs.
+    Yours(String, String),
+    /// The row one group stands off the next by.
+    Blank,
+}
+
+impl Row {
+    /// Whether this row is one of the keys, which is what the count at the top
+    /// counts: a heading is not a key and neither is the air around it.
+    fn key(&self) -> bool {
+        matches!(self, Row::Key(..) | Row::Yours(..))
+    }
+}
+
 /// Every key and what it does, under the heading that says what it is for.
 ///
-/// Down before across, for the reason a list is a column. Somebody looking for
-/// one key reads the heading, runs their eye down the keys under it and on to
-/// the next; a table filled the other way would put the second key beside the
-/// first and the rest of them anywhere at all.
-///
-/// Which page of them is drawn is the view's to hold, because it is where
+/// Which rows are on the screen is the view's to hold, because it is where
 /// somebody left off reading rather than a fact about the screen. The clamp is
-/// here: only the paint knows how many pages a screen this shape made of them,
-/// so the key that turns them only adds and subtracts.
-pub(super) fn help(frame: &mut Frame, area: Rect, page: &Cell<usize>, bound: &[Bound]) {
-    let width = (area.width as usize).max(1);
-    let dealt = dealt(width);
-    let share = width / dealt.len();
-    let mut columns: Vec<Vec<Vec<Span<'static>>>> = dealt
+/// here: only the paint knows how many rows a screen this shape gave them, so
+/// the keys that scroll only add and subtract.
+pub(super) fn help(frame: &mut Frame, area: Rect, keymap: &Keymap, bound: &[Bound]) {
+    let room = (area.width as usize).clamp(1, WIDEST);
+    let sought = keymap.sought().to_lowercase();
+    keymap.yours.set(bound.len());
+    let rows = rows(&sought, bound);
+    let keys = rows.iter().filter(|row| row.key()).count();
+
+    // One row at the top for what is being looked for and how much of the
+    // document is on the screen, and the air under it that a heading stands
+    // off by. A screen with room for neither gives them up in that order: the
+    // keys are what somebody came for.
+    let height = area.height as usize;
+    let chrome = match height {
+        0..=3 => 0,
+        _ => 2,
+    };
+    let visible = height.saturating_sub(chrome).max(1);
+    keymap.page.set(visible);
+
+    let away = keymap.away.get().min(rows.len().saturating_sub(visible));
+    keymap.away.set(away);
+
+    if chrome > 0 {
+        let above = rows[..away].iter().filter(|row| row.key()).count();
+        let shown = rows[away..(away + visible).min(rows.len())]
+            .iter()
+            .filter(|row| row.key())
+            .count();
+        frame.render_widget(
+            Paragraph::new(marker(keymap, above, shown, keys, room)),
+            Rect { height: 1, ..area },
+        );
+    }
+
+    let lines: Vec<Line> = rows[away..(away + visible).min(rows.len())]
         .iter()
-        .enumerate()
-        .map(|(n, groups)| column(groups.clone(), room(width, share, n, dealt.len())))
+        .map(|row| line(row, room))
         .collect();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect {
+            y: area.y + chrome as u16,
+            height: area.height.saturating_sub(chrome as u16),
+            ..area
+        },
+    );
+}
+
+/// The row over the keys: what somebody is looking for, and where in the
+/// document they are standing.
+///
+/// The second half is the whole reason this row exists. Fifty-five keys do not
+/// fit on a terminal and the screen said nothing about the ones that were not
+/// on it, so the keys below the fold were keys nobody knew to look for.
+///
+/// Where nothing is being looked for and everything fits, the row is empty —
+/// which is a document with no fold and nothing to say about one.
+fn marker(keymap: &Keymap, above: usize, shown: usize, keys: usize, room: usize) -> Line<'static> {
+    let sought = match keymap.finding.as_deref() {
+        // The block is the cursor: the line is open and taking letters.
+        Some(sought) => format!(" find {sought}▌"),
+        None => String::new(),
+    };
+    // Three things to say and one row to say them in: that nothing answered,
+    // that what is on the screen is part of a longer document, or how many
+    // keys there are — and where a narrowing is on, how many of the whole
+    // table that is, because `3 keys` about a table of fifty-five reads as a
+    // program with three keys.
+    let whole = HELP.len() + keymap.yours.get();
+    let standing = match (keys, shown < keys, keys < whole) {
+        (0, ..) => " nothing answers to that".to_string(),
+        (keys, true, _) => format!("{}–{} of {keys} ", above + 1, above + shown),
+        (keys, false, true) => format!("{keys} of {whole} "),
+        (keys, false, false) => format!("{keys} keys "),
+    };
+    let air = room
+        .saturating_sub(width_of(&sought))
+        .saturating_sub(width_of(&standing));
+    Line::from(vec![
+        Span::styled(sought, bold()),
+        Span::raw(" ".repeat(air)),
+        Span::styled(standing, dim()),
+    ])
+}
+
+/// Every row of the document, in the order it is read: each group's heading
+/// and the keys under it, then the ones somebody bound themselves.
+///
+/// Narrowed by what is being looked for, on the spelling of a key and on what
+/// it does alike — the two halves of what somebody has in their head when they
+/// come here, and no reason to make them guess which half they are typing. A
+/// group with nothing left in it goes with its keys: a heading over nothing is
+/// a heading in everybody's way.
+fn rows(sought: &str, bound: &[Bound]) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for (group, (label, _)) in GROUPS.iter().enumerate() {
+        let keys: Vec<&(&'static str, &'static str)> = under(group)
+            .filter(|(key, said)| matches(sought, key, said))
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        if !rows.is_empty() {
+            rows.push(Row::Blank);
+        }
+        rows.push(Row::Heading(label, keys.len()));
+        rows.extend(keys.into_iter().map(|(key, said)| Row::Key(key, said)));
+    }
+
     // The keys somebody bound themselves, after the last of amx's own and
     // under the same kind of heading: a group like the five, in the place the
     // eye gets to last, because the keys the view binds are the ones on every
     // machine.
-    if !bound.is_empty() {
-        let last = columns.len() - 1;
-        let told = yours(bound, room(width, share, last, columns.len()));
-        columns[last].extend(told);
-    }
-    let deep = columns.iter().map(Vec::len).max().unwrap_or(0);
-
-    // The rows the keys themselves have: the screen's, less the one the foot
-    // takes to say there are more of them.
-    let height = area.height as usize;
-    let rows = match deep > height {
-        true => height.saturating_sub(1),
-        false => height,
-    }
-    .max(1);
-    let pages = deep.div_ceil(rows);
-    let at = page.get().min(pages.saturating_sub(1));
-    page.set(at);
-
-    let from = at * rows;
-    let mut lines: Vec<Line> = (from..(from + rows).min(deep))
-        .map(|row| line(&columns, row, share))
+    //
+    // The command is the row: a bound key has no name but what it runs, and a
+    // second one somebody had to write would be a name that goes stale the day
+    // they change the command.
+    let yours: Vec<&Bound> = bound
+        .iter()
+        .filter(|one| matches(sought, &one.spelling, &one.command))
         .collect();
-    if pages > 1 {
-        lines.push(foot(at, pages));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The foot of a screen that could not hold them all: which page of them this
-/// is, and the keys that turn it.
-///
-/// A page that did not say there was another would be answering half of what
-/// somebody asked, and the keys are what they came for. Only the ones that do
-/// something are named: there is nothing above the first page and nothing
-/// below the last.
-fn foot(at: usize, pages: usize) -> Line<'static> {
-    let turns = match (at > 0, at + 1 < pages) {
-        (true, true) => "pgup pgdn",
-        (true, false) => "pgup",
-        _ => "pgdn",
-    };
-    Line::styled(format!(" page {} of {pages} · {turns}", at + 1), dim())
-}
-
-/// Which groups each column holds: either side of the cut that leaves the two
-/// of them nearest the same number of keys, or all five in one column on a
-/// screen too narrow for that.
-///
-/// Two rather than a column each, because five short lists side by side is a
-/// wall of keys again, and one column of every key there is would be the flat
-/// list the headings were put in to break up. Two columns is what a page of
-/// keys looks like.
-///
-/// A group is what the eye follows down, so it is never cut in half to make
-/// the columns even.
-fn dealt(width: usize) -> Vec<Range<usize>> {
-    // A narrow screen is the cut falling off the end of the table: everything
-    // stands in the first column and the second one comes out empty, which is
-    // a column the screen does not have.
-    let cut = match width >= WIDE {
-        true => cut(),
-        false => GROUPS.len(),
-    };
-    [0..cut, cut..GROUPS.len()]
-        .into_iter()
-        .filter(|column| !column.is_empty())
-        .collect()
-}
-
-/// Where those two columns part, which for the table as it stands is after
-/// `start`: thirty-two keys against twenty-three.
-fn cut() -> usize {
-    let total: usize = GROUPS.iter().map(|(_, under)| under).sum();
-    (1..GROUPS.len())
-        .min_by_key(|at| {
-            let left: usize = GROUPS[..*at].iter().map(|(_, under)| under).sum();
-            left.abs_diff(total - left)
-        })
-        .unwrap_or(1)
-}
-
-/// How many cells one column has to say a key and what it does in.
-///
-/// The last takes whatever the division left over and runs to the edge of the
-/// screen; every other one keeps a column of air between it and the next.
-fn room(width: usize, share: usize, n: usize, columns: usize) -> usize {
-    match n + 1 == columns {
-        true => width.saturating_sub(n * share),
-        false => share.saturating_sub(1),
-    }
-}
-
-/// One column: its groups in order, each headed and each standing off from the
-/// one before it. An empty row is that space rather than a key.
-fn column(groups: Range<usize>, room: usize) -> Vec<Vec<Span<'static>>> {
-    let mut told = Vec::new();
-    for group in groups {
-        if !told.is_empty() {
-            told.push(Vec::new());
+    if !yours.is_empty() {
+        if !rows.is_empty() {
+            rows.push(Row::Blank);
         }
-        let (label, count) = GROUPS[group];
-        told.push(heading(label, count, room));
-        told.extend(under(group).map(|(key, said)| row(key, said, room)));
+        rows.push(Row::Heading("yours", yours.len()));
+        rows.extend(
+            yours
+                .into_iter()
+                .map(|one| Row::Yours(one.spelling.clone(), one.command.clone())),
+        );
     }
-    told
+    rows
 }
 
-/// The keys somebody bound in their config file, standing off from the last of
-/// amx's own the way one group stands off from the next.
-///
-/// The command is the row: a bound key has no name but what it runs, and a
-/// second one somebody had to write would be a name that goes stale the day
-/// they change the command.
-fn yours(bound: &[Bound], room: usize) -> Vec<Vec<Span<'static>>> {
-    let mut told = vec![Vec::new(), heading("yours", bound.len(), room)];
-    told.extend(
-        bound
-            .iter()
-            .map(|one| row(&one.spelling, &one.command, room)),
-    );
-    told
+/// Whether a key answers to what is being looked for.
+fn matches(sought: &str, key: &str, said: &str) -> bool {
+    sought.is_empty() || key.to_lowercase().contains(sought) || said.to_lowercase().contains(sought)
+}
+
+/// One row of the document, drawn for a column this wide.
+fn line(row: &Row, room: usize) -> Line<'static> {
+    match row {
+        Row::Heading(label, under) => Line::from(heading(label, *under, room)),
+        Row::Key(key, said) => Line::from(keyed(key, said, room)),
+        Row::Yours(key, said) => Line::from(keyed(key, said, room)),
+        Row::Blank => Line::raw(""),
+    }
 }
 
 /// One key and what it does: the key in a column of its own, and what is left
 /// of the room for the rest.
-fn row(key: &str, said: &str, room: usize) -> Vec<Span<'static>> {
+fn keyed(key: &str, said: &str, room: usize) -> Vec<Span<'static>> {
     let does = room.saturating_sub(INDENT + KEY);
     vec![
         Span::raw(" ".repeat(INDENT)),
@@ -336,28 +476,6 @@ fn heading(label: &str, under: usize, room: usize) -> Vec<Span<'static>> {
 fn under(group: usize) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
     let from: usize = GROUPS[..group].iter().map(|(_, under)| under).sum();
     HELP[from..from + GROUPS[group].1].iter()
-}
-
-/// One row of the overlay, which is one row of each column stood side by side.
-///
-/// A column that has run out of keys, or is standing one group off from the
-/// next, leaves the ones beside it where they were: the columns are what the
-/// eye follows down.
-fn line(columns: &[Vec<Vec<Span<'static>>>], at: usize, share: usize) -> Line<'static> {
-    let mut spans = Vec::new();
-    let mut column = 0;
-    for (n, told) in columns.iter().enumerate() {
-        let told = match told.get(at) {
-            Some(told) if !told.is_empty() => told,
-            _ => continue,
-        };
-        if n * share > column {
-            spans.push(Span::raw(" ".repeat(n * share - column)));
-        }
-        column = n * share + said(told);
-        spans.extend(told.iter().cloned());
-    }
-    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -404,17 +522,23 @@ mod tests {
             .collect()
     }
 
-    /// The overlay on a screen this size, and the rows it was drawn on.
+    /// The overlay on a screen this size.
     fn overlay(size: (u16, u16)) -> Vec<String> {
         overlay_of(size, Vec::new())
     }
 
     /// The same, with keys somebody bound in their config file.
     fn overlay_of(size: (u16, u16), bound: Vec<Bound>) -> Vec<String> {
-        let mut screen = showing(Vec::new(), None);
-        screen.mode = Mode::Keys;
+        let mut screen = asking();
         screen.bound = bound;
         painted(&screen, size)
+    }
+
+    /// The view with the keys on the screen, which is what `?` opens.
+    fn asking() -> Screen {
+        let mut screen = showing(Vec::new(), None);
+        screen.mode = Mode::Keys;
+        screen
     }
 
     /// One key somebody bound, read the way the config file's own table is.
@@ -426,271 +550,289 @@ mod tests {
         }
     }
 
-    /// The cells between two columns of a drawn screen, as their own lines:
-    /// what one band of the overlay says, with whatever stands beside it cut
-    /// away.
-    fn between(painted: &[String], from: usize, to: usize) -> String {
-        painted
-            .iter()
-            .map(|line| line.chars().skip(from).take(to - from).collect::<String>())
-            .collect::<Vec<String>>()
-            .join("\n")
+    /// A screen tall enough for every key at once, worked out rather than
+    /// counted off one somebody looked at: it grows every time the table does,
+    /// and a number written here would send the next key that joins the table
+    /// scrolling.
+    fn tall_screen() -> (u16, u16) {
+        // The document, the two chrome rows over it, the chrome the view
+        // draws around the whole overlay, and room for a `yours` group of two
+        // so the one test that grows one is not the one test that scrolls.
+        (100, document() + 2 + 5 + 4)
     }
 
-    /// A screen wide enough for the two columns and tall enough for all of
-    /// them, which is the shape the overlay is drawn for. The keys row and the
-    /// blank one over it are counted in: what the overlay has is what the list
-    /// would have had.
-    ///
-    /// The depth is worked out rather than counted off a screen somebody once
-    /// looked at, because it grows every time the table does: a number written
-    /// here would send the next key that joins the table paging.
-    fn wide_screen() -> (u16, u16) {
-        (120, deepest_column() + 5)
+    /// How many rows the document is: every key, a heading over each group,
+    /// and the row that stands each group off from the one above it.
+    fn document() -> u16 {
+        (HELP.len() + 2 * GROUPS.len() - 1) as u16
     }
 
-    /// How many rows the deeper of the two columns takes: its keys, a heading
-    /// over each of its groups, and the row that stands each group off from
-    /// the one under it.
-    fn deepest_column() -> u16 {
-        let cut = cut();
-        [0..cut, cut..GROUPS.len()]
-            .into_iter()
-            .map(|column| {
-                let keys: u16 = GROUPS[column.clone()]
-                    .iter()
-                    .map(|(_, under)| *under as u16)
-                    .sum();
-                keys + 2 * column.len() as u16 - 1
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// The screen most people have: too narrow for two columns and far too
-    /// short for one column of every key there is, which is the shape the
-    /// paging is for. It is what a terminal opens at.
+    /// The screen most people have, which is far too short for a document this
+    /// long and is the shape the scrolling is for. It is what a terminal opens
+    /// at.
     const SHORT_SCREEN: (u16, u16) = (80, 24);
 
-    #[test]
-    fn keymap_reaches_every_key_by_paging_a_screen_too_short_to_hold_them() {
-        let mut screen = showing(Vec::new(), None);
-        screen.mode = Mode::Keys;
-
-        // Every page pgdn reaches, in order. The last one is where the screen
-        // stops changing: the paint holds the page at the last one it made, so
-        // a press past the end lands where the press before it did.
-        let mut pages: Vec<String> = Vec::new();
-        for _ in 0..HELP.len() {
-            let drawn = painted(&screen, SHORT_SCREEN).join("\n");
-            if pages.last() == Some(&drawn) {
+    /// Every key the screen shows at this size, walked down with `key` until
+    /// the screen stops changing.
+    fn walked(screen: &mut Screen, key: KeyCode, size: (u16, u16)) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..HELP.len() * 2 {
+            let drawn = painted(screen, size).join("\n");
+            if seen.last() == Some(&drawn) {
                 break;
             }
-            pages.push(drawn);
-            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageDown));
+            seen.push(drawn);
+            let _ = screen.reading_the_keys(KeyEvent::from(key));
         }
+        seen
+    }
+
+    #[test]
+    fn keymap_reaches_every_key_by_scrolling_a_screen_too_short_to_hold_them() {
+        let mut screen = asking();
+        let seen = walked(&mut screen, KeyCode::Char('j'), SHORT_SCREEN);
         assert!(
-            pages.len() > 1,
+            seen.len() > 1,
             "a screen this short does not hold them all at once:\n{}",
-            pages.join("\n")
+            seen.join("\n")
         );
         assert!(
             matches!(screen.mode, Mode::Keys),
-            "and paging is not the key that puts the agents back"
+            "and walking them is not the key that puts the agents back"
         );
 
-        // Every key is on one of those pages, and what it does with it.
-        let paged = pages.join("\n");
+        // Every key was on the screen at some point on the way down, and what
+        // it does with it.
+        let scrolled = seen.join("\n");
         for (key, does) in HELP {
             assert!(
-                paged.contains(key),
-                "{key} is on none of the pages:\n{paged}"
+                scrolled.contains(key),
+                "{key} was never on the screen:\n{scrolled}"
             );
             assert!(
-                paged.contains(does),
-                "{does} is on none of the pages:\n{paged}"
+                scrolled.contains(does),
+                "{does} was never on the screen:\n{scrolled}"
             );
         }
 
-        // And the first of them says there are more and which key brings them:
-        // a page nobody knows to turn is a page holding keys nobody finds.
+        // And the first screenful says how much of the document it is holding,
+        // which is the whole of what a fold nobody can see needs to say.
         assert!(
-            pages[0].contains("page 1 of") && pages[0].contains("pgdn"),
-            "the first page says there is another and how to turn to it:\n{}",
-            pages[0]
+            seen[0].contains(&format!("of {}", HELP.len())),
+            "the first screenful says how many keys there are:\n{}",
+            seen[0]
         );
     }
 
     #[test]
-    fn keymap_holds_the_last_page_so_the_way_back_is_the_one_press() {
-        let mut screen = showing(Vec::new(), None);
-        screen.mode = Mode::Keys;
+    fn keymap_walks_with_the_keys_that_walk_the_list_and_stops_at_either_end() {
+        // The same keys the wall answers to, because somebody who has walked a
+        // wall has already learned them. Each pair is walked to its end and
+        // back, and landing where it started is what says both halves moved.
+        for (down, up) in [
+            (
+                KeyEvent::from(KeyCode::Char('j')),
+                KeyEvent::from(KeyCode::Char('k')),
+            ),
+            (KeyEvent::from(KeyCode::Down), KeyEvent::from(KeyCode::Up)),
+            (
+                KeyEvent::from(KeyCode::PageDown),
+                KeyEvent::from(KeyCode::PageUp),
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('d'), crossterm::event::KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('u'), crossterm::event::KeyModifiers::CONTROL),
+            ),
+        ] {
+            let mut screen = asking();
+            let top = painted(&screen, SHORT_SCREEN).join("\n");
 
-        // Somebody leaning on the key, which is what pressing past the end is.
-        // The paint holds the page at the last one it made, so the presses that
-        // went nowhere are not presses to be taken back.
-        for _ in 0..HELP.len() {
-            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageDown));
-            let _ = painted(&screen, SHORT_SCREEN);
+            let _ = screen.reading_the_keys(down);
+            let moved = painted(&screen, SHORT_SCREEN).join("\n");
+            assert_ne!(moved, top, "{down:?} moves the screen");
+            assert!(matches!(screen.mode, Mode::Keys), "{down:?}");
+
+            let _ = screen.reading_the_keys(up);
+            assert_eq!(
+                painted(&screen, SHORT_SCREEN).join("\n"),
+                top,
+                "and {up:?} puts it back"
+            );
+
+            // And neither walks off its end: a press past the top or the foot
+            // lands where the press before it did.
+            for _ in 0..HELP.len() {
+                let _ = screen.reading_the_keys(up);
+                let _ = painted(&screen, SHORT_SCREEN);
+            }
+            assert_eq!(painted(&screen, SHORT_SCREEN).join("\n"), top);
         }
-        let last = painted(&screen, SHORT_SCREEN).join("\n");
+    }
 
-        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::PageUp));
-        assert_ne!(
+    #[test]
+    fn keymap_reaches_both_ends_of_the_document_in_one_press_each() {
+        let mut screen = asking();
+        let top = painted(&screen, SHORT_SCREEN).join("\n");
+
+        // G, and the gg under it: the two the wall answers to.
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('G')));
+        let foot = painted(&screen, SHORT_SCREEN);
+        assert_ne!(foot.join("\n"), top, "G is the foot of them");
+        let last = HELP.last().expect("the last key there is");
+        assert!(
+            foot.join("\n").contains(last.1),
+            "which is the last key in the table:\n{}",
+            foot.join("\n")
+        );
+
+        for _ in 0..2 {
+            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('g')));
+        }
+        assert_eq!(
             painted(&screen, SHORT_SCREEN).join("\n"),
-            last,
-            "one press off the last page is a page back:\n{last}"
+            top,
+            "and gg is the top"
         );
+        assert!(matches!(screen.mode, Mode::Keys));
     }
 
     #[test]
-    fn keymap_stands_the_keys_in_two_columns_cut_where_they_balance() {
-        let painted = overlay(wide_screen());
-        let share = wide_screen().0 as usize / 2;
-        let left = between(&painted, 0, share);
-        let right = between(&painted, share, wide_screen().0 as usize);
+    fn keymap_narrows_to_what_somebody_typed_on_the_key_and_on_what_it_does() {
+        let mut screen = asking();
+        for key in [KeyCode::Char('/'), KeyCode::Char('w'), KeyCode::Char('o')] {
+            let _ = screen.reading_the_keys(KeyEvent::from(key));
+        }
+        let drawn = painted(&screen, SHORT_SCREEN).join("\n");
 
-        // Cut where the two columns come out nearest the same number of
-        // keys, which for this table is after `start`. Worked out rather than
-        // written down: the boundary moves every time the table grows, and a
-        // number here would only ever say which day it was written.
-        let boundary =
-            |groups: usize| -> usize { GROUPS[..groups].iter().map(|(_, under)| under).sum() };
-        let cut = boundary(3);
-        let off = |at: usize| (HELP.len() as isize - 2 * at as isize).abs();
-        for groups in 1..GROUPS.len() {
-            assert!(
-                off(cut) <= off(boundary(groups)),
-                "the cut after `start` is not the one that balances them"
-            );
-        }
-        for (key, does) in &HELP[..cut] {
-            assert!(
-                left.contains(does),
-                "{key} is not down the first column:\n{left}"
-            );
-            assert!(
-                !right.contains(does),
-                "{key} is down both of them:\n{right}"
-            );
-        }
-        for (key, does) in &HELP[cut..] {
-            assert!(
-                right.contains(does),
-                "{key} is not down the second column:\n{right}"
-            );
-            assert!(!left.contains(does), "{key} is down both of them:\n{left}");
-        }
+        // What was typed, on the line, with the block that says it is still
+        // taking letters.
+        assert!(drawn.contains("find wo▌"), "{drawn}");
+        assert!(
+            matches!(screen.mode, Mode::Keys),
+            "and the letters are the search rather than keys of the wall"
+        );
 
-        // And every one of them whole: a screen this wide has room for the
-        // longest thing a key does, so nothing on it is cut short.
+        // Both halves of a row are searched, because somebody looking for a
+        // key has a word for what they want it to do as often as a spelling.
+        assert!(
+            drawn.contains("the word offered"),
+            "matched on what it does:\n{drawn}"
+        );
+        assert!(
+            drawn.contains("alt+w") && drawn.contains("worktree of its own"),
+            "and on the spelling of a key:\n{drawn}"
+        );
+        assert!(
+            !drawn.contains("start an agent"),
+            "and nothing else is on the screen:\n{drawn}"
+        );
+
+        // A heading over nothing goes with its keys, and the count over it is
+        // what the narrowing left rather than what the table holds.
+        assert!(!drawn.contains("WALK"), "{drawn}");
+        assert!(
+            drawn.contains("6 of 55"),
+            "and it is said against the whole of the table, because `6 keys` \
+             about a table of fifty-five reads as a program with six:\n{drawn}"
+        );
+
+        // Backspace takes a letter back, and esc gives every key back.
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Backspace));
+        assert!(
+            painted(&screen, SHORT_SCREEN)
+                .join("\n")
+                .contains("find w▌"),
+            "a letter at a time"
+        );
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Esc));
+        let back = painted(&screen, SHORT_SCREEN).join("\n");
+        assert!(matches!(screen.mode, Mode::Keys), "esc drops the search");
+        assert!(
+            !back.contains('▌'),
+            "the line is gone, block and all:\n{back}"
+        );
+        assert!(back.contains("WALK"), "and every key is back:\n{back}");
+    }
+
+    #[test]
+    fn keymap_says_so_rather_than_going_blank_when_nothing_answers() {
+        let mut screen = asking();
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('/')));
+        for letter in "zzzz".chars() {
+            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char(letter)));
+        }
+        let drawn = painted(&screen, SHORT_SCREEN).join("\n");
+        assert!(drawn.contains("nothing answers to that"), "{drawn}");
+        assert!(drawn.contains("find zzzz▌"), "{drawn}");
+    }
+
+    #[test]
+    fn keymap_stands_every_key_in_one_column_under_its_own_heading() {
+        let painted = overlay(tall_screen());
         let all = painted.join("\n");
-        assert!(
-            !all.contains('…'),
-            "nothing is elided at this width:\n{all}"
-        );
-        for (key, _) in HELP {
-            assert!(all.contains(key), "{key} is missing:\n{all}");
-        }
-    }
 
-    #[test]
-    fn keymap_heads_each_column_the_way_the_wall_heads_a_group() {
-        let painted = overlay(wide_screen());
-        let share = wide_screen().0 as usize / 2;
-
-        // The heading a group of agents carries: the label uppercase, a rule
-        // run out from it, and how many stand under it at the column's own
-        // right edge.
-        let first = between(&painted, 0, share);
-        let heading = first.lines().nth(3).expect("the first heading").to_string();
-        assert!(heading.starts_with(" WALK ┈"), "{heading:?}");
-        assert!(
-            heading.trim_end().ends_with(&GROUPS[0].1.to_string()),
-            "and how many stand under it, which is the run's own length: \
-             {heading:?}"
-        );
-
-        let second = between(&painted, share, wide_screen().0 as usize);
-        let beside = second
-            .lines()
-            .nth(3)
-            .expect("the heading beside it")
-            .to_string();
-        assert!(beside.starts_with(" ARRANGE ┈"), "{beside:?}");
-        assert!(
-            beside.trim_end().ends_with(&GROUPS[3].1.to_string()),
-            "{beside:?}"
-        );
-
-        // A group stands off from the one under it rather than running into
-        // it, and the keys are indented under their own heading. Which row
-        // that is follows the first run's length rather than being counted
-        // off a screen somebody once looked at.
-        let under_walk = 4 + GROUPS[0].1;
-        assert!(
-            painted[under_walk]
-                .chars()
-                .take(share)
-                .all(char::is_whitespace),
-            "one group stands off from the next: {:?}",
-            painted[under_walk]
-        );
-        assert!(
-            painted[under_walk + 1].starts_with(" LOOK ┈"),
-            "{:?}",
-            painted[under_walk + 1]
-        );
-        assert!(painted[4].starts_with("  "), "{:?}", painted[4]);
-    }
-
-    #[test]
-    fn keymap_gives_up_the_second_column_whole_rather_than_squeezing_it() {
-        // Below the width the rows themselves change shape at there is no room
-        // for two of anything: two columns here would be a key with a stub of
-        // a description against it, and the description is the half somebody
-        // came for.
-        //
-        // Tall enough for the one column whole, worked out rather than counted
-        // off a screen somebody once looked at: every key, a heading over each
-        // group, the row that stands each group off from the next, and the
-        // header, the space under it, the row of keys at the foot and the
-        // space over those.
-        let deep = (HELP.len() + 2 * GROUPS.len() - 1 + 5) as u16;
-        let painted = overlay((80, deep));
-        let all = painted.join("\n");
+        // Every key and what it does, whole: a screen this tall has room for
+        // the longest of them, so nothing on it is cut short.
         for (key, does) in HELP {
             assert!(all.contains(key), "{key} is missing:\n{all}");
             assert!(all.contains(does), "{does} is missing:\n{all}");
         }
-        assert!(!all.contains('…'), "and none of it is cut short:\n{all}");
-        for line in &painted {
-            assert!(line.chars().count() <= 80, "{line:?}");
-        }
+        assert!(!all.contains('…'), "nothing is elided this tall:\n{all}");
 
-        // One column: every heading is against the left edge, and the last
-        // group is under the first rather than beside it.
+        // One column: every heading is against the left edge, and every group
+        // is under the one before it rather than beside it.
+        let row = |said: &str| {
+            painted
+                .iter()
+                .position(|line| line.contains(said))
+                .unwrap_or_else(|| panic!("{said} is not on the screen:\n{all}"))
+        };
+        let mut last = 0;
         for (label, _) in GROUPS {
             let heading = format!(" {} ┈", label.to_uppercase());
+            let at = row(&heading);
+            assert!(at > last, "{heading:?} is not under the one before it");
+            last = at;
+        }
+
+        // And each group stands off from the one above it, with its keys
+        // indented under its own heading.
+        let walk = row(" WALK ┈");
+        assert!(painted[walk + 1].starts_with("  "), "{:?}", painted[walk]);
+        assert!(
+            painted[walk + 1 + GROUPS[0].1].trim().is_empty(),
+            "one group stands off from the next: {:?}",
+            painted[walk + 1 + GROUPS[0].1]
+        );
+    }
+
+    #[test]
+    fn keymap_keeps_its_column_off_the_edge_of_a_very_wide_terminal() {
+        // A key and a sentence about it half a screen apart is a pair the eye
+        // loses in the middle.
+        let painted = overlay((200, tall_screen().1));
+        let from = painted
+            .iter()
+            .position(|line| line.starts_with(" WALK ┈"))
+            .expect("the first heading");
+        for line in &painted[from..] {
             assert!(
-                painted.iter().any(|line| line.starts_with(&heading)),
-                "{heading:?} is not at the edge:\n{all}"
+                line.chars().count() <= WIDEST,
+                "the column stops and the rest is margin: {line:?}"
             );
         }
     }
 
     #[test]
     fn view_lists_every_key_when_somebody_asks_for_them() {
-        let mut screen = showing(Vec::new(), None);
-        screen.mode = Mode::Keys;
-
-        // Tall and wide enough for every key and every heading over them,
-        // so each of them has the row to itself and every description is
-        // whole.
-        // The chrome the overlay is drawn inside: the header, the blank row
-        // under it, the blank row over the keys, and the keys.
-        let tall = (HELP.len() + GROUPS.len()) as u16 + header_rows(24) + 2 * space_rows(24) + 1;
-        let painted = painted(&screen, (140, tall)).join("\n");
+        let screen = asking();
+        // Tall enough for every key and every heading over them, plus the
+        // chrome the overlay is drawn inside: the header, the blank row under
+        // it, the row that says where in the document this is and the air
+        // under that, and the blank row over the keys at the foot and the keys
+        // themselves.
+        let tall = document() + header_rows(24) + 2 * space_rows(24) + 1 + 2;
+        let painted = painted(&screen, (100, tall)).join("\n");
         for (key, does) in HELP {
             assert!(painted.contains(key), "{key} is missing:\n{painted}");
             assert!(painted.contains(does), "{does} is missing:\n{painted}");
@@ -700,43 +842,39 @@ mod tests {
     #[test]
     fn keymap_stands_the_keys_somebody_bound_under_a_heading_of_their_own() {
         let painted = overlay_of(
-            wide_screen(),
+            tall_screen(),
             vec![
                 bound("alt+g", "lazygit"),
                 bound("alt+t", "cargo test 2>&1 | less"),
             ],
         );
-        let share = wide_screen().0 as usize / 2;
-        let right = between(&painted, share, wide_screen().0 as usize);
+        let all = painted.join("\n");
+        let row = |said: &str| {
+            painted
+                .iter()
+                .position(|line| line.contains(said))
+                .unwrap_or_else(|| panic!("{said} is not on the screen:\n{all}"))
+        };
 
         // The heading amx's own groups wear, counting the keys under it: what
         // somebody bound is a group of keys like any other.
-        let heading = right
-            .lines()
-            .find(|line| line.starts_with(" YOURS ┈"))
-            .unwrap_or_else(|| panic!("no heading over the bound keys:\n{right}"));
+        let heading = painted[row(" YOURS ┈")].clone();
         assert!(
             heading.trim_end().ends_with('2'),
             "and how many stand under it: {heading:?}"
         );
 
-        // Under the last of amx's own rather than over them or beside them:
-        // the keys the view binds are the ones every machine has.
-        let row = |said: &str| {
-            right
-                .lines()
-                .position(|line| line.contains(said))
-                .unwrap_or_else(|| panic!("{said} is not down the last column:\n{right}"))
-        };
+        // Under the last of amx's own rather than over them: the keys the view
+        // binds are the ones every machine has.
         assert!(
             row(" DIALS ┈") < row(" YOURS ┈"),
-            "the group somebody wrote stands after the ones amx ships:\n{right}"
+            "the group somebody wrote stands after the ones amx ships:\n{all}"
         );
 
         // The spelling in the key column and the command against it, because
         // the command is what a bound key is: there is no second name for it.
         for (spelling, command) in [("alt+g", "lazygit"), ("alt+t", "cargo test 2>&1 | less")] {
-            let line = right.lines().nth(row(spelling)).expect("the row it is on");
+            let line = &painted[row(spelling)];
             assert!(
                 line.starts_with(&format!("{}{spelling}", " ".repeat(INDENT))),
                 "the spelling stands in the key column: {line:?}"
@@ -749,8 +887,22 @@ mod tests {
     }
 
     #[test]
+    fn keymap_finds_a_key_somebody_bound_the_way_it_finds_one_amx_binds() {
+        let mut screen = asking();
+        screen.bound = vec![bound("alt+g", "lazygit")];
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('/')));
+        for letter in "lazy".chars() {
+            let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char(letter)));
+        }
+        let drawn = painted(&screen, SHORT_SCREEN).join("\n");
+        assert!(drawn.contains("lazygit"), "{drawn}");
+        assert!(drawn.contains("YOURS"), "{drawn}");
+        assert!(!drawn.contains("WALK"), "{drawn}");
+    }
+
+    #[test]
     fn keymap_grows_nothing_for_a_config_that_bound_no_keys() {
-        let painted = overlay(wide_screen()).join("\n");
+        let painted = overlay(tall_screen()).join("\n");
         assert!(
             !painted.contains("YOURS"),
             "a heading over nothing is a heading in everybody's way:\n{painted}"
@@ -758,18 +910,41 @@ mod tests {
     }
 
     #[test]
-    fn keymap_carries_the_weight_on_the_label_and_the_key_and_none_of_it_elsewhere() {
-        let mut screen = showing(Vec::new(), None);
-        screen.mode = Mode::Keys;
-        let buffer = cells(&screen, wide_screen());
+    fn keymap_opens_at_the_top_with_nothing_being_looked_for() {
+        // The question is what the keys are, not where somebody stopped
+        // reading them the last time they asked.
+        let mut screen = asking();
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('G')));
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('/')));
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('w')));
+        let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char('q')));
 
-        let label = buffer[(1, 3)].clone();
+        let mut opened = asking();
+        opened.keymap.opened();
+        assert_eq!(
+            painted(&opened, SHORT_SCREEN),
+            painted(&asking(), SHORT_SCREEN)
+        );
+    }
+
+    #[test]
+    fn keymap_carries_the_weight_on_the_label_and_the_key_and_none_of_it_elsewhere() {
+        let screen = asking();
+        let size = tall_screen();
+        let buffer = cells(&screen, size);
+        let painted = painted(&screen, size);
+        let row = painted
+            .iter()
+            .position(|line| line.starts_with(" WALK ┈"))
+            .expect("the first heading") as u16;
+
+        let label = buffer[(1, row)].clone();
         assert!(
             label.modifier.contains(Modifier::BOLD),
             "a heading is what makes a group out of a run of keys: {:?}",
             label.modifier
         );
-        let rule = buffer[(7, 3)].clone();
+        let rule = buffer[(7, row)].clone();
         assert_eq!(rule.symbol(), "┈", "the rule runs out to the count");
         assert!(
             rule.modifier.contains(Modifier::DIM),
@@ -777,13 +952,13 @@ mod tests {
             rule.modifier
         );
 
-        let key = buffer[(INDENT as u16, 4)].clone();
+        let key = buffer[(INDENT as u16, row + 1)].clone();
         assert!(
             key.modifier.contains(Modifier::BOLD),
             "the key itself is what somebody came here to find: {:?}",
             key.modifier
         );
-        let does = buffer[((INDENT + KEY) as u16, 4)].clone();
+        let does = buffer[((INDENT + KEY) as u16, row + 1)].clone();
         assert!(
             does.modifier.contains(Modifier::DIM),
             "and what it does stands behind it: {:?}",

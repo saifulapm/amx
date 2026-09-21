@@ -755,7 +755,20 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
     let width = width as usize;
     match &screen.mode {
         Mode::List => fitted(&hints(screen), MORE, width),
-        Mode::Keys => row(&[("any key", "goes back"), ("q", "quits")]),
+        // The keys that work on the screen of keys, which is the one screen
+        // where somebody not knowing them has nowhere else to look it up. A
+        // line being typed at is its own answer: every letter is the search,
+        // so the two keys that are not are what the row says.
+        Mode::Keys => match screen.keymap.finding() {
+            true => row(&[("enter", "keeps it"), ("esc", "drops it")]),
+            // The way out is what this row keeps whatever else it sheds, and
+            // `? keys` is not it: somebody reading this row is already here.
+            false => fitted(
+                &[("j k", "scroll"), ("/", "finds one"), ("q", "quits")],
+                ("any key", "goes back"),
+                width,
+            ),
+        },
         // A question up is the whole of this row, and is drawn above.
         Mode::Confirming(_) => fitted(&hints(screen), MORE, width),
         Mode::Typing(composer) => match composer.asking {

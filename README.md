@@ -774,14 +774,20 @@ been; the row under the line says how many notes `enter` would send and how many
 
 `?` puts every key where the list was, in the five groups they are learned in —
 walk, look, start, arrange, dials — each under a heading of its own: the label,
-a dim rule, and how many keys stand under it at the far end. From 100 columns
-the groups stand in two ruled columns, cut where the two halves come nearest to
-holding the same number of keys, and nothing is shortened to fit. Narrower than
-that the second column is given up whole rather than squeezed: one column,
-every key still saying what it does in full, paged with `pgup` and `pgdn`, and
-the foot of each page says which page it is and which of those two keys turns
-it — a key nobody can reach is a key the screen may as well not list. Any other
-key goes back to the list, and `q` closes the view.
+a dim rule, and how many keys stand under it at the far end. One column, and
+nothing is shortened to fit.
+
+It is a document longer than a terminal, and it says so: the row over the keys
+counts which of them are on the screen out of how many there are. It scrolls
+with the keys that walk the list — `j` and `k`, the arrows, `ctrl+d` and
+`ctrl+u`, `pgup` and `pgdn`, `G` for the foot and `g` for the top — because
+somebody who has walked a wall has already learned them.
+
+And `/` narrows them as you type, on the spelling of a key and on what it does
+alike: `worktree` leaves three keys and the two headings they are under.
+`enter` closes the line with the narrowing standing, `esc` gives every key
+back, and the `esc` after that goes back to the list. Any other key goes back
+too, and `q` closes the view.
 
 `ctrl+x` forgets nothing on the first press, and the first press is the same
 press on every row. An agent that is still running — sitting idle at its

@@ -153,19 +153,20 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
-    // The screen the overlay is drawn for: wide enough for two columns and
-    // deep enough for the longer of them, the blank row over the keys counted
-    // in. It grows with the table, so a key added to the first column is a row
-    // added here.
-    resize(&amx, &view, 120, 42);
+    // A screen tall enough for the whole document at once: every key, a
+    // heading over each of the five groups, the row that stands each group off
+    // from the one above it, the row over them that says where in the document
+    // this is and the air under it, and the view's own chrome. It grows with
+    // the table, so a key added to it is a row added here.
+    resize(&amx, &view, 100, 72);
 
     types(&amx, &view, "?");
-    // Waited for by the last row of the deeper column, so a screen caught
-    // halfway through being written is not read as a key that is missing.
+    // Waited for by the last key of the last group, so a screen caught halfway
+    // through being written is not read as a key that is missing.
     let keys = amx.until("the keys", || {
         let drawn = screen(&amx, &view);
         drawn
-            .contains("lines sent before · ↑ ↓ too on a task line")
+            .contains("which vendor runs it, for one spawn")
             .then_some(drawn)
     });
     for does in [
@@ -187,40 +188,45 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "take the uncommitted work",
         "how hard the next agent thinks",
         "effort, for one spawn",
+        "lines sent before · ↑ ↓ too on a task line",
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
     }
-
-    // Two columns, each headed the way the wall heads a group of agents: the
-    // second stands beside the first rather than under it, and a screen this
-    // wide says what every key does in full.
-    let heading = keys
-        .lines()
-        .find(|line| line.contains("WALK"))
-        .unwrap_or_default();
-    assert!(
-        heading.contains("ARRANGE"),
-        "the columns stand side by side:\n{keys}"
-    );
-    assert!(heading.contains('┈'), "and each is ruled: {heading:?}");
     assert!(
         !keys.contains('…'),
-        "a screen this wide cuts nothing short:\n{keys}"
+        "a screen this tall cuts nothing short:\n{keys}"
     );
 
-    // And the count at the end of a heading is the keys under it, `v` among
-    // them: a key on the screen that the heading over it does not count would
-    // be a number somebody has to check by hand.
-    let look = keys
-        .lines()
-        .find(|line| line.contains("LOOK"))
-        .unwrap_or_else(|| panic!("no heading over the looking keys:\n{keys}"));
-    // The first column alone: the second one is drawn on the same rows, and
-    // what stands beside this heading is a key of somebody else's group.
-    let first: String = look.chars().take(120 / 2).collect();
+    // One column: every heading is on a row of its own, headed the way the
+    // wall heads a group of agents, with the count of what is under it at the
+    // column's own right edge.
+    let heading = |label: &str| {
+        keys.lines()
+            .find(|line| line.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("no {label} heading:\n{keys}"))
+            .to_string()
+    };
+    let walk = heading("WALK");
+    assert!(walk.contains('┈'), "each is ruled: {walk:?}");
     assert!(
-        first.trim_end().ends_with("12"),
-        "the LOOK count includes v: {first:?}"
+        !walk.contains("ARRANGE"),
+        "and stands on a row of its own:\n{keys}"
+    );
+
+    // The count at the end of a heading is the keys under it, `v` among them:
+    // a key on the screen the heading over it does not count would be a number
+    // somebody has to check by hand.
+    let look = heading("LOOK");
+    assert!(
+        look.trim_end().ends_with("12"),
+        "the LOOK count includes v: {look:?}"
+    );
+
+    // And the row over them says how much of the document is on the screen,
+    // which on a screen holding all of it is how many keys there are.
+    assert!(
+        keys.lines().any(|line| line.trim_end().ends_with("keys")),
+        "the screen says how many keys there are:\n{keys}"
     );
 
     // And back to the agents, which is what the view is for.
@@ -229,61 +235,76 @@ fn the_keys_are_on_the_screen_for_the_asking() {
 }
 
 #[test]
-fn the_keys_a_short_screen_cannot_hold_are_a_page_away() {
+fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
-    // The screen a terminal opens at, which is half the rows the keys take.
+    // The screen a terminal opens at, which is a third of the rows the keys
+    // take.
     resize(&amx, &view, 80, 24);
 
     types(&amx, &view, "?");
-    // Waited for by the page 1 foot as well as the keys, so a screen caught
-    // before the foot catches up to the keys is not read as the page missing.
-    let first = amx.until("the keys and the foot that says page 1 of", || {
+    // Waited for by the marker as well as the keys, so a screen caught before
+    // the marker catches up is not read as one that says nothing.
+    // The whole frame: the keys, the row that says how many there are and the
+    // row at the foot that says how to reach the rest. A screen caught halfway
+    // through being written still carries the list's own foot under the keys.
+    let first = amx.until("the keys, the count and the foot", || {
         let drawn = screen(&amx, &view);
-        (drawn.contains("walk the agents") && drawn.contains("page 1 of")).then_some(drawn)
-    });
-    assert!(
-        first.contains("page 1 of"),
-        "a screen this short says there is another page:\n{first}"
-    );
-    assert!(
-        !first.contains("which vendor runs it, for one spawn"),
-        "and the last of the keys is not on this one:\n{first}"
-    );
-
-    // The page turns under a real terminal's key, and the overlay is still up
-    // when it has: paging is not the press that puts the agents back. How many
-    // turns that takes is the table's business and grows with it, so the foot
-    // is read for the count rather than it being written down here.
-    let pages: usize = first
-        .lines()
-        .find(|line| line.trim_start().starts_with("page 1 of "))
-        .and_then(|line| line.split(" of ").nth(1))
-        .and_then(|said| said.split_whitespace().next())
-        .and_then(|said| said.parse().ok())
-        .unwrap_or_else(|| panic!("the foot says how many pages there are:\n{first}"));
-    for _ in 1..pages {
-        press(&amx, &view, "PageDown");
-    }
-    // Waited for by the last page's foot as well as its keys, so a screen
-    // caught before the foot catches up to the keys is not read as the wrong
-    // page.
-    let last = amx.until("the rest of the keys and their page", || {
-        let drawn = screen(&amx, &view);
-        (drawn.contains("which vendor runs it, for one spawn")
-            && drawn.contains(&format!("page {pages} of {pages}")))
+        (drawn.contains("walk the agents")
+            && drawn.contains(" of 55")
+            && drawn.contains("j k scroll"))
         .then_some(drawn)
     });
     assert!(
-        last.contains(&format!("page {pages} of {pages}")),
-        "which page it is on:\n{last}"
+        !first.contains("which vendor runs it, for one spawn"),
+        "the last of the keys is not on the first screenful:\n{first}"
+    );
+
+    // G is the foot of the document, one press, and the overlay still has the
+    // screen when it lands: scrolling is not the press that puts the agents
+    // back.
+    press(&amx, &view, "G");
+    let last = amx.until("the foot of the keys", || {
+        let drawn = screen(&amx, &view);
+        drawn
+            .contains("which vendor runs it, for one spawn")
+            .then_some(drawn)
+    });
+    assert!(
+        last.contains(&format!(" of {}", 55)),
+        "which says where in the document it is:\n{last}"
     );
     assert!(
         last.contains("any key goes back"),
         "and the overlay still has the screen:\n{last}"
     );
 
+    // And `/` narrows them as it is typed, which is the other way to reach a
+    // key below the fold.
+    press(&amx, &view, "/");
+    types(&amx, &view, "worktree");
+    let found = amx.until("the keys that answer to it", || {
+        let drawn = screen(&amx, &view);
+        drawn.contains("find worktree").then_some(drawn)
+    });
+    assert!(
+        found.contains("whether it gets a worktree of its own"),
+        "{found}"
+    );
+    assert!(
+        !found.contains("walk the agents"),
+        "and nothing that does not answer to it:\n{found}"
+    );
+
+    // Esc drops the search rather than the screen, and the one after it is the
+    // way out.
+    press(&amx, &view, "Escape");
+    amx.until("every key back", || {
+        screen(&amx, &view)
+            .contains("walk the agents")
+            .then_some(())
+    });
     press(&amx, &view, "Escape");
     until_empty(&amx, &view);
 }

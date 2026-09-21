@@ -68,6 +68,7 @@ pub use header::title;
 /// key of amx's own. The test up in the view presses everything a terminal can
 /// send and holds what acted against it.
 pub(super) use help::HELP;
+pub use help::Keymap;
 pub use input::Notice;
 pub use wall::WallScroll;
 
@@ -281,7 +282,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         (carding > 0).then_some(carded),
     );
     match &screen.mode {
-        Mode::Keys => help(frame, middle, &screen.page, &screen.bound),
+        Mode::Keys => help(frame, middle, &screen.keymap, &screen.bound),
         // The whole band, card or no card: the rows are laid out as if none
         // were up, and the card is drawn over the last of them.
         _ => agents(

@@ -28,9 +28,8 @@ fn press(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key]);
 }
 
-/// Give the pane a terminal wide enough for both columns of the keys screen
-/// and deep enough to hold them without a page turn, so what is on it is all
-/// of it.
+/// Give the pane a terminal wide enough for the keys screen's own column and
+/// deep enough that the foot of the document holds a group and its keys.
 fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
     amx.tmux(&["set-option", "-w", "-t", view, "window-size", "manual"]);
     amx.tmux(&[
@@ -44,12 +43,16 @@ fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
     ]);
 }
 
-/// The keys screen, waited for by the last key of the second column: the group
-/// somebody bound is drawn under that one, so a screen caught before it is not
-/// read as a group that is missing.
+/// The foot of the keys screen, which is where a group somebody bound is
+/// drawn: after the last of amx's own, because the keys the view binds are the
+/// ones on every machine.
+///
+/// Waited for by the last key amx itself binds, so a screen caught before the
+/// foot of the document is not read as a group that is missing.
 fn keys_screen(amx: &Harness, view: &str) -> String {
     press(amx, view, "?");
-    amx.until("the keys", || {
+    press(amx, view, "G");
+    amx.until("the foot of the keys", || {
         let drawn = screen(amx, view);
         drawn
             .contains("which vendor runs it, for one spawn")

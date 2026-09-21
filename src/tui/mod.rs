@@ -48,7 +48,6 @@ use crossterm::terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -67,7 +66,7 @@ use act::{Asking, Composer, Renamed, Replied, Started};
 /// the same one, so a task written in either place is read the same way.
 pub use act::{Edited, edited};
 use keyname::Bound;
-use paint::{Body, Card, Hunk, Notice};
+use paint::{Body, Card, Hunk, Keymap, Notice};
 use rows::{Arrangement, List, Narrow};
 
 /// How often the agents are read again.
@@ -675,10 +674,10 @@ struct Screen {
     /// move. The paint owns this clamp too, for the same reason: how far the
     /// window can be scrolled is a question about the band it is drawn in.
     wall: paint::WallScroll,
-    /// Which page of the keys the overlay is showing. The paint owns the clamp
-    /// here too, for the same reason: only it knows how many pages a screen
-    /// this shape made of them.
-    page: Cell<usize>,
+    /// How far down the keys the overlay stands, and what somebody is looking
+    /// for on it. The paint owns the clamp here too, for the same reason: only
+    /// it knows how many rows a screen this shape gave them.
+    keymap: Keymap,
     /// The keys somebody bound in the config file, each against the command it
     /// runs. Read when the view opens and not again: the file is a person's
     /// standing answer, and a key that moved under their hands while they were
@@ -2020,7 +2019,7 @@ impl Screen {
             // question is what the keys are, not where somebody stopped
             // reading them.
             KeyCode::Char('?') if plain => {
-                self.page.set(0);
+                self.keymap.opened();
                 self.mode = Mode::Keys;
             }
             KeyCode::Char('n') if plain => self.mode = Mode::Typing(self.task_line()),
@@ -3311,23 +3310,76 @@ impl Screen {
     /// A key while the keys themselves are on the screen. Any of them puts the
     /// agents back, because that is what somebody came here for — except the
     /// one that closes the view, which means that wherever it is pressed, and
-    /// the two that page, because on a screen too short for all of them a
-    /// person who cannot turn the page cannot ask what half the keys are.
+    /// the ones that move about the document, because fifty-five keys do not
+    /// fit on a terminal and a person who cannot scroll cannot ask what half
+    /// of them are.
     ///
-    /// They only add and subtract, the way the card's do: the paint owns the
-    /// clamp, so a press past the last page lands on it.
+    /// Those are the keys that walk the list, and they are the same ones here:
+    /// somebody who has walked a wall has already learned them. They only add
+    /// and subtract, the way the card's do — the paint owns the clamp, so a
+    /// press past either end lands where the press before it did.
+    ///
+    /// And `/`, after which every letter is the search rather than a key. That
+    /// is the one state this screen has: a line that is open takes what is
+    /// typed at it, esc gives every key back, and enter closes the line with
+    /// the narrowing it made still standing.
     fn reading_the_keys(&mut self, key: KeyEvent) -> Doing {
         let plain = chord(key).is_empty();
-        let page = self.page.get();
-        let turned = match key.code {
-            KeyCode::PageDown if plain => Some(page.saturating_add(1)),
-            KeyCode::PageUp if plain => Some(page.saturating_sub(1)),
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let finding = self.keymap.finding();
+
+        // The keys that move about the document, wherever the find line is: a
+        // narrowing nobody could scroll would be one they could only read the
+        // first screenful of. The letters among them are the exception, because
+        // a line being typed at takes every letter there is.
+        let page = self.keymap.page();
+        let moved = match key.code {
+            KeyCode::Down if plain => Some((false, 1)),
+            KeyCode::Up if plain => Some((true, 1)),
+            KeyCode::PageDown if plain => Some((false, page)),
+            KeyCode::PageUp if plain => Some((true, page)),
+            KeyCode::Char('f') if ctrl => Some((false, page)),
+            KeyCode::Char('b') if ctrl => Some((true, page)),
+            KeyCode::Char('d') if ctrl => Some((false, page / 2)),
+            KeyCode::Char('u') if ctrl => Some((true, page / 2)),
+            KeyCode::Char('j') if plain && !finding => Some((false, 1)),
+            KeyCode::Char('k') if plain && !finding => Some((true, 1)),
             _ => None,
         };
-        if let Some(page) = turned {
-            self.page.set(page);
+        if let Some((up, by)) = moved {
+            self.keymap.scrolled(up, by);
             return Doing::Carry;
         }
+
+        if finding {
+            match key.code {
+                KeyCode::Char(letter) if plain => self.keymap.typed(letter),
+                KeyCode::Backspace if plain => self.keymap.rubbed(),
+                KeyCode::Esc if plain => self.keymap.found_nothing(),
+                // The line shuts and the narrowing it made stands: somebody
+                // has typed what they wanted and is about to read it.
+                KeyCode::Enter if plain => self.keymap.kept(),
+                _ => return self.leaving_the_keys(key),
+            }
+            return Doing::Carry;
+        }
+
+        match key.code {
+            KeyCode::Char('/') if plain => self.keymap.find(),
+            // The wall's own two ends. `gg` is the wall's spelling of the top
+            // and one `g` is enough here: there is nothing on this screen for
+            // a press to cost, so nothing for the second one to guard.
+            KeyCode::Char('G') if plain => self.keymap.to_the_end(true),
+            KeyCode::Char('g') if plain => self.keymap.to_the_end(false),
+            _ => return self.leaving_the_keys(key),
+        }
+        Doing::Carry
+    }
+
+    /// The agents back, which is what any key that is not this screen's means
+    /// — and the view closed, for the one key that means that wherever it is
+    /// pressed.
+    fn leaving_the_keys(&mut self, key: KeyEvent) -> Doing {
         self.mode = Mode::List;
         match key.code {
             KeyCode::Char('q') => Doing::Close,
