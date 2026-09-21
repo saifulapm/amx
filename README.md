@@ -746,6 +746,14 @@ already running. claude's own composer says `Press up to edit queued messages`
 for the whole of that half-minute; the row now says the same thing for the same
 half-minute, where before it came and went inside one frame.
 
+What it goes *to* is the conversation on the card itself. claude takes a queued
+message into the turn already running and writes no prompt for it — two lines
+of its own bookkeeping, an `enqueue` and a `remove` saying `absorbed_mid_turn`,
+and no user turn anywhere in the transcript — so a message that had left the
+queued row was on no screen amx could draw. The removal is read as the prompt
+it is, and it stands where claude's own pane draws it: after the call the
+message arrived during, and before the answer it changed.
+
 `alt+↑` brings back the last line you sent, and again the one before it, back
 to the oldest; `alt+↓` walks forward again, and the step past the newest gives
 back whatever you were typing when you started. A task line takes `↑` and `↓`

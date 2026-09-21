@@ -375,8 +375,42 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
     }
 }
 
+/// What claude calls a queued message it took into the turn already running,
+/// and the reason it gives for taking it off the queue.
+///
+/// The one case where a person's own words reach the model and are written
+/// nowhere a reading can see them. claude keeps a queue of what was typed
+/// while it worked, writes an `enqueue` line for each, and writes a `remove`
+/// line when it takes one — and for this reason, and only this one, it writes
+/// no `user` entry at all. Its own pane draws the message: measured at 2.1.278
+/// on 2026-09-21, `❯ also say BRAVO` stood between the tool it interrupted and
+/// the answer, with the transcript holding the two queue lines and nothing
+/// else about it.
+///
+/// So the removal is the prompt. It sits exactly where the pane draws it —
+/// after the call the message arrived during and before the answer it changed
+/// — and it carries the words, which the pane's own row would have to be
+/// captured and cut to get back.
+///
+/// This is what Saiful's `tell-me-about-this-uuz` came to: `Stop no need`,
+/// absorbed 868 milliseconds after it was queued, answered by the agent, and
+/// on no screen amx could draw.
+const QUEUED: &str = "queue-operation";
+const ABSORBED: &str = "absorbed_mid_turn";
+
+/// The words of a queued message claude took without writing a turn for it.
+fn absorbed(entry: &Value) -> Option<&str> {
+    let taken =
+        entry["type"] == QUEUED && entry["operation"] == "remove" && entry["reason"] == ABSORBED;
+    taken.then(|| entry["content"].as_str()).flatten()
+}
+
 /// One claude entry, into what it said.
 fn claude(entry: &Value, said: &mut Vec<Said>) {
+    if let Some(queued) = absorbed(entry) {
+        prompt(Some(queued), said);
+        return;
+    }
     match voice(Transcript::Claude, entry) {
         Some(Voice::User) => prompt(entry["message"]["content"].as_str(), said),
         Some(Voice::Assistant) => {
@@ -530,6 +564,55 @@ mod tests {
             ],
             "a prompt, the call with the first line of its command, the words; \
              thinking, the tool's result and the bookkeeping are nobody's reading"
+        );
+    }
+
+    #[test]
+    fn conversation_reads_a_message_claude_took_off_its_queue_as_the_prompt_it_is() {
+        // A message typed while claude worked reaches the model and is written
+        // nowhere a reading can see it: two queue lines, and no `user` entry
+        // at all. Measured at 2.1.278 on 2026-09-21, twice — Saiful's
+        // `tell-me-about-this-uuz`, where `Stop no need` was absorbed 868ms
+        // after it was queued and then answered, and a driven session of the
+        // same shape. claude's own pane draws the row; amx drew nothing, so
+        // the card went from `· queued` to no sign of it anywhere.
+        let absorbed = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\"run the tests\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test\"}}]}}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"also the linter\"}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"content\":\"also the linter\",\"reason\":\"absorbed_mid_turn\"}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Both are green.\"}]}}\n",
+        );
+        assert_eq!(
+            read(Transcript::Claude, absorbed),
+            vec![
+                Said::Prompt("run the tests".to_string()),
+                tool("Bash", Some("cargo test")),
+                Said::Prompt("also the linter".to_string()),
+                Said::Text("Both are green.".to_string()),
+            ],
+            "the removal is the prompt, and it stands where the pane draws it: \
+             after the call the message arrived during, before the answer it \
+             changed"
+        );
+
+        // The enqueue is not, because a message still on the queue is one the
+        // model has not seen and the row already says is waiting — and a
+        // removal for any other reason is claude doing something else with it.
+        let waiting = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\"run the tests\"}}\n",
+            "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"also the linter\"}\n",
+        );
+        assert_eq!(
+            read(Transcript::Claude, waiting),
+            vec![Said::Prompt("run the tests".to_string())]
+        );
+        let dropped = waiting.to_string()
+            + "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"content\":\"also the linter\",\"reason\":\"cancelled\"}\n";
+        assert_eq!(
+            read(Transcript::Claude, &dropped),
+            vec![Said::Prompt("run the tests".to_string())]
         );
     }
 
