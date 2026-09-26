@@ -679,6 +679,23 @@ impl State {
         self.walked = seen.is_some_and(|seen| seen.walked);
         self.reported = false;
     }
+
+    /// The record a new session of the same agent starts from: `resume`, and
+    /// a `/clear` in the pane.
+    ///
+    /// Everything the last session left behind goes with it: its answer is not
+    /// this session's answer, and an exit code is not how a running command
+    /// ended. The count of messages sent stays, because the log it counts is
+    /// still the agent's own, and so do the seconds it worked and the name
+    /// somebody gave it, because it is the same agent.
+    pub fn for_a_new_session(&self) -> State {
+        State {
+            seq: self.seq,
+            worked: self.worked,
+            name: self.name.clone(),
+            ..State::default()
+        }
+    }
 }
 
 /// What a reading of a screen found to answer, where it found anything. A

@@ -27,7 +27,7 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::exit;
@@ -48,6 +48,12 @@ pub const ID_ENV: &str = "AMX_ID";
 /// [`crate::derive`].
 pub const NESTED_ENV: &str = "AMX_NESTED";
 
+/// The file claude hands a session-start hook for the variables its shells
+/// should have, per code.claude.com/docs/en/hooks. What is written there
+/// reaches every shell the session runs and none of its own later hooks
+/// (measured on 2.1.283, 2026-09-26), which is where [`NESTED_ENV`] belongs.
+const ENV_FILE: &str = "CLAUDE_ENV_FILE";
+
 /// Record one hook payload. Answers with the process's exit code, which is
 /// always `OK`.
 pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
@@ -58,12 +64,14 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
     let Ok(root) = crate::paths::state_root() else {
         return exit::OK;
     };
+    let env_file = std::env::var_os(ENV_FILE).map(PathBuf::from);
     run(
         id.as_deref(),
         &root,
         stdin,
         &mut std::io::stdout().lock(),
         config,
+        env_file.as_deref(),
     )
 }
 
@@ -84,6 +92,7 @@ pub fn run(
     stdin: &mut impl Read,
     out: &mut impl Write,
     config: &Config,
+    env_file: Option<&Path>,
 ) -> i32 {
     // Every early return here is a hook that is not amx's business, or a
     // record amx cannot reach. Both end quietly: this process is standing
@@ -99,7 +108,7 @@ pub fn run(
         return exit::OK;
     };
 
-    let _ = record(root, &agent, &payload, config);
+    let _ = record(root, &agent, &payload, config, env_file);
     if hears_the_answer(&agent) {
         let _ = writeln!(out, "{}", agent.dir().display());
     }
@@ -221,7 +230,18 @@ fn anothers(meta: &Meta, payload: &Value) -> bool {
 
 /// Fold one payload into an agent's record, under the writer's lock, and set
 /// the timer over the pane of a turn that has ended.
-pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
+///
+/// The agent's own session opening also marks every shell it runs as nested,
+/// in the file the vendor handed the hook for that, so a claude started from
+/// one of them never reports as the agent. [`anothers`] cannot catch a
+/// `claude -c` there: it continues the agent's own session, under its id.
+pub fn record(
+    root: &Path,
+    agent: &Agent,
+    payload: &Value,
+    config: &Config,
+    env_file: Option<&Path>,
+) -> Result<()> {
     let writer = agent.writer()?;
     let mut meta = agent.meta()?;
     if anothers(&meta, payload) {
@@ -300,6 +320,17 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
     notify::post(notice.as_ref(), config.notifications, errand.as_ref());
     after_the_write(root, agent, &meta, was, &written, &event, config);
+
+    if moment(payload) == Some(Moment::Started)
+        && payload["agent_id"].is_null()
+        && let Some(file) = env_file
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(file)?;
+        writeln!(file, "export {NESTED_ENV}=1")?;
+    }
     Ok(())
 }
 
@@ -625,6 +656,18 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
     let screen = match moment(payload)? {
         Moment::Started => {
+            // `/clear` opens a new session in the same pane, at the prompt it
+            // was typed at, and nothing the old session said is its answer.
+            if payload["source"] == "clear"
+                && let Some(session) = payload["session_id"].as_str()
+                && meta.session.as_deref() != Some(session)
+            {
+                *state = State {
+                    state: state.state,
+                    since: state.since,
+                    ..state.for_a_new_session()
+                };
+            }
             if let Some(session) = payload["session_id"].as_str() {
                 meta.session = Some(session.to_string());
             }
@@ -2418,6 +2461,7 @@ mod tests {
             &mut payload.as_bytes(),
             &mut std::io::sink(),
             &quiet(),
+            None,
         )
     }
 
@@ -2614,6 +2658,7 @@ mod tests {
                     park_after: 5,
                     ..quiet()
                 },
+                None,
             ),
             exit::OK
         );
@@ -2649,6 +2694,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2666,6 +2712,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2750,6 +2797,7 @@ mod tests {
                     &mut payload.as_bytes(),
                     &mut std::io::sink(),
                     &quiet(),
+                    None,
                 ),
                 exit::OK,
                 "{payload}"
@@ -2776,6 +2824,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2784,6 +2833,112 @@ mod tests {
             Some("I fixed the login bug.")
         );
         assert_eq!(agent.events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hook_the_agents_own_start_marks_its_shells_nested() {
+        // claude sources the file it hands a session-start hook into every
+        // shell it runs, and not into its own later hooks (measured on 2.1.283,
+        // 2026-09-26). So a claude the agent starts from one of those shells
+        // knows it is nested before it says a word, `claude -c` included.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let file = root.path().join("sessionstart-hook-1.sh");
+        std::fs::write(&file, "export PATH=/opt/bin:$PATH\n").unwrap();
+        let hear = |payload: &str| {
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut payload.as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+                Some(&file),
+            )
+        };
+
+        // Another process's start, a subagent's and a turn are not the agent's
+        // session opening.
+        hear(r#"{"session_id":"nested","hook_event_name":"SessionStart","source":"startup"}"#);
+        hear(r#"{"session_id":"abc-123","hook_event_name":"SessionStart","agent_id":"sub-1"}"#);
+        hear(r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit","prompt":"go"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "export PATH=/opt/bin:$PATH\n"
+        );
+
+        hear(r#"{"session_id":"abc-123","hook_event_name":"SessionStart","source":"startup"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "export PATH=/opt/bin:$PATH\nexport AMX_NESTED=1\n",
+            "added to what the file had"
+        );
+    }
+
+    #[test]
+    fn hook_a_cleared_session_carries_nothing_over() {
+        // `/clear` is a new session in the same pane, and nothing the old one
+        // said is its answer. What stays is what `resume` keeps.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.since = 100;
+                state.seq = 3;
+                state.worked = 40;
+                state.name = Some("login".to_string());
+                state.session_title = Some("Fix the login bug".to_string());
+                state.summary = Some("Running Bash".to_string());
+                state.result = Some("I fixed the login bug.".to_string());
+                state.source = Some(Source::Payload);
+                state.question = Some("Allow Bash?".to_string());
+                state.options = vec!["Yes".to_string(), "No".to_string()];
+            })
+            .unwrap();
+
+        run(
+            Some(agent.id()),
+            root.path(),
+            &mut r#"{"session_id":"def-456","hook_event_name":"SessionStart","source":"clear"}"#
+                .as_bytes(),
+            &mut std::io::sink(),
+            &quiet(),
+            None,
+        );
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.result, None);
+        assert_eq!(state.source, None);
+        assert_eq!(state.summary, None);
+        assert_eq!(state.session_title, None);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert_eq!(
+            (state.seq, state.worked, state.name.as_deref()),
+            (3, 40, Some("login"))
+        );
+        assert_eq!(
+            (state.state, state.since),
+            (Phase::Idle, 100),
+            "the prompt the clear left is the one it was at"
+        );
+        assert_eq!(agent.meta().unwrap().session.as_deref(), Some("def-456"));
     }
 
     #[test]
@@ -2817,6 +2972,7 @@ mod tests {
                 &mut r#"{"hook_event_name":"UserPromptSubmit","prompt":"carry on"}"#.as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2868,6 +3024,7 @@ mod tests {
             &mut r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit"}"#.as_bytes(),
             &mut std::io::sink(),
             &quiet(),
+            None,
         );
 
         assert_eq!(adopted.state().unwrap().state, Phase::Working);
@@ -2908,6 +3065,7 @@ mod tests {
             &mut r#"{"session_id":"pi-session","hook_event_name":"agent_start"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
@@ -2920,6 +3078,7 @@ mod tests {
             &mut r#"{"hook_event_name":"tool_execution_start","tool_name":"bash"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
@@ -2948,6 +3107,7 @@ mod tests {
                 .as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 
@@ -2959,6 +3119,7 @@ mod tests {
             &mut r#"{"session_id":"nobodys","hook_event_name":"agent_start"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert!(out.is_empty());
     }
@@ -3159,6 +3320,7 @@ mod tests {
                 &mut "{}".as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );

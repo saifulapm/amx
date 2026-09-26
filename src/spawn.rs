@@ -602,7 +602,8 @@ fn quoted(path: &Path) -> String {
 /// one's parent to call its own. `parent` is the id and record directory of
 /// the agent whose pane this one was started in, where there is one, and the
 /// three family variables are removed rather than left alone when there is
-/// not.
+/// not. [`crate::hook::NESTED_ENV`] is removed always: a spawn from inside an
+/// agent's shell carries that agent's marker, and this pane is an agent.
 fn pane_env(
     snapshot: &BTreeMap<String, String>,
     bin: &Path,
@@ -613,6 +614,7 @@ fn pane_env(
     depth: u32,
 ) -> BTreeMap<String, String> {
     let mut env = snapshot.clone();
+    env.remove(crate::hook::NESTED_ENV);
     env.insert("AMX_BIN".to_string(), bin.to_string_lossy().into_owned());
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     env.insert(
@@ -1757,6 +1759,7 @@ mod tests {
             ("AMX_PARENT", "fix-login-a1b"),
             ("AMX_PARENT_DIR", "/state/agents/fix-login-a1b"),
             ("AMX_DEPTH", "3"),
+            ("AMX_NESTED", "1"),
         ]));
 
         let env = pane_env(
@@ -1786,6 +1789,9 @@ mod tests {
         assert_eq!(env.get(PARENT_ENV), None, "{env:?}");
         assert_eq!(env.get(PARENT_DIR_ENV), None, "{env:?}");
         assert_eq!(env.get(DEPTH_ENV), None, "{env:?}");
+        // The spawning agent's shell is marked nested, and this pane is an
+        // agent that reports for itself.
+        assert_eq!(env.get(crate::hook::NESTED_ENV), None, "{env:?}");
     }
 
     #[test]
