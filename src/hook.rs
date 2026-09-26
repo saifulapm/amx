@@ -235,8 +235,23 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
 
     let mut state = writer.state()?;
     let was = state.state;
+    let cut = state.interrupted_at;
     let before = meta.clone();
     let notice = apply(payload, &mut state, &mut meta);
+
+    // A turn amx cut short ended at the stamp, and claude said nothing then,
+    // so the record is still working when the next prompt comes. The phase
+    // does not move and the store would count the gap as work, so the cut
+    // turn is closed at the stamp and the new one opens now. Only where the
+    // prompt was the agent's own, which is what took the stamp off.
+    if was == Phase::Working
+        && cut > 0
+        && state.interrupted_at == 0
+        && moment(payload) == Some(Moment::Prompted)
+    {
+        state.worked = state.worked_by(cut);
+        state.since = crate::store::now();
+    }
 
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
 
@@ -2737,6 +2752,47 @@ mod tests {
             Some("I fixed the login bug.")
         );
         assert_eq!(agent.events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hook_a_prompt_after_an_interrupt_closes_the_cut_turn() {
+        // claude says nothing when a turn is cut short, so the record is still
+        // working when the next prompt comes. The cut turn ended at the stamp,
+        // and the hour between it and this prompt was nobody's work.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let cut = crate::store::now() - 3_600;
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                *state = State {
+                    state: Phase::Working,
+                    since: cut - 60,
+                    last_event: cut - 5,
+                    worked: 20,
+                    interrupted_at: cut,
+                    ..State::default()
+                }
+            })
+            .unwrap();
+
+        let before = crate::store::now();
+        assert_eq!(
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut r#"{"hook_event_name":"UserPromptSubmit","prompt":"carry on"}"#.as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+            ),
+            exit::OK
+        );
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.interrupted_at, 0);
+        assert_eq!(state.worked, 80, "the cut turn is closed at the stamp");
+        assert!(state.since >= before, "and the new one opens now");
     }
 
     #[test]
