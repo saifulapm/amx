@@ -57,9 +57,9 @@ pub const HEARTBEAT: &str = "heartbeat";
 /// see [`Agent::output`].
 pub const OUTPUT: &str = "output";
 /// How much of a transcript's end [`Agent::transcript_tail`] reads. A fixed
-/// cost however long the session has run, at the price of a turn larger than
-/// it: a tool result or an answer that long is cut, and the half line the seek
-/// opens on is dropped.
+/// cost however long the session has run, at the price of the half line the
+/// seek opens on, which is dropped; a last entry larger than it is read whole,
+/// with this much before it.
 const TAIL: u64 = 64 * 1024;
 /// How much of a command's output [`Agent::output_tail`] reads. About three
 /// thousand rows of eighty columns, which is more than a card is ever paged
@@ -1165,6 +1165,12 @@ impl Agent {
     /// line this opens on is one of those. Bytes that are half a character are
     /// in that same first line, and go the same way.
     ///
+    /// A last entry bigger than the window — a tool's result that read a large
+    /// file — would leave nothing whole to read, and the context with it,
+    /// which is the entry before. So where the window holds no line break but
+    /// the one ending the file, the tail is that entry whole and the [`TAIL`]
+    /// bytes before it.
+    ///
     /// `None` where the record names no transcript, or names one that is not
     /// there: the vendor announces the path in its first hook, and the file
     /// can be gone by the time somebody reads the record.
@@ -1175,11 +1181,36 @@ impl Agent {
     pub fn transcript_tail(meta: &Meta) -> Option<String> {
         let path = meta.transcript.as_ref()?;
         let mut file = File::open(path).ok()?;
-        let from = file.metadata().ok()?.len().saturating_sub(TAIL);
-        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut from = file.metadata().ok()?.len().saturating_sub(TAIL);
         let mut bytes = Vec::new();
+        file.seek(SeekFrom::Start(from)).ok()?;
         file.read_to_end(&mut bytes).ok()?;
+        let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+        if from > 0 && !body.contains(&b'\n') {
+            from = Self::line_start(&mut file, from)?.saturating_sub(TAIL);
+            bytes.clear();
+            file.seek(SeekFrom::Start(from)).ok()?;
+            file.read_to_end(&mut bytes).ok()?;
+        }
         Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Where the line holding `at` starts: just past the nearest line break
+    /// before it, read back a [`TAIL`] at a time, or the file's start.
+    fn line_start(file: &mut File, at: u64) -> Option<u64> {
+        let mut end = at;
+        let mut chunk = Vec::new();
+        while end > 0 {
+            let start = end.saturating_sub(TAIL);
+            chunk.resize((end - start) as usize, 0);
+            file.seek(SeekFrom::Start(start)).ok()?;
+            file.read_exact(&mut chunk).ok()?;
+            if let Some(at) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                return Some(start + at as u64 + 1);
+            }
+            end = start;
+        }
+        Some(0)
     }
 
     /// How it was started.
@@ -2628,6 +2659,39 @@ mod tests {
             crate::conversation::latest(crate::vendor::Transcript::Claude, &tail).as_deref(),
             Some("Read src/importer.rs"),
             "and the rest of the tail reads as the transcript it is"
+        );
+    }
+
+    #[test]
+    fn store_transcript_tail_holds_a_last_entry_bigger_than_the_window() {
+        let root = TempDir::new().unwrap();
+        let mut record = meta("fix-login-a1b");
+        let path = root.path().join("abc-123.jsonl");
+        record.transcript = Some(path.clone());
+
+        // The call that read a large file, and its result bigger than the
+        // whole tail: the window opens inside the result and holds no line
+        // a reading can parse.
+        let called = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"big.log\"}}],\"usage\":{\"input_tokens\":1200}}}\n";
+        let result = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":\"{}\"}}]}}}}\n",
+            "x".repeat(2 * TAIL as usize)
+        );
+        let session = "{\"type\":\"user\",\"message\":{\"content\":\"read it\"}}\n".repeat(2000)
+            + called
+            + &result;
+        std::fs::write(&path, &session).unwrap();
+
+        let tail = Agent::transcript_tail(&record).unwrap();
+        assert!(tail.ends_with(&result), "the last entry whole");
+        assert!(
+            tail.len() <= result.len() + TAIL as usize,
+            "and no more than a window before it"
+        );
+        assert_eq!(
+            crate::conversation::context_and_last_words(crate::vendor::Transcript::Claude, &tail).0,
+            Some(1200),
+            "so the call before it still gives the context"
         );
     }
 
