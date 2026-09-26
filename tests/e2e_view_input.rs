@@ -1641,8 +1641,11 @@ fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
     types(&amx, &view, "n");
     types(&amx, &view, "/rev");
-    amx.until("the word on the line", || {
-        screen(&amx, &view).contains("❯ /rev").then_some(())
+    // The list is what escape takes: wait for it, not only for the word,
+    // or escape can land before the list is up.
+    amx.until("the band under the line", || {
+        let drawn = screen(&amx, &view);
+        (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(())
     });
 
     // One key back from a list is the list gone, and the line is what the next
