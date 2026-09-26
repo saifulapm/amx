@@ -530,6 +530,18 @@ all, a shape the table above never reached — and the walk printed that row at
 the foot of the view's card as the agent's own output. The walk now stands on
 `ing…` as the rule does, and that row is cut.
 
+**On the row over the composer, and nowhere else (2026-09-26).** `ing…` is
+also what claude's elision leaves after any gerund it cuts short. The
+2026-09-21 capture of a turn interrupted with esc carries `⎿  Initializing…`
+on a tool result above the interrupt, and a statusline elided in the middle of
+a branch name can end `reading…` under the composer; both read `working` over
+an agent at rest. The rule now carries `over_composer`: the fragment counts
+only on the row the furniture walk finds directly over the composer's top
+border, past the effort hint, blank rows and a `⎿  Tip:` row. The /btw overlay
+while it answers (`· Answering…`) has no composer under it, so it now reads
+`unknown`, and at 54 columns the background screen's `Preparing…` in the
+agents panel is no longer the spinner's: `background_agents` names it.
+
 ## `idle_prompt`
 
 Holds everywhere, on the anchor it was moved to. `⏵⏵` and `⏸` were on the
@@ -742,9 +754,9 @@ agent*, and needs none, because that is what an unclaimed screen already says.
 
         Esc to close
 
-`· Answering…` carries `ing…`, so the spinner rule has it, and that is the
-answer a person wants: a side question being answered is a turn running. Once it
-has answered:
+`· Answering…` carries `ing…`, and the spinner rule had it until 2026-09-26.
+It is on no row over a composer, and the rule now reads only that row, so the
+overlay reads `unknown` while it answers. Once it has answered:
 
     ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
@@ -851,9 +863,9 @@ over it.
 
 At 54 columns the agents panel elides its subagent's label to `Preparing…`,
 which is the whole of the spinner rule's anchor, drawn on a row
-under the mode footer. Both rules hold on that screen and both say `working`;
-which of them names it is the document order's business, and `spinner` comes
-first. The coincidence is why the rule under it was measured at the other four
+under the mode footer. Since 2026-09-26 the spinner reads only the row over the
+composer, so `background_agents` names that screen as it does the other four.
+The coincidence is why the rule under it was measured at the other four
 widths as well.
 
 The glyph is not what the rule reads. `✻` is one of the six the spinner cycles

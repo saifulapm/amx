@@ -2584,7 +2584,9 @@ test reads_the_line ... ok
   ⎿  Read 210 lines
 
 ✢ Forging… (22s · ↓ 1.3k tokens)
+────────────────────────────────────────
 ❯
+────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
@@ -3233,7 +3235,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // seventh. What they have in common is that they are one character and
         // not a word, which is the whole of what this leans on.
         for glyph in ["✻", "✽", "✢", "✶", "·", "*"] {
-            let screen = format!("{glyph} Smooshing… (7s · thinking with xhigh effort)\n");
+            let screen = format!(
+                "{glyph} Smooshing… (7s · thinking with xhigh effort)\n────────────────────────────────────────\n❯\n────────────────────────────────────────\n  ⏵⏵ auto mode on\n"
+            );
             let reading = reading(&state(Phase::Working, 1_000), true, Some(&screen), 1_100);
             assert_eq!(
                 reading.doing.as_deref(),

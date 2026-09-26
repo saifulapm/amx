@@ -140,6 +140,12 @@ placeholders = [
 # the mid-turn capture `● Wibbling… (20s)` sat directly on top of the hint row
 # with no blank between, and both of them came through onto the card.
 #
+# `tip` is the row claude 2.1.226 drew between its spinner and the composer's
+# top border mid-turn, `  ⎿  Tip: Did you know you can drag and drop image
+# files into your terminal?` (2026-08-12, the working capture in the rules'
+# tests). The walk steps over it on its way to the spinner, and the gap in it
+# is folded the way `interrupted`'s is below.
+#
 # `interrupted` is no part of that walk either. It is what the row claude
 # leaves in its transcript when somebody presses esc in front of it OPENS with,
 # and it is the only account of that turn ending there is: the vendor sends
@@ -221,6 +227,7 @@ bottom = 2
 beneath = ["● ", "◯ "]
 panel = 8
 hint = ["/effort"]
+tip = ["⎿  Tip:"]
 interrupted = ["⎿  Interrup"]
 shells = ["shell", "·"]
 
@@ -650,16 +657,24 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 # what this rule used to stand on — a margin spent rather than a rule broken,
 # and the reason the `[furniture] spinner` walk above wants driving next.
 #
-# This is still the weakest rule in the file: one fragment, no `within`, no
-# `not_below`. The floor reads the bottom rows, so an agent's own output can
-# carry `ing…` on one of them — a paste of another agent's pane, or prose that
-# ends a word in an ellipsis — and a wrong match here does not only mislabel a
-# row: naming a screen as non-blocking also clears a pending question off it.
-# It is the first rule to re-measure on a vendor bump.
+# One fragment is weak on its own, and it was matched anywhere on the floor
+# until 2026-09-26: the vendor's own elision after a gerund carries it too.
+# The 2026-09-21 capture of an interrupted turn has `⎿  Initializing…` on a
+# tool result three rows over the interrupt, and a statusline cut short in a
+# branch name ends `reading…` under the composer; both read `working` over an
+# agent at rest. `over_composer` is the fix: the fragment counts only on the
+# row the furniture walk finds directly over the composer, past the effort
+# hint, blank rows and a `tip` row. A screen with no composer the walk can
+# find — the /btw overlay, the transcript viewer, a pane too narrow for the
+# footer — is claimed by nothing here, which reads `unknown` rather than a
+# guess. A wrong match does not only mislabel a row: naming a screen as
+# non-blocking also clears a pending question off it. It is the first rule to
+# re-measure on a vendor bump.
 [[rule]]
 name = "spinner"
 state = "working"
 all = ["ing…"]
+over_composer = true
 
 # A turn is over by the hooks and the agent is still working: claude 2.1.270
 # fires Stop when the answer stops streaming and goes on running the subagents
@@ -773,8 +788,8 @@ within = 3
 # and puts no mode row under it either, so nothing in this document claims it
 # as things stand; it is named here because a screen in the composer's slot is
 # not the composer, and the rows this rule stands on are the composer's. The
-# overlay while it is still working is the spinner rule's, through
-# `· Answering…`, and that is the right answer about it.
+# overlay while it is still working carries `· Answering…` on no row over a
+# composer, so the spinner rule does not have it either and it reads unknown.
 [[rule]]
 name = "idle_prompt"
 state = "idle"

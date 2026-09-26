@@ -99,6 +99,12 @@ pub struct Rule {
     /// underneath them, so no window a rule's anchors fit tells them apart.
     #[serde(default)]
     pub not: Vec<String>,
+    /// Whether every anchor must be on the row the furniture walk finds
+    /// directly over the composer, which is where a vendor that spins a line
+    /// above its box spins it. The same words anywhere else on the screen are
+    /// the vendor's elision or the agent's own output.
+    #[serde(default)]
+    pub over_composer: bool,
     /// Whether the `any` anchors count only where they open a row: past its
     /// indent, or past the vendor's rule on a border row the vendor draws a
     /// status into. The same glyph in the middle of a row is somebody's text.
@@ -311,9 +317,23 @@ impl Rule {
             return false;
         }
 
+        // The one row every anchor has to be on, for a rule that says so.
+        let over = match self.over_composer {
+            true => match furniture.spinner_row(&screen.rows()) {
+                Some(row) => Some(row),
+                None => return false,
+            },
+            false => None,
+        };
+        let placed = |rows: Vec<usize>| -> Vec<usize> {
+            rows.into_iter()
+                .filter(|&row| over.is_none_or(|over| row == over))
+                .collect()
+        };
+
         let mut anchors: Vec<Vec<usize>> = Vec::with_capacity(self.all.len() + 1);
         for needle in &self.all {
-            let rows = screen.rows_of(needle);
+            let rows = placed(screen.rows_of(needle));
             if rows.is_empty() {
                 return false;
             }
@@ -333,6 +353,7 @@ impl Rule {
                     false => screen.rows_of(n),
                 })
                 .collect();
+            let rows = placed(rows);
             if rows.is_empty() {
                 return false;
             }
@@ -530,6 +551,11 @@ impl Screen {
             .filter(|(_, row)| furniture.unruled(row).starts_with(needle))
             .map(|(at, _)| at)
             .collect()
+    }
+
+    /// The rows as the pane drew them, for the furniture walk.
+    fn rows(&self) -> Vec<&str> {
+        self.shown.iter().map(String::as_str).collect()
     }
 
     /// Whether any of `needles` is anywhere in the rows a rule may see.
@@ -984,9 +1010,8 @@ mod tests {
 ";
 
     /// The same overlay while it works, off the same pane a moment earlier.
-    /// `· Answering…` is this vendor's own gerund and ellipsis, so the spinner
-    /// rule has the screen — which is the answer a person wants: a side
-    /// question being answered is a turn running.
+    /// `· Answering…` is this vendor's own gerund and ellipsis, on no row over
+    /// a composer, so the spinner rule does not have the screen.
     const BTW_ANSWERING_270_100: &str = "\
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
@@ -1021,8 +1046,8 @@ mod tests {
 
     /// The same at 54 columns, where the agents panel elides its subagent's
     /// label to `Preparing…`. That is the spinner rule's whole anchor, drawn on
-    /// a row under the mode footer, so both rules hold on this screen and the
-    /// document's order decides which of them names it. Both say working.
+    /// a row under the mode footer rather than over the composer, so the
+    /// background line is what names this screen.
     const BACKGROUND_270_54: &str = "\
 ✻ Waiting for 1 background agent to finish
                                     ● high · /effort
@@ -3156,10 +3181,13 @@ Only showing models from configured providers. Use /login to add providers.
             ("at 100 columns", BACKGROUND_270_100, "background_agents"),
             // At 54 the agents panel elides its subagent's label to
             // `Preparing…`, which is the whole of the spinner rule's anchor,
-            // on a row under the mode footer. Both rules hold and both say
-            // working; which of the two names the screen is the document
-            // order's to say, and the spinner comes first.
-            ("at 54, under an elided panel", BACKGROUND_270_54, "spinner"),
+            // on a row under the mode footer. That row is not the one over
+            // the composer, so the spinner does not hold on it.
+            (
+                "at 54, under an elided panel",
+                BACKGROUND_270_54,
+                "background_agents",
+            ),
             (
                 "at 40, wrapped after `to`",
                 BACKGROUND_270_40,
@@ -3236,12 +3264,14 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // The same overlay while it answers is a turn running, and it says so
-        // in the vendor's own grammar.
+        // The same overlay while it answers carries the vendor's own gerund
+        // and ellipsis, in the slot the composer had and with no composer
+        // under it. The spinner is the row over the composer, so there is no
+        // spinner here either.
         assert_eq!(
-            claim(rules, BTW_ANSWERING_270_100, Phase::Idle).phase(),
-            Some(Phase::Working),
-            "a side question being answered is a turn"
+            claim(rules, BTW_ANSWERING_270_100, Phase::Idle),
+            Claim::Unclaimed,
+            "a side question being answered is not the row over the composer"
         );
     }
 
@@ -4178,6 +4208,40 @@ Only showing models from configured providers. Use /login to add providers.
         );
     }
 
+    /// Saiful's `tell-me-about-this-f1n`, captured off a live claude 2.1.278
+    /// on 2026-09-21 after an esc: the turn's last tool result carries
+    /// `Initializing…`, which is the spinner's own `ing…` on a row of the
+    /// transcript. The gap after each `⎿` is a non-breaking space, as drawn.
+    const INTERRUPTED_278: &str = "\
+❯ Tell me about this project
+
+● Skill(mem)
+  ⎿ \u{a0}Initializing…
+  ⎿ \u{a0}Error: Unknown skill: mem. Did you mean new?
+  ⎿ \u{a0}Interrupted · What should Claude do instead?
+
+────────────────────────────────────────
+❯\u{a0}
+────────────────────────────────────────
+  Haiku 4.5 │ ◈ 9% │ amx (main) │ ◖ thinking
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+    /// The same pane at rest with its statusline elided from the right in the
+    /// middle of a branch name, which leaves the ending of a gerund and the
+    /// vendor's ellipsis under the composer.
+    const AN_ELIDED_STATUSLINE: &str = "\
+● done
+
+✻ Cogitated for 10s · done 2:19 PM
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  Haiku 4.5 │ ◈ 9% │ amx (fix-the-spinner-reading…
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
     /// claude's AskUserQuestion menu asking a question that opens the way a
     /// permission box's does. The menu is the widget: `Enter to select` is on
     /// no permission box.
@@ -4231,6 +4295,21 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ~/.claude/jobs/3876e46d/tmp/pane
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
 ";
+
+    #[test]
+    fn rules_claudes_spinner_is_the_row_over_its_composer_and_no_other() {
+        // `ing…` is the vendor's elision after a gerund as readily as it is
+        // the spinner: on a tool result in the transcript, and on a statusline
+        // cut short under the composer. Neither is the row the vendor spins.
+        for (what, screen) in [
+            ("an interrupted turn", INTERRUPTED_278),
+            ("an elided statusline", AN_ELIDED_STATUSLINE),
+        ] {
+            let claimed = claim(claude(), screen, Phase::Working);
+            assert_eq!(claimed.rule_name(), Some("idle_prompt"), "{what}");
+            assert_eq!(claimed.phase(), Some(Phase::Idle), "{what}");
+        }
+    }
 
     #[test]
     fn rules_a_frame_in_pis_tool_output_is_not_pis_spinner() {
