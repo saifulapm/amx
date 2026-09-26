@@ -167,7 +167,10 @@ Nine rules, in the order the document holds them.
   draws it inside the composer's top border, and the other three keep their row
   above the box. The message after the frame is not part of the rule, which is
   why the kinds that do not say `Working` are claimed too — two of them driven,
-  and the fourth is the same row with a fourth message on it.
+  and the fourth is the same row with a fourth message on it. The frame counts
+  only where it opens a row, past the indent or past the rule on the border
+  pi draws the working kind into (`any_opens`): a frame in the middle of a row
+  is a tool's own output, and a pi at rest under one read `working`.
 - **`login`** wants `(escape/ctrl+c to` — the `to` is what tells it from the
   three hint rows that spell the same key `escape/ctrl+c cancel`, and the
   parenthesis from the two selectors whose 0.85.1 hint row ends `Escape/Ctrl+C

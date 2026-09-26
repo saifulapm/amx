@@ -99,6 +99,11 @@ pub struct Rule {
     /// underneath them, so no window a rule's anchors fit tells them apart.
     #[serde(default)]
     pub not: Vec<String>,
+    /// Whether the `any` anchors count only where they open a row: past its
+    /// indent, or past the vendor's rule on a border row the vendor draws a
+    /// status into. The same glyph in the middle of a row is somebody's text.
+    #[serde(default)]
+    pub any_opens: bool,
     /// Whether this rule needs the screen to have held still before it may end
     /// a running turn.
     #[serde(default)]
@@ -251,7 +256,11 @@ impl Ruleset {
         // Ordered: the first rule that holds decides, and the rest are not
         // asked. A screen the specific rules have named is not also the
         // furniture underneath them.
-        let Some(rule) = self.rules.iter().find(|rule| rule.holds(&screen)) else {
+        let Some(rule) = self
+            .rules
+            .iter()
+            .find(|rule| rule.holds(&screen, &self.furniture))
+        else {
             return Claim::Unclaimed;
         };
         if rule.may_decide(recorded, held) {
@@ -272,7 +281,10 @@ impl Ruleset {
     /// question is quiescent.
     pub fn asking(&self, capture: &str) -> Option<Question> {
         let screen = Screen::new(capture);
-        let rule = self.rules.iter().find(|rule| rule.holds(&screen))?;
+        let rule = self
+            .rules
+            .iter()
+            .find(|rule| rule.holds(&screen, &self.furniture))?;
         rule.question(capture)
     }
 }
@@ -291,7 +303,7 @@ impl Rule {
     /// the transcript pushed the box off. Trying every row can only make a
     /// rule hold where it failed; the floor `apart` still refuses a lone
     /// bottom border, because no choice of rows on that screen spans enough.
-    fn holds(&self, screen: &Screen) -> bool {
+    fn holds(&self, screen: &Screen, furniture: &Furniture) -> bool {
         // A string the screen names itself with settles it before any of this:
         // no choice of rows can make a screen that says it is something else
         // into the one this rule is about.
@@ -313,7 +325,14 @@ impl Rule {
             // one chosen is the rest of the box — or, on a quotation, the
             // vendor's own chrome, which is what gives the guard something to
             // find.
-            let rows: Vec<usize> = self.any.iter().flat_map(|n| screen.rows_of(n)).collect();
+            let rows: Vec<usize> = self
+                .any
+                .iter()
+                .flat_map(|n| match self.any_opens {
+                    true => screen.rows_opening(n, furniture),
+                    false => screen.rows_of(n),
+                })
+                .collect();
             if rows.is_empty() {
                 return false;
             }
@@ -496,6 +515,17 @@ impl Screen {
             .iter()
             .enumerate()
             .filter(|(_, row)| row.contains(needle))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// Every row `needle` opens, past its indent and past the vendor's rule
+    /// on a row drawn into a border, top to bottom.
+    fn rows_opening(&self, needle: &str, furniture: &Furniture) -> Vec<usize> {
+        self.folded
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| furniture.unruled(row).starts_with(needle))
             .map(|(at, _)| at)
             .collect()
     }
@@ -4144,6 +4174,27 @@ Only showing models from configured providers. Use /login to add providers.
                 .any(|row| row.contains("Compacting")),
             "a wrapped status line is left whole"
         );
+    }
+
+    /// pi at rest after a tool call whose output drew one of the vendor's own
+    /// braille frames in the middle of a row, two rows over the composer.
+    const A_PI_FRAME_IN_TOOL_OUTPUT: &str = r"
+ $ pnpm install
+
+ resolving ⠏ 3/3 packages
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/eef72778/tmp/pipane
+↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)          (github-copilot) gpt-5-mini • minimal
+";
+
+    #[test]
+    fn rules_a_frame_in_pis_tool_output_is_not_pis_spinner() {
+        let claimed = claim(pi(), A_PI_FRAME_IN_TOOL_OUTPUT, Phase::Working);
+        assert_eq!(claimed.rule_name(), Some("prompt"));
+        assert_eq!(claimed.phase(), Some(Phase::Idle));
     }
 
     #[test]

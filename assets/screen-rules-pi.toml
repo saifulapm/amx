@@ -740,6 +740,13 @@ asks = { above = ">" }
 # better of the two answers available: the pane is busy, and what it read
 # before was `unknown`.
 #
+# `any_opens` is what keeps a frame somebody else drew off this rule. Every
+# kind of the status line opens on its frame, on a row of its own or past the
+# rule of the border it is drawn into, and so does the `!cmd` box. A tool's own
+# output draws the same glyphs wherever it likes: a progress line two rows over
+# the composer with a frame in the middle of it read `working` over a pi at
+# rest, for as long as it stayed on the pane.
+#
 # One measured floor, on 0.84.4: the spinner was the first row a short pane
 # lost. At eight rows it was still on the screen; at six the box, the working
 # directory and the stats line were all that fit, and a running pi read idle.
@@ -750,6 +757,7 @@ name = "spinner"
 state = "working"
 all = ["────────────────────"]
 any = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+any_opens = true
 within = 4
 
 # pi is waiting for the credentials a provider wants. `/login` ends here on
