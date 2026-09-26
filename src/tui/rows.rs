@@ -328,7 +328,7 @@ pub enum Item {
 /// place in a table that is built again every second, and what somebody shut
 /// has to be remembered against something that does not move under them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Key {
+pub enum Key {
     Group(Group),
     Project(PathBuf),
 }
@@ -889,6 +889,19 @@ impl List {
 
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// Where the heading `key` names stands now, and what it answers for.
+    pub fn heading_at(&self, key: &Key) -> Option<(usize, Under)> {
+        self.items
+            .iter()
+            .enumerate()
+            .find_map(|(at, item)| match item {
+                Item::Heading(under, _) if self.key(*under).as_ref() == Some(key) => {
+                    Some((at, *under))
+                }
+                _ => None,
+            })
     }
 
     /// The agent a line stands for, if it stands for one.
@@ -1835,7 +1848,7 @@ impl List {
     }
 
     /// What a heading stands for, in terms that outlive the next reading.
-    fn key(&self, under: Under) -> Option<Key> {
+    pub fn key(&self, under: Under) -> Option<Key> {
         match under {
             Under::Group(group) => Some(Key::Group(group)),
             Under::Project(n) => self.projects.get(n).cloned().map(Key::Project),
@@ -1867,8 +1880,27 @@ impl List {
             }),
             On::Nothing => None,
         };
-        if let Some(at) = found {
-            self.cursor = at;
+        match (found, held) {
+            (Some(at), _) => self.cursor = at,
+            // The agent the cursor was on has gone from the list. The line
+            // that has drifted into its place is some other agent, and a key
+            // meant for the one that went would land on it: the cursor goes to
+            // the heading over where it was instead, which no single key acts
+            // on irreversibly.
+            (None, On::Agent(_)) if !self.items.is_empty() => {
+                let over = self.items[..=self.cursor.min(self.items.len() - 1)]
+                    .iter()
+                    .rposition(|item| matches!(item, Item::Heading(..)))
+                    .or_else(|| {
+                        self.items
+                            .iter()
+                            .position(|item| matches!(item, Item::Heading(..)))
+                    });
+                if let Some(at) = over {
+                    self.cursor = at;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2987,10 +3019,12 @@ mod tests {
         ]);
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
-        // And when the agent it was on goes, the cursor lands on a line that
-        // is still there.
+        // And when the agent it was on goes, the cursor lands on the heading
+        // over where it was rather than on whichever agent drifted into its
+        // line: a key meant for the one that went must not reach another.
         list.show(vec![view("ask-a1b", Phase::Idle, 10)]);
-        assert_eq!(list.selected().unwrap().id(), "ask-a1b");
+        assert!(list.on_heading(), "a heading, not the agent below it");
+        assert!(list.selected().is_none());
     }
 
     #[test]

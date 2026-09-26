@@ -554,6 +554,11 @@ struct Arm {
     /// Whether the first press was on a heading, which is where the press
     /// that forgets them all has to land again.
     swept: bool,
+    /// Which heading that was, in terms that outlive the next reading — or
+    /// the heading standing over the rows once that one has dissolved, which
+    /// [`Screen::keep_the_sweep`] moves it to. A press on any other heading
+    /// is a first press of its own, whatever rows the two share.
+    heading: Option<rows::Key>,
     /// Whether it was `c` that armed them, which is a press about everything
     /// on the wall that has finished rather than about the row the cursor is
     /// on. The two kinds do not answer each other's second press: a `ctrl+x`
@@ -1388,10 +1393,40 @@ impl Screen {
             }
         }
         let on = self.list.selected().map(|view| view.id().to_string());
+        let pointed = self.hover.and_then(|at| self.line_named(at));
         self.list.show(views);
         let still = self.list.selected().map(|view| view.id());
         if on.is_some() && on.as_deref() != still {
             self.wall.follow.set(true);
+        }
+        // An agent the cursor was on that has gone from the list takes its arm
+        // with it: the rows have moved, and a second press is about a row the
+        // person can no longer see.
+        if let Some(on) = &on
+            && self.list.agent_by_id(on).is_none()
+        {
+            self.arm = None;
+        }
+        // The pointer stays only on the line it was resting on. Rows that moved
+        // under it carry another agent to that place, and a key read where the
+        // pointer is would reach that agent instead.
+        if self.hover.is_some_and(|at| self.line_named(at) != pointed) {
+            self.hover = None;
+        }
+    }
+
+    /// What the line at `at` stands for, in terms that outlive a reading: an
+    /// agent's id, or a heading's key.
+    fn line_named(&self, at: usize) -> Option<String> {
+        match self.list.items().get(at)? {
+            rows::Item::Agent(_) => self
+                .list
+                .agent(self.list.items()[at])
+                .map(|view| format!("agent:{}", view.id())),
+            rows::Item::Heading(under, _) => {
+                self.list.key(*under).map(|key| format!("heading:{key:?}"))
+            }
+            _ => None,
         }
     }
 
@@ -1473,6 +1508,11 @@ impl Screen {
     /// heading standing over them: the second press lands on what the first
     /// one was about. A cursor anywhere else is left alone — a row reads its own
     /// presses, and only a heading is a keystroke from sweeping.
+    ///
+    /// The arm follows too. While the heading that was pressed is still on the
+    /// wall, its own second press is the one that finishes the sweep and a
+    /// press on any other heading arms that one instead. Once it has gone, the
+    /// heading standing over the armed rows is the arm's heading from then on.
     fn keep_the_sweep(&mut self) {
         let Some(arm) = self
             .arm
@@ -1481,22 +1521,37 @@ impl Screen {
         else {
             return;
         };
+        if arm
+            .heading
+            .as_ref()
+            .is_some_and(|key| self.list.heading_at(key).is_some())
+        {
+            return;
+        }
         let covers = |under: rows::Under| {
             self.list
                 .members(under)
                 .iter()
                 .any(|view| arm.ids.iter().any(|id| id == view.id()))
         };
-        match self.list.heading() {
-            Some(under) if !covers(under) => {}
-            _ => return,
-        }
-        let landing = self.list.items().iter().position(|item| match item {
-            rows::Item::Heading(under, _) => covers(*under),
-            _ => false,
-        });
-        if let Some(at) = landing {
+        let landing = self
+            .list
+            .items()
+            .iter()
+            .enumerate()
+            .find_map(|(at, item)| match item {
+                rows::Item::Heading(under, _) if covers(*under) => Some((at, *under)),
+                _ => None,
+            });
+        let Some((at, under)) = landing else {
+            return;
+        };
+        let key = self.list.key(under);
+        if self.list.heading().is_some() {
             self.list.land(at);
+        }
+        if let Some(arm) = self.arm.as_mut() {
+            arm.heading = key;
         }
     }
 
@@ -3014,7 +3069,10 @@ impl Screen {
         let Some(view) = self.list.selected() else {
             return;
         };
-        if self.forgetting().iter().any(|id| id == view.id()) {
+        // Only a row's own arm: rows a heading armed are finished by the
+        // heading's second press, which stops the live ones first. A press on
+        // one of them is a first press on that row.
+        if !self.swept() && self.forgetting().iter().any(|id| id == view.id()) {
             self.arm = None;
             self.notice = kept_a_tree(act::forget(root, view));
             self.acted();
@@ -3041,6 +3099,7 @@ impl Screen {
         self.arm = Some(Arm {
             ids: vec![id],
             swept: false,
+            heading: None,
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
@@ -3077,16 +3136,12 @@ impl Screen {
     /// not be on its own: the failure is on the screen instead, and the rest
     /// of the group goes.
     fn sweep_or_arm(&mut self, root: &Path, under: rows::Under) {
+        let pressed = self.list.key(under);
         let again = self
             .arm
             .as_ref()
             .filter(|arm| arm.swept && !arm.cleared && arm.at.elapsed() < ARMED)
-            .is_some_and(|arm| {
-                self.list
-                    .members(under)
-                    .iter()
-                    .any(|view| arm.ids.iter().any(|id| id == view.id()))
-            });
+            .is_some_and(|arm| arm.heading.is_some() && arm.heading == pressed);
         if again {
             let arm = self.arm.take().expect("the arm that was just read");
             // What the first press armed, as the list has it now: an agent
@@ -3139,6 +3194,7 @@ impl Screen {
         self.arm = Some(Arm {
             ids,
             swept: true,
+            heading: self.list.key(under),
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
@@ -3210,6 +3266,7 @@ impl Screen {
         self.arm = Some(Arm {
             ids,
             swept: false,
+            heading: None,
             cleared: true,
             why,
             held,
@@ -8048,6 +8105,175 @@ diff --git a/src/bar.rs b/src/bar.rs
         // window a row gets.
         screen.act(ctrl('x'), root.path(), &config, None).unwrap();
         assert!(crate::store::list(root.path()).unwrap().is_empty());
+    }
+
+    /// A reading of an agent in `phase`, settled there since the first second.
+    fn in_phase(id: &str, phase: Phase) -> View {
+        reading(
+            id,
+            phase,
+            State {
+                state: phase,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    }
+
+    #[test]
+    fn ctrl_x_a_row_press_under_a_heading_arm_stops_before_forgetting() {
+        // The heading armed two live agents. A press on one of their rows is
+        // that row's own first press: it stops the agent and arms the row, and
+        // the record stands.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "busy-a1b");
+        idle(root.path(), "busy-b2c");
+        let mut screen = watching(vec![
+            in_phase("busy-a1b", Phase::Working),
+            in_phase("busy-b2c", Phase::Working),
+        ]);
+        screen.list.up();
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed().len(), 2, "the heading armed both");
+
+        screen.list.down();
+        assert_eq!(screen.list.selected().unwrap().id(), "busy-a1b");
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(
+            Agent::open(root.path(), "busy-a1b")
+                .unwrap()
+                .state()
+                .unwrap()
+                .state,
+            Phase::Stopped,
+            "stopped"
+        );
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            2,
+            "and nothing forgotten under a running pane"
+        );
+        assert_eq!(screen.armed(), ["busy-a1b".to_string()], "armed on its own");
+    }
+
+    #[test]
+    fn ctrl_x_a_first_press_on_another_heading_only_arms() {
+        // Working was armed; one of its agents ended into Completed, where a
+        // finished row already was. Working is still on the wall, so a press
+        // on Completed is Completed's own first press, and the live agent left
+        // under Working is nobody's business.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        for id in ["busy-a1b", "busy-b2c", "done-c3d"] {
+            idle(root.path(), id);
+        }
+        let mut screen = watching(vec![
+            in_phase("busy-a1b", Phase::Working),
+            in_phase("busy-b2c", Phase::Working),
+            in_phase("done-c3d", Phase::Done),
+        ]);
+        screen.list.top();
+        assert!(screen.list.on_heading());
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed().len(), 2);
+
+        screen.showing(vec![
+            in_phase("busy-a1b", Phase::Working),
+            in_phase("busy-b2c", Phase::Done),
+            in_phase("done-c3d", Phase::Done),
+        ]);
+        screen.keep_the_sweep();
+        screen.list.bottom();
+        while !screen.list.on_heading() {
+            screen.list.up();
+        }
+        assert_eq!(
+            screen.list.heading(),
+            Some(rows::Under::Group(rows::Group::Completed))
+        );
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+
+        assert_eq!(
+            crate::store::list(root.path()).unwrap().len(),
+            3,
+            "a first press forgets nothing"
+        );
+        assert_eq!(
+            Agent::open(root.path(), "busy-a1b")
+                .unwrap()
+                .state()
+                .unwrap()
+                .state,
+            Phase::Idle,
+            "and stops nothing"
+        );
+        let mut armed = screen.armed().to_vec();
+        armed.sort();
+        assert_eq!(armed, ["busy-b2c", "done-c3d"], "it armed its own rows");
+    }
+
+    #[test]
+    fn ctrl_x_a_reread_moves_no_pointer_onto_another_agent() {
+        let mut screen = watching(vec![
+            in_phase("ask-a1b", Phase::Waiting),
+            in_phase("busy-b2c", Phase::Working),
+        ]);
+        let at = screen
+            .list
+            .items()
+            .iter()
+            .position(|item| {
+                screen
+                    .list
+                    .agent(*item)
+                    .is_some_and(|view| view.id() == "ask-a1b")
+            })
+            .unwrap();
+        screen.hover = Some(at);
+
+        // The same wall again: the pointer stays where it was resting.
+        screen.showing(vec![
+            in_phase("ask-a1b", Phase::Waiting),
+            in_phase("busy-b2c", Phase::Working),
+        ]);
+        assert_eq!(screen.hover, Some(at));
+
+        // The agent it rested on moves group, and another comes to that line.
+        screen.showing(vec![
+            in_phase("ask-a1b", Phase::Done),
+            in_phase("busy-b2c", Phase::Waiting),
+        ]);
+        assert_eq!(screen.hover, None, "the pointer is on nothing now");
+    }
+
+    #[test]
+    fn ctrl_x_a_vanished_armed_row_forgets_nothing() {
+        // A finished row armed, then gone from the wall — forgotten in another
+        // shell. The row that drifted into its line is somebody else's, and
+        // the press meant for the one that went must not forget it.
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        idle(root.path(), "done-a1b");
+        idle(root.path(), "done-b2c");
+        let mut screen = watching(vec![
+            in_phase("done-a1b", Phase::Done),
+            in_phase("done-b2c", Phase::Done),
+        ]);
+        assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert_eq!(screen.armed(), ["done-a1b".to_string()]);
+
+        screen.showing(vec![in_phase("done-b2c", Phase::Done)]);
+        assert!(screen.armed().is_empty(), "the arm went with its row");
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+        assert!(
+            crate::store::list(root.path())
+                .unwrap()
+                .contains(&"done-b2c".to_string()),
+            "the row that drifted in is still there"
+        );
     }
 
     #[test]

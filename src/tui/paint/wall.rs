@@ -1455,6 +1455,7 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string()],
             swept: false,
+            heading: None,
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
@@ -1511,6 +1512,7 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string()],
             swept: false,
+            heading: None,
             cleared: true,
             why: vec!["#12 merged".to_string()],
             held: Vec::new(),
@@ -1562,6 +1564,7 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string(), "port-importer-b2c".to_string()],
             swept: false,
+            heading: None,
             cleared: true,
             why: vec!["#12 merged".to_string(), "#13 merged".to_string()],
             held: vec!["fix-login-a1b".to_string()],
@@ -1608,6 +1611,7 @@ mod tests {
         screen.arm = Some(Arm {
             ids: vec!["fix-login-a1b".to_string(), "port-importer-b2c".to_string()],
             swept: true,
+            heading: None,
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
