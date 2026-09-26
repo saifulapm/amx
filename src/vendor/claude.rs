@@ -252,6 +252,9 @@ pub const HOOKS: Hooks = Hooks {
     idle_notice: "idle_prompt",
     permission_notice: "permission_prompt",
     permission_sentence: "Claude needs your permission to use {tool}",
+    // Read off 121 real UserPromptSubmit payloads on 2026-09-26: a background
+    // task that finished, and a message from another agent.
+    injected: &["<task-notification", "<agent-message"],
 };
 
 /// The sentence claude puts on a permission box about `tool`.
@@ -497,6 +500,15 @@ mod tests {
             hooks.idle_notice, hooks.permission_notice,
             "a nudge about a session nobody is using is not a question"
         );
+    }
+
+    #[test]
+    fn claude_names_the_prompts_it_types_into_a_session_itself() {
+        // Read off 121 real UserPromptSubmit payloads: a background task
+        // finishing and a message from another agent arrive as prompts nobody
+        // typed, and each opens with its own tag.
+        let hooks = VENDOR.hooks.expect("claude reports through hooks");
+        assert_eq!(hooks.injected, ["<task-notification", "<agent-message"]);
     }
 
     #[test]

@@ -261,13 +261,14 @@ pub const HOOKS: Hooks = Hooks {
     ],
     // None of these: pi's extension takes every event without a matcher, has
     // no tool that draws a menu and waits on it, sends no typed notices about
-    // an idle session or a permission box, and draws no permission box to
-    // write a sentence on.
+    // an idle session or a permission box, draws no permission box to write a
+    // sentence on, and starts no turn of its own.
     matcher: "",
     question_tool: "",
     idle_notice: "",
     permission_notice: "",
     permission_sentence: "",
+    injected: &[],
 };
 
 #[cfg(test)]
@@ -345,6 +346,20 @@ mod tests {
         // agent_start; the user message pi then starts is the word it went in.
         assert_eq!(HOOKS.moment("message_start"), Some(Moment::Taken));
         assert_eq!(HOOKS.moment("Stop"), None, "claude's names are not pi's");
+    }
+
+    #[test]
+    fn pi_types_no_prompt_of_its_own_and_says_how_a_turn_ended() {
+        // Nothing pi delivers as a turn is a prompt somebody did not type.
+        assert!(HOOKS.injected.is_empty());
+        // The extension names the reason the answer stopped, and a branch that
+        // ends on a tool's result is a turn cut off after the tool ran, with
+        // no answer to it.
+        let Wire::File { body, .. } = HOOKS.wire else {
+            unreachable!()
+        };
+        assert!(body.contains("fields.stop_reason ="), "{body}");
+        assert!(body.contains("role === \"toolResult\""), "{body}");
     }
 
     #[test]

@@ -101,6 +101,17 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
         "the hooks are written around turns that run to their end: {kinds:?}"
     );
 
+    // Nor is it only the row that says so. The vendor will never send the
+    // turn's end, so the reader that saw it writes it down, once.
+    let record = amx.state("port-importer-c3d");
+    assert_eq!(record["state"], "idle", "{record}");
+    assert!(record["question"].is_null(), "{record}");
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == "read.turn-end").count(),
+        1,
+        "{kinds:?}"
+    );
+
     // And a caller that was waiting on the answer is told at once that there
     // is none, rather than being handed another turn's.
     let asked = Instant::now();
@@ -120,6 +131,74 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
         asked.elapsed() < Duration::from_secs(5),
         "the wait was over before it started: {:?}",
         asked.elapsed()
+    );
+}
+
+/// Start the harness's tmux server with this harness's config under it.
+///
+/// A timer the server fires runs `_park`, which reads the person's config for
+/// `park_after`, and a server the harness starts keeps whatever
+/// `XDG_CONFIG_HOME` the suite was run under. The session is the something
+/// else a machine has on it, so the park leaves a server behind.
+fn a_server_reading_this_config(amx: &Harness) {
+    let out = std::process::Command::new("tmux")
+        .args(["-L", amx.socket(), "-f", "/dev/null", "new-session", "-d"])
+        .args(["--", "sh", "-c", "while :; do sleep 1; done"])
+        .env("AMX_STATE_DIR", amx.state_root().parent().unwrap())
+        .env("HOME", amx.home())
+        .env("XDG_CONFIG_HOME", amx.home().join(".config"))
+        .output()
+        .expect("running tmux");
+    assert!(
+        out.status.success(),
+        "tmux: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
+    // The hook that ends a turn is what runs `on_idle` and sets the park
+    // timer. None comes for this one, so the reader that wrote the turn's end
+    // is what does both, and does them once however many looks follow.
+    let amx = Harness::new();
+    let said = amx.home().join("said-on_idle");
+    amx.config(&format!(
+        "park_after = 1\non_idle = \"{{ echo $AMX_STATE; cat; }} >> '{}'\"\n",
+        said.display()
+    ));
+    a_server_reading_this_config(&amx);
+    let id = "port-importer-c3d";
+    let pane = amx.play(id, "interrupted");
+    amx.until_state(id, "working");
+
+    let out = amx.amx(&["interrupt", id]);
+    assert_eq!(out.status.code(), Some(0));
+    amx.until("the vendor to go back to its prompt", || {
+        amx.capture(&pane).contains("⏵⏵").then_some(())
+    });
+    until_idle(&amx, id);
+
+    let text = amx.until("the idle command to have run", || {
+        let text = std::fs::read_to_string(&said).ok()?;
+        (text.lines().count() >= 2).then_some(text)
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "idle", "{text}");
+    let event: serde_json::Value = serde_json::from_str(lines[1]).expect("the event");
+    assert_eq!(event["kind"], "read.turn-end", "{text}");
+
+    // Nobody is attached, so the timer the reader set takes the pane.
+    amx.until("the park timer to take the pane", || {
+        (!amx.pane_alive(&pane)).then_some(())
+    });
+    for _ in 0..3 {
+        amx.amx(&["status", id, "--json"]);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&said).unwrap().lines().count(),
+        2,
+        "one idle command for one turn's end"
     );
 }
 

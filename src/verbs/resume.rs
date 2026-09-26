@@ -314,21 +314,13 @@ fn bring_back(
         RESUMED,
         serde_json::json!({ "session": session }),
     ))?;
-    // Everything the last turn left behind goes with it: an answer from before
-    // the agent stopped is not this session's answer, and an exit code is not
-    // how a running command ended. The count of messages sent stays, because
-    // the log it counts is still the agent's own, and so do the seconds it
-    // worked and the name somebody gave it, because it is the same agent.
-    writer.update_state(|state| {
+    writer.update_state_heard(agent.heartbeat(), |state| {
         *state = State {
-            seq: state.seq,
-            worked: state.worked,
-            name: state.name.take(),
             // Nobody is asking this session for anything, so nothing after the
             // session opens will say the agent is there. What only this
             // command knows goes on the record for the hook that opens it.
             opens_idle: message.is_none(),
-            ..State::default()
+            ..state.for_a_new_session()
         }
     })?;
     // A message is on the record before the pane is, which is

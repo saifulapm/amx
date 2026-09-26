@@ -292,3 +292,43 @@ fn result_children_surfaces_a_waiting_childs_question() {
         "the question rides in the collection: {object}"
     );
 }
+
+/// Put an event on an agent's log the way amx's own verbs put theirs there.
+fn happened(amx: &Harness, id: &str, kind: &str) {
+    use std::io::Write;
+    let line = json!({ "at": 1, "kind": kind, "payload": { "text": "and now the linter" } });
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(amx.agent_dir(id).join("events.jsonl"))
+        .expect("the agent's log");
+    writeln!(log, "{line}").expect("an event appended");
+}
+
+#[test]
+fn a_message_a_hand_interrupt_left_open_keeps_the_family_from_settling() {
+    // Esc in the pane ends the turn and says nothing, so the child reads idle
+    // with the message amx sent it still unanswered. Its answer on the record
+    // is the turn before's, and handing it back as this one's is the mistake.
+    let amx = Harness::new();
+    amx.play("parent-a1b", "happy-turn");
+    amx.until_state("parent-a1b", "idle");
+    amx.play("kid-one-b2c", "happy-turn");
+    amx.until_state("kid-one-b2c", "idle");
+    amx.set_meta("kid-one-b2c", json!({ "parent": "parent-a1b", "depth": 1 }));
+    happened(&amx, "kid-one-b2c", "send");
+
+    let out = amx.amx(&["wait", "--children", "parent-a1b", "--timeout", "2"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    let out = amx.amx(&["result", "--children", "parent-a1b", "--timeout", "2"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+
+    // `amx interrupt` does say so, and the turn it cut short has no answer.
+    happened(&amx, "kid-one-b2c", "interrupt");
+    let out = amx.amx(&["wait", "--children", "parent-a1b", "--timeout", "5"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "kid-one-b2c idle\n");
+    let out = amx.amx(&["result", "--children", "parent-a1b", "--timeout", "5"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "kid-one-b2c idle\n");
+}

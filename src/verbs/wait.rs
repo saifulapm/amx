@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::derive::{self, Evidence};
 use crate::store::{Agent, Phase};
+use crate::verbs::result::{self, Ended, Settled};
 use crate::{exit, paths, store};
 
 /// How often the records are read while waiting — `result`'s own poll, for the
@@ -90,7 +91,7 @@ pub fn run(
         let mut at = 0;
         while at < pending.len() {
             let view = derive::view(root, &pending[at], store::now())?;
-            if !settled(view.phase(), state) {
+            if !ready(root, &pending[at], view.phase(), state)? {
                 slowest = slowest.max(pace(&view.verdict.evidence));
                 at += 1;
                 continue;
@@ -155,19 +156,27 @@ pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
     Ok(children.into_iter().map(|(_, id)| id).collect())
 }
 
+/// Whether this agent's reading is what the wait was for, reading its log
+/// only where the answer turns on it.
+pub(crate) fn ready(root: &Path, id: &str, phase: Phase, wanted: Option<Phase>) -> Result<bool> {
+    let ended = match wanted {
+        Some(_) => Ended::NotYet,
+        None => result::ended(root, id, phase)?,
+    };
+    Ok(settled(phase, wanted, ended))
+}
+
 /// Whether this reading is what the wait was for.
 ///
-/// With no `--for`, the five phases where the agent is not in the middle of
-/// something: its turn is over, or it is stopped on a question. `Starting` and
-/// `Working` are agents still going, and `Unknown` is amx not knowing — a
-/// reading nobody can act on is not an agent that is ready.
-pub(crate) fn settled(phase: Phase, wanted: Option<Phase>) -> bool {
+/// With no `--for`, whatever `result` would stop waiting on: a turn that is
+/// over, or an agent stopped on a question. `Starting` and `Working` are
+/// agents still going, `Unknown` is amx not knowing — a reading nobody can act
+/// on is not an agent that is ready — and an idle agent with a message still
+/// in front of it has a turn to come.
+fn settled(phase: Phase, wanted: Option<Phase>, ended: Ended) -> bool {
     match wanted {
         Some(wanted) => phase == wanted,
-        None => matches!(
-            phase,
-            Phase::Waiting | Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
-        ),
+        None => result::settled(phase, ended) != Settled::NotYet,
     }
 }
 
@@ -194,23 +203,58 @@ mod tests {
             Phase::Failed,
             Phase::Stopped,
         ] {
-            assert!(settled(phase, None), "{phase}");
+            assert!(settled(phase, None, Ended::Turn), "{phase}");
         }
         // Still going, or amx not knowing: neither is an agent whose answer a
         // caller can go and take.
         for phase in [Phase::Starting, Phase::Working, Phase::Unknown] {
-            assert!(!settled(phase, None), "{phase}");
+            assert!(!settled(phase, None, Ended::Turn), "{phase}");
         }
+    }
+
+    #[test]
+    fn a_message_nothing_has_answered_keeps_an_idle_agent_from_settling() {
+        // Idle after a turn cut short by hand, with the message amx sent still
+        // in front of it: the answer on the record is the turn before's.
+        let root = tempfile::TempDir::new().unwrap();
+        record(root.path(), "a", Phase::Idle);
+        let said = |kind: &str| {
+            Agent::open(root.path(), "a")
+                .unwrap()
+                .writer()
+                .unwrap()
+                .append(&Event::new(
+                    kind,
+                    serde_json::json!({ "text": "and the linter" }),
+                ))
+                .unwrap();
+        };
+        said(crate::verbs::send::SEND);
+
+        let patience = Some(Duration::ZERO);
+        let (code, printed) = waited(root.path(), &["a"], false, None, patience);
+        assert_eq!(code, exit::TIMEOUT);
+        assert_eq!(printed, "");
+
+        // A resume ends the turn the message asked for, and the wait with it.
+        said("resume");
+        let (code, printed) = waited(root.path(), &["a"], false, None, patience);
+        assert_eq!(code, exit::OK);
+        assert_eq!(printed, "a idle\n");
     }
 
     #[test]
     fn for_a_named_phase_waits_for_that_one_and_no_other() {
         // `--for working` is how a caller confirms a fleet started, so the
         // phases the plain wait ends on are no longer endings.
-        assert!(settled(Phase::Working, Some(Phase::Working)));
-        assert!(!settled(Phase::Done, Some(Phase::Working)));
-        assert!(!settled(Phase::Waiting, Some(Phase::Working)));
-        assert!(settled(Phase::Unknown, Some(Phase::Unknown)));
+        assert!(settled(Phase::Working, Some(Phase::Working), Ended::NotYet));
+        assert!(!settled(Phase::Done, Some(Phase::Working), Ended::NotYet));
+        assert!(!settled(
+            Phase::Waiting,
+            Some(Phase::Working),
+            Ended::NotYet
+        ));
+        assert!(settled(Phase::Unknown, Some(Phase::Unknown), Ended::NotYet));
     }
 
     #[test]

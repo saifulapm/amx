@@ -27,7 +27,7 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::exit;
@@ -48,6 +48,12 @@ pub const ID_ENV: &str = "AMX_ID";
 /// [`crate::derive`].
 pub const NESTED_ENV: &str = "AMX_NESTED";
 
+/// The file claude hands a session-start hook for the variables its shells
+/// should have, per code.claude.com/docs/en/hooks. What is written there
+/// reaches every shell the session runs and none of its own later hooks
+/// (measured on 2.1.283, 2026-09-26), which is where [`NESTED_ENV`] belongs.
+const ENV_FILE: &str = "CLAUDE_ENV_FILE";
+
 /// Record one hook payload. Answers with the process's exit code, which is
 /// always `OK`.
 pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
@@ -58,12 +64,14 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
     let Ok(root) = crate::paths::state_root() else {
         return exit::OK;
     };
+    let env_file = std::env::var_os(ENV_FILE).map(PathBuf::from);
     run(
         id.as_deref(),
         &root,
         stdin,
         &mut std::io::stdout().lock(),
         config,
+        env_file.as_deref(),
     )
 }
 
@@ -84,6 +92,7 @@ pub fn run(
     stdin: &mut impl Read,
     out: &mut impl Write,
     config: &Config,
+    env_file: Option<&Path>,
 ) -> i32 {
     // Every early return here is a hook that is not amx's business, or a
     // record amx cannot reach. Both end quietly: this process is standing
@@ -99,7 +108,7 @@ pub fn run(
         return exit::OK;
     };
 
-    let _ = record(root, &agent, &payload, config);
+    let _ = record(root, &agent, &payload, config, env_file);
     if hears_the_answer(&agent) {
         let _ = writeln!(out, "{}", agent.dir().display());
     }
@@ -221,7 +230,18 @@ fn anothers(meta: &Meta, payload: &Value) -> bool {
 
 /// Fold one payload into an agent's record, under the writer's lock, and set
 /// the timer over the pane of a turn that has ended.
-pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> Result<()> {
+///
+/// The agent's own session opening also marks every shell it runs as nested,
+/// in the file the vendor handed the hook for that, so a claude started from
+/// one of them never reports as the agent. [`anothers`] cannot catch a
+/// `claude -c` there: it continues the agent's own session, under its id.
+pub fn record(
+    root: &Path,
+    agent: &Agent,
+    payload: &Value,
+    config: &Config,
+    env_file: Option<&Path>,
+) -> Result<()> {
     let writer = agent.writer()?;
     let mut meta = agent.meta()?;
     if anothers(&meta, payload) {
@@ -235,10 +255,25 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
 
     let mut state = writer.state()?;
     let was = state.state;
+    let cut = state.interrupted_at;
     let before = meta.clone();
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
+    let payload = &without_a_synthetic_answer(payload, &meta, format);
     let notice = apply(payload, &mut state, &mut meta);
 
-    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
+    // A turn amx cut short ended at the stamp, and claude said nothing then,
+    // so the record is still working when the next prompt comes. The phase
+    // does not move and the store would count the gap as work, so the cut
+    // turn is closed at the stamp and the new one opens now. Only where the
+    // prompt was the agent's own, which is what took the stamp off.
+    if was == Phase::Working
+        && cut > 0
+        && state.interrupted_at == 0
+        && moment(payload) == Some(Moment::Prompted)
+    {
+        state.worked = state.worked_by(cut);
+        state.since = crate::store::now();
+    }
 
     // The transcript is the second place an answer can be, and it is read only
     // when the payload had none. Reading a file is all this costs; asking the
@@ -278,10 +313,82 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
 
     // The same fork, and the same answer about who is looking, for both: this
     // hook is standing between the vendor and its next token, and one child is
-    // what it can afford.
+    // what it can afford. Idle has no notice to go with it, and is what
+    // [`after_the_write`] is for.
     let errand = reached(written.state, was, notice.is_some())
+        .filter(|phase| *phase != Phase::Idle)
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
     notify::post(notice.as_ref(), config.notifications, errand.as_ref());
+    after_the_write(root, agent, &meta, was, &written, &event, config);
+
+    if moment(payload) == Some(Moment::Started)
+        && payload["agent_id"].is_null()
+        && let Some(file) = env_file
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(file)?;
+        writeln!(file, "export {NESTED_ENV}=1")?;
+    }
+    Ok(())
+}
+
+/// The payload, less an answer that is the vendor's note about a turn rather
+/// than anything the agent said.
+///
+/// claude ends a turn that never reached the model — an API error, a session
+/// limit — with a synthetic entry, and hands its words to the hook that ends
+/// the turn as the answer. Only the transcript says whose words they are, so
+/// it is read for a payload that carries an answer, and for no other.
+fn without_a_synthetic_answer(
+    payload: &Value,
+    meta: &Meta,
+    format: Option<crate::vendor::Transcript>,
+) -> Value {
+    let mut payload = payload.clone();
+    if moment(&payload) == Some(Moment::Ended)
+        && let Some(answer) = payload["last_assistant_message"].as_str()
+        && let Some(format) = format
+        && let Some(tail) = Agent::transcript_tail(meta)
+        && crate::conversation::synthetic_words(format, &tail)
+            .iter()
+            .any(|words| words == answer)
+        && let Some(fields) = payload.as_object_mut()
+    {
+        fields.remove("last_assistant_message");
+    }
+    payload
+}
+
+/// What a write that moved an agent to idle sets off: the `on_idle` errand,
+/// and the timer over the pane.
+///
+/// Run by whichever process wrote the phase, once. That is the hook where the
+/// vendor said its turn ended, and a reader where it said nothing and the pane
+/// did — see [`crate::derive`]'s `hear_what_went_unsaid`. A record already
+/// idle has had both, from whoever moved it there.
+///
+/// The errand is started here rather than behind the hook's fork: a reader is
+/// a process with threads in it, and forking one is not safe. Whether anybody
+/// is looking is asked of the agent's own pane, which is the pane the hook
+/// runs in, and asked only where somebody wrote a command to tell.
+pub fn after_the_write(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    was: Phase,
+    written: &State,
+    event: &crate::store::Event,
+    config: &Config,
+) {
+    if reached(written.state, was, false) != Some(Phase::Idle) {
+        return;
+    }
+    let server = Server::from_socket(meta.socket.clone());
+    if let Some(errand) = crate::errand::assembled(config, agent, meta, Phase::Idle, event) {
+        notify::start(&errand, Some(server.pane_watched(&meta.pane)));
+    }
 
     // The turn is over and the vendor is sitting at its prompt, holding the
     // couple of hundred megabytes it worked in. Nothing is watching for the
@@ -293,16 +400,14 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     // a git lookup and this path runs on every event the vendor sends: a tool
     // call is waiting on this hook, and it should not pay for a timer that
     // was never going to be set.
-    if written.state == Phase::Idle
-        && let Some(delay) = parks_in(&written, park_after(config, &meta))
+    if let Some(delay) = parks_in(written, park_after(config, meta))
         && let Some(command) = park_command(root, agent.id())
     {
         // A timer that could not be set is a pane that keeps its memory, and
         // that is not worth a word to somebody whose agent is waiting on this
         // process to return.
-        let _ = Server::from_socket(meta.socket).run_after(delay, &command);
+        let _ = server.run_after(delay, &command);
     }
-    Ok(())
 }
 
 /// The moment one event brought the agent to, where it is one somebody may
@@ -388,7 +493,7 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     let event = crate::store::Event::new("exit", serde_json::json!({ "code": code }));
     writer.append(&event)?;
 
-    let state = writer.update_state(|state| {
+    let state = writer.update_state_heard(agent.heartbeat(), |state| {
         state.exit = Some(code);
         // The pane goes with the command, so a question left on the record
         // here is one nobody can answer and nothing can deliver an answer to.
@@ -452,27 +557,59 @@ fn typed(payload: &Value, what: &str) -> bool {
     payload["notification_type"] == what
 }
 
-/// How many background shells the vendor says are still running.
+/// Whether a prompt is one the vendor typed into the session itself — see
+/// [`crate::vendor::Hooks`]'s `injected`. A record naming no vendor amx knows
+/// is asked like claude's.
+fn injected(payload: &Value, meta: &Meta) -> bool {
+    let hooks = meta
+        .agent
+        .as_deref()
+        .and_then(crate::registry::entry)
+        .and_then(|vendor| vendor.hooks)
+        .unwrap_or(claude::HOOKS);
+    payload["prompt"]
+        .as_str()
+        .is_some_and(|prompt| hooks.injected.iter().any(|tag| prompt.starts_with(tag)))
+}
+
+/// How many background shells, and how many other tasks, the vendor says are
+/// still running.
 ///
-/// It lists every shell the session has started, finished ones included, so
-/// what is counted is the ones it marks as running. A payload that lists none,
+/// It lists every task the session has started, finished ones included, so
+/// what is counted is the ones it marks as running. A task typed `shell` is a
+/// shell and anything else is an agent it started. A payload that lists none,
 /// and one from a vendor that has never listed any, are both an agent with
 /// nothing of its own left to do.
-fn running_shells(payload: &Value) -> u32 {
+fn running(payload: &Value) -> (u32, u32) {
     let Some(tasks) = payload["background_tasks"].as_array() else {
-        return 0;
+        return (0, 0);
     };
     tasks
         .iter()
         .filter(|task| task["status"] == "running")
-        .count() as u32
+        .fold((0, 0), |(shells, agents), task| {
+            if task["type"] == "shell" {
+                (shells + 1, agents)
+            } else {
+                (shells, agents + 1)
+            }
+        })
 }
 
 /// The line a row says that with.
-fn shells_running(count: u32) -> String {
-    match count {
-        1 => "1 shell running".to_string(),
-        many => format!("{many} shells running"),
+fn still_running(shells: u32, agents: u32) -> String {
+    let counted = |n: u32, one: &str| match n {
+        1 => format!("1 {one}"),
+        many => format!("{many} {one}s"),
+    };
+    match (shells, agents) {
+        (shells, 0) => format!("{} running", counted(shells, "shell")),
+        (0, agents) => format!("{} running", counted(agents, "agent")),
+        (shells, agents) => format!(
+            "{} and {} running",
+            counted(shells, "shell"),
+            counted(agents, "agent")
+        ),
     }
 }
 
@@ -578,6 +715,18 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
     let screen = match moment(payload)? {
         Moment::Started => {
+            // `/clear` opens a new session in the same pane, at the prompt it
+            // was typed at, and nothing the old session said is its answer.
+            if payload["source"] == "clear"
+                && let Some(session) = payload["session_id"].as_str()
+                && meta.session.as_deref() != Some(session)
+            {
+                *state = State {
+                    state: state.state,
+                    since: state.since,
+                    ..state.for_a_new_session()
+                };
+            }
             if let Some(session) = payload["session_id"].as_str() {
                 meta.session = Some(session.to_string());
             }
@@ -607,8 +756,12 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // A new turn retires the last one's answer. A turn that ends
             // without one would otherwise leave the previous answer on the
             // record, and `result` would hand it to a caller as this turn's.
-            state.result = None;
-            state.source = None;
+            // Unless nobody asked for this one: the vendor typed it into the
+            // session itself, and the answer stands.
+            if !injected(payload, meta) {
+                state.result = None;
+                state.source = None;
+            }
             Screen::Clear
         }
 
@@ -757,25 +910,31 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
         Moment::Ended => {
             state.asks(None);
-            state.background = running_shells(payload);
-            // The model has finished and the shells it started have not, and
+            let (shells, agents) = running(payload);
+            state.background = shells + agents;
+            // The model has finished and the tasks it started have not, and
             // the payload says so. A turn is what a caller waits on and what
             // the park timer ends, and both are about the agent rather than
             // about the model: `_park` took the pane off an agent whose shells
             // were still going, twice on 2026-09-18, ten minutes after a stop.
-            // So the count stands in the phase, and the answer this payload
-            // carries is not written down — an answer is what the turn came
-            // to, and this turn has not come to it yet.
+            // So the count stands in the phase.
             if state.background > 0 {
                 state.state = Phase::Working;
-                state.summary = Some(shells_running(state.background));
+                state.summary = Some(still_running(shells, agents));
             } else {
                 state.state = Phase::Idle;
                 state.summary = None;
-                if let Some(answer) = payload["last_assistant_message"].as_str() {
-                    state.result = Some(answer.to_string());
-                    state.source = Some(Source::Payload);
-                }
+            }
+            // The answer is what the model said, running tasks or not. Not one
+            // it was cut off in the middle of, nor one whose provider failed,
+            // and not over an answer a turn the vendor typed itself kept: every
+            // other turn took the last one off as it started.
+            if let Some(answer) = payload["last_assistant_message"].as_str()
+                && !matches!(payload["stop_reason"].as_str(), Some("aborted" | "error"))
+                && state.result.is_none()
+            {
+                state.result = Some(answer.to_string());
+                state.source = Some(Source::Payload);
             }
             Screen::Clear
         }
@@ -2102,27 +2261,135 @@ mod tests {
             "stop_hook_active": false,
             "last_assistant_message": "I started the build.",
             "background_tasks": [
-                { "id": "bash_1", "status": "running" },
-                { "id": "bash_2", "status": "completed" },
-                { "id": "bash_3", "status": "running" }
+                { "id": "bash_1", "type": "shell", "status": "running" },
+                { "id": "bash_2", "type": "shell", "status": "completed" },
+                { "id": "bash_3", "type": "shell", "status": "running" }
             ]
         }));
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.background, 2, "the finished one is not one of them");
         assert_eq!(state.summary.as_deref(), Some("2 shells running"));
         assert_eq!(
-            state.result, None,
-            "an answer is what a turn came to, and this one has not"
+            state.result.as_deref(),
+            Some("I started the build."),
+            "the model has answered, whatever is still running under it"
         );
+        assert_eq!(state.source, Some(Source::Payload));
         assert_eq!(parks_in(&state, 3_600), None, "and nothing takes its pane");
         assert_eq!(notice, None, "a working agent is on the wall already");
 
         // One of them is one shell, not one shells.
         let (one, _, _) = fold(json!({
             "hook_event_name": "Stop",
-            "background_tasks": [{ "id": "bash_1", "status": "running" }]
+            "background_tasks": [{ "id": "bash_1", "type": "shell", "status": "running" }]
         }));
         assert_eq!(one.summary.as_deref(), Some("1 shell running"));
+    }
+
+    #[test]
+    fn hook_a_turn_that_left_agents_running_names_them_apart_from_shells() {
+        // Anything the vendor lists that is not typed a shell is an agent it
+        // started, and a row saying "3 shells running" over two subagents
+        // sends somebody looking for shells that are not there.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "Stop",
+            "last_assistant_message": "Two reviewers are reading the diff.",
+            "background_tasks": [
+                { "id": "bash_1", "type": "shell", "status": "running" },
+                { "id": "a1", "type": "local_agent", "status": "running" },
+                { "id": "a2", "type": "local_agent", "status": "running" },
+                { "id": "a3", "type": "local_agent", "status": "completed" }
+            ]
+        }));
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.background, 3);
+        assert_eq!(
+            state.summary.as_deref(),
+            Some("1 shell and 2 agents running")
+        );
+        assert_eq!(
+            state.result.as_deref(),
+            Some("Two reviewers are reading the diff.")
+        );
+
+        let (agents, _, _) = fold(json!({
+            "hook_event_name": "Stop",
+            "background_tasks": [{ "id": "a1", "type": "local_agent", "status": "running" }]
+        }));
+        assert_eq!(agents.summary.as_deref(), Some("1 agent running"));
+    }
+
+    #[test]
+    fn hook_a_prompt_the_vendor_typed_itself_keeps_the_answer_before_it() {
+        // A background task finishing, or another agent's message, arrives as
+        // a prompt nobody typed. What the agent says to it is a note about
+        // that, not the answer to the task, which is already on the record.
+        let mut state = State {
+            state: Phase::Working,
+            summary: Some("1 shell running".to_string()),
+            background: 1,
+            result: Some("I started the build.".to_string()),
+            source: Some(Source::Payload),
+            ..State::default()
+        };
+        let mut meta = meta();
+
+        for prompt in [
+            "<task-notification>\n<task-id>bash_1</task-id>\n<status>completed</status>",
+            "<agent-message from=\"reviewer\">looks fine</agent-message>",
+        ] {
+            apply(
+                &json!({ "hook_event_name": "UserPromptSubmit", "prompt": prompt }),
+                &mut state,
+                &mut meta,
+            );
+            assert_eq!(state.state, Phase::Working, "{prompt}");
+            assert_eq!(state.result.as_deref(), Some("I started the build."));
+            assert_eq!(state.source, Some(Source::Payload));
+
+            apply(
+                &json!({ "hook_event_name": "Stop", "last_assistant_message": "Noted." }),
+                &mut state,
+                &mut meta,
+            );
+            assert_eq!(state.state, Phase::Idle, "{prompt}");
+            assert_eq!(
+                state.result.as_deref(),
+                Some("I started the build."),
+                "its end does not replace the answer on the record"
+            );
+        }
+
+        // A tag somewhere past the start is somebody's prompt about one.
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "what is a <task-notification>?" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.result, None);
+    }
+
+    #[test]
+    fn hook_an_aborted_or_failed_turn_has_no_answer() {
+        // pi ends a turn cut short, or one its provider failed, with whatever
+        // text the assistant had got to, and says why on the payload.
+        for reason in ["aborted", "error"] {
+            let (state, _, _) = fold(json!({
+                "hook_event_name": "Stop",
+                "stop_reason": reason,
+                "last_assistant_message": "Let me look at the"
+            }));
+            assert_eq!(state.state, Phase::Idle, "{reason}");
+            assert_eq!(state.result, None, "{reason}");
+            assert_eq!(state.source, None, "{reason}");
+        }
+
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "Stop",
+            "stop_reason": "stop",
+            "last_assistant_message": "Done."
+        }));
+        assert_eq!(state.result.as_deref(), Some("Done."));
     }
 
     #[test]
@@ -2371,6 +2638,7 @@ mod tests {
             &mut payload.as_bytes(),
             &mut std::io::sink(),
             &quiet(),
+            None,
         )
     }
 
@@ -2567,6 +2835,7 @@ mod tests {
                     park_after: 5,
                     ..quiet()
                 },
+                None,
             ),
             exit::OK
         );
@@ -2602,6 +2871,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2619,6 +2889,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2703,6 +2974,7 @@ mod tests {
                     &mut payload.as_bytes(),
                     &mut std::io::sink(),
                     &quiet(),
+                    None,
                 ),
                 exit::OK,
                 "{payload}"
@@ -2729,6 +3001,7 @@ mod tests {
                     .as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );
@@ -2737,6 +3010,154 @@ mod tests {
             Some("I fixed the login bug.")
         );
         assert_eq!(agent.events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hook_the_agents_own_start_marks_its_shells_nested() {
+        // claude sources the file it hands a session-start hook into every
+        // shell it runs, and not into its own later hooks (measured on 2.1.283,
+        // 2026-09-26). So a claude the agent starts from one of those shells
+        // knows it is nested before it says a word, `claude -c` included.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let file = root.path().join("sessionstart-hook-1.sh");
+        std::fs::write(&file, "export PATH=/opt/bin:$PATH\n").unwrap();
+        let hear = |payload: &str| {
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut payload.as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+                Some(&file),
+            )
+        };
+
+        // Another process's start, a subagent's and a turn are not the agent's
+        // session opening.
+        hear(r#"{"session_id":"nested","hook_event_name":"SessionStart","source":"startup"}"#);
+        hear(r#"{"session_id":"abc-123","hook_event_name":"SessionStart","agent_id":"sub-1"}"#);
+        hear(r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit","prompt":"go"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "export PATH=/opt/bin:$PATH\n"
+        );
+
+        hear(r#"{"session_id":"abc-123","hook_event_name":"SessionStart","source":"startup"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "export PATH=/opt/bin:$PATH\nexport AMX_NESTED=1\n",
+            "added to what the file had"
+        );
+    }
+
+    #[test]
+    fn hook_a_cleared_session_carries_nothing_over() {
+        // `/clear` is a new session in the same pane, and nothing the old one
+        // said is its answer. What stays is what `resume` keeps.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.since = 100;
+                state.seq = 3;
+                state.worked = 40;
+                state.name = Some("login".to_string());
+                state.session_title = Some("Fix the login bug".to_string());
+                state.summary = Some("Running Bash".to_string());
+                state.result = Some("I fixed the login bug.".to_string());
+                state.source = Some(Source::Payload);
+                state.question = Some("Allow Bash?".to_string());
+                state.options = vec!["Yes".to_string(), "No".to_string()];
+            })
+            .unwrap();
+
+        run(
+            Some(agent.id()),
+            root.path(),
+            &mut r#"{"session_id":"def-456","hook_event_name":"SessionStart","source":"clear"}"#
+                .as_bytes(),
+            &mut std::io::sink(),
+            &quiet(),
+            None,
+        );
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.result, None);
+        assert_eq!(state.source, None);
+        assert_eq!(state.summary, None);
+        assert_eq!(state.session_title, None);
+        assert_eq!(state.question, None);
+        assert!(state.options.is_empty());
+        assert_eq!(
+            (state.seq, state.worked, state.name.as_deref()),
+            (3, 40, Some("login"))
+        );
+        assert_eq!(
+            (state.state, state.since),
+            (Phase::Idle, 100),
+            "the prompt the clear left is the one it was at"
+        );
+        assert_eq!(agent.meta().unwrap().session.as_deref(), Some("def-456"));
+    }
+
+    #[test]
+    fn hook_a_prompt_after_an_interrupt_closes_the_cut_turn() {
+        // claude says nothing when a turn is cut short, so the record is still
+        // working when the next prompt comes. The cut turn ended at the stamp,
+        // and the hour between it and this prompt was nobody's work.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let cut = crate::store::now() - 3_600;
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                *state = State {
+                    state: Phase::Working,
+                    since: cut - 60,
+                    last_event: cut - 5,
+                    worked: 20,
+                    interrupted_at: cut,
+                    ..State::default()
+                }
+            })
+            .unwrap();
+
+        let before = crate::store::now();
+        assert_eq!(
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut r#"{"hook_event_name":"UserPromptSubmit","prompt":"carry on"}"#.as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+                None,
+            ),
+            exit::OK
+        );
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.interrupted_at, 0);
+        assert_eq!(state.worked, 80, "the cut turn is closed at the stamp");
+        assert!(state.since >= before, "and the new one opens now");
     }
 
     #[test]
@@ -2780,6 +3201,7 @@ mod tests {
             &mut r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit"}"#.as_bytes(),
             &mut std::io::sink(),
             &quiet(),
+            None,
         );
 
         assert_eq!(adopted.state().unwrap().state, Phase::Working);
@@ -2820,6 +3242,7 @@ mod tests {
             &mut r#"{"session_id":"pi-session","hook_event_name":"agent_start"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
@@ -2832,6 +3255,7 @@ mod tests {
             &mut r#"{"hook_event_name":"tool_execution_start","tool_name":"bash"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
@@ -2860,6 +3284,7 @@ mod tests {
                 .as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 
@@ -2871,6 +3296,7 @@ mod tests {
             &mut r#"{"session_id":"nobodys","hook_event_name":"agent_start"}"#.as_bytes(),
             &mut out,
             &quiet(),
+            None,
         );
         assert!(out.is_empty());
     }
@@ -2906,6 +3332,85 @@ mod tests {
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result.as_deref(), Some("from the transcript"));
         assert_eq!(state.source, Some(Source::Transcript));
+    }
+
+    #[test]
+    fn hook_never_takes_the_vendors_note_about_a_turn_for_its_answer() {
+        // claude ends a turn that never reached the model with a synthetic
+        // entry, and hands that entry's words to the Stop as the answer.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        let transcript = root.path().join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix it\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\
+                 \"content\":[{\"type\":\"text\",\"text\":\"API Error: 529 Overloaded\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            &json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "abc-123",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Stop","last_assistant_message":"API Error: 529 Overloaded"}"#,
+        );
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result, None);
+        assert_eq!(state.source, None);
+    }
+
+    #[test]
+    fn hook_never_takes_an_aborted_answer_from_the_transcript_either() {
+        // The payload's answer refused, the transcript is asked, and pi wrote
+        // the same half-sentence there.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("pi".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let transcript = root.path().join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\
+             \"content\":[{\"type\":\"text\",\"text\":\"Let me look at the\"}],\"stopReason\":\"aborted\"}}\n",
+        )
+        .unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            &json!({
+                "hook_event_name": "session_start",
+                "session_id": "abc-123",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"agent_settled","stop_reason":"aborted","last_assistant_message":"Let me look at the"}"#,
+        );
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result, None);
     }
 
     #[test]
@@ -3071,6 +3576,7 @@ mod tests {
                 &mut "{}".as_bytes(),
                 &mut std::io::sink(),
                 &quiet(),
+                None,
             ),
             exit::OK
         );

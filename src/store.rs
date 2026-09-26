@@ -57,9 +57,9 @@ pub const HEARTBEAT: &str = "heartbeat";
 /// see [`Agent::output`].
 pub const OUTPUT: &str = "output";
 /// How much of a transcript's end [`Agent::transcript_tail`] reads. A fixed
-/// cost however long the session has run, at the price of a turn larger than
-/// it: a tool result or an answer that long is cut, and the half line the seek
-/// opens on is dropped.
+/// cost however long the session has run, at the price of the half line the
+/// seek opens on, which is dropped; a last entry larger than it is read whole,
+/// with this much before it.
 const TAIL: u64 = 64 * 1024;
 /// How much of a command's output [`Agent::output_tail`] reads. About three
 /// thousand rows of eighty columns, which is more than a card is ever paged
@@ -679,6 +679,23 @@ impl State {
         self.walked = seen.is_some_and(|seen| seen.walked);
         self.reported = false;
     }
+
+    /// The record a new session of the same agent starts from: `resume`, and
+    /// a `/clear` in the pane.
+    ///
+    /// Everything the last session left behind goes with it: its answer is not
+    /// this session's answer, and an exit code is not how a running command
+    /// ended. The count of messages sent stays, because the log it counts is
+    /// still the agent's own, and so do the seconds it worked and the name
+    /// somebody gave it, because it is the same agent.
+    pub fn for_a_new_session(&self) -> State {
+        State {
+            seq: self.seq,
+            worked: self.worked,
+            name: self.name.clone(),
+            ..State::default()
+        }
+    }
 }
 
 /// What a reading of a screen found to answer, where it found anything. A
@@ -1148,6 +1165,12 @@ impl Agent {
     /// line this opens on is one of those. Bytes that are half a character are
     /// in that same first line, and go the same way.
     ///
+    /// A last entry bigger than the window — a tool's result that read a large
+    /// file — would leave nothing whole to read, and the context with it,
+    /// which is the entry before. So where the window holds no line break but
+    /// the one ending the file, the tail is that entry whole and the [`TAIL`]
+    /// bytes before it.
+    ///
     /// `None` where the record names no transcript, or names one that is not
     /// there: the vendor announces the path in its first hook, and the file
     /// can be gone by the time somebody reads the record.
@@ -1158,11 +1181,36 @@ impl Agent {
     pub fn transcript_tail(meta: &Meta) -> Option<String> {
         let path = meta.transcript.as_ref()?;
         let mut file = File::open(path).ok()?;
-        let from = file.metadata().ok()?.len().saturating_sub(TAIL);
-        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut from = file.metadata().ok()?.len().saturating_sub(TAIL);
         let mut bytes = Vec::new();
+        file.seek(SeekFrom::Start(from)).ok()?;
         file.read_to_end(&mut bytes).ok()?;
+        let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+        if from > 0 && !body.contains(&b'\n') {
+            from = Self::line_start(&mut file, from)?.saturating_sub(TAIL);
+            bytes.clear();
+            file.seek(SeekFrom::Start(from)).ok()?;
+            file.read_to_end(&mut bytes).ok()?;
+        }
         Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Where the line holding `at` starts: just past the nearest line break
+    /// before it, read back a [`TAIL`] at a time, or the file's start.
+    fn line_start(file: &mut File, at: u64) -> Option<u64> {
+        let mut end = at;
+        let mut chunk = Vec::new();
+        while end > 0 {
+            let start = end.saturating_sub(TAIL);
+            chunk.resize((end - start) as usize, 0);
+            file.seek(SeekFrom::Start(start)).ok()?;
+            file.read_exact(&mut chunk).ok()?;
+            if let Some(at) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                return Some(start + at as u64 + 1);
+            }
+            end = start;
+        }
+        Some(0)
     }
 
     /// How it was started.
@@ -1269,13 +1317,55 @@ impl Writer<'_> {
     /// The same, with the clock named, so a test can lay a span of work out in
     /// the past rather than sit through one.
     fn update_state_at(&self, at: u64, change: impl FnOnce(&mut State)) -> Result<State> {
+        self.update_state_closing_at(at, at, change)
+    }
+
+    /// Change the state for somebody who is not the agent speaking: `stop`,
+    /// `resume`, the exit hook.
+    ///
+    /// The same write, except for where an open span of work closes. Nothing
+    /// the vendor said is being written, so the span runs to when the agent
+    /// was last heard and not to this moment: a record left working over a
+    /// pane that died ten hours ago did not work for ten hours. Heard is what
+    /// [`crate::derive`] means by it, the latest of `last_event`, `since` and
+    /// the beat beside the record, and never later than now.
+    pub fn update_state_heard(
+        &self,
+        heartbeat: Option<u64>,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
+        self.update_state_heard_at(now(), heartbeat, change)
+    }
+
+    fn update_state_heard_at(
+        &self,
+        at: u64,
+        heartbeat: Option<u64>,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
+        let before = self.state()?;
+        let heard = before
+            .last_event
+            .max(before.since)
+            .max(heartbeat.unwrap_or_default())
+            .min(at);
+        self.update_state_closing_at(at, heard, change)
+    }
+
+    /// The write itself: stamped at `at`, with an open span closed at `close`.
+    fn update_state_closing_at(
+        &self,
+        at: u64,
+        close: u64,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
         let before = self.state()?;
         let mut after = before.clone();
         change(&mut after);
 
         if after.state != before.state {
             if before.state == Phase::Working {
-                after.worked = before.worked_by(at);
+                after.worked = before.worked_by(close);
             }
             after.since = at;
             after.ended = match after.state.is_terminal() {
@@ -1758,6 +1848,43 @@ mod tests {
             ..State::default()
         };
         assert_eq!(undated.worked_by(9_000), 0);
+    }
+
+    #[test]
+    fn a_stale_span_closes_where_the_agent_was_last_heard() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        // A turn that started at 1_000, whose last hook landed at 1_100, and
+        // whose pane died with it. Ten hours later somebody stops it.
+        writer
+            .update_state_at(1_000, |s| s.state = Phase::Working)
+            .unwrap();
+        writer.update_state_at(1_100, |_| {}).unwrap();
+        let stopped = writer
+            .update_state_heard_at(37_100, None, |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(stopped.worked, 100, "ten hours of a dead pane are not work");
+        assert_eq!(stopped.ended, 37_100, "the stop is still when it stopped");
+
+        // A report that beat on after the last hook was the agent heard.
+        writer
+            .update_state_at(40_000, |s| s.state = Phase::Working)
+            .unwrap();
+        let beaten = writer
+            .update_state_heard_at(80_000, Some(40_050), |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(beaten.worked, 150);
+
+        // And a beat from the future is capped at the write.
+        writer
+            .update_state_at(90_000, |s| s.state = Phase::Working)
+            .unwrap();
+        let capped = writer
+            .update_state_heard_at(90_010, Some(99_999), |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(capped.worked, 160);
     }
 
     #[test]
@@ -2532,6 +2659,39 @@ mod tests {
             crate::conversation::latest(crate::vendor::Transcript::Claude, &tail).as_deref(),
             Some("Read src/importer.rs"),
             "and the rest of the tail reads as the transcript it is"
+        );
+    }
+
+    #[test]
+    fn store_transcript_tail_holds_a_last_entry_bigger_than_the_window() {
+        let root = TempDir::new().unwrap();
+        let mut record = meta("fix-login-a1b");
+        let path = root.path().join("abc-123.jsonl");
+        record.transcript = Some(path.clone());
+
+        // The call that read a large file, and its result bigger than the
+        // whole tail: the window opens inside the result and holds no line
+        // a reading can parse.
+        let called = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"big.log\"}}],\"usage\":{\"input_tokens\":1200}}}\n";
+        let result = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":\"{}\"}}]}}}}\n",
+            "x".repeat(2 * TAIL as usize)
+        );
+        let session = "{\"type\":\"user\",\"message\":{\"content\":\"read it\"}}\n".repeat(2000)
+            + called
+            + &result;
+        std::fs::write(&path, &session).unwrap();
+
+        let tail = Agent::transcript_tail(&record).unwrap();
+        assert!(tail.ends_with(&result), "the last entry whole");
+        assert!(
+            tail.len() <= result.len() + TAIL as usize,
+            "and no more than a window before it"
+        );
+        assert_eq!(
+            crate::conversation::context_and_last_words(crate::vendor::Transcript::Claude, &tail).0,
+            Some(1200),
+            "so the call before it still gives the context"
         );
     }
 

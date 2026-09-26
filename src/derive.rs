@@ -477,6 +477,11 @@ pub struct Reading {
     /// own words are on the record already and a picture of them is not wanted
     /// beside them. Where the record write asks that is [`answers_on_the_pane`].
     pub said: Option<String>,
+    /// Whether the screen was read as a turn over by a rule that had to wait
+    /// for it and was let speak, with no shell or agent of the vendor's own
+    /// still running on the footer. The one reading a vendor that reports may
+    /// have its record ended by — see [`hear_what_went_unsaid`].
+    pub settled: bool,
 }
 
 /// Whether a question on the record says nothing about what is being asked:
@@ -573,6 +578,16 @@ fn cut_by_hand_in_the_pane(rules: &Ruleset, capture: &str) -> bool {
 fn still_has_a_shell(rules: &Ruleset, capture: &str) -> bool {
     let rows: Vec<&str> = capture.lines().collect();
     rules.furniture().shells_running(&rows).unwrap_or(true)
+}
+
+/// Whether the footer says the vendor still has a shell or an agent running.
+///
+/// Where [`still_has_a_shell`] asks whether a count on the record is still
+/// true, and takes silence for yes, this asks what the screen shows, and a
+/// vendor that shows nothing about its shells shows none running.
+fn shows_a_shell(rules: &Ruleset, capture: &str) -> bool {
+    let rows: Vec<&str> = capture.lines().collect();
+    rules.furniture().shells_running(&rows) == Some(true)
 }
 
 /// What a screen a rule read as a finished turn says the agent last said.
@@ -1017,6 +1032,7 @@ pub fn read(
         asking: None,
         doing: None,
         said: None,
+        settled: false,
     };
 
     if state.state.is_terminal() {
@@ -1128,6 +1144,7 @@ pub fn read(
             said: (rule.state == Phase::Idle)
                 .then(|| said(rules, &screen))
                 .flatten(),
+            settled: rule.state == Phase::Idle && rule.quiescent && !shows_a_shell(rules, &screen),
         },
         // A rule claims the screen but may not end a turn that is on the
         // record as running. The record stands, with its age beside it.
@@ -1222,6 +1239,7 @@ fn read_a_command(
         asking: None,
         doing: screen.and_then(last_printed).map(str::to_string),
         said: None,
+        settled: false,
     }
 }
 
@@ -1578,6 +1596,94 @@ fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
         (_, Phase::Idle) => Some(READ_TURN_END),
         (Phase::Waiting, Phase::Working) => None,
         (_, Phase::Working) => Some(READ_PROMPT),
+        _ => None,
+    }
+}
+
+/// Write down the edge of a turn a vendor that reports sent nothing about.
+///
+/// claude fires no hook when a turn ends by hand: esc in the pane, `amx
+/// interrupt`, a box answered at the keyboard. The record goes on saying
+/// working or waiting, and everything that waits on it waits for good —
+/// `result` and `wait` hang, park and `on_idle` never fire, and the next Stop
+/// books the gap as work. So two edges are written from the screen, and only
+/// these two, since everything else the vendor does say:
+///
+/// - **Working or waiting to idle**, off a prompt a quiescent rule was let end
+///   the turn on, with no shell or agent of the vendor's own still running —
+///   see [`Reading::settled`]. The question goes, the line about the turn goes
+///   with it, and the log gets the turn's end the way [`write_the_reading`]
+///   writes it.
+/// - **Waiting to working**, off a turn running where the record has a box up.
+///   Somebody answered it in the pane, and the turn goes on: no edge.
+///
+/// Under the writer's lock, and only where the record is the one this look
+/// read — a hook that landed meanwhile is the vendor's own account and wins.
+/// The span closes where the agent was last heard rather than now, as it does
+/// for every writer that is not the vendor speaking — see
+/// [`crate::store::Writer::update_state_heard`].
+///
+/// The process that moved the phase to idle is the one that runs what idle
+/// sets off, once, the same way the hook does: see
+/// [`crate::hook::after_the_write`].
+fn hear_what_went_unsaid(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    state: &mut State,
+    reading: &Reading,
+    config: &crate::config::Config,
+) {
+    let Some(to) = went_unsaid(meta, state, reading) else {
+        return;
+    };
+
+    let (heard, phase) = (state.last_event, state.state);
+    let written = agent.writer().and_then(|writer| {
+        let current = writer.state()?;
+        if current.last_event != heard || current.state != phase {
+            return Ok(None);
+        }
+        let written = writer.update_state_heard(agent.heartbeat(), |current| {
+            current.state = to;
+            current.asks(None);
+            if to == Phase::Idle {
+                the_line_goes_with_the_turn(current);
+                current.background = 0;
+            }
+        })?;
+        let ended = (to == Phase::Idle).then(|| {
+            Event::new(
+                READ_TURN_END,
+                serde_json::json!({ "rule": reading.verdict.rule }),
+            )
+        });
+        if let Some(event) = &ended {
+            writer.append(event)?;
+        }
+        Ok(Some((written, ended)))
+    });
+
+    // A record that cannot be written is left as this look found it, and the
+    // next look arrives at the same edge.
+    let Ok(Some((written, ended))) = written else {
+        return;
+    };
+    *state = written;
+    if let Some(event) = ended {
+        crate::hook::after_the_write(root, agent, meta, phase, state, &event, config);
+    }
+}
+
+/// The phase [`hear_what_went_unsaid`] writes, where this reading is one of
+/// its two edges.
+fn went_unsaid(meta: &Meta, state: &State, reading: &Reading) -> Option<Phase> {
+    if !reports(vendor_of(meta)) || reading.verdict.evidence != Evidence::Screen {
+        return None;
+    }
+    match (state.state, reading.verdict.phase) {
+        (Phase::Working | Phase::Waiting, Phase::Idle) if reading.settled => Some(Phase::Idle),
+        (Phase::Waiting, Phase::Working) => Some(Phase::Working),
         _ => None,
     }
 }
@@ -2275,6 +2381,8 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
+    let config = crate::config::current();
+    hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
     have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
 
     Ok(seen(&agent, meta, state, reading))
@@ -2391,6 +2499,8 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
         }
+        let config = crate::config::current();
+        hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
         have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
 
         views.push(seen(&agent, meta, state, reading));
@@ -2584,7 +2694,9 @@ test reads_the_line ... ok
   ⎿  Read 210 lines
 
 ✢ Forging… (22s · ↓ 1.3k tokens)
+────────────────────────────────────────
 ❯
+────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
@@ -3233,7 +3345,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // seventh. What they have in common is that they are one character and
         // not a word, which is the whole of what this leans on.
         for glyph in ["✻", "✽", "✢", "✶", "·", "*"] {
-            let screen = format!("{glyph} Smooshing… (7s · thinking with xhigh effort)\n");
+            let screen = format!(
+                "{glyph} Smooshing… (7s · thinking with xhigh effort)\n────────────────────────────────────────\n❯\n────────────────────────────────────────\n  ⏵⏵ auto mode on\n"
+            );
             let reading = reading(&state(Phase::Working, 1_000), true, Some(&screen), 1_100);
             assert_eq!(
                 reading.doing.as_deref(),
@@ -5801,6 +5915,153 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert!(
             wants_a_line(&running),
             "so the finished turn is asked about, as a turn with no rewrite on it is"
+        );
+    }
+
+    /// A claude agent's record on disk, at `state`, as its hooks last left it.
+    fn a_claude_record(root: &TempDir, state: &State) -> (Agent, Meta) {
+        let meta = Meta {
+            agent: Some("claude".to_string()),
+            ..meta()
+        };
+        let agent = Agent::create(root.path(), &meta).expect("a record");
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_vec(state).expect("a record"),
+        )
+        .expect("a record");
+        (agent, meta)
+    }
+
+    fn nothing_to_run() -> crate::config::Config {
+        crate::config::Config {
+            park_after: 0,
+            ..crate::config::Config::default()
+        }
+    }
+
+    #[test]
+    fn a_hooked_turn_cut_by_hand_is_written_idle() {
+        // claude sends nothing when esc ends a turn in its pane, so the record
+        // says working until something writes otherwise. The reader that
+        // watched the prompt come up is that something.
+        let root = TempDir::new().unwrap();
+        let mut running = state(Phase::Working, 1_000);
+        running.summary = Some("Running Bash".to_string());
+        let (agent, meta) = a_claude_record(&root, &running);
+
+        let reading = read(
+            &running,
+            0,
+            true,
+            || Some(AN_INTERRUPTED_SCREEN.to_string()),
+            rules::of("claude"),
+            true,
+            1_001,
+            1,
+            None,
+        );
+        assert!(reading.settled, "a prompt cut by hand with no shell on it");
+        hear_what_went_unsaid(
+            root.path(),
+            &agent,
+            &meta,
+            &mut running,
+            &reading,
+            &nothing_to_run(),
+        );
+
+        let written = agent.state().unwrap();
+        assert_eq!(written.state, Phase::Idle);
+        assert_eq!(written.summary, None);
+        assert_eq!(written.question, None);
+        assert_eq!(running, written, "the reading goes on with what it wrote");
+        let kinds: Vec<String> = agent
+            .events()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(kinds, [READ_TURN_END]);
+
+        // Written once: the next look finds the phase already moved.
+        let again = read(
+            &written,
+            0,
+            true,
+            || Some(AN_INTERRUPTED_SCREEN.to_string()),
+            rules::of("claude"),
+            true,
+            written.last_event + 60,
+            1,
+            None,
+        );
+        let mut written = written;
+        hear_what_went_unsaid(
+            root.path(),
+            &agent,
+            &meta,
+            &mut written,
+            &again,
+            &nothing_to_run(),
+        );
+        assert_eq!(agent.events().unwrap().len(), 1);
+
+        // And a prompt with a shell still running behind it is not the turn's
+        // end, whatever the rule reads the prompt as.
+        let running = state(Phase::Working, 1_000);
+        let shells = read(
+            &running,
+            0,
+            true,
+            || Some(A_SCREEN_WITH_A_SHELL.to_string()),
+            rules::of("claude"),
+            true,
+            1_100,
+            SETTLED_LOOKS,
+            None,
+        );
+        assert!(!shells.settled);
+    }
+
+    #[test]
+    fn a_box_answered_by_hand_is_written_working() {
+        // A permission box answered in the pane sends nothing either: the
+        // tool runs, and the record goes on saying waiting on a question
+        // nobody is being asked.
+        let root = TempDir::new().unwrap();
+        let mut waiting = state(Phase::Waiting, 1_000);
+        waiting.asks(Some("Do you want to proceed?".to_string()));
+        let (agent, meta) = a_claude_record(&root, &waiting);
+
+        let reading = read(
+            &waiting,
+            0,
+            true,
+            || Some(A_WORKING_SCREEN.to_string()),
+            rules::of("claude"),
+            true,
+            1_100,
+            1,
+            None,
+        );
+        assert_eq!(reading.verdict.phase, Phase::Working);
+        assert_eq!(reading.verdict.evidence, Evidence::Screen);
+        hear_what_went_unsaid(
+            root.path(),
+            &agent,
+            &meta,
+            &mut waiting,
+            &reading,
+            &nothing_to_run(),
+        );
+
+        let written = agent.state().unwrap();
+        assert_eq!(written.state, Phase::Working);
+        assert_eq!(written.question, None);
+        assert!(
+            agent.events().unwrap().is_empty(),
+            "back on the turn it was on, which is no edge"
         );
     }
 

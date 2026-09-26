@@ -159,7 +159,10 @@ Nine rules, in the order the document holds them.
   rule. One component draws both terms: `extension-editor.js`.
 - **`input`** wants `enter submit` and twenty columns of rule, which is
   everything the rule above stands on minus the term that tells them apart, so
-  it sits under it. `extension-input.js` is what reaches it.
+  it sits under it. `extension-input.js` is what reaches it. Its question is
+  the sentence over the `>`, read the same under a transcript that ends in a
+  numbered list: the screen numbers no choices, so a `1.` higher up is the
+  agent's output and not where to stop looking.
 - **`spinner`** wants twenty columns of rule and one of the ten braille frames
   within four rows of it. `status-indicator.js` opens every one of its four
   kinds on that frame, and so does the box `bash-execution.js` puts in the
@@ -167,7 +170,10 @@ Nine rules, in the order the document holds them.
   draws it inside the composer's top border, and the other three keep their row
   above the box. The message after the frame is not part of the rule, which is
   why the kinds that do not say `Working` are claimed too — two of them driven,
-  and the fourth is the same row with a fourth message on it.
+  and the fourth is the same row with a fourth message on it. The frame counts
+  only where it opens a row, past the indent or past the rule on the border
+  pi draws the working kind into (`any_opens`): a frame in the middle of a row
+  is a tool's own output, and a pi at rest under one read `working`.
 - **`login`** wants `(escape/ctrl+c to` — the `to` is what tells it from the
   three hint rows that spell the same key `escape/ctrl+c cancel`, and the
   parenthesis from the two selectors whose 0.85.1 hint row ends `Escape/Ctrl+C

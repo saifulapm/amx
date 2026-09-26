@@ -123,26 +123,26 @@ export default function (pi: ExtensionAPI) {
     return fields;
   }
 
-  // The answer a turn ended on: the last thing the assistant said on the
-  // branch, unless a prompt stands after it, which is a turn that ended with
-  // nothing said.
-  function lastAnswer(ctx): string | undefined {
+  // How a turn ended: the last thing the assistant said on the branch and why
+  // it stopped, unless a prompt or a tool's result stands after it, which is a
+  // turn that ended with nothing said about it.
+  function ending(ctx): { answer?: string; stopReason?: string } {
     try {
       const branch = ctx.sessionManager.getBranch();
       for (let at = branch.length - 1; at >= 0; at--) {
         const entry = branch[at];
         if (entry?.type !== "message") continue;
         const role = entry.message?.role;
-        if (role === "user") return undefined;
+        if (role === "user" || role === "toolResult") return {};
         if (role === "assistant") {
           const text = textOf(entry.message).trim();
-          return text || undefined;
+          return { answer: text || undefined, stopReason: entry.message.stopReason };
         }
       }
     } catch {
       // No branch to read is no answer to report.
     }
-    return undefined;
+    return {};
   }
 
   // The stream: what pi is saying at this moment, written whole beside the
@@ -298,8 +298,9 @@ export default function (pi: ExtensionAPI) {
     stopBeating();
     endStream();
     const fields = about(ctx);
-    const answer = lastAnswer(ctx);
+    const { answer, stopReason } = ending(ctx);
     if (answer !== undefined) fields.last_assistant_message = answer;
+    if (typeof stopReason === "string") fields.stop_reason = stopReason;
     report("agent_settled", fields);
   });
 }

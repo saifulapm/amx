@@ -74,6 +74,11 @@ pub struct Furniture {
     /// row the walk steps over when it is there rather than one it requires.
     #[serde(default)]
     pub hint: Vec<String>,
+    /// What the row the vendor draws between its spinner line and the
+    /// composer opens with, after whatever it indents by, any one of them. A
+    /// row the walk steps over on its way to the spinner when it is there.
+    #[serde(default)]
+    pub tip: Vec<String>,
     /// What the row the vendor leaves behind when somebody cuts a turn short
     /// in its own pane opens with, after whatever it indents by, any one of
     /// them.
@@ -94,6 +99,12 @@ pub struct Furniture {
     /// out, and a reader asked about one is told it cannot say.
     #[serde(default)]
     pub shells: Vec<String>,
+    /// Tails the vendor puts on its mode footer that are hints about a key
+    /// rather than counts of anything running, any one of them. Taken off the
+    /// footer before `shells` is matched, so a separator a hint brings with
+    /// it is not read as a shell's.
+    #[serde(default)]
+    pub footer_hints: Vec<String>,
 }
 
 /// The vendor's own furniture, cut off the bottom of a capture.
@@ -130,6 +141,44 @@ impl Furniture {
     /// 9 and 8, with the composer empty and with three and ten rows staged in
     /// it — see the document they are written in.
     pub fn cut<'a, 'b>(&self, rows: &'a [&'b str]) -> &'a [&'b str] {
+        let at = match self.composer(rows) {
+            Ok(at) => at,
+            Err(kept) => return &rows[..kept],
+        };
+
+        // And the line the vendor spins while a turn runs, which sits above
+        // the box with a blank row between them. A vendor that draws its
+        // working indicator in the top border itself — pi since 0.85.1 —
+        // has already lost it with that border; what this step finds on
+        // such a vendor is the row it keeps up there for a compaction.
+        match self.above_composer(rows, at) {
+            Some(above) if self.spinning(rows[above]) => &rows[..above],
+            _ => &rows[..at],
+        }
+    }
+
+    /// The row the walk finds directly above the composer, blank rows and the
+    /// vendor's hint over its top border stepped over: the one row a vendor
+    /// that spins a line above its box spins it on. `None` where the walk
+    /// finds no composer, or nothing above it.
+    pub fn spinner_row(&self, rows: &[&str]) -> Option<usize> {
+        self.above_composer(rows, self.composer(rows).ok()?)
+    }
+
+    /// The first row above `at` with anything on it, past a tip the vendor
+    /// draws under its spinner line.
+    fn above_composer(&self, rows: &[&str], at: usize) -> Option<usize> {
+        let row = rows[..at].iter().rposition(|row| !blank(row))?;
+        match self.tip_row(rows[row]) {
+            true => rows[..row].iter().rposition(|row| !blank(row)),
+            false => Some(row),
+        }
+    }
+
+    /// The walk up from the bottom to the composer's top border: `Ok` with
+    /// how many rows sit above that border and the hint hung off it, or `Err`
+    /// with how many rows to keep where a step gave up before it got there.
+    fn composer(&self, rows: &[&str]) -> Result<usize, usize> {
         // Past the blank rows a pane is padded out with, to the last row the
         // vendor actually drew on.
         let mut at = rows.len();
@@ -160,7 +209,7 @@ impl Furniture {
         // has measured no footer for carries none anywhere, and keeps every
         // screen whole for the same reason.
         if at == 0 || !self.mode_footer(rows[at - 1]) {
-            return rows;
+            return Err(rows.len());
         }
         at -= 1;
         let footer = at;
@@ -174,13 +223,13 @@ impl Furniture {
         let mut stepped = 0;
         while at > 0 && !self.rule_row(rows[at - 1]) {
             if stepped == self.statusline {
-                return &rows[..footer];
+                return Err(footer);
             }
             at -= 1;
             stepped += 1;
         }
         if at == 0 {
-            return &rows[..footer];
+            return Err(footer);
         }
 
         // The composer's bottom border.
@@ -200,13 +249,13 @@ impl Furniture {
         let mut typed = 0;
         while at > 0 && !self.ends_in_rule(rows[at - 1]) {
             if typed == rows.len() / 2 {
-                return &rows[..bottom];
+                return Err(bottom);
             }
             at -= 1;
             typed += 1;
         }
         if at == 0 {
-            return &rows[..bottom];
+            return Err(bottom);
         }
 
         // The composer's top border: the row the scan stopped on, and only it.
@@ -219,20 +268,7 @@ impl Furniture {
         if at > 0 && self.hint_row(rows[at - 1]) {
             at -= 1;
         }
-
-        // And the line the vendor spins while a turn runs, which sits above
-        // the box with a blank row between them. A vendor that draws its
-        // working indicator in the top border itself — pi since 0.85.1 —
-        // has already lost it with that border; what this step finds on
-        // such a vendor is the row it keeps up there for a compaction.
-        let mut above = at;
-        while above > 0 && blank(rows[above - 1]) {
-            above -= 1;
-        }
-        match above > 0 && self.spinning(rows[above - 1]) {
-            true => &rows[..above - 1],
-            false => &rows[..at],
-        }
+        Ok(at)
     }
 
     /// A row that is the vendor's rule and nothing else, which is what the
@@ -274,6 +310,13 @@ impl Furniture {
     /// where it starts is the pane's width and not the vendor's choice.
     fn hint_row(&self, row: &str) -> bool {
         self.hint.iter().any(|fragment| row.contains(fragment))
+    }
+
+    /// A row the vendor draws between its spinner line and the composer, read
+    /// from what it opens with across the gap the vendor holds open.
+    fn tip_row(&self, row: &str) -> bool {
+        let drawn = spaced(row.trim_start());
+        self.tip.iter().any(|opening| drawn.starts_with(opening))
     }
 
     /// The line the vendor spins while a turn runs, told apart from the line
@@ -363,11 +406,11 @@ impl Furniture {
             return None;
         }
         let footer = rows.iter().rposition(|row| self.mode_footer(row))?;
-        Some(
-            self.shells
-                .iter()
-                .any(|fragment| rows[footer].contains(fragment)),
-        )
+        let footer = self
+            .footer_hints
+            .iter()
+            .fold(rows[footer].to_string(), |row, hint| row.replace(hint, ""));
+        Some(self.shells.iter().any(|fragment| footer.contains(fragment)))
     }
 }
 
@@ -968,5 +1011,31 @@ mod tests {
             9,
         ));
         assert_eq!(claude().cut(&pane), pane);
+    }
+
+    #[test]
+    fn furniture_a_footer_hint_is_no_shell_and_a_count_of_agents_is_one() {
+        // claude ends its footer `· ← for agents` in every mode, idle or not,
+        // measured at 2.1.278 on all six (docs/claude-screens.md). That tail
+        // is a hint about a key and says nothing is running. The same place
+        // reads `← 5 agents` while some are, and that is a count.
+        for footer in [
+            "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+            "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+            "⏸ plan mode on (shift+tab to cycle) · ← for agents",
+            "⏸ manual mode on · ← for agents",
+            "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+            "⏵⏵ don't ask on (shift+tab to cycle) · ← for agents",
+        ] {
+            assert_eq!(claude().shells_running(&[footer]), Some(false), "{footer}");
+        }
+        assert_eq!(
+            claude().shells_running(&["⏸ manual mode on · ← 5 agents"]),
+            Some(true)
+        );
+        assert_eq!(
+            claude().shells_running(&["⏵⏵ bypass permissions on · 1 shell · ← for agents"]),
+            Some(true)
+        );
     }
 }

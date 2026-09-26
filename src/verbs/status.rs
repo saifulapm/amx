@@ -32,10 +32,11 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&view.json())?)?;
     } else {
-        // What was sent and not yet taken, which only a working agent holds:
-        // an idle one took it, and one that has ended will never.
+        // What was sent and not yet taken, which a working agent holds behind
+        // its turn and an idle one holds where a turn cut short by hand left
+        // it. One that has ended will never take it.
         let queued = match view.phase() {
-            Phase::Working => send::queued(&Agent::open(root, id)?.events()?),
+            Phase::Working | Phase::Idle => send::queued(&Agent::open(root, id)?.events()?),
             _ => Vec::new(),
         };
         report(&view, &queued, now, out)?;
@@ -142,7 +143,7 @@ fn evidence(view: &View, now: u64) -> String {
 mod tests {
     use super::*;
     use crate::derive::Verdict;
-    use crate::store::{Meta, Phase, State};
+    use crate::store::{Event, Meta, Phase, State};
     use crate::tmux::{PaneId, Socket};
     use std::path::PathBuf;
 
@@ -207,6 +208,35 @@ mod tests {
             .expect("the second, first line only");
         assert!(doing < first && first < second, "{text}");
         assert!(!text.contains("with care"), "{text}");
+    }
+
+    #[test]
+    fn reader_status_says_what_an_idle_agent_was_sent_and_has_not_taken() {
+        // A turn cut short by hand leaves the agent idle with a message still
+        // in front of it, and a caller who sent it wants to know it waits.
+        let root = tempfile::TempDir::new().unwrap();
+        let mut meta = view(Phase::Idle, Evidence::Record, None, 0).meta;
+        meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        let writer = agent.writer().unwrap();
+        for event in [
+            Event::new("Stop", serde_json::json!({})),
+            Event::new(send::SEND, serde_json::json!({ "text": "and the linter" })),
+        ] {
+            writer.append(&event).unwrap();
+        }
+        writer
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.parked_at = 4_600;
+            })
+            .unwrap();
+        drop(writer);
+
+        let mut out = Vec::new();
+        run(root.path(), &meta.id, false, 5_000, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("  queued    and the linter"), "{text}");
     }
 
     /// The same report, read at a given moment: what amx did to a pane is
