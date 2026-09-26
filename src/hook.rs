@@ -388,7 +388,7 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     let event = crate::store::Event::new("exit", serde_json::json!({ "code": code }));
     writer.append(&event)?;
 
-    let state = writer.update_state(|state| {
+    let state = writer.update_state_heard(agent.heartbeat(), |state| {
         state.exit = Some(code);
         // The pane goes with the command, so a question left on the record
         // here is one nobody can answer and nothing can deliver an answer to.

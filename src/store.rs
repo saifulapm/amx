@@ -1269,13 +1269,55 @@ impl Writer<'_> {
     /// The same, with the clock named, so a test can lay a span of work out in
     /// the past rather than sit through one.
     fn update_state_at(&self, at: u64, change: impl FnOnce(&mut State)) -> Result<State> {
+        self.update_state_closing_at(at, at, change)
+    }
+
+    /// Change the state for somebody who is not the agent speaking: `stop`,
+    /// `resume`, the exit hook.
+    ///
+    /// The same write, except for where an open span of work closes. Nothing
+    /// the vendor said is being written, so the span runs to when the agent
+    /// was last heard and not to this moment: a record left working over a
+    /// pane that died ten hours ago did not work for ten hours. Heard is what
+    /// [`crate::derive`] means by it, the latest of `last_event`, `since` and
+    /// the beat beside the record, and never later than now.
+    pub fn update_state_heard(
+        &self,
+        heartbeat: Option<u64>,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
+        self.update_state_heard_at(now(), heartbeat, change)
+    }
+
+    fn update_state_heard_at(
+        &self,
+        at: u64,
+        heartbeat: Option<u64>,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
+        let before = self.state()?;
+        let heard = before
+            .last_event
+            .max(before.since)
+            .max(heartbeat.unwrap_or_default())
+            .min(at);
+        self.update_state_closing_at(at, heard, change)
+    }
+
+    /// The write itself: stamped at `at`, with an open span closed at `close`.
+    fn update_state_closing_at(
+        &self,
+        at: u64,
+        close: u64,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
         let before = self.state()?;
         let mut after = before.clone();
         change(&mut after);
 
         if after.state != before.state {
             if before.state == Phase::Working {
-                after.worked = before.worked_by(at);
+                after.worked = before.worked_by(close);
             }
             after.since = at;
             after.ended = match after.state.is_terminal() {
@@ -1758,6 +1800,43 @@ mod tests {
             ..State::default()
         };
         assert_eq!(undated.worked_by(9_000), 0);
+    }
+
+    #[test]
+    fn a_stale_span_closes_where_the_agent_was_last_heard() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        let writer = agent.writer().unwrap();
+
+        // A turn that started at 1_000, whose last hook landed at 1_100, and
+        // whose pane died with it. Ten hours later somebody stops it.
+        writer
+            .update_state_at(1_000, |s| s.state = Phase::Working)
+            .unwrap();
+        writer.update_state_at(1_100, |_| {}).unwrap();
+        let stopped = writer
+            .update_state_heard_at(37_100, None, |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(stopped.worked, 100, "ten hours of a dead pane are not work");
+        assert_eq!(stopped.ended, 37_100, "the stop is still when it stopped");
+
+        // A report that beat on after the last hook was the agent heard.
+        writer
+            .update_state_at(40_000, |s| s.state = Phase::Working)
+            .unwrap();
+        let beaten = writer
+            .update_state_heard_at(80_000, Some(40_050), |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(beaten.worked, 150);
+
+        // And a beat from the future is capped at the write.
+        writer
+            .update_state_at(90_000, |s| s.state = Phase::Working)
+            .unwrap();
+        let capped = writer
+            .update_state_heard_at(90_010, Some(99_999), |s| s.state = Phase::Stopped)
+            .unwrap();
+        assert_eq!(capped.worked, 160);
     }
 
     #[test]

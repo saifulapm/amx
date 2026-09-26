@@ -92,7 +92,7 @@ fn stop_one(root: &Path, id: &str, out: &mut impl Write) -> Result<()> {
     if !was.is_terminal() {
         agent
             .writer()?
-            .update_state(|state| state.state = Phase::Stopped)?;
+            .update_state_heard(agent.heartbeat(), |state| state.state = Phase::Stopped)?;
         stopped(&agent, &meta);
     }
 

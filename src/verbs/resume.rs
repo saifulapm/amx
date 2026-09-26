@@ -319,7 +319,7 @@ fn bring_back(
     // how a running command ended. The count of messages sent stays, because
     // the log it counts is still the agent's own, and so do the seconds it
     // worked and the name somebody gave it, because it is the same agent.
-    writer.update_state(|state| {
+    writer.update_state_heard(agent.heartbeat(), |state| {
         *state = State {
             seq: state.seq,
             worked: state.worked,
