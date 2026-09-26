@@ -74,14 +74,7 @@ pub fn run(
     loop {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        // Only an ending needs the log: while an agent is working there is no
-        // turn to place against the last message.
-        let ended = match phase {
-            Phase::Idle | Phase::Done => past_the_last_message(root, id)?,
-            _ => Ended::NotYet,
-        };
-
-        match settled(phase, ended) {
+        match settled(phase, ended(root, id, phase)?) {
             Settled::Answer => return answer(&view, to_terminal, out),
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
             // The command ended, and the message it was sent went with it.
@@ -204,7 +197,7 @@ pub fn run_family(
 
 /// What one reading means to a caller waiting on an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Settled {
+pub(crate) enum Settled {
     /// The turn is over; whatever was captured is the answer.
     Answer,
     /// It is asking, and the wait ends here rather than behind the question.
@@ -221,7 +214,7 @@ enum Settled {
 
 /// Whether the turn amx is waiting for has ended, and what ended it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ended {
+pub(crate) enum Ended {
     /// Nothing since the last message says a turn is over.
     NotYet,
     /// A turn of the agent's own ended, and whatever it left is its answer.
@@ -234,7 +227,7 @@ enum Ended {
 
 /// Weigh one reading. `ended` is how the turn after the last message ended, if
 /// it has.
-fn settled(phase: Phase, ended: Ended) -> Settled {
+pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
     match (phase, ended) {
         (Phase::Waiting, _) => Settled::Question,
         (Phase::Idle | Phase::Done, Ended::Interrupted) => Settled::Interrupted,
@@ -256,36 +249,67 @@ fn pace(evidence: &Evidence) -> Duration {
     }
 }
 
-/// Whether a turn has ended since the last message amx sent, and what ended
-/// it.
-fn past_the_last_message(root: &Path, id: &str) -> Result<Ended> {
-    Ok(ended_past_the_last_message(
-        &Agent::open(root, id)?.events()?,
-    ))
+/// What `amx resume` records when it brings an agent back, as
+/// `crate::verbs::resume` spells it.
+const RESUMED: &str = "resume";
+
+/// What `amx park` records when it lets a pane go, as `crate::verbs::park`
+/// spells it.
+const PARKED: &str = "park";
+
+/// How the turn a caller is waiting on ended, for a record in this phase: only
+/// an ending needs the log, and while an agent is working there is no turn to
+/// place against the last message.
+pub(crate) fn ended(root: &Path, id: &str, phase: Phase) -> Result<Ended> {
+    Ok(match phase {
+        Phase::Idle | Phase::Done => turn_ended(&Agent::open(root, id)?.events()?),
+        _ => Ended::NotYet,
+    })
 }
 
-/// The same question, asked of the log.
+/// Whether the last turn has ended, and what ended it, asked of the log.
 ///
 /// Order, not a clock: the log is appended to under one lock, so "a turn ended
-/// after the last message" is a position in it. An agent nobody has sent
-/// anything to has no message to be past, and whatever it last answered is its
-/// answer.
+/// after the last message" is a position in it. A turn opens at a message amx
+/// sent, at a prompt when none is open, and at the start for the task the
+/// agent was spawned with; an agent nobody has sent anything to answers with
+/// its last turn.
 ///
-/// The first ending after the message is the one that counts. An interrupt the
+/// The first ending of an open turn is the one that counts. An interrupt the
 /// vendor caught up with afterwards is still the thing that ended the turn,
 /// and a turn that ended on its own before anybody typed at it ended on its
-/// own.
+/// own. Only a message puts the answer out of date: a turn opened by a prompt
+/// alone that is still open leaves the last ending standing.
 ///
 /// Whose word said the turn ended is not this question — see [`a_turn_ended`].
-fn ended_past_the_last_message(events: &[Event]) -> Ended {
-    let Some(sent) = events.iter().rposition(|event| event.kind == send::SEND) else {
-        return Ended::Turn;
-    };
-    match events[sent..].iter().find(|event| a_turn_ended(event)) {
-        None => Ended::NotYet,
-        Some(event) if cut_short(event) => Ended::Interrupted,
-        Some(_) => Ended::Turn,
+pub(crate) fn turn_ended(events: &[Event]) -> Ended {
+    let mut ended = Ended::Turn;
+    let mut open = true;
+    for event in events {
+        if event.kind == send::SEND {
+            ended = Ended::NotYet;
+            open = true;
+        } else if a_turn_ended(event) {
+            if open {
+                ended = match cut_short(event) {
+                    true => Ended::Interrupted,
+                    false => Ended::Turn,
+                };
+            }
+            open = false;
+        } else if a_turn_began(event) {
+            open = true;
+        }
     }
+    ended
+}
+
+/// Whether this event says a turn of the agent's own began: the vendor, or a
+/// reading of the pane, saying a prompt went in.
+fn a_turn_began(event: &Event) -> bool {
+    let moment = crate::vendor::moment_of(&event.kind);
+    (matches!(moment, Some(Moment::Prompted | Moment::Taken)) || event.kind == derive::READ_PROMPT)
+        && event.payload["agent_id"].is_null()
 }
 
 /// Whether this event says a turn of the agent's own ended.
@@ -300,7 +324,8 @@ fn ended_past_the_last_message(events: &[Event]) -> Ended {
 /// An interrupt is the third, and the one nothing else may ever say twice: a
 /// turn cancelled at the pane is over whether or not the vendor mentions it,
 /// and a wait holding out for a word that may never come is a wait that runs
-/// to its own deadline.
+/// to its own deadline. A resume and a park are the same for a turn still
+/// open: the process it was going on in is gone.
 ///
 /// A subagent's events ride the same log and are not the agent's turn.
 fn a_turn_ended(event: &Event) -> bool {
@@ -308,9 +333,10 @@ fn a_turn_ended(event: &Event) -> bool {
         && event.payload["agent_id"].is_null()
 }
 
-/// Whether this event is amx cutting the turn short.
+/// Whether this event is amx cutting the turn short, or taking away the
+/// process it was going on in.
 fn cut_short(event: &Event) -> bool {
-    event.kind == INTERRUPT
+    [INTERRUPT, RESUMED, PARKED].contains(&event.kind.as_str())
 }
 
 /// The answer, or the honest absence of one.
@@ -452,30 +478,27 @@ mod tests {
 
     #[test]
     fn an_agent_nobody_has_written_to_answers_with_its_last_turn() {
-        assert_eq!(ended_past_the_last_message(&log(&[])), Ended::Turn);
+        assert_eq!(turn_ended(&log(&[])), Ended::Turn);
         assert_eq!(
-            ended_past_the_last_message(&log(&["SessionStart", "UserPromptSubmit", "Stop"])),
+            turn_ended(&log(&["SessionStart", "UserPromptSubmit", "Stop"])),
             Ended::Turn
         );
     }
 
     #[test]
     fn an_answer_from_before_the_last_message_is_not_past_it() {
+        assert_eq!(turn_ended(&log(&["Stop", send::SEND])), Ended::NotYet);
         assert_eq!(
-            ended_past_the_last_message(&log(&["Stop", send::SEND])),
+            turn_ended(&log(&["Stop", send::SEND, "UserPromptSubmit"])),
             Ended::NotYet
         );
         assert_eq!(
-            ended_past_the_last_message(&log(&["Stop", send::SEND, "UserPromptSubmit"])),
-            Ended::NotYet
-        );
-        assert_eq!(
-            ended_past_the_last_message(&log(&["Stop", send::SEND, "UserPromptSubmit", "Stop"])),
+            turn_ended(&log(&["Stop", send::SEND, "UserPromptSubmit", "Stop"])),
             Ended::Turn
         );
         // And it is the *last* message that counts.
         assert_eq!(
-            ended_past_the_last_message(&log(&[send::SEND, "Stop", send::SEND])),
+            turn_ended(&log(&[send::SEND, "Stop", send::SEND])),
             Ended::NotYet
         );
     }
@@ -486,7 +509,7 @@ mod tests {
         // thing that will ever place the end of a turn, so a wait that took
         // the vendor's word alone was waiting on a word never coming.
         assert_eq!(
-            ended_past_the_last_message(&log(&[
+            turn_ended(&log(&[
                 send::SEND,
                 derive::READ_PROMPT,
                 derive::READ_TURN_END,
@@ -494,12 +517,12 @@ mod tests {
             Ended::Turn
         );
         assert_eq!(
-            ended_past_the_last_message(&log(&[send::SEND, derive::READ_PROMPT])),
+            turn_ended(&log(&[send::SEND, derive::READ_PROMPT])),
             Ended::NotYet,
             "a turn a reading watched begin is under way, not over"
         );
         assert_eq!(
-            ended_past_the_last_message(&log(&[derive::READ_TURN_END, send::SEND])),
+            turn_ended(&log(&[derive::READ_TURN_END, send::SEND])),
             Ended::NotYet,
             "and one that ended before the message is the turn before it"
         );
@@ -511,21 +534,18 @@ mod tests {
         // interrupted out of would run to its own deadline over a turn that
         // ended the moment the key landed.
         assert_eq!(
-            ended_past_the_last_message(&log(&[send::SEND, "UserPromptSubmit", INTERRUPT])),
+            turn_ended(&log(&[send::SEND, "UserPromptSubmit", INTERRUPT])),
             Ended::Interrupted
         );
         // The first word for the turn's end is the one that ended it: a vendor
         // catching up afterwards is not a second ending.
         assert_eq!(
-            ended_past_the_last_message(&log(&[send::SEND, INTERRUPT, TURN_END])),
+            turn_ended(&log(&[send::SEND, INTERRUPT, TURN_END])),
             Ended::Interrupted
         );
         // And an interrupt from before the last message belongs to the turn
         // before it, like any other ending.
-        assert_eq!(
-            ended_past_the_last_message(&log(&[INTERRUPT, send::SEND])),
-            Ended::NotYet
-        );
+        assert_eq!(turn_ended(&log(&[INTERRUPT, send::SEND])), Ended::NotYet);
     }
 
     #[test]
@@ -593,6 +613,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_interrupt_with_no_message_before_it_still_cut_the_turn_short() {
+        // The task an agent was spawned with is a turn nobody sent, and one
+        // cut short leaves the answer to no turn at all on the record.
+        assert_eq!(
+            turn_ended(&log(&["SessionStart", "UserPromptSubmit", INTERRUPT])),
+            Ended::Interrupted
+        );
+        // And so is a turn somebody typed into the pane by hand.
+        assert_eq!(
+            turn_ended(&log(&[
+                "UserPromptSubmit",
+                TURN_END,
+                "UserPromptSubmit",
+                INTERRUPT
+            ])),
+            Ended::Interrupted
+        );
+        // An interrupt that lands after the turn ended on its own ends nothing.
+        assert_eq!(
+            turn_ended(&log(&["UserPromptSubmit", TURN_END, INTERRUPT])),
+            Ended::Turn
+        );
+    }
+
+    #[test]
+    fn a_resume_or_a_park_ends_the_turn_a_message_left_open() {
+        // The process the message went to is gone either way, and the turn it
+        // asked for went with it.
+        assert_eq!(turn_ended(&log(&[send::SEND, RESUMED])), Ended::Interrupted);
+        assert_eq!(turn_ended(&log(&[send::SEND, PARKED])), Ended::Interrupted);
+        // A park after a turn that ended is not a second ending.
+        assert_eq!(
+            turn_ended(&log(&[send::SEND, TURN_END, PARKED])),
+            Ended::Turn
+        );
+        assert_eq!(turn_ended(&log(&[TURN_END, PARKED])), Ended::Turn);
+        // A resume carrying a message records it after itself, and that turn
+        // is still to come.
+        assert_eq!(
+            turn_ended(&log(&[send::SEND, RESUMED, send::SEND])),
+            Ended::NotYet
+        );
+    }
+
     /// claude's word for a turn ending, as its entry spells it.
     const TURN_END: &str = "Stop";
 
@@ -602,6 +667,6 @@ mod tests {
             Event::new(send::SEND, json!({ "text": "and now the linter" })),
             Event::new(TURN_END, json!({ "agent_id": "sub-1" })),
         ];
-        assert_eq!(ended_past_the_last_message(&events), Ended::NotYet);
+        assert_eq!(turn_ended(&events), Ended::NotYet);
     }
 }
