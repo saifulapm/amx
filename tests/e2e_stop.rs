@@ -541,9 +541,12 @@ fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
     );
     assert!(
         printed.contains(&worktree),
-        "and the record that named it is going, so the line says where it is: {printed}"
+        "the line says where it is: {printed}"
     );
-    assert!(!amx.agent_dir("fix-login-a1b").exists(), "{printed}");
+    // The tree stayed, and the record is the only thing naming it: it stays
+    // too, whatever `--delete` asked for.
+    assert!(printed.contains("kept fix-login-a1b's record"), "{printed}");
+    assert!(amx.agent_dir("fix-login-a1b").exists(), "{printed}");
 }
 
 #[test]

@@ -168,7 +168,7 @@ fn clear_lists_the_finished_rows_and_forgets_the_ones_whose_trees_hold_nothing()
 
     assert!(
         out.contains(&format!(
-            "kept port-import-c3d: {tree} holds work no commit has"
+            "kept port-import-c3d: {tree} is still there, and so is its record"
         )),
         "{out}"
     );
@@ -252,4 +252,49 @@ fn clear_says_what_it_would_take_and_takes_none_of_it_when_the_answer_is_no() {
     assert!(out.contains("clear 1? [y/N]"), "{out}");
     assert!(out.contains("nothing cleared"), "{out}");
     assert!(amx.agent_dir("fix-login-a1b").exists(), "{out}");
+}
+
+#[test]
+fn clear_goes_past_a_row_whose_tree_git_will_not_remove() {
+    // git refuses to remove a locked tree. That row keeps its tree and the
+    // record naming it, the row after it is still cleared, and the run says
+    // which one it kept.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let locked = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    let loose = an_ended_agent(&amx, "tidy-b2c", &repo);
+    git(&repo, &["worktree", "lock", &locked]);
+
+    let out = amx.amx_with_input(&["clear", "--force"], "");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("kept fix-login-a1b"), "{said}");
+    assert!(Path::new(&locked).exists(), "the locked tree stays: {said}");
+    assert!(
+        amx.agent_dir("fix-login-a1b").exists(),
+        "and its record: {said}"
+    );
+    assert!(
+        !Path::new(&loose).exists(),
+        "the next row was cleared: {said}"
+    );
+    assert!(!amx.agent_dir("tidy-b2c").exists(), "{said}");
+}
+
+#[test]
+fn a_kept_tree_keeps_its_record_under_stop_delete() {
+    // `stop --delete` on a tree holding work no commit has keeps the tree, and
+    // so the record that is the only thing naming it.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    std::fs::write(Path::new(&tree).join("wip.rs"), "not committed\n").expect("work");
+
+    let out = amx.amx(&["stop", "fix-login-a1b", "--force", "--delete"]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(Path::new(&tree).exists(), "{said}");
+    assert!(
+        amx.agent_dir("fix-login-a1b").exists(),
+        "the record stays: {said}"
+    );
+    assert!(said.contains("kept fix-login-a1b's record"), "{said}");
 }

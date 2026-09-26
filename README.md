@@ -1366,8 +1366,9 @@ Stopping asks the pane's process group to stop, waits, and only then kills it.
 An agent cut down mid-sentence loses the answer it was writing. The defaults
 lose nothing: the worktree goes, the branch stays, the record stays. A
 worktree with uncommitted work in it is always kept, whatever you answer.
-`--delete` says the record goes; `--force` says every question takes its
-default. They are separate on purpose.
+`--delete` says the record goes, except while the worktree is still there: the
+record is the only thing naming a tree it kept, so the two stay together.
+`--force` says every question takes its default. They are separate on purpose.
 
 `stop` ends the one agent it names. A parent's children carry on, because a
 child is never its parent's to end, and stopping a child never touches its
@@ -2143,7 +2144,8 @@ file.
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A
 stopped agent's record is never swept. Somebody stopped it on purpose, and its
-record is where the branch it left behind is named.
+record is where the branch it left behind is named. Nor is a record whose
+worktree is still on the disk, whatever its phase: the record is what names it.
 
 ## Building
 

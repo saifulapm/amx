@@ -57,9 +57,21 @@ pub fn run(
     // where the worktree and the branch are written down, so a line about
     // either of them has to be printed while there is still a record to print
     // it from.
+    // A tree that stayed — holding work no commit has, or one git would not
+    // remove — is named nowhere but the record, so the record stays with it.
     if args.delete {
-        agent.remove()?;
-        writeln!(out, "removed {}'s record", args.id)?;
+        match meta.worktree.as_ref().filter(|tree| tree.exists()) {
+            Some(tree) => writeln!(
+                out,
+                "kept {}'s record: {} is still there",
+                args.id,
+                tree.display()
+            )?,
+            None => {
+                agent.remove()?;
+                writeln!(out, "removed {}'s record", args.id)?;
+            }
+        }
     }
     Ok(exit::OK)
 }

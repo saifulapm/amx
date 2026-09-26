@@ -36,7 +36,8 @@ use crate::{exit, paths, store, worktree};
 pub enum Taken {
     /// The record is gone, and the tree amx cut with it.
     Gone,
-    /// Both are still here, because this tree holds work no commit has.
+    /// Both are still here, because this tree holds work no commit has or git
+    /// would not remove it.
     Holding(PathBuf),
 }
 
@@ -71,18 +72,29 @@ pub fn run(
         return Ok(exit::OK);
     }
 
+    // A row that will not go is said and passed by: the rest of the list is
+    // still what was asked for.
+    let mut failed = false;
     for (at, _) in &rows {
         let view = &views[*at];
-        if let Taken::Holding(tree) = take_row(root, view)? {
-            writeln!(
+        match take_row(root, view) {
+            Ok(Taken::Gone) => {}
+            Ok(Taken::Holding(tree)) => writeln!(
                 out,
-                "kept {}: {} holds work no commit has",
+                "kept {}: {} is still there, and so is its record",
                 view.id(),
                 tree.display()
-            )?;
+            )?,
+            Err(e) => {
+                failed = true;
+                writeln!(out, "could not clear {}: {e:#}", view.id())?;
+            }
         }
     }
-    Ok(exit::OK)
+    Ok(match failed {
+        true => exit::FAILURE,
+        false => exit::OK,
+    })
 }
 
 /// Which of these rows are finished, and why each one is on the list.
@@ -125,7 +137,14 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
         return Ok(Taken::Holding(tree));
     }
     sweep::take_landed(root, &view.meta, &mut std::io::sink())?;
-    Ok(Taken::Gone)
+    // The stop behind the sweep keeps a tree git would not remove, and the
+    // record with it.
+    Ok(
+        match view.meta.worktree.as_ref().filter(|tree| tree.exists()) {
+            Some(tree) => Taken::Holding(tree.clone()),
+            None => Taken::Gone,
+        },
+    )
 }
 
 /// Forget a row whose work went nowhere: its record, and the tree amx gave it.
@@ -143,7 +162,9 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
         && tree.exists()
     {
         let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
-        worktree::remove(&repo, tree)?;
+        if worktree::remove(&repo, tree).is_err() {
+            return Ok(Taken::Holding(tree.clone()));
+        }
         // And its key in the vendor's store with it, the way `stop` takes it:
         // the caller has one line to say what happened to the whole list.
         stop::forget(&view.meta, tree, &mut std::io::sink())?;

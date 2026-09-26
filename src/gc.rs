@@ -5,7 +5,8 @@
 //! plainly been read or abandoned: an agent whose command ended, a week ago.
 //!
 //! A stopped agent is never swept. Somebody stopped it on purpose, and its
-//! record is where the branch it left behind is named.
+//! record is where the branch it left behind is named. Nor is any record whose
+//! tree is still on the disk, for the same reason.
 //!
 //! This is the one thing a reader writes, and it happens on `ls` because that
 //! is the command a person runs often and expects nothing of.
@@ -28,7 +29,15 @@ pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
     for record in records {
         // A record that will not go is not worth failing a listing over, and
         // it is still on the disk to be listed.
-        if !past_keeping(&record.state, now) || record.agent.remove().is_err() {
+        // A record whose tree is still on the disk is the only thing that
+        // names the tree and its branch, and a tree nothing names is work
+        // nobody finds again: it stays until the tree has gone.
+        let holding = record
+            .meta
+            .worktree
+            .as_ref()
+            .is_some_and(|tree| tree.exists());
+        if !past_keeping(&record.state, now) || holding || record.agent.remove().is_err() {
             kept.push(record);
         }
     }
@@ -127,6 +136,30 @@ mod tests {
         // records are gone from the disk with it.
         assert_eq!(ids(&sweep(read(root.path()), NOW)), ["just-done-e5f"]);
         assert_eq!(left(root.path()), ["just-done-e5f"]);
+    }
+
+    #[test]
+    fn a_kept_tree_keeps_its_record() {
+        // A week-old finished agent whose tree is still on the disk: the
+        // record is the only thing that names the tree and its branch, so it
+        // stays until the tree has gone.
+        let root = TempDir::new().unwrap();
+        let tree = root.path().join("repo/.amx/worktrees/old-done-a1b");
+        std::fs::create_dir_all(&tree).unwrap();
+        record(root.path(), "old-done-a1b", Phase::Done, NOW - KEEP - 1);
+        let agent = Agent::open(root.path(), "old-done-a1b").unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .update_meta(|meta| meta.worktree = Some(tree.clone()))
+            .unwrap();
+        drop(writer);
+        wrote(&agent, Phase::Done, NOW - KEEP - 1);
+
+        assert_eq!(ids(&sweep(read(root.path()), NOW)), ["old-done-a1b"]);
+
+        // Once the tree has gone, so may the record.
+        std::fs::remove_dir_all(&tree).unwrap();
+        assert!(sweep(read(root.path()), NOW).is_empty());
     }
 
     #[test]

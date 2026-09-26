@@ -3304,11 +3304,12 @@ impl Screen {
             match verbs::clear::take_row(root, view) {
                 Ok(verbs::clear::Taken::Gone) => cleared += 1,
                 // A tree that took work on between the two presses, which the
-                // taker caught and this did not.
+                // taker caught and this did not, or one git would not remove.
                 Ok(verbs::clear::Taken::Holding(_)) => kept += 1,
+                // Said, and passed by: the rest of the list is still what the
+                // second press asked for.
                 Err(e) => {
-                    trouble = Some(format!("{e:#}"));
-                    break;
+                    trouble.get_or_insert_with(|| format!("{id}: {e:#}"));
                 }
             }
         }
