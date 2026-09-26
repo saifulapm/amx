@@ -293,10 +293,44 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
 
     // The same fork, and the same answer about who is looking, for both: this
     // hook is standing between the vendor and its next token, and one child is
-    // what it can afford.
+    // what it can afford. Idle has no notice to go with it, and is what
+    // [`after_the_write`] is for.
     let errand = reached(written.state, was, notice.is_some())
+        .filter(|phase| *phase != Phase::Idle)
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
     notify::post(notice.as_ref(), config.notifications, errand.as_ref());
+    after_the_write(root, agent, &meta, was, &written, &event, config);
+    Ok(())
+}
+
+/// What a write that moved an agent to idle sets off: the `on_idle` errand,
+/// and the timer over the pane.
+///
+/// Run by whichever process wrote the phase, once. That is the hook where the
+/// vendor said its turn ended, and a reader where it said nothing and the pane
+/// did — see [`crate::derive`]'s `hear_what_went_unsaid`. A record already
+/// idle has had both, from whoever moved it there.
+///
+/// The errand is started here rather than behind the hook's fork: a reader is
+/// a process with threads in it, and forking one is not safe. Whether anybody
+/// is looking is asked of the agent's own pane, which is the pane the hook
+/// runs in, and asked only where somebody wrote a command to tell.
+pub fn after_the_write(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    was: Phase,
+    written: &State,
+    event: &crate::store::Event,
+    config: &Config,
+) {
+    if reached(written.state, was, false) != Some(Phase::Idle) {
+        return;
+    }
+    let server = Server::from_socket(meta.socket.clone());
+    if let Some(errand) = crate::errand::assembled(config, agent, meta, Phase::Idle, event) {
+        notify::start(&errand, Some(server.pane_watched(&meta.pane)));
+    }
 
     // The turn is over and the vendor is sitting at its prompt, holding the
     // couple of hundred megabytes it worked in. Nothing is watching for the
@@ -308,16 +342,14 @@ pub fn record(root: &Path, agent: &Agent, payload: &Value, config: &Config) -> R
     // a git lookup and this path runs on every event the vendor sends: a tool
     // call is waiting on this hook, and it should not pay for a timer that
     // was never going to be set.
-    if written.state == Phase::Idle
-        && let Some(delay) = parks_in(&written, park_after(config, &meta))
+    if let Some(delay) = parks_in(written, park_after(config, meta))
         && let Some(command) = park_command(root, agent.id())
     {
         // A timer that could not be set is a pane that keeps its memory, and
         // that is not worth a word to somebody whose agent is waiting on this
         // process to return.
-        let _ = Server::from_socket(meta.socket).run_after(delay, &command);
+        let _ = server.run_after(delay, &command);
     }
-    Ok(())
 }
 
 /// The moment one event brought the agent to, where it is one somebody may
