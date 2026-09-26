@@ -149,6 +149,20 @@ pub fn branch_for(id: &str) -> String {
     format!("amx/{id}")
 }
 
+/// Whether `branch` is one amx named for the agent `id`: the branch it cuts
+/// for an agent's tree, or the `pr-<N>` it cuts for a request whose head it
+/// would not name after.
+///
+/// What a cleanup nobody asked about branch by branch — a sweep, a clear, a
+/// spawn taking back its own tree — may delete. Any other name is one a
+/// person chose, and whatever amx did on it, the branch is theirs.
+pub fn named_by_amx(id: &str, branch: &str) -> bool {
+    branch == branch_for(id)
+        || branch
+            .strip_prefix("pr-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Where an agent's tree goes.
 pub fn path_for(repo: &Path, id: &str) -> PathBuf {
     repo.join(WORKTREES).join(id)
@@ -610,19 +624,26 @@ pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Take a tree back out with the branch it was cut on, whatever is in it.
+/// Take a tree back out, whatever is in it, and the branch it was cut on
+/// where one is named.
 ///
 /// The undo for a tree nobody has worked in yet: [`furnish`] failed in it, so
 /// everything it holds amx put there and there is nothing to lose. [`remove`]'s
-/// refusal is for the other tree, the one with an agent's afternoon in it. The
-/// branch goes too, because it was cut a moment ago and holds no commit of its
-/// own, and leaving it behind would refuse the next spawn under the same name.
-pub fn discard(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
+/// refusal is for the other tree, the one with an agent's afternoon in it. A
+/// branch amx cut a moment ago goes too, because it holds no commit of its own
+/// and leaving it behind would refuse the next spawn under the same name; the
+/// caller names none where the branch is somebody's own — see
+/// [`named_by_amx`] — and [`delete_branch`] still keeps one holding commits no
+/// other branch has.
+pub fn discard(repo: &Path, worktree: &Path, branch: Option<&str>) -> Result<()> {
     git(
         repo,
         &["worktree", "remove", "--force", &worktree.to_string_lossy()],
     )?;
-    delete_branch(repo, branch)
+    match branch {
+        Some(branch) => delete_branch(repo, branch, &[]),
+        None => Ok(()),
+    }
 }
 
 /// Put a tree back where it was, on the branch it already had.
@@ -642,10 +663,61 @@ pub fn restore(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete a branch and whatever is on it. Only ever on request.
-pub fn delete_branch(repo: &Path, branch: &str) -> Result<()> {
+/// Delete a branch, but never one whose going would lose commits.
+///
+/// `-D` is what deletes an unmerged branch, and an unmerged branch is exactly
+/// the one whose commits may be nowhere else: an agent that went on committing
+/// after its request merged, or a person's own branch nobody pushed. So what
+/// it would lose is asked first — see [`loses`] — and a branch that would take
+/// commits with it is refused, saying how many. Only ever on request.
+pub fn delete_branch(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<()> {
+    match loses(repo, branch, merged_heads)? {
+        0 => {}
+        1 => bail!("1 commit is on no other branch"),
+        n => bail!("{n} commits are on no other branch"),
+    }
     git(repo, &["branch", "-D", branch])?;
     Ok(())
+}
+
+/// How many commits deleting `branch` would lose.
+///
+/// Those no other branch has — see [`unshared_commits`] — unless the branch is
+/// exactly where a request the forge merged was: a squash or a rebase put that
+/// work into main under commits of its own, so the branch's commits are on no
+/// other branch and lost nothing. `merged_heads` is what the forge said was
+/// merged, and a branch that moved on past it has commits nobody merged.
+pub fn loses(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<usize> {
+    let tip = git(repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
+    if merged_heads.iter().any(|head| head == tip.trim()) {
+        return Ok(0);
+    }
+    unshared_commits(repo, branch)
+}
+
+/// How many commits on `branch` no other branch has, local or remote.
+///
+/// What deleting the branch would lose: a commit another branch or a remote
+/// still reaches survives the branch going, and one nothing else reaches is
+/// left to the reflog. A branch git does not have is an error, as git says.
+pub fn unshared_commits(repo: &Path, branch: &str) -> Result<usize> {
+    let exclude = format!("--exclude={branch}");
+    let count = git(
+        repo,
+        &[
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{branch}"),
+            "--not",
+            &exclude,
+            "--branches",
+            "--remotes",
+        ],
+    )?;
+    count
+        .trim()
+        .parse()
+        .with_context(|| format!("counting the commits on {branch}"))
 }
 
 /// Write what the agent has done to its tree, since the commit it started
@@ -1716,7 +1788,7 @@ mod tests {
             remove(repo.path(), &tree.path).is_err(),
             "what furnishing put there reads as work to `remove`"
         );
-        discard(repo.path(), &tree.path, &tree.branch).unwrap();
+        discard(repo.path(), &tree.path, Some(&tree.branch)).unwrap();
 
         assert!(!tree.path.exists());
         assert_eq!(
@@ -1866,8 +1938,81 @@ mod tests {
         let branches = setup(repo.path(), &["branch", "--list", &tree.branch]);
         assert!(branches.contains(&tree.branch), "{branches}");
 
-        delete_branch(repo.path(), &tree.branch).unwrap();
+        // And it is not deleted while that commit is on no other branch.
+        let refused = delete_branch(repo.path(), &tree.branch, &[]).unwrap_err();
+        assert_eq!(format!("{refused:#}"), "1 commit is on no other branch");
+        assert!(setup(repo.path(), &["branch", "--list", &tree.branch]).contains(&tree.branch));
+
+        // Once main has it, the branch holds nothing of its own.
+        setup(repo.path(), &["merge", "--ff-only", &tree.branch]);
+        delete_branch(repo.path(), &tree.branch, &[]).unwrap();
         assert_eq!(setup(repo.path(), &["branch", "--list", &tree.branch]), "");
+    }
+
+    #[test]
+    fn unshared_commits_are_the_ones_no_other_branch_or_remote_has() {
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 0);
+
+        for n in 1..=2 {
+            std::fs::write(tree.path.join("login.rs"), format!("{n}\n")).unwrap();
+            setup(&tree.path, &["add", "login.rs"]);
+            setup(&tree.path, &["commit", "-m", "the agent's own"]);
+        }
+        assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 2);
+
+        // Another branch holding them is enough: the branch going loses nothing.
+        setup(repo.path(), &["branch", "keep-it", &tree.branch]);
+        assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 0);
+    }
+
+    #[test]
+    fn unshared_a_branch_at_the_head_a_forge_merged_loses_nothing() {
+        // A squash merge: the work is in main under a commit of its own, and
+        // the branch's commit is on no other branch.
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        std::fs::write(tree.path.join("login.rs"), "fixed\n").unwrap();
+        setup(&tree.path, &["add", "login.rs"]);
+        setup(&tree.path, &["commit", "-m", "the agent's own"]);
+        let merged = setup(&tree.path, &["rev-parse", "HEAD"]).trim().to_string();
+        assert_eq!(loses(repo.path(), &tree.branch, &[]).unwrap(), 1);
+        assert_eq!(
+            loses(repo.path(), &tree.branch, std::slice::from_ref(&merged)).unwrap(),
+            0
+        );
+
+        // Two more commits after the merge are commits nobody merged.
+        for n in 1..=2 {
+            std::fs::write(tree.path.join("login.rs"), format!("{n}\n")).unwrap();
+            setup(&tree.path, &["add", "login.rs"]);
+            setup(&tree.path, &["commit", "-m", "after the merge"]);
+        }
+        assert_eq!(loses(repo.path(), &tree.branch, &[merged]).unwrap(), 3);
+    }
+
+    #[test]
+    fn unshared_a_fresh_tree_cut_from_unpushed_work_holds_nothing_of_its_own() {
+        // Cut from a branch whose commits went nowhere yet, the tree's branch
+        // reaches them too; they are the other branch's, not the tree's.
+        let repo = a_repo();
+        setup(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("wip.rs"), "wip\n").unwrap();
+        setup(repo.path(), &["add", "wip.rs"]);
+        setup(repo.path(), &["commit", "-m", "the person's unpushed work"]);
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 0);
+    }
+
+    #[test]
+    fn unshared_only_amx_names_are_amx_s_to_delete() {
+        assert!(named_by_amx("fix-login-a1b", "amx/fix-login-a1b"));
+        assert!(named_by_amx("fix-login-a1b", "pr-12"));
+        assert!(!named_by_amx("fix-login-a1b", "amx/another-b2c"));
+        assert!(!named_by_amx("fix-login-a1b", "feature"));
+        assert!(!named_by_amx("fix-login-a1b", "pr-"));
+        assert!(!named_by_amx("fix-login-a1b", "pr-12-fix"));
     }
 
     #[test]

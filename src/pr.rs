@@ -166,7 +166,7 @@ fn sorted(mut prs: Vec<Pr>) -> Vec<Pr> {
 }
 
 /// The fields amx asks `gh` for, which are the four questions and nothing else.
-const GH_FIELDS: &str = "number,state,isDraft,reviewDecision,statusCheckRollup";
+const GH_FIELDS: &str = "number,state,isDraft,reviewDecision,statusCheckRollup,headRefOid";
 
 /// What `gh pr list --json` said, read into what a row needs.
 ///
@@ -232,6 +232,24 @@ fn read_glab(said: &str) -> Vec<Pr> {
                 standing: fold(word(mr, "state"), draft, "", pipeline_of(pipeline)),
             })
         })
+        .collect()
+}
+
+/// The commits the forge merged, one per merged request: the head each was at
+/// when it went in. gh calls it `headRefOid` and glab `sha`.
+///
+/// What says a branch whose own commits are on no other branch has landed
+/// anyway: a squash or a rebase puts the work into main under commits of its
+/// own, and the branch's tip being exactly what was merged is what says
+/// nothing was added after.
+fn merged_heads(said: &str, head: &str) -> Vec<String> {
+    let Ok(serde_json::Value::Array(listed)) = serde_json::from_str(said) else {
+        return Vec::new();
+    };
+    listed
+        .iter()
+        .filter(|pr| word(pr, "state").eq_ignore_ascii_case("merged"))
+        .filter_map(|pr| Some(pr.get(head)?.as_str()?.to_string()))
         .collect()
 }
 
@@ -384,9 +402,25 @@ fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     if still_good(held.as_ref(), branch, now) {
         return theirs(held, branch);
     }
-    let prs = ask(at, branch);
-    let _ = write(dir, branch, prs.clone(), now);
-    prs
+    let looked = ask(at, branch);
+    let _ = write(dir, branch, looked.prs.clone(), &looked.merged_heads, now);
+    looked.prs
+}
+
+/// The commits the last look says were merged from this branch — see
+/// [`merged_heads`] — however long ago it looked.
+///
+/// Read with nothing but the record: it is asked as the branch is about to go,
+/// when the tree the forge would be asked from has gone already.
+pub fn merged_heads_written(meta: &Meta) -> Vec<String> {
+    let (Some(branch), Ok(dir)) = (meta.branch.as_deref(), crate::paths::agent_dir(&meta.id))
+    else {
+        return Vec::new();
+    };
+    held(&dir)
+        .filter(|held| held.branch == branch)
+        .map(|held| held.merged_heads)
+        .unwrap_or_default()
 }
 
 /// What the last look wrote about this branch, however long ago it was written.
@@ -412,6 +446,10 @@ struct Recorded {
     /// answers a question nobody is asking now.
     branch: String,
     prs: Vec<Pr>,
+    /// The head each merged request was at when it went in, where the forge
+    /// said: see [`merged_heads`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    merged_heads: Vec<String>,
 }
 
 /// Whether what is written down is this branch's and still stands.
@@ -442,11 +480,18 @@ fn held(dir: &Path) -> Option<Recorded> {
 ///
 /// Into a file beside it and then renamed, so a reader that arrives mid-write
 /// sees the answer before or the answer after and never half of either.
-fn write(dir: &Path, branch: &str, prs: Vec<Pr>, asked: u64) -> std::io::Result<()> {
+fn write(
+    dir: &Path,
+    branch: &str,
+    prs: Vec<Pr>,
+    merged_heads: &[String],
+    asked: u64,
+) -> std::io::Result<()> {
     let recorded = Recorded {
         asked,
         branch: branch.to_string(),
         prs,
+        merged_heads: merged_heads.to_vec(),
     };
     let said = serde_json::to_string(&recorded)?;
     let beside = dir.join(format!("{CACHE}.new"));
@@ -478,8 +523,14 @@ fn ask_again(dir: PathBuf, at: PathBuf, branch: String) {
     let done = std::thread::Builder::new()
         .name("amx-pr".to_string())
         .spawn(move || {
-            let prs = ask(&at, &branch);
-            let _ = write(&asking, &branch, prs, crate::store::now());
+            let looked = ask(&at, &branch);
+            let _ = write(
+                &asking,
+                &branch,
+                looked.prs,
+                &looked.merged_heads,
+                crate::store::now(),
+            );
             forget(&asking);
         });
     if done.is_err() {
@@ -493,10 +544,17 @@ fn forget(dir: &Path) {
     }
 }
 
+/// What one look at the forge found.
+#[derive(Debug, Default)]
+struct Looked {
+    prs: Vec<Pr>,
+    merged_heads: Vec<String>,
+}
+
 /// Whichever forge answers about this branch, in the order a machine is likely
 /// to have them. Neither of them installed is no pull requests, which is the
 /// same answer as a branch nobody has opened one for.
-fn ask(at: &Path, branch: &str) -> Vec<Pr> {
+fn ask(at: &Path, branch: &str) -> Looked {
     if let Some(said) = run(
         at,
         "gh",
@@ -504,7 +562,10 @@ fn ask(at: &Path, branch: &str) -> Vec<Pr> {
             "pr", "list", "--head", branch, "--state", "all", "--limit", "5", "--json", GH_FIELDS,
         ],
     ) {
-        return sorted(read_gh(&said));
+        return Looked {
+            prs: sorted(read_gh(&said)),
+            merged_heads: merged_heads(&said, "headRefOid"),
+        };
     }
     if let Some(said) = run(
         at,
@@ -519,9 +580,12 @@ fn ask(at: &Path, branch: &str) -> Vec<Pr> {
             "json",
         ],
     ) {
-        return sorted(read_glab(&said));
+        return Looked {
+            prs: sorted(read_glab(&said)),
+            merged_heads: merged_heads(&said, "sha"),
+        };
     }
-    Vec::new()
+    Looked::default()
 }
 
 /// One forge command, with its output as the answer. A command that is not
@@ -857,7 +921,7 @@ mod tests {
             number: 12,
             standing: Standing::Failing,
         }];
-        write(dir.path(), "amx/fix-login-a1b", prs.clone(), 1_000).unwrap();
+        write(dir.path(), "amx/fix-login-a1b", prs.clone(), &[], 1_000).unwrap();
 
         assert_eq!(
             read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_030),
@@ -877,7 +941,7 @@ mod tests {
             number: 12,
             standing: Standing::Failing,
         }];
-        write(dir.path(), "amx/fix-login-a1b", prs.clone(), 1_000).unwrap();
+        write(dir.path(), "amx/fix-login-a1b", prs.clone(), &[], 1_000).unwrap();
 
         // Old enough that a look would set a fresh one going. A verb that
         // prints this and exits has nowhere to put the answer, so it takes
@@ -903,7 +967,7 @@ mod tests {
             number: 12,
             standing: Standing::Merged,
         }];
-        write(dir.path(), "amx/fix-login-a1b", over.clone(), 1_000).unwrap();
+        write(dir.path(), "amx/fix-login-a1b", over.clone(), &[], 1_000).unwrap();
         assert_eq!(
             ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
             over,
@@ -914,7 +978,7 @@ mod tests {
             number: 12,
             standing: Standing::Open,
         }];
-        write(dir.path(), "amx/fix-login-a1b", going, 1_000).unwrap();
+        write(dir.path(), "amx/fix-login-a1b", going, &[], 1_000).unwrap();
         assert_eq!(
             ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
             Vec::new(),
@@ -944,6 +1008,7 @@ mod tests {
             asked: 1_000,
             branch: "amx/fix-login-a1b".to_string(),
             prs: Vec::new(),
+            merged_heads: Vec::new(),
         };
         assert!(still_good(
             Some(&held),
@@ -984,6 +1049,7 @@ mod tests {
                     standing: Standing::Closed,
                 },
             ],
+            merged_heads: Vec::new(),
         };
         assert!(still_good(Some(&over), "amx/fix-login-a1b", 90_000));
 
@@ -1043,7 +1109,7 @@ mod tests {
             "a program that is not installed is not a failure to report"
         );
         assert!(
-            ask(dir.path(), "amx/fix-login-a1b").is_empty(),
+            ask(dir.path(), "amx/fix-login-a1b").prs.is_empty(),
             "and neither is a directory the forge has nothing to say about"
         );
     }
@@ -1151,5 +1217,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let gh = a_fake_gh(dir.path(), "not json at all");
         assert!(head_from(dir.path(), 7, &gh).is_err());
+    }
+
+    #[test]
+    fn a_merged_request_says_the_head_it_went_in_at() {
+        let gh = r#"[{"number":12,"state":"MERGED","headRefOid":"aaa"},
+                     {"number":9,"state":"CLOSED","headRefOid":"bbb"},
+                     {"number":7,"state":"OPEN","headRefOid":"ccc"}]"#;
+        assert_eq!(merged_heads(gh, "headRefOid"), ["aaa"]);
+        let glab =
+            r#"[{"iid":3,"state":"merged","sha":"ddd"},{"iid":4,"state":"opened","sha":"eee"}]"#;
+        assert_eq!(merged_heads(glab, "sha"), ["ddd"]);
+        assert!(merged_heads("not json", "sha").is_empty());
     }
 }

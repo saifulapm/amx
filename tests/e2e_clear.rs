@@ -103,13 +103,17 @@ fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
 
 /// What the last look at the forge wrote down beside the record: the request
 /// on this agent's branch, and that it went in.
-fn a_merged_request(amx: &Harness, id: &str, number: u64) {
+fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
+    let head = git(Path::new(tree), &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
     std::fs::write(
         amx.agent_dir(id).join("pr.json"),
         json!({
             "asked": now(),
             "branch": format!("amx/{id}"),
             "prs": [{ "number": number, "standing": "merged" }],
+            "merged_heads": [head],
         })
         .to_string(),
     )
@@ -192,7 +196,7 @@ fn clear_takes_a_landed_row_the_way_the_sweep_takes_it_branch_and_all() {
     // landed is what the last look at the forge wrote down.
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
     work_on_the_branch(&tree, "login.rs");
-    a_merged_request(&amx, "fix-login-a1b", 12);
+    a_merged_request(&amx, "fix-login-a1b", 12, &tree);
 
     let out = said(&amx.amx_with_input(&["clear", "--force"], "n\n"));
     assert!(!out.contains("[y/N]"), "nothing was asked: {out}");

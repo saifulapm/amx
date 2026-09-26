@@ -16,7 +16,7 @@
 //! Keeping them apart is what lets somebody clear a finished agent away
 //! without also telling amx they do not care what happens to a worktree.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -228,6 +228,20 @@ fn dispositions(
         return Ok(());
     }
 
+    // Commits no other branch has go with the branch, and nothing asked here
+    // can bring them back: such a branch is kept whatever was asked, and the
+    // count is the reason given. A branch at exactly the head a request was
+    // merged from lost nothing, whatever the forge merged it as.
+    let merged = crate::pr::merged_heads_written(meta);
+    if let Ok(n @ 1..) = worktree::loses(&repo, branch, &merged) {
+        let commits = match n {
+            1 => "1 commit is".to_string(),
+            n => format!("{n} commits are"),
+        };
+        writeln!(out, "kept {branch}: {commits} on no other branch")?;
+        return Ok(());
+    }
+
     if !asked(
         args.branch,
         args.force,
@@ -238,8 +252,10 @@ fn dispositions(
     )?
     .is_keep()
     {
-        worktree::delete_branch(&repo, branch).with_context(|| format!("deleting {branch}"))?;
-        writeln!(out, "deleted {branch}")?;
+        match worktree::delete_branch(&repo, branch, &merged) {
+            Ok(()) => writeln!(out, "deleted {branch}")?,
+            Err(why) => writeln!(out, "kept {branch}: {why:#}")?,
+        }
     } else {
         writeln!(out, "kept {branch}")?;
     }

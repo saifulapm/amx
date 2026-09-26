@@ -306,6 +306,16 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
         return Ok(());
     }
 
+    // Only a branch amx named is a sweep's to delete. One a person named —
+    // `--branch develop`, which reads as landed whenever main has caught up
+    // with it — is theirs, landed or not.
+    let branch = match &meta.branch {
+        Some(branch) if !worktree::named_by_amx(&meta.id, branch) => {
+            writeln!(out, "kept {branch}: not amx's to delete")?;
+            Disposition::Keep
+        }
+        _ => Disposition::Delete,
+    };
     stop::run(
         root,
         &StopArgs {
@@ -313,7 +323,7 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
             force: true,
             delete: true,
             worktree: Some(Disposition::Delete),
-            branch: Some(Disposition::Delete),
+            branch: Some(branch),
         },
         &mut std::io::empty(),
         out,

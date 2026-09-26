@@ -3086,14 +3086,19 @@ fn work_on_the_branch(tree: &str, name: &str) {
 }
 
 /// What a look at the forge would have written down beside the record: the
-/// request on this agent's branch, and that it went in.
-fn a_merged_request(amx: &Harness, id: &str, number: u64) {
+/// request on this agent's branch, that it went in, and the head it was at —
+/// where the tree in `tree` stands now.
+fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
+    let head = git(Path::new(tree), &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
     std::fs::write(
         amx.agent_dir(id).join("pr.json"),
         json!({
             "asked": now(),
             "branch": format!("amx/{id}"),
             "prs": [{ "number": number, "standing": "merged" }],
+            "merged_heads": [head],
         })
         .to_string(),
     )
@@ -3114,7 +3119,7 @@ fn merged_by_hand(repo: &Path, id: &str) {
 fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) {
     let landed = an_ended_agent(amx, "fix-login-a1b", repo);
     work_on_the_branch(&landed, "login.rs");
-    a_merged_request(amx, "fix-login-a1b", 12);
+    a_merged_request(amx, "fix-login-a1b", 12, &landed);
 
     let merged = an_ended_agent(amx, "tidy-b2c", repo);
     work_on_the_branch(&merged, "search.rs");

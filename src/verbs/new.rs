@@ -674,7 +674,7 @@ fn start(
             // apply is still where it was typed, so the tree holds nothing of
             // yours, and a tree standing under an id nothing records would
             // refuse the next spawn under that name.
-            take_back(repo, tree, problems, to_terminal);
+            take_back(repo, id, tree, problems, to_terminal);
             return Err(e);
         }
     }
@@ -983,7 +983,7 @@ fn furnish_the_tree(
         }
         Err(e) => {
             // Nothing half furnished stands.
-            take_back(repo, tree, problems, to_terminal);
+            take_back(repo, id, tree, problems, to_terminal);
             Err(e)
         }
     }
@@ -993,8 +993,18 @@ fn furnish_the_tree(
 /// and holds nothing of the person's, so it goes with its branch. What the
 /// undo cannot do is said, and the refusal that brought it here is still the
 /// answer: the spawn is off either way.
-fn take_back(repo: &Path, tree: &worktree::Worktree, problems: &mut impl Write, to_terminal: bool) {
-    if let Err(undone) = worktree::discard(repo, &tree.path, &tree.branch) {
+///
+/// A branch that is not amx's own name — `--branch` onto one the person
+/// already had — is theirs, and is kept whatever happened here.
+fn take_back(
+    repo: &Path,
+    id: &str,
+    tree: &worktree::Worktree,
+    problems: &mut impl Write,
+    to_terminal: bool,
+) {
+    let branch = worktree::named_by_amx(id, &tree.branch).then_some(tree.branch.as_str());
+    if let Err(undone) = worktree::discard(repo, &tree.path, branch) {
         let _ = writeln!(
             problems,
             "{}",
@@ -1663,6 +1673,49 @@ mod tests {
             .lines()
             .filter(|line| line.starts_with("worktree "))
             .count()
+    }
+
+    #[test]
+    fn a_failed_setup_on_a_persons_branch_keeps_the_branch_and_its_commits() {
+        // `--branch feature` onto a branch the person already had, carrying a
+        // commit nobody pushed. The setup fails and the tree is taken back;
+        // the branch is theirs and stays, with the commit on it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+        setup(&repo, &["checkout", "-b", "feature"]);
+        std::fs::write(repo.join("wip.rs"), "wip\n").unwrap();
+        setup(&repo, &["add", "wip.rs"]);
+        setup(&repo, &["commit", "-m", "the person's unpushed work"]);
+        let tip = setup(&repo, &["rev-parse", "HEAD"]);
+        setup(&repo, &["checkout", "main"]);
+
+        let tree = cut_on_branch(&repo, "fix-login-a1b", "feature").unwrap();
+        let config = Config {
+            setup: vec!["false".to_string()],
+            ..Config::default()
+        };
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let mut problems = Vec::new();
+        assert!(
+            furnish_the_tree(
+                &config,
+                &agent_dir,
+                "fix-login-a1b",
+                &repo,
+                &tree,
+                &mut problems,
+                false
+            )
+            .is_err()
+        );
+
+        assert!(!tree.path.exists(), "the tree is taken back");
+        assert_eq!(
+            setup(&repo, &["rev-parse", "refs/heads/feature"]),
+            tip,
+            "and the branch is still where the person left it"
+        );
     }
 
     #[test]

@@ -142,6 +142,47 @@ fn branches(repo: &Path) -> String {
 }
 
 #[test]
+fn stop_keeps_a_branch_whose_commits_are_on_no_other_branch_and_says_how_many() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "finishes");
+    amx.until_state("fix-login-a1b", "done");
+    for name in ["login.rs", "tests.rs"] {
+        std::fs::write(Path::new(&tree).join(name), "fn login() {}\n").expect("a file");
+        for args in [&["add", name][..], &["commit", "-q", "-m", name][..]] {
+            let ok = std::process::Command::new("git")
+                .current_dir(&tree)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "amx tests")
+                .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+                .env("GIT_COMMITTER_NAME", "amx tests")
+                .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+                .status()
+                .expect("running git");
+            assert!(ok.success());
+        }
+    }
+
+    let out = said(&stop(
+        &amx,
+        &[
+            "fix-login-a1b",
+            "--force",
+            "--worktree",
+            "delete",
+            "--branch",
+            "delete",
+        ],
+    ));
+    assert!(
+        out.contains("kept amx/fix-login-a1b: 2 commits are on no other branch"),
+        "{out}"
+    );
+    assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
+}
+
+#[test]
 fn stop_ends_the_agent_and_records_that_it_was_stopped() {
     let amx = Harness::new();
     let pane = amx.play("fix-login-a1b", "happy-turn");

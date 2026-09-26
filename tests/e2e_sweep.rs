@@ -100,8 +100,12 @@ fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
 }
 
 /// What a look at the forge would have written down beside the record: the
-/// request on this agent's branch, and that it went in.
-fn a_merged_request(amx: &Harness, id: &str, number: u64) {
+/// request on this agent's branch, that it went in, and the head it was at —
+/// where the tree in `tree` stands now.
+fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
+    let head = git(Path::new(tree), &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
     let asked = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("a clock")
@@ -112,6 +116,7 @@ fn a_merged_request(amx: &Harness, id: &str, number: u64) {
             "asked": asked,
             "branch": format!("amx/{id}"),
             "prs": [{ "number": number, "standing": "merged" }],
+            "merged_heads": [head],
         })
         .to_string(),
     )
@@ -170,7 +175,7 @@ fn sweep_takes_the_agent_the_forge_finished_with_and_the_one_git_did() {
     // thing saying this work has landed is what the last look wrote down.
     let landed = an_ended_agent(&amx, "fix-login-a1b", &repo);
     work_on_the_branch(&landed, "login.rs");
-    a_merged_request(&amx, "fix-login-a1b", 12);
+    a_merged_request(&amx, "fix-login-a1b", 12, &landed);
 
     // And one with no request at all, whose branch somebody merged.
     let merged = an_ended_agent(&amx, "add-search-b2c", &repo);
@@ -201,15 +206,20 @@ fn sweep_takes_the_agent_the_forge_finished_with_and_the_one_git_did() {
 fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let bin = a_forge_saying(
-        &amx,
-        r#"[{"number":12,"state":"MERGED","isDraft":false,
-             "reviewDecision":"","statusCheckRollup":[]}]"#,
-    );
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
     // The agent's own commit is not in main, so git has nothing to say about
-    // this branch and the forge is the only thing that knows.
+    // this branch and the forge is the only thing that knows — and it merged
+    // the branch exactly where it stands.
     work_on_the_branch(&tree, "login.rs");
+    let head = git(Path::new(&tree), &["rev-parse", "HEAD"]);
+    let bin = a_forge_saying(
+        &amx,
+        &format!(
+            r#"[{{"number":12,"state":"MERGED","isDraft":false,
+             "reviewDecision":"","statusCheckRollup":[],"headRefOid":"{}"}}]"#,
+            head.trim()
+        ),
+    );
     assert!(
         !amx.agent_dir("fix-login-a1b").join("pr.json").exists(),
         "nobody has opened the view, so nothing is written down beside the record"
@@ -226,6 +236,72 @@ fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
         !amx.agent_dir("fix-login-a1b").exists(),
         "and the record that named them: {out}"
     );
+}
+
+#[test]
+fn sweep_keeps_a_merged_branch_the_agent_went_on_committing_on() {
+    // The request went in, and then a follow-up made two more commits on the
+    // same branch that nobody pushed. They are on no other branch anywhere.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    work_on_the_branch(&tree, "login.rs");
+    a_merged_request(&amx, "fix-login-a1b", 12, &tree);
+    work_on_the_branch(&tree, "after.rs");
+    work_on_the_branch(&tree, "later.rs");
+
+    let out = said(&sweep(&amx, &["--force"]));
+    assert!(out.contains("fix-login-a1b  #12 merged"), "{out}");
+    assert!(
+        out.contains("kept amx/fix-login-a1b: 3 commits are on no other branch"),
+        "{out}"
+    );
+    assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
+    let kept = git(&repo, &["log", "--format=%s", "amx/fix-login-a1b", "-3"]);
+    assert_eq!(
+        kept.lines().count(),
+        3,
+        "every commit is still there: {kept}"
+    );
+}
+
+#[test]
+fn sweep_never_deletes_a_branch_a_person_named() {
+    // `--branch develop` onto a branch main has already caught up with reads
+    // as landed, and develop is still the person's own.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    git(&repo, &["branch", "develop"]);
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            "fix-login-a1b",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--branch",
+            "develop",
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state("fix-login-a1b", "done");
+
+    let out = said(&sweep(&amx, &["--force"]));
+    assert!(
+        out.contains("fix-login-a1b  develop merged into main"),
+        "{out}"
+    );
+    assert!(out.contains("kept develop: not amx's to delete"), "{out}");
+    assert!(branches(&repo).contains("develop"), "{out}");
 }
 
 #[test]
@@ -251,10 +327,14 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
         "{out}"
     );
     assert!(!Path::new(&tree).exists(), "the tree is gone: {out}");
+    // Nothing but the origin's word says the commit went anywhere, and no
+    // forge says it merged this head: the one commit on the branch is on no
+    // other branch, so the branch stays for somebody to look at.
     assert!(
-        !branches(&repo).contains("amx/fix-login-a1b"),
-        "and its branch: {out}"
+        out.contains("kept amx/fix-login-a1b: 1 commit is on no other branch"),
+        "{out}"
     );
+    assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
     assert!(
         !amx.agent_dir("fix-login-a1b").exists(),
         "and the record that named them: {out}"
