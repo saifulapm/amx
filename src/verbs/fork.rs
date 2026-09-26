@@ -185,7 +185,9 @@ fn start(
     ];
     let pane = spawn::place(&server, id, &origin.dir, &boot)?;
 
-    spawn::record(
+    // A pane with no record is a copy nothing can find or stop, waiting on a
+    // record that is never coming: it goes with the record that failed.
+    let recorded = spawn::record(
         root,
         &Meta {
             role: None,
@@ -207,14 +209,17 @@ fn start(
             branch: None,
             base: None,
             socket: server.socket().clone(),
-            pane,
+            pane: pane.clone(),
             bg: false,
             session: opened,
             transcript: None,
             created: now(),
         },
-    )?;
-    Ok(())
+    );
+    if recorded.is_err() {
+        let _ = server.kill_pane(&pane);
+    }
+    recorded.map(|_| ())
 }
 
 /// Write down what the copy is a copy of, and which conversation it took.

@@ -566,7 +566,7 @@ pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
 }
 
 /// Move the work no commit holds out of `from` and into `tree`, answering
-/// whether there was any.
+/// with the stash commit that carried it, or nothing where there was none.
 ///
 /// The half hour you had already spent when you thought to start an agent on
 /// it: without this it stays in the directory you typed the command in, where
@@ -581,7 +581,10 @@ pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
 /// file you had just started is most of that half hour, and git already draws
 /// the line amx would otherwise be guessing at, since telling a build's output
 /// from work is what the ignore file is for.
-pub fn carry_changes(from: &Path, tree: &Path) -> Result<bool> {
+///
+/// The stash commit is the way back: a spawn that fails after the work moved
+/// hands it to [`give_back`] rather than leaving it in a tree about to go.
+pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
     // `add -A` is how the new file gets into the commit at all: `stash create`
     // records the index and the tracked files, so a file git has never heard
     // of is in neither until the index holds it. It is also where the ignore
@@ -603,7 +606,7 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<bool> {
         // The index is put back whatever happens next: staging was this
         // function's doing, and `from` is somebody's working directory.
         git(from, &["reset", "-q"])?;
-        return Ok(false);
+        return Ok(None);
     }
     if let Err(e) = git(tree, &["stash", "apply", &stashed]) {
         git(from, &["reset", "-q"])?;
@@ -622,7 +625,16 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<bool> {
     // `--hard` rather than the plain reset, since the new files are in this
     // index and in no commit, and it is what takes them off the disk.
     git(from, &["reset", "--hard", "HEAD"])?;
-    Ok(true)
+    Ok(Some(stashed))
+}
+
+/// Put work [`carry_changes`] moved back where it was typed, unstaged, the way
+/// it was held.
+pub fn give_back(from: &Path, stash: &str) -> Result<()> {
+    git(from, &["stash", "apply", stash])
+        .with_context(|| format!("putting the work back in {}", from.display()))?;
+    git(from, &["reset", "-q"])?;
+    Ok(())
 }
 
 /// Whether the tree holds work that no commit has: changes to tracked files,
@@ -1920,7 +1932,7 @@ mod tests {
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
         assert!(has_changes_to_carry(repo.path()).unwrap());
-        assert!(carry_changes(repo.path(), &tree.path).unwrap());
+        assert!(carry_changes(repo.path(), &tree.path).unwrap().is_some());
 
         assert_eq!(
             std::fs::read_to_string(tree.path.join("README.md")).unwrap(),
@@ -1969,7 +1981,7 @@ mod tests {
         // Ignored and nothing else is nothing to move, which is the answer a
         // directory with no changes at all gives.
         assert!(!has_changes_to_carry(repo.path()).unwrap());
-        assert!(!carry_changes(repo.path(), &tree.path).unwrap());
+        assert!(carry_changes(repo.path(), &tree.path).unwrap().is_none());
         assert_eq!(
             std::fs::read_to_string(repo.path().join("build/out")).unwrap(),
             "compiled\n",

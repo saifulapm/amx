@@ -657,29 +657,128 @@ fn start(
     spawn::harness_env(&mut env, config, &launch.agent);
 
     let cut = cut_worktree(dir, id, config, args)?;
-    let tree = cut.as_ref().map(|(_, tree)| tree);
+    let mut taken = Undo::default();
+    let placed = set_up(
+        root,
+        agent_dir,
+        dir,
+        env,
+        config,
+        args,
+        task,
+        lined,
+        launch,
+        lineage,
+        id,
+        cut.as_ref(),
+        &mut taken,
+        problems,
+        to_terminal,
+    );
+    if placed.is_err() {
+        give_everything_back(dir, id, cut.as_ref(), taken, problems, to_terminal);
+    }
+    placed
+}
+
+/// What a spawn did on its way to a recorded pane, for the undo that takes it
+/// back when a later step fails.
+#[derive(Default)]
+struct Undo {
+    /// The stash the checkout's own work was carried into the tree in.
+    carried: Option<String>,
+    /// The vendor's store a trust key was written into for the tree.
+    trusted: Option<PathBuf>,
+    /// The pane placed, and the server it was placed on.
+    placed: Option<(crate::tmux::Server, crate::tmux::PaneId)>,
+}
+
+/// Take back everything a failed spawn did after it cut its tree, newest
+/// first: the pane, the work carried out of the checkout, the trust key, and
+/// the tree with amx's own branch.
+///
+/// The work goes back before the tree goes, and a checkout that will not take
+/// it back keeps the tree: the tree is then the only place it is, and saying
+/// which tree is the whole of what is left to do.
+fn give_everything_back(
+    dir: &Path,
+    id: &str,
+    cut: Option<&(PathBuf, worktree::Worktree)>,
+    taken: Undo,
+    problems: &mut impl Write,
+    to_terminal: bool,
+) {
+    let mut say = |what: String| {
+        let _ = writeln!(
+            problems,
+            "{}",
+            said(Severity::Warned, &format!("amx new: {what}"), to_terminal)
+        );
+    };
+    if let Some((server, pane)) = &taken.placed
+        && let Err(e) = server.kill_pane(pane)
+    {
+        say(format!("{e:#}"));
+    }
+    let Some((repo, tree)) = cut else {
+        return;
+    };
+    if let Some(stash) = &taken.carried
+        && let Err(e) = worktree::give_back(dir, stash)
+    {
+        say(format!(
+            "{e:#}: your work is still in {}",
+            tree.path.display()
+        ));
+        return;
+    }
+    if let Some(store) = &taken.trusted
+        && let Err(e) = trust::forget_tree(store, &tree.path, now())
+    {
+        say(format!("{e:#}"));
+    }
+    if tree.path.exists() {
+        take_back(repo, id, tree, problems, to_terminal);
+    }
+}
+
+/// Everything a spawn does once its tree is cut, up to the record, noting in
+/// `taken` each thing a failure after it would have to undo.
+#[allow(clippy::too_many_arguments)]
+fn set_up(
+    root: &Path,
+    agent_dir: &Path,
+    dir: &Path,
+    mut env: std::collections::BTreeMap<String, String>,
+    config: &Config,
+    args: &NewArgs,
+    task: &str,
+    lined: &str,
+    launch: &Launch,
+    lineage: &Lineage,
+    id: &str,
+    cut: Option<&(PathBuf, worktree::Worktree)>,
+    taken: &mut Undo,
+    problems: &mut impl Write,
+    to_terminal: bool,
+) -> Result<()> {
+    let tree = cut.map(|(_, tree)| tree);
     let cwd = tree
         .map(|tree| tree.path.clone())
         .unwrap_or_else(|| dir.to_path_buf());
-    if let Some((repo, tree)) = &cut {
+    if let Some((repo, tree)) = cut {
         furnish_the_tree(config, agent_dir, id, repo, tree, problems, to_terminal)?;
         // After the furnishing, so that a setup command that fails takes back
         // a tree with nothing of yours in it. Whether there was anything to
         // move was settled before the id was minted, and a directory somebody
-        // has committed in since is no longer a spawn to refuse.
-        if args.with_changes
-            && let Err(e) = worktree::carry_changes(dir, &tree.path)
-        {
-            // The same undo a failed setup gets. The work that would not
-            // apply is still where it was typed, so the tree holds nothing of
-            // yours, and a tree standing under an id nothing records would
-            // refuse the next spawn under that name.
-            take_back(repo, id, tree, problems, to_terminal);
-            return Err(e);
+        // has committed in since is no longer a spawn to refuse. Work that
+        // would not apply is still where it was typed.
+        if args.with_changes {
+            taken.carried = worktree::carry_changes(dir, &tree.path)?;
         }
     }
     if let Some(tree) = tree_to_trust(tree.map(|tree| tree.path.as_path()), dir, args.exec) {
-        trust_the_tree(config, &env, &launch.agent, tree, problems, to_terminal);
+        taken.trusted = trust_the_tree(config, &env, &launch.agent, tree, problems, to_terminal);
     }
 
     // amx's own id over the top of the harness's pairs laid above: a table
@@ -702,6 +801,7 @@ fn start(
         id.to_string(),
     ];
     let pane = spawn::place(&server, id, &cwd, &boot)?;
+    taken.placed = Some((server.clone(), pane.clone()));
 
     let session = session_written(
         args.exec,
@@ -1054,6 +1154,9 @@ fn tree_to_trust<'a>(cut: Option<&'a Path>, dir: &'a Path, exec: bool) -> Option
 /// agent somebody answers by hand, which is exactly where amx stood before it
 /// wrote anything at all, so a store amx cannot write is said once and the
 /// spawn goes on.
+///
+/// The answer is the store it wrote a key into, which is the key a spawn that
+/// fails afterwards has to take back out; nothing where it wrote none.
 fn trust_the_tree(
     config: &Config,
     env: &std::collections::BTreeMap<String, String>,
@@ -1061,31 +1164,34 @@ fn trust_the_tree(
     tree: &Path,
     problems: &mut impl Write,
     to_terminal: bool,
-) {
+) -> Option<PathBuf> {
     // The store is the person's own file, and nothing is written to it until
     // they have said so once — `trust = true` in the config, the same consent
     // the hooks stand behind at doctor --fix. Until then the screen is theirs
     // to answer, and doctor points at the key.
     if !config.trust {
-        return;
+        return None;
     }
     // Which vendors amx can answer for is the wider question, and `doctor`
     // asks it. The one this write turns on is narrower: whose file it is.
     if !trust::writes_a_store(agent) {
-        return;
+        return None;
     }
-    let Some(store) = trust::store_in(env) else {
-        return;
-    };
+    let store = trust::store_in(env)?;
     // The vendor resolves a tree to the repository it belongs to, so that is
     // what already covers it when the person has trusted the repository.
     let inherits = worktree::main_repo(tree).ok();
-    if let Err(e) = trust::seed(&store, tree, inherits.as_deref(), now()) {
-        let _ = writeln!(
-            problems,
-            "{}",
-            said(Severity::Warned, &format!("amx new: {e:#}"), to_terminal)
-        );
+    match trust::seed(&store, tree, inherits.as_deref(), now()) {
+        Ok(true) => Some(store),
+        Ok(false) => None,
+        Err(e) => {
+            let _ = writeln!(
+                problems,
+                "{}",
+                said(Severity::Warned, &format!("amx new: {e:#}"), to_terminal)
+            );
+            None
+        }
     }
 }
 
@@ -1681,6 +1787,98 @@ mod tests {
             .lines()
             .filter(|line| line.starts_with("worktree "))
             .count()
+    }
+
+    #[test]
+    fn a_failed_place_takes_the_carried_work_back() {
+        // `new --with-changes` moved the work out of the checkout and wrote a
+        // trust key for the tree, and then the pane would not start. The undo
+        // leaves the checkout as it was: its work back, no tree, no branch of
+        // amx's, no key.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+        std::fs::write(repo.join("README.md"), "half an hour of work\n").unwrap();
+        std::fs::write(repo.join("started.rs"), "fn started() {}\n").unwrap();
+        let tree = worktree::create(&repo, "fix-login-a1b", None).unwrap();
+        let carried = worktree::carry_changes(&repo, &tree.path).unwrap();
+        assert!(carried.is_some());
+        assert_eq!(setup(&repo, &["status", "--porcelain"]), "", "moved out");
+
+        let store = dir.path().join("claude.json");
+        std::fs::write(&store, "{}").unwrap();
+        assert!(trust::seed(&store, &tree.path, None, 1_000).unwrap());
+
+        let cut = (repo.clone(), tree.clone());
+        let mut problems = Vec::new();
+        give_everything_back(
+            &repo,
+            "fix-login-a1b",
+            Some(&cut),
+            Undo {
+                carried,
+                trusted: Some(store.clone()),
+                placed: None,
+            },
+            &mut problems,
+            false,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "half an hour of work\n"
+        );
+        assert!(repo.join("started.rs").exists(), "the new file too");
+        assert!(!tree.path.exists(), "no tree");
+        assert_eq!(
+            setup(&repo, &["branch", "--list", &tree.branch]),
+            "",
+            "no branch"
+        );
+        assert!(
+            !std::fs::read_to_string(&store)
+                .unwrap()
+                .contains(&*tree.path.to_string_lossy()),
+            "and no key for it"
+        );
+        assert!(
+            problems.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&problems)
+        );
+    }
+
+    #[test]
+    fn a_failed_place_keeps_the_tree_when_the_work_will_not_go_back() {
+        // Somebody wrote over the same line in the checkout meanwhile: the
+        // work cannot be put back, so the tree is the only place it is, and it
+        // stays, named.
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+        std::fs::write(repo.join("README.md"), "the carried work\n").unwrap();
+        let tree = worktree::create(&repo, "fix-login-a1b", None).unwrap();
+        let carried = worktree::carry_changes(&repo, &tree.path).unwrap();
+        std::fs::write(repo.join("README.md"), "typed since\n").unwrap();
+
+        let cut = (repo.clone(), tree.clone());
+        let mut problems = Vec::new();
+        give_everything_back(
+            &repo,
+            "fix-login-a1b",
+            Some(&cut),
+            Undo {
+                carried,
+                ..Undo::default()
+            },
+            &mut problems,
+            false,
+        );
+
+        assert!(tree.path.exists(), "the tree holding the work stays");
+        let said = String::from_utf8_lossy(&problems);
+        assert!(
+            said.contains(&format!("your work is still in {}", tree.path.display())),
+            "{said}"
+        );
     }
 
     #[test]
