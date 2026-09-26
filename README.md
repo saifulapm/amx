@@ -1431,7 +1431,17 @@ The third reason is the one a squash merge leaves. The forge takes the commits
 under a sha your branch does not hold, so git reads nothing as merged, and then
 it deletes the branch. `sweep` fetches with `--prune` once per repository before
 it walks, and a branch whose upstream has gone is listed as `amx/fix-login-a1b
-gone from origin`. A repository with no origin has nothing to fetch and is read
+gone from origin`.
+
+A branch goes only when nothing on it would be lost. Its commits have to be on
+some other branch or remote, or its tip has to be exactly the commit a merged
+request went in at, which the look at the forge writes down beside the record.
+So a squash-merged request's branch goes, but one the agent kept committing on
+after the merge is kept, with `kept amx/fix-login-a1b: 2 commits are on no
+other branch`. So is a branch that is only gone from origin, with no request
+saying what was merged. And `sweep` and `clear` only ever delete a branch amx
+named, `amx/<id>` or `pr-<n>`: one you named with `--branch` is kept whether it
+landed or not. A repository with no origin has nothing to fetch and is read
 on the other two reasons without a word; one the fetch fails in — no network, a
 forge wanting a password — is said once on stderr and read the same way.
 
@@ -1555,8 +1565,10 @@ starts no agent at all.
 `--pr <n>` starts the agent on a pull request. `gh` is asked where the
 request's head is, that branch is fetched from the origin, and the tree is cut
 on it at the commit the request is at now: under the head ref's own name, or
-under `pr-<n>` where the work is in somebody's fork or another tree already
-holds that name. The branch is what the record keeps, so the row says which
+under `pr-<n>` where the work is in somebody's fork or this checkout already
+has a branch of that name. A local branch is never moved to the forge's
+commit: if `pr-<n>` already holds commits the request does not — a first agent
+on the same request committed there — the spawn is refused and names it. The branch is what the record keeps, so the row says which
 request the agent is on and `stop` leaves the branch where it is rather than
 deleting work that is under review. The request says what the tree is cut from
 and where it goes, so it is refused beside `--base`, `--with-changes`,

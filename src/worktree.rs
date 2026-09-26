@@ -248,17 +248,24 @@ pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
 /// [`create`]'s shape with the branch arriving instead of being made. The
 /// caller picks the name, because the head ref's own name is sometimes taken.
 ///
-/// `+` on the refspec so a branch fetched once and fetched again moves to the
-/// commit the request is at now rather than refusing; no `-b` on the add,
-/// since after the fetch the branch is already there. The base is read back
-/// off the branch rather than taken from the caller's answer about it: what
-/// the tree actually holds is what `diff` has to measure from.
+/// No `+` on the refspec: a branch fetched once and fetched again moves on to
+/// the commit the request is at now only where that is a fast-forward. A
+/// branch somebody committed to since — a first agent on the same request, a
+/// person — is refused rather than moved, and the refusal names it. No `-b`
+/// on the add, since after the fetch the branch is already there. The base is
+/// read back off the branch rather than taken from the caller's answer about
+/// it: what the tree actually holds is what `diff` has to measure from.
 pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Worktree> {
     ensure_excluded(repo)?;
-    git(
+    if let Err(e) = git(
         repo,
-        &["fetch", "origin", &format!("+{fetch}:refs/heads/{branch}")],
-    )?;
+        &["fetch", "origin", &format!("{fetch}:refs/heads/{branch}")],
+    ) {
+        if format!("{e:#}").contains("non-fast-forward") {
+            bail!("{branch} has commits {fetch} does not, so it was left where it is");
+        }
+        return Err(e);
+    }
 
     let path = path_for(repo, id);
     git(repo, &["worktree", "add", &path.to_string_lossy(), branch])?;

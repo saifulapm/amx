@@ -867,19 +867,27 @@ fn cut_worktree(
 }
 
 /// A tree on the head branch of request `number`, fetched from the origin.
-///
-/// The name is the head ref's own wherever it can be, because that is what the
-/// PR column reads a row's request back off. It cannot be when the work is in
-/// somebody's fork, where the same name means another branch, or when a tree
-/// in this repository already holds it — git keeps one tree to a branch, and a
-/// second agent on the same request is a thing to allow rather than refuse.
 fn cut_on_request(repo: &Path, id: &str, number: u64) -> Result<worktree::Worktree> {
     let head = crate::pr::request_head(repo, number)?;
-    let name = match head.cross || worktree::checked_out(repo, &head.branch)? {
-        true => format!("pr-{number}"),
-        false => head.branch,
-    };
+    let name = request_branch(repo, &head, number);
     worktree::create_on(repo, id, &name, &format!("refs/pull/{number}/head"))
+}
+
+/// The local branch a request's tree goes on.
+///
+/// The head ref's own name wherever it can be, because that is what the PR
+/// column reads a row's request back off. It cannot be when the work is in
+/// somebody's fork, where the same name means another branch, or when this
+/// checkout already has a branch of that name: whoever opened the request
+/// chose the name, and a local branch that happens to share it — the person's
+/// own, or the one a first agent on this request committed to — is not the
+/// forge's to move. `pr-<N>` is amx's name for it then, and the fetch onto it
+/// moves nothing either — see [`worktree::create_on`].
+fn request_branch(repo: &Path, head: &crate::pr::PrHead, number: u64) -> String {
+    match head.cross || here_already(repo, &head.branch) {
+        true => format!("pr-{number}"),
+        false => head.branch.clone(),
+    }
 }
 
 /// A tree on `name`, a branch this checkout already has or the origin does.
@@ -1673,6 +1681,83 @@ mod tests {
             .lines()
             .filter(|line| line.starts_with("worktree "))
             .count()
+    }
+
+    #[test]
+    fn a_request_never_moves_a_local_branch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = a_repo(&dir);
+        let origin = dir.path().join("origin.git");
+        setup(
+            dir.path(),
+            &[
+                "init",
+                "--bare",
+                "-q",
+                "-b",
+                "main",
+                &origin.to_string_lossy(),
+            ],
+        );
+        setup(
+            &repo,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        setup(&repo, &["push", "-q", "origin", "main"]);
+
+        // Somebody opens a request from a branch they called `perf-index`.
+        setup(&repo, &["checkout", "-q", "-b", "theirs"]);
+        std::fs::write(repo.join("theirs.rs"), "theirs\n").unwrap();
+        setup(&repo, &["add", "theirs.rs"]);
+        setup(&repo, &["commit", "-m", "their work"]);
+        let commit = setup(&repo, &["rev-parse", "HEAD"]);
+        setup(&repo, &["push", "-q", "origin", "HEAD:refs/pull/12/head"]);
+        setup(&repo, &["checkout", "-q", "main"]);
+        setup(&repo, &["branch", "-D", "theirs"]);
+
+        // And this checkout has a `perf-index` of its own, never pushed.
+        setup(&repo, &["checkout", "-q", "-b", "perf-index"]);
+        std::fs::write(repo.join("mine.rs"), "mine\n").unwrap();
+        setup(&repo, &["add", "mine.rs"]);
+        setup(&repo, &["commit", "-m", "my unpushed work"]);
+        let mine = setup(&repo, &["rev-parse", "HEAD"]);
+        setup(&repo, &["checkout", "-q", "main"]);
+
+        let head = crate::pr::PrHead {
+            branch: "perf-index".to_string(),
+            commit: commit.clone(),
+            cross: false,
+        };
+        let name = request_branch(&repo, &head, 12);
+        assert_eq!(name, "pr-12", "a name this checkout has is not the forge's");
+        let tree = worktree::create_on(&repo, "review-a1b", &name, "refs/pull/12/head").unwrap();
+        assert_eq!(setup(&tree.path, &["rev-parse", "HEAD"]), commit);
+        assert_eq!(
+            setup(&repo, &["rev-parse", "refs/heads/perf-index"]),
+            mine,
+            "and the person's branch is where they left it"
+        );
+
+        // A first agent commits on pr-12 and is stopped; a second request
+        // spawn must not fetch the forge's tip over that commit.
+        std::fs::write(tree.path.join("agent.rs"), "agent\n").unwrap();
+        setup(&tree.path, &["add", "agent.rs"]);
+        setup(&tree.path, &["commit", "-m", "the first agent's work"]);
+        let first = setup(&tree.path, &["rev-parse", "HEAD"]);
+        setup(&repo, &["worktree", "remove", &tree.path.to_string_lossy()]);
+
+        assert_eq!(request_branch(&repo, &head, 12), "pr-12");
+        let refused =
+            worktree::create_on(&repo, "again-b2c", "pr-12", "refs/pull/12/head").unwrap_err();
+        assert!(
+            format!("{refused:#}").starts_with("pr-12 has commits refs/pull/12/head does not"),
+            "{refused:#}"
+        );
+        assert_eq!(
+            setup(&repo, &["rev-parse", "refs/heads/pr-12"]),
+            first,
+            "the first agent's commit is still on pr-12"
+        );
     }
 
     #[test]
