@@ -423,23 +423,26 @@ pub enum Command {
 
     /// Check what amx needs from this machine, and what is missing.
     ///
-    /// Nine things have to be true before an agent can run: tmux, the agent
+    /// Ten things have to be true before an agent can run: tmux, the agent
     /// command, the config, amx's own files where each installed agent loads
     /// them, one amx on the PATH and this the one, a state directory to keep
     /// records in, no handoff still carrying the spawner's environment from
     /// before that moved to a file of its own, no agent already stopped at a
-    /// screen the vendor puts in front of the work, and no tree amx cut still
-    /// named in the agent's own trust store after the tree itself has gone.
+    /// screen the vendor puts in front of the work, no tree amx cut still
+    /// named in the agent's own trust store after the tree itself has gone,
+    /// and nothing amx made standing with no record: an id directory a spawn
+    /// died in, or a tree no record names. `--fix` clears the directories
+    /// once they are ten minutes old and never touches a tree.
     ///
     /// The wiring one is asked of every agent this machine has, so somebody
     /// with claude and pi reads two of those lines. `amx setup` is what wires
     /// one; doctor says which is unwired and prints the line.
     ///
-    /// Where a tmux server is already running, a tenth: that the directory
+    /// Where a tmux server is already running, an eleventh: that the directory
     /// the server itself is standing in still exists. One that outlived its
     /// own working directory kills every pane it starts.
     ///
-    /// Pointed at a directory, `amx --dir <path> doctor`, an eleventh: whether
+    /// Pointed at a directory, `amx --dir <path> doctor`, a twelfth: whether
     /// an agent started there would meet its vendor's folder-trust screen,
     /// which no hook can report and which a caller that never attaches would
     /// lose the agent to. Nothing is written to find out, and the exit code
@@ -1950,13 +1953,15 @@ mod tests {
             store: None,
             stale: Vec::new(),
             folder: None,
+            orphan_ids: Vec::new(),
+            orphan_trees: Vec::new(),
         });
         // The kinds of check, not the lines: `hooks` is asked once per agent
         // this machine has, so a person with claude and pi reads ten lines
-        // and is still asked the same nine things.
+        // and is still asked the same ten things.
         let kinds: std::collections::BTreeSet<&str> = checks.iter().map(|c| c.name).collect();
         let counted = [
-            "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+            "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         ]
         .get(kinds.len())
         .expect("a count these have a word for");

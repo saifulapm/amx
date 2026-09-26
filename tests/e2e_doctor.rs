@@ -579,3 +579,24 @@ fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back
     assert!(out.status.success(), "{printed}");
     assert!(!plugin.exists(), "and it is gone");
 }
+
+#[test]
+fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() {
+    // A spawn claims its id with a directory and writes the record into it a
+    // moment later. One that died between the two left a name nothing answers
+    // to and `--name` cannot take.
+    let amx = Harness::new();
+    std::fs::create_dir_all(amx.state_root().join("lost-a1b")).expect("an orphan id");
+
+    let out = amx.amx(&["doctor"]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("one id directory has no record"), "{said}");
+    assert!(said.contains("amx doctor --fix"), "{said}");
+
+    // Ten minutes is what separates a spawn that died from one still starting,
+    // so a fix run a moment later takes nothing.
+    let fixed = amx.amx(&["doctor", "--fix"]);
+    let said = String::from_utf8_lossy(&fixed.stdout);
+    assert!(said.contains("removed 0 id directories"), "{said}");
+    assert!(amx.state_root().join("lost-a1b").exists());
+}

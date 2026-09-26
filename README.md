@@ -38,29 +38,32 @@ amx setup claude      # or `amx setup pi`, for whichever agents you have
 amx doctor
 ```
 
-`doctor` checks the nine things that have to be true before an agent can run:
+`doctor` checks the ten things that have to be true before an agent can run:
 tmux, the agent command, the config file, the wiring, one amx on the PATH and
 the one running the check, a state directory amx can keep records in, no
 handoff still carrying the spawner's environment from before that moved to a
 file of its own, no agent already stopped at a screen the vendor puts in
-front of the work, and no tree amx cut still named in the agent's own trust
-store after the tree itself has gone. Every check that fails says what to do
-about it.
+front of the work, no tree amx cut still named in the agent's own trust store
+after the tree itself has gone, and nothing amx made standing with no record:
+an id directory a spawn died in before writing one, or a tree under
+`.amx/worktrees` that no record names. `doctor --fix` clears such a directory
+once it is ten minutes old; a tree it only names, since it may hold your work.
+Every check that fails says what to do about it.
 
-Nine kinds of check rather than nine lines. The wiring one is asked of every
+Ten kinds of check rather than ten lines. The wiring one is asked of every
 agent you have installed and names which agent it is about, so a machine with
 claude and pi reads two of those lines; an agent you have not got is not a
 fault and is not mentioned. `amx setup` is what wires one — `doctor` only says
 which is unwired, and prints the line that fixes it.
 
-Where a tmux server is already running, it checks a tenth: that the directory
+Where a tmux server is already running, it checks an eleventh: that the directory
 that server is standing in still exists. A server keeps the directory it was
 started in for as long as it lives, and once that directory is deleted every
 pane it starts lands somewhere that is not there and dies immediately — which
 from the outside looks like agents failing in under a second having said
 nothing. Restarting the server is the fix, and the check prints the command.
 
-Pointed at a directory, `amx --dir <path> doctor` asks an eleventh: whether an
+Pointed at a directory, `amx --dir <path> doctor` asks a twelfth: whether an
 agent started there would meet its vendor's folder-trust screen. That screen
 is drawn in front of the session every hook comes from, so an agent that meets
 it reports nothing and sits there until somebody attaches, and a caller that

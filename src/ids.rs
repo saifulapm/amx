@@ -99,7 +99,17 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
     if !edges_are_alphanumeric(name) {
         bail!("name {name:?} must start and end with a letter or digit");
     }
-    if state_root.join(name).exists() {
+    let held = state_root.join(name);
+    if held.exists() {
+        // A directory with no record in it is a spawn that died between
+        // claiming the name and writing it down: nobody's agent, and doctor
+        // is what clears it.
+        if !held.join("meta.json").exists() {
+            bail!(
+                "name {name:?} is held by a spawn that never finished: \
+                 `amx doctor --fix` clears it"
+            );
+        }
         bail!("name {name:?} is already taken");
     }
     Ok(())
@@ -330,5 +340,17 @@ mod tests {
             let id = generate(task, root.path()).unwrap();
             assert!(matches_pis_session_id_pattern(&id), "{id:?}");
         }
+    }
+
+    #[test]
+    fn a_name_held_by_a_spawn_that_never_finished_points_at_doctor() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join("fix-login")).unwrap();
+        let said = format!("{:#}", validate_name("fix-login", root.path()).unwrap_err());
+        assert!(said.contains("amx doctor --fix"), "{said}");
+
+        std::fs::write(root.path().join("fix-login/meta.json"), "{}").unwrap();
+        let said = format!("{:#}", validate_name("fix-login", root.path()).unwrap_err());
+        assert!(said.contains("already taken"), "{said}");
     }
 }

@@ -1,20 +1,20 @@
 //! `amx doctor` — what amx needs from this machine, and what is missing.
 //!
-//! Nine things have to be true before an agent can run: a tmux new enough to
+//! Ten things have to be true before an agent can run: a tmux new enough to
 //! address panes by id, a vendor command to run, a config amx can read, amx's
 //! own files where each installed agent loads them, one amx on the PATH and
 //! this the one, a state root amx can keep an agent in, no handoff still
 //! carrying the spawner's environment from before that moved to a file of its
 //! own, no agent already stopped at a screen the vendor puts in front of the
-//! work, and no tree amx cut still named in the vendor's own trust store after
-//! the tree itself has gone. Each check that fails says what to do about it,
+//! work, no tree amx cut still named in the vendor's own trust store after the
+//! tree itself has gone, and nothing amx made standing with no record. Each check that fails says what to do about it,
 //! because a check that only says "no" leaves somebody guessing at a machine
 //! they thought was fine.
 //!
-//! Nine kinds of check, that is, rather than nine lines. The wiring one is
+//! Ten kinds of check, that is, rather than ten lines. The wiring one is
 //! asked of every agent this machine has and names which agent it is about, so
 //! somebody with claude and pi reads two of those lines and is asked the same
-//! nine things. An agent that is not installed is not a machine with something
+//! ten things. An agent that is not installed is not a machine with something
 //! missing from it and gets no line at all.
 //!
 //! What two of them are worth depends on the vendor, and the vendor is what
@@ -26,7 +26,7 @@
 //! offered. A check that asked for a repair nobody can make would send somebody
 //! looking for a fault in their own machine.
 //!
-//! A tenth is asked only where there is something to ask it of. When a tmux
+//! An eleventh is asked only where there is something to ask it of. When a tmux
 //! server is already running, and the machine can say where a process is
 //! standing, doctor checks that the directory that server is standing in still
 //! exists. A server holds the directory it was started in for as long as it
@@ -34,7 +34,7 @@
 //! there and dies at once. No server yet is not a fault, and neither is a
 //! platform amx cannot ask, so both go unsaid rather than answered green.
 //!
-//! An eleventh is asked only when doctor is pointed at a directory, `amx --dir
+//! A twelfth is asked only when doctor is pointed at a directory, `amx --dir
 //! <path> doctor`: whether an agent started there would meet its vendor's
 //! folder-trust screen. That screen is drawn in front of the session every
 //! hook comes from, so an agent that meets it reports nothing and sits there
@@ -56,6 +56,7 @@
 //! which agent is unwired and prints the line that wires it.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -138,7 +139,18 @@ pub struct Findings {
     /// The directory doctor was pointed at, when it was, and what the vendor
     /// would do for an agent started there.
     pub folder: Option<Folder>,
+    /// Id directories with no record in them — a spawn that died between
+    /// claiming its id and writing it down — and how many seconds each has
+    /// stood.
+    pub orphan_ids: Vec<(PathBuf, u64)>,
+    /// Trees under a repository's `.amx/worktrees` that no record names.
+    pub orphan_trees: Vec<PathBuf>,
 }
+
+/// How long an id directory with no record stands before `--fix` takes it: a
+/// spawn in the middle of starting holds one for a moment, and this is far
+/// past any moment a spawn takes.
+const ORPHAN_AGE: u64 = 600;
 
 /// A directory an agent would be started in, and whether its vendor would
 /// draw the folder-trust screen there. Read off the store and off git, and
@@ -222,7 +234,7 @@ impl Setup {
 
 /// Judge what was found.
 ///
-/// Nine of these are asked on every machine. The tenth is asked only where
+/// Ten of these are asked on every machine. The eleventh is asked only where
 /// there is something to ask it of: a tmux server already running, on a
 /// platform that can say where a process is standing.
 pub fn report(found: &Findings) -> Vec<Check> {
@@ -234,7 +246,39 @@ pub fn report(found: &Findings) -> Vec<Check> {
     checks.push(setup_check(found));
     checks.push(store_check(found));
     checks.extend(folder_check(found));
+    checks.push(orphan_check(found));
     checks
+}
+
+/// Whether anything amx made stands with nothing naming it: an id directory
+/// no record was written into, or a tree no record names.
+///
+/// The directories are amx's to clear, and `--fix` clears them. A tree is
+/// not: it may hold somebody's work, so it is named and left for them.
+fn orphan_check(found: &Findings) -> Check {
+    let (ids, trees) = (found.orphan_ids.len(), found.orphan_trees.len());
+    if ids == 0 && trees == 0 {
+        return Check::ok("orphans", "every id and every tree amx made has a record");
+    }
+    let mut said = Vec::new();
+    if ids > 0 {
+        said.push(match ids {
+            1 => "one id directory has no record".to_string(),
+            n => format!("{n} id directories have no record"),
+        });
+    }
+    for tree in &found.orphan_trees {
+        said.push(format!("no record names {}", tree.display()));
+    }
+    let remedy = match (ids > 0, trees > 0) {
+        (true, false) => "run `amx doctor --fix`".to_string(),
+        (false, _) => "look in each tree, then `git worktree remove` it".to_string(),
+        (true, true) => {
+            "run `amx doctor --fix` for the ids; look in each tree, then `git worktree remove` it"
+                .to_string()
+        }
+    };
+    Check::wrong("orphans", said.join("; "), remedy)
 }
 
 fn tmux_check(found: &Findings) -> Check {
@@ -636,6 +680,29 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         checks = report(&current);
     }
 
+    if fix && !current.orphan_ids.is_empty() {
+        let (old, young): (Vec<_>, Vec<_>) = current
+            .orphan_ids
+            .iter()
+            .cloned()
+            .partition(|(_, age)| *age >= ORPHAN_AGE);
+        for (dir, _) in &old {
+            std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+        }
+        writeln!(
+            out,
+            "\nremoved {} id {} with no record",
+            old.len(),
+            if old.len() == 1 {
+                "directory"
+            } else {
+                "directories"
+            }
+        )?;
+        current.orphan_ids = young;
+        checks = report(&current);
+    }
+
     Ok(if checks.iter().all(Check::is_ok) {
         exit::OK
     } else {
@@ -726,12 +793,75 @@ pub fn gather(config: &Config, dir: Option<&Path>) -> Result<Findings> {
             // check above is where that is said. Here it means none were found.
             &derive::views(&state_root, store::now()).unwrap_or_default(),
         ),
+        orphan_ids: orphan_ids(&state_root, store::now()),
+        orphan_trees: orphan_trees(&state_root, dir),
         state_root,
         server: standing_server(),
         folder: dir.map(|dir| folder(dir, store.as_deref(), config.trust)),
         store,
         stale,
     })
+}
+
+/// Every directory under `root` named like an id with no record in it, and
+/// how long it has stood.
+fn orphan_ids(root: &Path, now: u64) -> Vec<(PathBuf, u64)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(PathBuf, u64)> = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(crate::ids::is_valid))
+        .map(|entry| entry.path())
+        .filter(|dir| dir.is_dir() && !dir.join("meta.json").exists())
+        .map(|dir| {
+            let made = std::fs::metadata(&dir)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(now, |at| at.as_secs());
+            let age = now.saturating_sub(made);
+            (dir, age)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Every tree under `.amx/worktrees` in a repository amx has cut trees in —
+/// or the one doctor was pointed into — that no record names.
+fn orphan_trees(root: &Path, dir: Option<&Path>) -> Vec<PathBuf> {
+    let named: Vec<PathBuf> = store::list(root)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|id| store::Agent::open(root, id).ok()?.meta().ok()?.worktree)
+        .collect();
+    let mut repos: BTreeSet<PathBuf> = named
+        .iter()
+        .filter_map(|tree| tree.parent()?.parent()?.parent().map(Path::to_path_buf))
+        .collect();
+    if let Some(dir) = dir
+        && let Ok(repo) = worktree::main_repo(dir)
+    {
+        repos.insert(repo);
+    }
+    let same = |a: &Path, b: &Path| {
+        std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf())
+            == std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf())
+    };
+    let mut found = Vec::new();
+    for repo in repos {
+        let Ok(trees) = std::fs::read_dir(repo.join(".amx/worktrees")) else {
+            continue;
+        };
+        for tree in trees.flatten().map(|entry| entry.path()) {
+            if tree.is_dir() && !named.iter().any(|kept| same(kept, &tree)) {
+                found.push(tree);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// What the vendor would do for an agent started in `dir`, read off the store
@@ -1079,7 +1209,56 @@ mod tests {
             store: Some(PathBuf::from("/home/dev/.claude.json")),
             stale: Vec::new(),
             folder: None,
+            orphan_ids: Vec::new(),
+            orphan_trees: Vec::new(),
         }
+    }
+
+    #[test]
+    fn orphan_ids_and_trees_are_named_and_only_old_ids_are_fixed() {
+        let root = TempDir::new().unwrap();
+        let young = root.path().join("fix-login-a1b");
+        let old = root.path().join("tidy-b2c");
+        std::fs::create_dir_all(&young).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let tree = root.path().join("repo/.amx/worktrees/lost-c3d");
+        std::fs::create_dir_all(&tree).unwrap();
+        let found = Findings {
+            orphan_ids: vec![(young.clone(), 30), (old.clone(), 900)],
+            orphan_trees: vec![tree.clone()],
+            ..healthy()
+        };
+
+        let orphans = check(&found, "orphans");
+        assert!(
+            orphans.found.contains("2 id directories have no record"),
+            "{}",
+            orphans.found
+        );
+        assert!(orphans.found.contains("lost-c3d"), "{}", orphans.found);
+        assert!(orphans.remedy.as_deref().unwrap().contains("--fix"));
+
+        let (code, said) = said(&found, true);
+        assert_eq!(code, exit::FAILURE, "the tree is still there to look at");
+        assert!(
+            said.contains("removed 1 id directory with no record"),
+            "{said}"
+        );
+        assert!(!old.exists(), "the old one went");
+        assert!(young.exists(), "a spawn still starting keeps its claim");
+        assert!(tree.exists(), "and a tree is never taken");
+    }
+
+    #[test]
+    fn orphan_ids_are_the_directories_with_no_record_in_them() {
+        let root = TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("fix-login-a1b")).unwrap();
+        std::fs::create_dir_all(root.path().join("kept-b2c")).unwrap();
+        std::fs::write(root.path().join("kept-b2c/meta.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.path().join("Not An Id")).unwrap();
+        let found = orphan_ids(root.path(), store::now());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.ends_with("fix-login-a1b"));
     }
 
     /// An agent as a reader hands it over. The record is deserialised rather
@@ -1173,8 +1352,9 @@ mod tests {
         assert!(checks.iter().all(Check::is_ok), "{checks:#?}");
         assert_eq!(
             checks.len(),
-            9,
-            "tmux, the vendor, the config, the hooks, amx, the state root, env, setup, the store"
+            10,
+            "tmux, the vendor, the config, the hooks, amx, the state root, env, setup, the store, \
+             the orphans"
         );
 
         let (code, printed) = said(&healthy(), false);
