@@ -159,7 +159,10 @@ Nine rules, in the order the document holds them.
   rule. One component draws both terms: `extension-editor.js`.
 - **`input`** wants `enter submit` and twenty columns of rule, which is
   everything the rule above stands on minus the term that tells them apart, so
-  it sits under it. `extension-input.js` is what reaches it.
+  it sits under it. `extension-input.js` is what reaches it. Its question is
+  the sentence over the `>`, read the same under a transcript that ends in a
+  numbered list: the screen numbers no choices, so a `1.` higher up is the
+  agent's output and not where to stop looking.
 - **`spinner`** wants twenty columns of rule and one of the ten braille frames
   within four rows of it. `status-indicator.js` opens every one of its four
   kinds on that frame, and so does the box `bash-execution.js` puts in the

@@ -399,8 +399,10 @@ impl Rule {
             .or_else(|| screen.first_option());
         let (from, to) = match (&self.asks, marked) {
             (Asks::Sentence(anchor), _) => screen.sentence_at(screen.row_above(choices, anchor)?),
+            // A screen asking above its own anchor numbers no choices, so a
+            // numbered row higher up is the agent's output and no ceiling.
             (Asks::Above(anchor), None) => {
-                screen.sentence_above(screen.row_above(choices, anchor)?)?
+                screen.sentence_above(screen.row_above(None, anchor)?)?
             }
             // The run's first row is the anchor row on a marked screen,
             // whichever of the two the document asked for.
@@ -4208,6 +4210,28 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)          (github-copilot) gpt-5-mini • minimal
 ";
 
+    /// pi's one-line input raised under a transcript that ends in a numbered
+    /// list of the agent's own.
+    const A_PI_INPUT_UNDER_A_LIST: &str = r"
+ Two branches are ahead of main:
+
+ 1. fix-login
+ 2. port-importer
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Which branch should I push to?
+
+>
+
+ enter submit  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.claude/jobs/3876e46d/tmp/pane
+0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
+";
+
     #[test]
     fn rules_a_frame_in_pis_tool_output_is_not_pis_spinner() {
         let claimed = claim(pi(), A_PI_FRAME_IN_TOOL_OUTPUT, Phase::Working);
@@ -4229,6 +4253,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             asked.options,
             ["Spaces", "Tabs", "Type something.", "Chat about this"]
         );
+    }
+
+    #[test]
+    fn rules_pis_input_under_a_numbered_list_keeps_its_question() {
+        // The list is the agent's own output above the box, and no choice
+        // this screen offers: the question is read above the row pi waits to
+        // be typed into, however many numbered rows sit higher.
+        let asked = asked(pi(), A_PI_INPUT_UNDER_A_LIST);
+        assert_eq!(asked.text, "Which branch should I push to?");
+        assert!(asked.options.is_empty(), "{:?}", asked.options);
     }
 
     #[test]

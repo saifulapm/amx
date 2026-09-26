@@ -660,6 +660,10 @@ asks = { above = "enter submit" }
 # above the `>` itself, which is the title, wrap and all — one row at 100, 54
 # and 40 columns, two at 30, 24 and 20. It stays the title once somebody has
 # typed, because the typing lands on that same row rather than on a new one.
+# And it is the `>` wherever it sits, whatever numbered rows the agent wrote
+# above the box: the reading used to take the lowest `1.` on the screen as
+# the choices and look for the `>` over them, so an input raised under a list
+# of the agent's own read no question at all.
 [[rule]]
 name = "input"
 state = "waiting"
