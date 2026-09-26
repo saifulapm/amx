@@ -140,6 +140,9 @@ pub struct Hooks {
     /// The sentence this vendor writes on a permission box, with [`TOOL`]
     /// where the tool it is about goes.
     pub permission_sentence: &'static str,
+    /// What a prompt the vendor types into the session itself opens with: a
+    /// turn nobody asked for, whose end is not the answer to anything.
+    pub injected: &'static [&'static str],
 }
 
 /// How a vendor is wired to amx's hook command, under the person's home

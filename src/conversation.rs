@@ -133,10 +133,31 @@ fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
         .iter()
         .rev()
         .find(|entry| voice(format, entry).is_some())?;
-    if voice(format, last) != Some(Voice::Assistant) || synthetic(format, last) {
+    if voice(format, last) != Some(Voice::Assistant) || synthetic(format, last) || cut_off(last) {
         return None;
     }
     answer_text(last)
+}
+
+/// Whether an assistant entry stopped before its words were an answer: pi's
+/// `aborted`, a turn somebody cut short, and `error`, one its provider failed.
+fn cut_off(entry: &Value) -> bool {
+    matches!(
+        entry["message"]["stopReason"].as_str(),
+        Some("aborted" | "error")
+    )
+}
+
+/// What every synthetic entry in a transcript says — see [`synthetic`].
+///
+/// claude hands the words of one to the hook that ends the turn as though the
+/// agent had said them, and this is the only place that tells the two apart.
+pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
+    spoken(format, jsonl)
+        .iter()
+        .filter(|entry| synthetic(format, entry))
+        .filter_map(answer_text)
+        .collect()
 }
 
 /// Why the last turn ended with nothing to show for it, where the vendor
