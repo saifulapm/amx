@@ -431,7 +431,7 @@ fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
 }
 
 #[test]
-fn resume_keeps_the_seconds_the_agent_already_worked() {
+fn resume_keeps_what_the_agent_worked_and_what_it_was_called() {
     // A parked agent that worked six hours read `6h` on the wall, and `0s`
     // the moment it was opened: the resume that brought it back wrote a fresh
     // record and the hours went with the answer and the exit code. It is the
@@ -445,11 +445,14 @@ fn resume_keeps_the_seconds_the_agent_already_worked() {
     let path = amx.agent_dir(id).join("state.json");
     let mut state = amx.state(id);
     state["worked"] = json!(22_178);
+    state["name"] = json!("billing");
     std::fs::write(&path, state.to_string()).unwrap();
 
     resume(&amx, &[id]);
     until_continued(&amx, id);
     assert_eq!(amx.state(id)["worked"], 22_178);
+    // And what somebody renamed it to on the wall is still what it is called.
+    assert_eq!(amx.state(id)["name"], "billing");
 }
 
 #[test]
