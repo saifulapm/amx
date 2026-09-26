@@ -170,6 +170,10 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
 /// the transcript and nowhere else — the pane has scrolled and the hooks say
 /// only that the turn ended — so this is the one place they can be read.
 ///
+/// claude writes none of those when the account stops the turn — a weekly
+/// limit, credits run out — and says why in a synthetic entry marked as the
+/// API's error instead, so its words are the reason, repeated as they are.
+///
 /// An ordinary ending answers `None`: `stop` and `toolUse`, and claude's
 /// `end_turn` and `tool_use`, say nothing about why there are no words, and a
 /// reason neither vendor's table names is repeated as the vendor spelled it
@@ -182,6 +186,9 @@ pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
         .find(|entry| voice(format, entry).is_some())?;
     if voice(format, last) != Some(Voice::Assistant) {
         return None;
+    }
+    if synthetic(format, last) && last["isApiErrorMessage"] == true {
+        return answer_text(last).map(|said| format!("the vendor said: {}", one_line(&said)));
     }
     let message = &last["message"];
     let reason = message["stopReason"]
@@ -373,12 +380,18 @@ enum Voice {
 fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
     match format {
         Transcript::Claude => match entry["type"].as_str()? {
-            // A tool's result is a `user` line whose content is blocks; a
-            // prompt's is a string.
-            "user" => Some(match entry["message"]["content"].is_string() {
-                true => Voice::User,
-                false => Voice::Result,
-            }),
+            // A tool's result is a `user` line whose blocks carry it; a
+            // prompt is a string, or blocks where an image was pasted into it
+            // or claude noted the person cut the turn short.
+            "user" => Some(
+                match blocks(entry)
+                    .iter()
+                    .any(|block| block["type"] == "tool_result")
+                {
+                    true => Voice::Result,
+                    false => Voice::User,
+                },
+            ),
             "assistant" => Some(Voice::Assistant),
             _ => None,
         },
@@ -433,7 +446,17 @@ fn claude(entry: &Value, said: &mut Vec<Said>) {
         return;
     }
     match voice(Transcript::Claude, entry) {
-        Some(Voice::User) => prompt(entry["message"]["content"].as_str(), said),
+        // claude's own lines in the person's voice: a skill's body, an image's
+        // source, the caveat before a local command, the summary a compaction
+        // starts the conversation again from. Nobody typed them.
+        Some(Voice::User) if entry["isMeta"] == true || entry["isCompactSummary"] == true => {}
+        Some(Voice::User) => {
+            let typed = match entry["message"]["content"].as_str() {
+                Some(typed) => typed.to_string(),
+                None => typed_text(entry),
+            };
+            prompt(Some(&command(&typed).unwrap_or(typed)), said);
+        }
         Some(Voice::Assistant) => {
             for block in blocks(entry) {
                 match block["type"].as_str() {
@@ -455,14 +478,7 @@ fn pi(entry: &Value, said: &mut Vec<Said>) {
             let content = &entry["message"]["content"];
             match content.as_str() {
                 Some(typed) => prompt(Some(typed), said),
-                None => {
-                    let typed: Vec<&str> = blocks(entry)
-                        .iter()
-                        .filter(|block| block["type"] == "text")
-                        .filter_map(|block| block["text"].as_str())
-                        .collect();
-                    prompt(Some(&typed.join("\n")), said);
-                }
+                None => prompt(Some(&typed_text(entry)), said),
             }
         }
         Some(Voice::Assistant) => {
@@ -476,6 +492,37 @@ fn pi(entry: &Value, said: &mut Vec<Said>) {
         }
         _ => {}
     }
+}
+
+/// The text blocks of a prompt written as blocks, joined: the words typed
+/// beside a pasted image, which is a block of its own.
+fn typed_text(entry: &Value) -> String {
+    let typed: Vec<&str> = blocks(entry)
+        .iter()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect();
+    typed.join("\n")
+}
+
+/// A slash command or a skill as the person typed it, out of the tags claude
+/// writes it in: `<command-name>/amx</command-name>` beside a
+/// `<command-message>` and the `<command-args>` typed after the name.
+fn command(written: &str) -> Option<String> {
+    let name = tagged(written, "command-name")?.trim();
+    let args = tagged(written, "command-args").unwrap_or_default().trim();
+    Some(match args.is_empty() {
+        true => name.to_string(),
+        false => format!("{name} {args}"),
+    })
+}
+
+/// What stands between `<tag>` and `</tag>`.
+fn tagged<'a>(written: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let from = written.find(&open)? + open.len();
+    let to = written[from..].find(&format!("</{tag}>"))?;
+    Some(&written[from..from + to])
 }
 
 /// The message's blocks, or none where the content is not blocks.
@@ -634,6 +681,75 @@ mod tests {
         assert_eq!(
             read(Transcript::Claude, &dropped),
             vec![Said::Prompt("run the tests".to_string())]
+        );
+    }
+
+    #[test]
+    fn conversation_reads_pasted_image_skill_and_interrupt_prompts_as_they_were_typed() {
+        // Shapes read off this machine's claude transcripts on 2026-09-26. A
+        // prompt with an image pasted into it is blocks, not a string, and so
+        // is claude's note that the person cut the turn short; a slash command
+        // or a skill is a string of claude's own tags around what was typed.
+        let typed = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Image #3] why is the name the store's?\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"data\":\"iVBO\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Image: source: /tmp/images/3.png]\"}]},\"isMeta\":true}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"<command-message>amx</command-message>\\n<command-name>/amx</command-name>\\n<command-args>spawn two agents\\nfor the importer</command-args>\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Base directory for this skill: /srv/.claude/skills/amx\\n\\n# amx\"}]},\"isMeta\":true,\"sourceToolUseID\":\"toolu_1\"}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"<command-name>/exit</command-name>\\n            <command-message>exit</command-message>\\n            <command-args></command-args>\"}}\n",
+        );
+        assert_eq!(
+            read(Transcript::Claude, typed),
+            vec![
+                Said::Prompt("[Image #3] why is the name the store's?".to_string()),
+                tool("Bash", Some("cargo test")),
+                Said::Prompt("[Request interrupted by user]".to_string()),
+                Said::Prompt("/amx spawn two agents\nfor the importer".to_string()),
+                Said::Prompt("/exit".to_string()),
+            ],
+            "the words of the pasted prompt, the interrupt, and each command as \
+             the person typed it; the image's source note and the skill's body \
+             are claude's"
+        );
+    }
+
+    #[test]
+    fn conversation_meta_and_compaction_lines_are_never_prompts() {
+        let written = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\"<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>\"},\"isMeta\":true}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"go on\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Going on.\"}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"This session is being continued from a previous conversation that ran out of context.\\n\\nSummary:\\n1. Primary Request\"},\"isCompactSummary\":true,\"isVisibleInTranscriptOnly\":true}\n",
+        );
+        assert_eq!(
+            read(Transcript::Claude, written),
+            vec![
+                Said::Prompt("go on".to_string()),
+                Said::Text("Going on.".to_string()),
+            ]
+        );
+        assert_eq!(
+            answer(Transcript::Claude, written),
+            None,
+            "a summary after the last answer is a turn going on past it, not an end"
+        );
+    }
+
+    #[test]
+    fn conversation_says_what_limit_stopped_a_claude_turn() {
+        // Written by claude 2.1 on 2026-08-22: a turn the account's limit
+        // stopped is a synthetic entry whose words are the reason.
+        let limited = format!(
+            "{CLAUDE}{}\n",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"content\":[{\"type\":\"text\",\"text\":\"You've hit your weekly limit · resets Aug 24, 10am (Asia/Dhaka)\"}]},\"error\":\"rate_limit\",\"isApiErrorMessage\":true}"
+        );
+        assert_eq!(answer(Transcript::Claude, &limited), None);
+        assert_eq!(
+            why_it_stopped(Transcript::Claude, &limited).as_deref(),
+            Some(
+                "the vendor said: You've hit your weekly limit · resets Aug 24, 10am (Asia/Dhaka)"
+            )
         );
     }
 
