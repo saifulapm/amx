@@ -4176,6 +4176,24 @@ Only showing models from configured providers. Use /login to add providers.
         );
     }
 
+    /// claude's AskUserQuestion menu asking a question that opens the way a
+    /// permission box's does. The menu is the widget: `Enter to select` is on
+    /// no permission box.
+    const ASK_MENU_DO_YOU_WANT_TO: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Indentation
+
+Do you want to indent this project with spaces or tabs?
+
+❯ 1. Spaces
+  2. Tabs
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+
     /// pi at rest after a tool call whose output drew one of the vendor's own
     /// braille frames in the middle of a row, two rows over the composer.
     const A_PI_FRAME_IN_TOOL_OUTPUT: &str = r"
@@ -4195,6 +4213,22 @@ Only showing models from configured providers. Use /login to add providers.
         let claimed = claim(pi(), A_PI_FRAME_IN_TOOL_OUTPUT, Phase::Working);
         assert_eq!(claimed.rule_name(), Some("prompt"));
         assert_eq!(claimed.phase(), Some(Phase::Idle));
+    }
+
+    #[test]
+    fn rules_a_menu_asking_whether_you_want_to_is_a_menu() {
+        let claimed = claim(claude(), ASK_MENU_DO_YOU_WANT_TO, Phase::Working);
+        assert_eq!(claimed.rule_name(), Some("ask_menu"));
+
+        let asked = asked(claude(), ASK_MENU_DO_YOU_WANT_TO);
+        assert_eq!(
+            asked.text,
+            "Do you want to indent this project with spaces or tabs?"
+        );
+        assert_eq!(
+            asked.options,
+            ["Spaces", "Tabs", "Type something.", "Chat about this"]
+        );
     }
 
     #[test]

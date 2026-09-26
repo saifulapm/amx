@@ -301,6 +301,12 @@ so it did not notice.
 At 24 columns the footer wraps as `Esc to cancel · Tab to` / `amend`, which
 leaves `esc to cancel` whole.
 
+`Enter to select` is on none of these rows at any width, and it is the footer
+the `ask_menu` screen opens with. The rule refuses a screen carrying it
+(`not`): a menu whose question the agent phrased `Do you want to …` carries
+this rule's `any` as well, `❯ 1.` and `Esc to cancel`, and read as a
+permission box ahead of the rule that names it.
+
 ## `ask_menu`
 
 At 54 columns, the plainest shape the tool draws:

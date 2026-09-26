@@ -397,6 +397,13 @@ marks = "❯"
 # at 40, gone by 30. Bypass-permissions and don't-ask were not re-driven this
 # round; nothing about this vendor bump touched the footer's wording.
 #
+# `not` is the menu below. AskUserQuestion puts whatever the agent asks over
+# its choices, and an agent asks `Do you want to …` as readily as the vendor
+# does; the menu's own `❯ 1.` and `Esc to cancel` are this rule's `any` too,
+# so a menu asking whether you want to read as a permission box and was
+# answered as one. `Enter to select` is on the menu's footer and on no
+# permission box measured.
+#
 # `asks` again: what sits above this screen's question is what the request is
 # about — the tool, its arguments, the rule that stopped it — and that is not
 # what is being asked, so the question is the row the anchor is on.
@@ -408,6 +415,7 @@ all = ["do you want to"]
 any = ["❯ 1.", "esc to cancel"]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+not = ["enter to select"]
 asks = { sentence = "do you want to" }
 
 # The third blocking prompt: the menu claude's AskUserQuestion tool draws.
