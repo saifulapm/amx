@@ -317,10 +317,12 @@ fn bring_back(
     // Everything the last turn left behind goes with it: an answer from before
     // the agent stopped is not this session's answer, and an exit code is not
     // how a running command ended. The count of messages sent stays, because
-    // the log it counts is still the agent's own.
+    // the log it counts is still the agent's own, and so do the seconds it
+    // worked, because it is the same agent that worked them.
     writer.update_state(|state| {
         *state = State {
             seq: state.seq,
+            worked: state.worked,
             // Nobody is asking this session for anything, so nothing after the
             // session opens will say the agent is there. What only this
             // command knows goes on the record for the hook that opens it.

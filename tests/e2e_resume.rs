@@ -431,6 +431,28 @@ fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
 }
 
 #[test]
+fn resume_keeps_the_seconds_the_agent_already_worked() {
+    // A parked agent that worked six hours read `6h` on the wall, and `0s`
+    // the moment it was opened: the resume that brought it back wrote a fresh
+    // record and the hours went with the answer and the exit code. It is the
+    // same agent on the same session, and what it worked is still its own.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+
+    let path = amx.agent_dir(id).join("state.json");
+    let mut state = amx.state(id);
+    state["worked"] = json!(22_178);
+    std::fs::write(&path, state.to_string()).unwrap();
+
+    resume(&amx, &[id]);
+    until_continued(&amx, id);
+    assert_eq!(amx.state(id)["worked"], 22_178);
+}
+
+#[test]
 fn resume_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
     // A record that has lost its pane is a record to bring back, and one that
     // lost it to another agent has lost it as surely as one whose pane is
