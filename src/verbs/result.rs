@@ -137,7 +137,8 @@ pub fn run_family(
     while !pending.is_empty() {
         pending.retain(|id| {
             derive::view(root, id, store::now())
-                .map(|view| !crate::verbs::wait::settled(view.phase(), None))
+                .and_then(|view| crate::verbs::wait::ready(root, id, view.phase(), None))
+                .map(|ready| !ready)
                 .unwrap_or(true)
         });
         if pending.is_empty() || deadline.is_some_and(|at| Instant::now() >= at) {
@@ -153,12 +154,18 @@ pub fn run_family(
     for id in &children {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        let answer = view.state.result.clone().or_else(|| transcript(&view));
+        let settled = settled(phase, ended(root, id, phase)?);
+        // What is on the record of a turn cut short, or of a command that
+        // ended on a message, answers the turn before: not this child's.
+        let answer = match settled {
+            Settled::Interrupted | Settled::Unanswered => None,
+            _ => view.state.result.clone().or_else(|| transcript(&view)),
+        };
         let question = view.state.question.clone();
-        match phase {
-            Phase::Waiting => waiting = true,
-            Phase::Failed | Phase::Stopped => failed = true,
-            Phase::Idle | Phase::Done if answer.is_none() => failed = true,
+        match settled {
+            Settled::Question => waiting = true,
+            Settled::Nothing | Settled::Interrupted | Settled::Unanswered => failed = true,
+            Settled::Answer if answer.is_none() => failed = true,
             _ => {}
         }
         if json {
