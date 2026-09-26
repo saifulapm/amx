@@ -440,10 +440,13 @@ pub const REPO_ENV: &str = "AMX_REPO";
 ///
 /// The answer is the paths that were not in the repository, said by name: a key
 /// naming a file this repository does not have is a config file outliving one
-/// of somebody's projects, not a reason to refuse them an agent. A setup
-/// command that fails is the other way round and is an error carrying what it
-/// said, because the tree is what the agent was going to work in and one that
-/// is half furnished is worse than none.
+/// of somebody's projects, not a reason to refuse them an agent. So is a copy
+/// the tree already has a file for, which is kept rather than written over. A
+/// setup command that fails is the other way round and is an error carrying
+/// what it said, because the tree is what the agent was going to work in and
+/// one that is half furnished is worse than none. So is an entry that is not a
+/// path inside the repository — absolute, or climbing out through `..` — named
+/// before anything is copied.
 ///
 /// `env` is what the caller knows and this does not: which agent this is, and
 /// where it may scribble. The tree and the repository are set from the
@@ -458,13 +461,33 @@ pub fn furnish(
 ) -> Result<Vec<String>> {
     let mut missing = Vec::new();
 
+    // Every entry is proved a path inside the repository before any is acted
+    // on, so a refused one leaves the tree as it was cut.
+    for path in copy.iter().chain(link) {
+        let inside = Path::new(path).components().all(|part| {
+            matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+        if !inside {
+            bail!("`{path}` is not a path inside the repository: copy and link name files in it");
+        }
+    }
+
     for path in copy {
         let from = repo.join(path);
         if !from.exists() {
             missing.push(format!("{path} is not in {}", repo.display()));
             continue;
         }
+        // What the tree already has is the tree's: a tracked file, or a
+        // tracked link whose target a copy would write straight through.
         let to = tree.join(path);
+        if to.symlink_metadata().is_ok() {
+            missing.push(format!("kept {path}: already in the tree"));
+            continue;
+        }
         make_way_for(&to)?;
         std::fs::copy(&from, &to)
             .with_context(|| format!("copying {path} into {}", tree.display()))?;
@@ -1744,6 +1767,80 @@ mod tests {
         assert!(
             tree.path.join(".env").exists(),
             "the paths that are there are furnished anyway"
+        );
+    }
+
+    #[test]
+    fn furnish_refuses_a_path_outside_the_repository_and_copies_nothing() {
+        let repo = a_repo();
+        std::fs::write(repo.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        let outside = repo.path().parent().unwrap().join("secret");
+        std::fs::write(&outside, "the key\n").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        for entry in [
+            "../secret".to_string(),
+            outside.to_string_lossy().into_owned(),
+            "config/../../secret".to_string(),
+        ] {
+            for (copy, link) in [
+                (vec![".env".to_string(), entry.clone()], vec![]),
+                (vec![".env".to_string()], vec![entry.clone()]),
+            ] {
+                let refused = furnish(repo.path(), &tree.path, &copy, &link, &[], &[]).unwrap_err();
+                assert!(format!("{refused:#}").contains(&entry), "{refused:#}");
+                assert!(
+                    !tree.path.join(".env").exists(),
+                    "nothing is copied once one entry is refused"
+                );
+            }
+        }
+        assert!(!repo.path().join(".amx/secret").exists());
+    }
+
+    #[test]
+    fn furnish_never_copies_over_a_file_the_tree_already_has() {
+        // An absolute entry was the path onto itself; a tracked symlink in the
+        // tree is the other way the destination is a file somebody has.
+        let repo = a_repo();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("settings.toml");
+        std::fs::write(&target, "the real settings\n").unwrap();
+        std::os::unix::fs::symlink(&target, repo.path().join("settings.toml")).unwrap();
+        setup(repo.path(), &["add", "settings.toml"]);
+        setup(repo.path(), &["commit", "-m", "a tracked link"]);
+        std::fs::write(repo.path().join("README.md"), "changed here\n").unwrap();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+
+        let said = furnish(
+            repo.path(),
+            &tree.path,
+            &["settings.toml".to_string(), "README.md".to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "the real settings\n",
+            "the file the link points at keeps its bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.path.join("README.md")).unwrap(),
+            "before\n",
+            "the tree's own file is kept"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s == "kept settings.toml: already in the tree"),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s == "kept README.md: already in the tree"),
+            "{said:?}"
         );
     }
 
