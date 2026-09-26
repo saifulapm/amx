@@ -325,6 +325,9 @@ pub fn queued(events: &[Event]) -> Vec<String> {
             Some(Moment::Ended) => Some(false),
             _ if event.kind == derive::READ_PROMPT => Some(true),
             _ if event.kind == derive::READ_TURN_END => Some(false),
+            // amx's own word that it cut the turn short, which the vendor
+            // may never mention: see [`crate::verbs::interrupt`].
+            _ if event.kind == crate::verbs::interrupt::INTERRUPT => Some(false),
             _ => None,
         };
         if let Some(began) = edge {
@@ -707,6 +710,17 @@ mod tests {
         let mut watched = holding.clone();
         watched.push(Event::new(derive::READ_TURN_END, json!({})));
         assert!(queued(&watched).is_empty());
+
+        // An interrupt ends the turn where it stands, and claude writes no
+        // `Stop` for a turn cut short: the next message is a turn of its own,
+        // not one held behind the turn that is gone.
+        let cut = vec![
+            Event::new(SUBMITTED, json!({})),
+            Event::new(crate::verbs::interrupt::INTERRUPT, json!({})),
+            sent("change of direction"),
+            Event::new(SUBMITTED, json!({})),
+        ];
+        assert!(queued(&cut).is_empty());
 
         // pi says the other thing, and it means what it always did: its
         // `Taken` is the vendor having started on the message, so it is no
