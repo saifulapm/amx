@@ -560,6 +560,12 @@ this pass and `← for agents` later, which is the 2.1.240 change still in place
 Four of the six modes are reachable with shift+tab, and the other two were
 driven with `--permission-mode` on the argv.
 
+The `· ← for agents` tail is a hint about a key and not a count, so the
+furniture names it in `footer_hints` and takes it off the footer before the
+`shells` fragments are matched: the separator it brings would otherwise read as
+a shell running on every idle screen. `← 5 agents` is a count and still reads as
+running.
+
 At 24 columns the footer truncates to `⏵⏵ auto mode on`, `⏸ manual mode on · …`
 and `⏵⏵ bypass`, so the glyph is all that is left — which is the whole reason
 it is the anchor.

@@ -218,6 +218,13 @@ placeholders = [
 # before this was measured at all. The other way round — a screen read as no
 # shells while one runs — ends a turn that has not ended, and is what the word
 # alone would have done at 30 columns.
+#
+# Since then claude ends the footer `· ← for agents` in all six modes, idle or
+# not (2.1.278, docs/claude-screens.md), and a reader now writes a turn's end
+# off a screen that shows no shell. So that tail is named in `footer_hints` and
+# taken off the footer before `shells` is matched. `← 5 agents` is a count and
+# is left on, and still reads as running. A footer cut to a bare `·` at 30
+# columns still reads as running too, which only holds a write back.
 [furniture]
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]
@@ -230,6 +237,7 @@ hint = ["/effort"]
 tip = ["⎿  Tip:"]
 interrupted = ["⎿  Interrup"]
 shells = ["shell", "·"]
+footer_hints = ["· ← for agents"]
 
 # claude asks this before its prompt exists, so nothing else it draws can be
 # underneath — which is why it comes first.

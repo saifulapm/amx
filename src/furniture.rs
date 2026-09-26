@@ -99,6 +99,12 @@ pub struct Furniture {
     /// out, and a reader asked about one is told it cannot say.
     #[serde(default)]
     pub shells: Vec<String>,
+    /// Tails the vendor puts on its mode footer that are hints about a key
+    /// rather than counts of anything running, any one of them. Taken off the
+    /// footer before `shells` is matched, so a separator a hint brings with
+    /// it is not read as a shell's.
+    #[serde(default)]
+    pub footer_hints: Vec<String>,
 }
 
 /// The vendor's own furniture, cut off the bottom of a capture.
@@ -400,11 +406,11 @@ impl Furniture {
             return None;
         }
         let footer = rows.iter().rposition(|row| self.mode_footer(row))?;
-        Some(
-            self.shells
-                .iter()
-                .any(|fragment| rows[footer].contains(fragment)),
-        )
+        let footer = self
+            .footer_hints
+            .iter()
+            .fold(rows[footer].to_string(), |row, hint| row.replace(hint, ""));
+        Some(self.shells.iter().any(|fragment| footer.contains(fragment)))
     }
 }
 
@@ -1005,5 +1011,31 @@ mod tests {
             9,
         ));
         assert_eq!(claude().cut(&pane), pane);
+    }
+
+    #[test]
+    fn furniture_a_footer_hint_is_no_shell_and_a_count_of_agents_is_one() {
+        // claude ends its footer `· ← for agents` in every mode, idle or not,
+        // measured at 2.1.278 on all six (docs/claude-screens.md). That tail
+        // is a hint about a key and says nothing is running. The same place
+        // reads `← 5 agents` while some are, and that is a count.
+        for footer in [
+            "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+            "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+            "⏸ plan mode on (shift+tab to cycle) · ← for agents",
+            "⏸ manual mode on · ← for agents",
+            "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+            "⏵⏵ don't ask on (shift+tab to cycle) · ← for agents",
+        ] {
+            assert_eq!(claude().shells_running(&[footer]), Some(false), "{footer}");
+        }
+        assert_eq!(
+            claude().shells_running(&["⏸ manual mode on · ← 5 agents"]),
+            Some(true)
+        );
+        assert_eq!(
+            claude().shells_running(&["⏵⏵ bypass permissions on · 1 shell · ← for agents"]),
+            Some(true)
+        );
     }
 }
