@@ -1012,6 +1012,9 @@ fn a_project(amx: &Harness, name: &str, config: &str) -> PathBuf {
     let dir = amx.home().join(name);
     std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
     std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
+    // Allowed, as a person keeping a file of their own would have.
+    let allowed = amx.amx(&["allow", "--dir", &dir.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
     dir
 }
 

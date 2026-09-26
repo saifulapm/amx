@@ -40,7 +40,7 @@ pub const WATCHED_ENV: &str = "AMX_WATCHED";
 ///
 /// One key is read off the project rather than the whole file laid up, because
 /// the caller is a hook holding the person's config already — see
-/// [`crate::config::project_key`].
+/// [`crate::config::project_key_in`].
 pub fn assembled(
     config: &Config,
     agent: &Agent,
@@ -64,7 +64,10 @@ pub fn assembled(
     // looked up from, because the project an errand belongs to is the project
     // the work is in.
     let dir = meta.worktree.clone().unwrap_or_else(|| meta.dir.clone());
-    let command = crate::config::project_key(&dir, key).or_else(|| person.clone())?;
+    // Consent is read under the root this record is kept in, which is the
+    // state directory every verb working on it was pointed at.
+    let root = agent.dir().parent().unwrap_or(agent.dir());
+    let command = crate::config::project_key_in(&dir, key, root).or_else(|| person.clone())?;
 
     let mut env = surroundings(agent, meta);
     env.push((STATE_ENV.to_string(), phase.as_str().to_string()));
@@ -245,8 +248,18 @@ mod tests {
         )
         .unwrap();
         let (agent, meta) = agent(root.path(), work.path(), None);
-
+        let file = crate::paths::project_config(work.path()).unwrap();
         let mut config = says("on_done", "the person's");
+
+        // A file nobody allowed says nothing, and the person's key stands.
+        assert_eq!(
+            assembled(&config, &agent, &meta, Phase::Done, &event())
+                .unwrap()
+                .command,
+            "the person's"
+        );
+        crate::consent::allow_in(root.path(), &file).unwrap();
+
         config.on_failed = Some("the person's, for a failure".to_string());
 
         assert_eq!(

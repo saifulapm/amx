@@ -1305,6 +1305,8 @@ fn new_reads_the_project_file_for_the_tree_it_furnishes() {
         "copy = [\".env\"]\nsetup = [\"touch furnished\"]\n",
     )
     .expect("the project's config");
+    let allowed = amx.amx(&["allow", "--dir", &repo.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
 
     let id = id_of(&new(
         &amx,
@@ -1324,6 +1326,41 @@ fn new_reads_the_project_file_for_the_tree_it_furnishes() {
         "TOKEN=hunter2\n"
     );
     assert!(worktree.join("furnished").exists(), "and its setup ran");
+}
+
+#[test]
+fn new_runs_nothing_a_cloned_repository_names_until_it_is_allowed() {
+    // The blocker of the 2026-09-26 review: a repository committing
+    // `.amx/config.toml` ran its own shell the first time somebody typed
+    // `amx new` in it. Now the file is nobody's until a person allows it.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    std::fs::create_dir_all(repo.join(".amx")).expect("the project's own directory");
+    std::fs::write(repo.join(".amx/config.toml"), "setup = [\"touch pwned\"]\n")
+        .expect("the project's config");
+
+    let out = new(
+        &amx,
+        "happy-turn",
+        &[
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &mock,
+            "fix the login bug",
+        ],
+    );
+    let id = id_of(&out);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("is not allowed"), "{said}");
+    assert!(said.contains("amx allow"), "{said}");
+    let worktree = repo.join(".amx/worktrees").join(&id);
+    assert!(worktree.is_dir(), "the agent still started");
+    assert!(
+        !worktree.join("pwned").exists(),
+        "and nothing the file named ran"
+    );
 }
 
 #[test]
@@ -1962,6 +1999,9 @@ fn a_project(amx: &Harness, name: &str, config: &str) -> std::path::PathBuf {
     let dir = amx.home().join(name);
     std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
     std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
+    // Allowed, as a person keeping a file of their own would have.
+    let allowed = amx.amx(&["allow", "--dir", &dir.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
     dir
 }
 

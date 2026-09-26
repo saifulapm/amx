@@ -19,23 +19,14 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::paths;
-
 /// The directory beside the agents that holds the allowed copies.
 const ALLOWED: &str = "allowed";
 
 /// Whether the project file at `project_file` is one somebody allowed, as it
-/// stands now.
-#[allow(dead_code)] // config::for_dir asks this once it gates the project file
-pub fn allowed(project_file: &Path) -> bool {
-    paths::state_root().is_ok_and(|root| allowed_in(&root, project_file))
-}
-
-/// The same, with the state directory named.
+/// stands now, reading the copies kept beside the agents under `root`.
 ///
 /// A file that cannot be read is not allowed: there is nothing to compare,
 /// and nothing a caller could take a key from either.
-#[allow(dead_code)] // the same
 pub fn allowed_in(root: &Path, project_file: &Path) -> bool {
     let Some(copy) = copy_of(root, project_file) else {
         return false;

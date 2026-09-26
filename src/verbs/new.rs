@@ -256,8 +256,17 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     // agent into another project, so it is that project's file and not the
     // one beside wherever the command was typed. A project file amx cannot
     // use leaves the person's standing under it, as everywhere else.
-    let (config, _) = crate::config::for_dir(&dir);
+    let (config, warnings) = crate::config::for_dir(&dir);
     let config = &config;
+    // What was said about the person's own file main has said already; what is
+    // said about the project's — above all that nobody has allowed it, and so
+    // none of it counts — only this verb can say.
+    if let Some(file) = crate::paths::project_config(&dir) {
+        let file = file.display().to_string();
+        for warning in warnings.iter().filter(|warning| warning.contains(&file)) {
+            crate::warn!("amx: {warning}");
+        }
+    }
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());

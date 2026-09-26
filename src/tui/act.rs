@@ -2579,6 +2579,11 @@ mod tests {
         .unwrap();
         std::fs::create_dir(here.path().join(".amx")).unwrap();
         std::fs::write(here.path().join(".amx/config.toml"), "max_agents = 0\n").unwrap();
+        crate::consent::allow_in(
+            root.path(),
+            &crate::paths::project_config(here.path()).unwrap(),
+        )
+        .unwrap();
 
         let Started::No(why) =
             spawn_copy(root.path(), "fix-login-a1b", Some("do it again")).unwrap()

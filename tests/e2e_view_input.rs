@@ -430,6 +430,8 @@ fn header_opens_a_view_on_a_project_under_that_projects_own_file() {
         "model = \"fable\"\nworktrees = false\nmax_agents = 3\n",
     )
     .expect("the project's own config");
+    let allowed = amx.amx(&["allow", "--dir", &repo.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
 
     // One agent in the project and one outside it, so the count on the header
     // is the project's rather than the machine's.
@@ -473,6 +475,8 @@ fn a_finished_turn_is_summarised_by_the_command_its_own_project_names() {
         "summary_command = \"sed s/^/theirs:/\"\n",
     )
     .expect("the project's own config");
+    let allowed = amx.amx(&["allow", "--dir", &repo.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
 
     // One turn that ended in the project and one that ended outside it, so
     // each row is a reading of the file the agent that wrote it ran under.

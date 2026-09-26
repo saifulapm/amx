@@ -94,7 +94,7 @@ pub fn run(
     // It is the cap of the project the copy will run in, which is the one the
     // agent it copies ran in: the config the caller holds is the person's file
     // and says nothing about that project.
-    let (theirs, _) = crate::config::for_dir(&meta.dir);
+    let (theirs, _) = crate::config::for_dir_in(&meta.dir, root);
     let project = spawn::project_of(&meta.dir);
     if let Some(full) = spawn::at_capacity(root, &project, theirs.max_agents, theirs.max_total)? {
         writeln!(
@@ -160,7 +160,11 @@ fn start(
     // cap is read through. Then amx's own id over the top, as in `new`: a
     // table that set the id would have the copy reporting as somebody else.
     if let Some(agent) = &origin.agent {
-        spawn::harness_env(&mut env, &crate::config::for_dir(&origin.dir).0, agent);
+        spawn::harness_env(
+            &mut env,
+            &crate::config::for_dir_in(&origin.dir, root).0,
+            agent,
+        );
     }
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(&dir, &env)?;
@@ -956,6 +960,11 @@ mod tests {
         .unwrap();
         std::fs::create_dir(here.path().join(".amx")).unwrap();
         std::fs::write(here.path().join(".amx/config.toml"), "max_agents = 0\n").unwrap();
+        crate::consent::allow_in(
+            root.path(),
+            &crate::paths::project_config(here.path()).unwrap(),
+        )
+        .unwrap();
 
         let (code, _, plain) = forked(root.path(), "fix-login-a1b", false).unwrap();
         assert_eq!(code, exit::BLOCKED);
