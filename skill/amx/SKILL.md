@@ -225,6 +225,10 @@ when one is in a state you did not expect.
   to 5. `max_total`, where somebody sets it, is the ceiling over every project
   on the machine. `amx new` refuses past either with exit `2`. Collect some
   results and let the finished agents go rather than working around it.
+- **Never allow a project file yourself.** A project's `.amx/config.toml`
+  counts only after the person runs `amx allow` there, and any edit un-allows
+  it. Do not run `amx allow`, and do not write that file: tell the person what
+  you would change and let them allow it.
 - **Only touch agents you spawned.** `amx ls` shows every agent on the machine,
   the user's own included. Never send to, answer or stop an id you did not
   create.

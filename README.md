@@ -1974,6 +1974,14 @@ the one exception, laid over an entry at a time. Whatever amx cannot
 use in it — an unknown key, a key of the wrong type, a file that will not open
 — is a warning naming that file, and the file under it still stands.
 
+A project file is code somebody else may have written: it can name the program
+a pane runs and the shell lines amx runs for it. So amx reads none of it until
+you have allowed it. `amx allow` in the project (or `amx allow --dir <path>`)
+prints the file and keeps a copy of exactly what it printed; from then on the
+file counts for as long as it still says that. An edit — yours, a pull's, or an
+agent's — un-allows it until you allow it again, and until then amx warns once
+and goes on with your own file alone. `amx allow --forget` takes it back.
+
 The project is the repository rather than the tree of it you are standing in,
 so several agents on one repository read one file. A worktree amx cut reads the
 repository it was cut from; any other linked worktree reads the repository it
@@ -2112,6 +2120,10 @@ been offered. `visited.json` beside it is the last twenty agents a terminal was
 handed to, newest first, which is what `amx attach --last` goes back along.
 Nothing in either belongs to an agent, and deleting them costs you the
 arrangement and the trail and nothing else.
+
+`allowed/` beside them holds a copy of every project file you allowed with
+`amx allow`, named after the file it stands for. Deleting one un-allows that
+file.
 
 Writes go through a lock, one at a time; readers never lock and never see half
 a document. `ls` sweeps records whose agent finished more than a week ago. A

@@ -1,6 +1,7 @@
 //! One module per verb.
 
 pub mod adopt;
+pub mod allow;
 pub mod answer;
 pub mod attach;
 pub mod clear;

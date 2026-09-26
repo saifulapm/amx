@@ -45,6 +45,7 @@ impl Cli {
             Answer { .. } => "answer",
             Interrupt { .. } => "interrupt",
             Rename { .. } => "rename",
+            Allow { .. } => "allow",
             Result { .. } => "result",
             Wait { .. } => "wait",
             Attach { .. } => "attach",
@@ -166,6 +167,22 @@ pub enum Command {
         id: String,
         /// What to call it.
         name: String,
+    },
+
+    /// Let amx read this project's `.amx/config.toml`.
+    ///
+    /// A project file can name the program a pane runs and shell lines amx
+    /// runs for it, so amx reads none of it until it has been allowed. This
+    /// prints the file and keeps a copy of exactly what it printed: an edit,
+    /// an agent's included, un-allows it until it is allowed again.
+    Allow {
+        /// The project whose file it is, where it is not this directory.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
+
+        /// Stop allowing it.
+        #[arg(long)]
+        forget: bool,
     },
 
     /// Wait for the agent's turn to end and print its answer.

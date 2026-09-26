@@ -9,7 +9,9 @@
 #
 # A project can keep the same file at <repo>/.amx/config.toml, laid over this
 # one a key at a time: a project file holding one line has changed its mind
-# about one key, and everything else is still what you set here.
+# about one key, and everything else is still what you set here. amx reads a
+# project file only once you have run `amx allow` in the project, and only as
+# long as it still says what it said then: an edit un-allows it.
 
 # The command a new agent runs: claude, pi, or your own. The vendor is read off
 # the program this names, so `claude --dangerously-skip-permissions` is still
