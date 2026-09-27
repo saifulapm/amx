@@ -629,15 +629,15 @@ impl Server {
     /// input.
     ///
     /// `command` is a shell command line the tmux server runs, not the pane:
-    /// whatever is in it is spelled for `sh` and reads the server's own
-    /// environment, never the pane's.
+    /// whatever is in it is spelled for `sh`, never for tmux, and reads the
+    /// server's own environment, never the pane's.
     ///
     /// `-o`, which is tmux's toggle: a pane that is already being piped has
     /// that pipe closed and nothing opened in its place. So this attaches a
     /// pipe to a pane that has none, and never quietly moves one pane's output
     /// from whatever was reading it to something else.
     pub fn pipe_pane(&self, pane: &PaneId, command: &str) -> Result<()> {
-        self.run(&["pipe-pane", "-o", "-t", pane.as_str(), command])?;
+        self.run(&["pipe-pane", "-o", "-t", pane.as_str(), &literal(command)])?;
         Ok(())
     }
 
@@ -653,7 +653,8 @@ impl Server {
     /// that goes before the delay is up takes the timer with it, which is the
     /// end a timer about a pane on that server wants.
     pub fn run_after(&self, delay: u64, command: &str) -> Result<()> {
-        self.run(&["run-shell", "-b", "-d", &delay.to_string(), command])?;
+        let command = literal(command);
+        self.run(&["run-shell", "-b", "-d", &delay.to_string(), &command])?;
         Ok(())
     }
 
@@ -810,13 +811,20 @@ fn sockets_in(dir: &Path) -> Vec<PathBuf> {
 fn push_spawn(args: &mut Vec<String>, spawn: &Spawn<'_>) {
     if let Some(cwd) = spawn.cwd {
         args.push("-c".to_string());
-        args.push(cwd.to_string_lossy().into_owned());
+        args.push(literal(&cwd.to_string_lossy()));
     }
     if !spawn.command.is_empty() {
         // Everything past this is the pane's argv, not tmux's.
         args.push("--".to_string());
         args.extend(spawn.command.iter().map(|arg| arg.to_string()));
     }
+}
+
+/// A string tmux reads as a format, spelled so it reads back as written: a
+/// `#` in a path or a command line is the path's, not the start of a
+/// `#{...}` tmux would expand.
+fn literal(text: &str) -> String {
+    text.replace('#', "##")
 }
 
 fn borrow(args: &[String]) -> Vec<&str> {
@@ -1482,6 +1490,81 @@ mod tests {
             std::fs::canonicalize(path).unwrap(),
             std::fs::canonicalize(dir.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn tmux_a_directory_with_a_hash_sign_is_the_directory_as_spelled() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let dir = parent.path().join("a#{session_id}#S##b");
+        std::fs::create_dir(&dir).unwrap();
+        let server = TestServer::new();
+        let (session, pane) = server
+            .new_session(&Spawn {
+                cwd: Some(&dir),
+                ..idle()
+            })
+            .unwrap();
+        let (window, _) = server
+            .new_window(
+                &session,
+                &Spawn {
+                    cwd: Some(&dir),
+                    ..idle()
+                },
+            )
+            .unwrap();
+        let split = server
+            .split_window(
+                &window,
+                &Spawn {
+                    cwd: Some(&dir),
+                    ..idle()
+                },
+            )
+            .unwrap();
+
+        for pane in [pane, split] {
+            let path = server.pane_field(&pane, "#{pane_current_path}").unwrap();
+            assert_eq!(
+                std::fs::canonicalize(&path).ok(),
+                std::fs::canonicalize(&dir).ok(),
+                "tmux read {path:?} for the directory"
+            );
+        }
+    }
+
+    #[test]
+    fn tmux_a_command_with_a_hash_sign_runs_as_spelled() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let dir = parent.path().join("a#{session_id}#S##b");
+        std::fs::create_dir(&dir).unwrap();
+        let (kept, fired, go) = (dir.join("output"), dir.join("fired"), dir.join("go"));
+        let script = format!(
+            "while [ ! -f '{}' ]; do sleep 0.02; done; printf 'one\\n'; while :; do sleep 0.05; done",
+            go.display()
+        );
+        let server = TestServer::new();
+        let (_, pane) = server
+            .new_session(&Spawn {
+                command: &["sh", "-c", &script],
+                ..Spawn::default()
+            })
+            .unwrap();
+
+        server
+            .pipe_pane(&pane, &format!("cat >> '{}'", kept.display()))
+            .unwrap();
+        std::fs::write(&go, "").unwrap();
+        server
+            .run_after(0, &format!("printf '#S' > '{}'", fired.display()))
+            .unwrap();
+
+        until("the pipe to reach the file as spelled", || {
+            std::fs::read_to_string(&kept).is_ok_and(|text| text.contains("one"))
+        });
+        until("the command to run as spelled", || {
+            std::fs::read_to_string(&fired).is_ok_and(|text| text == "#S")
+        });
     }
 
     #[test]
