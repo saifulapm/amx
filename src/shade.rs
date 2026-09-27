@@ -224,7 +224,6 @@ pub fn remember(state_root: &Path, colour: (u8, u8, u8)) -> Result<()> {
 
 /// The colour last kept, as `#rrggbb`, or nothing where the file is missing
 /// or holds anything but one colour.
-#[allow(dead_code, reason = "read by spawn once panes wear it")]
 pub fn remembered(state_root: &Path) -> Option<String> {
     let kept = std::fs::read_to_string(crate::paths::background_file(state_root)).ok()?;
     let kept = kept.trim();

@@ -53,13 +53,13 @@ pub fn for_the_shade(named: &str, shade: Shade) -> &str {
     }
 }
 
-/// The same, asking the terminal what shade it is only where the name is
-/// [`AUTO`].
+/// The same, reading a shade off the terminal's answer only where the name
+/// is [`AUTO`].
 ///
-/// Lazy on purpose, and this is the only door the view comes through. Asking
-/// costs a write to the terminal and a wait on its answer — see
-/// [`crate::shade`] — and somebody who named a palette has already answered
-/// the question it would be asking.
+/// This is the only door the view comes through. The view asks the terminal
+/// its background whatever the theme, for the colour it keeps for the panes
+/// amx starts — see [`crate::shade`] — but somebody who named a palette has
+/// already chosen it, and the shade of that answer never overrules them.
 pub fn chosen(named: &str, ask: impl FnOnce() -> Shade) -> &str {
     match named == AUTO {
         true => for_the_shade(named, ask()),

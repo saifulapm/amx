@@ -2800,3 +2800,50 @@ fn a_role_is_refused_beside_a_shell_command() {
 
     assert_eq!(out.status.code(), Some(64));
 }
+
+/// What a command in a pane amx spawned hears back when it asks its terminal
+/// for the background (OSC 11), with a second of silence taken as no answer.
+fn background_answered(amx: &Harness, id: &str) -> String {
+    let reply = amx.home().join("reply");
+    let script = format!(
+        r"stty raw -echo min 0 time 10; printf '\033]11;?\033\\'; cat > '{}'",
+        reply.display()
+    );
+    let out = amx
+        .amx_command(&["new", "--name", id, "--exec", &script])
+        .output()
+        .expect("running amx new --exec");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.until_state(id, "done");
+    std::fs::read_to_string(&reply).expect("the command wrote what it heard")
+}
+
+#[test]
+fn a_spawned_pane_answers_for_the_remembered_background() {
+    // A detached pane has no terminal behind it to answer, and a program that
+    // tints itself off the answer draws untinted. The colour the view last
+    // read off the terminal is what tmux answers with instead.
+    let amx = Harness::new();
+    std::fs::write(
+        amx.state_root().parent().unwrap().join("background"),
+        "#231f1f\n",
+    )
+    .unwrap();
+
+    let heard = background_answered(&amx, "ask-bg-a1b");
+
+    assert!(heard.contains("rgb:2323/1f1f/1f1f"), "{heard:?}");
+}
+
+#[test]
+fn a_spawned_pane_has_no_background_to_answer_with_before_the_view_kept_one() {
+    let amx = Harness::new();
+
+    let heard = background_answered(&amx, "ask-bg-b2c");
+
+    assert!(!heard.contains("rgb:"), "{heard:?}");
+}

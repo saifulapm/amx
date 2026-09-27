@@ -547,6 +547,13 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
     // And without this, a tmux.conf that keeps dead panes keeps the agent's,
     // and with it the session's name, which a resume needs to open again.
     server.set_session_option(&session, "remain-on-exit", "off")?;
+    // A detached pane has no terminal behind it to answer a program asking
+    // for the background, and one that tints itself off the answer draws
+    // untinted. tmux answers from `window-style` instead: the colour the view
+    // last read off the terminal, where it kept one.
+    if let Some(colour) = crate::shade::remembered(&crate::paths::state_root()?) {
+        server.set_session_option(&session, "window-style", &format!("bg={colour}"))?;
+    }
     Ok(pane)
 }
 
