@@ -225,7 +225,7 @@ fn nothing_is_running(view: &derive::View) -> bool {
 fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
     let stopped: Vec<_> = derive::views(root, store::now())?
         .into_iter()
-        .filter(|view| view.phase() == Phase::Stopped)
+        .filter(lost_its_pane)
         .collect();
     if stopped.is_empty() {
         writeln!(out, "nothing to bring back")?;
@@ -253,6 +253,13 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
         }
     }
     Ok(exit::OK)
+}
+
+/// Whether a sweep brings this agent back: stopped because its pane went,
+/// not because somebody stopped it. A record that says it was stopped on
+/// purpose stays stopped until it is named.
+fn lost_its_pane(view: &derive::View) -> bool {
+    view.phase() == Phase::Stopped && view.verdict.evidence == derive::Evidence::Gone
 }
 
 /// A place under the caps for bringing `id` back, held until the returned
@@ -713,6 +720,19 @@ mod tests {
                 "{phase}"
             );
         }
+    }
+
+    #[test]
+    fn resume_all_brings_back_only_an_agent_whose_pane_went() {
+        assert!(lost_its_pane(&read_as(Phase::Stopped, Evidence::Gone)));
+
+        // `amx stop` writes the ending on the record, and a sweep that undid
+        // it would start again what somebody meant to end.
+        assert!(!lost_its_pane(&read_as(Phase::Stopped, Evidence::Record)));
+        for phase in [Phase::Done, Phase::Failed] {
+            assert!(!lost_its_pane(&read_as(phase, Evidence::Record)), "{phase}");
+        }
+        assert!(!lost_its_pane(&read_as(Phase::Idle, Evidence::LetGo)));
     }
 
     #[test]
