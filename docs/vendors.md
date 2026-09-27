@@ -53,9 +53,13 @@ real entry happens to take.
   process opens, or `None` from a vendor amx has measured no session
   vocabulary for. `start` is the flag that opens a session under an id amx
   minted, and is `None` from a vendor whose own report already names the
-  session it opened, the way claude's Started hook does. `resume` is the flag
-  that carries one on, and `joined` says whether its value rides onto it with
-  `=` rather than standing as a word of its own. `conflicts` lists every other
+  session it opened, the way claude's Started hook does. `resume` says how one
+  is carried on: `Resume::Flag { flag, joined }`, where `joined` says whether
+  the id rides onto the flag with `=` rather than standing as a word of its
+  own, or `Resume::Subcommand(word)`, a word right after the program and then
+  the id, the way `codex resume <id>` is spelled. `resume` and `fork` both
+  build those words through `SessionSpec::resume_args`, and a law holds that
+  whatever it writes, `names_a_session` reads back. `conflicts` lists every other
   flag that also claims to say which session is open, so a resume or a fork
   replaces it instead of leaving two words that disagree. `fork` says how this
   vendor branches a session into a copy, for a vendor that claims `Fork`: a
@@ -73,14 +77,34 @@ real entry happens to take.
   `Hooks`, `Transcript`, `Resume`, `Fork`, `Adopt`, `Trust`. A verb asks
   before it acts and refuses naming the gap. A vendor with no entry has none
   of these, which is the floor every unregistered command stands on: a pane
-  to watch, and nothing amx pretends to know about what is in it.
+  to watch, and nothing amx pretends to know about what is in it. `Hooks`
+  and the `hooks` field below say the same thing, and `Transcript` needs
+  `Hooks`: the file is named on a hook payload and nowhere else, so a vendor
+  that reports nothing never puts one on a record.
 - **`hooks`** — which files amx writes and where, the vendor's own name
-  for each of the seven moments amx listens for (started, prompted, calling,
-  asked, refused, notified, ended), its tool matcher, its question tool, its
-  two notification types, and the sentence it writes on a permission box.
-  `install` writes from this; `hook` reads by it. `None` from a vendor that
+  for each of the eight moments amx listens for (started, prompted, taken,
+  calling, asked, refused, notified, ended), its tool matcher, its question
+  tool, its two notification types, the sentence it writes on a permission
+  box, the prompt openings that mark a turn the vendor typed itself
+  (`injected`), the `source` that marks a session opening as a new
+  conversation (`fresh_start`), and the payload `kind`s that make a notice a
+  question (`question_kinds`). `install` writes from this; `hook` reads by
+  it, always through the record's own vendor (`vendor::hooks_for`). What the
+  payloads have to carry is [the wire](#the-wire). `None` from a vendor that
   reports nothing, and then install has nothing to wire and leaves the
   machine alone.
+- **`transcript`** — the shape of the conversation file a report names,
+  `Transcript::Claude` or `Transcript::Pi`, for `crate::conversation` to read
+  it by. `None` from a vendor whose file nobody has sat down with.
+- **`ends_options`** — the word after which the vendor reads every word as a
+  message, put in front of a task, a resume's message or a fork's prompt, so
+  a task opening with `@` or `-` is not read as a file or a flag. pi's is
+  `--`; `None` from a vendor that reads its last word as a prompt whatever it
+  opens with.
+- **`restores_queued_on_cancel`** — whether a cancel puts the messages the
+  vendor was holding behind the turn back in its composer. pi's does, so
+  `amx interrupt` writes them down and `send` refuses to type after them
+  until the next prompt.
 - **`screens`** — the document naming what this vendor's screens look like,
   in the format of `assets/screen-rules.toml`: ordered rules, each built from
   measured anchors, with the capture, the version and the date each anchor
@@ -120,20 +144,65 @@ variables. The questions the rest of amx puts to an entry:
   fallback capture comes off the same entry, like everybody else's: the
   anchors that find pi's box are nothing claude draws.
 
-Three things stay outside the table anyway, and not because a vendor's word for
-them was hardcoded somewhere it should not have been: each is the wire format
-of one particular capability's implementation. The JSON keys a hook payload
-arrives with — `session_id`, `hook_event_name`, `tool_name`, and the rest
-`hook.rs` reads — are claude's, written there because claude is the only
-vendor in the table with hooks to read. The lines inside a transcript are
-claude's too: `logs::conversation` and `hook::transcript_answer` both walk one
-by `type`, `user`, `assistant`, `message.content` and `text`, a shape measured
-from a live claude 2.1.240 transcript and not re-driven since, and `logs` reads
-`tool_use` blocks besides. `Transcript` is a capability only claude claims.
-`trust`'s store, `$CLAUDE_CONFIG_DIR/.claude.json`, is a literal in `trust.rs`
-for the same reason, with a test tying that file to whichever vendors the table
-says can answer the screen — `[claude]`, today. Each waits on a second vendor
-claiming the capability that reads it, and pi claims none of the three.
+One thing stays outside the table: `trust`'s store,
+`$CLAUDE_CONFIG_DIR/.claude.json`, is a literal in `trust.rs`, with a test
+tying that file to whichever vendors the table says can answer the screen by
+writing a store — `[claude]`, today. pi answers its own with a flag instead.
+The keys a hook payload carries are not the table's either, but they are not
+a vendor's: they are amx's, the contract every wire delivers, and the next
+section is that contract.
+
+## The wire
+
+A vendor that reports runs `amx _hook` once per moment with one JSON object on
+stdin. The keys are amx's, whatever the vendor calls things inside its own
+process: claude's hook runner happens to send them as they are, and pi's
+extension, `assets/pi/amx.ts`, builds them out of pi's event arguments. pi is
+the reference for a third vendor, because its payload is one amx wrote and
+every key on it is one amx reads. A third vendor either sends these keys
+itself or gets a wire of amx's own that builds them, the way pi did.
+
+Every payload carries these, whatever the moment:
+
+- **`hook_event_name`** — the vendor's own name for the event, which is how
+  the payload is found in the record's vendor's `Hooks.events`. A name the
+  entry does not list is written to the log and moves nothing.
+- **`session_id`** — the conversation the report is about. It finds the
+  record when the process has no `AMX_ID` (an agent somebody adopted), and a
+  report about a session the record does not carry is another process's and
+  moves nothing, except a session opening, below. Optional, and a report
+  without it is the agent's own.
+- **`transcript_path`** — the file the conversation is written to. A record
+  with none takes it from the first report about its own session. Needed for
+  `Transcript`, and the reason that capability needs `Hooks`.
+- **`agent_id`** — present and not null on a report about a subagent's work.
+  Such a report is logged and moves nothing on the record. pi sends none.
+
+Each moment reads these besides, and nothing else. What pi sends is the
+reference; what claude sends past these keys is claude's and amx ignores it.
+
+| Moment | pi event | claude event | Keys read | What they are for |
+| --- | --- | --- | --- | --- |
+| Started | `session_start` | `SessionStart` | `source` | A `source` equal to the entry's `fresh_start` under another session is another process opening one, and is dropped; `clear` under a new session is a fresh conversation in the same pane and clears the record's question and answer. pi sends no `source`, and `fresh_start` is `None` for it. |
+| Prompted | `agent_start` | `UserPromptSubmit` | `prompt` | A prompt opening with one of `injected` is a turn the vendor typed itself, and keeps the last answer. pi sends no `prompt`. |
+| Taken | `message_start` (user messages only) | none | none | A queued message went into the running turn. Moves no state; `send` reads it as the message landing. |
+| Calling | `tool_execution_start` | `PreToolUse` | `tool_name`, `tool_input` | The tool that runs. `tool_name` equal to `question_tool` is a menu, and its `tool_input.questions` (each `header`, `question`, `options` of `label`, `description`, `preview`) is the question. |
+| Asked | none | `PermissionRequest` | `tool_name`, `tool_input` | A permission box over `tool_name`, worded by `permission_sentence`; or the menu again, when it is the question tool. |
+| Refused | `ui_prompt_end` | `PermissionDenied` | none | The box closed without the tool running: back to working inside an open turn, to idle outside one. pi sends `kind`, which amx does not read here. |
+| Notified | `ui_prompt_start` | `Notification` | `notification_type`, `kind`, `message` | `notification_type` equal to `idle_notice` is the idle nudge and to `permission_notice` a permission box. A `kind` listed in `question_kinds` makes the notice a question (pi: `input`, `editor`, `select`, `confirm`). `message` is the question's words. pi sends `kind` and `message` and no `notification_type`. |
+| Ended | `agent_settled` | `Stop` | `last_assistant_message`, `stop_reason`, `background_tasks` | The answer, unless `stop_reason` is `aborted` or `error`. `background_tasks` is a list of `{type, status}`; each `running` one keeps the agent working, `type: shell` counted as a shell and anything else as an agent. pi sends no `background_tasks`. |
+
+pi also sends `cwd` on every report and `role` on `message_start`; amx reads
+neither. `amx events` shows one key per moment as the event's detail —
+Started's `source`, Prompted's `prompt`, Calling's `tool_name`, Notified's
+`message`, Ended's `last_assistant_message` — so a key a vendor leaves out
+is a blank there and nothing worse.
+
+A vendor whose wire `listens()` (a `Wire::File`, amx's own code inside the
+vendor) reads what `_hook` prints back: the record's directory, which is how
+a pane amx did not start learns where to write `live` and `heartbeat`. A
+settings or plugin wire is the vendor's own hook runner, and gets nothing
+back.
 
 ## claude
 
@@ -241,7 +310,7 @@ stdin, under pi's own event names — `session_start`, `agent_start`,
 `tool_execution_start`, `message_start` (a user message only, which lands as
 `Taken`: the word that a message steered into a running turn went in),
 `ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
-and the keys claude's payloads carry, so `hook` reads it with no arm of its
+and the keys [the wire](#the-wire) names, so `hook` reads it with no arm of its
 own. `ui_prompt_start` lands as `Notified` and `ui_prompt_end` as `Refused`;
 there is no `Asked`, because pi asks leave for nothing. `Transcript` comes
 with it: a report names the session jsonl pi appends to as a turn runs,
@@ -454,10 +523,13 @@ claimed the screen is worth.
 3. **Let the laws hold you.** The table's tests quantify over every entry:
    cycles start at the sentinel, dial flags are distinct and are flags, a
    vendor that reports names a moment at most once and always the three a
-   turn stands on — started, prompted, ended — an adoptable vendor
+   turn stands on — started, prompted, ended — the `Hooks` capability and
+   the `hooks` field agree, a vendor that claims a transcript reports through
+   hooks, an adoptable vendor
    names its session variable, a session variable never travels, a session's
    own flags are flags too and none of them lists `resume` among what
-   conflicts with it, a vendor that can fork says how — and one that forks
+   conflicts with it, a vendor that resumes reads its own resume words back
+   through `names_a_session`, a vendor that can fork says how — and one that forks
    through no hooks declares a start flag, since there is no report coming to
    name the copy's session — declared screens parse, and a vendor that prints
    its models names an argv to print them with that is not empty and opens
