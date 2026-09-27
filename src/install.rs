@@ -183,8 +183,9 @@ fn is_amx_plugin(dir: &Path) -> bool {
 /// A directory already amx's is amx's to rewrite: an older amx's files are
 /// replaced where they differ and nothing is kept, the way an older amx's
 /// extension is. A directory that is not amx's may hold a file of the
-/// person's at one of these names — theirs is copied aside before amx's goes
-/// over it.
+/// person's at one of these names — theirs is copied aside before amx writes
+/// anything, and the manifest goes in last, so a run that stops partway
+/// leaves a directory the next run still reads as not amx's.
 pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Report> {
     let ours = is_amx_plugin(dir);
     let mut report = Report {
@@ -192,7 +193,8 @@ pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Re
         backup: None,
         changed: false,
     };
-    for (name, body) in files {
+    let mut writes = Vec::new();
+    for (name, body) in manifest_last(files) {
         let path = dir.join(name);
         let existing = match std::fs::read_to_string(&path) {
             Ok(text) => Some(text),
@@ -205,16 +207,33 @@ pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Re
         if !ours && existing.is_some() {
             report.backup = back_up(&path, now, true)?.or(report.backup.take());
         }
+        writes.push((path, body));
+    }
+    for (path, body) in writes {
         write_bytes(&path, body.as_bytes())?;
         report.changed = true;
     }
     Ok(report)
 }
 
+/// A plugin's files with its manifest moved to the end.
+///
+/// The manifest is what says the directory is amx's, so it is the last thing
+/// written and the last thing removed: until it stands, the directory is still
+/// somebody else's and a foreign file in it still gets a copy kept, and until
+/// it goes, a run that stopped partway can still be finished.
+fn manifest_last<'a>(
+    files: &'a [(&'a str, &'a str)],
+) -> impl Iterator<Item = &'a (&'a str, &'a str)> {
+    let (manifest, rest): (Vec<_>, Vec<_>) = files.iter().partition(|(name, _)| *name == MANIFEST);
+    rest.into_iter().chain(manifest)
+}
+
 /// Take amx's plugin away again, and put back whatever it was written over.
 ///
 /// A directory whose manifest is not amx's is not amx's to empty, however many
-/// of these names it happens to carry.
+/// of these names it happens to carry. The manifest goes last, so a run that
+/// stops partway leaves one the next run can finish.
 pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result<Report> {
     let mut report = Report {
         path: dir.to_path_buf(),
@@ -224,7 +243,7 @@ pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result
     if !is_amx_plugin(dir) {
         return Ok(report);
     }
-    for (name, _) in files {
+    for (name, _) in manifest_last(files) {
         let path = dir.join(name);
         match std::fs::remove_file(&path) {
             Ok(()) => report.changed = true,
@@ -757,6 +776,57 @@ mod tests {
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
             "theirs\n"
         );
+    }
+
+    #[test]
+    fn install_that_failed_after_the_first_file_still_keeps_their_file_when_run_again() {
+        // The manifest is what makes the directory amx's. Written first, a run
+        // that died after it would leave a directory the next run took for
+        // amx's own, and the person's skill would go under without a copy.
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
+        std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
+        // A file where the hooks directory goes makes that write fail.
+        std::fs::write(dir.join("hooks"), "in the way\n").unwrap();
+
+        install_wire(&claude::HOOKS.wire, home.path(), 1).expect_err("the hooks file cannot go in");
+        std::fs::remove_file(dir.join("hooks")).unwrap();
+        install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
+
+        let kept = latest_backup(&dir.join("SKILL.md"))
+            .unwrap()
+            .expect("their file was copied aside");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), theirs);
+        uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            theirs,
+            "their file is back where it was"
+        );
+    }
+
+    #[test]
+    fn uninstall_that_failed_midway_removes_what_is_left_when_run_again() {
+        // The manifest is what makes the directory amx's to empty. Removed
+        // first, a run that died after it would leave the rest of amx's files
+        // in a directory no later run would touch.
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
+        // A directory with something in it where amx's skill was cannot be
+        // removed as a file.
+        std::fs::remove_file(dir.join("SKILL.md")).unwrap();
+        std::fs::create_dir_all(dir.join("SKILL.md/in-the-way")).unwrap();
+
+        uninstall_wire(&claude::HOOKS.wire, home.path(), 2).expect_err("the skill cannot go");
+        std::fs::remove_dir_all(dir.join("SKILL.md")).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "amx's skill\n").unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
+
+        assert!(report.changed);
+        assert!(!dir.exists(), "nothing of amx's is left behind");
     }
 
     #[test]
