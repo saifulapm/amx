@@ -6,8 +6,8 @@
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, SessionSpec,
-    Transcript, Vendor, Wire, Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
+    SessionSpec, Transcript, Vendor, Wire, Wiring,
 };
 
 /// pi's entry in the table.
@@ -65,8 +65,10 @@ pub const VENDOR: Vendor = Vendor {
     // on 2026-09-04.
     session: Some(SessionSpec {
         start: Some("--session-id"),
-        resume: "--session-id",
-        joined: false,
+        resume: Resume::Flag {
+            flag: "--session-id",
+            joined: false,
+        },
         conflicts: &[
             "-c",
             "-r",
@@ -408,8 +410,14 @@ mod tests {
         // starting a session or carrying one on.
         let session = VENDOR.session.expect("pi declares a session vocabulary");
         assert_eq!(session.start, Some("--session-id"));
-        assert_eq!(session.resume, "--session-id");
-        assert!(!session.joined, "--session-id <id> is two words, not one");
+        assert_eq!(
+            session.resume,
+            Resume::Flag {
+                flag: "--session-id",
+                joined: false
+            },
+            "--session-id <id> is two words, not one"
+        );
         assert_eq!(session.fork, Some(ForkSpec::Origin("--fork")));
     }
 

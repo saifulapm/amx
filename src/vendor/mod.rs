@@ -278,21 +278,92 @@ pub struct SessionSpec {
     /// Started hook already names the session it opened, and the id it wants
     /// there is a UUID, not the id amx mints for a session it starts.
     pub start: Option<&'static str>,
-    /// The flag that carries an agent on into a session it already has.
-    pub resume: &'static str,
-    /// Whether the value rides joined onto [`resume`](Self::resume) with `=`,
-    /// the way claude spells `--resume=<id>`, rather than as a word of its
-    /// own.
-    pub joined: bool,
+    /// How this vendor carries an agent on into a session it already has.
+    pub resume: Resume,
     /// Every other flag that also names a session, so a resume or a fork
     /// replaces it rather than leaving two words that both claim to say
     /// which session the vendor opens. Never
-    /// [`resume`](Self::resume) itself: that flag is always replaced with the
+    /// [`resume`](Self::resume) itself: that is always replaced with the
     /// session being carried on to, which needs no listing here.
     pub conflicts: &'static [&'static str],
     /// How this vendor branches a session into a copy, for a vendor that
     /// claims [`Capability::Fork`]. `None` from a vendor that cannot.
     pub fork: Option<ForkSpec>,
+}
+
+/// How a vendor is told to carry on a session it already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    /// A flag carrying the id, written after everything else. `joined` is
+    /// whether the id rides on it with `=`, the way claude spells
+    /// `--resume=<id>`, rather than as a word of its own.
+    Flag { flag: &'static str, joined: bool },
+    /// A word right after the program, then the id: `codex resume <id>`.
+    Subcommand(&'static str),
+}
+
+impl SessionSpec {
+    /// The words that carry an agent on into `session`. A
+    /// [`Resume::Subcommand`] belongs right after the program; a flag goes
+    /// wherever the caller puts its flags.
+    pub fn resume_args(&self, session: &str) -> Vec<String> {
+        match self.resume {
+            Resume::Flag { flag, joined: true } => vec![format!("{flag}={session}")],
+            Resume::Flag {
+                flag,
+                joined: false,
+            } => vec![flag.to_string(), session.to_string()],
+            Resume::Subcommand(word) => vec![word.to_string(), session.to_string()],
+        }
+    }
+
+    /// Whether the id rides on every other session flag with `=`, the way it
+    /// does on the resume flag. A subcommand says nothing about it, and a
+    /// word of its own is the spelling nobody misreads.
+    pub fn joined(&self) -> bool {
+        matches!(self.resume, Resume::Flag { joined: true, .. })
+    }
+
+    /// Whether a word is a flag naming a session, and if so whether its value
+    /// is the word after it rather than joined on with `=`. `first` is
+    /// whether the word stands right after the program, the only place a
+    /// [`Resume::Subcommand`] is one; a word that begins with `-` is a flag
+    /// wherever it stands, and never a subcommand.
+    ///
+    /// The flag a vendor branches by naming the origin counts too. A copy is
+    /// opened under an id of its own, so its recorded command carries that
+    /// flag beside the one that minted the id, and a respawn keeping both
+    /// would ask the vendor to branch into a session it already has, which pi
+    /// refuses outright. Read here rather than listed among the entry's
+    /// conflicts, because a conflict is also what stands a start flag down,
+    /// and a fork somebody asks for by hand on `amx new` still wants an id
+    /// minted for it.
+    pub fn names_a_session(&self, word: &str, first: bool) -> Option<bool> {
+        if let Resume::Subcommand(subcommand) = self.resume
+            && first
+            && word == subcommand
+            && !word.starts_with('-')
+        {
+            return Some(true);
+        }
+        let mut flags: Vec<&str> = self.conflicts.to_vec();
+        if let Resume::Flag { flag, .. } = self.resume {
+            flags.push(flag);
+        }
+        // A marker names no session: what claude branches from rides on the
+        // resume flag beside it, and that is already replaced.
+        if let Some(ForkSpec::Origin(flag)) = self.fork {
+            flags.push(flag);
+        }
+        flags.into_iter().find_map(|flag| {
+            if word == flag {
+                return Some(true);
+            }
+            word.strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
+                .then_some(false)
+        })
+    }
 }
 
 /// One vendor, and everything amx has been taught about it.
@@ -962,11 +1033,13 @@ mod tests {
             let Some(session) = vendor.session else {
                 continue;
             };
-            assert!(
-                session.resume.starts_with('-'),
-                "{}'s resume flag is not one",
-                vendor.name
-            );
+            if let Resume::Flag { flag, .. } = session.resume {
+                assert!(
+                    flag.starts_with('-'),
+                    "{}'s resume flag is not one",
+                    vendor.name
+                );
+            }
             if let Some(start) = session.start {
                 assert!(
                     start.starts_with('-'),
@@ -990,6 +1063,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resume_args_spells_a_joined_flag_a_split_flag_and_a_subcommand() {
+        let spelled = |resume| SessionSpec {
+            start: None,
+            resume,
+            conflicts: &[],
+            fork: None,
+        };
+        let joined = spelled(Resume::Flag {
+            flag: "--resume",
+            joined: true,
+        });
+        assert_eq!(joined.resume_args("abc-123"), ["--resume=abc-123"]);
+        let split = spelled(Resume::Flag {
+            flag: "--session-id",
+            joined: false,
+        });
+        assert_eq!(split.resume_args("abc-123"), ["--session-id", "abc-123"]);
+        let subcommand = spelled(Resume::Subcommand("resume"));
+        assert_eq!(subcommand.resume_args("abc-123"), ["resume", "abc-123"]);
+    }
+
+    /// Whether what [`SessionSpec::resume_args`] writes after a program is
+    /// read back whole by [`SessionSpec::names_a_session`], so that a second
+    /// resume replaces the session the first one wrote rather than keeping it
+    /// beside the new one.
+    fn round_trips(spec: &SessionSpec) -> bool {
+        let mut words = spec.resume_args("abc-123").into_iter().peekable();
+        let mut kept = Vec::new();
+        let mut first = true;
+        while let Some(word) = words.next() {
+            match spec.names_a_session(&word, first) {
+                Some(true) => {
+                    words.next();
+                }
+                Some(false) => {}
+                None => kept.push(word),
+            }
+            first = false;
+        }
+        kept.is_empty()
+    }
+
+    #[test]
+    fn every_vendor_that_resumes_reads_its_own_spelling_back() {
+        for vendor in known() {
+            if !vendor.can(Capability::Resume) {
+                continue;
+            }
+            let session = vendor.session.unwrap_or_else(|| {
+                panic!("{} claims it can resume and names no session", vendor.name)
+            });
+            assert!(
+                round_trips(&session),
+                "{} writes a resume it cannot read back",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_law_refuses_a_subcommand_spelled_as_a_flag() {
+        // A word that begins with `-` is a flag wherever it stands, so a
+        // subcommand spelled that way is written and never found again.
+        let spec = SessionSpec {
+            resume: Resume::Subcommand("--again"),
+            ..SECOND.session.unwrap()
+        };
+        assert!(!round_trips(&spec));
+    }
+
+    #[test]
+    fn a_subcommand_names_a_session_only_right_after_the_program() {
+        let spec = SECOND.session.unwrap();
+        assert_eq!(spec.names_a_session("again", true), Some(true));
+        assert_eq!(
+            spec.names_a_session("again", false),
+            None,
+            "anywhere else it is a word like any other"
+        );
     }
 
     #[test]
@@ -1017,8 +1172,11 @@ mod tests {
             let Some(session) = vendor.session else {
                 continue;
             };
+            let Resume::Flag { flag, .. } = session.resume else {
+                continue;
+            };
             assert!(
-                !session.conflicts.contains(&session.resume),
+                !session.conflicts.contains(&flag),
                 "{} names its own resume flag as one that conflicts with it",
                 vendor.name
             );

@@ -12,7 +12,7 @@
 //! answer it differently here.
 
 use super::{
-    Capability, DEFAULT, DialSpec, Hooks, Models, Moment, SessionSpec, Vendor, Wire, Wiring,
+    Capability, DEFAULT, DialSpec, Hooks, Models, Moment, Resume, SessionSpec, Vendor, Wire, Wiring,
 };
 
 /// The fixture. Read the module docs before changing a value: each of these
@@ -39,13 +39,12 @@ pub const SECOND: Vendor = Vendor {
         flag: "--care",
     }),
     // Unlike claude, it declares a start flag: proof that a vendor is free to
-    // ask amx to open a session under an id amx chose. Its resume flag is a
-    // word of its own rather than joined with `=`, and it names no fork
+    // ask amx to open a session under an id amx chose. It resumes with a
+    // subcommand rather than a flag, the way codex does, and it names no fork
     // shape at all, because it does not claim `Capability::Fork`.
     session: Some(SessionSpec {
         start: Some("--open"),
-        resume: "-c",
-        joined: false,
+        resume: Resume::Subcommand("again"),
         conflicts: &["--open"],
         fork: None,
     }),

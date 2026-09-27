@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
-use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
+use crate::vendor::{self, Capability, Resume, SessionSpec, Vendor};
 use crate::verbs::send;
 use crate::{complain, derive, exit, paths, store, warn, worktree};
 
@@ -422,8 +422,8 @@ fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handof
 /// already carries the one the last resume wrote. Two of them would leave which
 /// session the vendor opens up to the vendor.
 ///
-/// The flag and its value arrive joined or as two words, whichever the
-/// vendor's own spelling says.
+/// The flag and its value arrive joined or as two words, or as a subcommand
+/// right after the program, whichever the vendor's own spelling says.
 fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
     build_continuation(handoff, session, &spelling(handoff))
 }
@@ -443,7 +443,10 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
         if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&handoff.task) {
             break;
         }
-        let Some(value_is_a_word_of_its_own) = names_a_session(&word, spec) else {
+        // Where `word` stood in the recorded command: a subcommand is one
+        // only right after the program.
+        let first = handoff.command.len() - words.len() - 1 == 1;
+        let Some(value_is_a_word_of_its_own) = spec.names_a_session(&word, first) else {
             command.push(word);
             continue;
         };
@@ -456,41 +459,12 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
         }
     }
 
-    if spec.joined {
-        command.push(format!("{}={session}", spec.resume));
-    } else {
-        command.push(spec.resume.to_string());
-        command.push(session.to_string());
+    let resume = spec.resume_args(session);
+    match spec.resume {
+        Resume::Subcommand(_) => drop(command.splice(1..1, resume)),
+        Resume::Flag { .. } => command.extend(resume),
     }
     command
-}
-
-/// Whether a word is a flag naming a session, and if so whether its value is
-/// the word after it rather than joined on with `=`.
-///
-/// The flag a vendor branches by naming the origin with counts too. A copy is
-/// opened under an id of its own, so its recorded command carries that flag
-/// beside the one that minted the id, and a respawn keeping both would ask the
-/// vendor to branch into a session it already has — which pi refuses outright.
-/// Read here rather than listed among the entry's conflicts, because a
-/// conflict is also what stands a start flag down, and a fork somebody asks
-/// for by hand on `amx new` still wants an id minted for it.
-fn names_a_session(word: &str, spec: &SessionSpec) -> Option<bool> {
-    let mut flags: Vec<&str> = spec.conflicts.to_vec();
-    flags.push(spec.resume);
-    // A marker names no session: what claude branches from rides on the resume
-    // flag beside it, and that is already replaced.
-    if let Some(ForkSpec::Origin(flag)) = spec.fork {
-        flags.push(flag);
-    }
-    flags.into_iter().find_map(|flag| {
-        if word == flag {
-            return Some(true);
-        }
-        word.strip_prefix(flag)
-            .is_some_and(|rest| rest.starts_with('='))
-            .then_some(false)
-    })
 }
 
 /// The vendor's own session vocabulary, read off the table by the program the
@@ -846,13 +820,33 @@ mod tests {
 
     #[test]
     fn resume_reads_a_different_vendors_own_spelling_off_the_table() {
-        // The second vendor's resume flag is a word of its own, not joined
-        // with `=`, and its own conflict is spelled nothing like claude's.
+        // The second vendor resumes with a subcommand rather than a flag, and
+        // its own conflict is spelled nothing like claude's.
         let spec = SECOND.session.expect("the second vendor names a session");
         let started = handoff(&["second", "--open", "old", "go"], "go");
         assert_eq!(
             build_continuation(&started, "abc-123", &spec),
-            ["second", "-c", "abc-123"]
+            ["second", "again", "abc-123"]
+        );
+    }
+
+    #[test]
+    fn resume_puts_a_subcommand_right_after_the_program_and_replaces_it() {
+        // The subcommand is the word after the program, then the id, then
+        // every flag the agent was started with; a second resume takes the
+        // first one's pair away rather than writing two.
+        let spec = SECOND.session.expect("the second vendor names a session");
+        let started = handoff(&["second", "--care", "quick", "go"], "go");
+        let once = build_continuation(&started, "abc-123", &spec);
+        assert_eq!(once, ["second", "again", "abc-123", "--care", "quick"]);
+
+        let resumed = Handoff {
+            task: "go".to_string(),
+            command: once,
+        };
+        assert_eq!(
+            build_continuation(&resumed, "def-456", &spec),
+            ["second", "again", "def-456", "--care", "quick"]
         );
     }
 

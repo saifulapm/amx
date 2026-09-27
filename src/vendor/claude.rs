@@ -6,8 +6,8 @@
 //! that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, SessionSpec,
-    Transcript, Vendor, Wire, Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
+    SessionSpec, Transcript, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -64,8 +64,10 @@ pub const VENDOR: Vendor = Vendor {
     // than continue.
     session: Some(SessionSpec {
         start: None,
-        resume: "--resume",
-        joined: true,
+        resume: Resume::Flag {
+            flag: "--resume",
+            joined: true,
+        },
         conflicts: &["--session-id", "-r"],
         fork: Some(ForkSpec::Marker("--fork-session")),
     }),
@@ -339,8 +341,14 @@ mod tests {
             .session
             .expect("claude declares a session vocabulary");
         assert_eq!(session.start, None);
-        assert_eq!(session.resume, "--resume");
-        assert!(session.joined, "--resume=<id> is one word, not two");
+        assert_eq!(
+            session.resume,
+            Resume::Flag {
+                flag: "--resume",
+                joined: true
+            },
+            "--resume=<id> is one word, not two"
+        );
         assert_eq!(session.conflicts, ["--session-id", "-r"]);
         assert_eq!(session.fork, Some(ForkSpec::Marker("--fork-session")));
     }

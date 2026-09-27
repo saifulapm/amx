@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
-use crate::vendor::{self, Capability, ForkSpec, SessionSpec, Vendor};
+use crate::vendor::{self, Capability, ForkSpec, Resume, SessionSpec, Vendor};
 use crate::{Severity, exit, ids, paths, said};
 
 /// What amx records when it copies a conversation.
@@ -320,6 +320,9 @@ fn build_copy(
         if words.peek().is_none() && word == handoff.task {
             break;
         }
+        // Where `word` stood in the recorded command: a subcommand is one
+        // only right after the program.
+        let first = handoff.command.len() - words.len() - 1 == 1;
         if let ForkSpec::Marker(marker) = fork {
             // A bare word, never carrying a value of its own: a copy of a
             // copy drops it here rather than asking the vendor to branch
@@ -328,7 +331,7 @@ fn build_copy(
                 continue;
             }
         }
-        let Some(value_is_a_word_of_its_own) = names_a_session(&word, spec, fork) else {
+        let Some(value_is_a_word_of_its_own) = spec.names_a_session(&word, first) else {
             command.push(word);
             continue;
         };
@@ -343,13 +346,17 @@ fn build_copy(
 
     match fork {
         ForkSpec::Marker(marker) => {
-            push_flag(&mut command, spec.resume, spec.joined, session);
+            let resume = spec.resume_args(session);
+            match spec.resume {
+                Resume::Subcommand(_) => drop(command.splice(1..1, resume)),
+                Resume::Flag { .. } => command.extend(resume),
+            }
             command.push(marker.to_string());
         }
-        ForkSpec::Origin(flag) => push_flag(&mut command, flag, spec.joined, session),
+        ForkSpec::Origin(flag) => push_flag(&mut command, flag, spec.joined(), session),
     }
     if let Some(start) = spec.start {
-        push_flag(&mut command, start, spec.joined, copy);
+        push_flag(&mut command, start, spec.joined(), copy);
     }
     command.extend(prompt.map(str::to_string));
     command
@@ -364,28 +371,6 @@ fn push_flag(command: &mut Vec<String>, flag: &str, joined: bool, value: &str) {
         command.push(flag.to_string());
         command.push(value.to_string());
     }
-}
-
-/// Whether a word is a flag naming a session, and if so whether its value is
-/// the word after it rather than joined on with `=`.
-///
-/// The origin flag counts too, when that is how this vendor branches: a copy
-/// of a copy asks for one origin rather than carrying the first one's
-/// forward.
-fn names_a_session(word: &str, spec: &SessionSpec, fork: ForkSpec) -> Option<bool> {
-    let mut flags: Vec<&str> = spec.conflicts.to_vec();
-    flags.push(spec.resume);
-    if let ForkSpec::Origin(flag) = fork {
-        flags.push(flag);
-    }
-    flags.into_iter().find_map(|flag| {
-        if word == flag {
-            return Some(true);
-        }
-        word.strip_prefix(flag)
-            .is_some_and(|rest| rest.starts_with('='))
-            .then_some(false)
-    })
 }
 
 /// The vendor's own session vocabulary, read off the table by the program the
@@ -687,8 +672,10 @@ mod tests {
         // no start flag either, so the minted id is nowhere in the argv.
         let spec = SessionSpec {
             start: None,
-            resume: "--resume",
-            joined: true,
+            resume: Resume::Flag {
+                flag: "--resume",
+                joined: true,
+            },
             conflicts: &["--session-id"],
             fork: Some(ForkSpec::Origin("--branch-from")),
         };
@@ -703,6 +690,25 @@ mod tests {
         assert_eq!(
             build_copy(&started, "def-456", "port-it-b2c", None, &spec),
             ["pi", "--branch-from=def-456"]
+        );
+    }
+
+    #[test]
+    fn fork_writes_a_subcommand_resume_right_after_the_program() {
+        // A vendor that resumes with a subcommand branches the same way: the
+        // program, the word, the origin's id, then the marker beside them.
+        let spec = SessionSpec {
+            start: None,
+            resume: Resume::Subcommand("resume"),
+            conflicts: &[],
+            fork: Some(ForkSpec::Marker("--fork")),
+        };
+        let started = handoff(&["codex", "resume", "old", "--model", "big", "go"], "go");
+        assert_eq!(
+            build_copy(&started, "abc-123", "port-it-b2c", Some("next"), &spec),
+            [
+                "codex", "resume", "abc-123", "--model", "big", "--fork", "next"
+            ]
         );
     }
 
