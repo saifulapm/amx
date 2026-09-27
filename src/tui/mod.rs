@@ -50,6 +50,7 @@ use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::Config;
@@ -135,8 +136,13 @@ impl Titles for TitleBar {
 impl Keys for Keyboard {
     fn next(&mut self, patience: Duration) -> Typed {
         // A terminal that cannot be read is a terminal with nobody at it,
-        // which is the same answer as somebody closing the view.
+        // which is the same answer as somebody closing the view. So is a
+        // signal to end, looked at on both sides of the wait.
+        if ENDED.load(Ordering::Relaxed) {
+            return Typed::Gone;
+        }
         match event::poll(patience) {
+            _ if ENDED.load(Ordering::Relaxed) => Typed::Gone,
             Ok(false) => Typed::Nothing,
             Err(_) => Typed::Gone,
             Ok(true) => match event::read() {
@@ -772,12 +778,18 @@ struct Screen {
 /// door decides: see [`Profile::cap`].
 pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> Result<i32> {
     let mut terminal = ratatui::try_init().context("taking the terminal")?;
+    // Made before anything else is asked of the terminal, so that whatever
+    // the view goes on to ask for is given back however it ends.
+    let held = Held;
+    // A signal to end is a close like any other, heard by the loop between
+    // keys, so the guard above is what gives the terminal back.
+    hear_the_end();
     // A terminal that declines is one amx cannot tell a paste from typing on,
     // which is what the composer did before it asked at all.
-    let bracketed = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     // And the mouse, for as long as the view holds the screen: the list
     // takes it, and shift is the terminal's own selection the whole time.
-    let moused = execute!(std::io::stdout(), EnableMouseCapture).is_ok();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
 
     // And the shift on an enter, which a terminal has no way of sending until
     // it is asked to tell the modified keys apart.
@@ -802,16 +814,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
         Painting::of(&config.theme),
     );
 
-    // Whatever happened, the screen goes back the way it was found.
-    if moused {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    }
-    if bracketed {
-        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
-    }
-    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
-    let _ = execute!(std::io::stdout(), Print(PUT_THE_TITLE_BACK));
-    ratatui::restore();
+    drop(held);
 
     // Said onto the screen the view has just handed back, where there is
     // room for it and nothing to answer. Not over a view that failed: what
@@ -822,6 +825,52 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
         println!("{offer}");
     }
     outcome
+}
+
+/// What gives the terminal back the way the view found it, on return, on a
+/// panic unwinding through [`run`], and on a signal the loop hears.
+///
+/// Everything is given back whether or not asking for it took: a terminal
+/// told to stop doing something it never started does nothing.
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        let _ = execute!(std::io::stdout(), Print(PUT_THE_TITLE_BACK));
+        // Then emptied, for a terminal with no title to put back: tmux keeps
+        // none, and without this a pane goes on being called what the view
+        // last counted.
+        let _ = execute!(std::io::stdout(), SetTitle(""));
+        ratatui::restore();
+    }
+}
+
+/// Whether a SIGTERM or a SIGHUP has come for the view.
+static ENDED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn heard_the_end(_: nix::libc::c_int) {
+    ENDED.store(true, Ordering::Relaxed);
+}
+
+/// Have SIGTERM and SIGHUP end the view the way closing it does, rather than
+/// end the process with the terminal still in the view's modes.
+///
+/// A handler that only sets a flag, because nothing else is safe to do inside
+/// one; the loop reads it between keys, at most a patience later.
+fn hear_the_end() {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+    let action = SigAction::new(
+        SigHandler::Handler(heard_the_end),
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    for signal in [Signal::SIGTERM, Signal::SIGHUP] {
+        // SAFETY: the handler touches nothing but an atomic.
+        let _ = unsafe { sigaction(signal, &action) };
+    }
 }
 
 /// What the view opens painted in: the palette the config named, whatever

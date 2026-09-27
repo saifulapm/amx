@@ -194,3 +194,43 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
         "least of all the command the key amx binds would never reach:\n{keys}"
     );
 }
+
+#[test]
+fn a_killed_view_gives_the_terminal_back() {
+    for signal in ["TERM", "HUP"] {
+        let amx = Harness::new();
+        let view = amx.in_a_terminal(&[], &[]);
+        until_empty(&amx, &view);
+
+        // Keep the pane after the view ends, so the modes it left behind can
+        // be read off it.
+        amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
+        let pid = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_pid}"]);
+        let killed = std::process::Command::new("kill")
+            .args([&format!("-{signal}"), &pid])
+            .status()
+            .expect("kill");
+        assert!(killed.success(), "SIG{signal} reached the view");
+
+        // Read in the same look as the end is recorded in, whether it ended
+        // by its own hand or the signal's, so the modes are what the view left
+        // and not what it was still drawing.
+        let left = amx.until("the view to end", || {
+            let read = amx.tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                &view,
+                "#{pane_dead_status}#{pane_dead_signal}|#{alternate_on} #{mouse_any_flag} \
+                 #{mouse_button_flag} #{mouse_standard_flag} #{bracket_paste_flag}|#{pane_title}|",
+            ]);
+            let (status, modes) = read.split_once('|')?;
+            (!status.is_empty()).then(|| modes.to_string())
+        });
+        assert_eq!(
+            left, "0 0 0 0 0||",
+            "after SIG{signal}: off the alternate screen, no mouse, no bracketed \
+             paste, and no title of the view's left on the window"
+        );
+    }
+}
