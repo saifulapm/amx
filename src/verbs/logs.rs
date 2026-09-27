@@ -662,7 +662,7 @@ mod tests {
 
         let root = TempDir::new().unwrap();
         let agent = without_a_pane(root.path(), "fix-login-a1b");
-        let mut writer = agent.writer().unwrap();
+        let writer = agent.writer().unwrap();
         writer
             .update_meta(|meta| meta.transcript = Some(kept.clone()))
             .unwrap();
