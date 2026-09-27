@@ -80,6 +80,18 @@ pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
 /// What that file is called.
 const VISITED: &str = "visited.json";
 
+/// The background colour the view last read off its terminal, as `#rrggbb`,
+/// for the panes amx starts to wear.
+///
+/// Beside the agents for the same reason the view's file is, and beside them
+/// the way the spawn lock is: every caller has a root with a parent.
+pub fn background_file(state_root: &Path) -> PathBuf {
+    state_root.parent().unwrap_or(state_root).join(BACKGROUND)
+}
+
+/// What that file is called.
+const BACKGROUND: &str = "background";
+
 /// A file amx keeps for itself, at the state root rather than among the
 /// agents.
 fn beside_the_agents(state_root: &Path, name: &str) -> Option<PathBuf> {
@@ -223,6 +235,21 @@ mod tests {
         assert_eq!(
             state_root_from(Some(Path::new("/tmp/t1")), Path::new("/home/dev")),
             Path::new("/tmp/t1/agents")
+        );
+    }
+
+    #[test]
+    fn the_background_is_kept_beside_the_agents() {
+        assert_eq!(
+            background_file(&state_root_from(None, Path::new("/home/dev"))),
+            PathBuf::from("/home/dev/.local/state/amx/background")
+        );
+        assert_eq!(
+            background_file(&state_root_from(
+                Some(Path::new("/tmp/t1")),
+                Path::new("/home/dev")
+            )),
+            PathBuf::from("/tmp/t1/background")
         );
     }
 

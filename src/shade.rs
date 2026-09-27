@@ -21,13 +21,17 @@
 //! everybody before this file, and the background nearly every terminal opens
 //! on.
 //!
-//! Nothing here runs unless somebody asked for it. A theme named by hand is a
-//! decision already made, and this is not amx overruling it: see
-//! [`crate::theme::AUTO`].
+//! The terminal is asked whatever the theme, because the colour it answers
+//! with is kept too — see [`remember`] — for the panes amx starts, which sit in
+//! detached tmux sessions no terminal answers. The shade still picks a palette
+//! only under `auto`: a theme named by hand is a decision already made, and
+//! this is not amx overruling it. See [`crate::theme::AUTO`].
 
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// What the terminal's background is, as far as anything could tell.
@@ -61,15 +65,10 @@ const PATIENCE: Duration = Duration::from_millis(200);
 /// one look before it gives up.
 const TICK: u8 = 1;
 
-/// Whether this terminal is a light one, asking it and then its environment.
-///
-/// Reads from the terminal, so it is called once, from the one place that has
-/// already taken the terminal into raw mode and has not yet started reading
-/// keys off it — see [`crate::tui::run`]. Anywhere else, the answer lands in
-/// the middle of somebody's typing.
-pub fn of_the_terminal() -> Shade {
-    asked()
-        .as_deref()
+/// Whether this terminal is a light one, by what it answered [`asked`] with
+/// and then by its environment.
+pub fn of_the_answer(answer: Option<&str>) -> Shade {
+    answer
         .and_then(said)
         .or_else(|| std::env::var("COLORFGBG").ok().as_deref().and_then(told))
         .unwrap_or(Shade::Dark)
@@ -77,10 +76,15 @@ pub fn of_the_terminal() -> Shade {
 
 /// The terminal's own answer, as the bytes it sent back.
 ///
+/// Reads from the terminal, so it is called once, from the one place that has
+/// already taken the terminal into raw mode and has not yet started reading
+/// keys off it — see [`crate::tui::run`]. Anywhere else, the answer lands in
+/// the middle of somebody's typing.
+///
 /// `None` from a terminal that did not answer, one that is not a terminal at
 /// all, and one whose settings could not be read or put back — the last
 /// because a shade is not worth a terminal left in a state amx changed.
-fn asked() -> Option<String> {
+pub fn asked() -> Option<String> {
     let input = std::io::stdin();
     let fd = input.as_fd();
     if !std::io::IsTerminal::is_terminal(&input) {
@@ -160,6 +164,12 @@ fn listen(input: &mut impl Read) -> Option<String> {
 }
 
 /// What a terminal's answer says its background is.
+pub fn said(answer: &str) -> Option<Shade> {
+    let (red, green, blue) = background_of(answer)?;
+    Some(shade_of(red.into(), green.into(), blue.into()))
+}
+
+/// The colour a terminal's answer names, a byte a channel.
 ///
 /// The colour is written `rgb:` and then the three channels in hex, separated
 /// by slashes, each of them one to four digits wide — a terminal answering in
@@ -169,7 +179,7 @@ fn listen(input: &mut impl Read) -> Option<String> {
 /// Anything else is nothing rather than a guess. An answer amx cannot read is
 /// a terminal amx has not measured, and painting a light palette onto a dark
 /// screen is worse than painting the one everybody had before.
-pub fn said(answer: &str) -> Option<Shade> {
+pub fn background_of(answer: &str) -> Option<(u8, u8, u8)> {
     let channels: Vec<&str> = answer
         .split_once("rgb:")?
         .1
@@ -180,7 +190,7 @@ pub fn said(answer: &str) -> Option<Shade> {
     let [red, green, blue] = channels.as_slice() else {
         return None;
     };
-    Some(shade_of(top(red)?, top(green)?, top(blue)?))
+    Some((top(red)?, top(green)?, top(blue)?))
 }
 
 /// The top eight bits of one channel, however many digits it was written in.
@@ -188,15 +198,38 @@ pub fn said(answer: &str) -> Option<Shade> {
 /// One digit is the odd one: `f` means the whole of the channel rather than
 /// the bottom sixteenth of it, so it is repeated into both nibbles the way X's
 /// own parser does, and `f` comes out 255 rather than 240.
-fn top(digits: &str) -> Option<u32> {
+fn top(digits: &str) -> Option<u8> {
     let value = u32::from_str_radix(digits, 16).ok()?;
-    match digits.len() {
-        1 => Some(value * 0x11),
-        2 => Some(value),
-        3 => Some(value >> 4),
-        4 => Some(value >> 8),
-        _ => None,
-    }
+    let top = match digits.len() {
+        1 => value * 0x11,
+        2 => value,
+        3 => value >> 4,
+        4 => value >> 8,
+        _ => return None,
+    };
+    u8::try_from(top).ok()
+}
+
+/// Keep a colour the terminal answered with, for the panes amx starts.
+///
+/// Written whole or not at all: a spawn reading it mid-write would paint a
+/// pane with half a colour.
+pub fn remember(state_root: &Path, colour: (u8, u8, u8)) -> Result<()> {
+    let (red, green, blue) = colour;
+    crate::store::write_atomic(
+        &crate::paths::background_file(state_root),
+        format!("#{red:02x}{green:02x}{blue:02x}\n").as_bytes(),
+    )
+}
+
+/// The colour last kept, as `#rrggbb`, or nothing where the file is missing
+/// or holds anything but one colour.
+#[allow(dead_code, reason = "read by spawn once panes wear it")]
+pub fn remembered(state_root: &Path) -> Option<String> {
+    let kept = std::fs::read_to_string(crate::paths::background_file(state_root)).ok()?;
+    let kept = kept.trim();
+    let hex = kept.strip_prefix('#')?;
+    (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| kept.to_string())
 }
 
 /// What `COLORFGBG` says the background is.
@@ -353,6 +386,66 @@ mod tests {
         ] {
             assert_eq!(said(answer), Some(Shade::Dark), "{answer:?}");
         }
+    }
+
+    #[test]
+    fn every_answer_shape_yields_its_colour() {
+        for answer in [
+            "\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
+            "\x1b]11;rgb:ff/ff/ff\x07",
+            "\x1b]11;rgb:fff/fff/fff\x1b\\",
+            "\x1b]11;rgb:f/f/f\x07",
+        ] {
+            assert_eq!(
+                background_of(answer),
+                Some((0xff, 0xff, 0xff)),
+                "{answer:?}"
+            );
+        }
+        assert_eq!(
+            background_of("\x1b]11;rgb:2323/1f1f/1f1f\x1b\\"),
+            Some((0x23, 0x1f, 0x1f)),
+            "what tmux answered for bg=#231f1f"
+        );
+        assert_eq!(
+            background_of("\x1b]11;rgb:23/1f/1f\x07"),
+            Some((0x23, 0x1f, 0x1f))
+        );
+        assert_eq!(
+            background_of("\x1b]11;rgb:a/5/0\x07"),
+            Some((0xaa, 0x55, 0x00))
+        );
+        for answer in ["", "\x1b]11;?\x1b\\", "\x1b]11;rgb:ff/ff\x07", "ok"] {
+            assert_eq!(background_of(answer), None, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_remembered_colour_is_read_back_as_written() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        assert_eq!(remembered(&root), None, "nothing kept yet");
+        remember(&root, (0x23, 0x1f, 0x1f)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(crate::paths::background_file(&root)).unwrap(),
+            "#231f1f\n"
+        );
+        assert_eq!(remembered(&root).as_deref(), Some("#231f1f"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_one_colour_is_no_colour() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        let file = crate::paths::background_file(&root);
+        for kept in [
+            "", "231f1f", "#231f1", "#231f1fa", "#23 f1f", "#gg1f1f", "red",
+        ] {
+            std::fs::write(&file, kept).unwrap();
+            assert_eq!(remembered(&root), None, "{kept:?}");
+        }
+        std::fs::write(&file, "  #231F1F \n").unwrap();
+        assert_eq!(remembered(&root).as_deref(), Some("#231F1F"), "trimmed");
     }
 
     #[test]

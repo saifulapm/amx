@@ -862,7 +862,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
         Here::read(),
         remembering.as_deref(),
         &mut TitleBar,
-        Painting::of(&config.theme),
+        Painting::of(&config.theme, crate::shade::asked, root),
     );
 
     drop(held);
@@ -984,14 +984,12 @@ struct Painting {
 impl Painting {
     /// The theme of that name, wherever this machine keeps its themes.
     ///
-    /// `auto` is not a name on disk: it is the terminal being asked what shade
-    /// it is and answering with one of the two amx ships — see
-    /// [`crate::theme::AUTO`]. Asked here, which is after the terminal has been
-    /// taken into raw mode and before the loop has read a key off it, because
-    /// the answer arrives on stdin and anywhere else it would land in the
-    /// middle of somebody's typing.
-    fn of(named: &str) -> Painting {
-        let named = crate::theme::chosen(named, crate::shade::of_the_terminal);
+    /// `ask` is the terminal being asked its background, called here, which is
+    /// after the terminal has been taken into raw mode and before the loop has
+    /// read a key off it, because the answer arrives on stdin and anywhere
+    /// else it would land in the middle of somebody's typing.
+    fn of(named: &str, ask: impl FnOnce() -> Option<String>, state_root: &Path) -> Painting {
+        let named = Painting::named(named, ask, state_root);
         // Stamped before the read rather than after it, so that an edit
         // landing between the two is one reread rather than a palette the
         // view holds until the next edit. `Watch` says why.
@@ -1002,6 +1000,28 @@ impl Painting {
             warnings,
             watching,
         }
+    }
+
+    /// The name of the palette to paint with, having asked the terminal its
+    /// background once whatever the theme, and kept the colour it answered
+    /// for the panes amx starts.
+    ///
+    /// `auto` is not a name on disk: it is that same answer read for a shade,
+    /// and one of the two palettes amx ships — see [`crate::theme::AUTO`]. Any
+    /// other name is itself. No answer keeps nothing, and leaves whatever an
+    /// earlier view kept.
+    fn named<'a>(
+        named: &'a str,
+        ask: impl FnOnce() -> Option<String>,
+        state_root: &Path,
+    ) -> &'a str {
+        let answer = ask();
+        if let Some(colour) = answer.as_deref().and_then(crate::shade::background_of) {
+            // A colour not kept is a pane painted the way it was before, which
+            // is no reason to keep somebody from their view.
+            let _ = crate::shade::remember(state_root, colour);
+        }
+        crate::theme::chosen(named, || crate::shade::of_the_answer(answer.as_deref()))
     }
 }
 
@@ -11772,5 +11792,65 @@ diff --git a/src/bar.rs b/src/bar.rs
         // business and its own tests'.
         assert!(screen.contains("↑ ↓"), "{screen}");
         assert!(screen.contains("any key goes back"), "{screen}");
+    }
+
+    /// A terminal that answers with this, counting how often it is asked.
+    fn answering(answer: Option<&str>, asked: &AtomicUsize) -> impl FnOnce() -> Option<String> {
+        move || {
+            asked.fetch_add(1, Ordering::Relaxed);
+            answer.map(str::to_string)
+        }
+    }
+
+    #[test]
+    fn theme_named_by_hand_still_asks_once_and_keeps_the_colour() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        let asked = AtomicUsize::new(0);
+        let named = Painting::named(
+            "solarized",
+            answering(Some("\x1b]11;rgb:2323/1f1f/1f1f\x07"), &asked),
+            &root,
+        );
+        assert_eq!(named, "solarized", "a name somebody wrote is not overruled");
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("background")).unwrap(),
+            "#231f1f\n"
+        );
+    }
+
+    #[test]
+    fn theme_auto_reads_its_shade_off_the_same_answer() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        let asked = AtomicUsize::new(0);
+        let named = Painting::named(
+            crate::theme::AUTO,
+            answering(Some("\x1b]11;rgb:ffff/ffff/ffff\x1b\\"), &asked),
+            &root,
+        );
+        assert_eq!(named, "light");
+        assert_eq!(asked.load(Ordering::Relaxed), 1, "one question for both");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("background")).unwrap(),
+            "#ffffff\n"
+        );
+    }
+
+    #[test]
+    fn theme_a_silent_terminal_leaves_the_kept_colour_as_it_was() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        let kept = dir.path().join("background");
+        std::fs::write(&kept, "#010203\n").unwrap();
+        // Nothing at all, and the empty wait `asked` hands back.
+        for silence in [None, Some("")] {
+            let asked = AtomicUsize::new(0);
+            let named = Painting::named("default", answering(silence, &asked), &root);
+            assert_eq!(named, "default");
+            assert_eq!(asked.load(Ordering::Relaxed), 1);
+            assert_eq!(std::fs::read_to_string(&kept).unwrap(), "#010203\n");
+        }
     }
 }
