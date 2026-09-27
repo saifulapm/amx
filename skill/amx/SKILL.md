@@ -36,8 +36,11 @@ terminal to the agent's pane, `amx resume <id>` starts a stopped agent again on
 the conversation it had, and `amx doctor` says what the machine is missing.
 
 One is about you rather than about an agent. `amx adopt`, run in a tmux pane,
-registers the claude that ran it — you — as an agent of amx's, so the user sees
-this session on their wall beside the ones amx started. Run it when they ask for
+registers the agent that ran it — you, whether claude, pi or codex — as an
+agent of amx's, so the user sees this session on their wall beside the ones amx
+started. From codex, run it in shell mode (`!amx adopt`) or ask for it through
+the shell tool: either way codex hands it `$CODEX_SESSION_ID`, which is how amx
+knows the session. Run it when they ask for
 that and never on your own. It starts nothing and sends nothing.
 
 ## Exit codes are the interface

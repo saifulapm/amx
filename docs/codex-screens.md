@@ -65,7 +65,7 @@ unless the row says otherwise.
 
 | Screen | How it was raised | Rule | Reads |
 | --- | --- | --- | --- |
-| Update prompt | `version.json` in CODEX_HOME naming 0.158.0, codex run from a standalone install under that CODEX_HOME, no prompt on argv | `update` | waiting, question |
+| Update prompt | `version.json` in CODEX_HOME naming 0.158.0, codex run from a standalone install under that CODEX_HOME, no prompt on argv | `update` (setup) | waiting, question |
 | Hooks need review | a hooks.json with eleven untrusted handlers | `hooks_review` (setup) | waiting, question |
 | Folder access (trust) | codex started in the untrusted repository | `folder_trust` (setup) | waiting, trust |
 | Working directory · resume | `codex --no-daemon resume <id>` from a directory other than the session's | `cwd_prompt` (setup) | waiting, question |
@@ -92,8 +92,12 @@ where the binary is under `~/.codex`, codex would draw the prompt.
 
 codex skips it when a prompt is on the argv, so `amx new` with a task never
 meets it. A new with no task, or a resume with nothing after the id, can.
-Ruling 7 names three setup gates and this is not one of them, so the rule is
-a plain waiting question. `enter continue · esc skip`; Esc skips.
+`enter continue · esc skip`; Esc skips. When this document was first written
+the rule was a plain waiting question, because Ruling 7 named three setup
+gates and this was not one of them. The drift ruling after t1 made it the
+fourth, so `update` is a `setup` rule: the person answers it, `doctor` names
+an agent stopped on it, and amx never picks a choice that would update codex
+or skip an update on anybody's behalf.
 
 ### The hooks review
 
