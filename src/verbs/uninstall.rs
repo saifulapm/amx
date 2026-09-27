@@ -231,6 +231,36 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_refuses_a_tmux_that_cannot_be_asked_and_removes_nothing() {
+        // A record saying `working` whose pane nobody could ask about may be a
+        // running agent, and deleting its record is not undone.
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let plugin = plugin_with_amx(home.path());
+        record(
+            root.path(),
+            "fix-login-a1b",
+            Some("claude"),
+            Phase::Working,
+            crate::tmux::unaskable(),
+            PaneId::new("%3").unwrap(),
+        );
+
+        let mut said = Vec::new();
+        let why = run(root.path(), home.path(), 2, &mut said).unwrap_err();
+
+        assert!(
+            format!("{why:#}").starts_with("tmux could not be asked: "),
+            "{why:#}"
+        );
+        assert!(
+            root.path().join("fix-login-a1b").is_dir(),
+            "the record stays"
+        );
+        assert!(plugin_is_there(&plugin), "and so do the hooks");
+    }
+
+    #[test]
     fn uninstall_does_not_wait_on_an_agent_whose_pane_is_gone() {
         // A record left saying `working` after a reboot is not a running
         // agent, and must not block a person from removing amx.

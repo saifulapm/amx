@@ -721,7 +721,8 @@ fn going(root: &Path) -> Result<Vec<Meta>> {
 /// An agent whose state amx cannot read is skipped rather than failing the
 /// whole walk: one bad document should cost that agent, not everyone listed
 /// after it. The pane is asked last, since it is the only question here that
-/// leaves the machine's own disk.
+/// leaves the machine's own disk. A tmux that could not be asked fails the
+/// walk: a record it cannot account for may be a running agent.
 fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<Meta>> {
     let mut kept = Vec::new();
     for id in crate::store::list(root)? {
@@ -731,7 +732,7 @@ fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<M
         if !wanted(state.state, &meta) {
             continue;
         }
-        if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
+        if Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id)? {
             kept.push(meta);
         }
     }
@@ -1696,6 +1697,36 @@ mod tests {
             at_capacity(root.path(), project.path(), 2, None).unwrap(),
             None,
             "and a cap of two has a place left: only one of the three is running"
+        );
+    }
+
+    #[test]
+    fn a_cap_refuses_a_tmux_that_cannot_be_asked() {
+        // A running record whose pane nobody could ask about may be taking a
+        // place, and a count that skipped it would let one spawn too many.
+        let root = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let of_theirs = Meta {
+            parent: None,
+            depth: 0,
+            dir: project.path().to_path_buf(),
+            ..meta(
+                "fix-login-a1b",
+                crate::tmux::unaskable(),
+                PaneId::new("%3").unwrap(),
+            )
+        };
+        let record = Agent::create(root.path(), &of_theirs).expect("a record");
+        record
+            .writer()
+            .unwrap()
+            .update_state(|state| state.state = Phase::Working)
+            .unwrap();
+
+        let why = at_capacity(root.path(), project.path(), 2, None).unwrap_err();
+        assert!(
+            format!("{why:#}").starts_with("tmux could not be asked: "),
+            "{why:#}"
         );
     }
 
