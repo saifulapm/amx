@@ -1,0 +1,40 @@
+╭───────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.157.1)                │
+│                                           │
+│ model:     GPT-6-Luna   /model to change  │            
+│ directory: /tmp/codexmeasure.ohGh/trusted │
+╰───────────────────────────────────────────╯
+                                                                                                                                                                                                                            
+                                                                                                                                                                                                                            
+› Run this shell command and reply with its output only: sleep 45; echo "$CODEX_SESSION_ID $CODEX_THREAD_ID"
+                                                
+                                                                                                                                                                                                                            
+                                                                                                                                                                                                                            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+• Working (7s • esc to interrupt)
+                                                                                                                                                                                                                           
+                                                                                                            
+› Ask Codex to do anything
+
+  GPT-6-Luna default · /tmp/codexmeasure.ohGh/trusted · Run shell command
+  ? for shortcuts

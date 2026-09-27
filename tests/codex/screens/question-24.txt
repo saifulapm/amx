@@ -1,0 +1,40 @@
+╭──────────────────────╮
+│ >_ OpenAI Codex (v0… │
+│                      │
+│ model:     GPT-6-Lu… │
+│ directory: …/trusted │
+╰──────────────────────╯
+
+
+› Use the
+  request_user_input
+  tool to ask me one
+  question: tea or
+  coffee, with those
+  two options. Do
+  nothing else.
+
+
+
+
+
+  Question 1/1 (1 unan
+  Tea or coffee?
+
+  › 1. Tea      Choose
+                tea.  
+    2. Coffee   Choose
+                coffee
+                .
+    3. None of  Option
+       the      ally,
+       above    add
+                detail
+                s in
+                notes
+                (tab)
+
+  tab to add notes
+  enter to submit…
+  esc to interrupt
+

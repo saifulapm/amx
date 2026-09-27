@@ -1,0 +1,40 @@
+╭───────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.157.1)                │
+│                                           │
+│ model:     GPT-6-Luna   /model to change  │
+│ directory: /tmp/codexmeasure.ohGh/trusted │
+╰───────────────────────────────────────────╯
+
+
+› Use the request_user_input tool to ask me one
+  question: tea or coffee, with those two options. Do
+  nothing else.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Question 1/1 (1 unanswered)
+  Tea or coffee?
+
+  › 1. Tea                Choose tea.               
+    2. Coffee             Choose coffee.
+    3. None of the above  Optionally, add details in
+                          notes (tab)
+
+  tab to add notes | enter to submit answer
+  esc to interrupt
+

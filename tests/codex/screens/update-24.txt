@@ -1,0 +1,40 @@
+
+  Update available ·
+  0.157.1 → 0.158.0
+  Release notes:
+  https://github.com/o
+  penai/codex/releases
+  /latest
+
+› 1. Update now (runs   
+     `sh -c 'curl -fsSL 
+     https://           
+     chatgpt.com/codex/ 
+     install.sh |       
+     CODEX_NON_INTERACTI
+     VE=1 sh'`)         
+  2. Skip
+  3. Skip until next
+     version
+
+  enter continue · esc
+  skip
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

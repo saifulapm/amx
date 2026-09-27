@@ -1,0 +1,40 @@
+╭───────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.157.1)                │
+│                                           │
+│ model:     GPT-6-Luna   /model to change  │
+│ directory: /tmp/codexmeasure.ohGh/trusted │
+╰───────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                 Tip: Use /permissions to control when Codex asks for confirmation.
+
+› Ask Codex to do anything
+
+  GPT-6-Luna default · /tmp/codexmeasure.ohGh/trusted
+  ? for shortcuts

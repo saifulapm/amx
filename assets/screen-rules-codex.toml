@@ -1,0 +1,267 @@
+# What amx can recognise on a codex pane.
+#
+# The same job `assets/screen-rules.toml` does for claude and
+# `assets/screen-rules-pi.toml` does for pi. codex reports through hooks, so
+# while they flow the pane is not the witness. It is read where the hooks go
+# quiet: every screen codex puts in front of a session, an Esc'd or errored
+# turn (codex sends no Stop for either), and an approval box, which
+# PermissionRequest fires before and a reviewer may answer with no box at all.
+# A screen no rule claims reads `unknown`.
+#
+# Rules are ORDERED: the first whose conditions hold decides. A rule holds when
+# every string in `all` appears and, if `any` is given, at least one of those
+# appears too. Matching is against the bottom FLOOR_LINES rows of the capture,
+# trailing blank rows trimmed, control characters replaced and case folded.
+#
+# ── The anchor law, on this vendor ───────────────────────────────────────────
+# Every string here was read off a live codex. The source tree (tag
+# rust-v0.157.1, the same code as the installed codex-cli 0.157.1) was read to
+# know which screens exist and how to raise them, and for nothing else.
+#
+# Measured on 2026-09-28 against codex-cli 0.157.1, launched `codex
+# --no-daemon` with its default alternate screen, under a scratch CODEX_HOME
+# holding a copy of auth.json and config.toml, in a private tmux server at 40
+# rows. Each screen was captured the way `src/tmux.rs` captures one,
+# `capture-pane -p -J`, at 220, 100, 54 and 24 columns, by resizing the window
+# with the screen up. The captures are in tests/codex/screens and
+# src/rules.rs holds every rule below against them. docs/codex-screens.md is
+# the inventory: how each screen was raised and what the rest of the pane
+# says.
+#
+# ── The alternate screen ─────────────────────────────────────────────────────
+# codex draws on the alternate screen by default, so the pane is the whole
+# frame, redrawn on every resize, with the composer pinned to the bottom row
+# block. `--no-alt-screen` writes finished history into tmux's scrollback and
+# draws the composer inline under it, where it floats up the pane until the
+# history fills it, and the idle footer measured there had no `? for
+# shortcuts` row. Every rule below was measured with the alternate screen, and
+# amx launches codex without `--no-alt-screen`.
+#
+# ── No furniture ─────────────────────────────────────────────────────────────
+# `src/furniture.rs` walks up from a mode footer, over a statusline, to the
+# bottom border of a composer box drawn with a rule glyph. codex draws no box.
+# Its bottom rows, as measured, are the composer (`› ` and whatever is staged,
+# or the placeholder `Ask Codex to do anything`), one blank row, a status line
+# (`GPT-6-Luna default · <cwd>`, then ` · <what the last turn did>`), and a
+# footer row (`? for shortcuts` idle and mid-turn, `tab to queue message` with
+# text staged mid-turn, nothing with text staged at idle). A running turn adds
+# `• Working (7s • esc to interrupt)` three rows above the composer. None of
+# that is a box for the walk to find, so this document carries no
+# `[furniture]` table and a codex pane keeps every row it has.
+
+# The update prompt. Raised by a `version.json` in CODEX_HOME naming a newer
+# version, with codex run from a standalone install under that same
+# CODEX_HOME: codex offers this screen only when it knows how it was
+# installed, and otherwise prints an `✨ Update available!` banner into the
+# history instead, which blocks nothing. codex skips the prompt whenever a
+# prompt is on its argv, so `amx new` with a task never meets it; a bare new,
+# or a resume with nothing after the id, can. At 100 columns:
+#
+#     Update available · 0.157.1 → 0.158.0
+#     Release notes: https://github.com/openai/codex/releases/latest
+#
+#   › 1. Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh |
+#        CODEX_NON_INTERACTIVE=1 sh'`)
+#     2. Skip
+#     3. Skip until next version
+#
+#     enter continue · esc skip
+#
+# `update available ·` is whole at all four widths (24 breaks the line after
+# the dot), and the banner spells it with `!` rather than `·`. `skip until
+# next` is whole on the third choice at every width. Drawn at the top of the
+# pane, so no `within`. Not `setup`: Ruling 7 names three gates and this is not
+# one of them.
+[[rule]]
+name = "update"
+state = "waiting"
+kind = "question"
+all = ["update available ·"]
+any = ["skip until next"]
+
+# The hooks review. Drawn at startup when any hook in a hooks.json codex
+# reads is new or changed since it was trusted; amx's own groups are that the
+# first time codex starts after `amx setup codex`, unless setup wrote their
+# trusted hashes. At 100 columns, eleven handlers in the scratch hooks.json:
+#
+#     Hooks need review
+#     11 hooks are new or changed.
+#     Hooks can run outside the sandbox after you trust them.
+#
+#
+#   › 1. Review hooks
+#     2. Trust all and continue
+#     3. Continue without trusting (hooks won't run)
+#
+#     enter confirm · esc skip
+#
+# With one handler the count line reads `1 hook is new or changed.`, so the
+# count line is no anchor. `trust all and` is whole at all four widths (24
+# wraps `continue` under it).
+[[rule]]
+name = "hooks_review"
+state = "waiting"
+kind = "question"
+setup = true
+all = ["hooks need review"]
+any = ["trust all and"]
+
+# The folder trust screen, for a directory with no trust entry in config.toml.
+# `-c 'projects."<dir>".trust_level="trusted"'` on the argv did not take it
+# down (measured the same day). At 100 columns:
+#
+#     Folder access
+#     /tmp/codexmeasure.ohGh/untrusted
+#
+#     Trust this folder? Codex can read, edit, and run files here, subject to your permission
+#     settings. Folder settings can run code automatically, even without a model request. Continue
+#     only if you trust these files. Your trust decision will be saved.
+#
+#   › 1. Trust and continue
+#     2. Quit
+#
+#     enter continue · esc quit
+#
+# `trust this folder?` and `trust and continue` are whole at all four widths.
+# `enter continue ·` is the update prompt's footer too, so it is not used.
+[[rule]]
+name = "folder_trust"
+state = "waiting"
+kind = "trust"
+setup = true
+all = ["trust this folder?"]
+any = ["trust and continue"]
+
+# The working directory prompt, raised by `codex resume <id>` from a directory
+# other than the one the session last ran in (a fork draws the same screen
+# with `fork` for `resume`, by source; not measured). At 100 columns:
+#
+#     Working directory · resume
+#     Session = latest cwd recorded in the resumed session
+#     Current = your current working directory
+#
+#   › 1. Use session directory (/tmp/codexmeasure.ohGh/trusted)
+#     2. Use current directory (/tmp/codexmeasure.ohGh/other)
+#     3. Always use session directory
+#     4. Always use current directory
+#
+#     enter continue · esc use session · ctrl+c quit
+#
+# `working directory ·` is whole at all four widths and still no anchor: at 24
+# columns the screen is 26 rows tall, and its title is above the 24 rows a
+# rule may see. `session = latest` opens the row under it, whole at every
+# width and inside that floor at 24. `use session` and `use current` open the
+# choices whatever the width does to the paths.
+[[rule]]
+name = "cwd_prompt"
+state = "waiting"
+kind = "question"
+setup = true
+all = ["session = latest"]
+any = ["use session", "use current"]
+
+# A command waiting for approval, raised with `--sandbox read-only` and a
+# prompt asking for escalated permissions. At 100 columns, bottom of the pane:
+#
+#     Would you like to run the following command?
+#
+#     Environment: local
+#
+#     Reason: May I create hello.txt in the workspace by running the requested touch command?
+#
+#     $ touch hello.txt
+#
+#   › 1. Yes, proceed (y)
+#     2. Yes, and don't ask again for commands that start with `touch hello.txt` (p)
+#     3. No, and tell Codex what to do differently (esc)
+#
+#     Press enter to confirm or esc to cancel
+#
+# No composer and no footer under it. `press enter to confirm` and `yes,
+# proceed` are whole at all four widths. Only the command box was raised; the
+# edit, network and permissions boxes share the overlay by source and are not
+# measured, so they are not claimed. The question is the sentence the title
+# row starts.
+[[rule]]
+name = "approval"
+state = "waiting"
+kind = "permission"
+all = ["press enter to confirm"]
+any = ["yes, proceed"]
+asks = { sentence = "would you like to" }
+
+# A `request_user_input` call, raised with `--enable
+# default_mode_request_user_input` (off by default outside plan mode). At 100
+# columns:
+#
+#     Question 1/1 (1 unanswered)
+#     Tea or coffee?
+#
+#     › 1. Tea                Choose tea.
+#       2. Coffee             Choose coffee.
+#       3. None of the above  Optionally, add details in notes (tab)
+#
+#     tab to add notes | enter to submit answer | esc to interrupt
+#
+# The footer is one row at 220 and 100, two at 54 and three at 24, and `tab to
+# add notes` and `enter to submit` are whole on it at every width, at most one
+# row apart. It says `esc to interrupt` with no bracket and no bullet, so the
+# working rule's anchors are not on it, and this rule comes first anyway.
+[[rule]]
+name = "question"
+state = "waiting"
+kind = "question"
+all = ["tab to add notes"]
+any = ["enter to submit"]
+within = 2
+
+# A running turn. The status row sits three rows above the composer:
+#
+#   • Working (7s • esc to interrupt)
+#
+#   › Ask Codex to do anything
+#
+#     GPT-6-Luna default · /tmp/codexmeasure.ohGh/trusted · Run shell command
+#     ? for shortcuts
+#
+# `to interrupt)` is the anchor the source reading proposed, because the
+# header word is replaced by a reasoning summary's header mid-turn. It is whole
+# at 220, 100 and 54, and gone at 24, where the row is cut to `• Working (12s
+# • esc to…`. `• esc to` is on that row at 24 while the elapsed time is under
+# a minute. Past that the source formats it `1m 05s`, which would cut a
+# 24-column row before `esc to` and quiet the rule there; no turn that long
+# was captured at 24. Background terminals and hook status are appended
+# after the bracket (`· 1 background terminal running · /ps to view`) and
+# leave both anchors alone. A steered message waiting for the next tool call
+# and a Tab-queued one are drawn between the status row and the composer and
+# read as this rule.
+[[rule]]
+name = "working"
+state = "working"
+any = ["to interrupt)", "• esc to"]
+
+# The composer with nothing staged in it, idle or after a turn. Mid-turn the
+# same footer is drawn, which is why the working rule comes first. With text
+# staged at idle the row is empty and this rule does not hold; after an Esc
+# (`esc again to edit previous message`) or a first Ctrl+C the row is replaced
+# for a moment too. A turn that ended on an API error draws `■ {"type":
+# "error",…}` in the history and then this same composer.
+[[rule]]
+name = "prompt"
+state = "idle"
+quiescent = true
+all = ["? for shortcuts"]
+
+# An Esc'd turn. codex draws
+#
+#   ■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+#
+# and puts any Tab-queued message back into the composer, which empties the
+# footer row the prompt rule stands on. `■ conversation` is whole at the head
+# of that row at all four widths. The row stays in the history, so on a later
+# screen that no earlier rule claims this still reads idle.
+[[rule]]
+name = "interrupted"
+state = "idle"
+quiescent = true
+all = ["■ conversation"]

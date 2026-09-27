@@ -1,0 +1,35 @@
+[hooks.state]
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:44f54c468857f43dc01c752c34e61be65d97d892facb9d1fd0c547e721e60987"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:62ca2d9301c902140298733d9e0be308345dda945b627cb0385a231adebdc012"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:permission_request:0:0"]
+trusted_hash = "sha256:a4bf19f387e07013968cb1aa454ce4aede3b7be23362452e9391ac21db88c621"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:ebec1bf77f27e13adb1b251088b3b68ef460da218a42904dd021dd02ad357023"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:session_start:1:0"]
+trusted_hash = "sha256:4add63b3f2cf92a907d37f2e9b7b5d7972234d4357db8dd35851c32c02603c53"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:session_end:0:0"]
+trusted_hash = "sha256:c1f45a88c3d9ab1fb2e4f69e5f98943f5ebe56e42bc4db6844043615be342f31"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:475ce6c338281b760e7195d03032fdead84a019064f4173eb6245bffd2eeaf4b"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:user_prompt_submit:1:0"]
+trusted_hash = "sha256:ddebddeb874f57494d55880d6f70adbee7136bb60988e2a9616f5d59ab304738"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:stop:0:0"]
+trusted_hash = "sha256:2281b6dd8a3f60dcc689419f83d97a2095e52bafa7c998eccf3f5c66d863ac71"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:stop:1:0"]
+trusted_hash = "sha256:4de4283a553cfcda6ea020eec3ae1d66555d7f3bce089906e6723de26975e6d7"
+
+[hooks.state."/tmp/codexmeasure.ohGh/home/hooks.json:interrupt:0:0"]
+trusted_hash = "sha256:8d589638c32ff92511f74435b08cb0579e0440ff6ab6f920d703a2e68c80c390"
+

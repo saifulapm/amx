@@ -1,0 +1,40 @@
+╭──────────────────────╮
+│ >_ OpenAI Codex (v0… │
+│                      │
+│ model:     GPT-6-Lu… │
+│ directory: …/trusted │
+╰──────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anyth
+
+  GPT-6-Luna default · …
+  ? for shortcuts

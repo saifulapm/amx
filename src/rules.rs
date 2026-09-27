@@ -4356,4 +4356,190 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         );
         assert!(Ruleset::parse("rule = ").is_err(), "not TOML");
     }
+
+    // ── codex 0.157.1, measured 2026-09-28 ───────────────────────────────────
+    // codex's document is read straight out of the file here: its entry in the
+    // table comes later, and until it does no agent command reads as codex.
+    // Every capture under tests/codex/screens came off a live `codex
+    // --no-daemon` in a private tmux server, `capture-pane -p -J`, at the width
+    // in its name and forty rows — see docs/codex-screens.md.
+
+    fn codex() -> Ruleset {
+        Ruleset::parse(include_str!("../assets/screen-rules-codex.toml"))
+            .expect("codex's screens parse")
+    }
+
+    /// A capture file as amx reads the pane it came off: tmux's output with
+    /// its trailing blank rows gone (`Server::run`), then sanitized.
+    fn as_read(capture: &str) -> String {
+        crate::tmux::sanitize(capture.trim_end())
+    }
+
+    /// One screen at the four widths it was captured at.
+    macro_rules! codex_widths {
+        ($name:literal) => {
+            [
+                (
+                    220,
+                    include_str!(concat!("../tests/codex/screens/", $name, "-220.txt")),
+                ),
+                (
+                    100,
+                    include_str!(concat!("../tests/codex/screens/", $name, "-100.txt")),
+                ),
+                (
+                    54,
+                    include_str!(concat!("../tests/codex/screens/", $name, "-54.txt")),
+                ),
+                (
+                    24,
+                    include_str!(concat!("../tests/codex/screens/", $name, "-24.txt")),
+                ),
+            ]
+        };
+    }
+
+    #[test]
+    fn rules_codex_reads_the_screens_it_draws() {
+        assert_eq!(
+            named(&codex()),
+            [
+                "update",
+                "hooks_review",
+                "folder_trust",
+                "cwd_prompt",
+                "approval",
+                "question",
+                "working",
+                "prompt",
+                "interrupted"
+            ],
+            "order decides, so it is part of the data"
+        );
+    }
+
+    #[test]
+    fn rules_codex_gates_a_run_with_trust_hooks_and_the_resume_directory() {
+        assert_eq!(
+            gates(&codex()),
+            ["hooks_review", "folder_trust", "cwd_prompt"],
+            "Ruling 7: amx answers none of them, the person does"
+        );
+    }
+
+    #[test]
+    fn rules_codex_names_every_screen_at_every_width() {
+        let codex = codex();
+        for (screen, captures, rule, means) in [
+            ("idle", codex_widths!("idle"), "prompt", Phase::Idle),
+            (
+                "idle after a turn",
+                codex_widths!("idle-after"),
+                "prompt",
+                Phase::Idle,
+            ),
+            (
+                "a turn running",
+                codex_widths!("working"),
+                "working",
+                Phase::Working,
+            ),
+            (
+                "a command waiting for approval",
+                codex_widths!("approval"),
+                "approval",
+                Phase::Waiting,
+            ),
+            (
+                "request_user_input",
+                codex_widths!("question"),
+                "question",
+                Phase::Waiting,
+            ),
+            (
+                "folder trust",
+                codex_widths!("trust"),
+                "folder_trust",
+                Phase::Waiting,
+            ),
+            (
+                "hooks need review",
+                codex_widths!("hooks-review"),
+                "hooks_review",
+                Phase::Waiting,
+            ),
+            (
+                "the resume working directory",
+                codex_widths!("cwd-prompt"),
+                "cwd_prompt",
+                Phase::Waiting,
+            ),
+            (
+                "the update prompt",
+                codex_widths!("update"),
+                "update",
+                Phase::Waiting,
+            ),
+            (
+                "an Esc'd turn with a queued message put back in the composer",
+                codex_widths!("interrupted"),
+                "interrupted",
+                Phase::Idle,
+            ),
+        ] {
+            for (width, capture) in captures {
+                let claimed = claim(&codex, &as_read(capture), Phase::Working);
+                assert_eq!(
+                    (claimed.rule_name(), claimed.phase()),
+                    (Some(rule), Some(means)),
+                    "{screen} at {width} columns"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rules_codex_names_what_a_turn_draws_around_its_status_row() {
+        let codex = codex();
+        for (screen, capture, rule) in [
+            (
+                "a message steered into the turn, waiting for the next tool call",
+                include_str!("../tests/codex/screens/steer-pending-100.txt"),
+                "working",
+            ),
+            (
+                "a message queued with Tab",
+                include_str!("../tests/codex/screens/queued-100.txt"),
+                "working",
+            ),
+            (
+                "a turn that ended on an API error",
+                include_str!("../tests/codex/screens/error-100.txt"),
+                "prompt",
+            ),
+        ] {
+            assert_eq!(
+                claim(&codex, &as_read(capture), Phase::Working).rule_name(),
+                Some(rule),
+                "{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_codex_claims_nothing_on_a_shell_or_another_vendors_pane() {
+        let codex = codex();
+        for (what, screen) in [
+            ("a shell", A_SHELL),
+            ("claude at its prompt", IDLE_SCREEN),
+            ("claude mid-turn", WORKING_SCREEN),
+            ("pi at its prompt", A_PI_IDLE),
+        ] {
+            assert_eq!(
+                claim(&codex, screen, Phase::Working),
+                Claim::Unclaimed,
+                "{what}"
+            );
+        }
+    }
 }

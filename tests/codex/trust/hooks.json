@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/SessionStart.jsonl; env | grep -E '^(AMX_|CODEX_)' | sort >> /tmp/codexmeasure.ohGh/payloads/SessionStart.env" }] },
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/UserPromptSubmit.jsonl" }] },
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/PreToolUse.jsonl" }] },
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/PermissionRequest.jsonl" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/Stop.jsonl" }] },
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "Interrupt": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/Interrupt.jsonl" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "{ cat; echo; } >> /tmp/codexmeasure.ohGh/payloads/SessionEnd.jsonl" }] }
+    ]
+  }
+}
