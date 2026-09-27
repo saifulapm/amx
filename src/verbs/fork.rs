@@ -257,7 +257,7 @@ fn names_its_origin(root: &Path, id: &str, origin: &Meta, session: &str) -> Resu
 /// branched from, and `copy` — the id amx minted for it — as the session the
 /// copy itself opens, for a vendor that declares a flag to ask for one.
 fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -> Vec<String> {
-    build_copy(handoff, session, copy, prompt, &spelling(handoff))
+    build_copy(handoff, session, copy, prompt, spawn::vendor_of(handoff))
 }
 
 /// What [`Meta::session`] is recorded as for the copy: the id amx minted for
@@ -273,7 +273,9 @@ fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -
 /// the same spelling, for the caller writing the record rather than the
 /// command.
 fn opened_under(handoff: &Handoff, copy: &str) -> Option<String> {
-    spelling(handoff).start.map(|_| copy.to_string())
+    spelling(spawn::vendor_of(handoff))
+        .start
+        .map(|_| copy.to_string())
 }
 
 /// What [`Meta::agent`] is recorded as for the copy: the word the agent it was
@@ -288,17 +290,19 @@ fn launched_with(handoff: &Handoff) -> Option<String> {
     handoff.command.first().cloned()
 }
 
-/// [`copying`], with the vendor's own spelling passed in rather than looked
-/// up, so a shape the table has never seen can be proved out here too.
+/// [`copying`], with the vendor passed in rather than looked up, so a shape
+/// the table has never seen can be proved out here too. `None` is a command
+/// amx has no entry for, spelled the way [`spelling`] says.
 ///
-/// A vendor branches one of two ways. [`ForkSpec::Marker`] rides beside the
+/// A vendor branches one of three ways. [`ForkSpec::Marker`] rides beside the
 /// resume flag: the copy opens through `resume` exactly as a continuation
 /// does, and the marker is what turns that into a branch rather than a
 /// carry-on. [`ForkSpec::Origin`] is the flag itself: it carries the session
 /// to copy, and `resume` is not written at all, because this vendor's copy
-/// is not asking to continue anything.
+/// is not asking to continue anything. [`ForkSpec::Subcommand`] is the same
+/// as an origin, spelled as a word right after the program.
 ///
-/// Either way, a vendor that declares a start flag is handed `copy` beside it:
+/// Whichever way, a vendor that declares a start flag is handed `copy` beside it:
 /// the copy is a second agent, and a vendor that reports nothing has no other
 /// way to be told which session that agent is.
 fn build_copy(
@@ -306,8 +310,10 @@ fn build_copy(
     session: &str,
     copy: &str,
     prompt: Option<&str>,
-    spec: &SessionSpec,
+    vendor: Option<&Vendor>,
 ) -> Vec<String> {
+    let spec = &spelling(vendor);
+    let ends_options = vendor.and_then(|vendor| vendor.ends_options);
     let fork = spec
         .fork
         .expect("a copy is only asked of a vendor that declares how it branches");
@@ -319,14 +325,13 @@ fn build_copy(
         // Only the last word is the task, which is where `new` put it, as
         // the vendor's words for it or, from an older amx, as typed.
         if words.peek().is_none()
-            && (word == handoff.task
-                || word == spawn::as_words(spawn::vendor_of(handoff), &handoff.task))
+            && (word == handoff.task || word == spawn::as_words(vendor, &handoff.task))
         {
             break;
         }
         // And the word `new` put in front of it, or the vendor would read
         // everything written after it as a message.
-        if words.len() == 1 && Some(word.as_str()) == spawn::ends_options_of(handoff) {
+        if words.len() == 1 && Some(word.as_str()) == ends_options {
             continue;
         }
         // Where `word` stood in the recorded command: a subcommand is one
@@ -363,13 +368,16 @@ fn build_copy(
             command.push(marker.to_string());
         }
         ForkSpec::Origin(flag) => push_flag(&mut command, flag, spec.joined(), session),
+        ForkSpec::Subcommand(word) => {
+            drop(command.splice(1..1, [word.to_string(), session.to_string()]));
+        }
     }
     if let Some(start) = spec.start {
         push_flag(&mut command, start, spec.joined(), copy);
     }
     if let Some(prompt) = prompt {
-        command.extend(spawn::ends_options_of(handoff).map(str::to_string));
-        command.push(spawn::as_words(spawn::vendor_of(handoff), prompt));
+        command.extend(ends_options.map(str::to_string));
+        command.push(spawn::as_words(vendor, prompt));
     }
     command
 }
@@ -385,13 +393,12 @@ fn push_flag(command: &mut Vec<String>, flag: &str, joined: bool, value: &str) {
     }
 }
 
-/// The vendor's own session vocabulary, read off the table by the program the
-/// recorded command names. Claude's — the vendor amx was written against — for
-/// a command amx has measured nothing about: unmeasured is not refused
-/// ([`cannot_branch`] already says so), and claude's is the only spelling amx
-/// has ever assumed for one.
-fn spelling(handoff: &Handoff) -> SessionSpec {
-    spawn::vendor_of(handoff)
+/// The vendor's own session vocabulary, read off its entry. Claude's — the
+/// vendor amx was written against — for a command amx has measured nothing
+/// about: unmeasured is not refused ([`cannot_branch`] already says so), and
+/// claude's is the only spelling amx has ever assumed for one.
+fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
+    vendor
         .and_then(|vendor| vendor.session)
         .unwrap_or_else(unmeasured)
 }
@@ -510,7 +517,7 @@ fn make_dir(dir: &Path) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::tmux::{PaneId, Socket};
-    use crate::vendor::second::SECOND;
+    use crate::vendor::second::{BRANCHING, SECOND};
     use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
@@ -718,16 +725,20 @@ mod tests {
             conflicts: &["--session-id"],
             fork: Some(ForkSpec::Origin("--branch-from")),
         };
+        let vendor = Vendor {
+            session: Some(spec),
+            ..SECOND
+        };
         let started = handoff(&["pi", "--model", "big", "go"], "go");
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, &spec),
+            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&vendor)),
             ["pi", "--model", "big", "--branch-from=abc-123"]
         );
 
         // A copy of a copy asks for one origin, not two.
         let started = handoff(&["pi", "--branch-from=old", "go"], "go");
         assert_eq!(
-            build_copy(&started, "def-456", "port-it-b2c", None, &spec),
+            build_copy(&started, "def-456", "port-it-b2c", None, Some(&vendor)),
             ["pi", "--branch-from=def-456"]
         );
     }
@@ -742,12 +753,55 @@ mod tests {
             conflicts: &[],
             fork: Some(ForkSpec::Marker("--fork")),
         };
+        let vendor = Vendor {
+            session: Some(spec),
+            ..SECOND
+        };
         let started = handoff(&["codex", "resume", "old", "--model", "big", "go"], "go");
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", Some("next"), &spec),
+            build_copy(
+                &started,
+                "abc-123",
+                "port-it-b2c",
+                Some("next"),
+                Some(&vendor)
+            ),
             [
                 "codex", "resume", "abc-123", "--model", "big", "--fork", "next"
             ]
+        );
+    }
+
+    #[test]
+    fn fork_writes_a_subcommand_fork_right_after_the_program_and_no_resume() {
+        // The word and the origin's id open the argv, the prompt goes behind
+        // the vendor's end of options, and nothing the recorded command said
+        // about which session it opened survives: not the task's own `--`,
+        // not a resume's words, not an earlier fork's.
+        let branching = Some(&BRANCHING);
+        for written in [
+            &["second", "-m", "large", "--", "go"][..],
+            &["second", "again", "old", "-m", "large", "--", "go"],
+            &["second", "fork", "old", "-m", "large", "--", "go"],
+            &["second", "-m", "large", "--open", "old", "--", "go"],
+        ] {
+            let started = handoff(written, "go");
+            assert_eq!(
+                build_copy(&started, "abc-123", "port-it-b2c", Some("next"), branching),
+                ["second", "fork", "abc-123", "-m", "large", "--", "next"],
+                "{written:?}"
+            );
+            assert_eq!(
+                build_copy(&started, "abc-123", "port-it-b2c", None, branching),
+                ["second", "fork", "abc-123", "-m", "large"],
+                "{written:?}"
+            );
+        }
+        // Only right after the program is it the fork's word.
+        let started = handoff(&["second", "-m", "fork", "--", "go"], "go");
+        assert_eq!(
+            build_copy(&started, "abc-123", "port-it-b2c", None, branching),
+            ["second", "fork", "abc-123", "-m", "fork"]
         );
     }
 
@@ -757,15 +811,13 @@ mod tests {
         // to branch carries the origin, and the start flag beside it carries
         // the copy's own id. Without that id the copy answers to nothing amx
         // chose, and a vendor with no hooks never reports the one it opened.
-        let spec = crate::registry::entry("pi")
-            .and_then(|pi| pi.session)
-            .expect("pi declares a session vocabulary");
+        let pi = crate::registry::entry("pi");
         let started = handoff(
             &["pi", "--model", "big", "--session-id", "abc-123", "go"],
             "go",
         );
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, &spec),
+            build_copy(&started, "abc-123", "port-it-b2c", None, pi),
             [
                 "pi",
                 "--model",
@@ -796,7 +848,7 @@ mod tests {
             "go",
         );
         assert_eq!(
-            build_copy(&started, "port-it-b2c", "redo-it-c3d", None, &spec),
+            build_copy(&started, "port-it-b2c", "redo-it-c3d", None, pi),
             ["pi", "--fork", "port-it-b2c", "--session-id", "redo-it-c3d"]
         );
     }

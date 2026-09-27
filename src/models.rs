@@ -34,6 +34,14 @@ pub fn models_of(vendor: &Vendor, config: &Config) -> Vec<String> {
         Models::Printed(argv) => printed(
             vendor.name,
             argv,
+            rows,
+            kept_at(vendor.name).as_deref(),
+            SystemTime::now(),
+        ),
+        Models::Json(argv) => printed(
+            vendor.name,
+            argv,
+            slugs,
             kept_at(vendor.name).as_deref(),
             SystemTime::now(),
         ),
@@ -74,18 +82,24 @@ fn kept_at(name: &str) -> Option<PathBuf> {
 }
 
 /// The listing `program` prints: what `cache` holds while that still stands,
-/// and the program's own answer otherwise.
+/// and the program's own answer, read by `read`, otherwise.
 ///
 /// Empty from a program that could not be run, would not answer, or printed
 /// nothing amx can read as a model. A harness nobody can be told about claims
 /// no models, which leaves the word to the next harness or to a refusal naming
 /// them all. Nothing is kept from such a run either, so a vendor installed a
 /// minute later is asked again rather than held to an hour of silence.
-fn printed(program: &str, argv: &[&str], cache: Option<&Path>, now: SystemTime) -> Vec<String> {
+fn printed(
+    program: &str,
+    argv: &[&str],
+    read: fn(&str) -> Vec<String>,
+    cache: Option<&Path>,
+    now: SystemTime,
+) -> Vec<String> {
     if let Some(kept) = cache.and_then(|cache| fresh(cache, now)) {
         return kept;
     }
-    let read = read_from(program, argv);
+    let read = read_from(program, argv, read);
     if let Some(cache) = cache
         && !read.is_empty()
     {
@@ -121,7 +135,7 @@ fn fresh(cache: &Path, now: SystemTime) -> Option<Vec<String>> {
 /// fork and its exec, still holding a script another test had just written.
 /// The window is a moment long, and a listing that came back empty for it
 /// would have been an hour of a harness claiming no models.
-fn read_from(program: &str, argv: &[&str]) -> Vec<String> {
+fn read_from(program: &str, argv: &[&str], read: fn(&str) -> Vec<String>) -> Vec<String> {
     let run = || {
         Command::new(program)
             .args(argv)
@@ -140,7 +154,7 @@ fn read_from(program: &str, argv: &[&str]) -> Vec<String> {
         listing = run();
     }
     match listing {
-        Ok(listing) if listing.status.success() => rows(&String::from_utf8_lossy(&listing.stdout)),
+        Ok(listing) if listing.status.success() => read(&String::from_utf8_lossy(&listing.stdout)),
         _ => Vec::new(),
     }
 }
@@ -160,6 +174,25 @@ fn rows(listing: &str) -> Vec<String> {
             let model = columns.next()?;
             Some(format!("{provider}/{model}"))
         })
+        .collect()
+}
+
+/// The models a JSON listing offers: the `slug` of each of its `models` whose
+/// `visibility` is `list`, in the order it names them.
+///
+/// A model the vendor hides is one it keeps off its own picker, and not one a
+/// person names. A listing that will not read as that object offers nothing.
+fn slugs(listing: &str) -> Vec<String> {
+    let Ok(listing) = serde_json::from_str::<serde_json::Value>(listing) else {
+        return Vec::new();
+    };
+    listing["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|model| model["visibility"] == "list")
+        .filter_map(|model| model["slug"].as_str())
+        .map(str::to_string)
         .collect()
 }
 
@@ -260,7 +293,13 @@ mod tests {
         let vendor = a_vendor_printing(dir.path(), "prints-models", LISTING);
         let cache = dir.path().join("models/pi.txt");
 
-        let list = printed(&vendor, &["--list-models"], Some(&cache), SystemTime::now());
+        let list = printed(
+            &vendor,
+            &["--list-models"],
+            rows,
+            Some(&cache),
+            SystemTime::now(),
+        );
 
         assert_eq!(list, ["openai/gpt-5", "anthropic/claude-opus-5"]);
         assert!(cache.exists(), "and it is kept for the next spawn");
@@ -274,9 +313,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vendor = a_vendor_printing(dir.path(), "prints-models", LISTING);
         let cache = dir.path().join("models/pi.txt");
-        printed(&vendor, &["--list-models"], Some(&cache), SystemTime::now());
+        printed(
+            &vendor,
+            &["--list-models"],
+            rows,
+            Some(&cache),
+            SystemTime::now(),
+        );
 
-        let list = printed(&vendor, &["--wrong"], Some(&cache), SystemTime::now());
+        let list = printed(&vendor, &["--wrong"], rows, Some(&cache), SystemTime::now());
 
         assert_eq!(list, ["openai/gpt-5", "anthropic/claude-opus-5"]);
     }
@@ -289,7 +334,7 @@ mod tests {
         keep(&cache, &["openai/gpt-4".to_string()]).unwrap();
 
         let later = SystemTime::now() + FRESH_FOR + Duration::from_secs(1);
-        let list = printed(&vendor, &["--list-models"], Some(&cache), later);
+        let list = printed(&vendor, &["--list-models"], rows, Some(&cache), later);
 
         assert_eq!(list, ["openai/gpt-5", "anthropic/claude-opus-5"]);
         assert_eq!(
@@ -318,15 +363,70 @@ mod tests {
             printed(
                 &missing.to_string_lossy(),
                 &["--list-models"],
+                rows,
                 Some(&cache),
                 now,
             ),
-            printed(&vendor, &["--every-model"], Some(&cache), now),
-            printed(&says_nothing, &["--list-models"], Some(&cache), now),
+            printed(&vendor, &["--every-model"], rows, Some(&cache), now),
+            printed(&says_nothing, &["--list-models"], rows, Some(&cache), now),
         ] {
             assert!(asked.is_empty(), "{asked:?}");
         }
         assert!(!cache.exists(), "nothing worth keeping was read");
+    }
+
+    /// Models as codex 0.157.1's `debug models` prints them, cut to the keys
+    /// read and a few beside them: two a person names, then one it hides.
+    const JSON: &str = r#"{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list","priority":1},{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","priority":9},{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","priority":30}]}"#;
+
+    #[test]
+    fn a_json_listing_offers_the_slugs_it_lists_and_not_the_ones_it_hides() {
+        assert_eq!(slugs(JSON), ["gpt-6-astra", "gpt-5.5"]);
+        for malformed in ["", "not json", "{}", r#"{"models":{}}"#, "[1,2]"] {
+            assert!(slugs(malformed).is_empty(), "{malformed:?}");
+        }
+        assert_eq!(
+            slugs(r#"{"models":[{"visibility":"list"},{"slug":"x","visibility":"list"}]}"#),
+            ["x"],
+            "a model with no slug is no model"
+        );
+    }
+
+    #[test]
+    fn a_json_listing_is_asked_for_by_its_words_and_kept_like_a_printed_one() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("prints-json");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n[ \"$1 $2\" = \"debug models\" ] || exit 3\ncat <<'LISTING'\n{JSON}\nLISTING\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let vendor = path.to_string_lossy().into_owned();
+        let cache = dir.path().join("models/codex.txt");
+
+        let list = printed(
+            &vendor,
+            &["debug", "models"],
+            slugs,
+            Some(&cache),
+            SystemTime::now(),
+        );
+
+        assert_eq!(list, ["gpt-6-astra", "gpt-5.5"]);
+        assert_eq!(
+            printed(
+                &vendor,
+                &["--wrong"],
+                slugs,
+                Some(&cache),
+                SystemTime::now()
+            ),
+            ["gpt-6-astra", "gpt-5.5"],
+            "and read inside the hour out of what was kept"
+        );
     }
 
     #[test]
@@ -334,7 +434,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vendor = a_vendor_printing(dir.path(), "prints-models", LISTING);
 
-        let list = printed(&vendor, &["--list-models"], None, SystemTime::now());
+        let list = printed(&vendor, &["--list-models"], rows, None, SystemTime::now());
 
         assert_eq!(list, ["openai/gpt-5", "anthropic/claude-opus-5"]);
     }

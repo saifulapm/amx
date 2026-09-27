@@ -12,7 +12,8 @@
 //! answer it differently here.
 
 use super::{
-    Capability, DEFAULT, DialSpec, Hooks, Models, Moment, Resume, SessionSpec, Vendor, Wire, Wiring,
+    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Resume, SessionSpec, Vendor,
+    Wire, Wiring,
 };
 
 /// The fixture. Read the module docs before changing a value: each of these
@@ -74,6 +75,33 @@ pub const SECOND: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+};
+
+/// The second vendor as it would be if it could branch a session: by a word
+/// right after the program, the way it already resumes, rather than by a flag.
+///
+/// Beside [`SECOND`] rather than in place of it, because that one is the
+/// vendor a verb has to refuse a fork for. A vendor that forks has to report
+/// the session a copy opened, and this one declares no start flag to ask for
+/// one, so it reports through [`HOOKS`]. It prints its models as JSON, and it
+/// ends its options before a message.
+pub const BRANCHING: Vendor = Vendor {
+    models: Models::Json(&["list", "models"]),
+    session: Some(SessionSpec {
+        start: None,
+        resume: Resume::Subcommand("again"),
+        conflicts: &["--open"],
+        fork: Some(ForkSpec::Subcommand("fork")),
+    }),
+    capabilities: &[
+        Capability::Hooks,
+        Capability::Resume,
+        Capability::Fork,
+        Capability::Adopt,
+    ],
+    hooks: Some(HOOKS),
+    ends_options: Some("--"),
+    ..SECOND
 };
 
 /// Hooks in the second vendor's words, for a test that reads a payload.

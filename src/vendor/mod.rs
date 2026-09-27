@@ -52,6 +52,11 @@ pub enum Models {
     /// A listing is a process, so whoever reads one decides when it is worth
     /// starting; the entry says only how it is asked for.
     Printed(&'static [&'static str]),
+    /// The vendor prints its models as JSON, and these are the words that ask
+    /// it to: an object whose `models` each carry a `slug` and a `visibility`,
+    /// and the models it offers are the slugs whose visibility is `list`. The
+    /// rest are its own, kept off its picker, and no more a person's to name.
+    Json(&'static [&'static str]),
 }
 
 /// One moment in a turn that amx listens for.
@@ -268,6 +273,10 @@ pub enum ForkSpec {
     /// A flag naming the session to branch from, carrying the origin's id
     /// rather than riding beside the resume flag.
     Origin(&'static str),
+    /// A word right after the program, then the origin's id: `codex fork
+    /// <id>`. The copy is not a resume, so the resume words are never written
+    /// beside it.
+    Subcommand(&'static str),
 }
 
 /// How a vendor spells the flags that decide which session a process opens.
@@ -327,8 +336,9 @@ impl SessionSpec {
     /// Whether a word is a flag naming a session, and if so whether its value
     /// is the word after it rather than joined on with `=`. `first` is
     /// whether the word stands right after the program, the only place a
-    /// [`Resume::Subcommand`] is one; a word that begins with `-` is a flag
-    /// wherever it stands, and never a subcommand.
+    /// [`Resume::Subcommand`] or a [`ForkSpec::Subcommand`] is one; a word
+    /// that begins with `-` is a flag wherever it stands, and never a
+    /// subcommand.
     ///
     /// The flag a vendor branches by naming the origin counts too. A copy is
     /// opened under an id of its own, so its recorded command carries that
@@ -339,11 +349,10 @@ impl SessionSpec {
     /// and a fork somebody asks for by hand on `amx new` still wants an id
     /// minted for it.
     pub fn names_a_session(&self, word: &str, first: bool) -> Option<bool> {
-        if let Resume::Subcommand(subcommand) = self.resume
-            && first
-            && word == subcommand
-            && !word.starts_with('-')
-        {
+        let resumes = matches!(self.resume, Resume::Subcommand(subcommand) if word == subcommand);
+        let forks =
+            matches!(self.fork, Some(ForkSpec::Subcommand(subcommand)) if word == subcommand);
+        if (resumes || forks) && first && !word.starts_with('-') {
             return Some(true);
         }
         let mut flags: Vec<&str> = self.conflicts.to_vec();
@@ -514,7 +523,7 @@ pub struct Catalog {
 /// The shape of a conversation on disk: one JSON document a line, and where
 /// in each the words are.
 ///
-/// Two vendors, two shapes, both measured. What each entry means is
+/// A shape to each vendor that keeps one. What each entry means is
 /// `crate::conversation`'s business; this is only which of them a file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transcript {
@@ -530,6 +539,10 @@ pub enum Transcript {
     /// session's own bookkeeping under other types. Measured off pi 0.84.4's
     /// `~/.pi/agent/sessions/` on 2026-09-05.
     Pi,
+    /// The rollout codex writes under `$CODEX_HOME/sessions`, each entry
+    /// typed at the top. Nothing of it is read yet: a reading of this shape
+    /// finds nothing said, no answer and no usage.
+    Codex,
 }
 
 /// Something amx can do only where the vendor takes part.
@@ -683,7 +696,7 @@ fn already(carried: &[String], vendor_args: &[String], flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::second::SECOND;
+    use super::second::{BRANCHING, SECOND};
     use super::*;
 
     fn v(args: &[&str]) -> Vec<String> {
@@ -692,9 +705,10 @@ mod tests {
 
     /// Every vendor these tests know of, registered or not. A law about the
     /// table is a law about the shape of a vendor, and the second one is where
-    /// it is proved that the shape is not claude's.
+    /// it is proved that the shape is not claude's — once as the vendor a verb
+    /// refuses a fork for, and once as one that branches by a subcommand.
     fn known() -> Vec<&'static Vendor> {
-        table().iter().chain([&SECOND]).collect()
+        table().iter().chain([&SECOND, &BRANCHING]).collect()
     }
 
     #[test]
@@ -792,28 +806,41 @@ mod tests {
         }
     }
 
+    /// Whether a vendor that prints its models says what to run for the
+    /// listing. The words go on the vendor's own program, and running one
+    /// costs a process. An empty argv would start the agent itself and sit in
+    /// front of a prompt. A printed listing's first word that is not a flag
+    /// would be a task handed to an agent nobody asked for; a JSON listing is
+    /// asked for by a subcommand, which is a word of its own.
+    fn says_what_to_run(models: Models) -> bool {
+        match models {
+            Models::Cycle => true,
+            Models::Printed(argv) => argv.first().is_some_and(|word| word.starts_with('-')),
+            Models::Json(argv) => !argv.is_empty(),
+        }
+    }
+
     #[test]
     fn a_vendor_that_prints_its_models_says_what_to_run_for_the_listing() {
-        // The words go on the vendor's own program, and running one costs a
-        // process. An empty argv would start the agent itself and sit in front
-        // of a prompt; a first word that is not a flag would be a task handed
-        // to an agent nobody asked for.
         for vendor in known() {
-            let Models::Printed(argv) = vendor.models else {
-                continue;
-            };
             assert!(
-                !argv.is_empty(),
-                "{} prints its models and names nothing to run",
-                vendor.name
-            );
-            assert!(
-                argv[0].starts_with('-'),
-                "{}'s listing opens with {}, which is no flag",
+                says_what_to_run(vendor.models),
+                "{} lists its models by {:?}",
                 vendor.name,
-                argv[0]
+                vendor.models
             );
         }
+    }
+
+    #[test]
+    fn the_law_takes_a_json_listing_by_subcommand_and_refuses_one_asking_nothing() {
+        assert!(says_what_to_run(Models::Json(&["debug", "models"])));
+        assert!(!says_what_to_run(Models::Json(&[])));
+        assert!(!says_what_to_run(Models::Printed(&[])));
+        assert!(
+            !says_what_to_run(Models::Printed(&["list"])),
+            "a printed listing still opens with a flag"
+        );
     }
 
     #[test]
@@ -1100,14 +1127,31 @@ mod tests {
                 );
             }
             if let Some(fork) = session.fork {
-                let (ForkSpec::Marker(flag) | ForkSpec::Origin(flag)) = fork;
                 assert!(
-                    flag.starts_with('-'),
-                    "{}'s fork flag is not one",
+                    spelled_as_its_shape(fork),
+                    "{}'s {fork:?} is not spelled the way its shape is read",
                     vendor.name
                 );
             }
         }
+    }
+
+    /// Whether a fork's word is spelled the way its shape is read back: a
+    /// marker or an origin is a flag, and a subcommand is a word that is not
+    /// one, since a word that begins with `-` is a flag wherever it stands.
+    fn spelled_as_its_shape(fork: ForkSpec) -> bool {
+        match fork {
+            ForkSpec::Marker(flag) | ForkSpec::Origin(flag) => flag.starts_with('-'),
+            ForkSpec::Subcommand(word) => !word.is_empty() && !word.starts_with('-'),
+        }
+    }
+
+    #[test]
+    fn the_law_takes_a_fork_subcommand_and_refuses_one_spelled_as_a_flag() {
+        assert!(spelled_as_its_shape(ForkSpec::Subcommand("fork")));
+        assert!(!spelled_as_its_shape(ForkSpec::Subcommand("--fork")));
+        assert!(!spelled_as_its_shape(ForkSpec::Subcommand("")));
+        assert!(!spelled_as_its_shape(ForkSpec::Marker("fork")));
     }
 
     #[test]
@@ -1190,6 +1234,19 @@ mod tests {
             None,
             "anywhere else it is a word like any other"
         );
+    }
+
+    #[test]
+    fn a_fork_subcommand_names_a_session_only_right_after_the_program() {
+        // A copy of a copy is recorded as `<prog> fork <id> ..`, and the next
+        // fork replaces that id rather than asking to branch twice. Anywhere
+        // else the word is a word like any other, and so is the resume word's
+        // absence of meaning to a vendor that forks by flag.
+        let spec = BRANCHING.session.unwrap();
+        assert_eq!(spec.names_a_session("fork", true), Some(true));
+        assert_eq!(spec.names_a_session("fork", false), None);
+        assert_eq!(spec.names_a_session("again", true), Some(true));
+        assert_eq!(SECOND.session.unwrap().names_a_session("fork", true), None);
     }
 
     #[test]

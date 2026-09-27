@@ -59,17 +59,21 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
         match format {
             Transcript::Claude => claude(entry, &mut said),
             Transcript::Pi => pi(entry, &mut said),
+            Transcript::Codex => {}
         }
     }
     said
 }
 
 /// The entries a reading walks, in order: every line of a claude transcript,
-/// and of a pi session the branch its last entry is on.
+/// of a pi session the branch its last entry is on, and of a codex rollout
+/// none yet.
 fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
     match format {
         Transcript::Claude => entries(jsonl).collect(),
         Transcript::Pi => branch(entries(jsonl).collect()),
+        // Nothing of a codex rollout is read yet, so a reading walks nothing.
+        Transcript::Codex => Vec::new(),
     }
 }
 
@@ -298,6 +302,7 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
                 + field("cache_read_input_tokens")
         }
         Transcript::Pi => field("input") + field("cacheRead") + field("cacheWrite"),
+        Transcript::Codex => 0,
     }
 }
 
@@ -326,7 +331,7 @@ pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, 
 /// pi keeps no title in its session file, and there is nothing to read.
 pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
     match format {
-        Transcript::Pi => None,
+        Transcript::Pi | Transcript::Codex => None,
         Transcript::Claude => entries(jsonl)
             .filter_map(|entry| {
                 let title = match entry["type"].as_str()? {
@@ -406,6 +411,7 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
                 _ => None,
             }
         }
+        Transcript::Codex => None,
     }
 }
 
@@ -1161,6 +1167,25 @@ mod tests {
             "a run of calls is one block"
         );
         assert_eq!(plain(&[]), "");
+    }
+
+    #[test]
+    fn a_codex_rollout_reads_as_nothing_said_yet() {
+        // The shape is named before it is read: a real rollout, a turn that
+        // ended with an answer in it, gives no reading at all rather than a
+        // wrong one.
+        let rollout = include_str!("../tests/codex/rollouts/turn-steer-abort-kill-resume.jsonl");
+        assert!(read(Transcript::Codex, rollout).is_empty());
+        assert_eq!(answer(Transcript::Codex, rollout), None);
+        assert_eq!(latest(Transcript::Codex, rollout), None);
+        assert_eq!(why_it_stopped(Transcript::Codex, rollout), None);
+        assert_eq!(usage_context(Transcript::Codex, rollout), None);
+        assert_eq!(session_title(Transcript::Codex, rollout), None);
+        assert!(synthetic_words(Transcript::Codex, rollout).is_empty());
+        assert_eq!(
+            context_and_last_words(Transcript::Codex, rollout),
+            (None, None)
+        );
     }
 
     #[test]

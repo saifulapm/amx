@@ -204,13 +204,17 @@ fn asked(config: &Config) -> impl Iterator<Item = &'static Vendor> {
 /// what somebody would run to read it.
 fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
     match vendor.models {
-        Models::Printed(argv) if config.harness(vendor.name).models.is_empty() => format!(
-            "{} takes {} models ({} {})",
-            vendor.name,
-            list.len(),
-            vendor.name,
-            argv.join(" ")
-        ),
+        Models::Printed(argv) | Models::Json(argv)
+            if config.harness(vendor.name).models.is_empty() =>
+        {
+            format!(
+                "{} takes {} models ({} {})",
+                vendor.name,
+                list.len(),
+                vendor.name,
+                argv.join(" ")
+            )
+        }
         _ => format!("{} takes {}", vendor.name, list.join(", ")),
     }
 }
@@ -1564,6 +1568,13 @@ mod tests {
         assert_eq!(
             takes(pi, &told, &models::models_of(pi, &told)),
             "pi takes openai/gpt-5"
+        );
+
+        // A vendor that prints its models as JSON is named the same way.
+        let json = crate::vendor::second::BRANCHING;
+        assert_eq!(
+            takes(&json, &Config::default(), &printed[..3]),
+            "second takes 3 models (second list models)"
         );
     }
 
