@@ -23,12 +23,13 @@
 //! The one law it will not break is `stop`'s: a tree holding work no commit
 //! has is never removed, and neither is the record that names it.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::derive::{self, View};
-use crate::store::Agent;
+use crate::store::{Agent, Meta};
+use crate::tmux::Server;
 use crate::verbs::{stop, sweep};
 use crate::{exit, paths, store, worktree};
 
@@ -133,18 +134,23 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     if sweep::why_landed(view).is_none() {
         return forget_row(root, view);
     }
-    if let Some(tree) = holding(view) {
+    // Asked again under the writer, which is then let go: the stop behind the
+    // sweep takes it for itself. What it would read is what was just asked.
+    let meta = {
+        let agent = Agent::open(root, view.id())?;
+        let _writer = agent.writer()?;
+        still_over(&agent)?
+    };
+    if let Some(tree) = holding(&meta) {
         return Ok(Taken::Holding(tree));
     }
-    sweep::take_landed(root, &view.meta, &mut std::io::sink())?;
+    sweep::take_landed(root, &meta, &mut std::io::sink())?;
     // The stop behind the sweep keeps a tree git would not remove, and the
     // record with it.
-    Ok(
-        match view.meta.worktree.as_ref().filter(|tree| tree.exists()) {
-            Some(tree) => Taken::Holding(tree.clone()),
-            None => Taken::Gone,
-        },
-    )
+    Ok(match meta.worktree.as_ref().filter(|tree| tree.exists()) {
+        Some(tree) => Taken::Holding(tree.clone()),
+        None => Taken::Gone,
+    })
 }
 
 /// Forget a row whose work went nowhere: its record, and the tree amx gave it.
@@ -152,13 +158,20 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
 /// A tree holding work no commit has keeps both. Its record is where the
 /// branch and the commit that tree was cut from are named, and a tree nothing
 /// names is work nobody will find again.
+///
+/// The writer is taken before anything is decided and held until the record
+/// is gone. The row was read before somebody said yes, and a resume in
+/// between takes the writer too: it either finished first and the record
+/// reads as running, or it waits and finds nothing to resume.
 pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
     let agent = Agent::open(root, view.id())?;
+    let _writer = agent.writer()?;
+    let meta = still_over(&agent)?;
 
-    if let Some(tree) = holding(view) {
+    if let Some(tree) = holding(&meta) {
         return Ok(Taken::Holding(tree));
     }
-    if let Some(tree) = &view.meta.worktree
+    if let Some(tree) = &meta.worktree
         && tree.exists()
     {
         let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
@@ -167,19 +180,36 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
         }
         // And its key in the vendor's store with it, the way `stop` takes it:
         // the caller has one line to say what happened to the whole list.
-        stop::forget(&view.meta, tree, &mut std::io::sink())?;
+        stop::forget(&meta, tree, &mut std::io::sink())?;
     }
 
     agent.remove()?;
     Ok(Taken::Gone)
 }
 
+/// The record as it is now, if it is still finished; asked under its writer.
+///
+/// A phase that is no longer terminal is an agent somebody brought back, and a
+/// pane that still answers for it is somebody's to read, whatever the phase
+/// says.
+fn still_over(agent: &Agent) -> Result<Meta> {
+    let meta = agent.meta()?;
+    let phase = agent.state()?.state;
+    if !phase.is_terminal() {
+        bail!("{} is {phase} now", meta.id);
+    }
+    if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
+        bail!("{}'s pane is still there", meta.id);
+    }
+    Ok(meta)
+}
+
 /// The tree this row will not give up, if it has one.
 ///
 /// A tree amx cannot read is read as dirty: the answer that keeps the work is
 /// the answer to give when git will not say.
-fn holding(view: &View) -> Option<PathBuf> {
-    let tree = view.meta.worktree.as_ref()?;
+fn holding(meta: &Meta) -> Option<PathBuf> {
+    let tree = meta.worktree.as_ref()?;
     (tree.exists() && worktree::is_dirty(tree).unwrap_or(true)).then(|| tree.clone())
 }
 
@@ -201,4 +231,157 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Phase, State};
+    use crate::tmux::{PaneId, Socket};
+    use std::io::Read;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    /// git as the tests run it: none of the developer's own configuration and
+    /// an identity of its own.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "amx tests")
+            .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "amx tests")
+            .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repository with one commit in it.
+    fn a_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        git(dir.path(), &["config", "user.name", "amx tests"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "tests@example.invalid"],
+        );
+        std::fs::write(dir.path().join("README.md"), "before\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-m", "first"]);
+        dir
+    }
+
+    /// An agent that has finished, in a clean tree of its own cut in `repo`.
+    /// With its branch named the branch is in the main line, so the row goes
+    /// the sweep's way; without, it is forgotten.
+    fn a_finished_agent(root: &Path, repo: &Path, id: &str, landed: bool) -> PathBuf {
+        let tree = worktree::create(repo, id, None).unwrap();
+        let agent = Agent::create(
+            root,
+            &Meta {
+                role: None,
+                parent: None,
+                depth: 0,
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: None,
+                model: None,
+                effort: None,
+                dir: repo.to_path_buf(),
+                worktree: Some(tree.path.clone()),
+                branch: landed.then(|| tree.branch.clone()),
+                base: Some(tree.base.clone()),
+                // A socket no tmux server on this machine answers on: nothing
+                // here has a pane, and nothing here may signal one that is
+                // somebody's.
+                socket: Socket::Name("amx-clear-tests".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+        )
+        .unwrap();
+        let state = State {
+            state: Phase::Done,
+            last_event: store::now(),
+            since: store::now(),
+            ..State::default()
+        };
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+        tree.path
+    }
+
+    /// Somebody at the prompt who, before typing yes, resumes these agents
+    /// from another shell.
+    struct ResumedFirst<'a> {
+        root: &'a Path,
+        ids: &'a [&'a str],
+        typed: &'a [u8],
+    }
+
+    impl Read for ResumedFirst<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            for id in std::mem::take(&mut self.ids) {
+                let agent = Agent::open(self.root, id).unwrap();
+                agent
+                    .writer()
+                    .unwrap()
+                    .update_state(|state| state.state = Phase::Starting)
+                    .unwrap();
+            }
+            self.typed.read(buf)
+        }
+    }
+
+    #[test]
+    fn clear_keeps_a_row_resumed_after_the_list_was_printed_and_its_tree() {
+        let repo = a_repo();
+        let root = TempDir::new().unwrap();
+        let forgotten = a_finished_agent(root.path(), repo.path(), "forgotten-a1b", false);
+        let landed = a_finished_agent(root.path(), repo.path(), "landed-c3d", true);
+        let left = a_finished_agent(root.path(), repo.path(), "left-e5f", false);
+
+        let mut input = std::io::BufReader::new(ResumedFirst {
+            root: root.path(),
+            ids: &["forgotten-a1b", "landed-c3d"],
+            typed: b"y\n",
+        });
+        let mut out = Vec::new();
+        run(root.path(), false, &mut input, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+
+        // All three were on the list, and were finished when it was read:
+        // one the sweep's way and two by their phase.
+        assert!(
+            out.contains("landed-c3d  amx/landed-c3d merged into main"),
+            "{out}"
+        );
+        for id in ["forgotten-a1b", "left-e5f"] {
+            assert!(out.contains(&format!("{id}  done")), "{out}");
+        }
+        // The two that came back keep their records and their trees, and
+        // stay running.
+        for (id, tree) in [("forgotten-a1b", &forgotten), ("landed-c3d", &landed)] {
+            assert!(tree.exists(), "{id}'s tree: {out}");
+            let agent = Agent::open(root.path(), id).expect("its record");
+            assert_eq!(agent.state().unwrap().state, Phase::Starting, "{id}");
+            assert!(out.contains(&format!("could not clear {id}")), "{out}");
+        }
+        // The one nobody touched went.
+        assert!(!left.exists(), "{out}");
+        assert_eq!(store::list(root.path()).unwrap().len(), 2);
+    }
 }
