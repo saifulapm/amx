@@ -525,7 +525,10 @@ mod tests {
         drop(writer);
 
         assert_eq!(park.join().expect("the verb"), exit::OK);
-        assert!(it.has_a_pane(), "it went back to work before park could act");
+        assert!(
+            it.has_a_pane(),
+            "it went back to work before park could act"
+        );
         assert_eq!(left(&it.agent), (0, Vec::new()));
     }
 }
