@@ -454,6 +454,27 @@ impl Server {
             .is_ok_and(|owners| owners.pane_answers_for(pane, id))
     }
 
+    /// The same question, for whoever is about to act on the answer.
+    ///
+    /// A server with nothing listening is an answer — nothing on it is
+    /// anybody's — but a tmux that failed some other way, or never ran, said
+    /// nothing about the pane at all. That is an error rather than a no: a
+    /// verb that read it as a gone pane would delete a live tree or start a
+    /// second pane beside the first.
+    pub fn answers_for_now(&self, pane: &PaneId, id: &str) -> Result<bool> {
+        Ok(self.owners_for_now()?.pane_answers_for(pane, id))
+    }
+
+    /// [`Server::pane_owners`], with nothing listening read as nobody's panes
+    /// and every other failure as a tmux that could not be asked.
+    pub fn owners_for_now(&self) -> Result<PaneOwners> {
+        match self.pane_owners() {
+            Ok(owners) => Ok(owners),
+            Err(e) if is_no_server(&e) => Ok(PaneOwners::default()),
+            Err(e) => Err(e.context("tmux could not be asked")),
+        }
+    }
+
     /// Read one format from a pane. A **value read**: an empty answer means
     /// the format was empty *or* the pane is gone, and this cannot tell you
     /// which. Ask [`Server::pane_alive`] for that.
@@ -938,6 +959,14 @@ fn is_no_server(err: &anyhow::Error) -> bool {
     said.contains("error connecting to")
         || said.contains("no server running")
         || said.contains("server exited")
+}
+
+/// A socket no tmux can be started against, for a test that wants a tmux that
+/// cannot be asked: the name carries a NUL, so the command fails before it
+/// runs, the way it does with no tmux on the path.
+#[cfg(test)]
+pub(crate) fn unaskable() -> Socket {
+    Socket::Name("amx\0unaskable".to_string())
 }
 
 /// Ask once more when the first answer was that nothing was listening.
@@ -1755,6 +1784,23 @@ mod tests {
         // The whole question, asked of the server in one call.
         assert!(server.pane_answers_for(&adopted, "port-importer-c3d"));
         assert!(!server.pane_answers_for(&adopted, "fix-login-a1b"));
+    }
+
+    #[test]
+    fn tmux_a_tmux_that_cannot_be_asked_is_not_an_answer() {
+        // A server that is not there is an answer: nothing on it is anybody's.
+        let gone = Server::named(format!("amx-no-such-server-{}", std::process::id()));
+        let pane = PaneId::new("%0").unwrap();
+        assert!(!gone.answers_for_now(&pane, "fix-login-a1b").unwrap());
+
+        // A tmux that never ran is not one: nobody said anything about the
+        // pane, and the reason goes to whoever asked.
+        let unasked = Server::from_socket(unaskable());
+        let why = unasked.answers_for_now(&pane, "fix-login-a1b").unwrap_err();
+        assert!(
+            format!("{why:#}").starts_with("tmux could not be asked: "),
+            "{why:#}"
+        );
     }
 
     #[test]
