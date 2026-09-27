@@ -1020,6 +1020,34 @@ mod tests {
         }
     }
 
+    /// Whether a vendor that claims a transcript has a way to say where it
+    /// is. The file is named on a hook payload and nowhere else, so a vendor
+    /// that reports nothing never puts one on a record, and a verb that asked
+    /// for it would be promised a file nobody can find.
+    fn finds_its_transcript(vendor: &Vendor) -> bool {
+        !vendor.can(Capability::Transcript) || vendor.can(Capability::Hooks)
+    }
+
+    #[test]
+    fn a_vendor_with_a_transcript_reports_through_hooks() {
+        for vendor in known() {
+            assert!(
+                finds_its_transcript(vendor),
+                "{} claims a transcript and has no hooks to name it",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_law_refuses_a_transcript_with_no_hooks() {
+        let vendor = Vendor {
+            capabilities: &[Capability::Transcript],
+            ..SECOND
+        };
+        assert!(!finds_its_transcript(&vendor));
+    }
+
     #[test]
     fn a_vendor_that_can_be_adopted_names_the_session_that_makes_it_possible() {
         // Taking over an agent amx did not start is finding, in the
