@@ -6,7 +6,7 @@
 //! the card the view opens over an agent, and `amx logs`. Both read it here,
 //! so neither can disagree with the other about what a line of it means.
 //!
-//! Two vendors keep one, in two shapes, and the shapes are the table's to
+//! Three vendors keep one, in three shapes, and the shapes are the table's to
 //! name — see [`Transcript`]. What this file knows is where in each the words
 //! are, and it keeps three kinds of them: what the person asked, what the
 //! agent said, and which tool it called with what. Everything else in the file
@@ -14,7 +14,7 @@
 //! compaction — is nobody's reading. A tool's result would drown the words
 //! around it, and thinking is the agent's own.
 //!
-//! Both files are one JSON document a line. pi's is a tree — entries carry an
+//! Every file is one JSON document a line. pi's is a tree — entries carry an
 //! `id` and a `parentId`, and a session can branch in place — and it is read
 //! here along the branch its last entry is on, which is the one pi itself
 //! shows on a reload — see [`branch`]. A line that is not JSON is skipped
@@ -59,21 +59,18 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
         match format {
             Transcript::Claude => claude(entry, &mut said),
             Transcript::Pi => pi(entry, &mut said),
-            Transcript::Codex => {}
+            Transcript::Codex => codex(entry, &mut said),
         }
     }
     said
 }
 
-/// The entries a reading walks, in order: every line of a claude transcript,
-/// of a pi session the branch its last entry is on, and of a codex rollout
-/// none yet.
+/// The entries a reading walks, in order: every line of a claude transcript
+/// or a codex rollout, and of a pi session the branch its last entry is on.
 fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
     match format {
-        Transcript::Claude => entries(jsonl).collect(),
+        Transcript::Claude | Transcript::Codex => entries(jsonl).collect(),
         Transcript::Pi => branch(entries(jsonl).collect()),
-        // Nothing of a codex rollout is read yet, so a reading walks nothing.
-        Transcript::Codex => Vec::new(),
     }
 }
 
@@ -126,6 +123,9 @@ fn branch(entries: Vec<Value>) -> Vec<Value> {
 /// so it answers with nothing instead. The vendor's bookkeeping lines are not
 /// the end of anything and are read past, and neither is a turn that never
 /// reached the vendor — see [`synthetic`].
+///
+/// codex writes where each turn ends, and its answer is read off that — see
+/// [`codex_answer`].
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
     last_answer(format, &spoken(format, jsonl))
 }
@@ -133,6 +133,9 @@ pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
 /// The answer at the end of a walk already read, which is what
 /// [`answer`] and [`context_and_last_words`] both ask of it.
 fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
+    if format == Transcript::Codex {
+        return codex_answer(entries);
+    }
     let last = entries
         .iter()
         .rev()
@@ -184,6 +187,9 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
 /// rather than guessed at.
 pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
     let entries = spoken(format, jsonl);
+    if format == Transcript::Codex {
+        return codex_why(&entries);
+    }
     let last = entries
         .iter()
         .rev()
@@ -282,11 +288,19 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
 /// real turn never sends 0 tokens, so the sum itself tells the two apart for
 /// either vendor, and a tail holding no turn that sent anything answers
 /// `None`.
+///
+/// codex keeps usage off its messages, in `token_count` events, and the
+/// `input_tokens` of their `last_token_usage` is the last request's whole
+/// input, the cached part of it included. A turn that never reached the model
+/// writes none.
 fn context_of(format: Transcript, entries: &[Value]) -> Option<u64> {
     entries
         .iter()
         .rev()
-        .filter(|entry| voice(format, entry) == Some(Voice::Assistant))
+        .filter(|entry| match format {
+            Transcript::Codex => codex_event(entry) == Some("token_count"),
+            _ => voice(format, entry) == Some(Voice::Assistant),
+        })
         .map(|entry| usage_sum(format, entry))
         .find(|total| *total > 0)
 }
@@ -302,7 +316,9 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
                 + field("cache_read_input_tokens")
         }
         Transcript::Pi => field("input") + field("cacheRead") + field("cacheWrite"),
-        Transcript::Codex => 0,
+        Transcript::Codex => entry["payload"]["info"]["last_token_usage"]["input_tokens"]
+            .as_u64()
+            .unwrap_or(0),
     }
 }
 
@@ -497,6 +513,127 @@ fn pi(entry: &Value, said: &mut Vec<Said>) {
             }
         }
         _ => {}
+    }
+}
+
+/// One codex rollout line, into what it said.
+///
+/// A prompt is read off codex's own record of what the person sent, never off
+/// the `user` messages it hands the model: those also carry the context codex
+/// writes in the person's voice — `<environment_context>`, a project's
+/// AGENTS.md — which nobody typed. codex keeps that record as an
+/// `item_completed` event whose item is a `UserMessage` on the paginated
+/// threads its TUI starts, and as a `user_message` event on legacy ones; a
+/// steered message is one of them like any other. Measured off codex 0.157.1
+/// on 2026-09-28, where every typed prompt had one and the injected context
+/// had none.
+///
+/// What the agent said and called is its `response_item`s: `output_text` of an
+/// assistant message, commentary and final answer alike, and a call as a
+/// `function_call` with JSON arguments or a `custom_tool_call` whose input is
+/// whatever the tool takes — for `exec`, a script, which names no argument
+/// worth a row.
+fn codex(entry: &Value, said: &mut Vec<Said>) {
+    let payload = &entry["payload"];
+    match codex_event(entry) {
+        Some("item_completed") if payload["item"]["type"] == "UserMessage" => {
+            let typed: Vec<&str> = payload["item"]["content"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect();
+            prompt(Some(&typed.join("\n")), said);
+        }
+        Some("user_message") => prompt(payload["message"].as_str(), said),
+        _ if entry["type"] != "response_item" => {}
+        _ => match payload["type"].as_str() {
+            Some("message") if payload["role"] == "assistant" => {
+                for block in payload["content"].as_array().into_iter().flatten() {
+                    if block["type"] == "output_text" {
+                        text(block["text"].as_str(), said);
+                    }
+                }
+            }
+            Some("function_call" | "custom_tool_call") => {
+                let input = payload["arguments"]
+                    .as_str()
+                    .or_else(|| payload["input"].as_str())
+                    .and_then(|input| serde_json::from_str(input).ok())
+                    .unwrap_or(Value::Null);
+                tool(payload["name"].as_str(), &input, said);
+            }
+            _ => {}
+        },
+    }
+}
+
+/// The type of a codex `event_msg` line, and `None` for any other line.
+fn codex_event(entry: &Value) -> Option<&str> {
+    match entry["type"] == "event_msg" {
+        true => entry["payload"]["type"].as_str(),
+        false => None,
+    }
+}
+
+/// The event that last opened or closed a turn in a rollout: `task_started`,
+/// `task_complete` or `turn_aborted`.
+///
+/// A turn whose last word is `task_started` is still running, and a pane
+/// killed under it leaves it so for good: codex writes nothing more for that
+/// turn, and a later resume does not either (docs/codex-screens.md).
+fn codex_turn_end(entries: &[Value]) -> Option<&Value> {
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            matches!(
+                codex_event(entry),
+                Some("task_started" | "task_complete" | "turn_aborted")
+            )
+        })
+        .map(|entry| &entry["payload"])
+}
+
+/// A codex turn's answer: the `last_agent_message` its `task_complete`
+/// carries. An Esc'd turn has no `task_complete` — even where it had written
+/// a final answer before the Esc landed — a turn that ended on a question
+/// carries a null one, and an errored one carries an `error` beside it.
+fn codex_answer(entries: &[Value]) -> Option<String> {
+    let end = codex_turn_end(entries)?;
+    if end["type"] != "task_complete" || !end["error"].is_null() {
+        return None;
+    }
+    let said = end["last_agent_message"].as_str()?.trim();
+    (!said.is_empty()).then(|| said.to_string())
+}
+
+/// Why a codex turn ended with nothing: aborted, with the reason codex gave
+/// (Esc is `interrupted`), or failed, with the provider's own message.
+///
+/// codex writes the error it got back as the message, and where that is the
+/// provider's JSON — measured with a model the account may not use — its
+/// `error.message` is the sentence, and the rest is wrapping.
+fn codex_why(entries: &[Value]) -> Option<String> {
+    let end = codex_turn_end(entries)?;
+    match end["type"].as_str()? {
+        "turn_aborted" => Some(match end["reason"].as_str() {
+            Some("interrupted") | None => "the turn was aborted".to_string(),
+            Some(other) => format!("the vendor stopped on `{other}`"),
+        }),
+        "task_complete" if !end["error"].is_null() => {
+            let written = end["error"]["message"].as_str();
+            let said = written
+                .and_then(|written| serde_json::from_str::<Value>(written).ok())
+                .and_then(|json| json["error"]["message"].as_str().map(str::to_string))
+                .or(written.map(str::to_string));
+            Some(match said {
+                Some(said) => format!("the provider failed: {}", one_line(&said)),
+                None => "the provider failed".to_string(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1169,23 +1306,172 @@ mod tests {
         assert_eq!(plain(&[]), "");
     }
 
+    /// Rollouts codex 0.157.1 wrote on 2026-09-28, copied out of a scratch
+    /// `CODEX_HOME` — see docs/codex-screens.md, "Rollouts".
+    const CODEX_TURNS: &str =
+        include_str!("../tests/codex/rollouts/turn-steer-abort-kill-resume.jsonl");
+    const CODEX_ABORTED: &str = include_str!("../tests/codex/rollouts/aborted-first-turn.jsonl");
+    const CODEX_APPROVAL: &str = include_str!("../tests/codex/rollouts/approval.jsonl");
+    const CODEX_ERROR: &str = include_str!("../tests/codex/rollouts/error.jsonl");
+    const CODEX_QUESTION: &str = include_str!("../tests/codex/rollouts/question.jsonl");
+
+    /// The first `lines` lines of a rollout: the file as it stood then.
+    fn codex_until(rollout: &str, lines: usize) -> String {
+        rollout.split_inclusive('\n').take(lines).collect()
+    }
+
     #[test]
-    fn a_codex_rollout_reads_as_nothing_said_yet() {
-        // The shape is named before it is read: a real rollout, a turn that
-        // ended with an answer in it, gives no reading at all rather than a
-        // wrong one.
-        let rollout = include_str!("../tests/codex/rollouts/turn-steer-abort-kill-resume.jsonl");
-        assert!(read(Transcript::Codex, rollout).is_empty());
-        assert_eq!(answer(Transcript::Codex, rollout), None);
-        assert_eq!(latest(Transcript::Codex, rollout), None);
-        assert_eq!(why_it_stopped(Transcript::Codex, rollout), None);
-        assert_eq!(usage_context(Transcript::Codex, rollout), None);
-        assert_eq!(session_title(Transcript::Codex, rollout), None);
-        assert!(synthetic_words(Transcript::Codex, rollout).is_empty());
+    fn conversation_reads_a_codex_rollout_in_order() {
+        // Every prompt the person typed, the steered one among them, and
+        // none of codex's own context: the `<environment_context>` it writes
+        // in the person's voice, the developer instructions, the
+        // `<turn_aborted>` note. What the agent said is its commentary and
+        // its final answers; reasoning and a call's output are nobody's.
         assert_eq!(
-            context_and_last_words(Transcript::Codex, rollout),
-            (None, None)
+            read(Transcript::Codex, CODEX_TURNS),
+            vec![
+                Said::Prompt(
+                    "Run this shell command and reply with its output only: sleep 45; echo \"$CODEX_SESSION_ID $CODEX_THREAD_ID\"".to_string()
+                ),
+                tool("exec", None),
+                Said::Prompt("Also end your reply with the word steered.".to_string()),
+                tool("exec", None),
+                Said::Text(
+                    "01a0e495-b6aa-7022-ba93-84d2107c2d0e 01a0e495-b6aa-7022-ba93-84d2107c2d0e steered".to_string()
+                ),
+                Said::Prompt("Run this shell command: sleep 60".to_string()),
+                Said::Text("Running it now.".to_string()),
+                tool("exec", None),
+                Said::Prompt("Run this shell command: sleep 30".to_string()),
+                tool("exec", None),
+                Said::Prompt("Reply with the single word pong.".to_string()),
+                Said::Text("pong".to_string()),
+            ]
         );
+        assert_eq!(
+            read(Transcript::Codex, CODEX_QUESTION),
+            vec![
+                Said::Prompt(
+                    "Use the request_user_input tool to ask me one question: tea or coffee, with those two options. Do nothing else.".to_string()
+                ),
+                tool("request_user_input", None),
+            ],
+            "and the empty final answer after the question is nothing said"
+        );
+    }
+
+    #[test]
+    fn conversation_answers_a_codex_turn_with_its_last_agent_message() {
+        assert_eq!(
+            answer(Transcript::Codex, CODEX_TURNS).as_deref(),
+            Some("pong")
+        );
+        assert_eq!(
+            answer(Transcript::Codex, CODEX_APPROVAL).as_deref(),
+            Some("Created `hello.txt` successfully.")
+        );
+        assert_eq!(
+            answer(Transcript::Codex, &codex_until(CODEX_TURNS, 26)).as_deref(),
+            Some(
+                "01a0e495-b6aa-7022-ba93-84d2107c2d0e 01a0e495-b6aa-7022-ba93-84d2107c2d0e steered"
+            ),
+            "the first turn, as the file stood when it completed"
+        );
+
+        // A question turn completes with no last message, an errored one
+        // with an error, and an Esc'd one with `turn_aborted` -- even where
+        // the agent had written a final answer before the Esc landed.
+        assert_eq!(answer(Transcript::Codex, CODEX_QUESTION), None);
+        assert_eq!(answer(Transcript::Codex, CODEX_ERROR), None);
+        assert_eq!(answer(Transcript::Codex, CODEX_ABORTED), None);
+        assert_eq!(
+            answer(Transcript::Codex, &codex_until(CODEX_TURNS, 41)),
+            None
+        );
+
+        // A turn that has started and not ended is still running: one just
+        // started after a turn that did answer, and one whose pane was killed
+        // mid-call, which leaves it open in the file for good.
+        assert_eq!(
+            answer(Transcript::Codex, &codex_until(CODEX_TURNS, 28)),
+            None
+        );
+        assert_eq!(
+            answer(Transcript::Codex, &codex_until(CODEX_TURNS, 50)),
+            None
+        );
+    }
+
+    #[test]
+    fn conversation_says_why_a_codex_turn_ended_with_nothing() {
+        assert_eq!(
+            why_it_stopped(Transcript::Codex, CODEX_ABORTED).as_deref(),
+            Some("the turn was aborted")
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Codex, &codex_until(CODEX_TURNS, 41)).as_deref(),
+            Some("the turn was aborted")
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Codex, CODEX_ERROR).as_deref(),
+            Some(
+                "the provider failed: The 'no-such-model-xyz' model is not supported when using Codex with a ChatGPT account."
+            ),
+            "the provider's own message, out of the JSON codex wraps it in"
+        );
+        assert_eq!(why_it_stopped(Transcript::Codex, CODEX_TURNS), None);
+        assert_eq!(why_it_stopped(Transcript::Codex, CODEX_QUESTION), None);
+        assert_eq!(
+            why_it_stopped(Transcript::Codex, &codex_until(CODEX_TURNS, 50)),
+            None,
+            "a killed pane's turn never ended, as far as the file says"
+        );
+    }
+
+    #[test]
+    fn conversation_latest_and_context_of_a_codex_rollout() {
+        assert_eq!(
+            latest(Transcript::Codex, CODEX_TURNS).as_deref(),
+            Some("pong")
+        );
+        assert_eq!(
+            latest(Transcript::Codex, CODEX_QUESTION).as_deref(),
+            Some("request_user_input")
+        );
+        assert_eq!(
+            latest(Transcript::Codex, &codex_until(CODEX_TURNS, 50)).as_deref(),
+            Some("exec"),
+            "the call the killed pane was in"
+        );
+        assert_eq!(latest(Transcript::Codex, CODEX_ERROR), None);
+
+        // The input side of the last token_count: the last request's.
+        assert_eq!(usage_context(Transcript::Codex, CODEX_TURNS), Some(14066));
+        assert_eq!(
+            usage_context(Transcript::Codex, CODEX_APPROVAL),
+            Some(13572)
+        );
+        assert_eq!(
+            usage_context(Transcript::Codex, CODEX_QUESTION),
+            Some(13542)
+        );
+        assert_eq!(usage_context(Transcript::Codex, CODEX_ABORTED), Some(13433));
+        assert_eq!(
+            usage_context(Transcript::Codex, &codex_until(CODEX_TURNS, 50)),
+            Some(13832)
+        );
+        assert_eq!(
+            usage_context(Transcript::Codex, CODEX_ERROR),
+            None,
+            "a turn that never reached the model counted nothing"
+        );
+        assert_eq!(
+            context_and_last_words(Transcript::Codex, CODEX_TURNS),
+            (Some(14066), Some("pong".to_string()))
+        );
+
+        assert_eq!(session_title(Transcript::Codex, CODEX_TURNS), None);
+        assert!(synthetic_words(Transcript::Codex, CODEX_TURNS).is_empty());
     }
 
     #[test]
