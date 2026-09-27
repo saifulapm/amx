@@ -538,8 +538,12 @@ pub struct Catalog {
     /// runs it: writing that is the line's business. Empty from a vendor
     /// whose own list amx has not measured.
     pub builtins: &'static [&'static str],
-    /// What stands in front of a skill's name in the word that runs one: pi
-    /// spells a skill `/skill:name`, and claude spells it `/name`.
+    /// The character that opens a word out of this catalog, and what a line
+    /// opens suggestions on: `/` for claude and pi, `$` for codex.
+    pub sigil: char,
+    /// What stands after the [`sigil`](Self::sigil) in front of a skill's
+    /// name in the word that runs one: pi spells a skill `/skill:name`, and
+    /// claude spells it `/name`.
     pub skill_prefix: &'static str,
 }
 
@@ -1458,12 +1462,12 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_pi_say_what_they_can_be_asked_for_by_name() {
+    fn every_vendor_in_the_table_says_what_it_can_be_asked_for_by_name() {
         // A word typed on a task line is completed out of the vendor's own
         // files, and a vendor with no catalog is one with nowhere to look.
-        // claude's and pi's layouts have been measured; codex's is plan
-        // codex-lands t8's, and the fixture's nobody's.
-        for vendor in [&claude::VENDOR, &pi::VENDOR] {
+        // Every layout in the table has been measured; the fixture's is
+        // nobody's.
+        for vendor in table() {
             assert!(
                 vendor.catalog.is_some(),
                 "{} says nothing it can be asked for by name",
@@ -1505,7 +1509,7 @@ mod tests {
             for builtin in catalog.builtins {
                 assert!(!builtin.is_empty(), "{} names nothing", vendor.name);
                 assert!(
-                    !builtin.starts_with('/'),
+                    !builtin.starts_with(catalog.sigil),
                     "{} spells {builtin} with the mark that runs it",
                     vendor.name
                 );

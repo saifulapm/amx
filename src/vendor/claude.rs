@@ -175,6 +175,7 @@ pub const VENDOR: Vendor = Vendor {
             "verify",
             "workflow-authoring",
         ],
+        sigil: '/',
         skill_prefix: "",
     }),
     // claude reads its last word as the prompt whatever it opens with.
@@ -519,6 +520,7 @@ mod tests {
             Some("--agent"),
             "and it can be told to run a session as one of them"
         );
+        assert_eq!(catalog.sigil, '/', "claude opens every word with a slash");
         assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
         // And the twenty words claude's own agent view dispatches as a first
         // prompt — the bundled skills and the prompt-expanding built-ins —

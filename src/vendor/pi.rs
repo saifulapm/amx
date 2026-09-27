@@ -177,6 +177,7 @@ pub const VENDOR: Vendor = Vendor {
             "changelog",
             "quit",
         ],
+        sigil: '/',
         skill_prefix: "skill:",
     }),
     // pi reads a message word opening with `-` as a flag until `--`
@@ -517,6 +518,7 @@ mod tests {
             catalog.agent_flag, None,
             "and there is no agent for a line to ask pi to be"
         );
+        assert_eq!(catalog.sigil, '/', "pi opens every word with a slash");
         assert_eq!(
             catalog.skill_prefix, "skill:",
             "pi runs a skill as /skill:name, which claude does not"

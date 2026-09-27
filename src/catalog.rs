@@ -66,7 +66,7 @@ pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     for place in catalog.skills {
         for found in expand(place, home, project) {
-            skills(&found, catalog.skill_prefix, &mut entries);
+            skills(&found, catalog, &mut entries);
         }
     }
     for (places, kind) in [
@@ -80,6 +80,7 @@ pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
                     found.plugin.as_deref(),
                     &mut Vec::new(),
                     kind,
+                    catalog.sigil,
                     &mut entries,
                 );
             }
@@ -87,7 +88,7 @@ pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
     }
     for builtin in catalog.builtins {
         entries.push(Entry {
-            spelled: format!("/{builtin}"),
+            spelled: format!("{}{builtin}", catalog.sigil),
             kind: Kind::Builtin,
             about: String::new(),
         });
@@ -166,15 +167,16 @@ fn plugin(matched: &[String]) -> Option<String> {
 /// A directory with no such file is not a skill, and neither is a stray file
 /// in among them, which is the same answer as a file that will not read: the
 /// place is somebody else's, and what amx cannot read there it does not offer.
-fn skills(found: &Found, prefix: &str, into: &mut Vec<Entry>) {
+fn skills(found: &Found, catalog: &Catalog, into: &mut Vec<Entry>) {
+    let (sigil, prefix) = (catalog.sigil, catalog.skill_prefix);
     for dir in contents(&found.dir) {
         let (Some(name), Some(about)) = (named(&dir), about(&dir.join(SKILL))) else {
             continue;
         };
         into.push(Entry {
             spelled: match &found.plugin {
-                Some(plugin) => format!("/{plugin}:{name}"),
-                None => format!("/{prefix}{name}"),
+                Some(plugin) => format!("{sigil}{plugin}:{name}"),
+                None => format!("{sigil}{prefix}{name}"),
             },
             kind: Kind::Skill,
             about,
@@ -189,13 +191,14 @@ fn walk(
     plugin: Option<&str>,
     under: &mut Vec<String>,
     kind: Kind,
+    sigil: char,
     into: &mut Vec<Entry>,
 ) {
     for path in contents(dir) {
         let Some(name) = named(&path) else { continue };
         if path.is_dir() {
             under.push(name.to_string());
-            walk(&path, plugin, under, kind, into);
+            walk(&path, plugin, under, kind, sigil, into);
             under.pop();
             continue;
         }
@@ -207,7 +210,7 @@ fn walk(
             continue;
         };
         into.push(Entry {
-            spelled: spell(kind, plugin, under, stem),
+            spelled: spell(kind, sigil, plugin, under, stem),
             kind,
             about,
         });
@@ -215,7 +218,7 @@ fn walk(
 }
 
 /// The word a file in one of these places is asked for by.
-fn spell(kind: Kind, plugin: Option<&str>, under: &[String], name: &str) -> String {
+fn spell(kind: Kind, sigil: char, plugin: Option<&str>, under: &[String], name: &str) -> String {
     match kind {
         // An agent is named by itself: the agents places measured hold no
         // plugins and no directories to qualify one with.
@@ -227,7 +230,7 @@ fn spell(kind: Kind, plugin: Option<&str>, under: &[String], name: &str) -> Stri
             let mut words: Vec<&str> = plugin.into_iter().collect();
             words.extend(under.iter().map(String::as_str));
             words.push(name);
-            format!("/{}", words.join(":"))
+            format!("{sigil}{}", words.join(":"))
         }
     }
 }
@@ -294,7 +297,7 @@ fn unquoted(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::{claude, pi};
+    use crate::vendor::{claude, codex, pi};
     use tempfile::TempDir;
 
     #[test]
@@ -445,6 +448,55 @@ mod tests {
             "",
             "a builtin is in no file to read one from"
         );
+    }
+
+    #[test]
+    fn codex_spells_a_skill_behind_its_own_sigil_out_of_four_places() {
+        // codex runs a skill as `$name`, out of two places under the person's
+        // home and two under the project, and has nothing else to be asked
+        // for by name. A skill nested a directory deeper is one codex finds
+        // and this reading does not, the same one level deep as claude's and
+        // pi's.
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+
+        file(
+            &home.path().join(".agents/skills/desktop/SKILL.md"),
+            "Drive the screen.",
+        );
+        file(
+            &home.path().join(".codex/skills/mem/SKILL.md"),
+            "Keep what was decided.",
+        );
+        file(
+            &project.path().join(".codex/skills/deploy/SKILL.md"),
+            "Push it out.",
+        );
+        file(
+            &project.path().join(".agents/skills/scout/SKILL.md"),
+            "Go and look.",
+        );
+        file(
+            &project.path().join(".agents/skills/tools/lint/SKILL.md"),
+            "Nested a level down.",
+        );
+        file(
+            &home.path().join(".claude/skills/review/SKILL.md"),
+            "claude's.",
+        );
+
+        let entries = listing(
+            &codex::VENDOR.catalog.expect("codex loads skills by name"),
+            home.path(),
+            project.path(),
+        );
+        assert_eq!(
+            spellings(&entries),
+            ["$deploy", "$desktop", "$mem", "$scout"],
+            "a bare name behind `$`, and nothing out of another vendor's places"
+        );
+        assert!(entries.iter().all(|entry| entry.kind == Kind::Skill));
+        assert_eq!(found(&entries, "$mem").about, "Keep what was decided.");
     }
 
     #[test]

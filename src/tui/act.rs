@@ -1122,8 +1122,9 @@ fn asked_of(config: &Config, line: &str) -> String {
 /// there are entries for, `m:` and `p:` by the cycle the vendor declares, `w:`
 /// by amx's two words, `on:` by the branches the checkout has, and `d:` by the
 /// directories a path names. The marks past
-/// them are the vendor's own: `/` runs a skill, a command or something the
-/// vendor answers out of itself, and `@` names one of its agents. And a word
+/// them are the vendor's own: its sigil — `/`, or codex's `$` — runs a skill,
+/// a command or something the vendor answers out of itself, and `@` names one
+/// of its agents. And a word
 /// naming none of those is the third kind — a path, which is the other thing
 /// the mark a vendor reads a file by is for.
 ///
@@ -1170,13 +1171,18 @@ fn answering(
         }
     }
 
+    // The vendor's own sigil opens its skills, commands and built-ins: `/`
+    // for claude and pi, `$` for codex, where `/` asks the catalog nothing.
+    let sigil = registry::entry(&agent)
+        .and_then(|vendor| vendor.catalog)
+        .map(|catalog| catalog.sigil);
     let kinds: &[catalog::Kind] = match typed.chars().next() {
-        Some('/') => &[
+        Some('@') => &[catalog::Kind::Agent],
+        first if first.is_some() && first == sigil => &[
             catalog::Kind::Skill,
             catalog::Kind::Command,
             catalog::Kind::Builtin,
         ],
-        Some('@') => &[catalog::Kind::Agent],
         _ => return Vec::new(),
     };
     let listed = composer.catalog(&agent, project, || catalogued(&agent, project));
@@ -3864,6 +3870,39 @@ mod tests {
     /// The words a reading holds, in the order it holds them.
     fn offered_by(entries: &[Entry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.spelled.as_str()).collect()
+    }
+
+    #[test]
+    fn composer_opens_a_codex_lines_suggestions_on_its_own_sigil() {
+        // codex runs a skill as `$name`, and a `/` there runs none: the line
+        // opens the catalog on the vendor's sigil and on nothing else. A
+        // reading put into the line by hand, so the disk is not what this is
+        // about.
+        let as_codex = Config {
+            agent: "codex".to_string(),
+            ..Config::default()
+        };
+        let mut line = Composer::new(Asking::Task);
+        *line.listed.borrow_mut() = Some(Listed {
+            agent: "codex".to_string(),
+            project: a_project().to_path_buf(),
+            entries: vec![worded("$deploy".to_string())],
+        });
+        line.insert("$de");
+        let found = suggest(&line, &as_codex, a_project(), &[]).expect("the skill");
+        assert_eq!(offered(&found), ["$deploy"]);
+
+        let mut line = Composer::new(Asking::Task);
+        *line.listed.borrow_mut() = Some(Listed {
+            agent: "codex".to_string(),
+            project: a_project().to_path_buf(),
+            entries: vec![worded("/deploy".to_string())],
+        });
+        line.insert("/de");
+        assert!(
+            suggest(&line, &as_codex, a_project(), &[]).is_none(),
+            "a slash on a codex line asks its catalog for nothing"
+        );
     }
 
     #[test]

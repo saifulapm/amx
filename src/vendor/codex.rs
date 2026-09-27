@@ -7,8 +7,8 @@
 //! choose, and a renamed flag turns a dial into a spawn that fails.
 
 use super::{
-    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Resume, SessionSpec,
-    Transcript, Vendor, Wire, Wiring,
+    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
+    SessionSpec, Transcript, Vendor, Wire, Wiring,
 };
 
 /// codex's entry in the table.
@@ -123,10 +123,38 @@ pub const VENDOR: Vendor = Vendor {
     // hook payload as `transcript_path`. Measured off 0.157.1's rollouts on
     // 2026-09-28 (tests/codex/rollouts).
     transcript: Some(Transcript::Codex),
-    // Not measured in this entry's shape yet: codex runs a skill as `$name`
-    // rather than behind a `/`, and a catalog that says so is plan codex-lands
-    // t8's. Until then a line for codex offers nothing.
-    catalog: None,
+    // codex runs a skill as a bare `$name` anywhere in a message
+    // (skills/src/mentions.rs:41), so its sigil is `$` and nothing follows it
+    // but the name; `/name` runs no skill. The four skill places are the
+    // person's and the project's of the roots ext/skills/src/host_roots.rs
+    // reads (:86-108, 137-185): `~/.agents/skills`, `$CODEX_HOME/skills`
+    // (taken as `~/.codex/skills`), and the project's `.codex/skills` and
+    // `.agents/skills`, which codex reads in every directory from the project
+    // root down to where it runs and amx only where it runs. Custom prompts are gone, so no
+    // commands; roles are TOML the model spawns by `agent_type`, with no CLI
+    // flag, so no agents; and a slash command typed as the first prompt is
+    // sent as words rather than run, so no built-ins. Measured at 0.157.1 on
+    // 2026-09-28.
+    //
+    // codex finds a SKILL.md anywhere to depth 6 under a place
+    // (ext/skills/src/loader/mod.rs:31) and names it by its frontmatter
+    // `name`; `crate::catalog` reads one directory deep and names a skill by
+    // its directory, as it does for claude and pi, so a skill nested deeper
+    // or named apart from its directory is not offered.
+    catalog: Some(Catalog {
+        skills: &[
+            Place::Person(".agents/skills"),
+            Place::Person(".codex/skills"),
+            Place::Project(".codex/skills"),
+            Place::Project(".agents/skills"),
+        ],
+        commands: &[],
+        agents: &[],
+        agent_flag: None,
+        builtins: &[],
+        sigil: '$',
+        skill_prefix: "",
+    }),
     // clap reads a message word opening with `-` as a flag, and one that is a
     // subcommand's name as that subcommand (cli/src/main.rs:125-140), until
     // `--`. Measured on 0.157.1 on 2026-09-28: `codex --no-daemon -- resume`
@@ -369,7 +397,28 @@ mod tests {
         assert!(!VENDOR.can(Capability::Trust), "Ruling 7");
         assert_eq!(VENDOR.hooks, Some(HOOKS));
         assert_eq!(VENDOR.transcript, Some(Transcript::Codex));
-        assert_eq!(VENDOR.catalog, None, "t8 measures codex's catalog");
+    }
+
+    #[test]
+    fn codex_runs_a_skill_as_dollar_name_out_of_four_places() {
+        assert_eq!(
+            VENDOR.catalog,
+            Some(Catalog {
+                skills: &[
+                    Place::Person(".agents/skills"),
+                    Place::Person(".codex/skills"),
+                    Place::Project(".codex/skills"),
+                    Place::Project(".agents/skills"),
+                ],
+                commands: &[],
+                agents: &[],
+                agent_flag: None,
+                builtins: &[],
+                sigil: '$',
+                skill_prefix: "",
+            }),
+            "Ruling 9: `$` opens a codex word, and a bare name follows it"
+        );
     }
 
     #[test]
