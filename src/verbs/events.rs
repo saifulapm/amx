@@ -22,6 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::store::{Agent, Event};
+use crate::vendor::{Hooks, Moment};
 use crate::verbs::send::SEND;
 use crate::{exit, paths, store};
 
@@ -62,7 +63,7 @@ pub fn run(
         for (id, event) in batch {
             let printed = match as_json {
                 true => json(&id, &event),
-                false => line(&id, &event, tails.widest),
+                false => line(&id, tails.hooks(&id), &event, tails.widest),
             };
             // A reader that walked away — `amx events | head` — ends the
             // stream, and that is nobody's failure to report.
@@ -85,6 +86,9 @@ struct Tails {
     /// It only ever grows: a stream whose columns moved back and forth as
     /// agents came and went would be harder to read than a ragged one.
     widest: usize,
+    /// The words each agent's vendor reports in, read once per agent: a
+    /// record's vendor is written at spawn and never moves.
+    vendors: BTreeMap<String, Option<Hooks>>,
 }
 
 impl Tails {
@@ -96,6 +100,14 @@ impl Tails {
             let Ok(agent) = Agent::open(root, &id) else {
                 continue; // deleted since the last look
             };
+            self.vendors.entry(id.clone()).or_insert_with(|| {
+                let meta = agent.meta().ok();
+                crate::vendor::hooks_for(
+                    meta.and_then(|meta| meta.agent)
+                        .as_deref()
+                        .unwrap_or_default(),
+                )
+            });
             let read = self.read.entry(id.clone()).or_default();
             let Some((fresh, next)) = grown(&agent.events_path(), *read) else {
                 continue; // no log yet, or nothing whole to read
@@ -115,6 +127,11 @@ impl Tails {
         // only order any of it means anything in.
         batch.sort_by_key(|(_, event)| event.at);
         batch
+    }
+
+    /// The words `id`'s vendor reports in, where it reports at all.
+    fn hooks(&self, id: &str) -> Option<&Hooks> {
+        self.vendors.get(id).and_then(Option::as_ref)
     }
 }
 
@@ -177,13 +194,13 @@ fn json(id: &str, event: &Event) -> String {
 }
 
 /// One event as a person reads it: when, whose, what, and the one thing worth
-/// knowing about it.
-fn line(id: &str, event: &Event, widest: usize) -> String {
+/// knowing about it, read in the words of `hooks`, the agent's own vendor's.
+fn line(id: &str, hooks: Option<&Hooks>, event: &Event, widest: usize) -> String {
     format!(
         "{}  {id:<widest$}  {:<KIND$}  {}",
         clock(event.at),
         inert(&event.kind),
-        detail(event)
+        detail(hooks, event)
     )
     .trim_end()
     .to_string()
@@ -202,22 +219,25 @@ fn clock(at: u64) -> String {
 /// The one thing worth knowing about an event, in a phrase.
 ///
 /// Every kind keeps what it is about somewhere different, and a payload amx has
-/// no phrase for shows nothing rather than a page of JSON.
-fn detail(event: &Event) -> String {
+/// no phrase for shows nothing rather than a page of JSON. amx's own kinds are
+/// its own words; the rest are the vendor's, and mean what `hooks` says.
+fn detail(hooks: Option<&Hooks>, event: &Event) -> String {
     let payload = &event.payload;
     let about = match event.kind.as_str() {
-        "SessionStart" => text(&payload["source"]),
-        "UserPromptSubmit" => text(&payload["prompt"]),
-        "PreToolUse" => text(&payload["tool_name"]),
-        "Notification" => text(&payload["message"]),
-        "Stop" => text(&payload["last_assistant_message"]),
         SEND => text(&payload["text"]),
         "answer" => text(&payload["key"]),
         "exit" => match payload["code"].as_i64() {
             Some(code) => format!("code {code}"),
             None => String::new(),
         },
-        _ => String::new(),
+        kind => match hooks.and_then(|hooks| hooks.moment(kind)) {
+            Some(Moment::Started) => text(&payload["source"]),
+            Some(Moment::Prompted) => text(&payload["prompt"]),
+            Some(Moment::Calling) => text(&payload["tool_name"]),
+            Some(Moment::Notified) => text(&payload["message"]),
+            Some(Moment::Ended) => text(&payload["last_assistant_message"]),
+            _ => String::new(),
+        },
     };
 
     // The vendor raises the same events for a subagent's work, and amx's own
@@ -305,6 +325,7 @@ mod tests {
     fn shown(kind: &str, payload: Value) -> String {
         line(
             "fix-login-a1b",
+            crate::vendor::hooks_for("").as_ref(),
             &Event {
                 at: 1,
                 kind: kind.to_string(),
@@ -337,7 +358,8 @@ mod tests {
 
     #[test]
     fn events_every_kind_shows_the_one_thing_it_is_about() {
-        let about = |kind, payload| detail(&Event::new(kind, payload));
+        let claude = crate::vendor::hooks_for("");
+        let about = |kind, payload| detail(claude.as_ref(), &Event::new(kind, payload));
         assert_eq!(
             about("SessionStart", json!({ "source": "resume" })),
             "resume"
@@ -372,11 +394,45 @@ mod tests {
     }
 
     #[test]
+    fn events_a_pi_row_shows_the_one_thing_it_is_about() {
+        // pi reports under its own event names, and a row is read in the
+        // words of the vendor the record names.
+        let pi = crate::vendor::hooks_for("pi");
+        let about = |kind, payload| detail(pi.as_ref(), &Event::new(kind, payload));
+        assert_eq!(
+            about("tool_execution_start", json!({ "tool_name": "bash" })),
+            "bash"
+        );
+        assert_eq!(
+            about(
+                "ui_prompt_start",
+                json!({ "kind": "confirm", "message": "Trust this folder?" })
+            ),
+            "Trust this folder?"
+        );
+        assert_eq!(
+            about(
+                "agent_settled",
+                json!({ "last_assistant_message": "the tests pass" })
+            ),
+            "the tests pass"
+        );
+        assert_eq!(
+            about("Stop", json!({ "last_assistant_message": "done" })),
+            "",
+            "claude's word is nothing to a pi"
+        );
+    }
+
+    #[test]
     fn events_a_subagents_event_says_whose_it_is() {
-        let about = detail(&Event::new(
-            "Stop",
-            json!({ "agent_id": "sub-1", "last_assistant_message": "the linter is clean" }),
-        ));
+        let about = detail(
+            crate::vendor::hooks_for("").as_ref(),
+            &Event::new(
+                "Stop",
+                json!({ "agent_id": "sub-1", "last_assistant_message": "the linter is clean" }),
+            ),
+        );
         assert_eq!(about, "subagent the linter is clean");
     }
 
@@ -488,7 +544,7 @@ mod tests {
         let drawn: Vec<String> = tails
             .appended(root.path(), &[])
             .iter()
-            .map(|(id, event)| line(id, event, tails.widest))
+            .map(|(id, event)| line(id, tails.hooks(id), event, tails.widest))
             .collect();
         assert_eq!(tails.widest, "port-importer-c3d".len());
         assert_eq!(
