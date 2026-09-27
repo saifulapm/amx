@@ -1699,11 +1699,21 @@ const RESUME: &str = "resume";
 /// And on one past listening, which is the whole of what would come of it.
 const NOBODY: &str = "nothing is listening";
 
-/// How many rows text takes when it is wrapped to a width.
+/// How many rows text takes when it is wrapped to a width, measured in cells:
+/// a wide character is one char and two columns, and a character that does
+/// not fit in what is left of a row starts the next one.
 fn wrapped(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
-    let rows = text.chars().count().div_ceil(width);
-    rows.clamp(1, u16::MAX as usize) as u16
+    let (mut rows, mut used) = (1usize, 0);
+    for one in text.chars() {
+        let wide = width_of(one.encode_utf8(&mut [0; 4]));
+        if used > 0 && used + wide > width {
+            rows += 1;
+            used = 0;
+        }
+        used += wide;
+    }
+    rows.min(u16::MAX as usize) as u16
 }
 
 /// Which rows of a screen the card shows: the last of the `end` rows the body
@@ -3667,6 +3677,20 @@ index e69de29..0000000
             0,
             "a question block does not page"
         );
+    }
+
+    #[test]
+    fn wide_text_in_a_question_gets_every_row_it_needs() {
+        // Forty-two characters two cells each: fewer chars than the card is
+        // wide, and more cells than one row of it holds.
+        let question = format!("{}終わり", "日本語".repeat(13));
+        let mut card = asking(&["1. Yes", "2. No"], None);
+        card.question = Some(question.clone());
+
+        let screen = painted(&showing(a_fleet(), Some(card)), (60, 30));
+        // A wide character's second cell reads back as a space.
+        let all: String = screen.concat().replace(' ', "");
+        assert!(all.contains(&question), "{screen:#?}");
     }
 
     /// A capture with the vendor's paint on it, which is what costs something
