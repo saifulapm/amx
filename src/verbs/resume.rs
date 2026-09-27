@@ -402,7 +402,10 @@ fn bring_back(
 /// and a follow-up turn is not a new piece of work.
 fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handoff {
     let mut command = continuing(recorded, session);
-    command.extend(message.map(str::to_string));
+    if let Some(message) = message {
+        command.extend(spawn::ends_options_of(recorded).map(str::to_string));
+        command.push(message.to_string());
+    }
     Handoff {
         task: message.unwrap_or(&recorded.task).to_string(),
         command,
@@ -442,6 +445,11 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
         // empty task is a suffix of everything and names nothing.
         if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&handoff.task) {
             break;
+        }
+        // The word `new` put in front of the task goes with it, or the
+        // vendor would read everything written after it as a message.
+        if words.len() == 1 && Some(word.as_str()) == spawn::ends_options_of(handoff) {
+            continue;
         }
         // Where `word` stood in the recorded command: a subcommand is one
         // only right after the program.
@@ -864,6 +872,27 @@ mod tests {
         // A command amx has no entry for is started again as it always was.
         spawn::write_handoff(dir.path(), &handoff(&["mock-claude", "go"], "go")).unwrap();
         assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
+    }
+
+    #[test]
+    fn resume_ends_pis_options_before_a_message_and_drops_the_old_end() {
+        // A task `new` handed pi rides behind `--`, which goes with it; a
+        // message goes behind a `--` of its own, so one opening with `@` is
+        // words rather than a file.
+        let started = handoff(
+            &["pi", "--session-id", "abc-123", "--", "@alice asked"],
+            "@alice asked",
+        );
+        let carried = handed_on(&started, "abc-123", None);
+        assert_eq!(carried.command, ["pi", "--session-id", "abc-123"]);
+
+        let carried = handed_on(&started, "abc-123", Some("@bob too"));
+        assert_eq!(
+            carried.command,
+            ["pi", "--session-id", "abc-123", "--", "@bob too"]
+        );
+        let after = handed_on(&carried, "def-456", None);
+        assert_eq!(after.command, ["pi", "--session-id", "def-456"]);
     }
 
     #[test]

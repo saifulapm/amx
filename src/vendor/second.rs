@@ -70,6 +70,8 @@ pub const SECOND: Vendor = Vendor {
     // this vendor keeps its skills or what it answers itself, which is the
     // shape a reader of those places has to leave alone.
     catalog: None,
+    // Its task is its last word, whatever that word opens with.
+    ends_options: None,
 };
 
 /// Hooks in the second vendor's words, for a test that reads a payload.

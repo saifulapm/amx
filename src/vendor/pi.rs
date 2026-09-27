@@ -177,6 +177,10 @@ pub const VENDOR: Vendor = Vendor {
         ],
         skill_prefix: "skill:",
     }),
+    // pi reads a message word opening with `@` as a file to attach and one
+    // opening with `-` as a flag, until `--`: every word after it is a
+    // message (dist/cli/args.js:23). Read at 0.87.1 on 2026-09-26.
+    ends_options: Some("--"),
 };
 
 /// How pi reports what it is doing, and where amx asks it to.

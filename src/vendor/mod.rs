@@ -435,6 +435,14 @@ pub struct Vendor {
     /// `None` from a vendor whose layout amx has not measured, and then a
     /// word on a line for it is only ever the word somebody typed.
     pub catalog: Option<Catalog>,
+    /// The word after which this vendor reads every word as a message, put
+    /// in front of whatever amx hands it as one: a task, a resume's message
+    /// or a fork's prompt. Without it a task opening with `@` or `-` is read
+    /// as a file to attach or a flag.
+    ///
+    /// `None` from a vendor that reads its last word as a prompt whatever it
+    /// opens with.
+    pub ends_options: Option<&'static str>,
 }
 
 /// A directory a vendor loads something from, under the root it hangs off.

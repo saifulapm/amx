@@ -174,6 +174,8 @@ pub const VENDOR: Vendor = Vendor {
         ],
         skill_prefix: "",
     }),
+    // claude reads its last word as the prompt whatever it opens with.
+    ends_options: None,
 };
 
 /// How claude reports what it is doing, and where amx asks it to.

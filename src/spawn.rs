@@ -235,8 +235,20 @@ pub fn vendor_command(
         &dials.effort,
         &args,
     ));
+    command.extend(
+        registry::entry(agent)
+            .and_then(|vendor| vendor.ends_options)
+            .map(str::to_string),
+    );
     command.push(task.to_string());
     command
+}
+
+/// The word that tells the vendor a recorded command names that every word
+/// after it is a message, for a verb about to put one on that argv: a
+/// resume's message or a fork's prompt.
+pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
+    vendor_of(handoff)?.ends_options
 }
 
 /// The flag that opens this spawn's session under an id amx chose, or `None`
@@ -1253,7 +1265,7 @@ mod tests {
             None,
             true,
         );
-        assert_eq!(approved, ["pi", "--approve", "fix the login bug"]);
+        assert_eq!(approved, ["pi", "--approve", "--", "fix the login bug"]);
 
         let ungated = vendor_command(
             "pi",
@@ -1263,7 +1275,34 @@ mod tests {
             None,
             false,
         );
-        assert_eq!(ungated, ["pi", "fix the login bug"]);
+        assert_eq!(ungated, ["pi", "--", "fix the login bug"]);
+    }
+
+    #[test]
+    fn spawn_ends_pis_options_before_a_task_so_an_at_sign_is_words() {
+        // pi reads a word opening with `@` as a file to attach, and a word
+        // opening with `-` as a flag, until `--`: after it every word is a
+        // message. claude has no such reading and is handed the task as it
+        // always was.
+        let pi = vendor_command(
+            "pi",
+            &Dials::default(),
+            &[],
+            "@alice asked for this",
+            None,
+            false,
+        );
+        assert_eq!(pi, ["pi", "--", "@alice asked for this"]);
+
+        let claude = vendor_command(
+            "claude",
+            &Dials::default(),
+            &[],
+            "@alice asked for this",
+            None,
+            false,
+        );
+        assert_eq!(claude, ["claude", "@alice asked for this"]);
     }
 
     #[test]
@@ -1356,7 +1395,7 @@ mod tests {
             Some("fix-login-a1b"),
             false,
         );
-        assert_eq!(command, ["pi", "-c", "fix the login bug"]);
+        assert_eq!(command, ["pi", "-c", "--", "fix the login bug"]);
     }
 
     #[test]
