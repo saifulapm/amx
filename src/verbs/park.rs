@@ -78,9 +78,11 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
     // an agent that ended: a stamp on that record would tell every reader
     // after it that amx let this one go and will bring it back. A pane that
     // answers for somebody else is the same answer — the number came round
-    // again to another agent, and taking it would end theirs.
+    // again to another agent, and taking it would end theirs. A tmux that
+    // could not be asked has said neither, and the timer says why it did
+    // nothing.
     let server = Server::from_socket(meta.socket.clone());
-    if !server.pane_answers_for(&meta.pane, &meta.id) {
+    if !server.answers_for_now(&meta.pane, &meta.id)? {
         return Ok(exit::OK);
     }
 
@@ -314,6 +316,37 @@ mod tests {
         let root = state_root(&state);
         std::fs::create_dir_all(root.join("broken-a1b")).unwrap();
         assert!(consider(&root, "broken-a1b", 4_600).is_err());
+    }
+
+    #[test]
+    fn park_refuses_a_tmux_that_cannot_be_asked_and_stamps_nothing() {
+        // Ripe, and nobody can say whether its pane is there: a stamp would
+        // tell every reader amx took a pane it never touched.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        let agent = record(
+            &root,
+            "fix-login-a1b",
+            crate::tmux::unaskable(),
+            PaneId::new("%3").unwrap(),
+        );
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.since = 1_000;
+            })
+            .unwrap();
+        let meta = agent.meta().unwrap();
+
+        let why = let_go(&root, &agent, &meta, 3_600, 4_600).unwrap_err();
+
+        assert!(
+            format!("{why:#}").starts_with("tmux could not be asked: "),
+            "{why:#}"
+        );
+        assert_eq!(left(&agent), (0, Vec::new()));
     }
 
     #[test]

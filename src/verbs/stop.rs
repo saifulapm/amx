@@ -172,7 +172,7 @@ pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
-    if !server.pane_answers_for(pane, id) {
+    if !server.answers_for_now(pane, id)? {
         return Ok(());
     }
     let group = Pid::from_raw(server.pane_pid(pane)?);
@@ -194,16 +194,17 @@ pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
 }
 
 /// Whether the pane stops being this agent's within `patience` — because it
-/// went, or because the number is somebody else's now.
+/// went, or because the number is somebody else's now. A tmux that could not
+/// be asked has not said so.
 fn gone(server: &Server, pane: &PaneId, id: &str, patience: Duration) -> bool {
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
-        if !server.pane_answers_for(pane, id) {
+        if matches!(server.answers_for_now(pane, id), Ok(false)) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    !server.pane_answers_for(pane, id)
+    matches!(server.answers_for_now(pane, id), Ok(false))
 }
 
 /// What becomes of the worktree and the branch.
@@ -452,6 +453,43 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.since, 1_000, "{state:?}");
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn stop_refuses_a_tmux_that_cannot_be_asked_and_touches_nothing() {
+        // No answer about the pane is not a pane gone: stopping on it would
+        // write Stopped over a live agent and take its tree with it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = tempfile::TempDir::new().unwrap();
+        let agent = record(dir.path(), "live-a1b", "%3", Phase::Working);
+        let writer = agent.writer().unwrap();
+        writer
+            .update_meta(|meta| {
+                meta.socket = crate::tmux::unaskable();
+                meta.worktree = Some(tree.path().to_path_buf());
+                meta.branch = Some("amx/live-a1b".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        let args = StopArgs {
+            id: "live-a1b".to_string(),
+            force: true,
+            delete: true,
+            worktree: Some(Disposition::Delete),
+            branch: Some(Disposition::Delete),
+        };
+        let mut out = Vec::new();
+        let why = run(dir.path(), &args, &mut "".as_bytes(), &mut out).unwrap_err();
+
+        assert!(
+            format!("{why:#}").starts_with("tmux could not be asked: "),
+            "{why:#}"
+        );
+        assert_eq!(agent.state().unwrap().state, Phase::Working);
+        assert!(tree.path().is_dir(), "the tree stays");
+        assert!(agent.dir().is_dir(), "and so does the record");
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
     }
 
     #[test]
