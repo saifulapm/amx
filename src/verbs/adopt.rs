@@ -107,6 +107,9 @@ pub fn run(
         bail!("{pane} is not a pane on the tmux server this is running on");
     }
     let (vendor, session) = this_session(server, &pane, env)?;
+    // Two adopts typed into one pane at once would both look before either
+    // wrote, and both find nobody there. Looking and writing are one step.
+    let _held = hold(root)?;
     let owners = server.pane_owners()?;
     if let Some(refusal) = spoken_for(root, server.socket(), &owners, &pane, &session)? {
         bail!(refusal);
@@ -117,14 +120,6 @@ pub fn run(
         Some(task) => task.clone(),
         None => label(&dir, vendor),
     };
-    let id = match &args.name {
-        Some(name) => {
-            ids::validate_name(name, root)?;
-            name.clone()
-        }
-        None => ids::generate(&task, root)?,
-    };
-
     // The screen before the record, because the screen is what the record is
     // about to say. A pane amx cannot read is one there is nothing to adopt
     // from, and saying so leaves the state root as it was found.
@@ -132,51 +127,48 @@ pub fn run(
         .capture(&pane)
         .with_context(|| format!("reading what is on {pane}"))?;
 
-    // The id on the pane, before there is a record to name it. A pane amx
-    // placed says whose it is by the session it is in; this one is in
-    // somebody's own session and can say it no other way, and a record about a
-    // pane that answers for nobody is a record every reader calls gone. So a
-    // stamp that will not go on is an adoption that does not happen.
-    server
-        .set_pane_option(&pane, crate::tmux::ID_OPTION, &id)
-        .with_context(|| format!("writing `{id}` on {pane}"))?;
-
-    let agent = Agent::create(
-        root,
-        &Meta {
-            role: None,
-            parent: None,
-            depth: 0,
-            id: id.clone(),
-            task,
-            // Which vendor is in the pane is the pane's word, not the config's,
-            // and it is the one thing about this agent amx learns here that
-            // outlives the reading.
-            agent: Some(vendor.name.to_string()),
-            // How that vendor was launched is not the pane's word to give.
-            // The dials are a spawn's, and amx did not make this spawn.
-            model: None,
-            effort: None,
-            dir,
-            // amx cut nothing and started nothing here. A record claiming this
-            // person's tree as an agent's worktree would be one `amx stop`
-            // away from removing the work they are doing in it.
-            worktree: None,
-            branch: None,
-            base: None,
-            socket: server.socket().clone(),
-            pane: pane.clone(),
-            bg: false,
-            session: Some(session.clone()),
-            // The transcript arrives with the first report the vendor makes
-            // about this session, which every report names — the session's
-            // own start was announced before there was a record to hear it.
-            // What the agent says at the end of a turn is on the Stop payload,
-            // which is the fresher of the two anyway.
-            transcript: None,
-            created: now(),
-        },
-    )?;
+    let (id, claimed) = claim(root, args, &task)?;
+    let meta = Meta {
+        role: None,
+        parent: None,
+        depth: 0,
+        id: id.clone(),
+        task,
+        // Which vendor is in the pane is the pane's word, not the config's,
+        // and it is the one thing about this agent amx learns here that
+        // outlives the reading.
+        agent: Some(vendor.name.to_string()),
+        // How that vendor was launched is not the pane's word to give.
+        // The dials are a spawn's, and amx did not make this spawn.
+        model: None,
+        effort: None,
+        dir,
+        // amx cut nothing and started nothing here. A record claiming this
+        // person's tree as an agent's worktree would be one `amx stop`
+        // away from removing the work they are doing in it.
+        worktree: None,
+        branch: None,
+        base: None,
+        socket: server.socket().clone(),
+        pane: pane.clone(),
+        bg: false,
+        session: Some(session.clone()),
+        // The transcript arrives with the first report the vendor makes
+        // about this session, which every report names — the session's
+        // own start was announced before there was a record to hear it.
+        // What the agent says at the end of a turn is on the Stop payload,
+        // which is the fresher of the two anyway.
+        transcript: None,
+        created: now(),
+    };
+    // Until the stamp is on, nothing written here names an agent anybody has.
+    let agent = match record(root, server, &meta) {
+        Ok(agent) => agent,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&claimed);
+            return Err(e);
+        }
+    };
 
     // Nothing after the record is written is undone if it fails. The record
     // names a live pane, which is the whole of what an agent is, so what a
@@ -203,6 +195,73 @@ pub fn run(
     Ok(exit::OK)
 }
 
+/// Hold the agents root against every other adopt until the returned lock is
+/// dropped.
+fn hold(root: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
+    std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
+    let dir = std::fs::File::open(root).with_context(|| format!("opening {}", root.display()))?;
+    nix::fcntl::Flock::lock(dir, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, errno)| errno)
+        .with_context(|| format!("locking {}", root.display()))
+}
+
+/// How many minted ids to try to claim before giving up.
+const MAX_CLAIMS: usize = 8;
+
+/// Claim an id by making its directory, as `new` does: the mkdir is the
+/// uniqueness check, so a name taken since it was looked at is refused before
+/// the pane is touched.
+fn claim(root: &Path, args: &AdoptArgs, task: &str) -> Result<(String, PathBuf)> {
+    if let Some(name) = &args.name {
+        ids::validate_name(name, root)?;
+        let dir = paths::agent_dir_in(root, name)?;
+        if !make_dir(&dir)? {
+            bail!("name {name:?} is already taken");
+        }
+        return Ok((name.clone(), dir));
+    }
+    for _ in 0..MAX_CLAIMS {
+        let id = ids::generate(task, root)?;
+        let dir = paths::agent_dir_in(root, &id)?;
+        if make_dir(&dir)? {
+            return Ok((id, dir));
+        }
+    }
+    bail!(
+        "no id for {task:?} could be claimed under {} after {MAX_CLAIMS} draws",
+        root.display()
+    )
+}
+
+/// Make an agent's directory, answering false when it is there already.
+/// Deliberately not recursive, since making it is the claim.
+fn make_dir(dir: &Path) -> Result<bool> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(paths::DIR_MODE).create(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
+}
+
+/// Write `meta` down, then put its id on the pane it names.
+fn record(root: &Path, server: &Server, meta: &Meta) -> Result<Agent> {
+    let agent = Agent::create(root, meta)?;
+
+    // Nothing after the record is written is undone if it fails. The record
+    // names a live pane, which is the whole of what an agent is, so what a
+    // failure here costs is the opening line of the log and one reading that
+
+    // The id on the pane once there is a record for it to name. A pane amx
+    // placed says whose it is by the session it is in; this one is in
+    // somebody's own session and can say it no other way, and a record about a
+    // pane that answers for nobody is a record every reader calls gone. So a
+    // stamp that will not go on is an adoption that does not happen.
+    server
+        .set_pane_option(&meta.pane, crate::tmux::ID_OPTION, &meta.id)
+        .with_context(|| format!("writing `{}` on {}", meta.id, meta.pane))?;
+    Ok(agent)
+}
 /// Write down what the pane is showing, as the record's first word on what
 /// this agent is doing.
 ///
@@ -1128,5 +1187,98 @@ mod tests {
         // A directory with no name to it leaves the vendor to say what the row
         // is, and that is the vendor's own word.
         assert_eq!(label(Path::new("/"), &SECOND), "adopted second");
+    }
+
+    #[test]
+    fn adopt_twice_at_once_leaves_one_record() {
+        // Two adopts typed into one pane together both look before either
+        // writes, and both saw nobody there.
+        let root = TempDir::new().unwrap();
+        let pane = APane::showing(&A_PERMISSION_BOX);
+        let env = pane.env("abc-123");
+
+        let start = std::sync::Barrier::new(2);
+        let taken: Vec<bool> = std::thread::scope(|s| {
+            let each: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        adopt(root.path(), &pane, &env, &AdoptArgs::default()).is_ok()
+                    })
+                })
+                .collect();
+            each.into_iter().map(|one| one.join().unwrap()).collect()
+        });
+
+        assert_eq!(taken.iter().filter(|took| **took).count(), 1, "{taken:?}");
+        let ids = crate::store::list(root.path()).unwrap();
+        assert_eq!(ids.len(), 1, "{ids:?}");
+        assert!(pane.server.pane_answers_for(&pane.pane, &ids[0]));
+    }
+
+    #[test]
+    fn adopt_leaves_the_pane_unstamped_when_the_record_cannot_be_written() {
+        let root = TempDir::new().unwrap();
+        let pane = APane::showing(&A_PERMISSION_BOX);
+        std::fs::set_permissions(
+            root.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o500),
+        )
+        .unwrap();
+
+        let refused = adopt(
+            root.path(),
+            &pane,
+            &pane.env("abc-123"),
+            &AdoptArgs::default(),
+        );
+        std::fs::set_permissions(
+            root.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+
+        assert!(refused.is_err());
+        assert_eq!(
+            pane.server
+                .pane_option(&pane.pane, crate::tmux::ID_OPTION)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn adopt_refuses_a_taken_name_before_it_touches_the_pane() {
+        let root = TempDir::new().unwrap();
+        let pane = APane::showing(&A_PERMISSION_BOX);
+        let elsewhere = APane::showing(&A_PERMISSION_BOX);
+        a_record_naming(root.path(), "login", &elsewhere);
+
+        let said = format!(
+            "{:#}",
+            adopt(
+                root.path(),
+                &pane,
+                &pane.env("abc-123"),
+                &AdoptArgs {
+                    name: Some("login".to_string()),
+                    ..AdoptArgs::default()
+                },
+            )
+            .unwrap_err()
+        );
+
+        assert!(said.contains("taken"), "{said}");
+        assert_eq!(
+            pane.server
+                .pane_option(&pane.pane, crate::tmux::ID_OPTION)
+                .unwrap(),
+            None
+        );
+        let meta = Agent::open(root.path(), "login").unwrap().meta().unwrap();
+        assert_eq!(
+            meta.pane, elsewhere.pane,
+            "and the record is left as it was"
+        );
     }
 }
