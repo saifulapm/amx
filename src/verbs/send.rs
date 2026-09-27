@@ -331,21 +331,9 @@ fn submissions(hooks: Option<&Hooks>, events: &[Event]) -> usize {
         .count()
 }
 
-/// The moment `event` is in whichever vendor's words it arrived.
-///
-/// [`queued`] is asked of a log with no record beside it, so it has no vendor
-/// to read the log in, and every entry is asked instead. The one reader left
-/// that does: the words do not collide, and every other reader goes by the
-/// record's own vendor.
-fn any_vendors_moment(event: &str) -> Option<Moment> {
-    crate::vendor::table()
-        .iter()
-        .filter_map(|vendor| vendor.hooks)
-        .find_map(|hooks| hooks.moment(event))
-}
-
 /// What has been sent and not yet answered: the text of every `send` the
-/// vendor is still holding, oldest first.
+/// vendor is still holding, oldest first, with the log read in the record's
+/// own vendor's `hooks`.
 ///
 /// A vendor mid-turn holds a message until it is ready for it, and says
 /// nothing about holding it that amx can read off the pane: claude draws it in
@@ -373,7 +361,7 @@ fn any_vendors_moment(event: &str) -> Option<Moment> {
 /// direction: a `Stop` amx missed would leave a message listed as waiting when
 /// it has been answered, and a reader watching the prompt come back — see
 /// [`derive::READ_TURN_END`] — is the second way out of that.
-pub fn queued(events: &[Event]) -> Vec<String> {
+pub fn queued(hooks: Option<&Hooks>, events: &[Event]) -> Vec<String> {
     let mut running = false;
     let mut answered = 0;
     for (at, event) in events.iter().enumerate() {
@@ -385,7 +373,7 @@ pub fn queued(events: &[Event]) -> Vec<String> {
         // beginning, or a turn ending. Either way everything sent before it
         // has been answered; what they disagree about is what the next prompt
         // the vendor reports will mean.
-        let edge = match any_vendors_moment(&event.kind) {
+        let edge = match hooks.and_then(|hooks| hooks.moment(&event.kind)) {
             // The vendor saying it has started on the message, which is the
             // one word that means the message is no longer waiting whenever
             // it arrives.
@@ -729,40 +717,54 @@ mod tests {
     #[test]
     fn send_lists_what_was_sent_after_the_last_prompt_was_taken() {
         let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+        let claude = crate::vendor::claude::VENDOR.hooks;
+        let pi = crate::vendor::pi::VENDOR.hooks;
 
-        assert!(queued(&[]).is_empty());
+        assert!(queued(claude.as_ref(), &[]).is_empty());
         // Nothing has ever been taken, so everything sent is waiting.
-        assert_eq!(queued(&[sent("carry on")]), ["carry on"]);
+        assert_eq!(queued(claude.as_ref(), &[sent("carry on")]), ["carry on"]);
         // Taken, and then two more behind the turn, oldest first.
         assert_eq!(
-            queued(&[
-                sent("carry on"),
-                Event::new(SUBMITTED, json!({})),
-                sent("and the linter"),
-                sent("then the docs"),
-            ]),
+            queued(
+                claude.as_ref(),
+                &[
+                    sent("carry on"),
+                    Event::new(SUBMITTED, json!({})),
+                    sent("and the linter"),
+                    sent("then the docs"),
+                ]
+            ),
             ["and the linter", "then the docs"]
         );
         // pi's word that a message steered into a running turn went in.
         assert_eq!(
-            queued(&[
-                sent("carry on"),
-                Event::new("message_start", json!({ "role": "user" }))
-            ]),
+            queued(
+                pi.as_ref(),
+                &[
+                    sent("carry on"),
+                    Event::new("message_start", json!({ "role": "user" }))
+                ]
+            ),
             Vec::<String>::new()
         );
         // A reader's word that a turn began is the same edge.
         assert_eq!(
-            queued(&[sent("carry on"), Event::new(derive::READ_PROMPT, json!({}))]),
+            queued(
+                claude.as_ref(),
+                &[sent("carry on"), Event::new(derive::READ_PROMPT, json!({}))]
+            ),
             Vec::<String>::new()
         );
         // A subagent's prompt rides the same log and takes nothing of this
         // agent's.
         assert_eq!(
-            queued(&[
-                sent("carry on"),
-                Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
-            ]),
+            queued(
+                claude.as_ref(),
+                &[
+                    sent("carry on"),
+                    Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
+                ]
+            ),
             ["carry on"]
         );
     }
@@ -770,6 +772,8 @@ mod tests {
     #[test]
     fn send_goes_on_listing_a_message_the_vendor_is_only_holding() {
         let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+        let claude = crate::vendor::claude::VENDOR.hooks;
+        let pi = crate::vendor::pi::VENDOR.hooks;
         let ended = || Event::new("Stop", json!({}));
 
         // claude reports a prompt seven milliseconds after it is typed and
@@ -783,25 +787,25 @@ mod tests {
             sent("and the linter"),
             Event::new(SUBMITTED, json!({})),
         ];
-        assert_eq!(queued(&holding), ["and the linter"]);
+        assert_eq!(queued(claude.as_ref(), &holding), ["and the linter"]);
 
         // The end of that turn is what says it has been answered.
         let mut answered = holding.clone();
         answered.push(ended());
-        assert!(queued(&answered).is_empty());
+        assert!(queued(claude.as_ref(), &answered).is_empty());
 
         // And the next one begins a turn of its own, because there is none for
         // it to be held behind.
         let mut again = answered.clone();
         again.extend([sent("then the docs"), Event::new(SUBMITTED, json!({}))]);
-        assert!(queued(&again).is_empty());
+        assert!(queued(claude.as_ref(), &again).is_empty());
 
         // A reader watching the prompt come back is the same edge, and is the
         // way out of a `Stop` amx never heard: without it a missed stop would
         // leave every message after it listed as waiting for ever.
         let mut watched = holding.clone();
         watched.push(Event::new(derive::READ_TURN_END, json!({})));
-        assert!(queued(&watched).is_empty());
+        assert!(queued(claude.as_ref(), &watched).is_empty());
 
         // An interrupt ends the turn where it stands, and claude writes no
         // `Stop` for a turn cut short: the next message is a turn of its own,
@@ -812,17 +816,40 @@ mod tests {
             sent("change of direction"),
             Event::new(SUBMITTED, json!({})),
         ];
-        assert!(queued(&cut).is_empty());
+        assert!(queued(claude.as_ref(), &cut).is_empty());
 
         // pi says the other thing, and it means what it always did: its
         // `Taken` is the vendor having started on the message, so it is no
         // longer waiting whenever it arrives.
         let steered = vec![
-            Event::new(SUBMITTED, json!({})),
+            Event::new("agent_start", json!({})),
             sent("and the linter"),
             Event::new("message_start", json!({ "role": "user" })),
         ];
-        assert!(queued(&steered).is_empty());
+        assert!(queued(pi.as_ref(), &steered).is_empty());
+    }
+
+    #[test]
+    fn send_reads_what_is_queued_in_the_records_own_vendors_words() {
+        let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+        let second = crate::vendor::second::HOOKS;
+
+        // claude's words on a second record are nobody's: nothing was taken.
+        assert_eq!(
+            queued(
+                Some(&second),
+                &[sent("carry on"), Event::new(SUBMITTED, json!({}))]
+            ),
+            ["carry on"]
+        );
+        // Its own word for a prompt is the edge.
+        assert!(
+            queued(
+                Some(&second),
+                &[sent("carry on"), Event::new("told", json!({}))]
+            )
+            .is_empty()
+        );
     }
 
     #[test]

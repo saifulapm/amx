@@ -2542,6 +2542,7 @@ fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
             "options": ["Allow once", "Allow always", "Deny"],
             "walked": true,
             "reported": true,
+            "kind": "question",
         }),
         "written down whole, the way claude's reported questions always were: \
          the vendor's words with the choices the screen filled in under them, \
