@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "amx _hook" }] }
+    ]
+  }
+}

@@ -368,6 +368,7 @@ fn wiring_check(found: &VendorWiring) -> Check {
     let what = match hooks.wire {
         Wire::File { .. } => "extension",
         Wire::Plugin { .. } => "plugin",
+        Wire::Hooks { .. } => return hooks_check(who, &found.wire, &found.wired),
     };
 
     match &found.wired {
@@ -386,6 +387,42 @@ fn wiring_check(found: &VendorWiring) -> Check {
         install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
             "hooks",
             format!("{who}: no {what} at {wire}"),
+            setup_with(who),
+        ),
+    }
+}
+
+/// Whether amx's groups are in the vendor's hooks file, and each trusted in
+/// its config as the group stands now. A group codex has no trust for, or
+/// trust under a hash that is not the group's, is a group codex will not run
+/// until somebody answers its review screen.
+fn hooks_check(who: &str, dir: &Path, wired: &install::Wired) -> Check {
+    let hooks = dir.join(install::HOOKS_FILE);
+    let config = dir.join(install::CONFIG_FILE);
+    match wired {
+        install::Wired::File {
+            present: true,
+            current: true,
+        } => Check::ok(
+            "hooks",
+            format!(
+                "{who}: amx's hooks in {}, trusted in {}",
+                hooks.display(),
+                config.display()
+            ),
+        ),
+        install::Wired::File { present: true, .. } => Check::wrong(
+            "hooks",
+            format!(
+                "{who}: amx's hooks in {} are not trusted in {}, so {who} will not run them",
+                hooks.display(),
+                config.display()
+            ),
+            setup_with(who),
+        ),
+        install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
+            "hooks",
+            format!("{who}: no hooks of amx's in {}", hooks.display()),
             setup_with(who),
         ),
     }
@@ -772,7 +809,7 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
 /// The configured agent is resolved the way [`hooks_of`] resolves it: a
 /// command amx has no entry for is judged as the first vendor is, since a
 /// wrapper somebody wrote around claude loads the same files claude does.
-fn wirings(agent: &str, home: &Path, path: Option<&OsStr>) -> Vec<VendorWiring> {
+fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) -> Vec<VendorWiring> {
     let configured = registry::entry(agent).or_else(|| registry::entries().first());
     registry::entries()
         .iter()
@@ -785,13 +822,22 @@ fn wirings(agent: &str, home: &Path, path: Option<&OsStr>) -> Vec<VendorWiring> 
             VendorWiring {
                 vendor: vendor.name,
                 hooks,
-                wire: hooks
-                    .map_or_else(|| home.to_path_buf(), |h| install::wire_path(&h.wire, home)),
-                wired: hooks.map_or(install::Wired::Nothing, |h| install::wired(&h.wire, home)),
+                wire: hooks.map_or_else(
+                    || home.to_path_buf(),
+                    |h| install::wire_path(&h.wire, home, env),
+                ),
+                wired: hooks.map_or(install::Wired::Nothing, |h| {
+                    install::wired(&h.wire, home, env)
+                }),
                 opt_in: hooks.map_or_else(Vec::new, |h| {
                     h.opt_in
                         .iter()
-                        .map(|wire| (install::wire_path(wire, home), install::wired(wire, home)))
+                        .map(|wire| {
+                            (
+                                install::wire_path(wire, home, env),
+                                install::wired(wire, home, env),
+                            )
+                        })
                         .collect()
                 }),
             }
@@ -804,7 +850,7 @@ pub fn gather(config: &Config, dir: Option<&Path>) -> Result<Findings> {
     let home = install::home()?;
     let exe = std::env::current_exe()?;
     let path = std::env::var_os("PATH");
-    let wirings = wirings(&config.agent, &home, path.as_deref());
+    let wirings = wirings(&config.agent, &home, &install::process_env, path.as_deref());
     let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
     // Only for the vendor whose screen amx answers by writing its store: any
@@ -1249,7 +1295,7 @@ mod tests {
             hooks,
             wire: hooks.map_or_else(
                 || PathBuf::from("/home/dev"),
-                |h| install::wire_path(&h.wire, Path::new("/home/dev")),
+                |h| install::wire_path(&h.wire, Path::new("/home/dev"), &install::no_env),
             ),
             wired: install::Wired::File {
                 present: there,
@@ -1260,7 +1306,7 @@ mod tests {
                     .iter()
                     .map(|wire| {
                         (
-                            install::wire_path(wire, Path::new("/home/dev")),
+                            install::wire_path(wire, Path::new("/home/dev"), &install::no_env),
                             install::Wired::File {
                                 present: there,
                                 current: there,
@@ -1651,7 +1697,7 @@ mod tests {
     fn a_path_to_pi_is_asked_about_as_pi() {
         let home = Path::new("/home/dev");
         assert_eq!(
-            wirings("/opt/pi/bin/pi", home, None)
+            wirings("/opt/pi/bin/pi", home, &install::no_env, None)
                 .iter()
                 .map(|w| w.vendor)
                 .collect::<Vec<_>>(),
@@ -1703,11 +1749,72 @@ mod tests {
     }
 
     #[test]
+    fn doctor_fails_hooks_whose_trust_is_missing_or_stale() {
+        // codex runs a group only while config.toml trusts it under the hash
+        // of the group as it stands, so amx's groups being in the file is half
+        // of being wired.
+        const HOOKS: Hooks = Hooks {
+            wire: install::HOOKS_WIRE,
+            ..crate::vendor::claude::HOOKS
+        };
+        let home = TempDir::new().unwrap();
+        let dir = install::wire_path(&HOOKS.wire, home.path(), &install::no_env);
+        let judged = || {
+            wiring_check(&VendorWiring {
+                vendor: "codex",
+                hooks: Some(&HOOKS),
+                wire: dir.clone(),
+                wired: install::wired(&HOOKS.wire, home.path(), &install::no_env),
+                opt_in: Vec::new(),
+            })
+        };
+
+        let missing = judged();
+        assert!(!missing.is_ok(), "{missing:?}");
+        assert_eq!(
+            missing.found,
+            format!(
+                "codex: no hooks of amx's in {}",
+                dir.join("hooks.json").display()
+            )
+        );
+        assert_eq!(missing.remedy.as_deref(), Some("run `amx setup codex`"));
+
+        install::install_wire(&HOOKS.wire, home.path(), &install::no_env, 1).unwrap();
+        let wired = judged();
+        assert!(wired.is_ok(), "{wired:?}");
+        assert_eq!(
+            wired.found,
+            format!(
+                "codex: amx's hooks in {}, trusted in {}",
+                dir.join("hooks.json").display(),
+                dir.join("config.toml").display()
+            )
+        );
+
+        let config = dir.join("config.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        let stale = text.replacen("trusted_hash = \"sha256:", "trusted_hash = \"sha256:0", 1);
+        assert_ne!(stale, text);
+        std::fs::write(&config, stale).unwrap();
+        let untrusted = judged();
+        assert!(!untrusted.is_ok(), "{untrusted:?}");
+        assert!(
+            untrusted.found.contains("are not trusted in"),
+            "{untrusted:?}"
+        );
+        assert_eq!(untrusted.remedy.as_deref(), Some("run `amx setup codex`"));
+
+        std::fs::write(&config, "").unwrap();
+        assert!(!judged().is_ok(), "no trust at all");
+    }
+
+    #[test]
     fn a_wrapper_somebody_wrote_is_judged_as_the_vendor_underneath_it_is() {
         // A command amx has no entry for loads the files the first vendor
         // loads, so the machine is asked about that vendor rather than about
         // nothing at all.
-        let asked = wirings("my-claude", Path::new("/home/dev"), None);
+        let asked = wirings("my-claude", Path::new("/home/dev"), &install::no_env, None);
         assert_eq!(
             asked.iter().map(|w| w.vendor).collect::<Vec<_>>(),
             ["claude"],
@@ -1728,17 +1835,22 @@ mod tests {
 
         let home = Path::new("/home/dev");
         assert_eq!(
-            wirings("claude", home, None)
+            wirings("claude", home, &install::no_env, None)
                 .iter()
                 .map(|w| w.vendor)
                 .collect::<Vec<_>>(),
             ["claude"]
         );
         assert_eq!(
-            wirings("claude", home, Some(dir.path().as_os_str()))
-                .iter()
-                .map(|w| w.vendor)
-                .collect::<Vec<_>>(),
+            wirings(
+                "claude",
+                home,
+                &install::no_env,
+                Some(dir.path().as_os_str())
+            )
+            .iter()
+            .map(|w| w.vendor)
+            .collect::<Vec<_>>(),
             ["claude", "pi"],
             "pi is installed here, so it is asked about too"
         );

@@ -165,9 +165,9 @@ pub struct Hooks {
 /// How a vendor is wired to amx's hook command, under the person's home
 /// directory.
 ///
-/// Two shapes, both measured off the vendor that takes them. Which a vendor
+/// Three shapes, each measured off the vendor that takes it. Which a vendor
 /// takes is its own business and `install`'s to honour; nothing that reads a
-/// payload afterwards can tell the two apart. The one thing the wire decides
+/// payload afterwards can tell them apart. The one thing the wire decides
 /// past that is whether the hook may answer — see [`Wire::listens`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wire {
@@ -188,6 +188,20 @@ pub enum Wire {
         dir: &'static str,
         files: &'static [(&'static str, &'static str)],
     },
+    /// amx's groups merged into a hooks file the vendor and the person share,
+    /// and a trust entry for each in the vendor's config beside it: codex.
+    /// The directory is `$<dir_env>` when that is set, else `dir` under the
+    /// home; the files in it are `hooks.json` and `config.toml`, and `body`
+    /// is a hooks file holding amx's groups and nothing else.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "codex's entry takes it, plan codex-lands t6")
+    )]
+    Hooks {
+        dir_env: &'static str,
+        dir: &'static str,
+        body: &'static str,
+    },
 }
 
 impl Wire {
@@ -200,16 +214,19 @@ impl Wire {
     /// `UserPromptSubmit` hook's stdout into the conversation — so a hook run
     /// over one says nothing. A plugin wire is the second kind however many
     /// files amx writes to make it: the vendor loads the plugin and runs the
-    /// hooks itself.
+    /// hooks itself. So is a hooks wire: codex feeds a hook's stdout to the
+    /// model.
     pub fn listens(self) -> bool {
         matches!(self, Wire::File { .. })
     }
 
-    /// Where the wiring goes, under the home directory.
+    /// Where the wiring goes, under the home directory: for a hooks wire,
+    /// where it goes when its variable is not set.
     pub fn path(&self) -> &'static str {
         match self {
             Wire::File { path, .. } => path,
             Wire::Plugin { dir, .. } => dir,
+            Wire::Hooks { dir, .. } => dir,
         }
     }
 }
@@ -1091,6 +1108,10 @@ mod tests {
                 // else the plugin ships. Each path is relative to the
                 // directory for the same reason the directory is relative to
                 // the home.
+                Wire::Hooks { dir_env, body, .. } => {
+                    assert!(!dir_env.is_empty(), "{path} names no variable");
+                    assert!(body.contains("_hook"), "{path} reports through nothing");
+                }
                 Wire::Plugin { files, .. } => {
                     assert!(
                         files.iter().any(|(_, body)| body.contains("_hook")),

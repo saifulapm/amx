@@ -37,11 +37,18 @@ use crate::{exit, install, registry, store};
 pub fn from_env(vendor: Option<&str>, subagent: bool) -> Result<i32> {
     let home = install::home()?;
     let mut out = std::io::stdout().lock();
-    run(vendor, subagent, &home, store::now(), &mut out)
+    run(
+        vendor,
+        subagent,
+        &home,
+        &install::process_env,
+        store::now(),
+        &mut out,
+    )
 }
 
-/// Run the verb, with everything it touches named: the agent, and the home its
-/// wiring goes under.
+/// Run the verb, with everything it touches named: the agent, the home its
+/// wiring goes under, and the environment a wire may name its directory in.
 ///
 /// The hook command is not among them. Every wire amx writes now runs `amx`
 /// off the PATH rather than the path this amx happens to stand at, which is
@@ -51,6 +58,7 @@ pub fn run(
     vendor: Option<&str>,
     subagent: bool,
     home: &Path,
+    env: install::Env,
     now: u64,
     out: &mut impl Write,
 ) -> Result<i32> {
@@ -95,13 +103,13 @@ pub fn run(
     }
     let mut wrote = false;
     for wire in wires {
-        wrote |= wire_one(wire, home, now, out)?;
+        wrote |= wire_one(wire, home, env, now, out)?;
     }
     if !wrote {
         writeln!(
             out,
             "nothing to do: {} is already that",
-            install::wire_path(&hooks.wire, home).display()
+            install::wire_path(&hooks.wire, home, env).display()
         )?;
     }
     Ok(exit::OK)
@@ -109,9 +117,15 @@ pub fn run(
 
 /// Write one wire, unless it is already what amx ships. Says what it is about
 /// to write first, and keeps a copy of whatever stood there.
-fn wire_one(wire: &Wire, home: &Path, now: u64, out: &mut impl Write) -> Result<bool> {
-    let path = install::wire_path(wire, home);
-    if install::wired(wire, home)
+fn wire_one(
+    wire: &Wire,
+    home: &Path,
+    env: install::Env,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<bool> {
+    let path = install::wire_path(wire, home, env);
+    if install::wired(wire, home, env)
         == (install::Wired::File {
             present: true,
             current: true,
@@ -119,12 +133,18 @@ fn wire_one(wire: &Wire, home: &Path, now: u64, out: &mut impl Write) -> Result<
     {
         return Ok(false);
     }
-    let keep = install::would_keep_a_copy(wire, home);
+    let keep = install::would_keep_a_copy(wire, home, env);
     writeln!(out, "{}", install::consent_line(wire, &path, keep))?;
-    let wrote = install::install_wire(wire, home, now)?;
+    let wrote = install::install_wire(wire, home, env, now)?;
     match wire {
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
         Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
+        Wire::Hooks { .. } => writeln!(
+            out,
+            "added the hooks to {} and trusted them in {}",
+            wrote.path.display(),
+            path.join(install::CONFIG_FILE).display()
+        )?,
     }
     if let Some(backup) = wrote.backup {
         writeln!(out, "the file as it was is at {}", backup.display())?;
@@ -166,7 +186,7 @@ mod tests {
     /// The same, with the opt-in wire asked for or not.
     fn said_with(vendor: Option<&str>, subagent: bool, home: &Path, now: u64) -> (i32, String) {
         let mut out = Vec::new();
-        let code = run(vendor, subagent, home, now, &mut out).unwrap();
+        let code = run(vendor, subagent, home, &install::no_env, now, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
     }
 
@@ -178,7 +198,7 @@ mod tests {
         // a manifest there, so it is copied aside rather than lost.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::claude::VENDOR.hooks.expect("claude reports");
-        let dir = install::wire_path(&hooks.wire, home.path());
+        let dir = install::wire_path(&hooks.wire, home.path(), &install::no_env);
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
@@ -216,7 +236,7 @@ mod tests {
     fn setup_writes_pis_extension_where_pi_loads_one() {
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::pi::VENDOR.hooks.expect("pi reports");
-        let extension = install::wire_path(&hooks.wire, home.path());
+        let extension = install::wire_path(&hooks.wire, home.path(), &install::no_env);
 
         let (code, printed) = said(Some("pi"), home.path(), 1);
 
@@ -257,8 +277,8 @@ mod tests {
         // that calls `amx sub`.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::pi::VENDOR.hooks.expect("pi reports");
-        let hook = install::wire_path(&hooks.wire, home.path());
-        let tool = install::wire_path(&hooks.opt_in[0], home.path());
+        let hook = install::wire_path(&hooks.wire, home.path(), &install::no_env);
+        let tool = install::wire_path(&hooks.opt_in[0], home.path(), &install::no_env);
 
         said(Some("pi"), home.path(), 1);
         assert!(hook.exists(), "the reporting wire is written");
@@ -276,7 +296,7 @@ mod tests {
         assert_eq!(code, exit::OK, "{printed}");
         assert!(printed.contains("nothing to do"), "{printed}");
 
-        install::uninstall_wire(&hooks.opt_in[0], home.path(), 4).unwrap();
+        install::uninstall_wire(&hooks.opt_in[0], home.path(), &install::no_env, 4).unwrap();
         assert!(!tool.exists(), "and it comes back out on its own");
     }
 
@@ -330,5 +350,56 @@ mod tests {
             assert!(printed.contains(vendor.name), "{printed}");
         }
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn setup_merges_a_hooks_wire_and_says_so_once() {
+        // codex's entry is not in the table yet, so the wire is the tests'
+        // own: amx's groups go into a hooks file of the person's, which is
+        // copied aside first, and the second run has nothing to do.
+        let home = TempDir::new().unwrap();
+        let dir = install::wire_path(&install::HOOKS_WIRE, home.path(), &install::no_env);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hooks.json"), "{\"hooks\": {}}\n").unwrap();
+
+        let mut out = Vec::new();
+        let wrote = wire_one(
+            &install::HOOKS_WIRE,
+            home.path(),
+            &install::no_env,
+            7,
+            &mut out,
+        )
+        .unwrap();
+        let printed = String::from_utf8(out).unwrap();
+        assert!(wrote, "{printed}");
+        let hooks = dir.join("hooks.json").display().to_string();
+        let config = dir.join("config.toml").display().to_string();
+        assert!(
+            printed.contains(&format!(
+                "amx will add its hooks to {hooks} and trust them in {config}, keeping a copy"
+            )),
+            "{printed}"
+        );
+        assert!(
+            printed.contains(&format!(
+                "added the hooks to {hooks} and trusted them in {config}"
+            )),
+            "{printed}"
+        );
+        assert!(printed.contains("the file as it was is at"), "{printed}");
+
+        let mut out = Vec::new();
+        assert!(
+            !wire_one(
+                &install::HOOKS_WIRE,
+                home.path(),
+                &install::no_env,
+                8,
+                &mut out
+            )
+            .unwrap()
+        );
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
     }
 }

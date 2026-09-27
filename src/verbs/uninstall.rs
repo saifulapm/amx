@@ -1,7 +1,8 @@
 //! `amx uninstall` — take amx back out of the machine.
 //!
 //! Every vendor's wiring comes out — the plugin from where claude loads one,
-//! the extension from where pi loads its — and the agents' records are
+//! the extension from where pi loads its, amx's hooks and their trust from
+//! codex's two files — and the agents' records are
 //! deleted. A directory amx never left a manifest in is not amx's to empty. It
 //! refuses while any agent is still running: those agents would keep working
 //! with nothing recording what they do, and their records would be the only
@@ -19,12 +20,25 @@ pub fn from_env() -> Result<i32> {
     let state_root = paths::state_root()?;
     let home = install::home()?;
     let mut out = std::io::stdout().lock();
-    run(&state_root, &home, store::now(), &mut out)
+    run(
+        &state_root,
+        &home,
+        &install::process_env,
+        store::now(),
+        &mut out,
+    )
 }
 
-/// Run the verb, with everything it touches named: the records, and the home
-/// every vendor's wiring is under.
-pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
+/// Run the verb, with everything it touches named: the records, the home
+/// every vendor's wiring is under, and the environment a wire may name its
+/// directory in.
+pub fn run(
+    state_root: &Path,
+    home: &Path,
+    env: install::Env,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<i32> {
     let still_there = crate::spawn::unfinished(state_root)?;
     if !still_there.is_empty() {
         writeln!(
@@ -40,13 +54,15 @@ pub fn run(state_root: &Path, home: &Path, now: u64, out: &mut impl Write) -> Re
         // Every wire the vendor carries, the reporting one and whatever a
         // person opted into: the tool leaves with amx like everything else.
         for wire in std::iter::once(&hooks.wire).chain(hooks.opt_in.iter()) {
-            let report = install::uninstall_wire(wire, home, now)?;
+            let report = install::uninstall_wire(wire, home, env, now)?;
             let path = report.path.display();
             match (wire, report.changed) {
                 (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
                 (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
                 (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
                 (Wire::Plugin { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
+                (Wire::Hooks { .. }, true) => writeln!(out, "took amx's hooks out of {path}")?,
+                (Wire::Hooks { .. }, false) => writeln!(out, "no hooks of amx's in {path}")?,
             }
         }
     }
@@ -133,8 +149,8 @@ mod tests {
 
     /// amx's plugin, written where claude loads one from under a home.
     fn plugin_with_amx(home: &Path) -> PathBuf {
-        let dir = install::wire_path(&claude::HOOKS.wire, home);
-        install::install_wire(&claude::HOOKS.wire, home, 1).unwrap();
+        let dir = install::wire_path(&claude::HOOKS.wire, home, &install::no_env);
+        install::install_wire(&claude::HOOKS.wire, home, &install::no_env, 1).unwrap();
         dir
     }
 
@@ -191,7 +207,7 @@ mod tests {
         }
 
         let mut said = Vec::new();
-        let code = run(root.path(), home.path(), 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap();
 
         assert_eq!(code, exit::FAILURE);
         let said = String::from_utf8(said).unwrap();
@@ -219,7 +235,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let code = run(root.path(), home.path(), 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap();
 
         assert_eq!(code, exit::OK);
         assert!(!root.path().exists(), "the records are gone");
@@ -247,7 +263,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let why = run(root.path(), home.path(), 2, &mut said).unwrap_err();
+        let why = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap_err();
 
         assert!(
             format!("{why:#}").starts_with("tmux could not be asked: "),
@@ -279,7 +295,7 @@ mod tests {
 
         let mut said = Vec::new();
         assert_eq!(
-            run(root.path(), home.path(), 2, &mut said).unwrap(),
+            run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap(),
             exit::OK,
             "{}",
             String::from_utf8_lossy(&said)
@@ -291,7 +307,7 @@ mod tests {
     fn uninstall_says_so_when_there_was_nothing_of_amxs_to_remove() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let dir = install::wire_path(&claude::HOOKS.wire, home.path());
+        let dir = install::wire_path(&claude::HOOKS.wire, home.path(), &install::no_env);
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
@@ -299,7 +315,7 @@ mod tests {
 
         let mut said = Vec::new();
         assert_eq!(
-            run(root.path(), home.path(), 2, &mut said).unwrap(),
+            run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap(),
             exit::OK
         );
         assert_eq!(

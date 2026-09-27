@@ -1,16 +1,19 @@
 //! Wiring amx into the vendor's hooks, and taking it back out.
 //!
 //! Everything amx knows about a running agent arrives through the vendor's own
-//! hooks, and every vendor now loads them out of files of amx's own: pi an
-//! extension, claude a plugin directory. Which files, and where, is the
-//! vendor's entry to say; this file writes what the table holds and knows none
-//! of the words itself.
+//! hooks. pi and claude load them out of files of amx's own: pi an extension,
+//! claude a plugin directory. codex has no such door, so amx merges its groups
+//! into codex's `hooks.json` and trusts each in `config.toml`. Which files, and
+//! where, is the vendor's entry to say; this file writes what the table holds
+//! and knows none of the words itself.
 //!
-//! amx edits nobody's settings. It did once, merging seven entries into
+//! amx edited claude's settings once, merging seven entries into
 //! `~/.claude/settings.json` and carrying the rest of the document through a
 //! JSON round trip, and the round trip cost a person their hand formatting
-//! every time. Writing files amx owns outright costs them nothing, and there
-//! is no document to fail to parse.
+//! every time. Writing files amx owns outright costs them nothing. codex's two
+//! files are the exception: the hooks file goes through the same round trip,
+//! the config is edited in place with `toml_edit`, and each is copied aside
+//! before amx first edits it so uninstall can put it back.
 //!
 //! What survives from that door is the one rule worth keeping: **nothing of
 //! somebody's is written over without a copy kept beside it.** Whose a file is
@@ -19,7 +22,9 @@
 //! line cannot tell amx's `SKILL.md` from anybody else's.
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -54,11 +59,56 @@ pub fn home() -> Result<PathBuf> {
     std::env::home_dir().context("no home directory")
 }
 
-/// Where one wire goes, given a home directory: the settings file a vendor
-/// reads its hooks out of, the file amx writes where it loads extensions from,
-/// or the directory of a plugin amx wrote.
-pub fn wire_path(wire: &Wire, home: &Path) -> PathBuf {
-    home.join(wire.path())
+/// How a wire asks for a variable of the environment: the process's own in
+/// the verbs, one of the test's making in a test, so no test ever reads where
+/// the person running it keeps a vendor.
+pub type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
+
+/// The environment this process was started in.
+pub fn process_env(name: &str) -> Option<OsString> {
+    std::env::var_os(name)
+}
+
+/// An environment with nothing set in it, for the tests.
+#[cfg(test)]
+pub fn no_env(_: &str) -> Option<OsString> {
+    None
+}
+
+/// A hooks wire of the tests' own, shaped like codex's: the body is the one
+/// codex's entry ships.
+#[cfg(test)]
+pub const HOOKS_WIRE: Wire = Wire::Hooks {
+    dir_env: "CODEX_HOME",
+    dir: ".codex",
+    body: include_str!("../assets/codex/hooks.json"),
+};
+
+/// Where a vendor that is told its directory by a variable keeps its files:
+/// the variable's value resolved to its real path when it is set and not
+/// empty, else `dir` under the home. codex's own rule for `CODEX_HOME`, which
+/// is also the path its trust keys are spelled with.
+pub fn vendor_dir(set: Option<OsString>, dir: &str, home: &Path) -> PathBuf {
+    match set.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            path.canonicalize().unwrap_or(path)
+        }
+        None => home.join(dir),
+    }
+}
+
+/// Where one wire goes, given a home directory and the environment: the file
+/// amx writes where a vendor loads extensions from, the directory of a plugin
+/// amx wrote, or the directory holding the hooks file amx merges into.
+///
+/// Every verb asks this, so setup, doctor, uninstall and the trust keys all
+/// agree on where codex lives.
+pub fn wire_path(wire: &Wire, home: &Path, env: Env) -> PathBuf {
+    match *wire {
+        Wire::Hooks { dir_env, dir, .. } => vendor_dir(env(dir_env), dir, home),
+        _ => home.join(wire.path()),
+    }
 }
 
 /// The one line a person is asked to agree to before amx writes under their
@@ -78,6 +128,16 @@ pub fn consent_line(wire: &Wire, path: &Path, backup: bool) -> String {
             "amx will write its plugin to {}{and_backup}.",
             path.display()
         ),
+        Wire::Hooks { .. } => format!(
+            "amx will add its hooks to {} and trust them in {}{}.",
+            path.join(HOOKS_FILE).display(),
+            path.join(CONFIG_FILE).display(),
+            if backup {
+                ", keeping a copy of each file as it is now"
+            } else {
+                ""
+            }
+        ),
     }
 }
 
@@ -87,13 +147,14 @@ pub enum Wired {
     /// The vendor reports nothing, so there is nothing to be wired.
     Nothing,
     /// A file wire: whether a file stands at the path, and whether it is the
-    /// one this amx ships.
+    /// one this amx ships. For a hooks wire, whether amx's groups are in the
+    /// hooks file, and whether each is trusted as it stands.
     File { present: bool, current: bool },
 }
 
 /// Read what is wired at one wire, under `home`.
-pub fn wired(wire: &Wire, home: &Path) -> Wired {
-    let path = wire_path(wire, home);
+pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
+    let path = wire_path(wire, home, env);
     match *wire {
         Wire::File { body, .. } => match std::fs::read_to_string(&path) {
             Ok(text) => Wired::File {
@@ -123,15 +184,29 @@ pub fn wired(wire: &Wire, home: &Path) -> Wired {
             }
             Wired::File { present, current }
         }
+        Wire::Hooks { body, .. } => {
+            let Ok(read) = Merge::read(&path, body) else {
+                return Wired::File {
+                    present: false,
+                    current: false,
+                };
+            };
+            let present = read.hooks.as_ref() == Some(&read.merged);
+            Wired::File {
+                present,
+                current: present && read.config_unchanged(),
+            }
+        }
     }
 }
 
 /// Wire one wire under `home`, whichever shape it is.
-pub fn install_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
-    let path = wire_path(wire, home);
+pub fn install_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
+    let path = wire_path(wire, home, env);
     match *wire {
         Wire::File { body, .. } => install_file(&path, body, now),
         Wire::Plugin { files, .. } => install_plugin(&path, files, now),
+        Wire::Hooks { body, .. } => install_hooks(&path, body, now),
     }
 }
 
@@ -143,8 +218,8 @@ pub fn install_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
 /// with nothing at it, and a file already equal to what amx ships are each
 /// written over or skipped with no copy kept; anything else standing there is
 /// copied aside first.
-pub fn would_keep_a_copy(wire: &Wire, home: &Path) -> bool {
-    let path = wire_path(wire, home);
+pub fn would_keep_a_copy(wire: &Wire, home: &Path, env: Env) -> bool {
+    let path = wire_path(wire, home, env);
     match *wire {
         Wire::File { body, .. } => std::fs::read_to_string(&path)
             .is_ok_and(|text| text != body && !is_amx_file(&text, body)),
@@ -153,6 +228,9 @@ pub fn would_keep_a_copy(wire: &Wire, home: &Path) -> bool {
                 && files.iter().any(|(name, body)| {
                     std::fs::read_to_string(path.join(name)).is_ok_and(|text| text != *body)
                 })
+        }
+        Wire::Hooks { body, .. } => {
+            Merge::read(&path, body).is_ok_and(|read| read.copies_hooks() || read.copies_config())
         }
     }
 }
@@ -276,12 +354,429 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
 }
 
 /// Take one wire back out from under `home`, whichever shape it is.
-pub fn uninstall_wire(wire: &Wire, home: &Path, now: u64) -> Result<Report> {
-    let path = wire_path(wire, home);
+pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
+    let path = wire_path(wire, home, env);
     match *wire {
         Wire::File { body, .. } => uninstall_file(&path, body, now),
         Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
+        Wire::Hooks { body, .. } => uninstall_hooks(&path, body),
     }
+}
+
+/// The hooks file a hooks wire merges amx's groups into, in the vendor's
+/// directory.
+pub const HOOKS_FILE: &str = "hooks.json";
+/// The config beside it that says which handlers the person trusts.
+pub const CONFIG_FILE: &str = "config.toml";
+
+/// The hash codex keeps in `trusted_hash` for a group's one handler, and lists
+/// as its `currentHash`.
+///
+/// codex hashes what it made of the handler rather than what was written: the
+/// event under its snake-case name, the matcher where one is written (never
+/// for `user_prompt_submit` or `stop`, which take none), and the handler's
+/// type, command, timeout (600 when none is given) and async (false). The
+/// JSON is serialised compactly with every object's keys sorted — which
+/// `serde_json`'s map is, built without `preserve_order` — and the sha256 of
+/// it is written out byte by byte in lower-case hex.
+pub fn trusted_hash(event_snake: &str, group: &Value) -> String {
+    let handler = &group["hooks"][0];
+    let mut identity = json!({
+        "event_name": event_snake,
+        "hooks": [{
+            "async": handler.get("async").cloned().unwrap_or(json!(false)),
+            "command": handler["command"],
+            "timeout": handler.get("timeout").cloned().unwrap_or(json!(600)),
+            "type": "command",
+        }],
+    });
+    if let Some(matcher) = group.get("matcher").filter(|matcher| !matcher.is_null())
+        && !matches!(event_snake, "user_prompt_submit" | "stop")
+    {
+        identity["matcher"] = matcher.clone();
+    }
+    let digest = Sha256::digest(identity.to_string().as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha256:{hex}")
+}
+
+/// An event's name as codex spells it in a trust key: `PreToolUse` is
+/// `pre_tool_use`.
+fn snake(event: &str) -> String {
+    let mut out = String::new();
+    for (at, c) in event.char_indices() {
+        if c.is_ascii_uppercase() {
+            if at > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The command amx's groups run: the one the shipped hooks file names.
+fn amx_command(shipped: &Value) -> &str {
+    shipped["hooks"]
+        .as_object()
+        .and_then(|events| events.values().next())
+        .and_then(|groups| groups[0]["hooks"][0]["command"].as_str())
+        .unwrap_or_default()
+}
+
+/// Whether a group is amx's: its one handler runs amx's hook command.
+fn is_amx_group(group: &Value, command: &str) -> bool {
+    group["hooks"]
+        .as_array()
+        .is_some_and(|handlers| handlers.len() == 1 && handlers[0]["command"] == command)
+}
+
+/// What a hooks wire finds in the vendor's directory, and what amx would make
+/// of it: both files as they stand, and as they would stand with amx's groups
+/// merged in and trusted.
+struct Merge {
+    hooks_path: PathBuf,
+    config_path: PathBuf,
+    hooks: Option<Value>,
+    merged: Value,
+    config: Option<toml_edit::DocumentMut>,
+    trusted: toml_edit::DocumentMut,
+    /// Whether the hooks file held a group of amx's before the merge.
+    had_groups: bool,
+    /// Whether the config held a trust entry under one of amx's keys.
+    had_trust: bool,
+}
+
+impl Merge {
+    /// Read both files in `dir`, and merge amx's groups in `body` into them.
+    ///
+    /// Each event's array gets amx's group appended, unless a group of amx's
+    /// is already in it; the trust key is the index the group stands at.
+    fn read(dir: &Path, body: &str) -> Result<Merge> {
+        let hooks_path = dir.join(HOOKS_FILE);
+        let config_path = dir.join(CONFIG_FILE);
+        let shipped: Value = serde_json::from_str(body).context("amx's own hooks file")?;
+        let command = amx_command(&shipped);
+        let hooks = match read_text(&hooks_path)? {
+            Some(text) => Some(
+                serde_json::from_str::<Value>(&text)
+                    .with_context(|| format!("reading {}", hooks_path.display()))?,
+            ),
+            None => None,
+        };
+        let config = match read_text(&config_path)? {
+            Some(text) => Some(
+                text.parse::<toml_edit::DocumentMut>()
+                    .with_context(|| format!("reading {}", config_path.display()))?,
+            ),
+            None => None,
+        };
+
+        let mut merged = hooks.clone().unwrap_or_else(|| json!({}));
+        let mut had_groups = false;
+        let mut trust = Vec::new();
+        {
+            let events = merged
+                .as_object_mut()
+                .context("the hooks file is not an object")?
+                .entry("hooks")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .context("its `hooks` is not an object")?;
+            for (event, groups) in shipped["hooks"].as_object().into_iter().flatten() {
+                let list = events
+                    .entry(event.clone())
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .with_context(|| format!("its `{event}` is not a list"))?;
+                for group in groups.as_array().into_iter().flatten() {
+                    let at = match list.iter().position(|it| is_amx_group(it, command)) {
+                        Some(at) => {
+                            had_groups = true;
+                            at
+                        }
+                        None => {
+                            list.push(group.clone());
+                            list.len() - 1
+                        }
+                    };
+                    let snake = snake(event);
+                    trust.push((
+                        format!("{}:{snake}:{at}:0", hooks_path.display()),
+                        trusted_hash(&snake, &list[at]),
+                    ));
+                }
+            }
+        }
+
+        let mut trusted = config.clone().unwrap_or_default();
+        let state = trust_table(&mut trusted)?;
+        let had_trust = trust.iter().any(|(key, _)| state.contains_key(key));
+        for (key, hash) in trust {
+            let entry = state
+                .entry(&key)
+                .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+                .as_table_like_mut()
+                .with_context(|| format!("[hooks.state.\"{key}\"] is not a table"))?;
+            if entry.get("trusted_hash").and_then(|it| it.as_str()) != Some(hash.as_str()) {
+                entry.insert("trusted_hash", toml_edit::value(hash));
+            }
+        }
+
+        Ok(Merge {
+            hooks_path,
+            config_path,
+            hooks,
+            merged,
+            config,
+            trusted,
+            had_groups,
+            had_trust,
+        })
+    }
+
+    /// Whether writing the hooks file would copy it aside first: it is there,
+    /// and amx has never put a group in it.
+    fn copies_hooks(&self) -> bool {
+        self.hooks.is_some() && !self.had_groups
+    }
+
+    /// Whether the config already trusts every group of amx's as it stands.
+    fn config_unchanged(&self) -> bool {
+        self.config
+            .as_ref()
+            .is_some_and(|config| config.to_string() == self.trusted.to_string())
+    }
+
+    /// The same of the config: it is there, and holds no trust of amx's.
+    fn copies_config(&self) -> bool {
+        self.config.is_some() && !self.had_trust
+    }
+}
+
+/// `[hooks.state]` in a codex config, made where it is missing. A table amx
+/// makes is implicit, so a config holding nothing else prints no empty
+/// `[hooks]` header.
+fn trust_table(doc: &mut toml_edit::DocumentMut) -> Result<&mut toml_edit::Table> {
+    let implicit = || {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(true);
+        toml_edit::Item::Table(table)
+    };
+    doc.entry("hooks")
+        .or_insert_with(implicit)
+        .as_table_mut()
+        .context("[hooks] is not a table")?
+        .entry("state")
+        .or_insert_with(implicit)
+        .as_table_mut()
+        .context("[hooks.state] is not a table")
+}
+
+/// A file's text, or `None` when there is no file.
+fn read_text(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Merge amx's groups into the hooks file in `dir` and trust each in the
+/// config beside it, copying either file aside before amx first edits it.
+///
+/// Run again with nothing moved, it writes nothing: both files are compared
+/// with what they would become before either is touched.
+pub fn install_hooks(dir: &Path, body: &str, now: u64) -> Result<Report> {
+    let merge = Merge::read(dir, body)?;
+    let mut report = Report {
+        path: merge.hooks_path.clone(),
+        backup: None,
+        changed: false,
+    };
+    if merge.hooks.as_ref() != Some(&merge.merged) {
+        report.backup = back_up(&merge.hooks_path, now, merge.copies_hooks())?;
+        let text = serde_json::to_string_pretty(&merge.merged)? + "\n";
+        write_bytes(&merge.hooks_path, text.as_bytes())?;
+        report.changed = true;
+    }
+    if !merge.config_unchanged() {
+        let kept = back_up(&merge.config_path, now, merge.copies_config())?;
+        report.backup = report.backup.or(kept);
+        write_bytes(&merge.config_path, merge.trusted.to_string().as_bytes())?;
+        report.changed = true;
+    }
+    Ok(report)
+}
+
+/// Take amx's groups and their trust back out of the files in `dir`.
+///
+/// A file that holds nothing now but what amx added is put back as it was: the
+/// copy kept before amx's first edit goes back byte for byte, and a file amx
+/// made is removed. A file somebody has changed since keeps their change, and
+/// only amx's groups, their `[hooks.state]` tables, and a `[hooks.state]` or
+/// `[hooks]` table that leaves empty come out.
+///
+/// Taking a group out shifts every later group in its event down by one, and
+/// the trust keys are indices: codex asks again about the groups the person
+/// added after amx's, because their keys now name different places.
+pub fn uninstall_hooks(dir: &Path, body: &str) -> Result<Report> {
+    let hooks_path = dir.join(HOOKS_FILE);
+    let config_path = dir.join(CONFIG_FILE);
+    let mut report = Report {
+        path: hooks_path.clone(),
+        backup: None,
+        changed: false,
+    };
+    let shipped: Value = serde_json::from_str(body).context("amx's own hooks file")?;
+    let command = amx_command(&shipped);
+    let Some(text) = read_text(&hooks_path)? else {
+        return Ok(report);
+    };
+    let hooks: Value =
+        serde_json::from_str(&text).with_context(|| format!("reading {}", hooks_path.display()))?;
+    let shown = hooks_path.display().to_string();
+    let keys: Vec<String> = hooks["hooks"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(event, groups)| {
+            let snake = snake(event);
+            let shown = &shown;
+            groups
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter(|(_, group)| is_amx_group(group, command))
+                .map(move |(at, _)| format!("{shown}:{snake}:{at}:0"))
+        })
+        .collect();
+    if keys.is_empty() {
+        return Ok(report);
+    }
+
+    if let Some(text) = read_text(&config_path)? {
+        let mut config = text
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("reading {}", config_path.display()))?;
+        if untrust(&mut config, &keys) {
+            let backup = latest_backup(&config_path)?.filter(|kept| {
+                std::fs::read_to_string(kept)
+                    .ok()
+                    .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+                    .is_some_and(|mut theirs| {
+                        untrust(&mut theirs, &keys);
+                        same_config(&theirs, &config)
+                    })
+            });
+            let empty = config.as_table().is_empty();
+            restore(
+                &config_path,
+                backup.as_deref(),
+                empty,
+                config.to_string().as_bytes(),
+            )?;
+            report.backup = backup;
+        }
+    }
+
+    let stripped = strip(&hooks, command);
+    let backup = latest_backup(&hooks_path)?.filter(|kept| {
+        std::fs::read_to_string(kept)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|theirs| strip(&theirs, command) == stripped)
+    });
+    let empty = stripped == json!({}) || stripped == json!({"hooks": {}});
+    let text = serde_json::to_string_pretty(&stripped)? + "\n";
+    restore(&hooks_path, backup.as_deref(), empty, text.as_bytes())?;
+    report.backup = backup.or(report.backup);
+    report.changed = true;
+    Ok(report)
+}
+
+/// Put a file amx edited back: the copy kept before its first edit when there
+/// is one that still holds everything else the file does, nothing at all when
+/// nothing else is left in it, and otherwise the file without amx's part.
+fn restore(path: &Path, kept: Option<&Path>, empty: bool, rest: &[u8]) -> Result<()> {
+    match kept {
+        Some(kept) => {
+            let bytes =
+                std::fs::read(kept).with_context(|| format!("reading {}", kept.display()))?;
+            write_bytes(path, &bytes)
+        }
+        None if empty => {
+            std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))
+        }
+        None => write_bytes(path, rest),
+    }
+}
+
+/// A hooks file without amx's groups, and without an event amx's group was
+/// the last of. Whether an event's list is empty or missing says the same
+/// thing to codex, so neither is kept.
+fn strip(hooks: &Value, command: &str) -> Value {
+    let mut stripped = hooks.clone();
+    if let Some(events) = stripped["hooks"].as_object_mut() {
+        for groups in events.values_mut() {
+            if let Some(list) = groups.as_array_mut() {
+                list.retain(|group| !is_amx_group(group, command));
+            }
+        }
+        events.retain(|_, groups| groups.as_array().is_none_or(|list| !list.is_empty()));
+    }
+    stripped
+}
+
+/// Take the trust tables under `keys` out of a config, and `[hooks.state]` and
+/// `[hooks]` with them where that leaves them empty. Answers whether there was
+/// any to take.
+fn untrust(config: &mut toml_edit::DocumentMut, keys: &[String]) -> bool {
+    let Some(hooks) = config
+        .get_mut("hooks")
+        .and_then(|it| it.as_table_like_mut())
+    else {
+        return false;
+    };
+    let Some(state) = hooks.get_mut("state").and_then(|it| it.as_table_like_mut()) else {
+        return false;
+    };
+    let mut removed = false;
+    for key in keys {
+        removed |= state.remove(key).is_some();
+    }
+    if !removed {
+        return false;
+    }
+    if state.is_empty() {
+        hooks.remove("state");
+        if hooks.is_empty() {
+            config.remove("hooks");
+        }
+    }
+    true
+}
+
+/// Whether two configs say the same thing, an empty table being the same as
+/// none: codex writes an empty `[hooks.state]` that amx's removal takes away.
+fn same_config(a: &toml_edit::DocumentMut, b: &toml_edit::DocumentMut) -> bool {
+    fn said(doc: &toml_edit::DocumentMut) -> Option<toml::Table> {
+        let mut table = doc.to_string().parse::<toml::Table>().ok()?;
+        prune(&mut table);
+        Some(table)
+    }
+    fn prune(table: &mut toml::Table) {
+        for (_, value) in table.iter_mut() {
+            if let toml::Value::Table(inner) = value {
+                prune(inner);
+            }
+        }
+        table.retain(|_, value| !matches!(value, toml::Value::Table(inner) if inner.is_empty()));
+    }
+    said(a).is_some_and(|a| Some(a) == said(b))
 }
 
 pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
@@ -505,21 +1000,21 @@ mod tests {
     #[test]
     fn install_writes_a_file_wire_whole_and_reads_it_back() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE.wire, home.path());
+        let path = wire_path(&FILE.wire, home.path(), &no_env);
         assert_eq!(
-            wired(&FILE.wire, home.path()),
+            wired(&FILE.wire, home.path(), &no_env),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_wire(&FILE.wire, home.path(), 1).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
         assert_eq!(
-            wired(&FILE.wire, home.path()),
+            wired(&FILE.wire, home.path(), &no_env),
             Wired::File {
                 present: true,
                 current: true
@@ -527,7 +1022,7 @@ mod tests {
         );
 
         // Installed twice is installed once.
-        let again = install_wire(&FILE.wire, home.path(), 2).unwrap();
+        let again = install_wire(&FILE.wire, home.path(), &no_env, 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -535,18 +1030,18 @@ mod tests {
     #[test]
     fn install_replaces_an_older_amx_file_without_keeping_it() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE.wire, home.path());
+        let path = wire_path(&FILE.wire, home.path(), &no_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
         assert_eq!(
-            wired(&FILE.wire, home.path()),
+            wired(&FILE.wire, home.path(), &no_env),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_wire(&FILE.wire, home.path(), 1).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -563,28 +1058,28 @@ mod tests {
         // already equal to amx's are written over or skipped with no copy;
         // somebody else's is copied aside.
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE.wire, home.path());
+        let path = wire_path(&FILE.wire, home.path(), &no_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         assert!(
-            !would_keep_a_copy(&FILE.wire, home.path()),
+            !would_keep_a_copy(&FILE.wire, home.path(), &no_env),
             "nothing stands there"
         );
 
         std::fs::write(&path, file_body()).unwrap();
         assert!(
-            !would_keep_a_copy(&FILE.wire, home.path()),
+            !would_keep_a_copy(&FILE.wire, home.path(), &no_env),
             "already what amx ships"
         );
 
         std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
         assert!(
-            !would_keep_a_copy(&FILE.wire, home.path()),
+            !would_keep_a_copy(&FILE.wire, home.path(), &no_env),
             "an older amx's file is amx's to replace"
         );
 
         std::fs::write(&path, "// somebody else's\n").unwrap();
         assert!(
-            would_keep_a_copy(&FILE.wire, home.path()),
+            would_keep_a_copy(&FILE.wire, home.path(), &no_env),
             "somebody else's file is copied aside"
         );
 
@@ -592,34 +1087,42 @@ mod tests {
         // an empty one holds nothing to copy, and somebody else's is copied
         // file by file before amx's goes over it.
         let ours = TempDir::new().unwrap();
-        install_wire(&claude::HOOKS.wire, ours.path(), 1).unwrap();
-        assert!(!would_keep_a_copy(&claude::HOOKS.wire, ours.path()));
+        install_wire(&claude::HOOKS.wire, ours.path(), &no_env, 1).unwrap();
+        assert!(!would_keep_a_copy(
+            &claude::HOOKS.wire,
+            ours.path(),
+            &no_env
+        ));
 
         let theirs = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, theirs.path());
+        let dir = wire_path(&claude::HOOKS.wire, theirs.path(), &no_env);
         std::fs::create_dir_all(&dir).unwrap();
         assert!(
-            !would_keep_a_copy(&claude::HOOKS.wire, theirs.path()),
+            !would_keep_a_copy(&claude::HOOKS.wire, theirs.path(), &no_env),
             "an empty directory holds nothing to copy"
         );
         std::fs::write(dir.join("SKILL.md"), "their own copy\n").unwrap();
-        assert!(would_keep_a_copy(&claude::HOOKS.wire, theirs.path()));
+        assert!(would_keep_a_copy(
+            &claude::HOOKS.wire,
+            theirs.path(),
+            &no_env
+        ));
     }
 
     #[test]
     fn install_keeps_a_copy_of_a_file_that_is_somebody_elses_and_uninstall_puts_it_back() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE.wire, home.path());
+        let path = wire_path(&FILE.wire, home.path(), &no_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let theirs = "// somebody else's\n";
         std::fs::write(&path, theirs).unwrap();
 
-        let report = install_wire(&FILE.wire, home.path(), 7).unwrap();
+        let report = install_wire(&FILE.wire, home.path(), &no_env, 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
 
-        let report = uninstall_wire(&FILE.wire, home.path(), 8).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 8).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, Some(backup));
         assert_eq!(
@@ -632,21 +1135,21 @@ mod tests {
     #[test]
     fn uninstall_removes_amxs_file_and_leaves_anyone_elses() {
         let home = TempDir::new().unwrap();
-        let path = wire_path(&FILE.wire, home.path());
+        let path = wire_path(&FILE.wire, home.path(), &no_env);
 
         // Nothing there is nothing to do.
-        let report = uninstall_wire(&FILE.wire, home.path(), 1).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
         assert!(!report.changed);
 
-        install_wire(&FILE.wire, home.path(), 1).unwrap();
-        let report = uninstall_wire(&FILE.wire, home.path(), 2).unwrap();
+        install_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 2).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None);
         assert!(!path.exists());
 
         // A file that is not amx's is not amx's to remove.
         std::fs::write(&path, "// theirs\n").unwrap();
-        let report = uninstall_wire(&FILE.wire, home.path(), 3).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 3).unwrap();
         assert!(!report.changed);
         assert!(path.exists());
     }
@@ -663,23 +1166,23 @@ mod tests {
     fn install_writes_a_plugin_whole_and_reads_it_back() {
         let home = TempDir::new().unwrap();
         let (_, files) = plugin();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         assert_eq!(
-            wired(&claude::HOOKS.wire, home.path()),
+            wired(&claude::HOOKS.wire, home.path(), &no_env),
             Wired::File {
                 present: false,
                 current: false
             }
         );
 
-        let report = install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None, "nothing was there to keep");
         for (name, body) in files {
             assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), body);
         }
         assert_eq!(
-            wired(&claude::HOOKS.wire, home.path()),
+            wired(&claude::HOOKS.wire, home.path(), &no_env),
             Wired::File {
                 present: true,
                 current: true
@@ -687,7 +1190,7 @@ mod tests {
         );
 
         // Written twice is written once.
-        let again = install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
+        let again = install_wire(&claude::HOOKS.wire, home.path(), &no_env, 2).unwrap();
         assert!(!again.changed);
         assert_eq!(again.backup, None);
     }
@@ -698,18 +1201,18 @@ mod tests {
         // one an older amx wrote is amx's to overwrite. Keeping a copy of
         // every one of those would leave a backup behind at every upgrade.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
-        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
+        install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
         std::fs::write(dir.join("SKILL.md"), "an older amx's skill\n").unwrap();
         assert_eq!(
-            wired(&claude::HOOKS.wire, home.path()),
+            wired(&claude::HOOKS.wire, home.path(), &no_env),
             Wired::File {
                 present: true,
                 current: false
             }
         );
 
-        let report = install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), &no_env, 2).unwrap();
         assert!(report.changed);
         assert_eq!(
             report.backup, None,
@@ -725,12 +1228,12 @@ mod tests {
         // itself tells them apart. The directory answers instead: one with no
         // manifest of amx's in it is not amx's, and what is in it is kept.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
 
-        let report = install_wire(&claude::HOOKS.wire, home.path(), 7).unwrap();
+        let report = install_wire(&claude::HOOKS.wire, home.path(), &no_env, 7).unwrap();
         let backup = report.backup.expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_ne!(
@@ -739,7 +1242,7 @@ mod tests {
             "and amx's own is what stands there now"
         );
 
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 8).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 8).unwrap();
         assert!(report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -751,17 +1254,17 @@ mod tests {
     #[test]
     fn uninstall_removes_amxs_plugin_and_leaves_anyone_elses() {
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
 
         // Nothing there is nothing to do.
         assert!(
-            !uninstall_wire(&claude::HOOKS.wire, home.path(), 1)
+            !uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 1)
                 .unwrap()
                 .changed
         );
 
-        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
+        install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 2).unwrap();
         assert!(report.changed);
         assert!(!dir.exists(), "and the directory it emptied goes too");
 
@@ -770,7 +1273,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(dir.join(MANIFEST), "{\"name\": \"theirs\"}\n").unwrap();
         std::fs::write(dir.join("SKILL.md"), "theirs\n").unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
         assert!(!report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -784,22 +1287,23 @@ mod tests {
         // that died after it would leave a directory the next run took for
         // amx's own, and the person's skill would go under without a copy.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "---\nname: amx\n---\n\ntheir own copy\n";
         std::fs::write(dir.join("SKILL.md"), theirs).unwrap();
         // A file where the hooks directory goes makes that write fail.
         std::fs::write(dir.join("hooks"), "in the way\n").unwrap();
 
-        install_wire(&claude::HOOKS.wire, home.path(), 1).expect_err("the hooks file cannot go in");
+        install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1)
+            .expect_err("the hooks file cannot go in");
         std::fs::remove_file(dir.join("hooks")).unwrap();
-        install_wire(&claude::HOOKS.wire, home.path(), 2).unwrap();
+        install_wire(&claude::HOOKS.wire, home.path(), &no_env, 2).unwrap();
 
         let kept = latest_backup(&dir.join("SKILL.md"))
             .unwrap()
             .expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&kept).unwrap(), theirs);
-        uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
+        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
             theirs,
@@ -813,17 +1317,18 @@ mod tests {
         // first, a run that died after it would leave the rest of amx's files
         // in a directory no later run would touch.
         let home = TempDir::new().unwrap();
-        let dir = wire_path(&claude::HOOKS.wire, home.path());
-        install_wire(&claude::HOOKS.wire, home.path(), 1).unwrap();
+        let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
+        install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
         // A directory with something in it where amx's skill was cannot be
         // removed as a file.
         std::fs::remove_file(dir.join("SKILL.md")).unwrap();
         std::fs::create_dir_all(dir.join("SKILL.md/in-the-way")).unwrap();
 
-        uninstall_wire(&claude::HOOKS.wire, home.path(), 2).expect_err("the skill cannot go");
+        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 2)
+            .expect_err("the skill cannot go");
         std::fs::remove_dir_all(dir.join("SKILL.md")).unwrap();
         std::fs::write(dir.join("SKILL.md"), "amx's skill\n").unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), 3).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
 
         assert!(report.changed);
         assert!(!dir.exists(), "nothing of amx's is left behind");
@@ -835,7 +1340,10 @@ mod tests {
         // names it in full because that is the thing being agreed to.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
         let plugin = Path::new("/home/dev").join(table.wire.path());
-        assert_eq!(wire_path(&table.wire, Path::new("/home/dev")), plugin);
+        assert_eq!(
+            wire_path(&table.wire, Path::new("/home/dev"), &no_env),
+            plugin
+        );
 
         let asked = consent_line(&table.wire, &plugin, true);
         assert!(asked.contains(&plugin.display().to_string()), "{asked}");
@@ -1026,5 +1534,285 @@ mod tests {
             "{}\n",
             "and whatever it pointed at is untouched"
         );
+    }
+
+    #[test]
+    fn trusted_hash_is_the_hash_codex_lists_for_each_of_amxs_groups() {
+        // The oracle is codex's own `hooks/list` answer for a hooks file in
+        // which amx's four groups sit at index 1 of their events.
+        let hooks: Value =
+            serde_json::from_str(include_str!("../tests/codex/trust/hooks.json")).unwrap();
+        for (event, snake, hash) in [
+            (
+                "SessionStart",
+                "session_start",
+                "sha256:4add63b3f2cf92a907d37f2e9b7b5d7972234d4357db8dd35851c32c02603c53",
+            ),
+            (
+                "UserPromptSubmit",
+                "user_prompt_submit",
+                "sha256:ddebddeb874f57494d55880d6f70adbee7136bb60988e2a9616f5d59ab304738",
+            ),
+            (
+                "PreToolUse",
+                "pre_tool_use",
+                "sha256:62ca2d9301c902140298733d9e0be308345dda945b627cb0385a231adebdc012",
+            ),
+            (
+                "Stop",
+                "stop",
+                "sha256:4de4283a553cfcda6ea020eec3ae1d66555d7f3bce089906e6723de26975e6d7",
+            ),
+        ] {
+            assert_eq!(
+                trusted_hash(snake, &hooks["hooks"][event][1]),
+                hash,
+                "{event}"
+            );
+        }
+        // And a recorder group of the person's, one with a command of its own.
+        assert_eq!(
+            trusted_hash("stop", &hooks["hooks"]["Stop"][0]),
+            "sha256:2281b6dd8a3f60dcc689419f83d97a2095e52bafa7c998eccf3f5c66d863ac71"
+        );
+    }
+
+    /// The oracle's hooks file with amx's groups taken out: seven events, each
+    /// holding one recorder group of the person's.
+    fn their_hooks() -> String {
+        let mut theirs: Value =
+            serde_json::from_str(include_str!("../tests/codex/trust/hooks.json")).unwrap();
+        for groups in theirs["hooks"].as_object_mut().unwrap().values_mut() {
+            groups.as_array_mut().unwrap().truncate(1);
+        }
+        serde_json::to_string_pretty(&theirs).unwrap() + "\n"
+    }
+
+    /// An environment naming `dir` as codex's.
+    fn codex_home(dir: &Path) -> impl Fn(&str) -> Option<OsString> {
+        let dir = dir.as_os_str().to_owned();
+        move |name| (name == "CODEX_HOME").then(|| dir.clone())
+    }
+
+    #[test]
+    fn the_hooks_directory_is_the_variables_real_path_or_the_one_under_home() {
+        let home = TempDir::new().unwrap();
+        let real = TempDir::new().unwrap();
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+
+        let env = codex_home(&link);
+        assert_eq!(
+            wire_path(&HOOKS_WIRE, home.path(), &env),
+            real.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            wire_path(&HOOKS_WIRE, home.path(), &no_env),
+            home.path().join(".codex")
+        );
+        // codex reads an empty CODEX_HOME as none.
+        assert_eq!(
+            vendor_dir(Some(OsString::new()), ".codex", home.path()),
+            home.path().join(".codex")
+        );
+    }
+
+    #[test]
+    fn install_merges_beside_their_groups_and_uninstall_puts_both_files_back() {
+        let home = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let env = codex_home(&dir);
+        let hooks_path = dir.join(HOOKS_FILE);
+        let config_path = dir.join(CONFIG_FILE);
+        let theirs = their_hooks();
+        let shown = hooks_path.display().to_string();
+        let their_config = format!(
+            "model = \"gpt-5.5\"  # theirs\n\n[hooks.state]\n\n[hooks.state.\"{shown}:stop:0:0\"]\ntrusted_hash = \"sha256:2281b6dd8a3f60dcc689419f83d97a2095e52bafa7c998eccf3f5c66d863ac71\"\n"
+        );
+        std::fs::write(&hooks_path, &theirs).unwrap();
+        std::fs::write(&config_path, &their_config).unwrap();
+        assert!(would_keep_a_copy(&HOOKS_WIRE, home.path(), &env));
+        assert_eq!(
+            wired(&HOOKS_WIRE, home.path(), &env),
+            Wired::File {
+                present: false,
+                current: false
+            }
+        );
+
+        let report = install_wire(&HOOKS_WIRE, home.path(), &env, 7).unwrap();
+        assert!(report.changed);
+        assert!(report.backup.is_some());
+        assert!(!home.path().join(".codex").exists(), "the variable wins");
+
+        // Their groups keep their places and amx's land after them, where the
+        // oracle's stood, so the trust amx writes is what codex wrote there.
+        let merged: Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        let oracle: Value =
+            serde_json::from_str(include_str!("../tests/codex/trust/hooks.json")).unwrap();
+        assert_eq!(merged, oracle);
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            config.starts_with("model = \"gpt-5.5\"  # theirs\n"),
+            "{config}"
+        );
+        let written: toml::Table = config.parse().unwrap();
+        let codex_wrote: toml::Table = include_str!("../tests/codex/trust/config.toml")
+            .replace("/tmp/codexmeasure.ohGh/home/hooks.json", &shown)
+            .parse()
+            .unwrap();
+        for event in [
+            "session_start",
+            "user_prompt_submit",
+            "pre_tool_use",
+            "stop",
+        ] {
+            let key = format!("{shown}:{event}:1:0");
+            assert_eq!(
+                written["hooks"]["state"][&key], codex_wrote["hooks"]["state"][&key],
+                "{event}"
+            );
+            assert!(
+                config.contains(&format!("[hooks.state.\"{key}\"]")),
+                "a table of its own, not an inline one: {config}"
+            );
+        }
+        assert_eq!(
+            wired(&HOOKS_WIRE, home.path(), &env),
+            Wired::File {
+                present: true,
+                current: true
+            }
+        );
+        assert!(!would_keep_a_copy(&HOOKS_WIRE, home.path(), &env));
+
+        // Installed twice is installed once, to the byte.
+        let hooks_then = std::fs::read(&hooks_path).unwrap();
+        let config_then = std::fs::read(&config_path).unwrap();
+        let again = install_wire(&HOOKS_WIRE, home.path(), &env, 8).unwrap();
+        assert!(!again.changed);
+        assert_eq!(again.backup, None);
+        assert_eq!(std::fs::read(&hooks_path).unwrap(), hooks_then);
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_then);
+
+        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &env, 9).unwrap();
+        assert!(report.changed);
+        assert_eq!(std::fs::read_to_string(&hooks_path).unwrap(), theirs);
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), their_config);
+    }
+
+    #[test]
+    fn uninstall_removes_the_files_amx_made() {
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&HOOKS_WIRE, home.path(), &no_env);
+        assert!(!would_keep_a_copy(&HOOKS_WIRE, home.path(), &no_env));
+
+        let report = install_wire(&HOOKS_WIRE, home.path(), &no_env, 1).unwrap();
+        assert!(report.changed);
+        assert_eq!(report.backup, None, "nothing was there to keep");
+        let config = std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        assert!(
+            config.starts_with("[hooks.state."),
+            "no empty table above amx's: {config}"
+        );
+
+        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
+        assert!(report.changed);
+        assert!(!dir.join(HOOKS_FILE).exists());
+        assert!(!dir.join(CONFIG_FILE).exists());
+
+        // And nothing of amx's is nothing to do.
+        assert!(
+            !uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 3)
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn uninstall_after_they_changed_the_files_takes_out_amxs_part_alone() {
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&HOOKS_WIRE, home.path(), &no_env);
+        let hooks_path = dir.join(HOOKS_FILE);
+        let config_path = dir.join(CONFIG_FILE);
+        install_wire(&HOOKS_WIRE, home.path(), &no_env, 1).unwrap();
+
+        // A group of their own after amx's, and a line of config.
+        let mut hooks: Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        let theirs = json!({"hooks": [{"type": "command", "command": "notify-send done"}]});
+        hooks["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(theirs.clone());
+        std::fs::write(&hooks_path, serde_json::to_string(&hooks).unwrap()).unwrap();
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        std::fs::write(&config_path, format!("model = \"gpt-5.5\"\n{config}")).unwrap();
+
+        uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
+
+        let left: Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        assert_eq!(left, json!({"hooks": {"Stop": [theirs]}}));
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "model = \"gpt-5.5\"\n"
+        );
+    }
+
+    #[test]
+    fn a_hook_trusted_under_another_hash_or_not_at_all_is_not_wired() {
+        let home = TempDir::new().unwrap();
+        let dir = wire_path(&HOOKS_WIRE, home.path(), &no_env);
+        let config_path = dir.join(CONFIG_FILE);
+        install_wire(&HOOKS_WIRE, home.path(), &no_env, 1).unwrap();
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        let stale = Wired::File {
+            present: true,
+            current: false,
+        };
+
+        let hash = trusted_hash(
+            "stop",
+            &json!({"hooks": [{"type": "command", "command": "amx _hook"}]}),
+        );
+        std::fs::write(&config_path, config.replace(&hash, "sha256:00")).unwrap();
+        assert_eq!(wired(&HOOKS_WIRE, home.path(), &no_env), stale);
+
+        std::fs::remove_file(&config_path).unwrap();
+        assert_eq!(wired(&HOOKS_WIRE, home.path(), &no_env), stale);
+
+        // And setup puts it right without a copy of amx's own edit.
+        let report = install_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
+        assert!(report.changed);
+        assert_eq!(report.backup, None);
+        assert_eq!(
+            wired(&HOOKS_WIRE, home.path(), &no_env),
+            Wired::File {
+                present: true,
+                current: true
+            }
+        );
+
+        std::fs::write(dir.join(HOOKS_FILE), "{\"hooks\": {}}\n").unwrap();
+        assert_eq!(
+            wired(&HOOKS_WIRE, home.path(), &no_env),
+            Wired::File {
+                present: false,
+                current: false
+            }
+        );
+    }
+
+    #[test]
+    fn the_consent_line_names_both_files_a_hooks_wire_edits() {
+        let dir = Path::new("/home/dev/.codex");
+        let asked = consent_line(&HOOKS_WIRE, dir, true);
+        assert!(asked.contains("/home/dev/.codex/hooks.json"), "{asked}");
+        assert!(asked.contains("/home/dev/.codex/config.toml"), "{asked}");
+        assert!(asked.contains("copy"), "{asked}");
+        assert!(!consent_line(&HOOKS_WIRE, dir, false).contains("copy"));
     }
 }
