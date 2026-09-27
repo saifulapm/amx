@@ -29,16 +29,20 @@ pub fn from_env(id: &str, json: bool) -> Result<i32> {
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) -> Result<i32> {
     let view = derive::view(root, id, now)?;
+    // What was sent and not yet taken, which a working agent holds behind its
+    // turn and an idle one holds where a turn cut short by hand left it. One
+    // that has ended will never take it.
+    let queued = match view.phase() {
+        Phase::Working | Phase::Idle => send::queued(&Agent::open(root, id)?.events()?),
+        _ => Vec::new(),
+    };
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(&view.json())?)?;
+        // Always there, empty or not, so a caller reads it without asking
+        // first whether it is.
+        let mut json = view.json();
+        json["queued"] = serde_json::json!(queued);
+        writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
     } else {
-        // What was sent and not yet taken, which a working agent holds behind
-        // its turn and an idle one holds where a turn cut short by hand left
-        // it. One that has ended will never take it.
-        let queued = match view.phase() {
-            Phase::Working | Phase::Idle => send::queued(&Agent::open(root, id)?.events()?),
-            _ => Vec::new(),
-        };
         report(&view, &queued, now, out)?;
     }
     Ok(exit::OK)
@@ -237,6 +241,25 @@ mod tests {
         run(root.path(), &meta.id, false, 5_000, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("  queued    and the linter"), "{text}");
+
+        let mut out = Vec::new();
+        run(root.path(), &meta.id, true, 5_000, &mut out).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(json["queued"], serde_json::json!(["and the linter"]));
+    }
+
+    #[test]
+    fn reader_status_json_says_nothing_is_queued_as_an_empty_list() {
+        // A caller reads the key without asking first whether it is there.
+        let root = tempfile::TempDir::new().unwrap();
+        let mut meta = view(Phase::Idle, Evidence::Record, None, 0).meta;
+        meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
+        Agent::create(root.path(), &meta).unwrap();
+
+        let mut out = Vec::new();
+        run(root.path(), &meta.id, true, 5_000, &mut out).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(json["queued"], serde_json::json!([]), "{json}");
     }
 
     /// The same report, read at a given moment: what amx did to a pane is

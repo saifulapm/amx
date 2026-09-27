@@ -1113,7 +1113,7 @@ amx ls --dir /srv/app  # only the agents working under that directory
 amx ls --dir .         # only this project's
 amx --dir /srv/app     # the same narrowing at the front door, drawn or printed
 amx status <id>        # one agent, and which signal that state came from
-amx status <id> --json #   a `queued` line for each message it has not answered
+amx status <id> --json #   the same, with `queued`: each message it has not answered
 amx rename <id> auth   # call it something else on the wall; the id stays
 amx attach <id>        # hand this terminal to its pane
 amx attach --next      # the agent after this one on the wall
@@ -1122,7 +1122,7 @@ amx attach --waiting   # the first agent with something for you to do
 amx attach --last      # the agent you were in before this one
 amx logs <id>          # the last of what its pane has printed, without attaching
 amx logs <id> --lines 40
-amx send <id> "and now the linter"
+amx send <id> "and now the linter"   # an empty or blank message exits 64
 amx send <id> --file notes.md   # the message, read out of a file; `-` reads stdin
 amx answer <id> y      # the keys a prompt reads: y, n, 1-9, enter, esc
 amx answer <id> 1,3    # a question that takes several: check these two
@@ -1668,7 +1668,9 @@ the conversation's usage, in tokens, off the last turn that sent any;
 `last_words` is what the reader last said, off the same transcript — null
 too where the last turn ended without reaching the vendor, since that turn
 has no words. Both are null where there is no transcript to read, or nothing
-on it yet.
+on it yet. `status --json` adds `queued`, the messages sent and not yet taken,
+oldest first, the same ones the text form prints as `queued` lines; it is
+always there, and `[]` when nothing waits.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
