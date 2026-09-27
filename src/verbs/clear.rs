@@ -189,17 +189,18 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
 
 /// The record as it is now, if it is still finished; asked under its writer.
 ///
-/// A phase that is no longer terminal is an agent somebody brought back, and a
-/// pane that still answers for it is somebody's to read, whatever the phase
-/// says.
+/// Finished the way the reader reads it: a pane that still answers for the
+/// agent is somebody's to read whatever the phase on the record says, and is
+/// what a resume leaves behind it. With no pane, a phase that is not terminal
+/// reads as stopped unless amx let the pane go and means to bring it back.
 fn still_over(agent: &Agent) -> Result<Meta> {
     let meta = agent.meta()?;
-    let phase = agent.state()?.state;
-    if !phase.is_terminal() {
-        bail!("{} is {phase} now", meta.id);
-    }
+    let state = agent.state()?;
     if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
         bail!("{}'s pane is still there", meta.id);
+    }
+    if !state.state.is_terminal() && state.parked_at > 0 {
+        bail!("{} is {} now", meta.id, state.state);
     }
     Ok(meta)
 }
@@ -237,7 +238,7 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
 mod tests {
     use super::*;
     use crate::store::{Phase, State};
-    use crate::tmux::{PaneId, Socket};
+    use crate::tmux::{PaneId, Socket, Spawn};
     use std::io::Read;
     use std::process::Command;
     use tempfile::TempDir;
@@ -325,9 +326,11 @@ mod tests {
     }
 
     /// Somebody at the prompt who, before typing yes, resumes these agents
-    /// from another shell.
+    /// from another shell: a pane placed for each, then the record pointed at
+    /// it and reset, under the writer.
     struct ResumedFirst<'a> {
         root: &'a Path,
+        server: &'a Server,
         ids: &'a [&'a str],
         typed: &'a [u8],
     }
@@ -335,10 +338,23 @@ mod tests {
     impl Read for ResumedFirst<'_> {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             for id in std::mem::take(&mut self.ids) {
+                let (_, pane) = self
+                    .server
+                    .new_session(&Spawn {
+                        name: Some(&format!("amx-{id}")),
+                        command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                        ..Spawn::default()
+                    })
+                    .unwrap();
                 let agent = Agent::open(self.root, id).unwrap();
-                agent
-                    .writer()
-                    .unwrap()
+                let writer = agent.writer().unwrap();
+                writer
+                    .update_meta(|meta| {
+                        meta.socket = self.server.socket().clone();
+                        meta.pane = pane;
+                    })
+                    .unwrap();
+                writer
                     .update_state(|state| state.state = Phase::Starting)
                     .unwrap();
             }
@@ -354,13 +370,18 @@ mod tests {
         let landed = a_finished_agent(root.path(), repo.path(), "landed-c3d", true);
         let left = a_finished_agent(root.path(), repo.path(), "left-e5f", false);
 
+        let server =
+            Server::named(format!("amx-test-clear-{}", std::process::id())).with_conf("/dev/null");
         let mut input = std::io::BufReader::new(ResumedFirst {
             root: root.path(),
+            server: &server,
             ids: &["forgotten-a1b", "landed-c3d"],
             typed: b"y\n",
         });
         let mut out = Vec::new();
-        run(root.path(), false, &mut input, &mut out).unwrap();
+        let cleared = run(root.path(), false, &mut input, &mut out);
+        let _ = server.kill();
+        cleared.unwrap();
         let out = String::from_utf8(out).unwrap();
 
         // All three were on the list, and were finished when it was read:
