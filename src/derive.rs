@@ -1621,7 +1621,10 @@ fn boundary(from: Phase, to: Phase) -> Option<&'static str> {
 /// read — a hook that landed meanwhile is the vendor's own account and wins.
 /// The span closes where the agent was last heard rather than now, as it does
 /// for every writer that is not the vendor speaking — see
-/// [`crate::store::Writer::update_state_heard`].
+/// [`crate::store::Writer::update_state_heard`] — or where a reader last saw
+/// the pane at work, if that is later: a turn cut mid-tool fired its last hook
+/// when the tool began, and the minutes the tool ran were work. See
+/// [`saw_it_working`].
 ///
 /// The process that moved the phase to idle is the one that runs what idle
 /// sets off, once, the same way the hook does: see
@@ -1644,7 +1647,8 @@ fn hear_what_went_unsaid(
         if current.last_event != heard || current.state != phase {
             return Ok(None);
         }
-        let written = writer.update_state_heard(agent.heartbeat(), |current| {
+        let last_sign = agent.heartbeat().max(agent.seen());
+        let written = writer.update_state_heard(last_sign, |current| {
             current.state = to;
             current.asks(None);
             if to == Phase::Idle {
@@ -1672,6 +1676,22 @@ fn hear_what_went_unsaid(
     *state = written;
     if let Some(event) = ended {
         crate::hook::after_the_write(root, agent, meta, phase, state, &event, config);
+    }
+}
+
+/// Stamp [`crate::store::SEEN`] where this look read a reporting vendor's pane
+/// as a turn running, so a turn later cut by hand books its work up to here.
+///
+/// Never fed to [`heard`]: a fresh `heard` skips the screen for [`FRESH`]
+/// seconds, and a look that saw work would put off the look that sees the
+/// prompt by as long.
+fn saw_it_working(agent: &Agent, meta: &Meta, reading: &Reading, now: u64) {
+    if reports(vendor_of(meta))
+        && reading.verdict.evidence == Evidence::Screen
+        && reading.verdict.phase == Phase::Working
+    {
+        // A stamp that cannot be written costs the span its tail, no more.
+        let _ = agent.saw_working(now);
     }
 }
 
@@ -2390,6 +2410,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         let said = worth_writing_down(&meta, &reading);
         write_the_reading(&agent, &mut state, &reading.verdict, said);
     }
+    saw_it_working(&agent, &meta, &reading, now);
     let config = crate::config::current();
     hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
     have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
@@ -2515,6 +2536,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
             let said = worth_writing_down(&meta, &reading);
             write_the_reading(&agent, &mut state, &reading.verdict, said);
         }
+        saw_it_working(&agent, &meta, &reading, now);
         let config = crate::config::current();
         hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
         have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
@@ -6082,6 +6104,89 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             None,
         );
         assert!(!shells.settled);
+    }
+
+    #[test]
+    fn a_turn_cut_mid_tool_books_work_up_to_the_last_working_look() {
+        // The last hook fires as the tool starts, and esc cuts the turn half a
+        // minute later. The screens read in between are the account of that
+        // half minute, and the turn's work runs to the last of them.
+        let cut = |looks: &[u64]| {
+            let root = TempDir::new().unwrap();
+            let mut running = state(Phase::Working, 1_003);
+            running.since = 1_000;
+            let (agent, meta) = a_claude_record(&root, &running);
+            for &now in looks {
+                let look = read(
+                    &running,
+                    0,
+                    true,
+                    || Some(A_WORKING_SCREEN.to_string()),
+                    rules::of("claude"),
+                    true,
+                    now,
+                    1,
+                    None,
+                );
+                saw_it_working(&agent, &meta, &look, now);
+                hear_what_went_unsaid(
+                    root.path(),
+                    &agent,
+                    &meta,
+                    &mut running,
+                    &look,
+                    &nothing_to_run(),
+                );
+            }
+            let prompt = read(
+                &running,
+                0,
+                true,
+                || Some(AN_INTERRUPTED_SCREEN.to_string()),
+                rules::of("claude"),
+                true,
+                1_045,
+                1,
+                None,
+            );
+            saw_it_working(&agent, &meta, &prompt, 1_045);
+            hear_what_went_unsaid(
+                root.path(),
+                &agent,
+                &meta,
+                &mut running,
+                &prompt,
+                &nothing_to_run(),
+            );
+            (root, agent)
+        };
+
+        let (_root, agent) = cut(&(1_010..=1_044).collect::<Vec<_>>());
+        let written = agent.state().unwrap();
+        assert_eq!(written.state, Phase::Idle);
+        assert_eq!(written.worked, 44, "up to the last look that saw work");
+        assert_eq!(agent.seen(), Some(1_044), "the prompt is no sign of work");
+
+        // No look saw work since the hook: the span closes at the hook.
+        let (_root, agent) = cut(&[]);
+        let written = agent.state().unwrap();
+        assert_eq!(written.state, Phase::Idle);
+        assert_eq!(written.worked, 3);
+        assert_eq!(agent.seen(), None);
+
+        // And a look that saw work does not put off the next one: the reader
+        // weighs the vendor's beat, not its own stamp, before taking a screen.
+        let root = TempDir::new().unwrap();
+        let (agent, _) = a_claude_record(&root, &state(Phase::Working, 1_003));
+        agent.saw_working(1_044).unwrap();
+        assert!(wants_the_screen(
+            rules::of("claude"),
+            &state(Phase::Working, 1_003),
+            false,
+            true,
+            1_045,
+            agent.heartbeat(),
+        ));
     }
 
     #[test]

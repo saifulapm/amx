@@ -54,6 +54,11 @@ pub const LIVE: &str = "live";
 /// [`Agent::heartbeat`]. The record's own file rather than any one vendor's:
 /// whichever wire can write here may beat.
 pub const HEARTBEAT: &str = "heartbeat";
+/// When a reader last saw the pane of a vendor that reports say its turn is
+/// running, stamped by the reader on every such look — see [`Agent::seen`].
+/// What a hook-less end of turn books work up to, where esc cut the turn
+/// mid-tool and nothing the vendor fires said it was still at work.
+pub const SEEN: &str = "seen";
 /// What a pane has printed, written by tmux piping the pane here — see
 /// [`crate::spawn::boot`]. A command's whole output, and the first
 /// [`crate::spawn::BOOT_BYTES`] of an agent's pane: the account a vendor
@@ -1072,6 +1077,27 @@ impl Agent {
             .duration_since(UNIX_EPOCH)
             .ok()
             .map(|since| since.as_secs())
+    }
+
+    /// When a reader last saw this agent's pane say its turn is running, in
+    /// epoch seconds — see [`SEEN`]. The file's mtime, as [`heartbeat`]'s is.
+    ///
+    /// [`heartbeat`]: Self::heartbeat
+    pub fn seen(&self) -> Option<u64> {
+        std::fs::metadata(self.dir.join(SEEN))
+            .and_then(|seen| seen.modified())
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|since| since.as_secs())
+    }
+
+    /// Stamp [`SEEN`] at `at`. A reader's note and nothing else, so it takes
+    /// no lock, as the vendor's beat takes none.
+    pub fn saw_working(&self, at: u64) -> Result<()> {
+        let file = File::create(self.dir.join(SEEN))?;
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(at))?;
+        Ok(())
     }
 
     /// What the pane printed, where its boot piped it into the record — see
