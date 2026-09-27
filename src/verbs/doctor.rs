@@ -862,7 +862,7 @@ fn zeroed(root: &Path) -> Vec<(String, u64)> {
         .filter(|record| record.state.worked == 0)
         .filter_map(|record| {
             let worked = derive::worked_off_the_log(&record.agent, &record.meta)?;
-            (worked > 0).then(|| (record.meta.id, worked))
+            (worked > 0).then_some((record.meta.id, worked))
         })
         .collect()
 }
