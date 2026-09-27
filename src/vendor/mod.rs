@@ -17,6 +17,7 @@
 //! and all.
 
 pub mod claude;
+pub mod codex;
 pub mod pi;
 
 /// A vendor that exists to keep this module honest. Test builds only: it is
@@ -193,10 +194,6 @@ pub enum Wire {
     /// The directory is `$<dir_env>` when that is set, else `dir` under the
     /// home; the files in it are `hooks.json` and `config.toml`, and `body`
     /// is a hooks file holding amx's groups and nothing else.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "codex's entry takes it, plan codex-lands t6")
-    )]
     Hooks {
         dir_env: &'static str,
         dir: &'static str,
@@ -566,8 +563,9 @@ pub enum Transcript {
     /// `~/.pi/agent/sessions/` on 2026-09-05.
     Pi,
     /// The rollout codex writes under `$CODEX_HOME/sessions`, each entry
-    /// typed at the top. Nothing of it is read yet: a reading of this shape
-    /// finds nothing said, no answer and no usage.
+    /// typed at the top, with what was said under `response_item` and a
+    /// turn's end under `event_msg`. Measured off codex 0.157.1's rollouts on
+    /// 2026-09-28.
     Codex,
 }
 
@@ -609,7 +607,7 @@ pub const DEFAULT: &str = "default";
 /// change what it answers. The table is the whole of what makes a second
 /// vendor possible, and a test-only [`second`] proves that nothing in here is
 /// shaped around the first.
-static TABLE: [Vendor; 2] = [claude::VENDOR, pi::VENDOR];
+static TABLE: [Vendor; 3] = [claude::VENDOR, pi::VENDOR, codex::VENDOR];
 
 /// The hooks a record's `agent` reports through, read in that vendor's own
 /// words: `None` from a vendor with none.
@@ -758,9 +756,9 @@ mod tests {
     }
 
     #[test]
-    fn the_table_lists_claude_first_and_pi_second() {
+    fn the_table_lists_claude_first_then_pi_then_codex() {
         let names: Vec<_> = table().iter().map(|v| v.name).collect();
-        assert_eq!(names, ["claude", "pi"]);
+        assert_eq!(names, ["claude", "pi", "codex"]);
         assert!(
             !names.contains(&SECOND.name),
             "the second vendor is a fixture, not an agent anybody can spawn"
@@ -773,7 +771,7 @@ mod tests {
         // config keys to obey and nothing to inject. mock-claude is the
         // fixture every end to end test spawns, and it must stay unregistered.
         assert!(find("mock-claude").is_none());
-        assert!(find("codex").is_none());
+        assert!(find("opencode").is_none());
         assert!(find("").is_none());
     }
 
@@ -1460,12 +1458,12 @@ mod tests {
     }
 
     #[test]
-    fn both_vendors_in_the_table_say_what_they_can_be_asked_for_by_name() {
+    fn claude_and_pi_say_what_they_can_be_asked_for_by_name() {
         // A word typed on a task line is completed out of the vendor's own
         // files, and a vendor with no catalog is one with nowhere to look.
-        // Both entries in the table have had their layout measured; the
-        // fixture has not.
-        for vendor in table() {
+        // claude's and pi's layouts have been measured; codex's is plan
+        // codex-lands t8's, and the fixture's nobody's.
+        for vendor in [&claude::VENDOR, &pi::VENDOR] {
             assert!(
                 vendor.catalog.is_some(),
                 "{} says nothing it can be asked for by name",

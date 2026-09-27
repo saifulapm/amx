@@ -464,13 +464,15 @@ pub enum Command {
     ///
     /// The agent is named, and never guessed: `amx setup claude` writes amx's
     /// plugin where claude loads one from, `amx setup pi` writes amx's
-    /// extension where pi loads one from. Either file is copied aside before
-    /// it is touched, and `amx uninstall` puts the copy back.
+    /// extension where pi loads one from, and `amx setup codex` merges amx's
+    /// hooks into codex's `hooks.json` and trusts them in its `config.toml`.
+    /// A file amx did not write is copied aside before it is touched, and
+    /// `amx uninstall` puts the copy back.
     ///
     /// A machine usually has more than one agent on it, so a bare `amx setup`
     /// prints the agents amx has an entry for and writes nothing.
     Setup {
-        /// Which agent to wire: `claude` or `pi`.
+        /// Which agent to wire: `claude`, `pi` or `codex`.
         vendor: Option<String>,
 
         /// Also write what this agent offers beyond reporting.

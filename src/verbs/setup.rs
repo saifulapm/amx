@@ -342,10 +342,10 @@ mod tests {
     fn setup_refuses_a_name_amx_has_no_entry_for() {
         let home = TempDir::new().unwrap();
 
-        let (code, printed) = said(Some("codex"), home.path(), 1);
+        let (code, printed) = said(Some("opencode"), home.path(), 1);
 
         assert_eq!(code, exit::USAGE, "{printed}");
-        assert!(printed.contains("codex"), "it names what was asked for");
+        assert!(printed.contains("opencode"), "it names what was asked for");
         for vendor in registry::entries() {
             assert!(printed.contains(vendor.name), "{printed}");
         }

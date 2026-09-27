@@ -4358,8 +4358,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     // ── codex 0.157.1, measured 2026-09-28 ───────────────────────────────────
-    // codex's document is read straight out of the file here: its entry in the
-    // table comes later, and until it does no agent command reads as codex.
     // Every capture under tests/codex/screens came off a live `codex
     // --no-daemon` in a private tmux server, `capture-pane -p -J`, at the width
     // in its name and forty rows — see docs/codex-screens.md.
@@ -4367,6 +4365,17 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     fn codex() -> Ruleset {
         Ruleset::parse(include_str!("../assets/screen-rules-codex.toml"))
             .expect("codex's screens parse")
+    }
+
+    #[test]
+    fn rules_codex_is_the_document_a_codex_pane_is_read_by() {
+        // The command a record carries is what picks the document, and amx
+        // starts codex with its launch word in front of everything else.
+        let read = of("codex --no-daemon --model gpt-6-luna -- fix the login bug");
+        assert!(std::ptr::eq(read, of("codex")));
+        assert!(std::ptr::eq(read, of("/usr/local/bin/codex --no-daemon")));
+        assert_eq!(named(read), named(&codex()));
+        assert!(!std::ptr::eq(read, of("claude")));
     }
 
     /// A capture file as amx reads the pane it came off: tmux's output with
@@ -4419,10 +4428,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
-    fn rules_codex_gates_a_run_with_trust_hooks_and_the_resume_directory() {
+    fn rules_codex_gates_a_run_with_update_trust_hooks_and_the_resume_directory() {
         assert_eq!(
             gates(&codex()),
-            ["hooks_review", "folder_trust", "cwd_prompt"],
+            ["update", "hooks_review", "folder_trust", "cwd_prompt"],
             "Ruling 7: amx answers none of them, the person does"
         );
     }

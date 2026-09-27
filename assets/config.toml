@@ -188,7 +188,7 @@ park_after = 3600
 # at the front of one spelled out, and amx's own AMX_ID, AMX_BIN, AMX_DIR and
 # AMX_AGENT_DIR go in over the top of whatever you write here.
 #
-# A table that sets none of them says nothing, which is what these two do.
+# A table that sets none of them says nothing, which is what these three do.
 
 [claude]
 # models = ["opus", "sonnet"]
@@ -199,3 +199,9 @@ park_after = 3600
 [pi]
 # models = ["anthropic/claude-opus-4-1", "openai/gpt-5"]
 # args = ["--approve"]
+
+[codex]
+# models = ["gpt-5.5"]
+# args = ["--search"]
+# [codex.env]
+# CODEX_HOME = "~/.codex-work"

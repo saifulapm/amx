@@ -70,12 +70,13 @@
 # `update available ·` is whole at all four widths (24 breaks the line after
 # the dot), and the banner spells it with `!` rather than `·`. `skip until
 # next` is whole on the third choice at every width. Drawn at the top of the
-# pane, so no `within`. Not `setup`: Ruling 7 names three gates and this is not
-# one of them.
+# pane, so no `within`. A `setup` gate (Ruling 7): the person answers it, and
+# amx never picks a choice that would update or skip on their behalf.
 [[rule]]
 name = "update"
 state = "waiting"
 kind = "question"
+setup = true
 all = ["update available ·"]
 any = ["skip until next"]
 

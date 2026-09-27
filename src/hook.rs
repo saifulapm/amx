@@ -3456,6 +3456,66 @@ mod tests {
     }
 
     #[test]
+    fn hook_a_message_steered_into_a_codex_turn_keeps_it_working() {
+        // codex hears a message steered into a running turn as a second
+        // UserPromptSubmit under the same turn_id (Ruling 6): a prompt, which
+        // clears what a prompt clears, and leaves the turn it went into open
+        // and its span unbroken. Both payloads off codex 0.157.1, 2026-09-28.
+        let mut lines = include_str!("../tests/codex/hooks/UserPromptSubmit.jsonl").lines();
+        let (first, steer) = (lines.next().unwrap(), lines.next().unwrap());
+        let turn = |line: &str| serde_json::from_str::<Value>(line).unwrap()["turn_id"].clone();
+        assert_eq!(turn(first), turn(steer), "the steer is the same turn");
+
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("codex --no-daemon".to_string()),
+                session: Some("01a0e495-b6aa-7022-ba93-84d2107c2d0e".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crate::vendor::hooks_for("codex --no-daemon"),
+            Some(crate::vendor::codex::HOOKS)
+        );
+        let send = |line: &str| {
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut line.as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+                None,
+            )
+        };
+        assert_eq!(send(first), exit::OK);
+        let opened = crate::store::now() - 120;
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                assert_eq!(state.state, Phase::Working);
+                state.since = opened;
+                state.worked = 20;
+                state.summary = Some("Running Bash".to_string());
+            })
+            .unwrap();
+
+        assert_eq!(send(steer), exit::OK);
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert!(state.turn_open);
+        assert_eq!(
+            (state.since, state.worked),
+            (opened, 20),
+            "the span is the turn's, unbroken"
+        );
+        assert_eq!(state.summary, None, "a prompt clears what a tool said");
+    }
+
+    #[test]
     fn hook_an_adopted_session_reaches_the_record_that_is_still_running() {
         // One conversation can be on two records: an agent amx started and
         // stopped, and the claude somebody resumed it in by hand and adopted.

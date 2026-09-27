@@ -4919,6 +4919,14 @@ mod tests {
         assert_eq!(profile.effort, "xhigh", "and pi has a level of that name");
         profile.effort = "minimal".to_string();
         profile.cycle_vendor();
+        assert_eq!(profile.agent, "codex");
+        assert_eq!(
+            profile.effort,
+            registry::DEFAULT,
+            "codex has no level called minimal, so the dial rests at the sentinel"
+        );
+        profile.effort = "minimal".to_string();
+        profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
         assert_eq!(
             profile.effort,
@@ -5026,7 +5034,9 @@ mod tests {
         );
 
         profile.cycle_vendor();
-        assert_eq!(profile.agent, "pi", "then the other registered vendor");
+        assert_eq!(profile.agent, "pi", "then the other registered vendors");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "codex");
 
         profile.cycle_vendor();
         assert_eq!(
@@ -5055,6 +5065,8 @@ mod tests {
             "a model belongs to the harness that runs it, so a harness \
              somebody turns to starts at its own answer"
         );
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "codex");
 
         profile.cycle_vendor();
         assert_eq!(
@@ -5071,11 +5083,13 @@ mod tests {
 
     #[test]
     fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
-        // Two registered vendors, so the key walks from claude to pi and a
-        // second press brings it back.
+        // Three registered vendors, so the key walks from claude to pi to
+        // codex and a third press brings it back.
         let mut profile = Profile::default();
         profile.cycle_vendor();
         assert_eq!(profile.agent, "pi");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "codex");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
 
@@ -5089,6 +5103,8 @@ mod tests {
         let mut profile = Profile::open(&config, None, None, None);
         profile.cycle_vendor();
         assert_eq!(profile.agent, "pi");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "codex");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude --add-dir ..");
     }
