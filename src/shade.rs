@@ -25,6 +25,7 @@
 //! decision already made, and this is not amx overruling it: see
 //! [`crate::theme::AUTO`].
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::time::{Duration, Instant};
@@ -214,6 +215,108 @@ pub fn told(said: &str) -> Option<Shade> {
     }
 }
 
+/// The terminal's answer arriving after the wait, as the key loop reads it.
+///
+/// A terminal slower than [`PATIENCE`] still answers, and by then the view is
+/// reading keys: the escape that opens the answer comes through as alt and
+/// `]`, the rest as a key a character, and `:` and `/` among them would open a
+/// line on the list. This holds on to a run of keys for as long as it could
+/// still be an answer, drops it whole when it is one, and hands it back in
+/// order when it turns out to be somebody typing.
+#[derive(Default)]
+pub struct Late {
+    held: Vec<KeyEvent>,
+}
+
+/// What an answer spells between the escape that opens it and its colour.
+const SPELT: &str = "11;rgb:";
+
+impl Late {
+    /// The keys to act on now that this one has arrived, which is none while
+    /// a run is held and none when the run was an answer.
+    pub fn hear(&mut self, key: KeyEvent) -> Vec<KeyEvent> {
+        if self.held.is_empty() {
+            return match opens(&key) {
+                true => {
+                    self.held.push(key);
+                    Vec::new()
+                }
+                false => vec![key],
+            };
+        }
+        let spelt = self.spelt();
+        if closes(&key) {
+            // `said` reads the colour the way it reads one from the wait.
+            return match said(&format!("\x1b]{spelt}\x07")) {
+                Some(_) => {
+                    self.held.clear();
+                    Vec::new()
+                }
+                None => self.with(key),
+            };
+        }
+        match plain(&key) {
+            Some(c) if could_be(&format!("{spelt}{c}")) => {
+                self.held.push(key);
+                Vec::new()
+            }
+            _ => self.with(key),
+        }
+    }
+
+    /// Whether a run is held, waiting to see whether it is an answer.
+    pub fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// The keys held, handed back because nothing more is coming: a run that
+    /// stops short of a terminator is somebody's typing.
+    pub fn let_go(&mut self) -> Vec<KeyEvent> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// What the held run spells after the escape that opened it.
+    fn spelt(&self) -> String {
+        self.held[1..].iter().filter_map(plain).collect()
+    }
+
+    /// The held run and this key after it, all of it somebody's typing.
+    fn with(&mut self, key: KeyEvent) -> Vec<KeyEvent> {
+        let mut keys = self.let_go();
+        keys.push(key);
+        keys
+    }
+}
+
+/// Alt and `]`, which is how the escape opening an answer is read.
+fn opens(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char(']') && key.modifiers == KeyModifiers::ALT
+}
+
+/// Control and `g` for a bell, or alt and `\` for the other terminator.
+fn closes(key: &KeyEvent) -> bool {
+    matches!(
+        (key.code, key.modifiers),
+        (KeyCode::Char('g'), KeyModifiers::CONTROL) | (KeyCode::Char('\\'), KeyModifiers::ALT)
+    )
+}
+
+/// The character a key is, when it is one typed with no chord.
+fn plain(key: &KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Char(c) if (key.modifiers - KeyModifiers::SHIFT).is_empty() => Some(c),
+        _ => None,
+    }
+}
+
+/// Whether text could still grow into an answer's body.
+fn could_be(text: &str) -> bool {
+    match text.strip_prefix(SPELT) {
+        Some(colour) => colour.chars().all(|c| c.is_ascii_hexdigit() || c == '/'),
+        None => SPELT.starts_with(text),
+    }
+}
+
 /// Whether a colour is one to paint dark words on.
 ///
 /// Rec. 709 luminance, which is the weighting that says green carries most of
@@ -326,6 +429,60 @@ mod tests {
         let mut kept = [0u8; 1];
         nix::unistd::read(&pty.slave, &mut kept).expect("the key, still there");
         assert_eq!(&kept, b"j");
+    }
+
+    /// A reply as the key loop reads it: alt and `]` for the escape that
+    /// opens it, a key a character, and the terminator either way it is spelt.
+    fn as_keys(answer: &str, bell: bool) -> Vec<KeyEvent> {
+        let mut keys = vec![KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT)];
+        keys.extend(answer.chars().map(|c| KeyEvent::from(KeyCode::Char(c))));
+        keys.push(match bell {
+            true => KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            false => KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT),
+        });
+        keys
+    }
+
+    /// What comes out of the recogniser for a run of keys, and then whatever
+    /// it was still holding when the keys stopped.
+    fn through(keys: &[KeyEvent]) -> Vec<KeyEvent> {
+        let mut late = Late::default();
+        let mut out: Vec<KeyEvent> = keys.iter().flat_map(|key| late.hear(*key)).collect();
+        out.extend(late.let_go());
+        out
+    }
+
+    #[test]
+    fn a_reply_arriving_after_the_wait_is_dropped_whole() {
+        // Past the wait, the answer reaches the key loop as keys, and `:` and
+        // `/` in it would open a line. None of it gets through.
+        for bell in [true, false] {
+            let reply = as_keys("11;rgb:ffff/ffff/ffff", bell);
+            let mut late = Late::default();
+            for key in &reply {
+                assert!(late.hear(*key).is_empty(), "{key:?} held or dropped");
+            }
+            assert!(late.let_go().is_empty(), "and nothing left over");
+        }
+    }
+
+    #[test]
+    fn keys_a_person_types_reach_the_list() {
+        let colon = KeyEvent::from(KeyCode::Char(':'));
+        let slash = KeyEvent::from(KeyCode::Char('/'));
+        assert_eq!(through(&[colon, slash]), vec![colon, slash]);
+
+        // Alt and `]` alone is held only until the keys stop.
+        let bracket = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT);
+        let mut late = Late::default();
+        assert!(late.hear(bracket).is_empty());
+        assert!(late.holding());
+        assert_eq!(late.let_go(), vec![bracket]);
+
+        // And one followed by something no reply spells gives both back, in
+        // the order they were typed.
+        let j = KeyEvent::from(KeyCode::Char('j'));
+        assert_eq!(through(&[bracket, j, slash]), vec![bracket, j, slash]);
     }
 
     #[test]

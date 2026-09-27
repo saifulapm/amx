@@ -156,6 +156,57 @@ impl Keys for Keyboard {
     }
 }
 
+/// The keys, less a shade answer that arrived after the probe stopped
+/// waiting for it: see [`crate::shade::Late`].
+struct Unanswered<K> {
+    keys: K,
+    late: crate::shade::Late,
+    /// What has been read and is still to be handed on, in order.
+    ready: std::collections::VecDeque<Typed>,
+}
+
+/// How long a run that could be an answer waits for its next key. An answer
+/// is sent in one write, so the rest of it is already there to be read.
+const HOLD: Duration = Duration::from_millis(50);
+
+impl<K: Keys> Unanswered<K> {
+    fn new(keys: K) -> Self {
+        Unanswered {
+            keys,
+            late: crate::shade::Late::default(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl<K: Keys> Keys for Unanswered<K> {
+    fn next(&mut self, patience: Duration) -> Typed {
+        while self.ready.is_empty() {
+            let holding = self.late.holding();
+            let wait = match holding {
+                true => patience.min(HOLD),
+                false => patience,
+            };
+            match self.keys.next(wait) {
+                Typed::Key(key) => self
+                    .ready
+                    .extend(self.late.hear(key).into_iter().map(Typed::Key)),
+                Typed::Nothing if !holding => return Typed::Nothing,
+                // Whatever is not a key ends the run, and what was held is
+                // somebody's typing that came before it.
+                other => {
+                    self.ready
+                        .extend(self.late.let_go().into_iter().map(Typed::Key));
+                    if !matches!(other, Typed::Nothing) {
+                        self.ready.push_back(other);
+                    }
+                }
+            }
+        }
+        self.ready.pop_front().unwrap_or(Typed::Nothing)
+    }
+}
+
 /// Whether the view goes round again.
 enum Doing {
     Carry,
@@ -807,7 +858,7 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
         cap,
         scope,
         &mut terminal,
-        &mut Keyboard,
+        &mut Unanswered::new(Keyboard),
         Here::read(),
         remembering.as_deref(),
         &mut TitleBar,
@@ -11402,6 +11453,39 @@ diff --git a/src/bar.rs b/src/bar.rs
             ended.is_none(),
             "and nothing behind it was taken off the queue"
         );
+    }
+
+    #[test]
+    fn a_late_shade_reply_never_reaches_the_list_and_typing_still_does() {
+        // A terminal slower than the shade probe's wait answers into the key
+        // loop, where its `:` and `/` would open a line. It is dropped whole;
+        // the same keys typed by somebody, and alt and `]` alone, get through.
+        let mut script: Vec<Typed> = vec![Typed::Key(alt(']'))];
+        script.extend(
+            word("11;rgb:ffff/ffff/ffff")
+                .into_iter()
+                .map(|code| Typed::Key(code.into())),
+        );
+        script.push(Typed::Key(ctrl('g')));
+        script.extend([':', '/'].map(|c| Typed::Key(KeyCode::Char(c).into())));
+        script.push(Typed::Key(alt(']')));
+        script.push(Typed::Nothing);
+        let mut keys = Unanswered::new(Script(script.into_iter()));
+
+        let mut reached = Vec::new();
+        loop {
+            match keys.next(Duration::ZERO) {
+                Typed::Key(key) => reached.push(key),
+                Typed::Gone => break,
+                _ => {}
+            }
+        }
+        let typed: Vec<KeyEvent> = vec![
+            KeyCode::Char(':').into(),
+            KeyCode::Char('/').into(),
+            alt(']'),
+        ];
+        assert_eq!(reached, typed);
     }
 
     /// More finished agents than a band in one of these frames is tall, so
