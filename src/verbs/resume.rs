@@ -10,20 +10,23 @@
 //! has the session and not the command, because amx never started it, and it
 //! goes back the way it came: by hand.
 //!
-//! Two orderings here are the whole of the verb's correctness. The record is
-//! put back to `starting` **before** the pane exists, because a pane starts
-//! hooking the moment it does and a record that still says the agent ended
-//! would turn those hooks away — including the one carrying the new session
-//! id. And the pane is placed **before** the record learns where it is, since
-//! there is no pane id to record until tmux has made one.
+//! Two orderings here are the whole of the verb's correctness. The pane is
+//! placed **before** the record is touched, since there is no pane id to
+//! record until tmux has made one, and a place that fails must leave the agent
+//! as it ended rather than starting over a pane that never came. And the whole
+//! of the record — the pane, then the reset to `starting` — is written under
+//! the writer **before** the new pane can be heard from: a pane starts hooking
+//! the moment it exists, and its hooks wait at that lock, so none of them meets
+//! a record that still says the agent ended and turns away — including the one
+//! carrying the new session id.
 //!
 //! A message rides the same command. It is the first turn of the agent that
 //! comes back, and it travels on the vendor's argv rather than as a `send`
 //! afterwards: a send confirms itself against the pane within five seconds and
 //! a vendor is still starting then, while the argv is the one road that cannot
 //! race the vendor's startup. What the log gets is the send anyway, written
-//! before the pane exists, so a `result` in another shell waits for the turn
-//! the message asks for rather than handing back the turn before it.
+//! before the vendor can say anything, so a `result` in another shell waits for
+//! the turn the message asks for rather than handing back the turn before it.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -320,6 +323,36 @@ fn bring_back(
     spawn::write_boot_env(agent.dir(), &env)?;
     spawn::write_handoff(agent.dir(), &handed_on(&recorded, session, message))?;
 
+    // The pane before the record: until tmux has made one there is nothing
+    // true to write, and a place that fails leaves the agent as it ended —
+    // its answer, its exit and its log — with nothing beside it for a boot
+    // that will never come.
+    let server = spawn::server()?;
+    let boot = vec![
+        std::env::current_exe()?.to_string_lossy().into_owned(),
+        "_boot".to_string(),
+        id.to_string(),
+    ];
+    // The session the agent had is gone with the pane that held it, and the
+    // one this makes wears the same name: an id is what addresses an agent,
+    // whichever pane it is in this time.
+    let pane = match spawn::place(&server, id, &dir, &boot) {
+        Ok(pane) => pane,
+        Err(e) => {
+            let _ = std::fs::remove_file(agent.dir().join(spawn::BOOT_ENV));
+            spawn::write_handoff(agent.dir(), &recorded)?;
+            return Err(e);
+        }
+    };
+
+    // Still under the writer taken at the top: a hook the new pane fires
+    // waits at the lock until all of this is on the record. The pane goes
+    // first, so a reader that finds the record starting again finds it
+    // naming the pane it is starting in.
+    writer.update_meta(|meta| {
+        meta.socket = server.socket().clone();
+        meta.pane = pane;
+    })?;
     writer.append(&Event::new(
         RESUMED,
         serde_json::json!({ "session": session }),
@@ -333,12 +366,12 @@ fn bring_back(
             ..state.for_a_new_session()
         }
     })?;
-    // A message is on the record before the pane is, which is
+    // A message is on the record before the vendor can say anything, which is
     // [`send::deliver`]'s order and for its reason: a `result` in another shell
     // reads the last send to know which turn it is waiting for, and one written
-    // after the vendor was up would leave a window in which the turn before the
-    // message read as this one's answer. There is no paste to go with it —
-    // the message is already in the argv the pane is about to run.
+    // after the vendor was heard would leave a window in which the turn before
+    // the message read as this one's answer. There is no paste to go with it —
+    // the message is already in the argv the pane runs.
     if let Some(message) = message {
         writer.append(&Event::new(
             send::SEND,
@@ -346,25 +379,6 @@ fn bring_back(
         ))?;
         writer.observe(|state| state.seq += 1)?;
     }
-
-    let server = spawn::server()?;
-    let boot = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
-        "_boot".to_string(),
-        id.to_string(),
-    ];
-    // The session the agent had is gone with the pane that held it, and the
-    // one this makes wears the same name: an id is what addresses an agent,
-    // whichever pane it is in this time.
-    let pane = spawn::place(&server, id, &dir, &boot)?;
-
-    // Still under the writer taken at the top: a hook the new pane fires
-    // waits at the lock until the pane is on the record, and update_meta
-    // reads before it writes, so nothing a hook recorded earlier is lost.
-    writer.update_meta(|meta| {
-        meta.socket = server.socket().clone();
-        meta.pane = pane;
-    })?;
     Ok(())
 }
 

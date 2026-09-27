@@ -576,15 +576,21 @@ fn keeping_output(meta: &Meta, dir: &Path) -> String {
 /// vendor that dies before its first hook says why before it draws, and a
 /// vendor that draws on for an hour costs a record nothing.
 ///
-/// The pane is addressed on the server its record names rather than on
-/// whichever one this process can see: `_boot` runs in the pane, and the pane
-/// belongs to the server that made it.
+/// The pane is the one `_boot` runs in, as tmux told it, rather than the one
+/// its record names: a resume writes the new pane on the record only once tmux
+/// has made it, and a boot that read the record first would pipe the pane the
+/// agent had before. The server is the one tmux told it too, else the one the
+/// record names.
 ///
 /// The pipe is a shell command the tmux server runs, so the path goes in as
 /// one word a shell reads whole — [`quoted`] is what makes it one.
 fn keep_output(meta: &Meta, command: &str) -> Result<()> {
-    let server = Server::from_socket(meta.socket.clone());
-    server.pipe_pane(&meta.pane, command)
+    let pane = std::env::var("TMUX_PANE").context("reading $TMUX_PANE")?;
+    let server = std::env::var("TMUX")
+        .ok()
+        .and_then(|inside| Server::from_tmux_env(&inside))
+        .unwrap_or_else(|| Server::from_socket(meta.socket.clone()));
+    server.pipe_pane(&PaneId::new(pane)?, command)
 }
 
 /// A path as one word, whatever is in it.

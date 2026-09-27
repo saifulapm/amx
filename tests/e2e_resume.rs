@@ -624,11 +624,11 @@ fn resume_puts_a_message_to_the_agent_it_brings_back() {
 }
 
 #[test]
-fn resume_records_the_message_as_a_send_before_the_pane_exists() {
+fn resume_records_the_message_as_a_send_before_the_vendor_speaks() {
     // `result` hands back the turn after the last message amx sent, so a send
     // written once the vendor was up would leave a window in which `result`
     // answered with the turn before. The record is written under the writer's
-    // lock, before tmux is asked for anything.
+    // lock, which the new pane's hooks wait at.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -671,6 +671,130 @@ fn resume_records_the_message_as_a_send_before_the_pane_exists() {
         "{:?}",
         amx.event_kinds(id)
     );
+}
+
+#[test]
+fn resume_that_cannot_place_a_pane_leaves_the_record_as_it_was() {
+    // tmux refuses a second session under a name it already has, and every
+    // pane amx places sits in one called `amx-<id>`: a squatter on the name is
+    // a place that fails after every check in front of it passed.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    ran_and_stopped(&amx, id);
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        &format!("amx-{id}"),
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+    let (state, meta, handoff, events) =
+        (amx.state(id), amx.meta(id), amx.handoff(id), amx.events(id));
+
+    let out = resume(&amx, &[id, "and now the linter"]);
+
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        amx.state(id),
+        state,
+        "the answer and exit are the ones it ended with"
+    );
+    assert_eq!(amx.meta(id), meta, "the record names the pane it had");
+    assert_eq!(
+        amx.handoff(id),
+        handoff,
+        "a later resume starts from what it had"
+    );
+    assert_eq!(
+        amx.events(id),
+        events,
+        "nothing was said to a pane that never came"
+    );
+    assert!(
+        !amx.agent_dir(id).join("boot-env.json").exists(),
+        "the environment is not left beside a record no boot will read"
+    );
+}
+
+#[test]
+fn resume_never_shows_a_reader_a_fresh_record_naming_the_old_pane() {
+    // A record back at `starting` over a pane that is gone reads as an agent
+    // that died starting. The pane is placed before the record is touched, and
+    // the record learns the pane before it is reset, so a reader that takes the
+    // state first and then the pane never finds the two apart.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let gone = ran_and_stopped(&amx, id);
+
+    let mut resuming = amx
+        .amx_command(&["resume", id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+        .spawn()
+        .expect("running amx resume");
+    let mut seen = Vec::new();
+    while resuming
+        .try_wait()
+        .expect("waiting for amx resume")
+        .is_none()
+    {
+        let state = amx.state(id)["state"].clone();
+        let pane = amx.meta(id)["pane"].clone();
+        if state != "stopped" && pane == gone.as_str() {
+            seen.push(state);
+        }
+    }
+    assert!(resuming.wait().expect("amx resume").success());
+    assert!(seen.is_empty(), "read {seen:?} over the pane that went");
+    assert_ne!(amx.pane_of(id), gone);
+}
+
+#[test]
+fn boot_keeps_what_its_own_pane_prints_and_not_the_recorded_one() {
+    // A resume writes the new pane on the record only once tmux has made it,
+    // so the boot in that pane can start while the record still names the
+    // pane before. Here the record names another pane outright, and what is
+    // kept has to be what the boot's own pane printed.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let elsewhere = amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        "while :; do echo somebody else; sleep 0.05; done",
+    ]);
+    amx.record(id, &elsewhere);
+    let dir = amx.agent_dir(id);
+    std::fs::write(
+        dir.join("handoff.json"),
+        json!({ "task": "fix the login bug", "command": ["echo", "booted here"] }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(dir.join("boot-env.json"), "{}").unwrap();
+
+    let pane = amx.in_a_terminal(&[], &["_boot", id]);
+    until_pane_gone(&amx, &pane);
+
+    let output = dir.join("output");
+    let kept = amx.until("the boot's words in the record", || {
+        std::fs::read_to_string(&output)
+            .ok()
+            .filter(|kept| !kept.is_empty())
+    });
+    assert!(kept.contains("booted here"), "{kept:?}");
+    assert!(!kept.contains("somebody else"), "{kept:?}");
 }
 
 #[test]
