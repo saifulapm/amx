@@ -549,10 +549,10 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
     server.set_session_option(&session, "remain-on-exit", "off")?;
     // A detached pane has no terminal behind it to answer a program asking
     // for the background, and one that tints itself off the answer draws
-    // untinted. tmux answers from `window-style` instead: the colour the view
-    // last read off the terminal, where it kept one.
-    if let Some(colour) = crate::shade::remembered(&crate::paths::state_root()?) {
-        server.set_session_option(&session, "window-style", &format!("bg={colour}"))?;
+    // untinted. tmux answers from `window-style` instead: the colours the view
+    // last read off the terminal, where it kept them.
+    if let Some(style) = crate::shade::remembered(&crate::paths::state_root()?) {
+        server.set_session_option(&session, "window-style", &style)?;
     }
     Ok(pane)
 }

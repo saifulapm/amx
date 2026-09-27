@@ -2802,11 +2802,12 @@ fn a_role_is_refused_beside_a_shell_command() {
 }
 
 /// What a command in a pane amx spawned hears back when it asks its terminal
-/// for the background (OSC 11), with a second of silence taken as no answer.
+/// for its foreground and background (OSC 10 and 11, in one write, the way codex
+/// asks), with a second of silence taken as no answer.
 fn background_answered(amx: &Harness, id: &str) -> String {
     let reply = amx.home().join("reply");
     let script = format!(
-        r"stty raw -echo min 0 time 10; printf '\033]11;?\033\\'; cat > '{}'",
+        r"stty raw -echo min 0 time 10; printf '\033]10;?\033\\\033]11;?\033\\'; cat > '{}'",
         reply.display()
     );
     let out = amx
@@ -2825,8 +2826,26 @@ fn background_answered(amx: &Harness, id: &str) -> String {
 #[test]
 fn a_spawned_pane_answers_for_the_remembered_background() {
     // A detached pane has no terminal behind it to answer, and a program that
-    // tints itself off the answer draws untinted. The colour the view last
-    // read off the terminal is what tmux answers with instead.
+    // tints itself off the answer draws untinted. The colours the view last
+    // read off the terminal are what tmux answers with instead, both of them:
+    // codex uses neither unless it gets the pair.
+    let amx = Harness::new();
+    std::fs::write(
+        amx.state_root().parent().unwrap().join("background"),
+        "fg=#e5e0dc,bg=#211b1b\n",
+    )
+    .unwrap();
+
+    let heard = background_answered(&amx, "ask-bg-a1b");
+
+    assert!(heard.contains("10;rgb:e5e5/e0e0/dcdc"), "{heard:?}");
+    assert!(heard.contains("11;rgb:2121/1b1b/1b1b"), "{heard:?}");
+}
+
+#[test]
+fn a_spawned_pane_answers_for_a_background_kept_alone() {
+    // What the view kept before it kept the foreground too: a bare colour,
+    // painted as the background and nothing else.
     let amx = Harness::new();
     std::fs::write(
         amx.state_root().parent().unwrap().join("background"),
@@ -2834,9 +2853,10 @@ fn a_spawned_pane_answers_for_the_remembered_background() {
     )
     .unwrap();
 
-    let heard = background_answered(&amx, "ask-bg-a1b");
+    let heard = background_answered(&amx, "ask-bg-c3d");
 
-    assert!(heard.contains("rgb:2323/1f1f/1f1f"), "{heard:?}");
+    assert!(heard.contains("11;rgb:2323/1f1f/1f1f"), "{heard:?}");
+    assert!(!heard.contains("10;rgb:"), "{heard:?}");
 }
 
 #[test]

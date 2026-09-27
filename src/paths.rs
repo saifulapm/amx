@@ -80,8 +80,9 @@ pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
 /// What that file is called.
 const VISITED: &str = "visited.json";
 
-/// The background colour the view last read off its terminal, as `#rrggbb`,
-/// for the panes amx starts to wear.
+/// The colours the view last read off its terminal, as the tmux style
+/// `fg=#rrggbb,bg=#rrggbb` (or `bg=#rrggbb` alone), for the panes amx starts
+/// to wear.
 ///
 /// Beside the agents for the same reason the view's file is, and beside them
 /// the way the spawn lock is: every caller has a root with a parent.

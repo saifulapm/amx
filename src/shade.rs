@@ -41,10 +41,14 @@ pub enum Shade {
     Dark,
 }
 
-/// The escape that asks a terminal what its background colour is: xterm's
-/// `OSC 11 ; ? ST`, which every terminal amx has been drawn on either answers
-/// or ignores.
-const ASK: &str = "\x1b]11;?\x1b\\";
+/// The escapes that ask a terminal what its foreground and background colours
+/// are: xterm's `OSC 10 ; ? ST` and `OSC 11 ; ? ST`, in one write, which every
+/// terminal amx has been drawn on either answers or ignores.
+///
+/// Both, because the panes amx starts are painted with both: codex asks the
+/// two together and tints nothing unless both are answered, and tmux answers
+/// the foreground only from a `window-style` that carries one.
+const ASK: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
 
 /// How long an answer is waited for.
 ///
@@ -133,13 +137,14 @@ fn set(fd: BorrowedFd<'_>, how: &nix::sys::termios::Termios) -> Option<()> {
     nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSANOW, how).ok()
 }
 
-/// Read until the answer is whole or the patience runs out.
+/// Read until both answers are whole or the patience runs out.
 ///
-/// Whole is the terminator, which is the one thing that says the rest of the
-/// answer is not still arriving: a colour is sent in one write by every
-/// terminal measured, and an answer cut in half reads as a darker colour than
-/// it is. Either terminator, because the two spellings are the same escape —
-/// see [`crate::ansi`], which reads them the same way.
+/// Whole is two terminators, one a reply, which is the one thing that says the
+/// rest is not still arriving: a colour is sent in one write by every terminal
+/// measured, and an answer cut in half reads as a darker colour than it is.
+/// Either terminator, because the two spellings are the same escape — see
+/// [`crate::ansi`], which reads them the same way. A terminal that answers the
+/// background alone is waited out, and its background is still what it said.
 fn listen(input: &mut impl Read) -> Option<String> {
     let deadline = Instant::now() + PATIENCE;
     let mut heard = Vec::new();
@@ -156,7 +161,9 @@ fn listen(input: &mut impl Read) -> Option<String> {
         if heard.first() != Some(&b'\x1b') {
             break;
         }
-        if heard.contains(&b'\x07') || heard.windows(2).any(|pair| pair == b"\x1b\\") {
+        let ended = heard.iter().filter(|&&byte| byte == b'\x07').count()
+            + heard.windows(2).filter(|pair| pair == b"\x1b\\").count();
+        if ended >= 2 {
             break;
         }
     }
@@ -165,11 +172,29 @@ fn listen(input: &mut impl Read) -> Option<String> {
 
 /// What a terminal's answer says its background is.
 pub fn said(answer: &str) -> Option<Shade> {
-    let (red, green, blue) = background_of(answer)?;
+    let (red, green, blue) = colours_of(answer).1?;
     Some(shade_of(red.into(), green.into(), blue.into()))
 }
 
-/// The colour a terminal's answer names, a byte a channel.
+/// A colour, a byte a channel.
+pub type Rgb = (u8, u8, u8);
+
+/// The foreground and the background a terminal's answer names, a byte a
+/// channel: the reply to `10` and the reply to `11`, in whichever order they
+/// arrived, and nothing for one that did not.
+pub fn colours_of(answer: &str) -> (Option<Rgb>, Option<Rgb>) {
+    let (mut foreground, mut background) = (None, None);
+    for reply in answer.split("\x1b]") {
+        if let Some(body) = reply.strip_prefix("10;") {
+            foreground = foreground.or_else(|| colour_of(body));
+        } else if let Some(body) = reply.strip_prefix("11;") {
+            background = background.or_else(|| colour_of(body));
+        }
+    }
+    (foreground, background)
+}
+
+/// The colour one reply names.
 ///
 /// The colour is written `rgb:` and then the three channels in hex, separated
 /// by slashes, each of them one to four digits wide — a terminal answering in
@@ -179,10 +204,9 @@ pub fn said(answer: &str) -> Option<Shade> {
 /// Anything else is nothing rather than a guess. An answer amx cannot read is
 /// a terminal amx has not measured, and painting a light palette onto a dark
 /// screen is worse than painting the one everybody had before.
-pub fn background_of(answer: &str) -> Option<(u8, u8, u8)> {
-    let channels: Vec<&str> = answer
-        .split_once("rgb:")?
-        .1
+fn colour_of(reply: &str) -> Option<(u8, u8, u8)> {
+    let channels: Vec<&str> = reply
+        .strip_prefix("rgb:")?
         .split(|c: char| !c.is_ascii_hexdigit() && c != '/')
         .next()?
         .split('/')
@@ -210,25 +234,56 @@ fn top(digits: &str) -> Option<u8> {
     u8::try_from(top).ok()
 }
 
-/// Keep a colour the terminal answered with, for the panes amx starts.
+/// Keep the colours the terminal answered with, for the panes amx starts, as
+/// the tmux style they are painted with: `fg=#rrggbb,bg=#rrggbb`, or
+/// `bg=#rrggbb` from a terminal that answered the background alone.
 ///
 /// Written whole or not at all: a spawn reading it mid-write would paint a
 /// pane with half a colour.
-pub fn remember(state_root: &Path, colour: (u8, u8, u8)) -> Result<()> {
-    let (red, green, blue) = colour;
+pub fn remember(
+    state_root: &Path,
+    foreground: Option<(u8, u8, u8)>,
+    background: (u8, u8, u8),
+) -> Result<()> {
+    let style = match foreground {
+        Some(foreground) => format!("fg={},bg={}", hex(foreground), hex(background)),
+        None => format!("bg={}", hex(background)),
+    };
     crate::store::write_atomic(
         &crate::paths::background_file(state_root),
-        format!("#{red:02x}{green:02x}{blue:02x}\n").as_bytes(),
+        format!("{style}\n").as_bytes(),
     )
 }
 
-/// The colour last kept, as `#rrggbb`, or nothing where the file is missing
-/// or holds anything but one colour.
+/// A colour as `#rrggbb`.
+fn hex((red, green, blue): (u8, u8, u8)) -> String {
+    format!("#{red:02x}{green:02x}{blue:02x}")
+}
+
+/// The tmux style last kept, `bg=#rrggbb` or `fg=#rrggbb,bg=#rrggbb`, or
+/// nothing where the file is missing or holds anything else.
+///
+/// A bare `#rrggbb` is what the view kept before it kept the foreground too,
+/// and is the background alone.
 pub fn remembered(state_root: &Path) -> Option<String> {
     let kept = std::fs::read_to_string(crate::paths::background_file(state_root)).ok()?;
     let kept = kept.trim();
-    let hex = kept.strip_prefix('#')?;
-    (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| kept.to_string())
+    if is_hex(kept) {
+        return Some(format!("bg={kept}"));
+    }
+    let background = match kept.split_once(',') {
+        Some((foreground, background)) => {
+            is_hex(foreground.strip_prefix("fg=")?).then_some(background)?
+        }
+        None => kept,
+    };
+    is_hex(background.strip_prefix("bg=")?).then(|| kept.to_string())
+}
+
+/// Whether text is one colour, `#` and six hex digits.
+fn is_hex(text: &str) -> bool {
+    text.strip_prefix('#')
+        .is_some_and(|hex| hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// What `COLORFGBG` says the background is.
@@ -260,8 +315,9 @@ pub struct Late {
     held: Vec<KeyEvent>,
 }
 
-/// What an answer spells between the escape that opens it and its colour.
-const SPELT: &str = "11;rgb:";
+/// What an answer spells between the escape that opens it and its colour: the
+/// foreground's reply or the background's.
+const SPELT: [&str; 2] = ["10;rgb:", "11;rgb:"];
 
 impl Late {
     /// The keys to act on now that this one has arrived, which is none while
@@ -278,13 +334,13 @@ impl Late {
         }
         let spelt = self.spelt();
         if closes(&key) {
-            // `said` reads the colour the way it reads one from the wait.
-            return match said(&format!("\x1b]{spelt}\x07")) {
-                Some(_) => {
+            // Read the way a colour from the wait is read.
+            return match colours_of(&format!("\x1b]{spelt}\x07")) {
+                (Some(_), _) | (_, Some(_)) => {
                     self.held.clear();
                     Vec::new()
                 }
-                None => self.with(key),
+                (None, None) => self.with(key),
             };
         }
         match plain(&key) {
@@ -343,10 +399,10 @@ fn plain(key: &KeyEvent) -> Option<char> {
 
 /// Whether text could still grow into an answer's body.
 fn could_be(text: &str) -> bool {
-    match text.strip_prefix(SPELT) {
+    SPELT.iter().any(|spelt| match text.strip_prefix(spelt) {
         Some(colour) => colour.chars().all(|c| c.is_ascii_hexdigit() || c == '/'),
-        None => SPELT.starts_with(text),
-    }
+        None => spelt.starts_with(text),
+    })
 }
 
 /// Whether a colour is one to paint dark words on.
@@ -396,40 +452,78 @@ mod tests {
             "\x1b]11;rgb:f/f/f\x07",
         ] {
             assert_eq!(
-                background_of(answer),
-                Some((0xff, 0xff, 0xff)),
+                colours_of(answer),
+                (None, Some((0xff, 0xff, 0xff))),
                 "{answer:?}"
             );
         }
         assert_eq!(
-            background_of("\x1b]11;rgb:2323/1f1f/1f1f\x1b\\"),
+            colours_of("\x1b]11;rgb:2323/1f1f/1f1f\x1b\\").1,
             Some((0x23, 0x1f, 0x1f)),
             "what tmux answered for bg=#231f1f"
         );
         assert_eq!(
-            background_of("\x1b]11;rgb:23/1f/1f\x07"),
+            colours_of("\x1b]11;rgb:23/1f/1f\x07").1,
             Some((0x23, 0x1f, 0x1f))
         );
         assert_eq!(
-            background_of("\x1b]11;rgb:a/5/0\x07"),
+            colours_of("\x1b]11;rgb:a/5/0\x07").1,
             Some((0xaa, 0x55, 0x00))
         );
         for answer in ["", "\x1b]11;?\x1b\\", "\x1b]11;rgb:ff/ff\x07", "ok"] {
-            assert_eq!(background_of(answer), None, "{answer:?}");
+            assert_eq!(colours_of(answer), (None, None), "{answer:?}");
         }
+    }
+
+    #[test]
+    fn both_replies_are_read_out_of_one_answer_in_either_order() {
+        let tmux = "\x1b]10;rgb:e5e5/e0e0/dcdc\x1b\\\x1b]11;rgb:2121/1b1b/1b1b\x1b\\";
+        let both = (Some((0xe5, 0xe0, 0xdc)), Some((0x21, 0x1b, 0x1b)));
+        assert_eq!(colours_of(tmux), both, "what tmux answered for the pair");
+        assert_eq!(
+            colours_of("\x1b]11;rgb:21/1b/1b\x07\x1b]10;rgb:e5/e0/dc\x07"),
+            both,
+            "backwards"
+        );
+        assert_eq!(
+            colours_of("\x1b]10;rgb:e5/e0/dc\x07"),
+            (Some((0xe5, 0xe0, 0xdc)), None)
+        );
+        assert_eq!(
+            said(tmux),
+            Some(Shade::Dark),
+            "the shade is the background's"
+        );
+        assert_eq!(
+            said("\x1b]10;rgb:ffff/ffff/ffff\x07"),
+            None,
+            "not the foreground's"
+        );
     }
 
     #[test]
     fn a_remembered_colour_is_read_back_as_written() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path().join("agents");
+        let file = crate::paths::background_file(&root);
         assert_eq!(remembered(&root), None, "nothing kept yet");
-        remember(&root, (0x23, 0x1f, 0x1f)).unwrap();
+        remember(&root, Some((0xe5, 0xe0, 0xdc)), (0x21, 0x1b, 0x1b)).unwrap();
         assert_eq!(
-            std::fs::read_to_string(crate::paths::background_file(&root)).unwrap(),
-            "#231f1f\n"
+            std::fs::read_to_string(&file).unwrap(),
+            "fg=#e5e0dc,bg=#211b1b\n"
         );
-        assert_eq!(remembered(&root).as_deref(), Some("#231f1f"));
+        assert_eq!(remembered(&root).as_deref(), Some("fg=#e5e0dc,bg=#211b1b"));
+        remember(&root, None, (0x23, 0x1f, 0x1f)).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "bg=#231f1f\n");
+        assert_eq!(remembered(&root).as_deref(), Some("bg=#231f1f"));
+    }
+
+    #[test]
+    fn a_colour_kept_before_the_foreground_was_is_the_background_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        std::fs::write(crate::paths::background_file(&root), "#231f1f\n").unwrap();
+        assert_eq!(remembered(&root).as_deref(), Some("bg=#231f1f"));
     }
 
     #[test]
@@ -438,13 +532,28 @@ mod tests {
         let root = dir.path().join("agents");
         let file = crate::paths::background_file(&root);
         for kept in [
-            "", "231f1f", "#231f1", "#231f1fa", "#23 f1f", "#gg1f1f", "red",
+            "",
+            "231f1f",
+            "#231f1",
+            "#231f1fa",
+            "#23 f1f",
+            "#gg1f1f",
+            "red",
+            "bg=",
+            "bg=#231f1",
+            "fg=#e5e0dc",
+            "bg=#211b1b,fg=#e5e0dc",
+            "fg=#e5e0dc,bg=#211b1b,",
+            "fg=#e5e0dc, bg=#211b1b",
+            "fg=#e5e0dc,bg=#211b1b,bold",
+            "fg=red,bg=#211b1b",
+            "bg=#211b1b;set -g x",
         ] {
             std::fs::write(&file, kept).unwrap();
             assert_eq!(remembered(&root), None, "{kept:?}");
         }
         std::fs::write(&file, "  #231F1F \n").unwrap();
-        assert_eq!(remembered(&root).as_deref(), Some("#231F1F"), "trimmed");
+        assert_eq!(remembered(&root).as_deref(), Some("bg=#231F1F"), "trimmed");
     }
 
     #[test]
@@ -481,13 +590,31 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_is_read_to_its_terminator_and_no_further() {
-        // A colour arrives in one write from every terminal measured, but the
-        // read stops on the terminator either way: an answer cut in half reads
-        // as a darker colour than it is.
+    fn the_answer_is_read_to_both_terminators_and_no_further() {
+        // Colours arrive in one write from every terminal measured, but the
+        // read stops on the second terminator either way: an answer cut in
+        // half reads as a darker colour than it is.
+        let mut sent: &[u8] = b"\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x07";
+        let began = Instant::now();
+        let heard = listen(&mut sent).expect("the answer");
+        assert!(began.elapsed() < PATIENCE, "and does not wait out the rest");
+        assert_eq!(
+            colours_of(&heard),
+            (Some((0, 0, 0)), Some((0xff, 0xff, 0xff)))
+        );
+    }
+
+    #[test]
+    fn a_terminal_answering_the_background_alone_is_waited_out_and_heard() {
         let mut sent: &[u8] = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
         let heard = listen(&mut sent).expect("the answer");
+        assert_eq!(colours_of(&heard), (None, Some((0xff, 0xff, 0xff))));
         assert_eq!(said(&heard), Some(Shade::Light));
+    }
+
+    #[test]
+    fn the_view_asks_for_both_colours_in_one_write() {
+        assert_eq!(ASK, "\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
     }
 
     #[test]
@@ -556,6 +683,33 @@ mod tests {
             }
             assert!(late.let_go().is_empty(), "and nothing left over");
         }
+    }
+
+    #[test]
+    fn a_late_foreground_reply_is_dropped_whole_too() {
+        for bell in [true, false] {
+            let reply = as_keys("10;rgb:e5e5/e0e0/dcdc", bell);
+            let mut late = Late::default();
+            for key in &reply {
+                assert!(late.hear(*key).is_empty(), "{key:?} held or dropped");
+            }
+            assert!(late.let_go().is_empty(), "and nothing left over");
+        }
+    }
+
+    #[test]
+    fn both_late_replies_back_to_back_are_dropped_whole() {
+        for bell in [true, false] {
+            let mut keys = as_keys("10;rgb:e5e5/e0e0/dcdc", bell);
+            keys.extend(as_keys("11;rgb:2121/1b1b/1b1b", bell));
+            assert!(through(&keys).is_empty(), "bell {bell}");
+        }
+    }
+
+    #[test]
+    fn a_run_that_is_neither_reply_is_handed_back() {
+        let keys = as_keys("12;rgb:ffff/ffff/ffff", true);
+        assert_eq!(through(&keys), keys);
     }
 
     #[test]

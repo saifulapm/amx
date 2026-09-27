@@ -1003,8 +1003,8 @@ impl Painting {
     }
 
     /// The name of the palette to paint with, having asked the terminal its
-    /// background once whatever the theme, and kept the colour it answered
-    /// for the panes amx starts.
+    /// foreground and background once whatever the theme, and kept the
+    /// colours it answered for the panes amx starts.
     ///
     /// `auto` is not a name on disk: it is that same answer read for a shade,
     /// and one of the two palettes amx ships — see [`crate::theme::AUTO`]. Any
@@ -1016,10 +1016,14 @@ impl Painting {
         state_root: &Path,
     ) -> &'a str {
         let answer = ask();
-        if let Some(colour) = answer.as_deref().and_then(crate::shade::background_of) {
+        let (foreground, background) = answer
+            .as_deref()
+            .map(crate::shade::colours_of)
+            .unwrap_or_default();
+        if let Some(background) = background {
             // A colour not kept is a pane painted the way it was before, which
             // is no reason to keep somebody from their view.
-            let _ = crate::shade::remember(state_root, colour);
+            let _ = crate::shade::remember(state_root, foreground, background);
         }
         crate::theme::chosen(named, || crate::shade::of_the_answer(answer.as_deref()))
     }
@@ -11803,20 +11807,40 @@ diff --git a/src/bar.rs b/src/bar.rs
     }
 
     #[test]
-    fn theme_named_by_hand_still_asks_once_and_keeps_the_colour() {
+    fn theme_named_by_hand_still_asks_once_and_keeps_both_colours() {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("agents");
         let asked = AtomicUsize::new(0);
         let named = Painting::named(
             "solarized",
-            answering(Some("\x1b]11;rgb:2323/1f1f/1f1f\x07"), &asked),
+            answering(
+                Some("\x1b]10;rgb:e5e5/e0e0/dcdc\x1b\\\x1b]11;rgb:2121/1b1b/1b1b\x1b\\"),
+                &asked,
+            ),
             &root,
         );
         assert_eq!(named, "solarized", "a name somebody wrote is not overruled");
         assert_eq!(asked.load(Ordering::Relaxed), 1);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("background")).unwrap(),
-            "#231f1f\n"
+            "fg=#e5e0dc,bg=#211b1b\n"
+        );
+    }
+
+    #[test]
+    fn theme_a_terminal_answering_the_background_alone_keeps_it_alone() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("agents");
+        let asked = AtomicUsize::new(0);
+        Painting::named(
+            "default",
+            answering(Some("\x1b]11;rgb:2323/1f1f/1f1f\x07"), &asked),
+            &root,
+        );
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("background")).unwrap(),
+            "bg=#231f1f\n"
         );
     }
 
@@ -11834,18 +11858,19 @@ diff --git a/src/bar.rs b/src/bar.rs
         assert_eq!(asked.load(Ordering::Relaxed), 1, "one question for both");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("background")).unwrap(),
-            "#ffffff\n"
+            "bg=#ffffff\n"
         );
     }
 
     #[test]
-    fn theme_a_silent_terminal_leaves_the_kept_colour_as_it_was() {
+    fn theme_a_silent_terminal_leaves_the_kept_colours_as_they_were() {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("agents");
         let kept = dir.path().join("background");
         std::fs::write(&kept, "#010203\n").unwrap();
-        // Nothing at all, and the empty wait `asked` hands back.
-        for silence in [None, Some("")] {
+        // Nothing at all, the empty wait `asked` hands back, and a foreground
+        // with no background to go with it.
+        for silence in [None, Some(""), Some("\x1b]10;rgb:ffff/ffff/ffff\x07")] {
             let asked = AtomicUsize::new(0);
             let named = Painting::named("default", answering(silence, &asked), &root);
             assert_eq!(named, "default");
