@@ -208,13 +208,14 @@ fn wait_children_covers_a_parents_whole_family_with_one_clock() {
 }
 
 #[test]
-fn wait_children_of_a_childless_parent_prints_nothing() {
+fn wait_children_of_a_childless_parent_is_a_failure() {
     let amx = Harness::new();
     amx.play("lonely-a1b", "happy-turn");
     amx.until_state("lonely-a1b", "idle");
 
     let out = amx.amx(&["wait", "--children", "lonely-a1b", "--timeout", "5"]);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("has no children"), "{}", stderr(&out));
     assert_eq!(stdout(&out), "");
 }
 
