@@ -242,9 +242,10 @@ the card and the wall read it the way they read any other, and this verb is
 `amx new` plus `amx result` in one call. The child's answer goes to stdout and
 its id to stderr on one line, so a caller that reads a question on stdout knows
 who to `amx answer`. With `--json` both come back in one object,
-`{"id", "parent", "phase", "answer", "evidence"}`, and the exit codes are
-`result`'s: 0 an answer, 1 failed or stopped, 2 the child is asking a question,
-3 your own deadline.
+`{"id", "parent", "phase", "answer", "evidence", "question", "options",
+"kind"}`, and the exit codes are `result`'s: 0 an answer, 1 failed or stopped,
+2 the child is asking a question, 3 your own deadline. On a 2, `question`,
+`options` and `kind` are what `amx answer` needs.
 
 A child starts in the parent's directory and sees whatever is uncommitted
 there, because a subagent is an extension of the parent's work; `--worktree`
@@ -1642,9 +1643,10 @@ both verbs read the family off the records: `--children <id>` is every agent
 whose record names that parent, in the order they were made, and it conflicts
 with naming ids yourself. `amx wait --children <parent>` is the same clock over
 the family; `amx result --children <parent>` waits and hands each answer back,
-one block per child, or one object keyed by child id under `--json`. A child
-stopped on a question is in the collection with its question rather than
-hidden, and the code is the most actionable thing found: `3` the timeout ran
+one block per child, or one object keyed by child id under `--json`, each
+carrying `phase`, `answer`, `evidence`, `question`, `options` and `kind`. A
+child stopped on a question is in the collection with its question and its
+numbered choices rather than hidden, and the code is the most actionable thing found: `3` the timeout ran
 out, `2` a question, `1` a failure, `0` every answer.
 
 When the caller is itself an agent, hand it `skill/amx/SKILL.md`, which is

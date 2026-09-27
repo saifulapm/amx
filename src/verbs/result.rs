@@ -176,12 +176,17 @@ pub fn run_family(
                     "answer": answer,
                     "evidence": view.verdict.evidence,
                     "question": question,
+                    "options": view.state.options,
+                    "kind": view.kind(),
                 }),
             );
         } else {
             writeln!(out, "{id} {phase}")?;
             if let Some(question) = &question {
                 send::line(&send::rendered(question, to_terminal), out)?;
+                for choice in send::numbered(&view.state.options) {
+                    send::line(&send::rendered(&choice, to_terminal), out)?;
+                }
             } else if let Some(answer) = &answer {
                 send::line(&send::rendered(answer, to_terminal), out)?;
             }
@@ -662,6 +667,75 @@ mod tests {
         assert_eq!(
             turn_ended(&log(&[send::SEND, RESUMED, send::SEND])),
             Ended::NotYet
+        );
+    }
+
+    /// A child stopped on a question, under a parent, as a reader hands it
+    /// back once its pane is gone.
+    fn a_family_with_a_question(root: &Path) {
+        let meta = |id: &str, parent: Option<&str>, created: u64| Meta {
+            role: None,
+            parent: parent.map(str::to_string),
+            depth: u32::from(parent.is_some()),
+            id: id.to_string(),
+            task: "find the flaky test".to_string(),
+            agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
+            dir: std::path::PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            pane: PaneId::new("%404").unwrap(),
+            bg: false,
+            session: None,
+            transcript: None,
+            created,
+        };
+        Agent::create(root, &meta("lead-a1b", None, 1)).unwrap();
+        Agent::create(root, &meta("scout-c3d", Some("lead-a1b"), 2))
+            .unwrap()
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Waiting;
+                state.question = Some("Which runner?".to_string());
+                state.options = vec!["Node".to_string(), "Deno".to_string()];
+                state.kind = Some(crate::store::Kind::Question);
+                state.parked_at = 4_600;
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn result_children_json_carries_what_answer_needs() {
+        let root = tempfile::TempDir::new().unwrap();
+        a_family_with_a_question(root.path());
+
+        let mut out = Vec::new();
+        let code = run_family(root.path(), "lead-a1b", None, true, false, &mut out).unwrap();
+
+        assert_eq!(code, exit::BLOCKED);
+        let family: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let child = &family["scout-c3d"];
+        assert_eq!(child["question"], "Which runner?");
+        assert_eq!(child["options"], json!(["Node", "Deno"]));
+        assert_eq!(child["kind"], "question");
+    }
+
+    #[test]
+    fn result_children_numbers_the_choices_answer_takes() {
+        let root = tempfile::TempDir::new().unwrap();
+        a_family_with_a_question(root.path());
+
+        let mut out = Vec::new();
+        let code = run_family(root.path(), "lead-a1b", None, false, false, &mut out).unwrap();
+
+        assert_eq!(code, exit::BLOCKED);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "scout-c3d waiting\nWhich runner?\n1. Node\n2. Deno\n"
         );
     }
 

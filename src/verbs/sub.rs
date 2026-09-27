@@ -366,6 +366,9 @@ fn report(
         "phase": view.phase().as_str(),
         "answer": answer,
         "evidence": view.verdict.evidence,
+        "question": view.state.question,
+        "options": view.state.options,
+        "kind": view.kind(),
     });
     writeln!(out, "{}", serde_json::to_string(&object)?)?;
     Ok(exit::OK)
@@ -376,4 +379,69 @@ fn report(
 fn refuse(err: &mut impl Write, colours: bool, message: String) -> Result<i32> {
     writeln!(err, "{}", said(Severity::Warned, &message, colours))?;
     Ok(exit::BLOCKED)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Kind;
+    use crate::tmux::{PaneId, Socket};
+
+    #[test]
+    fn sub_json_on_a_question_carries_what_answer_needs() {
+        // A caller reading the one object has no other pipe to find the
+        // question on, so the choices and what kind of screen it is ride too.
+        let root = tempfile::TempDir::new().unwrap();
+        let meta = Meta {
+            role: None,
+            parent: Some("lead-a1b".to_string()),
+            depth: 1,
+            id: "scout-c3d".to_string(),
+            task: "find the flaky test".to_string(),
+            agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
+            dir: std::path::PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            pane: PaneId::new("%404").unwrap(),
+            bg: false,
+            session: None,
+            transcript: None,
+            created: 1,
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Waiting;
+                state.question = Some("Which runner?".to_string());
+                state.options = vec!["Node".to_string(), "Deno".to_string()];
+                state.kind = Some(Kind::Question);
+                // Parked, so the record's own phase is what a reader hands
+                // back with no pane left to look at.
+                state.parked_at = 4_600;
+            })
+            .unwrap();
+
+        let mut out = Vec::new();
+        report(
+            root.path(),
+            "scout-c3d",
+            None,
+            true,
+            &mut out,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let object: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(object["phase"], "waiting");
+        assert_eq!(object["question"], "Which runner?");
+        assert_eq!(object["options"], serde_json::json!(["Node", "Deno"]));
+        assert_eq!(object["kind"], "question");
+    }
 }
