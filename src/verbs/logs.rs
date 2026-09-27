@@ -86,20 +86,22 @@ pub fn run(
         })
         .flatten();
 
+    // The conversation is the whole account with a pane or without one: a
+    // parked agent's session is still on disk, and its recorded answer is
+    // only the last turn of it.
+    if let Some(said) = told {
+        let tail = last_lines(&said, lines as usize);
+        send::line(&send::rendered(&tail, to_terminal), out)?;
+        return Ok(exit::OK);
+    }
+
     // Whether there is a screen to read is a question for tmux and not for the
     // record: the phase says what amx was last told, and this verb is asking
     // what has been going on over there right now. The pane has to answer for
     // this agent, though — a number the record still names and another agent
     // is standing at would hand back that agent's screen under this one's name.
     match server.pane_answers_for(&meta.pane, &meta.id) {
-        true => match told {
-            Some(said) => {
-                let tail = last_lines(&said, lines as usize);
-                send::line(&send::rendered(&tail, to_terminal), out)?;
-                Ok(exit::OK)
-            }
-            None => screen(&server, &meta.pane, id, lines, chrome(vendor), out),
-        },
+        true => screen(&server, &meta.pane, id, lines, chrome(vendor), out),
         false => recorded(&agent, id, vendor, lines, to_terminal, out),
     }
 }
@@ -191,8 +193,8 @@ fn screen(
 /// of one is what it printed, kept beside the record by its own boot; so does
 /// a vendor that died before its first hook, whose record holds no session and
 /// no transcript either; see [`Agent::output`]. It goes out the same way, and
-/// cut to length the same way the readings above it are, because it is the
-/// same question asked of a row whose pane has gone. A file with nothing in it
+/// either is cut to length the same way the readings above it are, because it
+/// is the same question asked of a row whose pane has gone. A file with nothing in it
 /// is a row that printed nothing, and that is nothing to hand back.
 fn recorded(
     agent: &Agent,
@@ -203,7 +205,7 @@ fn recorded(
     out: &mut impl Write,
 ) -> Result<i32> {
     let left = match agent.state()?.result {
-        Some(answer) => Some(answer),
+        Some(answer) => Some(last_lines(&answer, lines as usize)),
         None => agent
             .output()
             .map(|printed| last_lines(&printed, lines as usize))
@@ -622,6 +624,64 @@ mod tests {
         let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
         assert_eq!(code, exit::OK);
         assert_eq!(said, "wrote the parser\nand the tests with it\n");
+    }
+
+    #[test]
+    fn logs_cut_the_recorded_answer_to_the_lines_asked_for() {
+        let root = TempDir::new().unwrap();
+        let agent = without_a_pane(root.path(), "fix-login-a1b");
+        agent
+            .writer()
+            .unwrap()
+            .update_state(|s| {
+                s.state = Phase::Done;
+                s.result = Some("one\ntwo\nthree".to_string());
+            })
+            .unwrap();
+
+        let (code, said) = printed(root.path(), "fix-login-a1b", 2);
+        assert_eq!(code, exit::OK);
+        assert_eq!(said, "two\nthree\n");
+    }
+
+    #[test]
+    fn logs_of_a_parked_agent_are_its_conversation() {
+        // Parking takes the pane and leaves the session: the transcript is
+        // still the whole account, and the answer on the record only its
+        // last turn.
+        let transcript = TempDir::new().unwrap();
+        let kept = transcript.path().join("session.jsonl");
+        std::fs::write(
+            &kept,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"content\":\"print the numbers\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"1\\n2\\n3\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let root = TempDir::new().unwrap();
+        let agent = without_a_pane(root.path(), "fix-login-a1b");
+        let mut writer = agent.writer().unwrap();
+        writer
+            .update_meta(|meta| meta.transcript = Some(kept.clone()))
+            .unwrap();
+        writer
+            .update_state(|s| {
+                s.state = Phase::Idle;
+                s.parked_at = now();
+                s.result = Some("3".to_string());
+            })
+            .unwrap();
+        drop(writer);
+
+        let (code, said) = printed(root.path(), "fix-login-a1b", LINES);
+        assert_eq!(code, exit::OK);
+        assert!(said.contains("❯ print the numbers"), "{said:?}");
+        assert!(said.contains("1\n2\n3"), "{said:?}");
+
+        let (_, said) = printed(root.path(), "fix-login-a1b", 2);
+        assert_eq!(said, "2\n3\n");
     }
 
     #[test]
