@@ -177,10 +177,13 @@ pub const VENDOR: Vendor = Vendor {
         ],
         skill_prefix: "skill:",
     }),
-    // pi reads a message word opening with `@` as a file to attach and one
-    // opening with `-` as a flag, until `--`: every word after it is a
-    // message (dist/cli/args.js:23). Read at 0.87.1 on 2026-09-26.
+    // pi reads a message word opening with `-` as a flag until `--`
+    // (dist/cli/args.js:23). Read at 0.87.1 on 2026-09-26.
     ends_options: Some("--"),
+    // And one opening with `@` as a file to attach on either side of `--`
+    // (args.js:25 and :224); with a space in front it is words. Measured on
+    // pi 0.87.1 on 2026-09-27: `pi -p -- ' @README say hello'` said hello.
+    attaches_at: true,
     // Escape on a turn with steering or follow-up messages queued puts them
     // back in the editor, joined, for somebody to submit or clear
     // (interactive-mode.js:2332 and 3761-3778). Read at 0.87.1 on 2026-09-26.

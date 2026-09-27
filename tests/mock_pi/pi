@@ -141,7 +141,24 @@ origin=
 clash=
 in_memory=
 value_of=
+# A word opening with `@` names a file to attach, before `--` and after it
+# alike: `--` ends pi's flags, not its file arguments (dist/cli/args.js:23-31
+# and :224, read at 0.87.1 on 2026-09-27). A file that is not there ends pi.
+attaches() {
+	case $1 in
+	@*)
+		[ -e "${1#@}" ] && return
+		echo "Error: File not found: $PWD/${1#@}" >&2
+		exit 1
+		;;
+	esac
+}
+ended=
 for arg do
+	if [ -n "$ended" ]; then
+		attaches "$arg"
+		continue
+	fi
 	case $value_of in
 	session)
 		session=$arg
@@ -158,6 +175,8 @@ for arg do
 	--session-id) value_of=session ;;
 	--fork) value_of=fork ;;
 	--no-session) in_memory=yes ;;
+	--) ended=yes ;;
+	@*) attaches "$arg" ;;
 	*)
 		case " $REFUSES " in
 		*" $arg "*) clash=$arg ;;

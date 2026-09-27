@@ -316,8 +316,12 @@ fn build_copy(
     let mut command: Vec<String> = Vec::new();
 
     while let Some(word) = words.next() {
-        // Only the last word is the task, which is where `new` put it.
-        if words.peek().is_none() && word == handoff.task {
+        // Only the last word is the task, which is where `new` put it, as
+        // the vendor's words for it or, from an older amx, as typed.
+        if words.peek().is_none()
+            && (word == handoff.task
+                || word == spawn::as_words(spawn::vendor_of(handoff), &handoff.task))
+        {
             break;
         }
         // And the word `new` put in front of it, or the vendor would read
@@ -365,7 +369,7 @@ fn build_copy(
     }
     if let Some(prompt) = prompt {
         command.extend(spawn::ends_options_of(handoff).map(str::to_string));
-        command.push(prompt.to_string());
+        command.push(spawn::as_words(spawn::vendor_of(handoff), prompt));
     }
     command
 }
@@ -574,10 +578,11 @@ mod tests {
 
     #[test]
     fn fork_ends_pis_options_before_a_prompt_and_drops_the_old_end() {
-        // The original's task goes with the `--` in front of it, and a prompt
-        // of the copy's own goes behind a `--` of its own.
+        // The original's task goes with the `--` in front of it, spaced or
+        // not, and a prompt of the copy's own goes behind a `--` of its own,
+        // with a space in front of its `@`.
         let started = handoff(
-            &["pi", "--session-id", "abc-123", "--", "@alice asked"],
+            &["pi", "--session-id", "abc-123", "--", " @alice asked"],
             "@alice asked",
         );
         assert_eq!(
@@ -593,7 +598,7 @@ mod tests {
                 "--session-id",
                 "port-it-b2c",
                 "--",
-                "@bob too"
+                " @bob too"
             ]
         );
     }

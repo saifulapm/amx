@@ -72,6 +72,7 @@ pub const SECOND: Vendor = Vendor {
     catalog: None,
     // Its task is its last word, whatever that word opens with.
     ends_options: None,
+    attaches_at: false,
     restores_queued_on_cancel: false,
 };
 

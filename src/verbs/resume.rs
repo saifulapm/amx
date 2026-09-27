@@ -411,7 +411,7 @@ fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handof
     let mut command = continuing(recorded, session);
     if let Some(message) = message {
         command.extend(spawn::ends_options_of(recorded).map(str::to_string));
-        command.push(message.to_string());
+        command.push(spawn::as_words(spawn::vendor_of(recorded), message));
     }
     Handoff {
         task: message.unwrap_or(&recorded.task).to_string(),
@@ -897,10 +897,10 @@ mod tests {
     #[test]
     fn resume_ends_pis_options_before_a_message_and_drops_the_old_end() {
         // A task `new` handed pi rides behind `--`, which goes with it; a
-        // message goes behind a `--` of its own, so one opening with `@` is
-        // words rather than a file.
+        // message goes behind a `--` of its own, and one opening with `@`
+        // with a space in front, so it is words rather than a file.
         let started = handoff(
-            &["pi", "--session-id", "abc-123", "--", "@alice asked"],
+            &["pi", "--session-id", "abc-123", "--", " @alice asked"],
             "@alice asked",
         );
         let carried = handed_on(&started, "abc-123", None);
@@ -909,7 +909,7 @@ mod tests {
         let carried = handed_on(&started, "abc-123", Some("@bob too"));
         assert_eq!(
             carried.command,
-            ["pi", "--session-id", "abc-123", "--", "@bob too"]
+            ["pi", "--session-id", "abc-123", "--", " @bob too"]
         );
         let after = handed_on(&carried, "def-456", None);
         assert_eq!(after.command, ["pi", "--session-id", "def-456"]);

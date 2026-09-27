@@ -697,6 +697,40 @@ fn spawn_hands_pi_the_start_flag_and_the_id_amx_minted_for_the_agent() {
 }
 
 #[test]
+fn spawn_hands_pi_a_task_opening_with_an_at_sign_as_words() {
+    // `--` ends pi's flags and not its file arguments, so a task opening with
+    // `@` after it still names a file, and a file that is not there ends pi
+    // before its session opens (2026-09-27, against pi 0.87.1).
+    let amx = Harness::new();
+    let id = "at-sign-a1b";
+    let out = amx_with_pi(
+        &amx,
+        "takes-a-turn",
+        &[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "--agent",
+            "pi",
+            "@alice asked for this",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let opened = session_of(&amx, id);
+    assert!(
+        opened.contains(id),
+        "pi read the task as words and went on to open its session: {opened}"
+    );
+}
+
+#[test]
 fn spawn_asks_pi_to_create_the_session_when_there_is_no_file_under_that_id() {
     // `--session-id` is mint-or-open, and this is the mint: nothing on disk
     // answers to the id amx has just minted, so the vendor makes it.

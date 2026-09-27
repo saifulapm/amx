@@ -240,7 +240,7 @@ pub fn vendor_command(
             .and_then(|vendor| vendor.ends_options)
             .map(str::to_string),
     );
-    command.push(task.to_string());
+    command.push(as_words(registry::entry(agent), task));
     command
 }
 
@@ -249,6 +249,17 @@ pub fn vendor_command(
 /// resume's message or a fork's prompt.
 pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
     vendor_of(handoff)?.ends_options
+}
+
+/// A message as the word amx hands `vendor`: with one space in front where it
+/// opens with `@` and the vendor would read that as a file to attach — see
+/// [`Vendor::attaches_at`].
+pub fn as_words(vendor: Option<&Vendor>, message: &str) -> String {
+    if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
+        format!(" {message}")
+    } else {
+        message.to_string()
+    }
 }
 
 /// The flag that opens this spawn's session under an id amx chose, or `None`
@@ -1295,10 +1306,10 @@ mod tests {
 
     #[test]
     fn spawn_ends_pis_options_before_a_task_so_an_at_sign_is_words() {
-        // pi reads a word opening with `@` as a file to attach, and a word
-        // opening with `-` as a flag, until `--`: after it every word is a
-        // message. claude has no such reading and is handed the task as it
-        // always was.
+        // pi reads a word opening with `-` as a flag until `--`, and a word
+        // opening with `@` as a file to attach on either side of it, so that
+        // one goes with a space in front. claude has no such reading and is
+        // handed the task as it always was.
         let pi = vendor_command(
             "pi",
             &Dials::default(),
@@ -1307,7 +1318,7 @@ mod tests {
             None,
             false,
         );
-        assert_eq!(pi, ["pi", "--", "@alice asked for this"]);
+        assert_eq!(pi, ["pi", "--", " @alice asked for this"]);
 
         let claude = vendor_command(
             "claude",

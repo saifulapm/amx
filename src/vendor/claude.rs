@@ -176,6 +176,7 @@ pub const VENDOR: Vendor = Vendor {
     }),
     // claude reads its last word as the prompt whatever it opens with.
     ends_options: None,
+    attaches_at: false,
     restores_queued_on_cancel: false,
 };
 

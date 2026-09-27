@@ -96,11 +96,14 @@ real entry happens to take.
 - **`transcript`** — the shape of the conversation file a report names,
   `Transcript::Claude` or `Transcript::Pi`, for `crate::conversation` to read
   it by. `None` from a vendor whose file nobody has sat down with.
-- **`ends_options`** — the word after which the vendor reads every word as a
-  message, put in front of a task, a resume's message or a fork's prompt, so
-  a task opening with `@` or `-` is not read as a file or a flag. pi's is
-  `--`; `None` from a vendor that reads its last word as a prompt whatever it
-  opens with.
+- **`ends_options`** — the word after which the vendor reads no word as a
+  flag, put in front of a task, a resume's message or a fork's prompt, so a
+  task opening with `-` is not read as one. pi's is `--`; `None` from a
+  vendor that reads its last word as a prompt whatever it opens with.
+- **`attaches_at`** — whether the vendor reads a message word opening with
+  `@` as a file to attach even after `ends_options`. pi's does, so amx puts
+  one space in front of such a task, message or prompt, which pi reads as
+  words.
 - **`restores_queued_on_cancel`** — whether a cancel puts the messages the
   vendor was holding behind the turn back in its composer. pi's does, so
   `amx interrupt` writes them down and `send` refuses to type after them
