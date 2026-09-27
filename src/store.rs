@@ -1010,6 +1010,44 @@ impl Event {
     }
 }
 
+/// Which edge of a turn an event is, in its vendor's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Opens,
+    Closes,
+}
+
+/// The seconds of work a log's turns add up to: each from the event that
+/// opened it to the one that closed it, and `None` for a log with no turn
+/// edges in it at all.
+///
+/// The record's own `worked` is what a reader asks, and this is for one whose
+/// spans never got added up: the log kept every edge they would have been
+/// added up from. A second opening inside an open turn is a message steered
+/// into it, not a new turn, and a turn nothing closed counts nothing, because
+/// no event says where it stopped.
+pub fn worked_in(events: &[Event], edge: impl Fn(&str) -> Option<Edge>) -> Option<u64> {
+    let mut edged = false;
+    let mut open: Option<u64> = None;
+    let mut worked = 0u64;
+    for event in events {
+        match edge(&event.kind) {
+            Some(Edge::Opens) => {
+                edged = true;
+                open.get_or_insert(event.at);
+            }
+            Some(Edge::Closes) => {
+                edged = true;
+                if let Some(at) = open.take() {
+                    worked = worked.saturating_add(event.at.saturating_sub(at));
+                }
+            }
+            None => {}
+        }
+    }
+    edged.then_some(worked)
+}
+
 /// Epoch seconds. Every timestamp amx records is one of these.
 pub fn now() -> u64 {
     SystemTime::now()
@@ -2028,6 +2066,36 @@ mod tests {
             .update_state_heard_at(90_010, Some(99_999), |s| s.state = Phase::Stopped)
             .unwrap();
         assert_eq!(capped.worked, 160);
+    }
+
+    #[test]
+    fn a_log_adds_its_turns_up_from_edge_to_edge() {
+        let at = |at, kind: &str| Event {
+            at,
+            kind: kind.to_string(),
+            payload: serde_json::Value::Null,
+        };
+        let edge = |kind: &str| match kind {
+            "Prompt" => Some(Edge::Opens),
+            "End" => Some(Edge::Closes),
+            _ => None,
+        };
+        let log = [
+            at(1_000, "Start"),
+            at(1_010, "Prompt"),
+            at(1_020, "Tool"),
+            // Steered into the turn already running, which goes on.
+            at(1_030, "Prompt"),
+            at(1_050, "End"),
+            // A day at the prompt is not work.
+            at(87_450, "Prompt"),
+            at(87_455, "End"),
+            // And a turn nothing closed says nothing about where it stopped.
+            at(90_000, "Prompt"),
+        ];
+        assert_eq!(worked_in(&log, edge), Some(45));
+        assert_eq!(worked_in(&log[..1], edge), None, "a log with no turn edges");
+        assert_eq!(worked_in(&[at(1, "Prompt"), at(1, "End")], edge), Some(0));
     }
 
     #[test]

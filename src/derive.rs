@@ -115,9 +115,9 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::rules::{Claim, Ruleset, SETTLED_LOOKS};
-use crate::store::{Agent, Event, Meta, Phase, Question, Source, State, Still};
+use crate::store::{Agent, Edge, Event, Meta, Phase, Question, Source, State, Still};
 use crate::tmux::Server;
-use crate::vendor::{Capability, Vendor};
+use crate::vendor::{Capability, Moment, Vendor};
 
 /// How long the vendor's own events are taken at their word.
 ///
@@ -951,19 +951,56 @@ fn clock(phase: Phase, state: &State, created: u64, now: u64, heartbeat: Option<
 ///
 /// At the end it is [`clock`]'s own frozen answer, fallback included: a run
 /// that worked four minutes worked four minutes, and a record with no spans on
-/// it says how long the run was alive instead.
+/// it says how long the run was alive instead — unless its log has turns in
+/// it, which [`off_the_log`] reads where the record is in hand.
 fn worked(phase: Phase, state: &State, created: u64, now: u64, heartbeat: Option<u64>) -> u64 {
     if phase.is_terminal() {
-        let ended = match state.ended {
-            0 => heard(state, heartbeat),
-            at => at,
-        };
+        let ended = ended_at(state, heartbeat);
         return match state.worked_by(ended) {
             0 => ended.saturating_sub(created),
             worked => worked,
         };
     }
     state.worked_by(now)
+}
+
+/// When a run ended: the stamp the ending wrote, or the last thing heard from
+/// it where nothing wrote one.
+fn ended_at(state: &State, heartbeat: Option<u64>) -> u64 {
+    match state.ended {
+        0 => heard(state, heartbeat),
+        at => at,
+    }
+}
+
+/// The seconds an agent's log says it worked, in its own vendor's words — see
+/// [`crate::store::worked_in`]. `None` for a command, which has no turns, and
+/// for a log with no turn edges in it.
+pub fn worked_off_the_log(agent: &Agent, meta: &Meta) -> Option<u64> {
+    let hooks = crate::vendor::hooks_for(meta.agent.as_deref()?)?;
+    let events = agent.events().ok()?;
+    crate::store::worked_in(&events, |kind| match hooks.moment(kind) {
+        Some(Moment::Prompted) => Some(Edge::Opens),
+        Some(Moment::Ended) => Some(Edge::Closes),
+        _ => None,
+    })
+}
+
+/// An ended run's clock off its log, where the record added no spans up and
+/// [`worked`] fell back on the whole of the run.
+///
+/// That fallback is for a record written before spans were added up, and for
+/// an agent that never worked. A record whose spans were lost but whose log
+/// kept every turn's edges worked those turns, and a minute's turn in a day's
+/// run is not a day's work. The log is read only where the fallback applied.
+fn off_the_log(agent: &Agent, meta: &Meta, state: &State, verdict: &mut Verdict) {
+    if !verdict.phase.is_terminal() || state.worked_by(ended_at(state, agent.heartbeat())) > 0 {
+        return;
+    }
+    if let Some(worked) = worked_off_the_log(agent, meta) {
+        verdict.worked = worked;
+        verdict.age = worked;
+    }
 }
 
 /// The reading's number in words, in the shortest form that says it.
@@ -1763,7 +1800,9 @@ fn seen(agent: &Agent, meta: Meta, mut state: State, reading: Reading) -> View {
     if let Some(line) = fresher.or_else(|| reading.doing.clone().filter(|_| printed)) {
         state.summary = Some(line);
     }
-    let mut view = View::new(meta, state, reading.verdict);
+    let mut verdict = reading.verdict;
+    off_the_log(agent, &meta, &state, &mut verdict);
+    let mut view = View::new(meta, state, verdict);
     view.doing = reading.doing;
     view
 }
@@ -2613,12 +2652,13 @@ pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
     let mut views: Vec<View> = records(root)?
         .into_iter()
         .map(|record| {
-            let verdict = from_the_record(
+            let mut verdict = from_the_record(
                 &record.state,
                 record.meta.created,
                 now,
                 record.agent.heartbeat(),
             );
+            off_the_log(&record.agent, &record.meta, &record.state, &mut verdict);
             View::new(record.meta, record.state, verdict)
         })
         .collect();
@@ -4301,6 +4341,50 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(recorded[0].phase(), Phase::Done);
         assert_eq!(recorded[0].verdict.evidence, Evidence::Record);
         assert_eq!(recorded[0].verdict.age, 100, "and how long it worked");
+    }
+
+    #[test]
+    fn reader_takes_an_ended_run_with_no_spans_but_turns_in_its_log_off_the_log() {
+        // The record added nothing up, and the log has a minute's turn in a
+        // day-long run. A minute is what it worked: the whole run is only for
+        // a log with no turn edges in it.
+        let root = TempDir::new().unwrap();
+        let mut done = state(Phase::Done, 90_000);
+        done.ended = 90_000;
+        let turned = Meta {
+            parent: None,
+            depth: 0,
+            agent: Some("claude".to_string()),
+            created: 900,
+            ..meta()
+        };
+        a_record(root.path(), &turned, &done);
+        let agent = Agent::open(root.path(), &turned.id).unwrap();
+        let writer = agent.writer().unwrap();
+        for (at, kind) in [
+            (1_000, "SessionStart"),
+            (1_010, "UserPromptSubmit"),
+            (1_070, "Stop"),
+        ] {
+            writer
+                .append(&crate::store::Event {
+                    at,
+                    kind: kind.to_string(),
+                    payload: serde_json::json!({"hook_event_name": kind}),
+                })
+                .unwrap();
+        }
+        drop(writer);
+
+        let first = &recorded(root.path(), 99_000).unwrap()[0];
+        assert_eq!((first.verdict.worked, first.verdict.age), (60, 60));
+        let read = view(root.path(), &turned.id, 99_000).unwrap();
+        assert_eq!((read.verdict.worked, read.verdict.age), (60, 60));
+
+        // A log with no turn edges is still read as the whole of the run.
+        std::fs::write(agent.events_path(), "").unwrap();
+        let spanless = &recorded(root.path(), 99_000).unwrap()[0];
+        assert_eq!(spanless.verdict.worked, 89_100);
     }
 
     #[test]
