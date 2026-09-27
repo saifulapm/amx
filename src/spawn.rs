@@ -481,6 +481,9 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
     // Without this, tmux destroys the session the moment whoever looked in on
     // it detaches again.
     server.set_session_option(&session, "destroy-unattached", "off")?;
+    // And without this, a tmux.conf that keeps dead panes keeps the agent's,
+    // and with it the session's name, which a resume needs to open again.
+    server.set_session_option(&session, "remain-on-exit", "off")?;
     Ok(pane)
 }
 
@@ -1516,6 +1519,41 @@ mod tests {
     fn placed(server: &Server, id: &str) -> PaneId {
         let command = ["sh", "-c", "while :; do sleep 0.05; done"].map(str::to_string);
         place(server, id, Path::new("/"), &command).expect("a pane for it")
+    }
+
+    #[test]
+    fn spawn_an_exited_agents_pane_is_gone_under_a_global_remain_on_exit() {
+        // Somebody's tmux.conf keeps every dead pane to read. An agent's pane
+        // that stayed would keep its session's name, and a resume could not
+        // open a session under that name again.
+        let server =
+            Own(Server::named(format!("amx-remain-{}", std::process::id())).with_conf("/dev/null"));
+        server
+            .0
+            .new_session(&Spawn {
+                name: Some("theirs"),
+                command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                ..Spawn::default()
+            })
+            .unwrap();
+        server
+            .0
+            .run(&["set-option", "-g", "remain-on-exit", "on"])
+            .unwrap();
+
+        let exits = ["sh", "-c", "sleep 0.3"].map(str::to_string);
+        place(&server.0, "exits-a1b", Path::new("/"), &exits).expect("a pane for it");
+        let name = session_name("exits-a1b");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while server.0.session_named(&name).unwrap().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "its session outlived it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        place(&server.0, "exits-a1b", Path::new("/"), &exits).expect("its session again");
     }
 
     #[test]
