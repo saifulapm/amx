@@ -31,7 +31,7 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Meta};
 use crate::tmux::Server;
 use crate::verbs::{stop, sweep};
-use crate::{exit, paths, store, worktree};
+use crate::{exit, paths, spawn, store, worktree};
 
 /// What taking one row came to.
 pub enum Taken {
@@ -149,7 +149,10 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     // record with it.
     Ok(match meta.worktree.as_ref().filter(|tree| tree.exists()) {
         Some(tree) => Taken::Holding(tree.clone()),
-        None => Taken::Gone,
+        None => {
+            spawn::end_session(&Server::from_socket(meta.socket.clone()), &meta.id)?;
+            Taken::Gone
+        }
     })
 }
 
@@ -183,6 +186,7 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
         stop::forget(&meta, tree, &mut std::io::sink())?;
     }
 
+    spawn::end_session(&Server::from_socket(meta.socket.clone()), &meta.id)?;
     agent.remove()?;
     Ok(Taken::Gone)
 }
@@ -404,5 +408,46 @@ mod tests {
         // The one nobody touched went.
         assert!(!left.exists(), "{out}");
         assert_eq!(store::list(root.path()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn clear_kills_a_session_remain_on_exit_left_standing_for_the_record() {
+        // A pane an older amx placed under a tmux.conf that keeps dead panes:
+        // not the record's pane any more, but still holding the name a resume
+        // opens a session under.
+        let repo = a_repo();
+        let root = TempDir::new().unwrap();
+        a_finished_agent(root.path(), repo.path(), "lingers-a1b", false);
+        let server =
+            Server::named(format!("amx-test-linger-{}", std::process::id())).with_conf("/dev/null");
+        let (session, _) = server
+            .new_session(&Spawn {
+                name: Some("amx-lingers-a1b"),
+                command: &["sh", "-c", "sleep 0.3"],
+                ..Spawn::default()
+            })
+            .unwrap();
+        server
+            .set_session_option(&session, "remain-on-exit", "on")
+            .unwrap();
+        let agent = Agent::open(root.path(), "lingers-a1b").unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| {
+                meta.socket = server.socket().clone();
+                meta.pane = PaneId::new("%99").unwrap();
+            })
+            .unwrap();
+
+        let mut out = Vec::new();
+        let cleared = run(root.path(), true, &mut &b""[..], &mut out);
+        let standing = server.session_named("amx-lingers-a1b");
+        let _ = server.kill();
+        let out = String::from_utf8(out).unwrap();
+
+        assert_eq!(cleared.unwrap(), exit::OK, "{out}");
+        assert!(store::list(root.path()).unwrap().is_empty(), "{out}");
+        assert_eq!(standing.unwrap(), None, "{out}");
     }
 }

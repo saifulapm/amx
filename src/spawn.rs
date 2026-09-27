@@ -462,6 +462,17 @@ fn session_name(id: &str) -> String {
     format!("{}{id}", crate::tmux::SESSION_PREFIX)
 }
 
+/// Kill the session [`place`] named for this agent, if one is still standing.
+///
+/// For a record on its way out: a session left under its name is a name the
+/// next agent given that id could not open a session under.
+pub fn end_session(server: &Server, id: &str) -> Result<()> {
+    if let Some(session) = server.session_named(&session_name(id))? {
+        server.kill_session(&session)?;
+    }
+    Ok(())
+}
+
 /// Start the agent's pane: a detached session of its own, named for the id.
 ///
 /// `-d` is what keeps a spawn from moving anybody. tmux switches to a window
