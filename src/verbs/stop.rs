@@ -49,7 +49,14 @@ pub fn run(
 
     // This one alone: a parent's children carry on, and a child's parent is
     // never the child's to end. A family is stopped one id at a time.
-    stop_one(root, &args.id, out)?;
+    if !stop_one(root, &args.id, &meta, out)? {
+        writeln!(
+            out,
+            "{} was resumed while it was being stopped; left it running",
+            args.id
+        )?;
+        return Ok(exit::FAILURE);
+    }
 
     dispositions(&meta, args, input, out)?;
 
@@ -76,29 +83,51 @@ pub fn run(
     Ok(exit::OK)
 }
 
-/// End one agent: mark it stopped where it is not already, run whatever the
-/// person asked to run at that moment, and take its pane down.
+/// End one agent: take its pane down, mark it stopped where it is not already,
+/// and run whatever the person asked to run at that moment.
 ///
-/// The record first and then the pane, so the exit the signal causes is
-/// read as a stop and not a failure.
-fn stop_one(root: &Path, id: &str, out: &mut impl Write) -> Result<()> {
+/// Everything under the writer, from the reading to the write: an exit landing
+/// while stop decides has either written its phase already, and stop leaves it
+/// alone, or waits until stop has written its own. The pane first and the
+/// record after, so a pane that would not go leaves the phase as it was.
+///
+/// `read` is the record the caller decided from. A pane on the record that is
+/// not the one read is a resume that landed in between, and that agent is one
+/// nobody asked to stop: false, and nothing touched.
+fn stop_one(root: &Path, id: &str, read: &Meta, out: &mut impl Write) -> Result<bool> {
+    stop_one_ending(root, id, read, out, end)
+}
+
+/// The same, with the way a pane is ended handed in, so a test can say what
+/// tmux did.
+fn stop_one_ending(
+    root: &Path,
+    id: &str,
+    read: &Meta,
+    out: &mut impl Write,
+    end: impl FnOnce(&Server, &PaneId, &str) -> Result<()>,
+) -> Result<bool> {
     let agent = Agent::open(root, id)?;
+    let writer = agent.writer()?;
     let meta = agent.meta()?;
+    if (&meta.socket, &meta.pane) != (&read.socket, &read.pane) {
+        return Ok(false);
+    }
     let server = Server::from_socket(meta.socket.clone());
 
-    // Recorded before the signal, so the exit the signal causes is read as
-    // what it is: an agent somebody stopped, not one that failed.
-    let was = agent.state()?.state;
+    let was = writer.state()?.state;
+    end(&server, &meta.pane, &meta.id)?;
+    // Still under the writer, so the exit the signal causes waits for this
+    // and reads it as what it is: an agent somebody stopped, not one that
+    // failed.
     if !was.is_terminal() {
-        agent
-            .writer()?
-            .update_state_heard(agent.heartbeat(), |state| state.state = Phase::Stopped)?;
+        writer.update_state_heard(agent.heartbeat(), |state| state.state = Phase::Stopped)?;
+        drop(writer);
         stopped(&agent, &meta);
     }
 
-    end(&server, &meta.pane, &meta.id)?;
     writeln!(out, "{id} stopped")?;
-    Ok(())
+    Ok(true)
 }
 
 /// Run whatever somebody asked to have run when an agent is stopped.
@@ -366,6 +395,123 @@ mod tests {
             &mut out,
         )
         .unwrap()
+    }
+
+    /// A record of an agent at `phase`, in a pane nothing here ever asks
+    /// about: these tests hand stop the ending, so no server is needed.
+    fn record(root: &Path, id: &str, pane: &str, phase: Phase) -> Agent {
+        let agent = Agent::create(
+            root,
+            &Meta {
+                role: None,
+                parent: None,
+                depth: 0,
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: None,
+                model: None,
+                effort: None,
+                dir: std::path::PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: crate::tmux::Socket::Name("amx-test-stop-nobody".to_string()),
+                pane: PaneId::new(pane).unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: store::now(),
+            },
+        )
+        .expect("the record");
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = phase;
+                state.since = 1_000;
+                state.last_event = 1_000;
+            })
+            .unwrap();
+        agent
+    }
+
+    #[test]
+    fn stop_whose_ending_fails_leaves_the_phase_as_it_was() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent = record(dir.path(), "stuck-a1b", "%3", Phase::Working);
+        let read = agent.meta().unwrap();
+
+        let mut out = Vec::new();
+        let stopped = stop_one_ending(dir.path(), "stuck-a1b", &read, &mut out, |_, _, _| {
+            anyhow::bail!("tmux would not kill it")
+        });
+
+        assert!(stopped.is_err(), "the failure is the answer");
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.since, 1_000, "{state:?}");
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn stop_racing_an_exit_leaves_done() {
+        // The exit hook holds the writer while stop is on its way in, and
+        // writes Done before letting go. What stop decides, it decides from
+        // what the exit left.
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent = record(dir.path(), "done-a1b", "%3", Phase::Working);
+        let read = agent.meta().unwrap();
+
+        let exiting = agent.writer().unwrap();
+        let mut out = Vec::new();
+        std::thread::scope(|scope| {
+            let stopping = scope.spawn(|| {
+                stop_one_ending(dir.path(), "done-a1b", &read, &mut out, |_, _, _| Ok(()))
+            });
+            std::thread::sleep(Duration::from_millis(200));
+            exiting
+                .update_state(|state| {
+                    state.exit = Some(0);
+                    state.state = Phase::Done;
+                })
+                .unwrap();
+            drop(exiting);
+            assert!(
+                stopping.join().unwrap().unwrap(),
+                "the record was the one read"
+            );
+        });
+
+        assert_eq!(agent.state().unwrap().state, Phase::Done);
+    }
+
+    #[test]
+    fn stop_leaves_a_record_resumed_since_it_was_read_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent = record(dir.path(), "back-a1b", "%3", Phase::Stopped);
+        let read = agent.meta().unwrap();
+
+        // `amx resume` lands between the read and the stop: a new pane, and
+        // the record reset for the session it opens.
+        let writer = agent.writer().unwrap();
+        writer
+            .update_meta(|meta| meta.pane = PaneId::new("%9").unwrap())
+            .unwrap();
+        writer
+            .update_state(|state| state.state = Phase::Idle)
+            .unwrap();
+        drop(writer);
+
+        let mut out = Vec::new();
+        let stopped = stop_one_ending(dir.path(), "back-a1b", &read, &mut out, |_, pane, _| {
+            panic!("{pane} is the resumed agent's, and nothing ends it")
+        })
+        .unwrap();
+
+        assert!(!stopped);
+        assert_eq!(agent.state().unwrap().state, Phase::Idle);
+        assert_eq!(agent.meta().unwrap().pane, PaneId::new("%9").unwrap());
     }
 
     #[test]
