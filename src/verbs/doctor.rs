@@ -438,7 +438,7 @@ fn amx_check(found: &Findings) -> Check {
         return Check::wrong(
             "amx",
             format!("{exe} is not on the PATH"),
-            format!("a pi started by hand reports to the amx the PATH finds; put {dir} on it"),
+            format!("an agent started by hand reports to the amx the PATH finds; put {dir} on it"),
         );
     };
     let others: Vec<String> = found
@@ -1763,6 +1763,21 @@ mod tests {
                 .contains("/home/dev/.cargo/bin"),
             "the directory to put on the PATH: {amx:?}"
         );
+        assert!(
+            names_no_other_vendor(amx.remedy.as_deref().unwrap(), &found.vendor),
+            "the check is about amx, not about a vendor: {amx:?}"
+        );
+    }
+
+    /// Whether `said` names no vendor in the table but the one in hand.
+    fn names_no_other_vendor(said: &str, in_hand: &str) -> bool {
+        let words: Vec<&str> = said
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .collect();
+        registry::entries()
+            .iter()
+            .filter(|vendor| vendor.name != registry::program(in_hand))
+            .all(|vendor| !words.contains(&vendor.name))
     }
 
     #[test]

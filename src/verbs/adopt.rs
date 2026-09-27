@@ -288,7 +288,7 @@ fn seed(state: &mut State, rules: &Ruleset, screen: &str) {
 fn this_pane(env: &BTreeMap<String, String>) -> Result<PaneId> {
     let Some(pane) = env.get(PANE_ENV).filter(|pane| !pane.is_empty()) else {
         bail!(
-            "no ${PANE_ENV} here: `amx adopt` needs the claude to be running \
+            "no ${PANE_ENV} here: `amx adopt` needs the agent to be running \
              inside a tmux pane, because a pane is the only thing amx can \
              watch and type at"
         );
@@ -968,6 +968,12 @@ mod tests {
         assert!(
             said.contains("watch"),
             "and why: a pane is the only thing amx can watch and type at: {said}"
+        );
+        assert!(
+            registry::entries()
+                .iter()
+                .all(|vendor| !said.contains(&format!("the {}", vendor.name))),
+            "no pane, so no vendor in hand for the refusal to name: {said}"
         );
 
         let shell = BTreeMap::from([(PANE_ENV.to_string(), pane.pane.to_string())]);
