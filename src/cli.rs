@@ -206,8 +206,8 @@ pub enum Command {
         #[arg(long, value_name = "ID")]
         children: Option<String>,
 
-        /// Print one JSON object keyed by child id. Read with `--children`.
-        #[arg(long)]
+        /// Print one JSON object keyed by child id. Only with `--children`.
+        #[arg(long, conflicts_with = "id")]
         json: bool,
 
         /// Give up after this many seconds.
@@ -1464,6 +1464,8 @@ mod tests {
             &["amx", "answer", "fix-a1b", "--note", "keep it short"],
             &["amx", "answer", "fix-a1b", "--text", "2", "--note", "short"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
+            // One answer is printed as it is: the JSON is the family's.
+            &["amx", "result", "fix-a1b", "--json"],
             // A wait says which agents, and holds out for a state amx has a
             // reading for: a word nobody knows is a wait that never ends.
             &["amx", "wait"],
