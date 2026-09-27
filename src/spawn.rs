@@ -491,7 +491,11 @@ pub fn end_session(server: &Server, id: &str) -> Result<()> {
 /// it has just made unless it is told not to, so an agent that arrived as a
 /// window in the caller's session took the screen out from under whoever typed
 /// the command. A session nobody is attached to cannot.
+///
+/// A tmux below [`crate::tmux::MINIMUM_VERSION`] is refused before anything
+/// is opened on it.
 pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Result<PaneId> {
+    meets_the_floor(crate::tmux::version()?)?;
     let name = session_name(id);
     let command = borrow(command);
     let (session, pane) = server.new_session(&Spawn {
@@ -508,6 +512,17 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
     // and with it the session's name, which a resume needs to open again.
     server.set_session_option(&session, "remain-on-exit", "off")?;
     Ok(pane)
+}
+
+/// Refuse a tmux older than the one amx runs against, naming both.
+fn meets_the_floor((major, minor): (u32, u32)) -> Result<()> {
+    let (want_major, want_minor) = crate::tmux::MINIMUM_VERSION;
+    if (major, minor) < (want_major, want_minor) {
+        bail!(
+            "tmux {major}.{minor} is installed and amx needs tmux {want_major}.{want_minor} or newer"
+        );
+    }
+    Ok(())
 }
 
 /// `amx _boot <id>`: become the agent.
@@ -1569,6 +1584,21 @@ mod tests {
     fn placed(server: &Server, id: &str) -> PaneId {
         let command = ["sh", "-c", "while :; do sleep 0.05; done"].map(str::to_string);
         place(server, id, Path::new("/"), &command).expect("a pane for it")
+    }
+
+    #[test]
+    fn spawn_refuses_a_tmux_below_the_floor_by_name() {
+        let refused = meets_the_floor((3, 1)).expect_err("tmux 3.1 is below the floor");
+        assert!(
+            refused.to_string().contains("tmux 3.1"),
+            "the refusal names the tmux it found: {refused}"
+        );
+        assert!(
+            refused.to_string().contains("3.2"),
+            "and the one it needs: {refused}"
+        );
+        meets_the_floor(crate::tmux::MINIMUM_VERSION).expect("the floor itself is enough");
+        meets_the_floor((4, 0)).expect("and anything newer");
     }
 
     #[test]
