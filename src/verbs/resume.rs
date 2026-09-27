@@ -170,6 +170,11 @@ fn one(
         );
         return Ok(exit::FAILURE);
     }
+    // A reading tmux could not be asked for is the record as written, and a
+    // parked record reads idle: say what stood in the way rather than that.
+    if !view.phase().is_terminal() {
+        Server::from_socket(view.meta.socket.clone()).answers_for_now(&view.meta.pane, id)?;
+    }
     if !nothing_is_running(&view) {
         warn!(
             "amx resume: {id} is {}. stop it before starting it again",
@@ -295,7 +300,7 @@ fn bring_back(
     let current = writer.state()?;
     let meta = agent.meta()?;
     if !current.state.is_terminal()
-        && Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id)
+        && Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id)?
     {
         bail!("{id} is already going again");
     }
@@ -726,6 +731,46 @@ mod tests {
                 "{phase}"
             );
         }
+    }
+
+    #[test]
+    fn resume_refuses_a_tmux_that_cannot_be_asked_and_starts_nothing() {
+        // A parked agent is one no pane answers for, and a tmux that could not
+        // be asked has not said so: bringing it back could be a second pane
+        // beside the one it still has.
+        let state = TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut meta = read_as(Phase::Idle, Evidence::Record).meta;
+        meta.agent = Some("claude".to_string());
+        meta.socket = crate::tmux::unaskable();
+        let agent = Agent::create(&root, &meta).unwrap();
+        spawn::write_handoff(agent.dir(), &handoff(&["claude", "go"], "go")).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.parked_at = 1_000;
+            })
+            .unwrap();
+        let before = agent.state().unwrap();
+        let env = BTreeMap::new();
+
+        let mut out = Vec::new();
+        let named = run(&root, Some("fix-login-a1b"), None, false, &env, &mut out);
+        let picked = picked_up(&root, "fix-login-a1b", None, &env).map(|_| ());
+        for why in [named.map(|_| ()), picked] {
+            let why = why.unwrap_err();
+            assert!(
+                format!("{why:#}").starts_with("tmux could not be asked: "),
+                "{why:#}"
+            );
+        }
+        assert_eq!(agent.state().unwrap(), before);
+        assert_eq!(agent.meta().unwrap(), meta);
+        assert!(!agent.dir().join(spawn::BOOT_ENV).exists());
+        assert!(out.is_empty());
     }
 
     #[test]
