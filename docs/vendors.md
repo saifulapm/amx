@@ -618,6 +618,9 @@ go.
   holds the hooks and the trust for them. And `amx setup codex`, `doctor` and
   `uninstall` read `CODEX_HOME` from the environment they run in and never
   from `[codex.env]`, so a home named only there is one setup never wired.
+  Closed the same day: a project file may no longer set `CODEX_HOME`, as it
+  may not set `CLAUDE_CONFIG_DIR`. A person's own `[codex.env]` still may,
+  and setup, doctor and uninstall still read only the environment.
 
 ## What the dogfood saw
 

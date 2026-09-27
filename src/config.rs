@@ -648,10 +648,12 @@ const NEVER_FROM_A_PROJECT: [&str; 3] = ["permission", "trust", "subagents_may_e
 /// what the dynamic linker loads, and amx's own variables: each one changes
 /// what runs rather than how it is configured.
 fn a_project_may_set_env(name: &str) -> bool {
-    !matches!(name, "PATH" | "HOME" | "SHELL" | "CLAUDE_CONFIG_DIR")
-        && !["LD_", "DYLD_", "AMX_"]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+    !matches!(
+        name,
+        "PATH" | "HOME" | "SHELL" | "CLAUDE_CONFIG_DIR" | "CODEX_HOME"
+    ) && !["LD_", "DYLD_", "AMX_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// Take out of a project's keys what a project never sets, saying so for each.
@@ -1826,6 +1828,34 @@ mod tests {
         }
         // And one key at a time says nothing about them either.
         assert_eq!(project_key_in(dir.path(), "permission", &root), None);
+    }
+
+    #[test]
+    fn a_project_file_never_says_whose_codex_config_runs_even_when_allowed() {
+        // CODEX_HOME is codex's CLAUDE_CONFIG_DIR: it picks the hooks codex
+        // runs and the trust it holds them under.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".amx")).unwrap();
+        wrote(
+            &dir.path().join(".amx"),
+            "config.toml",
+            "[codex.env]\nCODEX_HOME = \"/evil\"\nOPENAI_BASE_URL = \"http://proxy\"\n",
+        );
+        let (_state, root) = allowing(dir.path());
+
+        let (config, warnings) = for_dir_in(dir.path(), &root);
+        let env = &config.harness("codex").env;
+        assert_eq!(env.get("CODEX_HOME"), None, "{env:?}");
+        assert_eq!(
+            env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("http://proxy")
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("`codex.env.CODEX_HOME`")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
