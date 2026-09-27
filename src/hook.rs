@@ -34,7 +34,7 @@ use crate::exit;
 use crate::notify::{self, Notice};
 use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
 use crate::tmux::Server;
-use crate::vendor::{Moment, claude};
+use crate::vendor::{Hooks, Moment};
 
 /// How the hook learns which agent it belongs to. `_boot` puts it in the
 /// pane's environment, so every process the vendor starts inherits it.
@@ -211,9 +211,10 @@ pub fn exited(root: &Path, id: &str, code: i32, config: &Config) -> i32 {
 ///
 /// Except when the agent's session is the thing that changed. A resume, a
 /// clear and a compact each start a session and the vendor says which it was
-/// — `source` on a `SessionStart`, per code.claude.com/docs/en/hooks — so only
-/// a startup under a session the record does not carry is another process's. A
-/// payload with no source at all is the agent's own, whatever else it says.
+/// — `source` on a session opening — so only a fresh start, in the vendor's own
+/// word for one, under a session the record does not carry is another
+/// process's. A payload with no source at all is the agent's own, whatever
+/// else it says, and so is every opening from a vendor with no such word.
 ///
 /// A record with no session has nothing to disagree with: an adopted agent
 /// learns its session from the reports it gets, and a record amx wrote before
@@ -225,7 +226,14 @@ fn anothers(meta: &Meta, payload: &Value) -> bool {
     let Some(ours) = meta.session.as_deref() else {
         return false;
     };
-    session != ours && (moment(payload) != Some(Moment::Started) || payload["source"] == "startup")
+    let Some(hooks) = hooks(meta) else {
+        return false;
+    };
+    session != ours
+        && (moment(&hooks, payload) != Some(Moment::Started)
+            || hooks
+                .fresh_start
+                .is_some_and(|fresh| payload["source"] == fresh))
 }
 
 /// Fold one payload into an agent's record, under the writer's lock, and set
@@ -269,7 +277,7 @@ pub fn record(
     if was == Phase::Working
         && cut > 0
         && state.interrupted_at == 0
-        && moment(payload) == Some(Moment::Prompted)
+        && hooks(&meta).is_some_and(|hooks| moment(&hooks, payload) == Some(Moment::Prompted))
     {
         state.worked = state.worked_by(cut);
         state.since = crate::store::now();
@@ -321,7 +329,7 @@ pub fn record(
     notify::post(notice.as_ref(), config.notifications, errand.as_ref());
     after_the_write(root, agent, &meta, was, &written, &event, config);
 
-    if moment(payload) == Some(Moment::Started)
+    if hooks(&meta).is_some_and(|hooks| moment(&hooks, payload) == Some(Moment::Started))
         && payload["agent_id"].is_null()
         && let Some(file) = env_file
     {
@@ -347,7 +355,7 @@ fn without_a_synthetic_answer(
     format: Option<crate::vendor::Transcript>,
 ) -> Value {
     let mut payload = payload.clone();
-    if moment(&payload) == Some(Moment::Ended)
+    if hooks(meta).is_some_and(|hooks| moment(&hooks, &payload) == Some(Moment::Ended))
         && let Some(answer) = payload["last_assistant_message"].as_str()
         && let Some(format) = format
         && let Some(tail) = Agent::transcript_tail(meta)
@@ -532,11 +540,16 @@ fn kind(payload: &Value) -> Option<&str> {
     payload["hook_event_name"].as_str()
 }
 
-/// The moment a payload is about, when it is one amx listens for. A vendor's
-/// entry is the only thing that knows which name is which moment, and nothing
-/// on the payload says whose it is, so the whole table is asked.
-fn moment(payload: &Value) -> Option<Moment> {
-    crate::vendor::moment_of(kind(payload)?)
+/// The hooks a record's vendor reports through, which are the words every
+/// payload landing on it is read in — see [`crate::vendor::hooks_for`].
+fn hooks(meta: &Meta) -> Option<Hooks> {
+    crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default())
+}
+
+/// The moment a payload is about, in `hooks`' words, when it is one amx
+/// listens for.
+fn moment(hooks: &Hooks, payload: &Value) -> Option<Moment> {
+    hooks.moment(kind(payload)?)
 }
 
 /// Whether a payload is about the one tool call that is not work: it draws a
@@ -548,8 +561,8 @@ fn moment(payload: &Value) -> Option<Moment> {
 /// call draws the menu, the permission event lands 10 to 30 ms later naming
 /// this same tool, and the notification six seconds after that. Three events,
 /// one screen, and the screen is a menu the whole time.
-fn menu(payload: &Value) -> bool {
-    payload["tool_name"] == claude::HOOKS.question_tool
+fn menu(hooks: &Hooks, payload: &Value) -> bool {
+    payload["tool_name"] == hooks.question_tool
 }
 
 /// Whether the vendor typed a notification as `what`.
@@ -558,15 +571,8 @@ fn typed(payload: &Value, what: &str) -> bool {
 }
 
 /// Whether a prompt is one the vendor typed into the session itself — see
-/// [`crate::vendor::Hooks`]'s `injected`. A record naming no vendor amx knows
-/// is asked like claude's.
-fn injected(payload: &Value, meta: &Meta) -> bool {
-    let hooks = meta
-        .agent
-        .as_deref()
-        .and_then(crate::registry::entry)
-        .and_then(|vendor| vendor.hooks)
-        .unwrap_or(claude::HOOKS);
+/// [`crate::vendor::Hooks`]'s `injected`.
+fn injected(hooks: &Hooks, payload: &Value) -> bool {
     payload["prompt"]
         .as_str()
         .is_some_and(|prompt| hooks.injected.iter().any(|tag| prompt.starts_with(tag)))
@@ -686,7 +692,14 @@ fn still_running(shells: u32, agents: u32) -> String {
 /// leave the question where the call put it. This is 02BQ6442: with a menu on
 /// the pane the card offered a permission box's grammar, because the box the
 /// vendor asked itself about arrived last and won.
+///
+/// Read in the words of the record's own vendor, and nobody else's.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
+    apply_in(&hooks(meta)?, payload, state, meta)
+}
+
+/// [`apply`], in `hooks`' words.
+fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
@@ -718,7 +731,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
     }
     let was_waiting = state.state == Phase::Waiting;
 
-    let screen = match moment(payload)? {
+    let screen = match moment(hooks, payload)? {
         Moment::Started => {
             // `/clear` opens a new session in the same pane, at the prompt it
             // was typed at, and nothing the old session said is its answer.
@@ -763,7 +776,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // record, and `result` would hand it to a caller as this turn's.
             // Unless nobody asked for this one: the vendor typed it into the
             // session itself, and the answer stands.
-            if !injected(payload, meta) {
+            if !injected(hooks, payload) {
                 state.result = None;
                 state.source = None;
             }
@@ -772,7 +785,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
         Moment::Taken => Screen::Clear,
 
-        Moment::Calling if menu(payload) => {
+        Moment::Calling if menu(hooks, payload) => {
             state.state = Phase::Waiting;
             // Not running anything: the menu is what it is doing.
             state.summary = None;
@@ -809,7 +822,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // because it is the only other place the questions are ever sent. So a
         // record with a call on it keeps the one it has, and a record with none
         // takes this.
-        Moment::Asked if menu(payload) => {
+        Moment::Asked if menu(hooks, payload) => {
             state.state = Phase::Waiting;
             state.summary = None;
             if state.pending().is_none() {
@@ -838,7 +851,7 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             state.asks(
                 payload["tool_name"]
                     .as_str()
-                    .map(claude::permission_sentence),
+                    .and_then(|tool| hooks.permission_sentence(tool)),
             );
             state.kind = Some(Kind::Permission);
             Screen::Waiting
@@ -868,11 +881,11 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
         // said and which is not the whole of what this agent is doing. So
         // nothing on the record moves — this is the nudge that put the record
         // back to idle a minute after the count said otherwise.
-        Moment::Notified if typed(payload, claude::HOOKS.idle_notice) && state.background > 0 => {
+        Moment::Notified if typed(payload, hooks.idle_notice) && state.background > 0 => {
             return None;
         }
 
-        Moment::Notified if typed(payload, claude::HOOKS.idle_notice) => {
+        Moment::Notified if typed(payload, hooks.idle_notice) => {
             state.state = Phase::Idle;
             state.summary = None;
             state.asks(None);
@@ -899,7 +912,15 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             // open on it, and an answered turn has nothing open. Its words
             // are not a question, and taking them as one would put the record
             // back to waiting in front of the answer it holds.
-            if state.state == Phase::Idle
+            //
+            // Unless the vendor said what it is waiting on beside the notice,
+            // and that is something the person answers: a question, however
+            // the turn before it ended.
+            let question = payload["kind"]
+                .as_str()
+                .is_some_and(|kind| hooks.question_kinds.contains(&kind));
+            if !question
+                && state.state == Phase::Idle
                 && state.result.is_some()
                 && payload["notification_type"].is_null()
             {
@@ -907,8 +928,10 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
             }
             state.state = Phase::Waiting;
             state.asks(payload["message"].as_str().map(str::to_string));
-            if typed(payload, claude::HOOKS.permission_notice) {
+            if typed(payload, hooks.permission_notice) {
                 state.kind = Some(Kind::Permission);
+            } else if question {
+                state.kind = Some(Kind::Question);
             }
             Screen::Waiting
         }
@@ -1028,6 +1051,7 @@ mod tests {
     use super::*;
     use crate::store::Meta;
     use crate::tmux::{PaneId, Socket};
+    use crate::vendor::claude;
     use serde_json::json;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -1092,14 +1116,17 @@ mod tests {
         // record would simply stop moving.
         for wiring in claude::HOOKS.events {
             assert_eq!(
-                moment(&json!({ "hook_event_name": wiring.event })),
+                moment(&claude::HOOKS, &json!({ "hook_event_name": wiring.event })),
                 Some(wiring.moment),
                 "{}",
                 wiring.event
             );
         }
-        assert_eq!(moment(&json!({ "hook_event_name": "PostToolUse" })), None);
-        assert_eq!(moment(&json!({})), None);
+        assert_eq!(
+            moment(&claude::HOOKS, &json!({ "hook_event_name": "PostToolUse" })),
+            None
+        );
+        assert_eq!(moment(&claude::HOOKS, &json!({})), None);
     }
 
     #[test]
@@ -1137,6 +1164,161 @@ mod tests {
         }));
         assert_eq!(box_.state, Phase::Waiting);
         assert_eq!(box_.kind, Some(Kind::Permission));
+    }
+
+    /// Fold a payload into a fresh record, read in `hooks`' words.
+    fn fold_in(hooks: &Hooks, payload: Value) -> State {
+        let mut state = State::default();
+        apply_in(hooks, &payload, &mut state, &mut meta());
+        state
+    }
+
+    /// `hooks`' name for a moment.
+    fn named_in(hooks: &Hooks, moment: Moment) -> &'static str {
+        hooks
+            .events
+            .iter()
+            .find(|wiring| wiring.moment == moment)
+            .expect("the vendor names the moment")
+            .event
+    }
+
+    #[test]
+    fn hook_under_another_vendors_words_claudes_notice_types_are_only_notices() {
+        // A type is a word of the vendor that sent it. Under the second
+        // vendor, claude's idle type is a notice like any other, and the
+        // second vendor's own is the one that says nothing is open.
+        let second = &crate::vendor::second::HOOKS;
+        let idle = fold_in(
+            second,
+            json!({
+                "hook_event_name": named_in(second, Moment::Notified),
+                "message": "Claude is waiting for your input",
+                "notification_type": claude::HOOKS.idle_notice
+            }),
+        );
+        assert_eq!(idle.state, Phase::Waiting);
+        let box_ = fold_in(
+            second,
+            json!({
+                "hook_event_name": named_in(second, Moment::Notified),
+                "message": "Claude needs your permission to use Bash",
+                "notification_type": claude::HOOKS.permission_notice
+            }),
+        );
+        assert_ne!(box_.kind, Some(Kind::Permission));
+        let own = fold_in(
+            second,
+            json!({
+                "hook_event_name": named_in(second, Moment::Notified),
+                "notification_type": second.idle_notice
+            }),
+        );
+        assert_eq!(own.state, Phase::Idle);
+    }
+
+    #[test]
+    fn hook_under_another_vendors_words_claudes_question_tool_is_work() {
+        let second = &crate::vendor::second::HOOKS;
+        let state = fold_in(
+            second,
+            json!({
+                "hook_event_name": named_in(second, Moment::Calling),
+                "tool_name": claude::HOOKS.question_tool,
+                "tool_input": { "questions": [{ "question": "Which fixture?", "options": [] }] }
+            }),
+        );
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.kind, None);
+        let menu = fold_in(
+            second,
+            json!({
+                "hook_event_name": named_in(second, Moment::Calling),
+                "tool_name": second.question_tool,
+                "tool_input": { "questions": [{ "question": "Which fixture?", "options": [] }] }
+            }),
+        );
+        assert_eq!(menu.kind, Some(Kind::Question));
+    }
+
+    #[test]
+    fn hook_a_permission_box_is_worded_by_the_vendor_that_drew_it() {
+        let second = &crate::vendor::second::HOOKS;
+        let state = fold_in(
+            second,
+            json!({ "hook_event_name": named_in(second, Moment::Asked), "tool_name": "Bash" }),
+        );
+        assert_eq!(
+            state.question.as_deref(),
+            Some("second may not run Bash yet")
+        );
+        assert_eq!(state.kind, Some(Kind::Permission));
+    }
+
+    #[test]
+    fn hook_a_pi_input_notice_is_a_question_from_the_hook_alone() {
+        // pi says what it drew beside the notice, and every one of those is
+        // something the person answers: no screen has to be read to say so.
+        let mut state = State::default();
+        let mut meta = Meta {
+            agent: Some("pi".to_string()),
+            ..meta()
+        };
+        let notice = apply(
+            &json!({
+                "hook_event_name": "ui_prompt_start",
+                "kind": "input",
+                "message": "Name the branch"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Question));
+        assert_eq!(state.question.as_deref(), Some("Name the branch"));
+        assert!(notice.is_some());
+    }
+
+    #[test]
+    fn hook_a_pi_record_hears_nothing_in_claudes_words() {
+        // Every word claude spells is nobody's moment on a pi record.
+        let mut meta = Meta {
+            agent: Some("pi".to_string()),
+            ..meta()
+        };
+        for wiring in claude::HOOKS.events {
+            let mut state = State::default();
+            let payload = json!({ "hook_event_name": wiring.event, "tool_name": "Bash" });
+            assert!(apply(&payload, &mut state, &mut meta).is_none());
+            assert_eq!(state, State::default(), "{}", wiring.event);
+        }
+    }
+
+    #[test]
+    fn hook_a_fresh_start_is_the_vendors_own_word_for_one() {
+        // claude says `startup` for a new conversation, and another session's
+        // startup on a claude record is another process's. pi says no such
+        // thing, so no word of claude's makes a pi opening someone else's.
+        let payload = json!({
+            "session_id": "nested",
+            "hook_event_name": "SessionStart",
+            "source": "startup"
+        });
+        let claude = Meta {
+            session: Some("ours".to_string()),
+            ..meta()
+        };
+        assert!(anothers(&claude, &payload));
+        let pi = Meta {
+            agent: Some("pi".to_string()),
+            ..claude.clone()
+        };
+        let opening = json!({
+            "session_id": "nested",
+            "hook_event_name": "session_start",
+            "source": "startup"
+        });
+        assert!(!anothers(&pi, &opening));
     }
 
     #[test]

@@ -143,6 +143,14 @@ pub struct Hooks {
     /// What a prompt the vendor types into the session itself opens with: a
     /// turn nobody asked for, whose end is not the answer to anything.
     pub injected: &'static [&'static str],
+    /// The `source` a session opening carries when it is a new conversation
+    /// rather than one the agent's own session became: a resume, a clear or a
+    /// compact says otherwise. `None` from a vendor whose openings say no
+    /// such thing.
+    pub fresh_start: Option<&'static str>,
+    /// The payload `kind`s that make a notice a question somebody answers, for
+    /// a vendor that says what it is waiting on beside the notice itself.
+    pub question_kinds: &'static [&'static str],
 }
 
 /// How a vendor is wired to amx's hook command, under the person's home
@@ -205,6 +213,44 @@ impl Hooks {
             .find(|wiring| wiring.event == event)
             .map(|wiring| wiring.moment)
     }
+
+    /// The sentence this vendor puts on a permission box about `tool`, or
+    /// `None` from a vendor that draws no box to write one on.
+    ///
+    /// The one place a tool name becomes the vendor's own words. What is
+    /// written when the box goes up has to be what the notification six
+    /// seconds later will repeat: it is the sentence every reader quotes until
+    /// that echo lands, and the echo writes the vendor's own words over it.
+    pub fn permission_sentence(&self, tool: &str) -> Option<String> {
+        (!self.permission_sentence.is_empty())
+            .then(|| self.permission_sentence.replace(TOOL, &rendered(tool)))
+    }
+}
+
+/// A tool's name the way a vendor writes it into a sentence, measured off
+/// claude at 2.1.237, the one vendor that writes one: the last `__` segment —
+/// an MCP tool arrives as `mcp__<server>__<tool>` — with underscores as spaces
+/// and a letter raised wherever a word starts, which is after anything that is
+/// not a letter or a digit (the vendor's `\b\w`), not only after an
+/// underscore. That carries a kebab-case name past its dashes, leaves a
+/// built-in like `Bash` as it stands, and keeps a digit's word one word.
+fn rendered(tool: &str) -> String {
+    let mut boundary = true;
+    tool.rsplit("__")
+        .next()
+        .unwrap_or(tool)
+        .chars()
+        .map(|letter| {
+            let letter = if letter == '_' { ' ' } else { letter };
+            let raised = if boundary {
+                letter.to_ascii_uppercase()
+            } else {
+                letter
+            };
+            boundary = !letter.is_ascii_alphanumeric();
+            raised
+        })
+        .collect()
 }
 
 /// Where the tool a vendor sentence is about goes, in the sentence.
@@ -438,17 +484,19 @@ pub const DEFAULT: &str = "default";
 /// shaped around the first.
 static TABLE: [Vendor; 2] = [claude::VENDOR, pi::VENDOR];
 
-/// The moment a vendor's event is, whichever vendor in the table names it.
+/// The hooks a record's `agent` reports through, read in that vendor's own
+/// words: `None` from a vendor with none.
 ///
-/// A payload arrives under the vendor's own word for the moment and nothing
-/// else says whose word it is, so every entry that reports is asked. The
-/// names do not collide — each vendor spells its events its own way — and an
-/// event no entry names is one amx has no business acting on.
-pub fn moment_of(event: &str) -> Option<Moment> {
-    table()
-        .iter()
-        .filter_map(|vendor| vendor.hooks)
-        .find_map(|hooks| hooks.moment(event))
+/// A payload says nothing about whose it is, and the record it lands on does,
+/// so it is read by the record's vendor and by nobody else's: a word one
+/// vendor spells is not a word another one said. An agent command the table
+/// has no entry for reads as claude's, the way its screens do: a wrapper
+/// somebody wrote around a vendor reports through it.
+pub fn hooks_for(agent: &str) -> Option<Hooks> {
+    match find(agent) {
+        Some(vendor) => vendor.hooks,
+        None => claude::VENDOR.hooks,
+    }
 }
 
 impl Vendor {
@@ -731,12 +779,10 @@ mod tests {
     }
 
     /// Every set of hooks amx knows: the ones on the entries in the table, and
-    /// the one a vendor carries before its entry takes it up.
+    /// the second vendor's, which it carries off its entry.
     fn every_hooks() -> Vec<Hooks> {
         let mut all: Vec<Hooks> = known().iter().filter_map(|vendor| vendor.hooks).collect();
-        if !all.contains(&pi::HOOKS) {
-            all.push(pi::HOOKS);
-        }
+        all.push(second::HOOKS);
         all
     }
 
@@ -761,23 +807,46 @@ mod tests {
     }
 
     #[test]
-    fn the_table_finds_a_moment_under_whichever_vendors_word_for_it() {
-        // Every event an entry in the table wires is found again from the
-        // table alone, which is how a payload is read without knowing whose
-        // it is; a word no entry uses is nobody's moment.
+    fn a_record_is_read_in_its_own_vendors_words() {
+        // A payload says nothing about whose it is, so the record's vendor is
+        // the only one asked: an event another vendor spells is no moment of
+        // this one's. A command the table does not know reads as claude's.
         for vendor in table() {
-            let Some(hooks) = vendor.hooks else { continue };
-            for wiring in hooks.events {
-                assert_eq!(
-                    moment_of(wiring.event),
-                    Some(wiring.moment),
-                    "{}",
-                    vendor.name
-                );
-            }
+            assert_eq!(hooks_for(vendor.name), vendor.hooks, "{}", vendor.name);
         }
-        assert_eq!(moment_of("NobodysEvent"), None);
-        assert_eq!(moment_of(""), None);
+        assert_eq!(hooks_for("pi --approve"), pi::VENDOR.hooks);
+        assert_eq!(hooks_for("my-wrapper"), claude::VENDOR.hooks);
+        assert_eq!(hooks_for(""), claude::VENDOR.hooks);
+        let pi = hooks_for("pi").unwrap();
+        for wiring in claude::HOOKS.events {
+            assert_eq!(pi.moment(wiring.event), None, "{}", wiring.event);
+        }
+    }
+
+    #[test]
+    fn a_vendor_raises_a_tools_name_at_every_word_boundary() {
+        // The vendor raises a letter wherever a word starts — after anything
+        // that is not a letter or a digit — not only after an underscore.
+        // Raised the underscore way, a kebab-case name reads
+        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id'.
+        assert_eq!(
+            rendered("mcp__context7__resolve-library-id"),
+            "Resolve-Library-Id"
+        );
+        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
+        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
+        // A digit neither opens a word nor ends one: nothing raises after it.
+        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
+        assert_eq!(rendered("Bash"), "Bash");
+    }
+
+    #[test]
+    fn a_vendor_that_draws_no_box_writes_no_sentence() {
+        assert_eq!(pi::HOOKS.permission_sentence("Bash"), None);
+        assert_eq!(
+            second::HOOKS.permission_sentence("Bash").as_deref(),
+            Some("second may not run Bash yet")
+        );
     }
 
     #[test]

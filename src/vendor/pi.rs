@@ -269,6 +269,13 @@ pub const HOOKS: Hooks = Hooks {
     permission_notice: "",
     permission_sentence: "",
     injected: &[],
+    // Its session opening carries no `source` at all.
+    fresh_start: None,
+    // What the extension puts beside a `ui_prompt_start`: the dialog pi drew
+    // for an extension, each one a thing the person answers (0.87.1,
+    // dist/core/extensions/runner.js:321-325, read 2026-09-27). `custom` is
+    // left out: it is whatever the extension draws, not a question.
+    question_kinds: &["input", "editor", "select", "confirm"],
 };
 
 #[cfg(test)]

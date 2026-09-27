@@ -40,23 +40,23 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, View};
 use crate::store::{Agent, Ask, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
-use crate::vendor::{Capability, Moment};
+use crate::vendor::{Capability, Hooks, Moment};
 use crate::{complain, exit, paths, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
 
-/// Whether this event is a vendor saying it has the message: the moment the
-/// table calls `Prompted`, or the `Taken` a vendor that steers a message into
-/// a running turn says instead, under whichever vendor's word for it arrived.
+/// Whether this event is the record's vendor saying it has the message: the
+/// moment its entry calls `Prompted`, or the `Taken` a vendor that steers a
+/// message into a running turn says instead, in its own word for it.
 ///
 /// That the vendor has it, and not that it has answered it — see [`queued`],
 /// which is about the difference. This is what a send waits on, and having it
 /// is the whole of what a send can ask for: the paste landed and the vendor
 /// took it off the composer.
-fn submitted(event: &Event) -> bool {
+fn submitted(hooks: Option<&Hooks>, event: &Event) -> bool {
     matches!(
-        crate::vendor::moment_of(&event.kind),
+        hooks.and_then(|hooks| hooks.moment(&event.kind)),
         Some(Moment::Prompted | Moment::Taken)
     )
 }
@@ -127,7 +127,8 @@ pub fn run(
     }
 
     let agent = Agent::open(root, id)?;
-    let taken = submissions(&agent.events()?);
+    let hooks = crate::vendor::hooks_for(view.meta.agent.as_deref().unwrap_or_default());
+    let taken = submissions(hooks.as_ref(), &agent.events()?);
 
     let server = Server::from_socket(view.meta.socket.clone());
     match delivered(&agent, &server, &view.meta.pane, text)? {
@@ -274,13 +275,14 @@ fn took_it(
 ) -> Result<bool> {
     let deadline = Instant::now() + patience;
     let looking = only_a_reader_will_say(meta);
+    let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
     loop {
         if looking {
             // A reading that cannot be taken is a look this wait did not get,
             // and the deadline below is what answers for that.
             let _ = derive::view(root, agent.id(), store::now());
         }
-        if submissions(&agent.events()?) > before {
+        if submissions(hooks.as_ref(), &agent.events()?) > before {
             return Ok(true);
         }
         if Instant::now() >= deadline {
@@ -319,14 +321,27 @@ fn only_a_reader_will_say(meta: &Meta) -> bool {
 ///
 /// A subagent's events ride the same log and are not the agent's doing, so
 /// they do not confirm anybody's send.
-fn submissions(events: &[Event]) -> usize {
+fn submissions(hooks: Option<&Hooks>, events: &[Event]) -> usize {
     events
         .iter()
         .filter(|event| {
-            (submitted(event) || event.kind == derive::READ_PROMPT)
+            (submitted(hooks, event) || event.kind == derive::READ_PROMPT)
                 && event.payload["agent_id"].is_null()
         })
         .count()
+}
+
+/// The moment `event` is in whichever vendor's words it arrived.
+///
+/// [`queued`] is asked of a log with no record beside it, so it has no vendor
+/// to read the log in, and every entry is asked instead. The one reader left
+/// that does: the words do not collide, and every other reader goes by the
+/// record's own vendor.
+fn any_vendors_moment(event: &str) -> Option<Moment> {
+    crate::vendor::table()
+        .iter()
+        .filter_map(|vendor| vendor.hooks)
+        .find_map(|hooks| hooks.moment(event))
 }
 
 /// What has been sent and not yet answered: the text of every `send` the
@@ -370,7 +385,7 @@ pub fn queued(events: &[Event]) -> Vec<String> {
         // beginning, or a turn ending. Either way everything sent before it
         // has been answered; what they disagree about is what the next prompt
         // the vendor reports will mean.
-        let edge = match crate::vendor::moment_of(&event.kind) {
+        let edge = match any_vendors_moment(&event.kind) {
             // The vendor saying it has started on the message, which is the
             // one word that means the message is no longer waiting whenever
             // it arrives.
@@ -669,16 +684,23 @@ mod tests {
 
     #[test]
     fn send_counts_the_prompts_the_agent_itself_submitted() {
-        assert_eq!(submissions(&events(&[])), 0);
+        let claude = Some(&crate::vendor::claude::HOOKS);
+        assert_eq!(submissions(claude, &events(&[])), 0);
         assert_eq!(
-            submissions(&events(&["SessionStart", SUBMITTED, "Stop", SUBMITTED])),
+            submissions(
+                claude,
+                &events(&["SessionStart", SUBMITTED, "Stop", SUBMITTED])
+            ),
             2
         );
 
         // A turn a reader watched begin is the same moment, on the vendor whose
         // pane is the only place it was ever written.
         assert_eq!(
-            submissions(&events(&[derive::READ_TURN_END, derive::READ_PROMPT])),
+            submissions(
+                claude,
+                &events(&[derive::READ_TURN_END, derive::READ_PROMPT])
+            ),
             1,
             "and the other edge of a turn is not a prompt"
         );
@@ -688,7 +710,20 @@ mod tests {
             Event::new(SUBMITTED, json!({})),
             Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
         ];
-        assert_eq!(submissions(&mixed), 1);
+        assert_eq!(submissions(claude, &mixed), 1);
+    }
+
+    #[test]
+    fn send_counts_a_prompt_only_in_the_records_own_vendors_words() {
+        // A pi record's prompts are pi's words; claude's word for one landing
+        // on it is nothing pi said.
+        let pi = crate::vendor::pi::VENDOR.hooks;
+        assert_eq!(
+            submissions(pi.as_ref(), &events(&["agent_start", "message_start"])),
+            2
+        );
+        assert_eq!(submissions(pi.as_ref(), &events(&[SUBMITTED])), 0);
+        assert_eq!(submissions(None, &events(&[SUBMITTED])), 0);
     }
 
     #[test]

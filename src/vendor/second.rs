@@ -11,7 +11,9 @@
 //! later field arrives on the descriptor, the way to keep it honest is to
 //! answer it differently here.
 
-use super::{Capability, DEFAULT, DialSpec, Models, SessionSpec, Vendor};
+use super::{
+    Capability, DEFAULT, DialSpec, Hooks, Models, Moment, SessionSpec, Vendor, Wire, Wiring,
+};
 
 /// The fixture. Read the module docs before changing a value: each of these
 /// disagrees with claude on purpose.
@@ -69,6 +71,65 @@ pub const SECOND: Vendor = Vendor {
     // this vendor keeps its skills or what it answers itself, which is the
     // shape a reader of those places has to leave alone.
     catalog: None,
+};
+
+/// Hooks in the second vendor's words, for a test that reads a payload.
+///
+/// Off the entry on purpose: [`SECOND`] is the vendor that reports nothing,
+/// and a verb has to refuse things for it. These are what a vendor that did
+/// report would say if every word of it were its own, so that a reading which
+/// passes under them is a reading of the record's vendor and not of claude.
+pub const HOOKS: Hooks = Hooks {
+    wire: Wire::File {
+        path: ".second/report.sh",
+        body: "# installed by amx\namx _hook\n",
+    },
+    opt_in: &[],
+    events: &[
+        Wiring {
+            moment: Moment::Started,
+            event: "opened",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Prompted,
+            event: "told",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Calling,
+            event: "using",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Asked,
+            event: "may_i",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Refused,
+            event: "refused",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Notified,
+            event: "note",
+            matched: false,
+        },
+        Wiring {
+            moment: Moment::Ended,
+            event: "finished",
+            matched: false,
+        },
+    ],
+    matcher: "",
+    question_tool: "choose",
+    idle_notice: "resting",
+    permission_notice: "gatekeeping",
+    permission_sentence: "second may not run {tool} yet",
+    injected: &["[second]"],
+    fresh_start: Some("new"),
+    question_kinds: &["pick"],
 };
 
 /// The second vendor's screens.

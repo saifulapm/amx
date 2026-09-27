@@ -7,7 +7,7 @@
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, SessionSpec,
-    TOOL, Transcript, Vendor, Wire, Wiring,
+    Transcript, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -255,43 +255,13 @@ pub const HOOKS: Hooks = Hooks {
     // Read off 121 real UserPromptSubmit payloads on 2026-09-26: a background
     // task that finished, and a message from another agent.
     injected: &["<task-notification", "<agent-message"],
+    // A resume, a clear and a compact each open a session too, and say which
+    // they were, per code.claude.com/docs/en/hooks.
+    fresh_start: Some("startup"),
+    // Its notices carry a type and no kind: the question it asks is the menu
+    // its question tool draws.
+    question_kinds: &[],
 };
-
-/// The sentence claude puts on a permission box about `tool`.
-///
-/// The one place a tool name becomes the vendor's own words. What is written
-/// when the box goes up has to be what the notification six seconds later will
-/// repeat: it is the sentence every reader quotes until that echo lands, and
-/// the echo writes the vendor's own words over it.
-pub fn permission_sentence(tool: &str) -> String {
-    HOOKS.permission_sentence.replace(TOOL, &rendered(tool))
-}
-
-/// A tool's name the way claude writes it into that sentence, measured at
-/// 2.1.237: the last `__` segment — an MCP tool arrives as
-/// `mcp__<server>__<tool>` — with underscores as spaces and a letter raised
-/// wherever a word starts, which is after anything that is not a letter or a
-/// digit (the vendor's `\b\w`), not only after an underscore. That carries a
-/// kebab-case name past its dashes, leaves a built-in like `Bash` as it
-/// stands, and keeps a digit's word one word.
-fn rendered(tool: &str) -> String {
-    let mut boundary = true;
-    tool.rsplit("__")
-        .next()
-        .unwrap_or(tool)
-        .chars()
-        .map(|letter| {
-            let letter = if letter == '_' { ' ' } else { letter };
-            let raised = if boundary {
-                letter.to_ascii_uppercase()
-            } else {
-                letter
-            };
-            boundary = !letter.is_ascii_alphanumeric();
-            raised
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -304,30 +274,15 @@ mod tests {
         // repeats it. One worded any other way is a sentence nothing drew,
         // handed to whoever has to answer the box.
         assert_eq!(
-            permission_sentence("Bash"),
-            "Claude needs your permission to use Bash"
+            HOOKS.permission_sentence("Bash").as_deref(),
+            Some("Claude needs your permission to use Bash")
         );
         assert_eq!(
-            permission_sentence("mcp__playwright__browser_click"),
-            "Claude needs your permission to use Browser Click"
+            HOOKS
+                .permission_sentence("mcp__playwright__browser_click")
+                .as_deref(),
+            Some("Claude needs your permission to use Browser Click")
         );
-    }
-
-    #[test]
-    fn claude_raises_a_tools_name_at_every_word_boundary() {
-        // The vendor raises a letter wherever a word starts — after anything
-        // that is not a letter or a digit — not only after an underscore.
-        // Raised the underscore way, a kebab-case name reads
-        // 'Resolve-library-id' against the pane's 'Resolve-Library-Id'.
-        assert_eq!(
-            rendered("mcp__context7__resolve-library-id"),
-            "Resolve-Library-Id"
-        );
-        assert_eq!(rendered("mcp__playwright__browser_click"), "Browser Click");
-        assert_eq!(rendered("mcp__acme__fs.read_file"), "Fs.Read File");
-        // A digit neither opens a word nor ends one: nothing raises after it.
-        assert_eq!(rendered("mcp__totp__get2fa-codes"), "Get2fa-Codes");
-        assert_eq!(rendered("Bash"), "Bash");
     }
 
     #[test]
