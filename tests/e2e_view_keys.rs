@@ -233,4 +233,27 @@ fn a_killed_view_gives_the_terminal_back() {
              paste, and no title of the view's left on the window"
         );
     }
+
+    // And a view whose terminal goes with its pane ends too.
+    let amx = Harness::new();
+    let view = amx.in_a_terminal(&[], &[]);
+    until_empty(&amx, &view);
+    let pid = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_pid}"]);
+
+    // The pane going takes the terminal with it: every read after that is an
+    // end of file or an error, and the view must stop reading, not spin.
+    amx.tmux(&["kill-pane", "-t", &view]);
+    let there = || std::path::Path::new(&format!("/proc/{pid}")).exists();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while there() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let lingered = there();
+    if lingered {
+        // Not left behind to spin after the test has failed.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid])
+            .status();
+    }
+    assert!(!lingered, "the view outlived its terminal");
 }

@@ -871,6 +871,46 @@ fn hear_the_end() {
         // SAFETY: the handler touches nothing but an atomic.
         let _ = unsafe { sigaction(signal, &action) };
     }
+    watch_the_terminal();
+}
+
+/// Have a terminal that goes end the view, wherever in the loop it is.
+///
+/// A hung-up terminal reads as an end of file or an error for ever after, and
+/// crossterm reads it again at once on either without returning, so a view
+/// waiting on a key when its pane went would spin and never hear the hangup.
+/// This thread waits on nothing but the hangup, asks the loop to close, and
+/// ends the process itself if the loop has not a moment later: there is no
+/// terminal left to give anything back to.
+fn watch_the_terminal() {
+    use std::io::IsTerminal;
+    use std::os::fd::IntoRawFd;
+    // The terminal crossterm reads keys from, found the way it finds it.
+    let fd = match std::io::stdin().is_terminal() {
+        true => nix::libc::STDIN_FILENO,
+        false => match std::fs::File::open("/dev/tty") {
+            Ok(tty) => tty.into_raw_fd(),
+            Err(_) => return,
+        },
+    };
+    std::thread::spawn(move || {
+        // Asking for no events still hears a hangup, an error or a closed
+        // descriptor, which are always reported.
+        let mut watched = nix::libc::pollfd {
+            fd,
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: one pollfd, alive for the whole call.
+        while unsafe { nix::libc::poll(&mut watched, 1, -1) } < 0 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return;
+            }
+        }
+        ENDED.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+        std::process::exit(exit::OK);
+    });
 }
 
 /// What the view opens painted in: the palette the config named, whatever
