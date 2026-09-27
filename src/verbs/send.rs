@@ -130,7 +130,16 @@ pub fn run(
     let taken = submissions(&agent.events()?);
 
     let server = Server::from_socket(view.meta.socket.clone());
-    deliver(&agent, &server, &view.meta.pane, text)?;
+    match delivered(&agent, &server, &view.meta.pane, text)? {
+        Delivered::Sent => {}
+        Delivered::Refused(why) => {
+            complain!("amx: {why}");
+            return Ok(exit::FAILURE);
+        }
+        Delivered::Waiting(state) => {
+            return waiting_on_a_question(&View { state, ..view }, to_terminal, out);
+        }
+    }
 
     // An agent that is mid-turn will not submit this until the turn it is on
     // ends, which is not a stall and may be a long way off.
@@ -163,6 +172,35 @@ pub fn run(
 /// document written before the message over the pane that has since taken it —
 /// including the reading this send is about to wait on.
 pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
+    match delivered(agent, server, pane, text)? {
+        Delivered::Sent => Ok(()),
+        Delivered::Refused(why) => bail!(why),
+        Delivered::Waiting(_) => bail!(
+            "{} is waiting on a question; nothing was typed at it",
+            agent.id()
+        ),
+    }
+}
+
+/// What became of a message [`delivered`] was handed.
+enum Delivered {
+    Sent,
+    /// Nothing typed and nothing recorded, for the reason given.
+    Refused(String),
+    /// The record reads waiting now, which the reading before this did not
+    /// say: nothing typed and nothing recorded, and this is the record.
+    Waiting(State),
+}
+
+/// [`deliver`], with what the record says now handed back rather than turned
+/// into an error.
+///
+/// The caller decided to send on a reading taken without the lock, and a park
+/// or a question can land between that reading and the paste. So the record
+/// is read again under the writer, and the writer is held until the Enter is
+/// pressed: `_park` holds it from its own reading to its kill, and a send
+/// either lands before that reading or finds the stamp it left.
+fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<Delivered> {
     if ends_its_own_paste(text) {
         bail!(
             "that message carries the end of a bracketed paste; \
@@ -171,13 +209,25 @@ pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Res
         );
     }
 
+    let id = agent.id();
     let writer = agent.writer()?;
+    let state = writer.state()?;
+    if state.parked_at > 0 {
+        return Ok(Delivered::Refused(was_let_go(id)));
+    }
+    if state.state == Phase::Waiting {
+        return Ok(Delivered::Waiting(state));
+    }
+    if !server.pane_answers_for(pane, id) {
+        return Ok(Delivered::Refused(format!(
+            "{id} has no pane any more; run: amx status {id}"
+        )));
+    }
+
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
     writer.observe(|state| state.seq += 1)?;
-    drop(writer);
-
     server.paste(pane, text)?;
-    server.send_keys(pane, &["Enter"])
+    server.send_keys(pane, &["Enter"]).map(|()| Delivered::Sent)
 }
 
 /// Whether the message carries the brackets of the paste it travels in.
@@ -985,5 +1035,125 @@ mod tests {
         line("no newline", &mut out).unwrap();
         line("has one\n", &mut out).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "no newline\nhas one\n");
+    }
+
+    /// A pane of the test's own on a server of its own, gone when the test
+    /// is, in a session named the way [`crate::spawn::place`] names one so it
+    /// answers for `fix-login-a1b`. It runs `cat`, so whatever is typed at it
+    /// is on its screen.
+    struct Listening {
+        server: Server,
+        pane: PaneId,
+    }
+
+    impl Listening {
+        fn new(test: &str) -> Listening {
+            let name = format!("amx-test-send-{test}-{}", std::process::id());
+            let server = Server::named(&name).with_conf("/dev/null");
+            let (_, pane) = server
+                .new_session(&crate::tmux::Spawn {
+                    name: Some(&format!("{}fix-login-a1b", crate::tmux::SESSION_PREFIX)),
+                    command: &["cat"],
+                    ..crate::tmux::Spawn::default()
+                })
+                .expect("a pane for it");
+            Listening { server, pane }
+        }
+
+        /// An agent whose record points at this pane, in the state `change`
+        /// leaves it.
+        fn agent(&self, root: &Path, change: impl FnOnce(&mut State)) -> Agent {
+            let meta = Meta {
+                socket: self.server.socket().clone(),
+                pane: self.pane.clone(),
+                ..asking(None, &[], None).meta
+            };
+            let agent = Agent::create(root, &meta).unwrap();
+            agent.writer().unwrap().observe(change).unwrap();
+            agent
+        }
+
+        /// Whether anything was typed at the pane.
+        fn typed_at(&self) -> bool {
+            let screen = self.server.capture(&self.pane).unwrap_or_default();
+            !screen.trim().is_empty()
+        }
+    }
+
+    impl Drop for Listening {
+        fn drop(&mut self) {
+            let _ = self.server.kill();
+        }
+    }
+
+    #[test]
+    fn send_refuses_a_record_parked_since_it_was_read() {
+        // The reading said idle, and park took the pane before the paste: the
+        // record under the writer is the one that is true now, and nothing of
+        // the send reaches it.
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = Listening::new("parked");
+        let agent = pane.agent(root.path(), |state| {
+            state.state = Phase::Idle;
+            state.parked_at = 4_600;
+        });
+
+        let refused = deliver(&agent, &pane.server, &pane.pane, "and the linter").unwrap_err();
+        assert!(format!("{refused:#}").contains("parked"), "{refused:#}");
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pane.typed_at(), "and nothing is typed");
+    }
+
+    #[test]
+    fn send_refuses_a_pane_that_no_longer_answers_for_the_agent() {
+        let root = tempfile::TempDir::new().unwrap();
+        let meta = Meta {
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            pane: PaneId::new("%404").unwrap(),
+            ..asking(None, &[], None).meta
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        let server = Server::from_socket(meta.socket.clone());
+
+        assert!(deliver(&agent, &server, &meta.pane, "and the linter").is_err());
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
+    }
+
+    #[test]
+    fn send_to_a_record_now_waiting_presses_nothing_and_hands_back_the_question() {
+        // The reading said idle, and a question went up before the paste.
+        // Text typed now would answer it, so none is, and what comes back is
+        // the question as the record has it.
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = Listening::new("waiting");
+        let agent = pane.agent(root.path(), |state| {
+            state.state = Phase::Waiting;
+            state.question = Some("Run the migration?".to_string());
+        });
+
+        match delivered(&agent, &pane.server, &pane.pane, "and the linter").unwrap() {
+            Delivered::Waiting(state) => {
+                assert_eq!(state.question.as_deref(), Some("Run the migration?"))
+            }
+            _ => panic!("the record is waiting"),
+        }
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pane.typed_at(), "and no key is pressed");
+    }
+
+    #[test]
+    fn send_types_at_a_pane_that_answers_for_an_idle_agent() {
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = Listening::new("idle");
+        let agent = pane.agent(root.path(), |state| state.state = Phase::Idle);
+
+        deliver(&agent, &pane.server, &pane.pane, "and the linter").unwrap();
+        assert_eq!(agent.state().unwrap().seq, 1);
+        assert_eq!(agent.events().unwrap().len(), 1);
     }
 }
