@@ -62,7 +62,13 @@ pub fn consider(root: &Path, id: &str, now: u64) -> Result<i32> {
 /// would have said. The suite cannot set an environment for one of its
 /// threads; see [`crate::paths`].
 fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) -> Result<i32> {
-    let state = agent.state()?;
+    // The writer first, and held to the end. A send or a hook landing between
+    // the reading and the kill would be a message pasted at a pane on its way
+    // out, or a turn ended under it; holding the writer puts every one of them
+    // either before the reading, where it is what park reads, or after the
+    // stamp, where it is what `send` refuses.
+    let writer = agent.writer()?;
+    let state = writer.state()?;
     if !ripe(&state, park_after, now) {
         return Ok(exit::OK);
     }
@@ -95,17 +101,17 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
     // `observe` rather than `update_state`: this is something amx did, not
     // something the agent said, and a `last_event` that moved would put an
     // unread mark on a row with nothing new on it.
-    agent.writer()?.observe(|state| state.parked_at = now)?;
+    writer.observe(|state| state.parked_at = now)?;
 
     // stop's own ladder: the vendor is asked to finish what it is writing
     // before it is insisted on. What it was writing is the transcript, and the
     // transcript is what an agent that comes back comes back to.
     if let Err(e) = stop::end(&server, &meta.pane, &meta.id) {
-        agent.writer()?.observe(|state| state.parked_at = 0)?;
+        writer.observe(|state| state.parked_at = 0)?;
         return Err(e);
     }
 
-    agent.writer()?.append(&Event::new(
+    writer.append(&Event::new(
         PARKED,
         serde_json::json!({ "idle": now.saturating_sub(state.since) }),
     ))?;
@@ -487,6 +493,39 @@ mod tests {
 
         assert_eq!(considered(&root, &it.agent, 3_600, 4_600), exit::OK);
         assert!(it.has_a_pane(), "somebody wants it in front of them");
+        assert_eq!(left(&it.agent), (0, Vec::new()));
+    }
+
+    #[test]
+    fn park_decides_on_the_record_as_it_is_once_it_holds_the_writer() {
+        // The timer fires over an agent that has sat idle for an hour, and in
+        // the moment between the verb reading the record and taking the pane,
+        // somebody sends it something. The writer is what orders the two: the
+        // record park goes by is the one it reads while holding it, so a send
+        // that got there first is a turn park finds and leaves alone.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        let it = Sitting::new(&root, "fix-login-a1b");
+        it.recorded(Phase::Idle, 1_000);
+
+        let writer = it.agent.writer().expect("the writer");
+        let park = std::thread::spawn({
+            let root = root.clone();
+            let agent = Agent::open(&root, "fix-login-a1b").unwrap();
+            move || considered(&root, &agent, 3_600, 4_600)
+        });
+        // Long enough for a verb that read first to have read.
+        std::thread::sleep(Duration::from_millis(300));
+        writer
+            .observe(|state| {
+                state.state = Phase::Working;
+                state.since = 4_590;
+            })
+            .unwrap();
+        drop(writer);
+
+        assert_eq!(park.join().expect("the verb"), exit::OK);
+        assert!(it.has_a_pane(), "it went back to work before park could act");
         assert_eq!(left(&it.agent), (0, Vec::new()));
     }
 }
