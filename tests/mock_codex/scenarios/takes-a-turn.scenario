@@ -1,0 +1,18 @@
+# One turn, reported the way codex 0.157.1 reports one: SessionStart at the
+# first turn and never at launch, the prompt, a shell call, and Stop with the
+# answer on it. The rollout gets the turn's edges, the prompt as codex records
+# what was typed, and the answer.
+screen idle
+sleep 50
+hook SessionStart {}
+hook UserPromptSubmit {}
+transcript {"timestamp":"2026-09-28T02:36:52.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+transcript {"timestamp":"2026-09-28T02:36:52.100Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"fix the login bug"}]}}}
+screen working
+hook PreToolUse {"tool_name":"Bash","tool_input":{"command":"cargo test"},"tool_use_id":"exec-1"}
+sleep 1000
+transcript {"timestamp":"2026-09-28T02:36:55.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I moved the timeout into the config, and the tests pass."}],"phase":"final_answer"}}
+transcript {"timestamp":"2026-09-28T02:36:55.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"I moved the timeout into the config, and the tests pass."}}
+screen idle-after
+hook Stop {"stop_hook_active":false,"last_assistant_message":"I moved the timeout into the config, and the tests pass."}
+sleep 600000

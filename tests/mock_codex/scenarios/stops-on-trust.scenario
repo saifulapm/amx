@@ -1,0 +1,4 @@
+# codex started in a folder it has no trust saved for: the trust screen, in
+# front of the first turn, so no SessionStart ever says which session this is.
+screen trust
+sleep 600000

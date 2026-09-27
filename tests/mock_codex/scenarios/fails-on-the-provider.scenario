@@ -1,0 +1,14 @@
+# A turn the provider refused. codex sends no Stop for it: the rollout's
+# task_complete carries the error and no answer, and the pane draws the error
+# above an idle composer.
+screen idle
+sleep 50
+hook SessionStart {}
+hook UserPromptSubmit {}
+transcript {"timestamp":"2026-09-28T02:44:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+transcript {"timestamp":"2026-09-28T02:44:10.100Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"fix the login bug"}]}}}
+screen working
+sleep 300
+transcript {"timestamp":"2026-09-28T02:44:12.460Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":null,"error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'no-such-model-xyz' model is not supported when using Codex with a ChatGPT account.\"}}"}}}
+screen error
+sleep 600000

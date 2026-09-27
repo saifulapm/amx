@@ -1,0 +1,16 @@
+# A turn running a shell command until Escape reaches the pane. codex sends no
+# Stop for an Esc'd turn: the rollout gets turn_aborted, and the pane gets
+# `■ Conversation interrupted` over the composer, which is all anything can
+# read the turn's end off.
+screen idle
+sleep 50
+hook SessionStart {}
+hook UserPromptSubmit {}
+transcript {"timestamp":"2026-09-28T02:38:46.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+transcript {"timestamp":"2026-09-28T02:38:46.100Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"fix the login bug"}]}}}
+screen working
+hook PreToolUse {"tool_name":"Bash","tool_input":{"command":"sleep 60"},"tool_use_id":"exec-1"}
+await esc
+transcript {"timestamp":"2026-09-28T02:39:00.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted"}}
+screen interrupted
+sleep 600000

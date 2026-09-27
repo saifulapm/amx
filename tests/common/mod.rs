@@ -113,6 +113,7 @@ impl Harness {
             .env_remove("AMX_PARENT")
             .env_remove("AMX_PARENT_DIR")
             .env_remove("AMX_DEPTH");
+        leaks_nothing(&mut command);
         command
     }
 
@@ -218,13 +219,16 @@ impl Harness {
     }
 
     fn tmux_once(&self, args: &[&str]) -> std::process::Output {
-        Command::new("tmux")
+        let mut command = Command::new("tmux");
+        command
             .args(["-L", &self.socket, "-f", "/dev/null"])
             .args(args)
             .env("AMX_STATE_DIR", self.state.path())
-            .env("HOME", self.home.path())
-            .output()
-            .expect("running tmux")
+            .env("HOME", self.home.path());
+        // The server this starts is where every pane of the test gets its
+        // environment from.
+        leaks_nothing(&mut command);
+        command.output().expect("running tmux")
     }
 
     /// What is on a pane's screen now.
@@ -490,6 +494,26 @@ impl Drop for Harness {
         // piled up thousands of dead sockets until /tmp/tmux-1000 itself made
         // new servers time out (friction #G40BJA0X).
         let _ = std::fs::remove_file(socket_dir().join(&self.socket));
+    }
+}
+
+/// Take out what the suite's own environment carries when it is run from
+/// inside an agent's pane, or beside somebody's own codex.
+///
+/// `AMX_NESTED` drops every hook a stand-in delivers as nested, and the rest
+/// name that outer agent's record, its scratch directory and the amx it runs
+/// (#KR7ZYJ5Z, #C2G0FZ5E). `CODEX_HOME` names the person's own codex, which
+/// no test may read or write: a test that wants one sets it itself.
+fn leaks_nothing(command: &mut Command) {
+    for name in [
+        "AMX_NESTED",
+        "AMX_DIR",
+        "AMX_AGENT_DIR",
+        "AMX_WORKTREE",
+        "AMX_BIN",
+        "CODEX_HOME",
+    ] {
+        command.env_remove(name);
     }
 }
 

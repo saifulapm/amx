@@ -1,0 +1,334 @@
+#!/bin/sh
+# A stand-in for codex 0.157.1, replaying a scenario of steps.
+#
+# It is called `codex`, and reached through the PATH, because that is the
+# whole of what makes it codex: amx keys its vendor table by the program an
+# agent command runs, so this directory in front of the PATH is the only way to
+# drive codex's entry on a machine with no codex on it. It is a shell script
+# for the reason pi's stand-in next door is one: a fixture sharing amx's own
+# code would only ever prove that amx agrees with itself.
+#
+# What it answers for:
+#
+#   the listing       `codex debug models` prints the catalog as JSON,
+#                     `models[]` with a `slug` and a `visibility` each, and
+#                     ends. amx asks it before there is a pane or a scenario.
+#   the argv          `codex [resume <id> | fork <id>] [options] [-- <prompt>]`,
+#                     parsed the way clap parses it on 0.157.1: a subcommand is
+#                     one only right after the program, a word opening with `-`
+#                     before `--` is an option or a refusal, and everything
+#                     after `--` is the prompt, whatever it looks like
+#                     (docs/codex-screens.md, open question 7).
+#                     `--no-daemon` twice is clap's refusal. Without it the
+#                     run goes ahead and its hooks run the way the shared
+#                     daemon runs them: in the daemon's environment, with no
+#                     `AMX_ID` (plan codex-lands Ruling 1).
+#   the session       codex mints its own id at launch and says it at the
+#                     first turn's SessionStart, never before. `resume <id>`
+#                     carries on the rollout kept under that id and `fork <id>`
+#                     copies it under a new one; either refuses an id with no
+#                     rollout.
+#   the screens       the captures in tests/codex/screens, painted whole in
+#                     one write, at the widest width captured that fits the
+#                     pane, bottom rows kept.
+#
+# How it was called, what it did with the session, and the prompt it read are
+# written before the first repaint, where `capture-pane -S -` reads them back.
+#
+# Steps, one per line. Blank lines and `#` comments are ignored.
+#
+#   screen <name>   repaint with tests/codex/screens/<name>-<width>.txt.
+#   sleep <ms>      wait. A long trailing sleep keeps the agent alive.
+#   hook <Event> <json>
+#                   run the command amx's hooks.json names, `amx _hook`, with
+#                   the payload on stdin, the way codex runs a handler. The
+#                   payload is the json with codex's own keys added where it
+#                   names none: hook_event_name, session_id, transcript_path,
+#                   cwd, model, permission_mode, and turn_id on every event
+#                   but SessionStart, which gets the source this run opened
+#                   with. A UserPromptSubmit with no `prompt` carries the one
+#                   this turn was given, and opens a new turn. codex feeds a
+#                   handler's stdout to the model, so a hook that prints
+#                   anything ends the stand-in with the words it printed.
+#   transcript <json>
+#                   append a line to the rollout the payloads name.
+#   await line      block until a line is typed at the pane, the way a message
+#                   amx sends arrives: a bracketed paste and Enter. The line is
+#                   the next turn's prompt.
+#   await esc       block until Escape reaches the pane.
+#
+# Environment:
+#   MOCK_CODEX_SCENARIO   the scenario to replay (required, except for the
+#                         listing)
+#   CODEX_HOME            where the rollouts go, `$HOME/.codex` without it
+
+set -u
+
+if [ "${1:-}" = debug ] && [ "${2:-}" = models ]; then
+	cat <<'LISTING'
+{"models":[{"slug":"gpt-6-luna","visibility":"list"},{"slug":"gpt-6-luna-mini","visibility":"list"},{"slug":"codex-auto-review","visibility":"hide"}]}
+LISTING
+	exit 0
+fi
+
+scenario=${MOCK_CODEX_SCENARIO:-}
+if [ -z "$scenario" ]; then
+	echo "mock codex: \$MOCK_CODEX_SCENARIO names the scenario to replay" >&2
+	exit 64
+fi
+if [ ! -r "$scenario" ]; then
+	echo "mock codex: cannot read the scenario $scenario" >&2
+	exit 66
+fi
+
+here=$(dirname "$0")
+screens=$here/../codex/screens
+sessions=${CODEX_HOME:-$HOME/.codex}/sessions
+
+printf 'argv: %s\n' "$*"
+
+# clap takes `resume` or `fork` as the subcommand wherever it is the first
+# word that is no option's, until `--`: past it every word is the prompt.
+mode=new
+origin=
+prompt=
+model=gpt-6-luna
+daemonless=0
+value_of=
+ended=
+for arg do
+	if [ -n "$ended" ]; then
+		prompt="${prompt:+$prompt }$arg"
+		continue
+	fi
+	if [ -n "$value_of" ]; then
+		[ "$value_of" = model ] && model=$arg
+		value_of=
+		continue
+	fi
+	case $arg in
+	--) ended=yes ;;
+	--no-daemon) daemonless=$((daemonless + 1)) ;;
+	-c | --config | -s | --sandbox | -a | --ask-for-approval) value_of=other ;;
+	-m | --model) value_of=model ;;
+	--last | --all | --include-non-interactive)
+		[ "$mode" != new ] || {
+			echo "error: unexpected argument '$arg' found" >&2
+			exit 2
+		}
+		;;
+	-*)
+		echo "error: unexpected argument '$arg' found" >&2
+		exit 2
+		;;
+	resume | fork)
+		if [ "$mode" = new ] && [ -z "$prompt" ]; then
+			mode=$arg
+		elif [ "$mode" != new ] && [ -z "$origin" ]; then
+			origin=$arg
+		else
+			prompt="${prompt:+$prompt }$arg"
+		fi
+		;;
+	*)
+		if [ "$mode" != new ] && [ -z "$origin" ]; then
+			origin=$arg
+		else
+			prompt="${prompt:+$prompt }$arg"
+		fi
+		;;
+	esac
+done
+
+if [ "$daemonless" -gt 1 ]; then
+	echo "error: the argument '--no-daemon' cannot be used multiple times" >&2
+	exit 2
+fi
+
+mint() {
+	cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s' "$$" "$(date +%s%N)"
+}
+
+rollout() {
+	printf '%s/rollout-%s.jsonl' "$sessions" "$1"
+}
+
+case $mode in
+new)
+	session=$(mint)
+	source=startup
+	printf 'session: started %s\n' "$session"
+	;;
+resume | fork)
+	if [ -z "$origin" ] || [ ! -f "$(rollout "$origin")" ]; then
+		echo "No saved session found with ID ${origin:-(none)}." >&2
+		exit 1
+	fi
+	if [ "$mode" = resume ]; then
+		session=$origin
+		source=resume
+		printf 'session: resumed %s\n' "$session"
+	else
+		session=$(mint)
+		source=fork
+		cp "$(rollout "$origin")" "$(rollout "$session")"
+		printf 'session: forked %s from %s\n' "$session" "$origin"
+	fi
+	;;
+esac
+printf 'prompt: %s\n' "$prompt"
+transcript=$(rollout "$session")
+
+# The pane is a terminal: a message arrives as a bracketed paste, which codex
+# asks for, and nothing typed is echoed over the screen.
+if [ -t 1 ]; then
+	printf '\033[?2004h'
+	stty -echo </dev/tty 2>/dev/null
+fi
+
+# ── The screens ──────────────────────────────────────────────────────────────
+# Captured off codex 0.157.1 on 2026-09-28 at 220, 100, 54 and 24 columns and
+# 40 rows (docs/codex-screens.md). The widest capture that fits the pane is
+# painted, with the blank rows between the history and the composer closed up
+# the way codex closes them on a shorter pane, and then its bottom rows, which
+# are the rows every rule reads. A capture wider than the pane wraps, and
+# `capture-pane -J` joins it back.
+size=$( (stty size </dev/tty) 2>/dev/null)
+rows=${size% *}
+width=${size#* }
+case $rows in '' | *[!0-9]*) rows=24 ;; esac
+case $width in '' | *[!0-9]*) width=80 ;; esac
+
+CLEAR=$(printf '\033[H\033[2J')
+
+draw() {
+	file=
+	for w in 24 54 100 220; do
+		[ -f "$screens/$1-$w.txt" ] || continue
+		if [ -z "$file" ] || [ "$w" -le "$width" ]; then
+			file=$screens/$1-$w.txt
+		fi
+	done
+	if [ -z "$file" ]; then
+		echo "mock codex: $scenario: no screen called \`$1\`" >&2
+		exit 65
+	fi
+	# Built first and written second, in one write: a screen that reaches the
+	# pane in two pieces is a screen codex never drew.
+	screen=$(sed 's/[[:space:]]*$//' "$file" | cat -s | tail -n "$((rows - 1))")
+	cat <<EOF
+$CLEAR$screen
+EOF
+}
+
+nap() {
+	[ "$1" -gt 0 ] || return 0
+	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
+}
+
+# A string as the inside of a JSON string.
+quoted() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+turn=0
+
+# One handler run, the way codex runs one: the command amx wrote into
+# hooks.json, through a shell, the payload on stdin. Under the daemon the
+# handler runs in the daemon's environment, which never had the pane's.
+deliver() {
+	event=${1%% *}
+	json=${1#"$event"}
+	json=${json# }
+	[ -n "$json" ] || json='{}'
+
+	fields="\"hook_event_name\":\"$event\""
+	has() { case "$json" in *"\"$1\""*) return 0 ;; esac; return 1; }
+	has session_id || fields="$fields,\"session_id\":\"$session\""
+	has transcript_path || fields="$fields,\"transcript_path\":\"$(quoted "$transcript")\""
+	has cwd || fields="$fields,\"cwd\":\"$(quoted "$PWD")\""
+	has model || fields="$fields,\"model\":\"$model\""
+	has permission_mode || fields="$fields,\"permission_mode\":\"default\""
+	case $event in
+	SessionStart)
+		has source || fields="$fields,\"source\":\"$source\""
+		;;
+	*)
+		if [ "$event" = UserPromptSubmit ] && ! has prompt; then
+			turn=$((turn + 1))
+			fields="$fields,\"prompt\":\"$(quoted "$prompt")\""
+		fi
+		has turn_id || fields="$fields,\"turn_id\":\"turn-$turn\""
+		;;
+	esac
+
+	interior=$(printf '%s' "$json" |
+		sed -e 's/^[[:space:]]*{[[:space:]]*//' -e 's/[[:space:]]*}[[:space:]]*$//')
+	[ -z "$interior" ] || fields="$fields,$interior"
+
+	if [ "$daemonless" -eq 1 ]; then
+		printed=$(printf '%s' "{$fields}" | sh -c 'amx _hook')
+	else
+		printed=$(printf '%s' "{$fields}" | env -u AMX_ID -u AMX_DIR sh -c 'amx _hook')
+	fi
+	if [ -n "$printed" ]; then
+		echo "mock codex: amx _hook printed on stdout, which codex hands the model: $printed" >&2
+		exit 70
+	fi
+}
+
+transcribe() {
+	mkdir -p "$sessions"
+	printf '%s\n' "$1" >>"$transcript"
+}
+
+# What a person, or amx, types at the pane. A message amx sends is a bracketed
+# paste and then Enter; the brackets come off, and what is left is the prompt.
+await() {
+	case $1 in
+	line)
+		IFS= read -r typed </dev/tty || exit 0
+		esc=$(printf '\033')
+		typed=$(printf '%s' "$typed" | sed -e "s/${esc}\[200~//g" -e "s/${esc}\[201~//g" -e 's/\r$//')
+		prompt=$typed
+		printf 'typed: %s\n' "$typed"
+		;;
+	esc)
+		old=$(stty -g </dev/tty)
+		stty -icanon min 1 time 0 </dev/tty
+		esc=$(printf '\033')
+		while :; do
+			key=$(dd bs=1 count=1 </dev/tty 2>/dev/null) || exit 0
+			[ "$key" = "$esc" ] && break
+		done
+		stty "$old" </dev/tty
+		;;
+	*)
+		echo "mock codex: $scenario: nothing to await called \`$1\`" >&2
+		exit 65
+		;;
+	esac
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+	'' | '#'*) continue ;;
+	esac
+	verb=${line%% *}
+	rest=${line#"$verb"}
+	rest=${rest# }
+
+	case "$verb" in
+	screen) draw "$rest" ;;
+	sleep) nap "$rest" ;;
+	hook) deliver "$rest" ;;
+	transcript) transcribe "$rest" ;;
+	await) await "$rest" ;;
+	*)
+		echo "mock codex: $scenario: no step called \`$verb\`" >&2
+		exit 65
+		;;
+	esac
+done <"$scenario"
+
+exit 0

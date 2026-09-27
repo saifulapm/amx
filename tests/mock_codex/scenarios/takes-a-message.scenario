@@ -1,0 +1,25 @@
+# A turn, then the message somebody types at the idle composer, which opens a
+# second turn: a UserPromptSubmit carrying what was typed, and a Stop.
+screen idle
+sleep 50
+hook SessionStart {}
+hook UserPromptSubmit {}
+transcript {"timestamp":"2026-09-28T02:36:52.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+transcript {"timestamp":"2026-09-28T02:36:52.100Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"fix the login bug"}]}}}
+screen working
+sleep 300
+transcript {"timestamp":"2026-09-28T02:36:53.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the tests pass now"}],"phase":"final_answer"}}
+transcript {"timestamp":"2026-09-28T02:36:53.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"the tests pass now"}}
+screen idle-after
+hook Stop {"stop_hook_active":false,"last_assistant_message":"the tests pass now"}
+await line
+hook UserPromptSubmit {}
+transcript {"timestamp":"2026-09-28T02:37:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+transcript {"timestamp":"2026-09-28T02:37:00.100Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-2","item":{"type":"UserMessage","content":[{"type":"text","text":"and now the linter"}]}}}
+screen working
+sleep 1000
+transcript {"timestamp":"2026-09-28T02:37:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the linter is clean"}],"phase":"final_answer"}}
+transcript {"timestamp":"2026-09-28T02:37:02.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2","last_agent_message":"the linter is clean"}}
+screen idle-after
+hook Stop {"stop_hook_active":false,"last_assistant_message":"the linter is clean"}
+sleep 600000
