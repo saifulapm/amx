@@ -49,7 +49,8 @@
 //! wrote every one of those files itself, and taking a stray key back out of
 //! one is not a change anybody could object to. Nor does forgetting a tree amx
 //! cut, which is amx's own key for a directory that is not there any more, and
-//! the file is copied aside before it goes.
+//! the file is copied aside before it goes. Nor does putting back the clock
+//! of a record that says it never worked while its log has turns in it.
 //!
 //! Wiring an agent is not among them. That writes under somebody's home, and
 //! it is `amx setup` that does it, named agent by named agent; doctor says
@@ -145,6 +146,9 @@ pub struct Findings {
     pub orphan_ids: Vec<(PathBuf, u64)>,
     /// Trees under a repository's `.amx/worktrees` that no record names.
     pub orphan_trees: Vec<PathBuf>,
+    /// Records whose clock says they never worked while their log has turns
+    /// in it, and the seconds those turns add up to.
+    pub zeroed: Vec<(String, u64)>,
 }
 
 /// How long an id directory with no record stands before `--fix` takes it: a
@@ -507,14 +511,34 @@ fn address(socket: &tmux::Socket) -> String {
     }
 }
 
+/// Whether amx can keep an agent in the state root, and whether every record
+/// in it has the clock its log says it should.
+///
+/// A record can say it never worked while its log has turns in it. It reads
+/// right, off the log, but only where a reader goes to the log for it; the
+/// number the record itself carries is the one `--fix` puts back, added up
+/// from the same turns. It is amx's own file, so the repair needs no asking.
 fn state_check(found: &Findings) -> Check {
-    match &found.state_error {
-        None => Check::ok("state", found.state_root.display().to_string()),
-        Some(why) => Check::wrong(
+    if let Some(why) = &found.state_error {
+        return Check::wrong(
             "state",
             why.clone(),
             "amx keeps every agent there, so until that is fixed it has nowhere to put one",
-        ),
+        );
+    }
+    let zeroed: Vec<String> = found
+        .zeroed
+        .iter()
+        .map(|(id, worked)| {
+            format!(
+                "{id} worked 0s and its log adds up to {}",
+                derive::in_words(*worked)
+            )
+        })
+        .collect();
+    match zeroed.as_slice() {
+        [] => Check::ok("state", found.state_root.display().to_string()),
+        _ => Check::wrong("state", zeroed.join("; "), "run `amx doctor --fix`"),
     }
 }
 
@@ -717,6 +741,17 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         checks = report(&current);
     }
 
+    if fix && !current.zeroed.is_empty() {
+        let rebuilt = rebuild_clocks(&current.state_root, &current.zeroed)?;
+        writeln!(
+            out,
+            "\nrebuilt the clock of {rebuilt} {} from its log",
+            if rebuilt == 1 { "agent" } else { "agents" }
+        )?;
+        current.zeroed = Vec::new();
+        checks = report(&current);
+    }
+
     Ok(if checks.iter().all(Check::is_ok) {
         exit::OK
     } else {
@@ -809,12 +844,45 @@ pub fn gather(config: &Config, dir: Option<&Path>) -> Result<Findings> {
         ),
         orphan_ids: orphan_ids(&state_root, store::now()),
         orphan_trees: orphan_trees(&state_root, dir),
+        zeroed: zeroed(&state_root),
         state_root,
         server: standing_server(),
         folder: dir.map(|dir| folder(dir, store.as_deref(), config.trust)),
         store,
         stale,
     })
+}
+
+/// Every record under `root` whose clock is zero while its log's turns add up
+/// to more. A root amx cannot read has none to report.
+fn zeroed(root: &Path) -> Vec<(String, u64)> {
+    derive::records(root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|record| record.state.worked == 0)
+        .filter_map(|record| {
+            let worked = derive::worked_off_the_log(&record.agent, &record.meta)?;
+            (worked > 0).then(|| (record.meta.id, worked))
+        })
+        .collect()
+}
+
+/// Write each zeroed record's clock back from its log, under its writer, and
+/// answer how many still needed it: one a hook added a span to since the
+/// reading has a clock of its own and is left alone.
+fn rebuild_clocks(root: &Path, zeroed: &[(String, u64)]) -> Result<usize> {
+    let mut rebuilt = 0;
+    for (id, worked) in zeroed {
+        let agent = store::Agent::open(root, id)?;
+        let writer = agent.writer()?;
+        writer.observe(|state| {
+            if state.worked == 0 {
+                state.worked = *worked;
+                rebuilt += 1;
+            }
+        })?;
+    }
+    Ok(rebuilt)
 }
 
 /// Every directory under `root` named like an id with no record in it, and
@@ -1225,6 +1293,7 @@ mod tests {
             folder: None,
             orphan_ids: Vec::new(),
             orphan_trees: Vec::new(),
+            zeroed: Vec::new(),
         }
     }
 
@@ -1273,6 +1342,67 @@ mod tests {
         let found = orphan_ids(root.path(), store::now());
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].0.ends_with("fix-login-a1b"));
+    }
+
+    #[test]
+    fn a_zeroed_clock_with_turns_in_its_log_is_named_and_rebuilt() {
+        let root = TempDir::new().unwrap();
+        let record = |id: &str, kinds: &[(u64, &str)]| {
+            let meta: store::Meta = serde_json::from_value(serde_json::json!({
+                "id": id,
+                "task": "fix the login bug",
+                "agent": "claude",
+                "dir": "/srv/app",
+                "socket": {"name": "amx"},
+                "pane": "%1",
+                "created": 900,
+            }))
+            .unwrap();
+            let agent = store::Agent::create(root.path(), &meta).unwrap();
+            let writer = agent.writer().unwrap();
+            for (at, kind) in kinds {
+                writer
+                    .append(&store::Event {
+                        at: *at,
+                        kind: kind.to_string(),
+                        payload: serde_json::json!({"hook_event_name": kind}),
+                    })
+                    .unwrap();
+            }
+            writer
+                .observe(|s| {
+                    s.state = Phase::Done;
+                    s.ended = 90_000;
+                })
+                .unwrap();
+            drop(writer);
+            agent
+        };
+        let zeroed = record(
+            "zeroed-a1b",
+            &[(1_010, "UserPromptSubmit"), (1_070, "Stop")],
+        );
+        // Nothing to rebuild from: a log with no turns says nothing new.
+        record("quiet-b2c", &[(1_000, "SessionStart")]);
+
+        let found = Findings {
+            zeroed: super::zeroed(root.path()),
+            state_root: root.path().to_path_buf(),
+            ..healthy()
+        };
+        assert_eq!(found.zeroed, vec![("zeroed-a1b".to_string(), 60)]);
+        let clock = check(&found, "state");
+        assert!(clock.found.contains("zeroed-a1b"), "{}", clock.found);
+        assert!(clock.remedy.as_deref().unwrap().contains("--fix"));
+
+        let (code, printed) = said(&found, true);
+        assert_eq!(code, exit::OK, "{printed}");
+        assert!(
+            printed.contains("rebuilt the clock of 1 agent"),
+            "{printed}"
+        );
+        assert_eq!(zeroed.state().unwrap().worked, 60);
+        assert!(super::zeroed(root.path()).is_empty());
     }
 
     /// An agent as a reader hands it over. The record is deserialised rather

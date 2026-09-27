@@ -1979,6 +1979,7 @@ mod tests {
             folder: None,
             orphan_ids: Vec::new(),
             orphan_trees: Vec::new(),
+            zeroed: Vec::new(),
         });
         // The kinds of check, not the lines: `hooks` is asked once per agent
         // this machine has, so a person with claude and pi reads ten lines
