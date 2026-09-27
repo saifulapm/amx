@@ -306,6 +306,44 @@ fn doctor_asks_a_hooks_line_of_every_agent_this_machine_has() {
 }
 
 #[test]
+fn an_agent_spelled_as_a_path_is_asked_about_as_the_vendor_it_names() {
+    // A path to pi used to miss the table and be judged as claude, so a
+    // machine running pi by its full path failed on claude's plugin. And a
+    // command the table does not know is read as claude, which doctor says
+    // on a passing line.
+    let amx = Harness::new();
+    let pi = pi_fixtures().join("pi");
+    amx.config(&format!("agent = \"{}\"\n", pi.display()));
+    amx.amx(&["setup", "pi"]);
+    let empty = tempfile::TempDir::new().unwrap();
+
+    let printed = doctor_on(&amx, &[empty.path()]);
+    let (ok, line) = hooks_line(&printed, "pi");
+    assert!(ok, "pi is wired: {line}");
+    assert!(
+        !printed.contains("claude:"),
+        "nothing about claude:\n{printed}"
+    );
+    let (ok, line) = check_line(&printed, "agent");
+    assert!(ok && !line.contains("no entry"), "{line}");
+
+    let wrapper = empty.path().join("my-agent");
+    std::fs::write(&wrapper, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&wrapper, PermissionsExt::from_mode(0o755)).unwrap();
+    amx.config(&format!("agent = \"{} --fast\"\n", wrapper.display()));
+    amx.amx(&["setup", "claude"]);
+    let printed = doctor_on(&amx, &[empty.path()]);
+    let (ok, line) = check_line(&printed, "agent");
+    assert!(ok, "an unknown agent is not a fault: {line}");
+    assert!(
+        line.contains("no entry for my-agent: read as claude"),
+        "{line}"
+    );
+    let (ok, line) = hooks_line(&printed, "claude");
+    assert!(ok, "and it is judged by claude's wiring: {line}");
+}
+
+#[test]
 fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
     // Two installed amx, and `amx setup pi` run under the stale one wrote
     // the stale extension, doctor judged it against that amx's own body,

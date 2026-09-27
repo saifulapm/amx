@@ -534,10 +534,12 @@ pub fn table() -> &'static [Vendor] {
     &TABLE
 }
 
-/// The program an agent command runs, without its arguments. What a warning
-/// about a vendor should name, and what the table is keyed by.
+/// The program an agent command runs, without its arguments or the directory
+/// it was spelled from. What a warning about a vendor should name, and what
+/// the table is keyed by: `/opt/pi/bin/pi` runs pi.
 pub fn program(agent: &str) -> &str {
-    agent.split_whitespace().next().unwrap_or(agent)
+    let first = agent.split_whitespace().next().unwrap_or(agent);
+    first.rsplit('/').next().unwrap_or(first)
 }
 
 /// Is `value` worth passing to this dial? [`DEFAULT`] always is, so is any
@@ -638,6 +640,28 @@ mod tests {
         assert!(find("my-claude").is_none(), "a longer name is not claude");
         assert_eq!(program("claude --model opus"), "claude");
         assert_eq!(program("claude"), "claude");
+    }
+
+    #[test]
+    fn an_agent_spelled_as_a_path_is_the_vendor_it_names() {
+        // A command written out in full runs the same program, so it is read
+        // by its file name: pi's dials, pi's screens and pi's resume, where it
+        // used to miss the table and get claude's.
+        let agent = "/opt/pi/bin/pi --approve";
+        assert_eq!(program(agent), "pi");
+        let vendor = find(agent).expect("a path to pi is pi");
+        assert_eq!(vendor.name, "pi");
+        assert_eq!(vendor.model, pi::VENDOR.model);
+        assert_eq!(vendor.session, pi::VENDOR.session);
+        assert!(std::ptr::eq(
+            crate::rules::of(agent),
+            crate::rules::of("pi")
+        ));
+        assert_eq!(hooks_for(agent), pi::VENDOR.hooks);
+        // A path to a program the table does not know is still unknown, and
+        // reads as claude.
+        assert!(find("/usr/local/bin/my-claude").is_none());
+        assert_eq!(program("./wrap"), "wrap");
     }
 
     #[test]

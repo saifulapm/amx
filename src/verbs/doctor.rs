@@ -302,8 +302,22 @@ fn tmux_check(found: &Findings) -> Check {
     }
 }
 
+/// Whether the configured agent is there to run.
+///
+/// A command the table has no entry for is read as claude, the wrapper law,
+/// and said so on a passing line: it is a guess about the agent, not a fault
+/// on the machine.
 fn vendor_check(found: &Findings) -> Check {
     match &found.vendor_path {
+        Some(path) if registry::entry(&found.vendor).is_none() => Check::ok(
+            "agent",
+            format!(
+                "{} at {}; no entry for {}: read as claude",
+                found.vendor,
+                path.display(),
+                registry::program(&found.vendor)
+            ),
+        ),
         Some(path) => Check::ok("agent", format!("{} at {}", found.vendor, path.display())),
         None => Check::wrong(
             "agent",
@@ -1477,6 +1491,42 @@ mod tests {
         let remedy = vendor.remedy.as_deref().unwrap();
         assert!(remedy.contains("agent"), "the config key to set: {remedy}");
         assert!(vendor.found.contains("claude"), "{}", vendor.found);
+    }
+
+    #[test]
+    fn doctor_warns_of_an_agent_the_table_has_no_entry_for_and_passes_it() {
+        // A wrapper somebody wrote is read as claude, which is a guess worth
+        // saying out loud and not a fault: the machine runs it fine.
+        let mut found = healthy();
+        found.vendor = "/opt/bin/my-agent --fast".to_string();
+        found.vendor_path = Some(PathBuf::from("/opt/bin/my-agent"));
+        let agent = check(&found, "agent");
+        assert!(agent.is_ok(), "{agent:?}");
+        assert!(
+            agent
+                .found
+                .contains("no entry for my-agent: read as claude"),
+            "{}",
+            agent.found
+        );
+
+        // A path to a vendor the table knows is that vendor, and says nothing.
+        found.vendor = "/opt/pi/bin/pi".to_string();
+        let agent = check(&found, "agent");
+        assert!(agent.is_ok(), "{agent:?}");
+        assert!(!agent.found.contains("no entry"), "{}", agent.found);
+    }
+
+    #[test]
+    fn a_path_to_pi_is_asked_about_as_pi() {
+        let home = Path::new("/home/dev");
+        assert_eq!(
+            wirings("/opt/pi/bin/pi", home, None)
+                .iter()
+                .map(|w| w.vendor)
+                .collect::<Vec<_>>(),
+            ["pi"]
+        );
     }
 
     #[test]
