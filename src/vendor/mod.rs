@@ -33,6 +33,10 @@ pub struct DialSpec {
     pub cycle: &'static [&'static str],
     pub open: bool,
     pub flag: &'static str,
+    /// The setting this dial is, for a vendor that takes it as `flag
+    /// key=value` rather than `flag value`: codex spells its effort `-c
+    /// model_reasoning_effort=high`. `None` for a flag of the dial's own.
+    pub key: Option<&'static str>,
 }
 
 /// Where a vendor's models are written down.
@@ -461,6 +465,11 @@ pub struct Vendor {
     /// `amx interrupt` writes them down where it is, and `send` refuses to
     /// type after them until the vendor's next prompt.
     pub restores_queued_on_cancel: bool,
+    /// Flags every process of this vendor is started with, whatever amx
+    /// starts it for: `new` writes them right after the program, once, and
+    /// `resume` and `fork` keep them where they stand. Empty from a vendor
+    /// that needs none.
+    pub launch: &'static [&'static str],
 }
 
 /// A directory a vendor loads something from, under the root it hangs off.
@@ -651,7 +660,8 @@ pub fn accepts(dial: &DialSpec, value: &str) -> bool {
 
 /// The one place a dial becomes a vendor flag: for each dial resolved to
 /// something other than [`DEFAULT`], put its flag and value in front of
-/// `vendor_args`, unless that flag is already there.
+/// `vendor_args` — the value as `key=value` for a keyed dial — unless that
+/// flag is already there.
 ///
 /// Already there means a whole token equal to the flag, or the `flag=value`
 /// spelling, in `vendor_args` or in `carried` — the arguments the agent
@@ -672,9 +682,12 @@ pub fn inject(
         let Some(spec) = dial else {
             continue;
         };
-        if value != DEFAULT && !already(carried, vendor_args, spec.flag) {
+        if value != DEFAULT && !already(carried, vendor_args, &spec) {
             injected.push(spec.flag.to_string());
-            injected.push(value.to_string());
+            injected.push(match spec.key {
+                Some(key) => format!("{key}={value}"),
+                None => value.to_string(),
+            });
         }
     }
 
@@ -682,16 +695,32 @@ pub fn inject(
     injected
 }
 
-/// Does the argv this spawn is heading for already carry `flag`, either as
-/// its own token or as `flag=value`? A string prefix would not do: `--models`
-/// is somebody else's flag, and reading it as this one would cancel the
-/// injection without a word.
-fn already(carried: &[String], vendor_args: &[String], flag: &str) -> bool {
+/// Does the argv this spawn is heading for already carry this dial's flag,
+/// either as its own token or as `flag=value`? A string prefix would not do:
+/// `--models` is somebody else's flag, and reading it as this one would cancel
+/// the injection without a word.
+///
+/// A keyed dial's flag carries other settings too, so for one it is the flag
+/// with this key after it — `flag key=..` or `flag=key=..` — and a `flag
+/// other=..` is not this dial.
+fn already(carried: &[String], vendor_args: &[String], dial: &DialSpec) -> bool {
+    let flag = dial.flag;
     let equals = format!("{flag}=");
-    carried
-        .iter()
-        .chain(vendor_args)
-        .any(|arg| arg == flag || arg.starts_with(&equals))
+    let Some(key) = dial.key else {
+        return carried
+            .iter()
+            .chain(vendor_args)
+            .any(|arg| arg == flag || arg.starts_with(&equals));
+    };
+    let setting = format!("{key}=");
+    [carried, vendor_args].into_iter().any(|args| {
+        args.iter().any(|arg| {
+            arg.strip_prefix(&equals)
+                .is_some_and(|rest| rest.starts_with(&setting))
+        }) || args
+            .windows(2)
+            .any(|pair| pair[0] == flag && pair[1].starts_with(&setting))
+    })
 }
 
 #[cfg(test)]
@@ -787,23 +816,65 @@ mod tests {
     #[test]
     fn every_dial_a_vendor_declares_names_a_flag_of_its_own() {
         // Two dials sharing a flag would inject it twice and leave the vendor
-        // to decide which one it meant.
+        // to decide which one it meant. Two keyed dials may share a flag,
+        // because the key is what the vendor reads, so it is the pair that is
+        // the dial's own.
         for vendor in known() {
-            let mut flags: Vec<&str> = vendor
+            let mut flags: Vec<(&str, Option<&str>)> = vendor
                 .dials()
                 .into_iter()
-                .filter_map(|(_, dial)| dial.map(|spec| spec.flag))
+                .filter_map(|(_, dial)| dial.map(|spec| (spec.flag, spec.key)))
                 .collect();
             let declared = flags.len();
             flags.sort_unstable();
             flags.dedup();
             assert_eq!(flags.len(), declared, "{} names a flag twice", vendor.name);
             assert!(
-                flags.iter().all(|flag| flag.starts_with('-')),
+                flags.iter().all(|(flag, _)| flag.starts_with('-')),
                 "{} declares a dial whose flag is not one",
                 vendor.name
             );
+            for (flag, key) in flags {
+                assert!(
+                    key.is_none_or(|key| !key.is_empty() && !key.contains('=')),
+                    "{}'s {flag} dial names a key that is not one",
+                    vendor.name
+                );
+            }
         }
+    }
+
+    #[test]
+    fn every_word_a_vendor_is_launched_with_is_a_flag_that_names_no_session() {
+        // Launch words ride on every argv new, resume and fork build, and
+        // resume and fork keep them only because they are no session's
+        // words: a word they read as one would be dropped or doubled.
+        for vendor in known() {
+            for word in vendor.launch {
+                assert!(
+                    word.starts_with('-'),
+                    "{} is launched with {word}, which is not a flag",
+                    vendor.name
+                );
+                let Some(session) = vendor.session else {
+                    continue;
+                };
+                for first in [true, false] {
+                    assert_eq!(
+                        session.names_a_session(word, first),
+                        None,
+                        "{} is launched with {word}, which names a session",
+                        vendor.name
+                    );
+                }
+                assert_ne!(session.start, Some(*word), "{}", vendor.name);
+            }
+        }
+        assert_eq!(
+            BRANCHING.launch,
+            ["--alone"],
+            "the law is not held vacuously"
+        );
     }
 
     /// Whether a vendor that prints its models says what to run for the
@@ -1633,5 +1704,54 @@ mod tests {
             ),
             v(&["--model", "fable", "--model-name=opus"])
         );
+    }
+
+    #[test]
+    fn a_keyed_dial_writes_its_key_as_the_flags_value() {
+        // codex has no flag of effort's own, only `-c key=value`, so the dial
+        // is the flag and then one word: the key, `=`, and the value.
+        assert_eq!(
+            inject(&BRANCHING, "large", DEFAULT, "thorough", &[], &v(&["-x"])),
+            v(&["-m", "large", "-c", "care=thorough", "-x"])
+        );
+    }
+
+    #[test]
+    fn a_keyed_dial_stands_down_only_for_its_own_key() {
+        // Written by hand, in either half of the argv and either spelling,
+        // the setting wins over the dial.
+        for carried in [
+            v(&["-c", "care=quick"]),
+            v(&["-c=care=quick"]),
+            v(&["-x", "-c", "care="]),
+        ] {
+            assert_eq!(
+                inject(&BRANCHING, DEFAULT, DEFAULT, "thorough", &carried, &[]),
+                v(&[]),
+                "{carried:?}"
+            );
+            assert_eq!(
+                inject(&BRANCHING, DEFAULT, DEFAULT, "thorough", &[], &carried),
+                carried,
+                "{carried:?}"
+            );
+        }
+        // Another setting under the same flag is somebody else's, and so is
+        // the key anywhere but right after the flag.
+        for other in [
+            v(&["-c", "other=1"]),
+            v(&["-c", "cared=1"]),
+            v(&["-c=other=1"]),
+            v(&["care=quick"]),
+            v(&["-c"]),
+        ] {
+            let mut expected = v(&["-c", "care=thorough"]);
+            expected.extend(other.clone());
+            assert_eq!(
+                inject(&BRANCHING, DEFAULT, DEFAULT, "thorough", &[], &other),
+                expected,
+                "{other:?}"
+            );
+        }
     }
 }

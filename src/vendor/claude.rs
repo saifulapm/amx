@@ -22,6 +22,7 @@ pub const VENDOR: Vendor = Vendor {
         cycle: &[DEFAULT, "fable", "opus", "sonnet", "haiku"],
         open: true,
         flag: "--model",
+        key: None,
     }),
     // The aliases above are the whole of what amx offers for claude, and the
     // vendor prints no list of its own, so its models are the cycle.
@@ -40,6 +41,7 @@ pub const VENDOR: Vendor = Vendor {
         ],
         open: false,
         flag: "--permission-mode",
+        key: None,
     }),
     // Closed by judgement rather than by the vendor: `--effort nonsense`
     // warns and falls back to the default rather than refusing. Five levels
@@ -50,6 +52,7 @@ pub const VENDOR: Vendor = Vendor {
         cycle: &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
         open: false,
         flag: "--effort",
+        key: None,
     }),
     // amx never asks claude to open a session under an id amx chose: claude's
     // own SessionStart hook already names the one it opened
@@ -178,6 +181,7 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+    launch: &[],
 };
 
 /// How claude reports what it is doing, and where amx asks it to.

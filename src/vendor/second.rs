@@ -25,6 +25,7 @@ pub const SECOND: Vendor = Vendor {
         cycle: &[DEFAULT, "small", "large"],
         open: false,
         flag: "-m",
+        key: None,
     }),
     // Its two words are the whole of what it offers, so they are found in the
     // cycle and nothing is ever run to ask: the shape a search over the table
@@ -38,6 +39,7 @@ pub const SECOND: Vendor = Vendor {
         cycle: &[DEFAULT, "quick", "thorough"],
         open: true,
         flag: "--care",
+        key: None,
     }),
     // Unlike claude, it declares a start flag: proof that a vendor is free to
     // ask amx to open a session under an id amx chose. It resumes with a
@@ -75,6 +77,8 @@ pub const SECOND: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+    // Started with nothing but what a spawn asks of it.
+    launch: &[],
 };
 
 /// The second vendor as it would be if it could branch a session: by a word
@@ -83,10 +87,19 @@ pub const SECOND: Vendor = Vendor {
 /// Beside [`SECOND`] rather than in place of it, because that one is the
 /// vendor a verb has to refuse a fork for. A vendor that forks has to report
 /// the session a copy opened, and this one declares no start flag to ask for
-/// one, so it reports through [`HOOKS`]. It prints its models as JSON, and it
-/// ends its options before a message.
+/// one, so it reports through [`HOOKS`]. It prints its models as JSON, it
+/// ends its options before a message, it takes its effort as a setting under a
+/// flag it shares with other settings, and every process of it is started
+/// alone.
 pub const BRANCHING: Vendor = Vendor {
     models: Models::Json(&["list", "models"]),
+    effort: Some(DialSpec {
+        cycle: &[DEFAULT, "quick", "thorough"],
+        open: true,
+        flag: "-c",
+        key: Some("care"),
+    }),
+    launch: &["--alone"],
     session: Some(SessionSpec {
         start: None,
         resume: Resume::Subcommand("again"),

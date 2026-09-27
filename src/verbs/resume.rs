@@ -641,7 +641,7 @@ mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
     use crate::tmux::{PaneId, Socket};
-    use crate::vendor::second::SECOND;
+    use crate::vendor::second::{BRANCHING, SECOND};
     use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
@@ -876,6 +876,51 @@ mod tests {
             build_continuation(&resumed, "def-456", &spec),
             ["second", "again", "def-456", "--care", "quick"]
         );
+    }
+
+    #[test]
+    fn resume_keeps_the_launch_words_and_a_keyed_dial_once() {
+        // `new` wrote the launch words right after the program and the keyed
+        // dial as its flag and one word. Neither names a session, so a resume
+        // keeps both where they stood, behind the subcommand and its id, and a
+        // second resume does not write them again.
+        let spec = BRANCHING.session.expect("it names a session");
+        let started = handoff(
+            &[
+                "second",
+                "--alone",
+                "-m",
+                "large",
+                "-c",
+                "care=thorough",
+                "go",
+            ],
+            "go",
+        );
+        let once = build_continuation(&started, "abc-123", &spec);
+        assert_eq!(
+            once,
+            [
+                "second",
+                "again",
+                "abc-123",
+                "--alone",
+                "-m",
+                "large",
+                "-c",
+                "care=thorough"
+            ]
+        );
+
+        let resumed = Handoff {
+            task: "go".to_string(),
+            command: once,
+        };
+        let twice = build_continuation(&resumed, "def-456", &spec);
+        assert_eq!(twice[..3], ["second", "again", "def-456"]);
+        for word in BRANCHING.launch {
+            assert_eq!(twice.iter().filter(|w| w == word).count(), 1, "{word}");
+        }
     }
 
     #[test]

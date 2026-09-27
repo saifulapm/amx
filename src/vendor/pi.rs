@@ -21,6 +21,7 @@ pub const VENDOR: Vendor = Vendor {
         cycle: &[DEFAULT],
         open: true,
         flag: "--model",
+        key: None,
     }),
     // The cycle above offers nothing, because pi's models are whatever its
     // providers hold rather than a handful of aliases: `--list-models` prints
@@ -40,6 +41,7 @@ pub const VENDOR: Vendor = Vendor {
         ],
         open: false,
         flag: "--thinking",
+        key: None,
     }),
     // `--session-id <id>` is mint-or-open (dist/main.js:337-344): it opens
     // the project session already under that id, or creates one under it if
@@ -188,6 +190,7 @@ pub const VENDOR: Vendor = Vendor {
     // back in the editor, joined, for somebody to submit or clear
     // (interactive-mode.js:2332 and 3761-3778). Read at 0.87.1 on 2026-09-26.
     restores_queued_on_cancel: true,
+    launch: &[],
 };
 
 /// How pi reports what it is doing, and where amx asks it to.

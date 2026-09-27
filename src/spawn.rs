@@ -221,7 +221,8 @@ pub fn vendor_command(
     session: Option<&str>,
     trust: bool,
 ) -> Vec<String> {
-    let mut command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
+    let command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
+    let mut command = with_launch_words(command, registry::entry(agent), vendor_args);
     let carried: Vec<&str> = command.iter().skip(1).map(String::as_str).collect();
 
     let mut args = session_flag(registry::entry(agent), &carried, vendor_args, session);
@@ -241,6 +242,30 @@ pub fn vendor_command(
             .map(str::to_string),
     );
     command.push(as_words(registry::entry(agent), task));
+    command
+}
+
+/// `command` with the vendor's launch words right after the program, each one
+/// the command line does not carry already — in `command` itself, where the
+/// configured command and a harness's args put it, or in `vendor_args`, which
+/// the caller adds later. So a launch word is on the argv once, and `resume`
+/// and `fork`, which keep every word that names no session, keep it once.
+fn with_launch_words(
+    mut command: Vec<String>,
+    vendor: Option<&Vendor>,
+    vendor_args: &[String],
+) -> Vec<String> {
+    let Some(vendor) = vendor else {
+        return command;
+    };
+    let carried: Vec<&str> = command.iter().skip(1).map(String::as_str).collect();
+    let missing: Vec<String> = vendor
+        .launch
+        .iter()
+        .filter(|word| !already(word, &carried, vendor_args))
+        .map(|word| word.to_string())
+        .collect();
+    drop(command.splice(1..1, missing));
     command
 }
 
@@ -1329,6 +1354,35 @@ mod tests {
             false,
         );
         assert_eq!(claude, ["claude", "@alice asked for this"]);
+    }
+
+    #[test]
+    fn spawn_launch_words_go_right_after_the_program_once() {
+        // Every process of the vendor is started with them, right after the
+        // program, but a command line that already carries one — from the
+        // configured command, a harness's args or after the separator — is
+        // not handed it twice.
+        use crate::vendor::second::BRANCHING;
+
+        let words =
+            |words: &[&str]| -> Vec<String> { words.iter().map(|word| word.to_string()).collect() };
+        let vendor = Some(&BRANCHING);
+        assert_eq!(
+            with_launch_words(words(&["second", "-m", "large"]), vendor, &[]),
+            ["second", "--alone", "-m", "large"]
+        );
+        assert_eq!(
+            with_launch_words(words(&["second", "-m", "large", "--alone"]), vendor, &[]),
+            ["second", "-m", "large", "--alone"]
+        );
+        assert_eq!(
+            with_launch_words(words(&["second"]), vendor, &words(&["--alone"])),
+            ["second"],
+            "the caller's own args are added later, and carry it already"
+        );
+        for other in [registry::entry("claude"), None] {
+            assert_eq!(with_launch_words(words(&["x"]), other, &[]), ["x"]);
+        }
     }
 
     #[test]
