@@ -767,6 +767,9 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         Moment::Prompted => {
             state.state = Phase::Working;
             state.turn_open = true;
+            // Whatever an interrupt put back in the composer went out with
+            // this prompt, or was cleared before it.
+            state.composer_holds.clear();
             state.summary = None;
             state.asks(None);
             // A count of shells was about the turn that ended, and this is the
@@ -1339,6 +1342,30 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.question, None, "a new turn answers the old question");
         assert_eq!(notice, None, "a turn starting is not worth an interruption");
+    }
+
+    #[test]
+    fn hook_a_prompt_empties_the_composer_an_interrupt_filled() {
+        // pi put its queued sends back in its composer when the turn was cut
+        // short, and `send` refuses while they sit there. A prompt is that
+        // composer submitted, so the refusal comes off with it.
+        let mut state = State {
+            state: Phase::Idle,
+            composer_holds: vec!["and the linter".to_string()],
+            ..State::default()
+        };
+        let mut meta = Meta {
+            agent: Some("pi".to_string()),
+            ..meta()
+        };
+
+        apply(
+            &json!({ "hook_event_name": "agent_start" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Working);
+        assert_eq!(state.composer_holds, Vec::<String>::new());
     }
 
     #[test]
