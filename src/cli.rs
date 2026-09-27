@@ -116,7 +116,11 @@ pub enum Command {
         id: String,
 
         /// What to put in front of it.
-        #[arg(required_unless_present = "file", conflicts_with = "file")]
+        #[arg(
+            required_unless_present = "file",
+            conflicts_with = "file",
+            value_parser = a_task
+        )]
         text: Option<String>,
 
         /// Read the message from this file instead, or from stdin for `-`.
@@ -1606,6 +1610,22 @@ mod tests {
         ] {
             assert_eq!(code(argv), exit::USAGE, "{argv:?}");
         }
+    }
+
+    #[test]
+    fn clibatch_a_message_with_nothing_in_it_is_not_a_message() {
+        for argv in [
+            &["amx", "send", "fix-login-a1b", ""][..],
+            &["amx", "send", "fix-login-a1b", "   "],
+            &["amx", "send", "fix-login-a1b", "\t\n"],
+        ] {
+            assert_eq!(code(argv), exit::USAGE, "{argv:?}");
+        }
+        let cli = parse(&["amx", "send", "fix-login-a1b", "  carry on\n"]).unwrap();
+        let Some(Command::Send { text, .. }) = cli.command else {
+            panic!("expected send");
+        };
+        assert_eq!(text.as_deref(), Some("  carry on\n"), "passed on as typed");
     }
 
     #[test]
