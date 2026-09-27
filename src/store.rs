@@ -502,6 +502,14 @@ pub struct State {
     /// the record carries what only `resume` knew: nothing is coming. See
     /// [`crate::hook::apply`], which spends it the moment the session opens.
     pub opens_idle: bool,
+    /// Whether the vendor has said a turn started and not yet that it ended.
+    ///
+    /// The phase cannot say it: a turn is working, waiting and working again,
+    /// and a question can go up with no turn under it at all. pi draws a
+    /// dialog for an extension whenever the extension asks, and closing one
+    /// says only that it went — see [`crate::hook::apply`], where a refusal
+    /// goes back to work inside a turn and back to idle outside one.
+    pub turn_open: bool,
 }
 
 /// A screen a reader saw, and the moment it went up.
@@ -746,6 +754,7 @@ struct Wire {
     worked: u64,
     still: Option<Still>,
     opens_idle: bool,
+    turn_open: bool,
 }
 
 /// A phase this build knows, or [`Phase::Unknown`] for one it does not.
@@ -859,6 +868,7 @@ impl From<State> for Wire {
             worked,
             still,
             opens_idle,
+            turn_open,
         } = state;
 
         Wire {
@@ -913,6 +923,7 @@ impl From<State> for Wire {
             worked,
             still,
             opens_idle,
+            turn_open,
         }
     }
 }
@@ -957,6 +968,7 @@ impl From<Wire> for State {
             worked: wire.worked,
             still: wire.still,
             opens_idle: wire.opens_idle,
+            turn_open: wire.turn_open,
         }
     }
 }

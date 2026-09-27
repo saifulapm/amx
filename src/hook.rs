@@ -766,6 +766,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Prompted => {
             state.state = Phase::Working;
+            state.turn_open = true;
             state.summary = None;
             state.asks(None);
             // A count of shells was about the turn that ended, and this is the
@@ -860,9 +861,14 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         // The one hook that says the box closed without the tool running:
         // nothing announces a tool that finished when it never ran. The turn
         // goes on with the refusal in it, and the next tool call will say what
-        // the agent is doing now.
+        // the agent is doing now. A prompt raised with no turn open — pi draws
+        // one for an extension whenever it is asked — closes onto the idle
+        // session it went up over.
         Moment::Refused => {
-            state.state = Phase::Working;
+            state.state = match state.turn_open {
+                true => Phase::Working,
+                false => Phase::Idle,
+            };
             state.summary = None;
             state.asks(None);
             Screen::Clear
@@ -937,6 +943,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         }
 
         Moment::Ended => {
+            state.turn_open = false;
             state.asks(None);
             let (shells, agents) = running(payload);
             state.background = shells + agents;
@@ -2008,7 +2015,10 @@ mod tests {
         // One notice per stop, not one per agent. Whatever put the agent back
         // to work — a box refused, a menu answered, a new prompt — the next
         // thing it stops on is news.
-        let mut state = State::default();
+        let mut state = State {
+            turn_open: true,
+            ..State::default()
+        };
         let mut meta = meta();
 
         assert!(
@@ -2084,6 +2094,7 @@ mod tests {
             question: Some("Claude needs your permission to use Bash".to_string()),
             options: vec!["Yes".to_string(), "No".to_string()],
             kind: Some(Kind::Permission),
+            turn_open: true,
             ..State::default()
         };
         let notice = apply(
@@ -2105,6 +2116,44 @@ mod tests {
         assert!(state.options.is_empty());
         assert_eq!(state.kind, None);
         assert_eq!(notice, None, "nobody is being asked for anything now");
+    }
+
+    #[test]
+    fn hook_a_prompt_closed_outside_a_turn_leaves_it_idle() {
+        // pi raises a dialog for an extension whether a turn is running or
+        // not, and closing it says only that the dialog went. Outside a turn
+        // there is nothing to go back to work on.
+        let pi = &crate::vendor::pi::HOOKS;
+        let raised = json!({ "hook_event_name": "ui_prompt_start", "kind": "confirm", "message": "Trust this folder?" });
+        let closed = json!({ "hook_event_name": "ui_prompt_end", "kind": "confirm" });
+
+        let mut state = State::default();
+        let mut meta = meta();
+        apply_in(pi, &raised, &mut state, &mut meta);
+        assert_eq!(state.state, Phase::Waiting);
+        apply_in(pi, &closed, &mut state, &mut meta);
+        assert_eq!(state.state, Phase::Idle, "no turn was open to go back to");
+        assert_eq!(state.question, None);
+
+        let mut state = State::default();
+        for payload in [
+            json!({ "hook_event_name": "agent_start" }),
+            raised.clone(),
+            closed.clone(),
+        ] {
+            apply_in(pi, &payload, &mut state, &mut meta);
+        }
+        assert_eq!(state.state, Phase::Working, "the turn goes on");
+
+        apply_in(
+            pi,
+            &json!({ "hook_event_name": "agent_settled" }),
+            &mut state,
+            &mut meta,
+        );
+        apply_in(pi, &raised, &mut state, &mut meta);
+        apply_in(pi, &closed, &mut state, &mut meta);
+        assert_eq!(state.state, Phase::Idle, "the turn that was open has ended");
     }
 
     #[test]
