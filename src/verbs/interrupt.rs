@@ -93,7 +93,7 @@ pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
     let cut = what_is_running(&view);
     if cut == Cut::Turn {
         let agent = Agent::open(root, id)?;
-        recorded(&agent)?;
+        recorded(&agent, view.meta.agent.as_deref())?;
         Server::from_socket(view.meta.socket.clone()).send_keys(&view.meta.pane, &[CANCELS])?;
     }
     Ok(cut)
@@ -162,11 +162,28 @@ fn runs_a_command(view: &View) -> bool {
 /// Written with the observing hand, because nothing was heard: the phase is
 /// still the vendor's last word, and a stamp for a key amx typed must not have
 /// the next reader believe this document over the pane it was typed at.
-fn recorded(agent: &Agent) -> Result<()> {
+///
+/// A vendor that puts what it was holding back in its composer on a cancel
+/// gets that written down too, read off the log before this event ends the
+/// queue: the text is on the vendor's prompt now, unsubmitted, and `send`
+/// refuses to type after it — see [`crate::store::State::composer_holds`].
+fn recorded(agent: &Agent, vendor: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
+    let holds = match crate::registry::entry(vendor.unwrap_or_default())
+        .is_some_and(|vendor| vendor.restores_queued_on_cancel)
+    {
+        true => send::queued(
+            crate::vendor::hooks_for(vendor.unwrap_or_default()).as_ref(),
+            &agent.events()?,
+        ),
+        false => Vec::new(),
+    };
     let event = Event::new(INTERRUPT, serde_json::json!({}));
     writer.append(&event)?;
-    writer.observe(|state| state.interrupted_at = event.at)?;
+    writer.observe(|state| {
+        state.interrupted_at = event.at;
+        state.composer_holds.extend(holds);
+    })?;
     Ok(())
 }
 
@@ -405,7 +422,7 @@ mod tests {
             .update_state(|state| state.state = Phase::Working)
             .unwrap();
 
-        recorded(&agent).unwrap();
+        recorded(&agent, None).unwrap();
 
         let events = agent.events().unwrap();
         assert_eq!(events.len(), 1);
@@ -419,5 +436,44 @@ mod tests {
         assert_eq!(state.interrupted_at, events[0].at);
         assert_eq!(state.last_event, turn.last_event, "and nothing was heard");
         assert_eq!(state.state, Phase::Working, "nor did the phase move");
+    }
+
+    #[test]
+    fn interrupt_a_pi_holding_sends_stamps_what_goes_back_in_its_composer() {
+        // pi puts the messages it was holding back in its composer when a turn
+        // is cancelled, so the record keeps them for `send` to refuse over.
+        // claude drops nothing back, and its record is left alone.
+        for (vendor, held) in [("pi", vec!["and the linter"]), ("claude", vec![])] {
+            let root = tempfile::TempDir::new().unwrap();
+            let meta = Meta {
+                agent: Some(vendor.to_string()),
+                ..reading(Phase::Working, Evidence::Hooks).meta
+            };
+            let agent = Agent::create(root.path(), &meta).unwrap();
+            let writer = agent.writer().unwrap();
+            writer
+                .append(&Event::new(
+                    send::SEND,
+                    serde_json::json!({ "text": "and the linter" }),
+                ))
+                .unwrap();
+            writer
+                .update_state(|state| state.state = Phase::Working)
+                .unwrap();
+            drop(writer);
+
+            recorded(&agent, meta.agent.as_deref()).unwrap();
+            assert_eq!(agent.state().unwrap().composer_holds, held, "{vendor}");
+        }
+
+        // A pi holding nothing has nothing put back.
+        let root = tempfile::TempDir::new().unwrap();
+        let meta = Meta {
+            agent: Some("pi".to_string()),
+            ..reading(Phase::Working, Evidence::Hooks).meta
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        recorded(&agent, meta.agent.as_deref()).unwrap();
+        assert!(agent.state().unwrap().composer_holds.is_empty());
     }
 }

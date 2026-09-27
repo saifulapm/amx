@@ -510,6 +510,17 @@ pub struct State {
     /// says only that it went — see [`crate::hook::apply`], where a refusal
     /// goes back to work inside a turn and back to idle outside one.
     pub turn_open: bool,
+    /// What an interrupt put back in the vendor's composer: the text of every
+    /// send it was still holding when the turn was cut short, oldest first,
+    /// and empty for a composer amx put nothing in.
+    ///
+    /// pi does that on a cancel, where claude drops what it held — see
+    /// [`crate::vendor::Vendor::restores_queued_on_cancel`]. The text then
+    /// sits on the vendor's prompt unsubmitted, a paste would land after it
+    /// and go out with it, and `send` refuses for as long as this stands. The
+    /// vendor's next prompt takes it off, because that is the composer
+    /// emptied. Written with the observing hand, like `interrupted_at`.
+    pub composer_holds: Vec<String>,
 }
 
 /// A screen a reader saw, and the moment it went up.
@@ -755,6 +766,7 @@ struct Wire {
     still: Option<Still>,
     opens_idle: bool,
     turn_open: bool,
+    composer_holds: Vec<String>,
 }
 
 /// A phase this build knows, or [`Phase::Unknown`] for one it does not.
@@ -869,6 +881,7 @@ impl From<State> for Wire {
             still,
             opens_idle,
             turn_open,
+            composer_holds,
         } = state;
 
         Wire {
@@ -924,6 +937,7 @@ impl From<State> for Wire {
             still,
             opens_idle,
             turn_open,
+            composer_holds,
         }
     }
 }
@@ -969,6 +983,7 @@ impl From<Wire> for State {
             still: wire.still,
             opens_idle: wire.opens_idle,
             turn_open: wire.turn_open,
+            composer_holds: wire.composer_holds,
         }
     }
 }

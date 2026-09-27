@@ -443,6 +443,11 @@ pub struct Vendor {
     /// `None` from a vendor that reads its last word as a prompt whatever it
     /// opens with.
     pub ends_options: Option<&'static str>,
+    /// Whether a cancel puts the messages this vendor was holding behind the
+    /// turn back in its composer, unsubmitted, rather than dropping them.
+    /// `amx interrupt` writes them down where it is, and `send` refuses to
+    /// type after them until the vendor's next prompt.
+    pub restores_queued_on_cancel: bool,
 }
 
 /// A directory a vendor loads something from, under the root it hangs off.

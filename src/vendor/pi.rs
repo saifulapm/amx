@@ -181,6 +181,10 @@ pub const VENDOR: Vendor = Vendor {
     // opening with `-` as a flag, until `--`: every word after it is a
     // message (dist/cli/args.js:23). Read at 0.87.1 on 2026-09-26.
     ends_options: Some("--"),
+    // Escape on a turn with steering or follow-up messages queued puts them
+    // back in the editor, joined, for somebody to submit or clear
+    // (interactive-mode.js:2332 and 3761-3778). Read at 0.87.1 on 2026-09-26.
+    restores_queued_on_cancel: true,
 };
 
 /// How pi reports what it is doing, and where amx asks it to.

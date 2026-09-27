@@ -176,6 +176,7 @@ pub const VENDOR: Vendor = Vendor {
     }),
     // claude reads its last word as the prompt whatever it opens with.
     ends_options: None,
+    restores_queued_on_cancel: false,
 };
 
 /// How claude reports what it is doing, and where amx asks it to.

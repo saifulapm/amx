@@ -226,6 +226,9 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     if state.state == Phase::Waiting {
         return Ok(Delivered::Waiting(Box::new(state)));
     }
+    if !state.composer_holds.is_empty() {
+        return Ok(Delivered::Refused(held(id, &state.composer_holds)));
+    }
     if !server.pane_answers_for(pane, id) {
         return Ok(Delivered::Refused(format!(
             "{id} has no pane any more; run: amx status {id}"
@@ -236,6 +239,21 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     writer.observe(|state| state.seq += 1)?;
     server.paste(pane, text)?;
     server.send_keys(pane, &["Enter"]).map(|()| Delivered::Sent)
+}
+
+/// What a send says to a composer an interrupt put text back in.
+///
+/// The text is on the vendor's prompt, unsubmitted, and a paste would land
+/// after it and go out with it as one message. Somebody at the pane decides
+/// whether it goes or is cleared, and the vendor's next prompt is what lifts
+/// the refusal.
+fn held(id: &str, held: &[String]) -> String {
+    let held: Vec<String> = held.iter().map(|text| format!("{text:?}")).collect();
+    format!(
+        "{id}'s composer still holds what the interrupt put back: {}; \
+         a send now would go out with it. submit or clear it at the pane: amx attach {id}",
+        held.join(", ")
+    )
 }
 
 /// Whether the message carries the brackets of the paste it travels in.
@@ -1213,6 +1231,30 @@ mod tests {
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
         std::thread::sleep(Duration::from_millis(100));
         assert!(!pane.typed_at(), "and no key is pressed");
+    }
+
+    #[test]
+    fn send_refuses_while_the_composer_holds_what_an_interrupt_put_back() {
+        // pi puts the messages it was holding back in its composer when a turn
+        // is cancelled, so a paste now would be typed after them and submitted
+        // with them. Nothing is typed and nothing recorded, and the refusal
+        // names what is sitting there.
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = Listening::new("holds");
+        let agent = pane.agent(root.path(), |state| {
+            state.state = Phase::Idle;
+            state.composer_holds = vec!["and the linter".to_string()];
+        });
+
+        let refused = deliver(&agent, &pane.server, &pane.pane, "and the tests").unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("and the linter"),
+            "{refused:#}"
+        );
+        assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
+        assert!(agent.events().unwrap().is_empty(), "and none is logged");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pane.typed_at(), "and nothing is typed");
     }
 
     #[test]

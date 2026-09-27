@@ -72,6 +72,7 @@ pub const SECOND: Vendor = Vendor {
     catalog: None,
     // Its task is its last word, whatever that word opens with.
     ends_options: None,
+    restores_queued_on_cancel: false,
 };
 
 /// Hooks in the second vendor's words, for a test that reads a payload.
