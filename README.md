@@ -17,7 +17,7 @@ port-the-importer-k3f
 $ amx ls
 working  port-the-importer-k3f     4s  Running Bash
 waiting  fix-the-login-bug-a1b    12s  Claude needs your permission to use Bash
-idle     tidy-the-imports-d4e      2m  the imports are sorted
+done     tidy-the-imports-d4e      2m  the imports are sorted
 ```
 
 ## Requirements
@@ -1120,7 +1120,7 @@ amx attach --next      # the agent after this one on the wall
 amx attach --prev      # the one before it
 amx attach --waiting   # the first agent with something for you to do
 amx attach --last      # the agent you were in before this one
-amx logs <id>          # the last of what its pane has printed, without attaching
+amx logs <id>          # the last of its transcript, else its pane, without attaching
 amx logs <id> --lines 40
 amx send <id> "and now the linter"   # an empty or blank message exits 64
 amx send <id> --file notes.md   # the message, read out of a file; `-` reads stdin
@@ -1162,7 +1162,7 @@ you are working across. An agent amx has since forgotten is read past, and a
 trail with nobody left on it is an exit of 1 saying there is no agent to go
 back to.
 
-`--dir` is one machine read one project at a time. An agent belongs to a
+`--dir` is a directory filter: one machine read one project at a time. An agent belongs to a
 directory when it runs under it, and an agent in a worktree belongs to the
 repository the tree was cut from: the tree is `<repo>/.amx/worktrees/<id>`, and
 what you mean by the project is the repository. A directory reached through a
@@ -1224,9 +1224,10 @@ tool call of the recent history, whole, where a pane could only ever hold one
 screen of it. An agent with no conversation to read — a command row, or an
 adopted agent before its first report has named one — gets the pane's picture
 instead, with the vendor's own composer, statusline and mode footer cut off the
-bottom the way the card cuts them. Once the pane is gone the record is what is left, and `logs` prints the
-answer amx captured from it, so the same command line says something about an
-agent whether or not it is still running. `amx result` is still the one that
+bottom the way the card cuts them. Once the pane is gone the transcript is
+still read first; with none, the record is what is left, and `logs` prints the
+answer amx captured from it, cut to `--lines` like the rest, so the same command
+line says something about an agent whether or not it is still running. `amx result` is still the one that
 hands back a turn's answer alone, and blocks for it.
 
 `amx statusline` prints the two numbers a status line has room for, and nothing
@@ -1590,8 +1591,8 @@ Four questions, four commands, and the exit code is the answer:
 | code | means |
 | ---- | ----- |
 | `0`  | done: the answer, if there is one, is on stdout |
-| `1`  | failed, stopped, or ended without an answer; nothing more is coming |
-| `2`  | blocked: `result` and `send` on an agent that is asking, `answer` with nothing pending, `new` or `fork` at the agent cap |
+| `1`  | failed, stopped, or ended without an answer; nothing more is coming. Also an id that names no agent |
+| `2`  | blocked: `result`, `sub`, `send` and `interrupt` on an agent that is asking, `answer` with nothing pending, `new`, `sub`, `fork` or `resume` at the agent cap, `new` or `sub` past `subagent_depth`, `sub` past `max_children` or with a `--permission` it may not escalate to, `resume` on an agent still running |
 | `3`  | `result --timeout` or `wait --timeout` expired |
 | `64` | the command line was wrong, including an answer the question would not take |
 
@@ -1600,7 +1601,7 @@ id=$(amx new --no-worktree --dir "$dir" --file "$brief" \
      -- --session-id "$session")
 
 amx ls --json                 # every agent: state, since, last_event, summary, question
-amx ls --json --dir "$dir"    # the ones this run started, and no other run's
+amx ls --json --dir "$dir"    # a directory filter: every agent under it, whoever started it
 
 said=$(amx result "$id" --timeout 900)
 case $? in
@@ -1674,7 +1675,9 @@ always there, and `[]` when nothing waits.
 
 `state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
 `stopped`, `unknown`. `done`, `failed` and `stopped` are endings; every other
-state is an agent still worth waiting on. `kind` says what an outstanding
+state is an agent still worth waiting on. The table `amx ls` and `amx status`
+print for a person says `idle` as `done`, since the turn is over either way;
+the JSON, `amx wait` and `--for` keep `idle`. `kind` says what an outstanding
 question is: `permission`, `question` or `trust`. `agent`, `model` and `effort`
 say who is running the row: the command the vendor was launched with, and the
 two dials the spawn turned. All three are null on a `--exec` row, which runs no

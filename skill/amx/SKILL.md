@@ -27,7 +27,7 @@ Nothing here needs a screen scraped or a state file polled.
 | `amx status <id> [--json]` | One agent, and which signal that state came from. |
 | `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
 | `amx diff <id> [--stat] [--from <ref>]` | What it has changed, against the commit its tree was cut from, or the commit its directory was standing on when it started; `--from` names the base instead. |
-| `amx logs <id> [--lines N]` | The last of what its pane has printed, without attaching to it. |
+| `amx logs <id> [--lines N]` | The last of its transcript, without attaching to it; with no transcript, its pane, and once that is gone its recorded answer. |
 | `amx fork <id> ["<task>"]` | Start a second agent on a copy of its conversation. Prints the new id. |
 | `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |
 
@@ -45,15 +45,18 @@ that and never on your own. It starts nothing and sends nothing.
 | Code | Means | Do |
 |---|---|---|
 | `0` | The turn ended. The answer is on stdout. | Read it. |
-| `1` | Failed, stopped, or ended with no answer to give. From `interrupt`, there was no turn to cut short. | Read stderr, which names the remedy. |
+| `1` | Failed, stopped, or ended with no answer to give. From `interrupt`, there was no turn to cut short. From any verb, an id that names no agent. | Read stderr, which names the remedy. |
 | `2` | Blocked. From `result` that means a question, and the question is on stdout; `interrupt` hands the same question back rather than answer it by accident. | Answer it, then call `result` again. |
 | `3` | `--timeout` expired. The agent is still working. | Call `result` again, or go and do something else. |
 | `64` | The command line was wrong, including an answer the question would not take. | Fix the command line. Nothing reached the agent. |
 
 `send` exits `2` while the agent is waiting on a question: text typed at a
 permission prompt answers the prompt, so answer it first rather than queueing a
-message behind it. `answer` exits `2` when nothing is pending. `new` and `fork`
-exit `2` at the agent cap.
+message behind it. `answer` exits `2` when nothing is pending. `new`, `sub`,
+`fork` and `resume` exit `2` at the agent cap, `new` and `sub` past
+`subagent_depth`, and `sub` past `max_children` or with a `--permission` it may
+not escalate to. `sub` exits `2` when the child asks a question, as `result`
+does, and `resume` when the agent is still running.
 
 ## Reading the question
 
@@ -236,9 +239,11 @@ when one is in a state you did not expect.
   has a turn you have to catch first, and nothing in `ls` says what it is for.
 - **Read the answer with `result`.** It hands back what the agent wrote,
   verbatim. The pane holds a redrawn screen, escape codes and whatever has
-  scrolled past. `amx logs <id>` is for when the screen itself is the question —
-  an agent that is taking longer than it should, or one whose state you did not
-  expect — and what it hands you is a picture of that screen, never the answer.
+  scrolled past. `amx logs <id>` is for when the history is the question — an
+  agent that is taking longer than it should, or one whose state you did not
+  expect. It reads the vendor's transcript first, then the pane, then the
+  recorded answer, cut to `--lines`; it never blocks for a turn the way
+  `result` does.
 - **Spawning never moves anybody.** Every agent goes in a detached tmux
   session of its own, `amx-<id>`, so `amx new` from inside tmux leaves whoever
   typed it looking at what they were looking at.

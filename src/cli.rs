@@ -92,7 +92,7 @@ pub enum Command {
         #[arg(long)]
         json: bool,
 
-        /// Only the agents whose work is under this directory.
+        /// A directory filter: only the agents whose work is under it.
         ///
         /// An agent is that directory's when it runs under it, and a worktree
         /// agent is its repository's wherever amx put the tree. Nothing is
@@ -286,11 +286,13 @@ pub enum Command {
 
     /// Print an agent's recent output without attaching to it.
     ///
-    /// While the pane is there this is the pane: the last of what it has drawn,
-    /// and as much of what has scrolled off it as tmux still holds. It is a
-    /// picture of a screen rather than the agent's own words — `amx result`
-    /// hands back those. Once the pane is gone the record is what is left, and
-    /// what the agent answered with is what this prints.
+    /// Where the vendor keeps a transcript, this is the transcript: every
+    /// prompt, answer and tool call of the recent history, with the pane there
+    /// or gone. With no transcript to read it is the pane: the last of what it
+    /// has drawn, and as much of what has scrolled off it as tmux still holds.
+    /// Once that is gone too, what the agent answered with is what this prints.
+    /// `--lines` cuts whichever it is. `amx result` is the one that hands back
+    /// a turn's answer alone.
     Logs {
         id: String,
         /// How many lines of it to print.
@@ -2075,5 +2077,166 @@ mod tests {
         ] {
             assert!(SKILL.contains(taught), "the skill never mentions {taught}");
         }
+    }
+
+    /// Every state a record can hold. A match rather than a list, so a state
+    /// added to the enum stops this compiling until it is here too.
+    fn every_phase() -> Vec<Phase> {
+        let all = [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Waiting,
+            Phase::Idle,
+            Phase::Done,
+            Phase::Failed,
+            Phase::Stopped,
+            Phase::Unknown,
+        ];
+        for phase in all {
+            match phase {
+                Phase::Starting
+                | Phase::Working
+                | Phase::Waiting
+                | Phase::Idle
+                | Phase::Done
+                | Phase::Failed
+                | Phase::Stopped
+                | Phase::Unknown => {}
+            }
+        }
+        all.to_vec()
+    }
+
+    /// The paragraph of a document that opens with these words.
+    fn paragraph<'a>(text: &'a str, opening: &str) -> &'a str {
+        let (_, from) = text
+            .split_once(opening)
+            .unwrap_or_else(|| panic!("nothing opens with {opening:?}"));
+        from.split("\n\n").next().unwrap_or_default()
+    }
+
+    #[test]
+    fn docs_the_readme_listing_says_the_words_ls_prints() {
+        // The first thing the README shows is a listing, and a person holds
+        // their own `amx ls` against it.
+        let (_, listing) = README.split_once("$ amx ls\n").expect("a listing");
+        let (listing, _) = listing.split_once("```").expect("the end of it");
+        let printed: Vec<&str> = every_phase().into_iter().map(Phase::word).collect();
+        for row in listing.lines() {
+            let word = row.split_whitespace().next().unwrap_or_default();
+            assert!(
+                printed.contains(&word),
+                "the README lists a row as `{word}`, which ls never prints: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_the_readme_names_every_state_and_the_word_the_table_says_for_it() {
+        let said = paragraph(README, "`state` is one of");
+        for phase in every_phase() {
+            assert!(
+                said.contains(&format!("`{}`", phase.as_str())),
+                "the README's states leave out `{}`",
+                phase.as_str()
+            );
+            // The JSON says the state and the table says the word, and where
+            // those differ a program reading one and a person the other are
+            // told two things unless the README says which is which.
+            if phase.word() != phase.as_str() {
+                assert!(
+                    said.contains(&format!("`{}` as `{}`", phase.as_str(), phase.word())),
+                    "the README never says the table prints `{}` as `{}`",
+                    phase.as_str(),
+                    phase.word()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn docs_both_exit_tables_name_every_verb_that_exits_2() {
+        // Every verb with a refusal that returns `exit::BLOCKED`, by a read
+        // of src/verbs: a caller branching on 2 has to know which verbs can
+        // hand it one.
+        let blocking = [
+            "answer",
+            "fork",
+            "interrupt",
+            "new",
+            "result",
+            "resume",
+            "send",
+            "sub",
+        ];
+        let (_, readme) = README
+            .split_once("\n| `2`  |")
+            .expect("the README's row for 2");
+        let readme = readme.lines().next().unwrap_or_default();
+        let (_, skill) = SKILL
+            .split_once("## Exit codes")
+            .expect("the skill's exit codes");
+        let (skill, _) = skill.split_once("\n## ").expect("the end of them");
+        for verb in blocking {
+            assert!(
+                readme.contains(&format!("`{verb}`")),
+                "the README's exit table never says `{verb}` exits 2: {readme}"
+            );
+            assert!(
+                skill.contains(&format!("`{verb}`")),
+                "the skill never says `{verb}` exits 2"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_logs_is_said_to_read_the_transcript_first() {
+        use clap::CommandFactory;
+        let long = Cli::command()
+            .find_subcommand("logs")
+            .and_then(|logs| logs.get_long_about().map(ToString::to_string))
+            .expect("what logs says of itself at length");
+        let transcript = long
+            .find("transcript")
+            .expect("logs help names no transcript");
+        let pane = long.find("pane").expect("logs help names no pane");
+        assert!(
+            transcript < pane,
+            "logs help reads the pane before the transcript: {long}"
+        );
+
+        let row = SKILL
+            .lines()
+            .find(|line| line.starts_with("| `amx logs"))
+            .expect("the skill's row for logs");
+        assert!(
+            row.contains("transcript"),
+            "the skill's logs is the pane: {row}"
+        );
+    }
+
+    #[test]
+    fn docs_ls_dir_is_called_a_directory_filter() {
+        // It narrows one reading and keeps nothing apart: another run's agent
+        // under the same directory is in it too.
+        use clap::CommandFactory;
+        let dir = Cli::command()
+            .find_subcommand("ls")
+            .and_then(|ls| {
+                ls.get_arguments()
+                    .find(|arg| arg.get_id() == "dir")
+                    .cloned()
+            })
+            .and_then(|dir| dir.get_help().map(ToString::to_string))
+            .expect("ls --dir help");
+        assert!(dir.contains("directory filter"), "{dir}");
+        assert!(
+            README.contains("directory filter"),
+            "the README never says so"
+        );
+        assert!(
+            !README.contains("no other run's"),
+            "the README says ls --dir keeps runs apart"
+        );
     }
 }

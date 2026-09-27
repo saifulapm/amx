@@ -7,11 +7,15 @@
 pub const OK: i32 = 0;
 
 /// Failure, and no answer is coming. `result`: the agent is failed or stopped.
+/// Any verb: an id that names no agent.
 pub const FAILURE: i32 = 1;
 
-/// Blocked: `result` on a waiting agent (its question goes to stdout), `send`
-/// refused because the agent is waiting, `answer` with nothing pending, `new`
-/// at a project's `max_agents` or the machine's `max_total`.
+/// Blocked: `result`, `sub` and `interrupt` on a waiting agent (its question
+/// goes to stdout), `send` refused because the agent is waiting, `answer` with
+/// nothing pending, `new`, `sub`, `fork` and `resume` at a project's
+/// `max_agents` or the machine's `max_total`, `new` and `sub` past
+/// `subagent_depth`, `sub` past `max_children` or refused a `--permission`,
+/// `resume` on an agent still running.
 pub const BLOCKED: i32 = 2;
 
 /// `result --timeout` expired.
