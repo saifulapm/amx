@@ -2197,12 +2197,19 @@ mod tests {
                 "--session-id",
                 "port-it-b2c",
                 "--approve",
+                "--",
                 "port the importer"
             ]
         );
         assert_eq!(
             launched(&args, "port the importer", &launch, "port-it-b2c", false),
-            ["pi", "--session-id", "port-it-b2c", "port the importer"],
+            [
+                "pi",
+                "--session-id",
+                "port-it-b2c",
+                "--",
+                "port the importer"
+            ],
             "and nothing at all without the key"
         );
     }
