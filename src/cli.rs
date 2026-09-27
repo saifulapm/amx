@@ -196,7 +196,7 @@ pub enum Command {
     /// child id; a child stopped on a question is in the collection with its
     /// question rather than hidden. The code is the most actionable thing
     /// found: 3 the timeout ran out, 2 a question, 1 a failure, 0 every
-    /// answer.
+    /// answer. A parent with no children is a failure too.
     Result {
         /// The agent whose answer to wait for.
         #[arg(required_unless_present = "children", conflicts_with = "children")]
@@ -228,7 +228,7 @@ pub enum Command {
     ///
     /// `--children <id>` waits on every child of that agent instead of on
     /// named ids, which is the fan-in for a parent that fanned out with
-    /// `amx sub --bg`.
+    /// `amx sub --bg`. A parent with no children exits 1.
     Wait {
         /// The agents to wait on.
         #[arg(

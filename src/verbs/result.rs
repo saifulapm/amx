@@ -136,6 +136,12 @@ pub fn run_family(
     out: &mut impl Write,
 ) -> Result<i32> {
     let children = crate::verbs::wait::children_of(root, parent)?;
+    // No children is no answers, and an empty reading that exits zero says
+    // every child answered.
+    if children.is_empty() {
+        complain!("amx result: {parent} has no children");
+        return Ok(exit::FAILURE);
+    }
     let deadline = timeout.map(|patience| Instant::now() + patience);
 
     let mut pending = children.clone();
@@ -765,6 +771,21 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "scout-c3d waiting\nWhich runner?\n1. Node\n2. Deno\n"
         );
+    }
+
+    #[test]
+    fn result_children_of_a_childless_parent_is_a_failure() {
+        // A family of none has no answers to hand back, and an empty stdout
+        // with a zero reads as every child having answered.
+        let root = tempfile::TempDir::new().unwrap();
+        a_family_with_a_question(root.path());
+
+        for json in [false, true] {
+            let mut out = Vec::new();
+            let code = run_family(root.path(), "scout-c3d", None, json, false, &mut out).unwrap();
+            assert_eq!(code, exit::FAILURE, "json {json}");
+            assert!(out.is_empty(), "json {json}: {out:?}");
+        }
     }
 
     /// claude's word for a turn ending, as its entry spells it.

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, Evidence};
 use crate::store::{Agent, Phase};
 use crate::verbs::result::{self, Ended, Settled};
-use crate::{exit, paths, store};
+use crate::{complain, exit, paths, store};
 
 /// How often the records are read while waiting — `result`'s own poll, for the
 /// same reason: short enough that a caller chaining turns is not waiting on
@@ -77,6 +77,12 @@ pub fn run(
         Some(parent) => children_of(root, parent)?,
         None => taken(ids),
     };
+    // A family of none would settle at once and print nothing, which reads as
+    // every child having settled.
+    if let (Some(parent), true) = (children, named.is_empty()) {
+        complain!("amx wait: {parent} has no children");
+        return Ok(exit::FAILURE);
+    }
     let mut pending = named;
     for id in &pending {
         Agent::open(root, id)?;
@@ -356,6 +362,28 @@ mod tests {
         .expect_err("an id nobody knows");
         assert!(refused.to_string().contains("nope"), "{refused:#}");
         assert!(out.is_empty(), "it printed {out:?} before refusing");
+    }
+
+    #[test]
+    fn children_of_a_childless_parent_is_a_failure() {
+        // A wait on a family of none would end at once and say nothing, which
+        // reads as every child having settled.
+        let root = tempfile::TempDir::new().unwrap();
+        record(root.path(), "lonely-a1b", Phase::Idle);
+
+        let mut out = Vec::new();
+        let code = run(
+            root.path(),
+            &[],
+            Some("lonely-a1b"),
+            false,
+            None,
+            None,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(code, exit::FAILURE);
+        assert!(out.is_empty(), "it printed {out:?}");
     }
 
     fn ids(ids: &[&str]) -> Vec<String> {
