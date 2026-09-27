@@ -654,8 +654,9 @@ fn still_running(shells: u32, agents: u32) -> String {
 /// * A record that has already ended stays ended. A late hook is a hook about
 ///   a turn that is over.
 /// * An event the vendor never told amx about moves nothing at all, save the
-///   stamp `amx interrupt` left, which every event about the agent takes off:
-///   what it is about is that the vendor spoke, not what it said.
+///   stamps `amx interrupt` and `_park` left, which every event about the
+///   agent takes off: what they are about is that the vendor spoke, not what
+///   it said.
 ///
 /// What comes back is the one notice a stop is worth, and one for every stop.
 /// Somebody is told when a screen goes up that nothing has told them about,
@@ -696,6 +697,10 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
     // was the other way to say it and it could not: both are whole seconds,
     // and a key pressed in the second the last hook landed in tied.
     state.interrupted_at = 0;
+    // The stamp `_park` leaves says amx let the pane go. A vendor that speaks
+    // has a pane, whoever gave it one, and `send` refuses a record that still
+    // reads parked.
+    state.parked_at = 0;
 
     // An adopted agent's record was written with its session and nothing
     // about the transcript: the vendor announced that session's start before
@@ -2589,6 +2594,38 @@ mod tests {
             &mut meta(),
         );
         assert_eq!(state.interrupted_at, 1_000, "a subagent's work is not it");
+    }
+
+    #[test]
+    fn hook_a_word_from_the_vendor_takes_a_park_stamp_off_the_record() {
+        // The stamp says amx let the pane go and the agent comes back on the
+        // next enter. An agent that speaks has a pane, whoever put it there,
+        // and a stamp left standing would have `send` refuse it as parked.
+        for payload in [
+            json!({ "hook_event_name": "SessionStart", "session_id": "s-1" }),
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+        ] {
+            let mut state = State {
+                state: Phase::Idle,
+                parked_at: 1_000,
+                ..State::default()
+            };
+            apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.parked_at, 0, "{payload}");
+        }
+
+        // A subagent's event is not the agent speaking.
+        let mut state = State {
+            state: Phase::Idle,
+            parked_at: 1_000,
+            ..State::default()
+        };
+        apply(
+            &json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub-1" }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.parked_at, 1_000, "a subagent's work is not it");
     }
 
     #[test]
