@@ -250,7 +250,7 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
 /// The opening pair goes with it. Nothing amx has any business sending carries
 /// either, and a message that is trying to open a paste of its own is a
 /// message worth stopping on the same sentence.
-fn ends_its_own_paste(text: &str) -> bool {
+pub(crate) fn ends_its_own_paste(text: &str) -> bool {
     // `ESC [` and the one character an 8-bit terminal takes in its place.
     ["\u{1b}[", "\u{9b}"]
         .iter()

@@ -84,7 +84,7 @@ use crate::cli::AnswerArgs;
 use crate::derive;
 use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
-use crate::verbs::send::nothing_more_is_coming;
+use crate::verbs::send::{ends_its_own_paste, nothing_more_is_coming};
 use crate::{exit, paths, store, warn};
 
 /// The key that moves a menu's cursor onto the vendor's own free-text row.
@@ -228,6 +228,7 @@ pub fn given(
         agent,
         server,
         &view.meta.pane,
+        &view.state,
         answer,
         note.as_deref(),
         Shape::of(&view.state),
@@ -387,6 +388,18 @@ fn read(
     kind: Option<Kind>,
     state: &State,
 ) -> Result<(Answer, Option<String>), String> {
+    // Words and a note are pasted, and a paste that carries its own end types
+    // the rest of it at the agent.
+    let typed = [&args.key, &args.text, &args.note];
+    if typed
+        .into_iter()
+        .flatten()
+        .any(|text| ends_its_own_paste(text))
+    {
+        return Err("that answer carries the end of a bracketed paste; \
+                    what follows it would be typed at the agent rather than pasted"
+            .to_string());
+    }
     let note = note(args, state.pending())?;
     Ok((answer(args, kind, state)?, note))
 }
@@ -870,12 +883,13 @@ fn reply(
     agent: &Agent,
     server: &Server,
     pane: &PaneId,
+    read: &State,
     answer: Answer,
     note: Option<&str>,
     shape: Shape,
 ) -> Result<()> {
     drive(&(server, pane), &steps(&answer, note, shape))?;
-    answered(agent, &answer, note)
+    answered(agent, read, &answer, note)
 }
 
 /// What a sequence is typed at.
@@ -973,15 +987,21 @@ fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
 /// timed from when it began, and the caller who typed a key that may have done
 /// nothing can type at the same screen again. The next hook, or the next
 /// reader at the pane, is what settles it.
-fn answered(agent: &Agent, answer: &Answer, note: Option<&str>) -> Result<()> {
+///
+/// The same goes for a record that has moved since `read`, the reading the
+/// answer was made from. A hook that landed in between may have put up a new
+/// question, and clearing it would clear a question nobody has answered; the
+/// answer is logged against the question it was typed at, and the record is
+/// left to the hook that moved it.
+fn answered(agent: &Agent, read: &State, answer: &Answer, note: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
-    let said = answer.said(&writer.state()?);
+    let said = answer.said(read);
     let mut what = answer.event(&said);
     if let Some(note) = note {
         what["note"] = serde_json::json!(note);
     }
     writer.append(&Event::new("answer", what))?;
-    if !answer.chose() {
+    if !answer.chose() || writer.state()?.last_event != read.last_event {
         return Ok(());
     }
     writer.update_state(|state| {
@@ -1821,7 +1841,7 @@ mod tests {
         let dialog = a_walked_dialog();
         let agent = recorded(root.path(), &dialog);
         let picked = answer(&given("3"), dialog.kind, &dialog).expect("the third row");
-        answered(&agent, &picked, None).unwrap();
+        answered(&agent, &agent.state().unwrap(), &picked, None).unwrap();
 
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Working);
@@ -1875,7 +1895,7 @@ mod tests {
         let gate = a_trust_gate();
         let agent = recorded(root.path(), &gate);
         let walked = Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]);
-        answered(&agent, &walked, None).unwrap();
+        answered(&agent, &agent.state().unwrap(), &walked, None).unwrap();
 
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Waiting);
@@ -1965,6 +1985,28 @@ mod tests {
         assert!(grammar(Some(Kind::Question), &state).contains("words of your own"));
     }
 
+    #[test]
+    fn hardening_an_answer_may_not_end_its_own_paste() {
+        // Words and a note go in as a bracketed paste, as a send does, and
+        // what follows the terminator in them would be typed at the agent.
+        let end = "fine\u{1b}[201~/exit\r";
+        let plain = a_plain_question();
+        for line in [given(end), given_text(end)] {
+            let refused = read(&line, Some(Kind::Question), &plain).unwrap_err();
+            assert!(refused.contains("paste"), "{refused}");
+        }
+
+        let previewed = a_previewed_question();
+        let noted = |note: &str| AnswerArgs {
+            key: Some("1".to_string()),
+            note: Some(note.to_string()),
+            ..AnswerArgs::default()
+        };
+        let refused = read(&noted(end), Some(Kind::Question), &previewed).unwrap_err();
+        assert!(refused.contains("paste"), "{refused}");
+        assert!(read(&noted("fine"), Some(Kind::Question), &previewed).is_ok());
+    }
+
     /// An agent with a record and no pane: what is written down when a
     /// question is answered, without a tmux server in it.
     fn recorded(root: &Path, asking: &State) -> Agent {
@@ -2011,7 +2053,13 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let agent = recorded(root.path(), &call);
 
-        answered(&agent, &Answer::Key("2".to_string()), None).unwrap();
+        answered(
+            &agent,
+            &agent.state().unwrap(),
+            &Answer::Key("2".to_string()),
+            None,
+        )
+        .unwrap();
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Waiting, "the prompt is still up");
         assert_eq!(state.asking[0].answer.as_deref(), Some("Apache-2.0"));
@@ -2021,7 +2069,13 @@ mod tests {
         );
         assert!(state.multi());
 
-        answered(&agent, &Answer::Toggle(vec![1, 3]), None).unwrap();
+        answered(
+            &agent,
+            &agent.state().unwrap(),
+            &Answer::Toggle(vec![1, 3]),
+            None,
+        )
+        .unwrap();
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Working, "and now it is over");
         assert_eq!(state.question, None);
@@ -2053,7 +2107,13 @@ mod tests {
                 a_checkbox_question().asking[0].clone(),
             ]);
             let agent = recorded(root.path(), &call);
-            answered(&agent, &Answer::Key(key.to_string()), None).unwrap();
+            answered(
+                &agent,
+                &agent.state().unwrap(),
+                &Answer::Key(key.to_string()),
+                None,
+            )
+            .unwrap();
 
             let state = agent.state().unwrap();
             assert_eq!(state.state, Phase::Waiting, "{key}");
@@ -2063,5 +2123,28 @@ mod tests {
             // What was typed is on the record; what it did is not amx's to say.
             assert_eq!(agent.events().unwrap()[0].payload["key"], key, "{key}");
         }
+    }
+
+    #[test]
+    fn surfaces_a_question_replaced_since_it_was_read_stays_on_the_record() {
+        // A hook can put up the next question between the reading the answer
+        // was made from and the write that clears it. The answer was to the
+        // question read, so the one on the record now stands.
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_plain_question());
+        let read = agent.state().unwrap();
+
+        let mut replaced = a_checkbox_question();
+        replaced.last_event = read.last_event + 1;
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_string(&replaced).unwrap(),
+        )
+        .unwrap();
+
+        answered(&agent, &read, &Answer::Key("2".to_string()), None).unwrap();
+        assert_eq!(agent.state().unwrap(), replaced);
+        let logged = agent.events().unwrap();
+        assert_eq!(logged[0].payload["key"], "2", "what was typed is logged");
     }
 }
