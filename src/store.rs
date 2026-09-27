@@ -27,8 +27,10 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,6 +42,8 @@ const META: &str = "meta.json";
 const STATE: &str = "state.json";
 const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";
+const SPAWN_LOCK: &str = "spawn.lock";
+const CLAIM: &str = "claim";
 /// What a vendor is saying right now, streamed by its own report while a turn
 /// runs and taken away when the turn ends. Written by the vendor's side and
 /// only ever read here.
@@ -1450,6 +1454,92 @@ pub fn list(root: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(ids)
+}
+
+/// The lock every spawn counts the caps and claims its place under, on
+/// `spawn.lock` beside the agents. Held until the returned file is dropped.
+///
+/// One lock for the whole machine rather than one per record: what it guards
+/// is a count over every record, and two spawns that each counted before the
+/// other claimed would both find room for one.
+pub fn spawn_lock(root: &Path) -> Result<File> {
+    let path = root.parent().unwrap_or(root).join(SPAWN_LOCK);
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(paths::FILE_MODE)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("locking {}", path.display()))?;
+    Ok(file)
+}
+
+/// A place under the caps, taken for an agent that has no running record yet:
+/// the file naming the project it counts against, locked for as long as the
+/// spawn that wrote it is still setting it up.
+///
+/// A claim whose spawn died is not locked by anybody, and counts for nothing.
+/// Dropping it takes the file away.
+pub struct Claim {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Claim {
+    /// Claim a place in `dir` for an agent of `project`.
+    pub fn hold(dir: &Path, project: &Path) -> Result<Claim> {
+        let path = dir.join(CLAIM);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(paths::FILE_MODE)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("locking {}", path.display()))?;
+        file.write_all(project.as_os_str().as_encoded_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(Claim { path, _file: file })
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The places claimed under `root` by spawns still setting up, as the id
+/// each was claimed for and the project it counts against.
+pub fn claims(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", root.display())),
+    };
+
+    let mut held = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", root.display()))?;
+        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // Gone between the listing and the open is a spawn that finished.
+        let Ok(mut file) = File::open(entry.path().join(CLAIM)) else {
+            continue;
+        };
+        if !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)) {
+            continue;
+        }
+        let mut project = Vec::new();
+        file.read_to_end(&mut project)
+            .with_context(|| format!("reading {}'s claim", id))?;
+        held.push((id, PathBuf::from(OsString::from_vec(project))));
+    }
+    Ok(held)
 }
 
 fn to_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {

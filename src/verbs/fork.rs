@@ -96,21 +96,27 @@ pub fn run(
     // and says nothing about that project.
     let (theirs, _) = crate::config::for_dir_in(&meta.dir, root);
     let project = spawn::project_of(&meta.dir);
-    if let Some(full) = spawn::at_capacity(root, &project, theirs.max_agents, theirs.max_total)? {
-        writeln!(
-            problems,
-            "{}",
-            said(Severity::Warned, &format!("amx fork: {full}"), to_terminal)
-        )?;
-        return Ok(exit::BLOCKED);
-    }
-
     // What the copy is for is what it was given to do, and the task it was
     // copied from when it was given nothing: a row with no task on it says
     // nothing about itself, and this one is about the same work as the agent
     // it came from.
     let task = prompt.unwrap_or(&meta.task);
-    let (copy, dir) = claim(root, task)?;
+    // Counted and claimed in one step, as in `new`.
+    let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
+        let (copy, dir) = claim(root, task)?;
+        Ok(((copy, dir.clone()), dir))
+    })?;
+    let ((copy, dir), _place) = match taken {
+        Ok(taken) => taken,
+        Err(full) => {
+            writeln!(
+                problems,
+                "{}",
+                said(Severity::Warned, &format!("amx fork: {full}"), to_terminal)
+            )?;
+            return Ok(exit::BLOCKED);
+        }
+    };
     // The id is minted before the argv is built, because a vendor that
     // declares a start flag is asked to open the copy under it.
     let command = copying(&recorded, &session, &copy, prompt);

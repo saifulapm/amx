@@ -95,9 +95,10 @@ pub fn picked_up(
     if let Err(why) = to_start(agent.dir(), id) {
         return Ok(Comeback::No(why));
     }
-    if let Some(full) = at_capacity(root, &meta.dir)? {
-        return Ok(Comeback::No(full));
-    }
+    let _place = match take_a_place(root, id, &meta.dir)? {
+        Ok(place) => place,
+        Err(full) => return Ok(Comeback::No(full)),
+    };
     bring_back(root, id, message, env)?;
     Ok(Comeback::Back)
 }
@@ -173,10 +174,13 @@ fn one(
         );
         return Ok(exit::BLOCKED);
     }
-    if let Some(full) = at_capacity(root, &view.meta.dir)? {
-        warn!("amx resume: {full}");
-        return Ok(exit::BLOCKED);
-    }
+    let _place = match take_a_place(root, id, &view.meta.dir)? {
+        Ok(place) => place,
+        Err(full) => {
+            warn!("amx resume: {full}");
+            return Ok(exit::BLOCKED);
+        }
+    };
 
     bring_back(root, id, message, env)?;
     writeln!(out, "{id} resumed")?;
@@ -225,10 +229,13 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
         // full is not the sweep's ending either: a server takes every project
         // on the machine with it when it dies, and the agents of the ones with
         // room still come back.
-        if let Some(full) = at_capacity(root, &view.meta.dir)? {
-            warn!("amx resume: {}: {full}", view.id());
-            continue;
-        }
+        let _place = match take_a_place(root, view.id(), &view.meta.dir)? {
+            Ok(place) => place,
+            Err(full) => {
+                warn!("amx resume: {}: {full}", view.id());
+                continue;
+            }
+        };
         // One agent that cannot come back is not the sweep's ending. The
         // others still can, and this is the command somebody runs when the
         // whole wall went at once.
@@ -240,21 +247,24 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
     Ok(exit::OK)
 }
 
-/// Whether the project an agent came from, or the machine over it, is already
-/// running as many agents as it will.
+/// A place under the caps for bringing `id` back, held until the returned
+/// claim is dropped, or the sentence saying the project an agent came from, or
+/// the machine over it, is already running as many agents as it will.
 ///
 /// The cap is read from the project the agent ran in rather than from the
 /// config this command was started with: an agent comes back where it was, and
 /// the machine's afternoon is spread over projects that each say for
 /// themselves what they can afford.
-fn at_capacity(root: &Path, dir: &Path) -> Result<Option<String>> {
+fn take_a_place(root: &Path, id: &str, dir: &Path) -> Result<Result<store::Claim, String>> {
     let (theirs, _) = crate::config::for_dir(dir);
-    spawn::at_capacity(
+    let taken = spawn::take_a_place(
         root,
         &spawn::project_of(dir),
         theirs.max_agents,
         theirs.max_total,
-    )
+        || Ok(((), paths::agent_dir_in(root, id)?)),
+    )?;
+    Ok(taken.map(|((), place)| place))
 }
 
 /// Put the agent back in a pane, continuing what it was doing.

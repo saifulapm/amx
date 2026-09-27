@@ -515,16 +515,23 @@ fn run_aloud(
     // refusal.
     let (theirs, _) = crate::config::for_dir(dir);
     let project = spawn::project_of(dir);
-    if let Some(full) = spawn::at_capacity(root, &project, theirs.max_agents, theirs.max_total)? {
-        writeln!(
-            problems,
-            "{}",
-            said(Severity::Warned, &format!("amx new: {full}"), to_terminal)
-        )?;
-        return Ok(exit::BLOCKED);
-    }
-
-    let (id, agent_dir) = claim(root, args, task)?;
+    // Counted and claimed in one step, so two spawns at once cannot both
+    // find the last place; the place is held until `start` has recorded it.
+    let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
+        let (id, agent_dir) = claim(root, args, task)?;
+        Ok(((id, agent_dir.clone()), agent_dir))
+    })?;
+    let ((id, agent_dir), _place) = match taken {
+        Ok(taken) => taken,
+        Err(full) => {
+            writeln!(
+                problems,
+                "{}",
+                said(Severity::Warned, &format!("amx new: {full}"), to_terminal)
+            )?;
+            return Ok(exit::BLOCKED);
+        }
+    };
 
     // From here on a failure leaves nothing behind: an id that half exists is
     // worse than one that does not. The directory is this spawn's own — the

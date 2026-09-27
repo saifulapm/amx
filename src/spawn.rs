@@ -30,7 +30,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -789,14 +789,25 @@ pub fn project_of(dir: &Path) -> PathBuf {
 /// machine is as busy as the projects on it ask between them.
 ///
 /// Both counts are of agents running a turn — see [`going`] for what that
-/// leaves out. One that has finished is a record, not a running program.
+/// leaves out — and of the places spawns still setting up have claimed. One
+/// that has finished is a record, not a running program.
 pub fn at_capacity(
     root: &Path,
     project: &Path,
     max_agents: usize,
     max_total: Option<usize>,
 ) -> Result<Option<String>> {
-    let here = live_under(root, project)?.len();
+    let claims = crate::store::claims(root)?;
+    let here: BTreeSet<String> = live_under(root, project)?
+        .into_iter()
+        .chain(
+            claims
+                .iter()
+                .filter(|(_, theirs)| theirs == project)
+                .map(|(id, _)| id.clone()),
+        )
+        .collect();
+    let here = here.len();
     if here >= max_agents {
         return Ok(Some(format!(
             "{here} agents already running in {}, and max_agents is {max_agents}",
@@ -807,10 +818,38 @@ pub fn at_capacity(
     let Some(ceiling) = max_total else {
         return Ok(None);
     };
-    let everywhere = live(root)?.len();
+    let everywhere: BTreeSet<String> = live(root)?
+        .into_iter()
+        .chain(claims.into_iter().map(|(id, _)| id))
+        .collect();
+    let everywhere = everywhere.len();
     Ok((everywhere >= ceiling).then(|| {
         format!("{everywhere} agents already running on this machine, and max_total is {ceiling}")
     }))
+}
+
+/// Count the caps and, where there is room, claim a place: `claim` makes the
+/// agent's directory and says which it is, and the place is held in it until
+/// the returned [`crate::store::Claim`] is dropped. The refusal is the
+/// sentence [`at_capacity`] says.
+///
+/// Both under [`crate::store::spawn_lock`], which is let go before this
+/// returns: a spawn's setup is seconds of worktree and install, and the next
+/// spawn counts this one's claim rather than waiting for it.
+pub fn take_a_place<T>(
+    root: &Path,
+    project: &Path,
+    max_agents: usize,
+    max_total: Option<usize>,
+    claim: impl FnOnce() -> Result<(T, PathBuf)>,
+) -> Result<Result<(T, crate::store::Claim), String>> {
+    let _counting = crate::store::spawn_lock(root)?;
+    if let Some(full) = at_capacity(root, project, max_agents, max_total)? {
+        return Ok(Err(full));
+    }
+    let (claimed, dir) = claim()?;
+    let held = crate::store::Claim::hold(&dir, project)?;
+    Ok(Ok((claimed, held)))
 }
 
 /// The record `new` writes once the pane exists.
@@ -1684,6 +1723,74 @@ mod tests {
             None,
             "and the record that lost its pane fills none of the cap"
         );
+    }
+
+    #[test]
+    fn two_spawns_at_the_cap_start_one() {
+        // Two spawns asked for at once, with room for one: each counts before
+        // either has a record, so the count has to see the other's claim, and
+        // see it under a lock only one of them holds at a time.
+        let home = TempDir::new().unwrap();
+        let root = home.path().join("agents");
+        std::fs::create_dir(&root).unwrap();
+        let project = TempDir::new().unwrap();
+        let server =
+            Own(Server::named(format!("amx-cap-{}", std::process::id())).with_conf("/dev/null"));
+        let running = Meta {
+            parent: None,
+            depth: 0,
+            dir: project.path().to_path_buf(),
+            ..meta(
+                "running-a1b",
+                server.0.socket().clone(),
+                placed(&server.0, "running-a1b"),
+            )
+        };
+        Agent::create(&root, &running).expect("a record");
+
+        let at_once = std::sync::Barrier::new(2);
+        let places: Vec<_> = std::thread::scope(|scope| {
+            let spawns: Vec<_> = ["first-b2c", "second-c3d"]
+                .map(|id| {
+                    let (root, project, at_once) = (&root, project.path(), &at_once);
+                    scope.spawn(move || {
+                        at_once.wait();
+                        take_a_place(root, project, 2, None, || {
+                            let dir = root.join(id);
+                            std::fs::create_dir(&dir)?;
+                            Ok((id, dir))
+                        })
+                        .unwrap()
+                    })
+                })
+                .into_iter()
+                .collect();
+            spawns
+                .into_iter()
+                .map(|spawn| spawn.join().unwrap())
+                .collect()
+        });
+
+        let (started, refused): (Vec<_>, Vec<_>) = places.into_iter().partition(Result::is_ok);
+        assert_eq!(started.len(), 1, "one of the two starts");
+        let refusal = refused.into_iter().next().unwrap().err().unwrap();
+        assert!(refusal.contains("max_agents is 2"), "{refusal}");
+
+        // The lock is given back before setup runs, while the claim is still
+        // held: the next spawn counts without waiting on this one's setup.
+        let lock = std::fs::File::open(home.path().join("spawn.lock")).unwrap();
+        lock.try_lock().expect("nobody holds the count");
+        drop(lock);
+        assert!(
+            at_capacity(&root, project.path(), 2, None)
+                .unwrap()
+                .is_some(),
+            "and the claim still fills its place"
+        );
+
+        // A spawn that gives up leaves its place for the next.
+        drop(started);
+        assert_eq!(at_capacity(&root, project.path(), 2, None).unwrap(), None);
     }
 
     #[test]
