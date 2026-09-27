@@ -85,6 +85,12 @@ fn asked() -> Option<String> {
     if !std::io::IsTerminal::is_terminal(&input) {
         return None;
     }
+    // Keys already waiting are somebody who started typing before the view
+    // was up. Asking now would read them as the answer and lose them, so the
+    // terminal goes unasked and the keys are left for the view.
+    if pending(fd) {
+        return None;
+    }
 
     // A read that comes back empty rather than waiting for a key. Raw mode
     // leaves stdin blocking on one byte, and a terminal that never answers
@@ -102,6 +108,18 @@ fn asked() -> Option<String> {
         .and_then(|()| listen(&mut std::io::stdin().lock()));
     set(fd, &settled)?;
     answer
+}
+
+/// Whether anything is waiting to be read, without reading it.
+fn pending(fd: BorrowedFd<'_>) -> bool {
+    let mut waiting = nix::libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(&fd),
+        events: nix::libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one pollfd, owned here, and a timeout of nothing.
+    let ready = unsafe { nix::libc::poll(&mut waiting, 1, 0) };
+    ready > 0 && waiting.revents & nix::libc::POLLIN != 0
 }
 
 /// Put the terminal's settings where they are asked for, saying whether it
@@ -287,6 +305,27 @@ mod tests {
         let heard = listen(&mut typing).expect("the letter");
         assert!(began.elapsed() < PATIENCE, "and does not wait out the rest");
         assert_eq!(said(&heard), None);
+    }
+
+    #[test]
+    fn a_key_already_waiting_is_left_for_the_view() {
+        // Somebody typing before the view is up: asking then would read their
+        // keys as the answer, so the terminal is not asked and they stay put.
+        let pty = nix::pty::openpty(None, None).expect("a pty");
+        // Raw, as the view has it by the time it asks.
+        let mut raw = nix::sys::termios::tcgetattr(&pty.slave).expect("its settings");
+        nix::sys::termios::cfmakeraw(&mut raw);
+        set(pty.slave.as_fd(), &raw).expect("raw");
+        assert!(!pending(pty.slave.as_fd()), "nothing typed yet");
+        nix::unistd::write(&pty.master, b"j").expect("a key");
+        let began = Instant::now();
+        while !pending(pty.slave.as_fd()) {
+            assert!(began.elapsed() < Duration::from_secs(1), "the key arrives");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut kept = [0u8; 1];
+        nix::unistd::read(&pty.slave, &mut kept).expect("the key, still there");
+        assert_eq!(&kept, b"j");
     }
 
     #[test]
