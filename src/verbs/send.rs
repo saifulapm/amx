@@ -137,7 +137,14 @@ pub fn run(
             return Ok(exit::FAILURE);
         }
         Delivered::Waiting(state) => {
-            return waiting_on_a_question(&View { state, ..view }, to_terminal, out);
+            return waiting_on_a_question(
+                &View {
+                    state: *state,
+                    ..view
+                },
+                to_terminal,
+                out,
+            );
         }
     }
 
@@ -189,7 +196,7 @@ enum Delivered {
     Refused(String),
     /// The record reads waiting now, which the reading before this did not
     /// say: nothing typed and nothing recorded, and this is the record.
-    Waiting(State),
+    Waiting(Box<State>),
 }
 
 /// [`deliver`], with what the record says now handed back rather than turned
@@ -216,7 +223,7 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
         return Ok(Delivered::Refused(was_let_go(id)));
     }
     if state.state == Phase::Waiting {
-        return Ok(Delivered::Waiting(state));
+        return Ok(Delivered::Waiting(Box::new(state)));
     }
     if !server.pane_answers_for(pane, id) {
         return Ok(Delivered::Refused(format!(
