@@ -325,8 +325,9 @@ fn terminals(servers: Vec<Server>) -> Vec<PathBuf> {
 /// Both fields are made inert first. The title and the body are an agent's own
 /// text — a question it printed, a command line somebody wrote — and they are
 /// travelling inside an escape sequence, where a stray escape would start
-/// another and a stray bell would end this one early. Every C0 control and the
-/// delete go; the semicolon of the title becomes a comma, because it is what
+/// another and a stray bell would end this one early. Every control goes, C0,
+/// the delete and the eight-bit C1 set a terminal may read as escapes of its
+/// own; the semicolon of the title becomes a comma, because it is what
 /// tells the title from the body.
 pub fn osc_notice(notice: &Notice) -> Vec<u8> {
     let mut bytes = b"\x1b]777;notify;".to_vec();
@@ -340,9 +341,10 @@ pub fn osc_notice(notice: &Notice) -> Vec<u8> {
 /// One field of that sequence: the bytes a terminal would read as instruction
 /// taken out, and whatever the text is spelled in left alone.
 fn inert(text: &str) -> Vec<u8> {
-    text.bytes()
-        .filter(|byte| *byte >= 0x20 && *byte != 0x7f)
-        .collect()
+    text.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .into_bytes()
 }
 
 /// Write the sequence to one terminal, and say nothing about it either way.
@@ -561,6 +563,18 @@ mod tests {
             osc_notice(&notice),
             b"\x1b]777;notify;a,b]0,stolen;lineandmore\x07".to_vec(),
             "the semicolons of the title are the fields, and the controls go"
+        );
+
+        // An eight-bit control is one char in the text and two bytes in UTF-8,
+        // and a terminal reading C1 takes U+009D for OSC and U+009C for its end.
+        let notice = Notice {
+            title: "a\u{9d}0;stolen\u{9c}b".to_string(),
+            body: "c\u{9b}31md\u{85}e".to_string(),
+        };
+        assert_eq!(
+            osc_notice(&notice),
+            b"\x1b]777;notify;a0,stolenb;c31mde\x07".to_vec(),
+            "the C1 controls go with the C0 ones"
         );
 
         // What is not a control character is left as it was written.
