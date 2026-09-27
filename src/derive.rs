@@ -2356,7 +2356,16 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     let server = Server::from_socket(meta.socket.clone());
     let rules = own_screens(&meta);
 
-    let alive = state.state.is_terminal() || server.pane_answers_for(&meta.pane, &meta.id);
+    let alive = match state.state.is_terminal() {
+        true => true,
+        false => match server.answers_for_now(&meta.pane, &meta.id) {
+            Ok(answers) => answers,
+            Err(_) => {
+                let verdict = as_written(&agent, &state, meta.created, now);
+                return Ok(View::new(meta, state, verdict));
+            }
+        },
+    };
     // Read once and used twice, like the record itself: a beat landing between
     // the question of whether to take a screen and the reading that weighs one
     // would have the two disagree about the same second.
@@ -2446,7 +2455,9 @@ pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
 /// their own screens rather than both against the first one's.
 pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
-    let mut owners: Vec<(crate::tmux::Socket, crate::tmux::PaneOwners)> = Vec::new();
+    // `None` for a server whose tmux could not be asked.
+    let mut owners: Vec<(crate::tmux::Socket, Option<crate::tmux::PaneOwners>)> = Vec::new();
+    let mut views = Vec::new();
 
     for record in records {
         let meta = &record.meta;
@@ -2457,11 +2468,17 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
                 Some((_, listed)) => listed,
                 None => {
                     let listed = Server::from_socket(meta.socket.clone())
-                        .pane_owners()
-                        .unwrap_or_default();
+                        .owners_for_now()
+                        .ok();
                     owners.push((meta.socket.clone(), listed));
                     &owners.last().expect("just pushed").1
                 }
+            };
+            let Some(listed) = listed else {
+                let Record { agent, meta, state } = record;
+                let verdict = as_written(&agent, &state, meta.created, now);
+                views.push(View::new(meta, state, verdict));
+                continue;
             };
             listed.pane_answers_for(&meta.pane, &meta.id)
         };
@@ -2475,7 +2492,6 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     }
 
     let mut screens = screens_of(&pending, now);
-    let mut views = Vec::new();
     for (at, item) in pending.into_iter().enumerate() {
         let Pending {
             record:
@@ -2587,6 +2603,17 @@ pub fn recorded(root: &Path, now: u64) -> Result<Vec<View>> {
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
     Ok(views)
+}
+
+/// What an agent reads as when tmux could not be asked about its pane: the
+/// record as written, and nothing written back. No answer about the pane is
+/// no reason to call it gone, and a reading taken off no screen has nothing to
+/// put over the record.
+fn as_written(agent: &Agent, state: &State, created: u64, now: u64) -> Verdict {
+    Verdict {
+        evidence: Evidence::Record,
+        ..from_the_record(state, created, now, agent.heartbeat())
+    }
 }
 
 /// What the record on its own says about one agent.
@@ -4193,6 +4220,39 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "which is what looking at the pane costs"
         );
         assert_eq!(read[0].verdict.evidence, Evidence::Gone);
+    }
+
+    #[test]
+    fn reader_reads_the_record_as_written_where_a_tmux_that_cannot_be_asked_is() {
+        // A tmux that never ran said nothing about the pane, so the reading is
+        // the record's, and nothing is written over it: a working agent read
+        // as stopped would end every wait on it.
+        let root = TempDir::new().unwrap();
+        a_record(
+            root.path(),
+            &Meta {
+                parent: None,
+                depth: 0,
+                socket: crate::tmux::unaskable(),
+                created: 900,
+                ..meta()
+            },
+            &state(Phase::Working, 1_000),
+        );
+        let file = root.path().join("fix-login-a1b").join("state.json");
+        let before = std::fs::read(&file).unwrap();
+
+        let one = view(root.path(), "fix-login-a1b", 1_100).expect("a reading");
+        let all = views(root.path(), 1_100).expect("a reading");
+        for read in [&one, &all[0]] {
+            assert_eq!(read.phase(), Phase::Working);
+            assert_eq!(read.verdict.evidence, Evidence::Record);
+        }
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            before,
+            "and the record stands"
+        );
     }
 
     #[test]
