@@ -27,7 +27,7 @@ use ratatui::widgets::Paragraph;
 
 use super::card::{notes, pages};
 use super::style::{bold, dim, prospective};
-use super::text::{RULE, SEPARATOR, fit};
+use super::text::{RULE, SEPARATOR, fit, width_of};
 use crate::registry::DEFAULT;
 use crate::theme::Theme;
 use crate::tui::act::{Asking, Composer};
@@ -118,13 +118,27 @@ pub(super) fn composer_room(width: u16) -> usize {
 /// where the cursor sits after a newline, and a row nobody drew would put the
 /// cursor on the line above.
 pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
-    let room = room.max(1);
-    let mut rows = Vec::new();
-    for paragraph in text.split('\n') {
-        let chars: Vec<char> = paragraph.chars().collect();
-        match chars.is_empty() {
-            true => rows.push(String::new()),
-            false => rows.extend(chars.chunks(room).map(|row| row.iter().collect())),
+    text.split('\n')
+        .flat_map(|paragraph| cut(paragraph, room))
+        .collect()
+}
+
+/// One paragraph of the line in the rows it takes, measured in cells: a wide
+/// character is one char and two columns, and a row counted in chars would
+/// run off the edge of the screen. A character that does not fit in what is
+/// left of a row starts the next one.
+fn cut(paragraph: &str, room: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for one in paragraph.chars() {
+        let wide = width_of(one.encode_utf8(&mut [0; 4]));
+        if used > 0 && used + wide > room {
+            rows.push(String::new());
+            used = 0;
+        }
+        used += wide;
+        if let Some(row) = rows.last_mut() {
+            row.push(one);
         }
     }
     rows
@@ -143,20 +157,22 @@ pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
 /// onto the row below is off the screen, and a cursor nobody can see is worse
 /// than one standing a cell short.
 pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
-    let room = room.max(1);
     let mut left = composer.at.min(composer.text.chars().count());
     let mut row = 0;
     for paragraph in composer.text.split('\n') {
-        let length = paragraph.chars().count();
-        let rows = length.div_ceil(room).max(1);
-        if left <= length {
-            let down = (left / room).min(rows - 1);
-            return ((row + down) as u16, (left - down * room) as u16);
+        let rows = cut(paragraph, room);
+        let last = rows.len() - 1;
+        for (down, text) in rows.iter().enumerate() {
+            let length = text.chars().count();
+            if left < length || (down == last && left == length) {
+                return ((row + down) as u16, left as u16);
+            }
+            left -= length;
         }
         // The newline between one paragraph and the next is a character of the
         // line like any other, and the cursor is past it.
-        left -= length + 1;
-        row += rows;
+        left -= 1;
+        row += rows.len();
     }
     (row.saturating_sub(1) as u16, 0)
 }
@@ -349,7 +365,7 @@ pub(super) fn typed_rows(
                 }
                 None if from + down == row => spans.extend(under_the_block(
                     text,
-                    column.min(room.saturating_sub(1)),
+                    last_cell(text, column, room),
                     Style::new(),
                     Style::new().fg(theme.accent),
                 )),
@@ -359,6 +375,17 @@ pub(super) fn typed_rows(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), band);
+}
+
+/// Which character of a row the block stands on for a cursor `column` chars
+/// along it: that one, unless the cursor is past the end of a row with no cell
+/// left for it, where it stands on the last character instead.
+fn last_cell(text: &str, column: usize, room: usize) -> usize {
+    let length = text.chars().count();
+    match column >= length && width_of(text) >= room {
+        true => length.saturating_sub(1),
+        false => column,
+    }
 }
 
 /// A row of the line, drawn in `paint`, with the block on the cell the cursor
@@ -1634,6 +1661,28 @@ mod tests {
             block(&typing("port it\nand test it"), TALL, 27),
             Some(13),
             "and the block is at the end of the last of them"
+        );
+    }
+
+    #[test]
+    fn wide_text_wraps_where_its_cells_run_out_with_the_block_after_it() {
+        // Forty-eight characters two cells each are ninety-six cells, and the
+        // fifty-eight a sixty-column line has for text take twenty-nine.
+        let line = "日本語の文章".repeat(8);
+        let painted = painted(&typing(&line), TALL);
+        // A wide character's second cell reads back as a space.
+        let cells = |chars: Vec<char>| {
+            let row: String = chars.iter().map(|one| format!("{one} ")).collect();
+            row.trim_end().to_string()
+        };
+        let first = cells(line.chars().take(29).collect());
+        let second = cells(line.chars().skip(29).collect());
+        assert_eq!(painted[26], format!("❯ {first}"), "{painted:?}");
+        assert_eq!(painted[27], format!("  {second}"), "{painted:?}");
+        assert_eq!(
+            block(&typing(&line), TALL, 27),
+            Some(2 + 19 * 2),
+            "the block stands in the cell after the last character"
         );
     }
 
