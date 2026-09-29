@@ -895,7 +895,10 @@ impl Drop for Held {
         // none, and without this a pane goes on being called what the view
         // last counted.
         let _ = execute!(std::io::stdout(), SetTitle(""));
-        ratatui::restore();
+        // Not `restore`, which says its failure on stderr: with the terminal
+        // gone that fails too, the saying panics, and the panic hook's own
+        // restore panics again into an abort.
+        let _ = ratatui::try_restore();
     }
 }
 
