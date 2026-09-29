@@ -42,7 +42,16 @@ pub fn from_env() -> Result<i32> {
 /// status line runs itself on a timer, and a chore on a timer is a background
 /// job amx never offered to be.
 pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
-    let phases: Vec<Phase> = derive::views(root, now)?.iter().map(View::phase).collect();
+    // An ended record reads as its own phase, which counts under no glyph, so
+    // only the rest are worth a reading.
+    let live = derive::records(root)?
+        .into_iter()
+        .filter(|record| !record.state.state.is_terminal())
+        .collect();
+    let phases: Vec<Phase> = derive::views_of(root, live, now)
+        .iter()
+        .map(View::phase)
+        .collect();
 
     let line = summary(&phases);
     // Nothing is nothing. An empty line is still a line — it leaves the gap
@@ -217,5 +226,30 @@ mod tests {
 
         let out = printed(root.path());
         assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn a_live_agent_among_finished_ones_is_counted() {
+        let root = TempDir::new().unwrap();
+        for (id, phase) in [
+            ("fix-login-a1b", Phase::Done),
+            ("port-importer-c3d", Phase::Waiting),
+        ] {
+            let mut meta = meta(id);
+            meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
+            let agent = Agent::create(root.path(), &meta).unwrap();
+            agent
+                .writer()
+                .unwrap()
+                .update_state(|state| {
+                    state.state = phase;
+                    // Parked, so the record's phase is what a reading
+                    // hands back with no pane to look at.
+                    state.parked_at = 1;
+                })
+                .unwrap();
+        }
+
+        assert_eq!(String::from_utf8(printed(root.path())).unwrap(), "⚠1\n");
     }
 }
