@@ -1490,4 +1490,14 @@ mod tests {
              its screens do"
         );
     }
+
+    #[test]
+    fn an_opencode_list_says_nothing_until_its_reader_is_written() {
+        // The shape is named before it is read: a list of it is walked and
+        // nothing in it is taken for words.
+        let list = r#"{"type":"user","parts":[{"type":"text","text":"hi"}]}"#;
+        assert!(read(Transcript::Opencode, list).is_empty());
+        assert_eq!(answer(Transcript::Opencode, list), None);
+        assert_eq!(session_title(Transcript::Opencode, list), None);
+    }
 }
