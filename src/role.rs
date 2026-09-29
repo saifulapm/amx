@@ -1,62 +1,50 @@
-//! Roles: a named spawn recipe in a file of amx's own.
+//! Roles: named spawn presets for `--role`.
 //!
-//! A role is what a spawn would otherwise take on its command line — a brief
-//! and the dials — written down once and asked for by name. It lives in amx's
-//! own format rather than a vendor's: `<config>/amx/agents/<role>.md`, and a
-//! repository's `<project>/.amx/agents/<role>.md` over it, the way a project's
-//! config lays over the person's. The frontmatter is flat `key: value` between
-//! `---` fences — the shape `catalog` already reads a description out of — so
-//! there is no YAML parser here and no dependency to add. The body under the
-//! fence is the brief.
-//!
-//! Nothing in a role is a lock: every value is a default the caller's own flag
-//! beats, and `verbs::new` fills them into the slots the caller left empty.
+//! A role is `<config>/amx/agents/<name>.md`, or the project's
+//! `.amx/agents/<name>.md`, which takes precedence. The frontmatter is flat
+//! `key: value` lines between `---` fences, read without a YAML parser, and
+//! the body is the brief put in front of the task. Every value is a default
+//! that the caller's flags override; `verbs::new` applies them.
 
 use std::path::{Path, PathBuf};
 
 use crate::catalog::{FENCE, unquoted};
 
-/// What the directory of roles is called, under a config directory and under a
-/// project's `.amx`.
+/// The roles directory name, under the config directory and a project's `.amx`.
 const AGENTS: &str = "agents";
 
-/// One role, as its file speaks it.
+/// One role, as read from its file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Role {
-    /// The name it is asked for by, which is its file's name.
+    /// The file name without `.md`.
     pub name: String,
-    /// One line about what the role is for, for a listing.
+    /// A one-line description for listings.
     pub description: String,
-    /// The command to run, where the role names one instead of inheriting.
+    /// The agent command to run. Never taken from a project's role.
     pub agent: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    /// Whether the spawn cuts a tree of its own, where the role has an
-    /// opinion: typed flags beat it, and the verb's own default is the last
-    /// word.
+    /// Whether the spawn gets its own worktree, if the role says.
     pub worktree: Option<bool>,
-    /// The body under the frontmatter: what the role tells the agent.
+    /// The body under the frontmatter, trimmed.
     pub brief: String,
 }
 
-/// The roles directory beside a config directory — the person's, given the
-/// directory their `config.toml` is in.
+/// The person's roles directory, given the directory holding `config.toml`.
 pub fn agents_under(config_dir: &Path) -> PathBuf {
     config_dir.join(AGENTS)
 }
 
-/// Where a project's roles stand, under its `.amx`.
+/// A project's roles directory.
 pub fn project_dir(project: &Path) -> PathBuf {
     project.join(".amx").join(AGENTS)
 }
 
-/// The role `name`, and anything wrong with the file it came from.
+/// The role `name`, with warnings about its file.
 ///
-/// The project's file answers first and whole: a name in both places is one
-/// role and it is the repository's, because a role is one voice and half of
-/// one voice over another is nobody's. A file that exists and is not a role
-/// answers with `None` rather than falling through to the other place — the
-/// repository meant to say something and what it said was wrong.
+/// The project's file wins whole over the person's; the two are not merged. A
+/// project file that exists but is not a valid role gives `None` rather than
+/// falling back to the person's.
 pub fn for_name(personal: &Path, project: &Path, name: &str) -> (Option<Role>, Vec<String>) {
     let mut warnings = Vec::new();
     for dir in [project, personal] {
@@ -65,8 +53,8 @@ pub fn for_name(personal: &Path, project: &Path, name: &str) -> (Option<Role>, V
             continue;
         };
         let mut role = read(&text, name, &path, &mut warnings);
-        // The program a pane runs is the person's to name: a role that came
-        // with a clone may say what to ask for, never what to run.
+        // A role that came with a clone must not choose the program a pane
+        // runs.
         if dir == project
             && let Some(role) = role.as_mut()
             && role.agent.take().is_some()
@@ -81,7 +69,7 @@ pub fn for_name(personal: &Path, project: &Path, name: &str) -> (Option<Role>, V
     (None, warnings)
 }
 
-/// Every role name either place holds, in one sorted list and no name twice.
+/// Every role name in either directory, sorted and deduplicated.
 pub fn names_under(personal: &Path, project: &Path) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for dir in [project, personal] {
@@ -105,7 +93,7 @@ pub fn names_under(personal: &Path, project: &Path) -> Vec<String> {
     names
 }
 
-/// The role a file holds, or `None` from a file that is not one.
+/// Parse a role file, or `None` if it has no closed frontmatter.
 fn read(text: &str, name: &str, path: &Path, warnings: &mut Vec<String>) -> Option<Role> {
     let Some((front, body)) = split(text) else {
         warnings.push(match opens(text) {
@@ -153,18 +141,17 @@ fn read(text: &str, name: &str, path: &Path, warnings: &mut Vec<String>) -> Opti
     Some(role)
 }
 
-/// Whether the text opens with a frontmatter fence.
+/// Whether the first line is a frontmatter fence.
 fn opens(text: &str) -> bool {
     text.lines()
         .next()
         .is_some_and(|line| line.trim_end() == FENCE)
 }
 
-/// The frontmatter and the body under it, or `None` from text that is not
+/// The frontmatter and the body after it, or `None` if the text is not
 /// fenced.
 ///
-/// The body is everything past the line the closing fence stands on, so a
-/// `---` a brief writes for a rule of its own is that brief's business.
+/// Only the first closing fence counts, so a `---` inside the body is kept.
 fn split(text: &str) -> Option<(&str, &str)> {
     if !opens(text) {
         return None;
@@ -193,7 +180,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Write a role file into `dir`, making it on the way.
+    /// Write a role file into `dir`, creating the directory.
     fn wrote(dir: &Path, name: &str, text: &str) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(format!("{name}.md"));
@@ -207,7 +194,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         let personal = home.path().join("amx/agents");
         let project = repo.path().join(".amx/agents");
-        // The person's own, which may name the program: a project's may not.
+        // A personal role may name the program.
         wrote(
             &personal,
             "scout",
@@ -247,7 +234,6 @@ mod tests {
         assert_eq!(role.model.as_deref(), Some("opus"));
         assert!(warnings[0].contains("ignoring `agent`"), "{warnings:?}");
 
-        // The person's own role names whatever it likes.
         let (role, _) = for_name(&personal, &project, "mine");
         assert_eq!(role.unwrap().agent.as_deref(), Some("pi"));
     }
@@ -276,7 +262,7 @@ mod tests {
         assert_eq!(role.description, "the project's");
         assert_eq!(role.brief, "ours");
 
-        // The person's answers where the project has nothing to say.
+        // The person's role is used when the project has none.
         wrote(
             &personal,
             "helper",

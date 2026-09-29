@@ -1,18 +1,9 @@
-//! What a vendor can be asked for by name, read out of the places it loads
-//! from.
+//! Lists the skills, commands and agents a vendor can be asked for by name,
+//! read from the directories its [`Catalog`] declares, for task-line
+//! completion (`/review`, `@code-reviewer`).
 //!
-//! A word typed on a task line — `/review`, `@code-reviewer` — is the vendor's
-//! word and not amx's, and what answers to it is whatever is in the vendor's
-//! own directories at the moment somebody types it. [`Catalog`] says where
-//! those are and how what is found there is spelled; this reads them, and what
-//! comes back is a list of words with a sentence each.
-//!
-//! Nothing here decides which of them to offer, or what a word is worth on a
-//! line: that is the composer's business. A place a vendor loads from is a
-//! feature nobody has to use, so a directory that is not there is silence
-//! rather than a failure, and so is a file that will not read — a file the
-//! vendor could not run either. Somebody typing a task is owed suggestions or
-//! none, never a complaint about somebody else's directory.
+//! Missing directories and unreadable files are skipped silently; which
+//! entries to offer is the composer's decision.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -20,8 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::vendor::{Catalog, Place};
 
-/// What a word names, which is what decides how it is spelled and where it
-/// stands in a list.
+/// What a catalog word names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Skill,
@@ -30,8 +20,8 @@ pub enum Kind {
     Builtin,
 }
 
-/// One thing a vendor can be asked for: the word that asks for it, what that
-/// word names, and what the thing says about itself.
+/// One catalog word: its spelling on a task line, its kind, and its
+/// description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub spelled: String,
@@ -39,29 +29,23 @@ pub struct Entry {
     pub about: String,
 }
 
-/// The file a skill directory says what it is in. Both vendors follow the
-/// same standard here: a skill is a directory, and this is the one file in it
-/// that has to be there.
+/// The file that makes a directory a skill.
 const SKILL: &str = "SKILL.md";
 
-/// What a command and an agent are written in, and the only files in those
-/// places that are one.
+/// The extension of command and agent files.
 const MARKDOWN: &str = "md";
 
-/// The segment of a place that stands for every directory at that level.
+/// A place segment that matches every directory at its level.
 const STAR: &str = "*";
 
 /// The line that opens a frontmatter, and the line that closes it.
 pub const FENCE: &str = "---";
 
-/// Everything `catalog` can be asked for on this machine, by the word that
-/// asks for it.
+/// Every word `catalog` offers on this machine, sorted, with built-ins after
+/// everything found on disk.
 ///
-/// Sorted, with the commands the vendor answers out of itself after
-/// everything on disk: a person is offered their own files first, and the
-/// vendor's own list is long enough to bury them. A word two places answer to
-/// is offered once, by the first of them to answer — which is what the order
-/// the places are declared in is for.
+/// A word found in more than one place is kept once, from the first place in
+/// declaration order.
 pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     for place in catalog.skills {
@@ -103,18 +87,14 @@ pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
     entries
 }
 
-/// One directory a place resolves to on this machine, and the plugin it
-/// belongs to when the place named one.
+/// A directory a place resolved to, and the plugin it belongs to, if any.
 struct Found {
     dir: PathBuf,
     plugin: Option<String>,
 }
 
-/// Every directory a place names, under the root it hangs off.
-///
-/// One directory from a place spelled plainly, and one per matching directory
-/// from each `*` in it — a pattern that matches nothing resolves to nothing,
-/// which is the same silence as a directory that is not there.
+/// Every directory `place` resolves to under its root, expanding each `*`
+/// segment to the directories that exist there.
 fn expand(place: &Place, home: &Path, project: &Path) -> Vec<Found> {
     let root = match place {
         Place::Person(_) => home,
@@ -150,24 +130,17 @@ fn expand(place: &Place, home: &Path, project: &Path) -> Vec<Found> {
         .collect()
 }
 
-/// The plugin the entries under a starred place belong to: the last directory
-/// but one that a star matched.
+/// The plugin name from the directories a starred place matched: the
+/// second-to-last one.
 ///
-/// claude keeps a plugin's files under a market, the plugin itself and the
-/// version it is installed at, so the star nearest what was asked for is the
-/// version and the one before it is the plugin. It is the only starred layout
-/// in the table, and a vendor that keeps its plugins some other way is a
-/// second measurement to take here.
+/// Written for claude's plugin cache, `<market>/<plugin>/<version>`, the only
+/// starred layout in the table.
 fn plugin(matched: &[String]) -> Option<String> {
     matched.get(matched.len().checked_sub(2)?).cloned()
 }
 
-/// Every skill under a skills place: a directory with a [`SKILL`] in it,
-/// under the word the vendor runs one by.
-///
-/// A directory with no such file is not a skill, and neither is a stray file
-/// in among them, which is the same answer as a file that will not read: the
-/// place is somebody else's, and what amx cannot read there it does not offer.
+/// Every skill under a skills place: each subdirectory holding a readable
+/// [`SKILL`].
 fn skills(found: &Found, catalog: &Catalog, into: &mut Vec<Entry>) {
     let (sigil, prefix) = (catalog.sigil, catalog.skill_prefix);
     for dir in contents(&found.dir) {
@@ -185,11 +158,10 @@ fn skills(found: &Found, catalog: &Catalog, into: &mut Vec<Entry>) {
     }
 }
 
-/// Every markdown file under a commands or an agents place, walked into the
-/// directories it keeps them in.
+/// Every markdown file under a commands or agents place, recursively.
 ///
-/// `walking` holds the real path of every directory on the way down, so a
-/// symlink back to one of them is not followed round again.
+/// `walking` holds the real path of each directory on the way down, so a
+/// symlink back to one of them is not followed again.
 fn walk(
     dir: &Path,
     plugin: Option<&str>,
@@ -230,15 +202,12 @@ fn walk(
     walking.pop();
 }
 
-/// The word a file in one of these places is asked for by.
+/// The word a command or agent file is asked for by.
 fn spell(kind: Kind, sigil: char, plugin: Option<&str>, under: &[String], name: &str) -> String {
     match kind {
-        // An agent is named by itself: the agents places measured hold no
-        // plugins and no directories to qualify one with.
+        // No measured agents place holds plugins or subdirectories.
         Kind::Agent => format!("@{name}"),
-        // A command carries whatever stands above it, joined the way the
-        // vendor namespaces one: the plugin it came with, and the directories
-        // it sits under.
+        // A command is namespaced by its plugin and subdirectories.
         _ => {
             let mut words: Vec<&str> = plugin.into_iter().collect();
             words.extend(under.iter().map(String::as_str));
@@ -248,13 +217,9 @@ fn spell(kind: Kind, sigil: char, plugin: Option<&str>, under: &[String], name: 
     }
 }
 
-/// What is in `dir`, by name, and nothing at all from a directory that is not
-/// there or will not be read.
+/// The entries of `dir`, sorted by path, or none if it cannot be read.
 ///
-/// By name, so what a machine offers does not depend on the order a
-/// filesystem happens to hand its entries back: two places answering to the
-/// same word are settled by which place was read first, and two plugins by
-/// which is called what.
+/// Sorted so the result does not depend on the filesystem's order.
 fn contents(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -264,26 +229,21 @@ fn contents(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// The last part of a path, when it is a name amx can write down.
+/// The file name of `path`, if it is UTF-8.
 fn named(path: &Path) -> Option<&str> {
     path.file_name().and_then(OsStr::to_str)
 }
 
-/// What a file says about itself, or nothing from a file that says nothing.
-///
-/// `None` from a file that cannot be read at all — missing, a directory, or
-/// bytes that are not text — which is a file the vendor could not run either.
+/// The frontmatter description of the file at `path`, or `None` if the file
+/// cannot be read as text.
 fn about(path: &Path) -> Option<String> {
     Some(description(&std::fs::read_to_string(path).ok()?))
 }
 
-/// The `description` of a frontmatter, if the text opens with one.
+/// The `description:` value from the text's frontmatter, unquoted, or empty.
 ///
-/// The one key amx reads out of a file it otherwise leaves alone, so this is
-/// a look at the first few lines rather than a parse: the value is what
-/// follows the colon, with the quotes a file may write it in taken off. A key
-/// that stands under another one is that key's, and a `description:` past the
-/// closing fence is the file's own words about whatever it likes.
+/// A line scan rather than a YAML parse: only an unindented key inside the
+/// opening fence counts.
 fn description(text: &str) -> String {
     let mut lines = text.lines();
     if lines.next() != Some(FENCE) {
@@ -296,8 +256,7 @@ fn description(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `value` without the quotes it may be written in, which are the file's own
-/// punctuation and not part of what it says.
+/// `value` without surrounding double or single quotes.
 pub fn unquoted(value: &str) -> &str {
     for mark in ['"', '\''] {
         if let Some(inner) = value.strip_prefix(mark).and_then(|v| v.strip_suffix(mark)) {
@@ -315,9 +274,8 @@ mod tests {
 
     #[test]
     fn claudes_places_are_read_into_the_words_that_ask_for_them() {
-        // claude's layout, measured: a skill is a directory saying what it is
-        // in SKILL.md, a command and an agent are files, and a plugin's files
-        // sit under a market, the plugin and the version it is installed at.
+        // claude's layout: skill directories with SKILL.md, command and agent
+        // files, and plugins under <market>/<plugin>/<version>.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let plugin = home.path().join(".claude/plugins/cache/market/focus/2.8.0");
@@ -374,8 +332,7 @@ mod tests {
              and a skills directory with no SKILL.md in it is no skill"
         );
 
-        // `/review` is a word claude answers out of itself too, and the skill
-        // of the person's own is the one offered under it.
+        // `/review` is also a claude built-in; the person's skill wins.
         assert_eq!(found(&entries, "/review").kind, Kind::Skill);
         assert_eq!(found(&entries, "/review").about, "Read the diff.");
         assert_eq!(found(&entries, "/deploy").kind, Kind::Skill);
@@ -392,9 +349,7 @@ mod tests {
 
     #[test]
     fn pi_spells_a_skill_its_own_way_and_answers_its_own_commands_last() {
-        // The same reading against the other vendor's layout: four skills
-        // places under two roots, prompts where claude keeps commands, no
-        // agents at all, and a list of commands pi answers out of itself.
+        // pi's layout: four skills places, prompts for commands, no agents.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -447,8 +402,7 @@ mod tests {
             "pi ships no sub agents, so nothing in its places is one"
         );
 
-        // What the vendor answers out of itself comes after everything on
-        // disk: a person is offered their own files first.
+        // Built-ins come after everything on disk.
         let mut builtins: Vec<String> = catalog.builtins.iter().map(|b| format!("/{b}")).collect();
         builtins.sort();
         assert_eq!(spellings(&entries[6..]), builtins);
@@ -465,11 +419,8 @@ mod tests {
 
     #[test]
     fn codex_spells_a_skill_behind_its_own_sigil_out_of_four_places() {
-        // codex runs a skill as `$name`, out of two places under the person's
-        // home and two under the project, and has nothing else to be asked
-        // for by name. A skill nested a directory deeper is one codex finds
-        // and this reading does not, the same one level deep as claude's and
-        // pi's.
+        // codex runs a skill as `$name`. Skills nested deeper than one level
+        // are not read, as for claude and pi.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -514,9 +465,7 @@ mod tests {
 
     #[test]
     fn a_place_that_is_not_there_offers_nothing_and_says_nothing() {
-        // Nobody has to have any of these directories, and most people have
-        // some of them. Two empty roots are the machine that ends up asking
-        // for the whole catalog and finding none of it on disk.
+        // Two empty roots: only built-ins are offered.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -533,10 +482,8 @@ mod tests {
 
     #[test]
     fn a_file_that_will_not_read_is_left_out_and_one_that_says_nothing_is_not() {
-        // The two are different: a file amx cannot read is a file it knows
-        // nothing about, including whether the vendor would offer it. A file
-        // with no description is a file the vendor offers with nothing to say
-        // about it.
+        // An unreadable file is left out; a file without a description is
+        // offered with an empty one.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -593,9 +540,7 @@ mod tests {
 
     #[test]
     fn a_word_two_places_answer_to_is_offered_once() {
-        // The places are read in the order the vendor reads them, so the
-        // first to answer to a word keeps it. Two of the same word in a list
-        // of suggestions is a choice between two things that look identical.
+        // The first place in declaration order keeps a word both places have.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -638,9 +583,7 @@ mod tests {
 
     #[test]
     fn the_description_in_a_frontmatter_is_what_a_suggestion_says() {
-        // Both spellings the measured files use, quoted and bare, and a
-        // description is a description of the file only while the
-        // frontmatter it stands in is open.
+        // Quoted and bare values, and only inside the frontmatter.
         assert_eq!(
             description("---\nname: x\ndescription: Read the diff.\n---\n"),
             "Read the diff."
@@ -671,19 +614,19 @@ mod tests {
         assert_eq!(description(""), "");
     }
 
-    /// A file saying `about` about itself, with the directories above it.
+    /// Write a file whose frontmatter description is `about`, creating its
+    /// parent directories.
     fn file(path: &Path, about: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, format!("---\ndescription: {about}\n---\n\nwords\n")).unwrap();
     }
 
-    /// The words a listing offers, in the order it offers them.
+    /// The spellings of `entries`, in order.
     fn spellings(entries: &[Entry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.spelled.as_str()).collect()
     }
 
-    /// The words a listing read off somebody's directories, which is all of
-    /// it but what the vendor answers out of itself.
+    /// The spellings of the entries found on disk, built-ins excluded.
     fn on_disk(entries: &[Entry]) -> Vec<&str> {
         entries
             .iter()
@@ -692,7 +635,7 @@ mod tests {
             .collect()
     }
 
-    /// The one entry `spelled` asks for.
+    /// The entry spelled `spelled`.
     fn found<'a>(entries: &'a [Entry], spelled: &str) -> &'a Entry {
         entries
             .iter()
