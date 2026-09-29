@@ -1,10 +1,11 @@
-//! `amx new` — start an agent on a task.
+//! `amx new`: start an agent on a task.
 //!
-//! The order matters and is the same every time: mint an id, cut a worktree,
-//! write the handoff, start the pane, then write the record. The pane waits
-//! for the record before it starts the vendor, so the vendor's first hook
-//! always has somewhere to go, and nothing but the id is ever printed — a
-//! caller reads that id straight into its next command.
+//! - A spawn always runs in this order: claim an id, cut a worktree, write the
+//!   handoff, place the pane, write the record. The pane waits for the record
+//!   before it starts the vendor, so the first hook always has a record to land
+//!   in.
+//! - stdout carries the id and nothing else, so a caller can pipe it into the
+//!   next command.
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
@@ -18,8 +19,7 @@ use crate::store::{Meta, now};
 use crate::vendor::{Models, Vendor};
 use crate::{Severity, exit, ids, models, paths, registry, said, trust, worktree};
 
-/// What this spawn launches: the vendor's command, and where its dials are
-/// pointed for this one agent.
+/// The vendor command a spawn launches and the dials it launches with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Launch {
     pub(crate) agent: String,
@@ -27,19 +27,13 @@ pub(crate) struct Launch {
 }
 
 impl Launch {
-    /// What the caller typed, else what the config holds, else the vendor's
-    /// own behaviour, dial by dial.
+    /// Resolves each dial from the flag, else the config, else the vendor's
+    /// default.
     ///
-    /// A value the vendor would not take is refused rather than passed on.
-    /// The config is treated more gently and drops such a value instead: a
-    /// file outlives the versions that wrote it, and it has already said so
-    /// on its own terms when it was read. A flag was typed for this spawn,
-    /// with the person who typed it still standing there, so telling them
-    /// beats starting an agent at a setting nobody asked for.
-    ///
-    /// Which vendor runs is settled first, because a typed model picks the
-    /// harness that offers it and the dials are read against whichever one
-    /// that turns out to be.
+    /// A flag value the vendor would not accept is an error. A config value it
+    /// would not accept is dropped, since config files outlive vendor versions
+    /// and config loading already warned about it. The vendor is resolved first
+    /// because a typed model can pick the harness.
     pub(crate) fn resolve(config: &Config, args: &NewArgs) -> Result<Launch, String> {
         let named = args.agent.as_ref();
         let agent = match named.and_then(|named| named.command.clone()) {
@@ -76,8 +70,8 @@ impl Launch {
             if let Some(value) = typed {
                 match spec {
                     Some(spec) if registry::accepts(&spec, value) => *resolved = value.to_string(),
-                    // Only a closed dial ever refuses a value, so its cycle is
-                    // the whole of what the vendor takes and worth printing.
+                    // Only a closed dial refuses a value, so its cycle lists
+                    // every accepted value.
                     Some(spec) => {
                         return Err(format!(
                             "--{key} {value:?}: {} takes {}",
@@ -105,13 +99,10 @@ impl Launch {
     }
 }
 
-/// Where a spawn stands in a family: the agent `amx sub` named as its parent,
-/// where that id names a record in this state root, and the depth that puts
-/// it at — one more than its parent's.
+/// A spawn's parent and depth in the agent tree.
 ///
-/// A child is asked for, never inherited: `amx new` is a root whatever pane
-/// it is typed in, and `amx sub` is the one verb that reads the pane's
-/// `AMX_ID` (or its `--parent`) and hands the id in on `NewArgs::parent`.
+/// Only `amx sub` sets `NewArgs::parent` (from `AMX_ID` or `--parent`); `amx
+/// new` always starts a root, whatever pane it runs in.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Lineage {
     parent: Option<String>,
@@ -119,10 +110,7 @@ struct Lineage {
 }
 
 impl Lineage {
-    /// What the parent this spawn was asked for says about its family.
-    ///
-    /// An id that names no record here — a parent since removed — records
-    /// nothing, the way a spawn that named none does.
+    /// Reads the parent's depth. A parent with no record counts as no parent.
     fn of(root: &Path, args: &NewArgs) -> Lineage {
         let Some(parent) = &args.parent else {
             return Lineage::default();
@@ -138,14 +126,11 @@ impl Lineage {
     }
 }
 
-/// The command a spawn that named no agent runs: the harness the typed model
-/// belongs to, else the configured agent as it stands.
+/// The command for a spawn that named no agent: the harness that lists the
+/// typed model, else the configured agent.
 ///
-/// A model is asked about only where amx has an entry for the configured
-/// agent, because the answer is a comparison against what each harness offers
-/// and an agent amx knows nothing about offers nothing. The sentinel is nobody's
-/// model — it is the word for passing no model at all — so it picks nothing and
-/// leaves the configured agent where it was.
+/// The model picks a harness only when amx has an entry for the configured
+/// agent. [`registry::DEFAULT`] means "pass no model" and picks nothing.
 fn picked(config: &Config, model: Option<&str>) -> Result<String, String> {
     let Some(model) = model.filter(|model| *model != registry::DEFAULT) else {
         return Ok(config.agent.clone());
@@ -154,24 +139,18 @@ fn picked(config: &Config, model: Option<&str>) -> Result<String, String> {
         return Ok(config.agent.clone());
     }
     let vendor = harness_for(config, model)?;
-    // The configured command where the harness is the one it runs, because
-    // `agent = "claude --add-dir .."` is how somebody says how claude is run
-    // here. The bare name where it is another, because nothing in the file
-    // says how to run that one.
+    // Keep the configured command, with its arguments, when it runs the chosen
+    // harness; otherwise the bare harness name.
     Ok(match registry::program(&config.agent) == vendor.name {
         true => config.agent.clone(),
         false => vendor.name.to_string(),
     })
 }
 
-/// The harness a typed model belongs to: the first whose list holds the word.
+/// The first harness, in [`asked`] order, whose model list holds `model`.
 ///
-/// The order is the rule. A word one harness alone lists picks that harness
-/// wherever it is asked; a word several list goes to the configured one where
-/// it is among them, and to the first in the table otherwise — which is what
-/// asking the configured agent first and stopping at the first answer says. It
-/// also spends the least: a listing a vendor has to be run for is never started
-/// once a list amx already holds has answered.
+/// Asking the configured harness first breaks ties in its favour and avoids
+/// running a vendor's model listing when an earlier list already answered.
 fn harness_for(config: &Config, model: &str) -> Result<&'static Vendor, String> {
     let mut said = Vec::new();
     for vendor in asked(config) {
@@ -184,8 +163,7 @@ fn harness_for(config: &Config, model: &str) -> Result<&'static Vendor, String> 
     Err(format!("--model {model:?}: {}", said.join("; ")))
 }
 
-/// Every harness there is, the configured one first and the rest in the order
-/// the table holds them.
+/// Every harness, the configured one first and the rest in table order.
 fn asked(config: &Config) -> impl Iterator<Item = &'static Vendor> {
     let configured = registry::entry(&config.agent);
     let already = configured.map(|vendor| vendor.name);
@@ -196,12 +174,10 @@ fn asked(config: &Config) -> impl Iterator<Item = &'static Vendor> {
     )
 }
 
-/// What a harness takes, for a refusal to name.
+/// The models a harness accepts, as a refusal names them.
 ///
-/// The words themselves where amx holds the list, and how many there are and
-/// what prints them where the vendor is the one holding it: a listing of
-/// several hundred models is not a sentence, and the command that prints it is
-/// what somebody would run to read it.
+/// A list the vendor prints can run to hundreds of models, so it is named by
+/// count and by the command that prints it.
 fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
     match vendor.models {
         Models::Printed(argv) | Models::Json(argv)
@@ -219,16 +195,11 @@ fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
     }
 }
 
-/// The command with whatever the file says this harness always carries.
+/// `agent` with the harness's configured `args` appended, skipping any word
+/// the command already carries.
 ///
-/// Whenever it runs and however it was picked: a harness's own arguments are
-/// what every agent on it is started with. They go into the command rather than
-/// beside it so that everything downstream reads one command line — the dial
-/// that stands down for a flag already written, the record of what was
-/// launched, the pane's own argv. A word the command already carries is not
-/// written twice: `agent = "claude --add-dir .."` beside the same words in the
-/// table is one person saying one thing in two places, not a vendor to be
-/// handed the flag twice.
+/// The args join the command itself so that dials, the record and the pane
+/// argv all see one command line.
 fn carrying(config: &Config, agent: String) -> String {
     let carried: Vec<&str> = agent.split_whitespace().collect();
     let args: Vec<String> = config
@@ -243,28 +214,21 @@ fn carrying(config: &Config, agent: String) -> String {
     }
 }
 
-/// Run the verb against the machine.
+/// Runs the verb from the command line.
 pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     let root = paths::state_root()?;
-    // Spelled out from the root before anything reads it: the record holds
-    // it, the cap is counted by it, and `--dir ../scratch` is a spelling no
-    // record started from inside that directory would ever match.
+    // Absolute before anything reads it, so the record and the cap count
+    // match records started from inside that directory.
     let dir = match &args.dir {
         Some(dir) => paths::anchored(dir)?,
         None => std::env::current_dir().context("no working directory")?,
     };
-    // The project the agent will run in has the last word on every key, the
-    // way the view's own spawns read it: which agent a project is written
-    // for, what furnishes its trees and what they are cut from are its own
-    // file's to say, laid over the person's a key at a time. `--dir` sends an
-    // agent into another project, so it is that project's file and not the
-    // one beside wherever the command was typed. A project file amx cannot
-    // use leaves the person's standing under it, as everywhere else.
+    // The config of the directory the agent runs in, which with `--dir` is
+    // not the directory the command was typed in.
     let (config, warnings) = crate::config::for_dir(&dir);
     let config = &config;
-    // What was said about the person's own file main has said already; what is
-    // said about the project's — above all that nobody has allowed it, and so
-    // none of it counts — only this verb can say.
+    // main already reported warnings about the user's config; only the
+    // project file's warnings (such as a file nobody allowed) are new here.
     if let Some(file) = crate::paths::project_config(&dir) {
         let file = file.display().to_string();
         for warning in warnings.iter().filter(|warning| warning.contains(&file)) {
@@ -276,8 +240,7 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
 
-    // The file is read here, in front of everything: it is the task, and a
-    // task nobody can read is a command line that never started an agent.
+    // Read the task first: without one there is nothing to start.
     let task = match task_of(args) {
         Ok(task) => task,
         Err(no_task) => {
@@ -299,7 +262,7 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     )
 }
 
-/// Write `what` to `problems` as a warning from `amx new`.
+/// Writes `what` to `problems` as a warning from `amx new`.
 fn warned(problems: &mut impl Write, what: &str, to_terminal: bool) -> std::io::Result<()> {
     writeln!(
         problems,
@@ -308,25 +271,16 @@ fn warned(problems: &mut impl Write, what: &str, to_terminal: bool) -> std::io::
     )
 }
 
-/// Why there is no task to start an agent on, and what amx exits with for it.
+/// Why there is no task, and the exit code for it.
 ///
-/// Two codes, because there are two kinds of nothing. A command line that
-/// names no task is malformed and exits `USAGE`, wherever the emptiness was
-/// typed. An editor that was opened and would have none of it ran and
-/// answered: the command line was well formed, and what happened is a spawn
-/// that did not happen, which is `FAILURE`.
+/// A command line that names no usable task exits `USAGE`. An editor that ran
+/// and produced no task exits `FAILURE`: the command line was valid.
 struct NoTask {
     said: String,
     code: i32,
 }
 
-/// What this spawn is on: the text left in an editor where `--edit` opened one,
-/// the file's text where `--file` named one, else what was typed.
-///
-/// One of the three and never two — the command line refuses a task typed
-/// beside a file or an editor — so this is the whole of the question, and
-/// everything downstream is handed the answer rather than the places it could
-/// have come from.
+/// The task from `--edit`, `--file` or the command line. clap allows only one.
 fn task_of(args: &NewArgs) -> Result<String, NoTask> {
     if args.edit {
         return written_in_an_editor();
@@ -337,12 +291,10 @@ fn task_of(args: &NewArgs) -> Result<String, NoTask> {
     }
 }
 
-/// The task somebody wrote in their editor, opened on nothing and read back
-/// the way a file handed to `--file` is read.
+/// The task written in `$EDITOR`, read back the way `--file` text is read.
 ///
-/// An editor that could not be run at all is the same answer as one that
-/// exited unhappily: it was asked for the task and there is none, and the
-/// sentence saying so is the whole of what amx knows about it.
+/// An editor that fails to run and one that exits unhappily both yield
+/// `FAILURE`.
 fn written_in_an_editor() -> Result<String, NoTask> {
     match crate::tui::edited("") {
         Ok(crate::tui::Edited::Line(text)) => crate::cli::a_text(&text).map_err(malformed),
@@ -357,7 +309,6 @@ fn written_in_an_editor() -> Result<String, NoTask> {
     }
 }
 
-/// A command line that could not name a task.
 fn malformed(said: String) -> NoTask {
     NoTask {
         said,
@@ -365,12 +316,10 @@ fn malformed(said: String) -> NoTask {
     }
 }
 
-/// The verb, with everything it reads named and its refusals in the words
-/// alone.
+/// The verb with its inputs passed in and refusals written uncoloured.
 ///
-/// The view spawns through here, and what it does with a refusal is put it in
-/// the notice at the foot of its own screen, in the colour that band paints its
-/// notices. Paint amx wrote would be paint the view has to take back out.
+/// The view and `amx sub` spawn through here; the view shows a refusal in its
+/// own notice line, so it must carry no terminal colour.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
@@ -381,13 +330,11 @@ pub fn run(
     out: &mut impl Write,
     problems: &mut impl Write,
 ) -> Result<i32> {
-    // The view types its task on the line at the foot of the screen; there is
-    // no file behind that door.
     let task = args.task.clone().unwrap_or_default();
     run_aloud(root, dir, env, config, args, &task, out, problems, false)
 }
 
-/// The same, told to a stderr that is a terminal and wants the colour.
+/// [`run`] with the task already read, colouring refusals when `to_terminal`.
 #[allow(clippy::too_many_arguments)]
 fn run_aloud(
     root: &Path,
@@ -400,17 +347,13 @@ fn run_aloud(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<i32> {
-    // Somewhere to run in, before anything else is read: tmux opens a pane
-    // whose directory is gone in the home directory and says nothing, so an
-    // agent pointed at a worktree a run has since removed asked to trust
-    // /home/saiful (2026-09-18) and was recorded as running where it was not.
+    // tmux silently opens a pane whose directory is missing in the home
+    // directory, so the agent would run, and ask for trust, somewhere else.
     if !dir.is_dir() {
         bail!("{} is not a directory to run in", dir.display());
     }
-    // The role it names, if any, and before anything is made: a role is a
-    // default for the dials, its brief goes in front of the task, and a name
-    // amx does not know is a command line to fix rather than a pane to clean
-    // up.
+    // Resolve the role before anything is made: it sets default dials and a
+    // brief, and an unknown name is a usage error.
     let mut args_with_role = args.clone();
     let mut brief = String::new();
     if let Some(name) = args.role.clone() {
@@ -431,9 +374,8 @@ fn run_aloud(
         brief = role.brief.clone();
         fill_from_role(&role, &mut args_with_role);
     }
-    // A preamble a caller handed down rides behind the role's and in front of
-    // the task: a subagent's digest of its parent, which the vendor reads and
-    // the record does not keep.
+    // A subagent's digest of its parent follows the role brief. The vendor
+    // sees it; the record does not keep it.
     if let Some(context) = &args.context_brief {
         if !brief.is_empty() {
             brief.push_str("\n\n");
@@ -442,17 +384,13 @@ fn run_aloud(
     }
 
     let args = &args_with_role;
-    // What the vendor is handed: the brief, when there is one, and then the
-    // task. The record keeps the task alone — what somebody asked for is the
-    // task, and the role is how they asked.
+    // The vendor gets brief and task; the record keeps the task alone.
     let lined = match brief.is_empty() {
         true => task.to_string(),
         false => format!("{brief}\n\n{task}"),
     };
 
-    // Before anything is made: a dial the vendor would not take is a
-    // malformed command line, and there is nothing to clean up if it is
-    // answered here.
+    // Refuse bad dials before anything is made, so there is nothing to undo.
     let launch = match Launch::resolve(config, args) {
         Ok(launch) => launch,
         Err(refusal) => {
@@ -461,10 +399,7 @@ fn run_aloud(
         }
     };
 
-    // Where this spawn stands in a family, read off the parent it was asked
-    // for. A spawn past the configured depth is refused here, before a
-    // tree is cut or an id is claimed, the way a cap is: there is nothing to
-    // clean up and nobody has to answer for a pane that should not exist.
+    // Refuse a spawn past `subagent_depth` before any id or tree exists.
     let lineage = Lineage::of(root, args);
     if lineage.depth as usize > config.subagent_depth {
         warned(
@@ -478,24 +413,15 @@ fn run_aloud(
         return Ok(exit::BLOCKED);
     }
 
-    // Asked before anything is made, the same as a base git cannot resolve:
-    // `--with-changes` where the last commit already holds all of it is a
-    // command nobody meant, and answering it here leaves no id, no tree and no
-    // install standing behind it.
+    // `--with-changes` on a clean checkout is refused before anything is made.
     if args.with_changes && !worktree::has_changes_to_carry(dir)? {
         bail!("--with-changes: nothing in {} to move", dir.display());
     }
 
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
 
-    // The cap is the project's own, and the project is the one the agent will
-    // run in rather than the one the command was typed in: `--dir` sends an
-    // agent into another repository, and what that one runs at once is its own
-    // file to answer. What is wrong with that file is not this spawn's to say —
-    // one key of it is being asked about, and the answer to that is a pane or a
-    // refusal.
-    // Counted and claimed in one step, so two spawns at once cannot both
-    // find the last place; the place is held until `start` has recorded it.
+    // Count and claim in one step so two concurrent spawns cannot both take
+    // the last place. The place is held until `start` has written the record.
     let taken = take_a_place(root, dir, || {
         let (id, agent_dir) = claim(root, args.name.as_deref(), task)?;
         Ok(((id, agent_dir.clone()), agent_dir))
@@ -508,9 +434,8 @@ fn run_aloud(
         }
     };
 
-    // From here on a failure leaves nothing behind: an id that half exists is
-    // worse than one that does not. The directory is this spawn's own — the
-    // claim made it — so removing it can never take another spawn's record.
+    // On failure remove the claimed directory. The claim created it, so it
+    // cannot hold another spawn's record.
     match start(
         root,
         &agent_dir,
@@ -537,7 +462,7 @@ fn run_aloud(
     }
 }
 
-/// Count `dir`'s project against its caps and, where there is room, claim a
+/// Counts `dir`'s project against its caps and, where there is room, claims a
 /// place for the agent `claim` makes, held until the claim is dropped.
 pub(crate) fn take_a_place<T>(
     root: &Path,
@@ -554,7 +479,7 @@ pub(crate) fn take_a_place<T>(
     )
 }
 
-/// Start `amx _boot <id>` in a pane of its own in `cwd`.
+/// Starts `amx _boot <id>` in a pane of its own in `cwd`.
 pub(crate) fn place_boot(
     id: &str,
     cwd: &Path,
@@ -569,8 +494,8 @@ pub(crate) fn place_boot(
     Ok((server, pane))
 }
 
-/// The two places a spawn in `dir` may be asked for a role: the person's,
-/// beside their config file, and the project's, under its `.amx`.
+/// The user's role directory, beside the config file, and the project's,
+/// under its `.amx`.
 fn role_places(dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let config = paths::config_file()?;
     let beside = config
@@ -582,8 +507,7 @@ fn role_places(dir: &Path) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
-/// Fill the dials `args` left empty from `role`. A role is a default: what the
-/// caller typed stands.
+/// Fills the dials `args` left empty from `role`. Typed flags win.
 fn fill_from_role(role: &Role, args: &mut NewArgs) {
     let named = args.agent.get_or_insert_with(Default::default);
     if named.command.is_none() {
@@ -600,13 +524,11 @@ fn fill_from_role(role: &Role, args: &mut NewArgs) {
     }
 }
 
-/// The role `args` names filled into the dials it left empty, and nothing said
-/// about it.
+/// Fills `args` from the role it names, silently.
 ///
-/// `verbs::sub` runs this before inheriting from the parent, so a role's dials
-/// beat a parent's and a typed flag beats both. The refusal for a name amx
-/// does not know, and the warning for a file it cannot read, are said by
-/// `run_aloud`, which reads the role again on the way past.
+/// `amx sub` calls this before inheriting from the parent, so the precedence is
+/// flag, then role, then parent. Unknown roles and unreadable files are
+/// reported later by `run_aloud`.
 pub(crate) fn fill_role(dir: &Path, args: &mut NewArgs) -> Option<Role> {
     let name = args.role.clone()?;
     let (personal, project) = role_places(dir).ok()?;
@@ -616,24 +538,23 @@ pub(crate) fn fill_role(dir: &Path, args: &mut NewArgs) -> Option<Role> {
     Some(role)
 }
 
-/// How many minted ids to try to claim before giving up.
+/// How many generated ids to try before giving up.
 const MAX_CLAIMS: usize = 8;
-/// Claim an id by making its directory. The mkdir is the uniqueness check:
-/// two spawns in flight can both believe a name is free, but the directory
-/// can only be made by one of them, and nothing the loser has to clean up
-/// exists yet.
+
+/// Claims an id by creating its directory, returning the id and the directory.
+///
+/// The non-recursive mkdir is the uniqueness check: of two concurrent spawns
+/// only one can create it, and the loser has nothing to clean up.
 pub(crate) fn claim(root: &Path, name: Option<&str>, task: &str) -> Result<(String, PathBuf)> {
     if let Some(name) = name {
         ids::validate_name(name, root)?;
         let dir = paths::agent_dir_in(root, name)?;
-        // A typed name that loses the claim was taken, however recently.
         if !make_dir(&dir)? {
             bail!("name {name:?} is already taken");
         }
         return Ok((name.to_string(), dir));
     }
-    // generate already avoids every directory that exists, so losing a draw
-    // to a spawn in flight is next to never — and answered with another draw.
+    // `generate` skips existing directories, so a lost race is rare.
     for _ in 0..MAX_CLAIMS {
         let id = ids::generate(task, root)?;
         let dir = paths::agent_dir_in(root, &id)?;
@@ -647,6 +568,7 @@ pub(crate) fn claim(root: &Path, name: Option<&str>, task: &str) -> Result<(Stri
     )
 }
 
+/// Cuts the tree and sets the spawn up, undoing every step on failure.
 #[allow(clippy::too_many_arguments)]
 fn start(
     root: &Path,
@@ -663,11 +585,8 @@ fn start(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<()> {
-    // What the file says this harness runs with, before anything reads the
-    // environment on the agent's behalf: the trust store is looked up in it,
-    // and a table pointing claude at another config directory has to point
-    // the seeding at the same one, or the agent meets the screen the seeding
-    // was meant to answer.
+    // Apply the harness env first: the trust store is located through it, and
+    // a harness pointing claude at another config directory must seed that one.
     spawn::harness_env(&mut env, config, &launch.agent);
 
     let cut = cut_worktree(dir, id, config, args)?;
@@ -695,25 +614,21 @@ fn start(
     placed
 }
 
-/// What a spawn did on its way to a recorded pane, for the undo that takes it
-/// back when a later step fails.
+/// Steps a spawn took after cutting its tree, for undo on a later failure.
 #[derive(Default)]
 struct Undo {
-    /// The stash the checkout's own work was carried into the tree in.
+    /// The stash that carried the checkout's changes into the tree.
     carried: Option<String>,
-    /// The vendor's store a trust key was written into for the tree.
+    /// The vendor trust store a key was written into for the tree.
     trusted: Option<PathBuf>,
-    /// The pane placed, and the server it was placed on.
     placed: Option<(crate::tmux::Server, crate::tmux::PaneId)>,
 }
 
-/// Take back everything a failed spawn did after it cut its tree, newest
-/// first: the pane, the work carried out of the checkout, the trust key, and
-/// the tree with amx's own branch.
+/// Undoes a failed spawn, newest step first: the pane, the carried changes,
+/// the trust key, then the tree and amx's branch.
 ///
-/// The work goes back before the tree goes, and a checkout that will not take
-/// it back keeps the tree: the tree is then the only place it is, and saying
-/// which tree is the whole of what is left to do.
+/// If the carried changes cannot be applied back to the checkout, the tree is
+/// kept, since it is the only copy, and the warning names it.
 fn give_everything_back(
     dir: &Path,
     id: &str,
@@ -752,8 +667,8 @@ fn give_everything_back(
     }
 }
 
-/// Everything a spawn does once its tree is cut, up to the record, noting in
-/// `taken` each thing a failure after it would have to undo.
+/// Everything from a cut tree to the written record, noting in `taken` what a
+/// later failure must undo.
 #[allow(clippy::too_many_arguments)]
 fn set_up(
     root: &Path,
@@ -778,11 +693,8 @@ fn set_up(
         .unwrap_or_else(|| dir.to_path_buf());
     if let Some((repo, tree)) = cut {
         furnish_the_tree(config, agent_dir, id, repo, tree, problems, to_terminal)?;
-        // After the furnishing, so that a setup command that fails takes back
-        // a tree with nothing of yours in it. Whether there was anything to
-        // move was settled before the id was minted, and a directory somebody
-        // has committed in since is no longer a spawn to refuse. Work that
-        // would not apply is still where it was typed.
+        // After furnishing, so a failed setup command discards a tree that
+        // holds none of the user's changes.
         if args.with_changes {
             taken.carried = worktree::carry_changes(dir, &tree.path)?;
         }
@@ -798,9 +710,7 @@ fn set_up(
             &launch.dials.model,
         );
     }
-    // amx's own id over the top of the harness's pairs laid above: a table
-    // that set the id would have this agent reporting under somebody else's
-    // name.
+    // Last, so a harness env that sets the id cannot override it.
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent_dir, &env)?;
     spawn::write_handoff(
@@ -834,11 +744,9 @@ fn set_up(
             dir: cwd,
             worktree: tree.map(|tree| tree.path.clone()),
             branch: tree.map(|tree| tree.branch.clone()),
-            // A tree amx cut is measured from the commit it was cut from; a
-            // directory amx was pointed at has no cut, so its base is the
-            // commit it was standing on when the session started — the whole
-            // of what it has changed since. A command is said no to: it runs
-            // against the checkout as it is, with no conversation to measure.
+            // A cut tree diffs against the commit it was cut from; an agent in
+            // an existing directory against HEAD at spawn time. Commands have
+            // no base.
             base: match tree {
                 Some(tree) => Some(tree.base.clone()),
                 None if !args.exec => worktree::head_commit(dir)?,
@@ -846,8 +754,6 @@ fn set_up(
             },
             socket: server.socket().clone(),
             pane,
-            // Nothing is out of sight any more: an agent is a session nobody
-            // is attached to until somebody looks in on it.
             bg: false,
             session,
             transcript: None,
@@ -857,55 +763,31 @@ fn set_up(
     Ok(())
 }
 
-/// What `Meta::session` is recorded as: the id amx minted, the moment a
-/// vendor that declares a start flag opens under it, rather than left `None`
-/// for a Started hook that a vendor with no hooks at all could never send.
+/// The recorded `Meta::session`: the minted id when the vendor was started
+/// under it, so vendors without hooks still have a session on record.
 ///
-/// `None` from a command spawn, which opens no session of its own, and from
-/// a vendor `opens_under_id` says was never offered one.
+/// `None` for a command spawn and for a vendor with no start flag.
 fn session_written(exec: bool, opens_under_id: bool, id: &str) -> Option<String> {
     (!exec && opens_under_id).then(|| id.to_string())
 }
 
-/// What `Meta::agent` is recorded as: the command this spawn resolved, which
-/// is what was typed, else what the config holds, else the vendor amx falls
-/// back to.
-///
-/// `None` from a command spawn. A shell command runs no vendor — the dials are
-/// refused beside `--exec` and nothing about the launch is resolved for it —
-/// and a row claiming one would be a row somebody went looking for a session
-/// on.
+/// The recorded `Meta::agent`: the resolved vendor command, or `None` for a
+/// command spawn, which runs no vendor.
 fn vendor_written(exec: bool, agent: &str) -> Option<String> {
     (!exec).then(|| agent.to_string())
 }
 
-/// What `Meta::model` and `Meta::effort` are recorded as: the value the dial
-/// was turned to, by the command line or by the config, and `None` for a dial
-/// left where the vendor's own configuration puts it.
-///
-/// [`registry::DEFAULT`] is amx saying it sent no flag, which is not a value
-/// the vendor was asked for — a record repeating it would have the wall
-/// claiming to know a word only the vendor knows. `None` from a command spawn
-/// for the same reason `vendor_written` gives: the dials are refused beside
-/// `--exec` and nothing was resolved for it.
+/// The recorded `Meta::model` or `Meta::effort`: the dial's value, or `None`
+/// when it was left at [`registry::DEFAULT`] or the spawn is a command.
 fn dial_written(exec: bool, dial: &str) -> Option<String> {
     (!exec && dial != registry::DEFAULT).then(|| dial.to_string())
 }
 
-/// What the pane runs: a shell command when that is what was asked for, else
-/// the vendor with the task after it.
+/// The pane's argv: the `--exec` command, or the vendor command with the task.
 ///
-/// A command spawn has no vendor and no dials — the command line refuses them
-/// beside `--exec` — so nothing about the launch is resolved for it. What was
-/// typed is what runs.
-///
-/// `id` rides along as the session a vendor that declares a start flag is
-/// asked to open under; a vendor with no such flag is unaffected by it.
-///
-/// `trust` is the same config key [`trust_the_tree`] stands behind, carried
-/// here because a vendor whose folder-trust answer is a flag is answered on
-/// this argv rather than in a file. The key is read here, where the config is,
-/// because `spawn` is handed no config of its own.
+/// `id` is the session a vendor with a start flag opens under. `trust` is the
+/// config key; vendors that answer folder trust with a flag get it here, since
+/// `spawn` has no config.
 fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
     match args.exec {
         true => spawn::exec_command(task),
@@ -920,9 +802,9 @@ fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) 
     }
 }
 
-/// A model dial `vendor` carries in the environment rather than on its argv,
-/// put into the pane's env — see [`crate::vendor::env_dials`]. Only `new`
-/// writes one: a resumed session keeps its own model.
+/// Adds the env vars through which `vendor` takes its model, if any. See
+/// [`crate::vendor::env_dials`]. Only `new` sets these; a resumed session keeps
+/// its model.
 fn dial_the_env(
     env: &mut std::collections::BTreeMap<String, String>,
     vendor: Option<&Vendor>,
@@ -934,38 +816,26 @@ fn dial_the_env(
     }
 }
 
-/// What the tree is cut from: the ref this spawn was given, else the one the
-/// config holds, else nothing, which is the commit checked out where `new` was
-/// typed.
-///
-/// The same order every other dial is read in, and for the same reason: the
-/// flag is somebody standing there saying it about this one agent, and the key
-/// is the answer they wrote down once for all of them.
+/// The ref to cut the tree from: `--base`, else the config's `base`, else
+/// `None` for the current HEAD.
 fn cut_from<'a>(config: &'a Config, args: &'a NewArgs) -> Option<&'a str> {
     args.base.as_deref().or(config.base.as_deref())
 }
 
-/// A worktree of its own, when the agent is being sent into a repository and
-/// nobody has said not to, with the repository it was cut from beside it.
+/// Cuts the agent a worktree when one is wanted, returning the repository it
+/// was cut from and the tree.
 ///
-/// Never for a command. A worktree is there to keep one conversation's work
-/// apart from another's, and a command has no conversation: it was typed to
-/// run *here*, against this checkout and whatever is already built in it.
-///
-/// The repository is answered with rather than asked for again, because
-/// furnishing copies out of it and the question has two answers: `git` asked
-/// from inside a linked worktree names that worktree, and the tree was cut
-/// from whichever one `new` was typed in.
+/// Never for `--exec`: a command runs against the checkout as it is. The repo
+/// is returned because furnishing copies from it, and `git` asked from inside
+/// the new tree would name the tree instead.
 fn cut_worktree(
     dir: &Path,
     id: &str,
     config: &Config,
     args: &NewArgs,
 ) -> Result<Option<(PathBuf, worktree::Worktree)>> {
-    // The key says what happens when nobody asked for a tree. A request and a
-    // branch are somebody asking: there is no working on either without the
-    // branch it is on checked out somewhere, so both are a tree whatever the
-    // key says.
+    // `--pr` and `--branch` need a checkout of their branch, so they cut a
+    // tree even when the `worktrees` key is off.
     let asked_for_a_branch = args.pr.is_some() || args.branch.is_some();
     if args.exec || args.no_worktree || (!config.worktrees && !asked_for_a_branch) {
         return Ok(None);
@@ -973,9 +843,7 @@ fn cut_worktree(
     if !dir.is_dir() {
         bail!("{} is not a directory to run in", dir.display());
     }
-    // Somewhere that is not a repository is somewhere to work in as it is —
-    // unless a request or a branch was named, which are a repository's own
-    // things to have and nothing a directory outside one could be started on.
+    // Outside a repository, run in place unless a PR or branch was asked for.
     let Some(repo) = worktree::repo_root(dir)? else {
         match (args.pr, args.branch.as_deref()) {
             (Some(number), _) => bail!("--pr {number}: {} is in no repository", dir.display()),
@@ -991,23 +859,18 @@ fn cut_worktree(
     Ok(Some((repo, tree)))
 }
 
-/// A tree on the head branch of request `number`, fetched from the origin.
+/// A tree on the head branch of pull request `number`, fetched from origin.
 fn cut_on_request(repo: &Path, id: &str, number: u64) -> Result<worktree::Worktree> {
     let head = crate::pr::request_head(repo, number)?;
     let name = request_branch(repo, &head, number);
     worktree::create_on(repo, id, &name, &format!("refs/pull/{number}/head"))
 }
 
-/// The local branch a request's tree goes on.
+/// The local branch for a PR's tree.
 ///
-/// The head ref's own name wherever it can be, because that is what the PR
-/// column reads a row's request back off. It cannot be when the work is in
-/// somebody's fork, where the same name means another branch, or when this
-/// checkout already has a branch of that name: whoever opened the request
-/// chose the name, and a local branch that happens to share it — the person's
-/// own, or the one a first agent on this request committed to — is not the
-/// forge's to move. `pr-<N>` is amx's name for it then, and the fetch onto it
-/// moves nothing either — see [`worktree::create_on`].
+/// The head branch's own name, which the PR column reads back, unless the PR
+/// comes from a fork or a local branch already has that name. Then `pr-<N>`,
+/// so the fetch never moves a local branch; see [`worktree::create_on`].
 fn request_branch(repo: &Path, head: &crate::pr::PrHead, number: u64) -> String {
     match head.cross || here_already(repo, &head.branch) {
         true => format!("pr-{number}"),
@@ -1015,22 +878,11 @@ fn request_branch(repo: &Path, head: &crate::pr::PrHead, number: u64) -> String 
     }
 }
 
-/// A tree on `name`, a branch this checkout already has or the origin does.
+/// A tree on branch `name`, local or fetched from origin.
 ///
-/// [`cut_on_request`]'s other half: the same tree on a branch somebody already
-/// made, without a forge to ask where it is. Which of the two ways it is cut
-/// turns on whether the ref is here — a branch with commits nobody has pushed
-/// would be moved to whatever the origin holds if it were fetched, and a name
-/// only the origin has is no branch at all until it is.
-///
-/// `origin/x` is how a branch on the forge is usually read out, and the tree
-/// goes on `x` either way, so the prefix comes off rather than being hunted for
-/// under a name nothing has.
-///
-/// The refusals are both about the name: git keeps one tree to a branch, so one
-/// another tree holds cannot be checked out again — and unlike a request, which
-/// can be started twice under a name of amx's own, there is no second name for
-/// the branch somebody typed.
+/// A local branch is checked out as is, since fetching would move unpushed
+/// commits. An `origin/` prefix is dropped. Fails if another tree already has
+/// the branch checked out, or if neither side has it.
 fn cut_on_branch(repo: &Path, id: &str, name: &str) -> Result<worktree::Worktree> {
     let name = name.strip_prefix("origin/").unwrap_or(name);
     if worktree::checked_out(repo, name)? {
@@ -1041,16 +893,11 @@ fn cut_on_branch(repo: &Path, id: &str, name: &str) -> Result<worktree::Worktree
     }
     match worktree::create_on(repo, id, name, name) {
         Ok(tree) => Ok(tree),
-        // Whatever git said about the fetch, what happened is that the name
-        // was in neither place, which is the sentence to answer with.
         Err(_) => bail!("{name} is no branch here or on origin"),
     }
 }
 
-/// Whether this checkout already has a branch called `name`.
-///
-/// Asked of the refs alone, because the answer decides which way the tree is
-/// cut rather than anything about the tree itself.
+/// Whether the repository has a local branch `name`.
 fn here_already(repo: &Path, name: &str) -> bool {
     std::process::Command::new("git")
         .current_dir(repo)
@@ -1067,16 +914,11 @@ fn here_already(repo: &Path, name: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Furnish the tree amx has just cut: the files and directories the config
-/// names, and then its setup commands, before the pane is placed.
+/// Copies and links the configured paths into a new tree, then runs the
+/// configured setup commands.
 ///
-/// The other half of a tree being worth working in, and the opposite kind of
-/// answer to [`trust_the_tree`]'s. A path the config names and the repository
-/// does not have is said and stepped over — a config file outlives the project
-/// it was written for. A setup command that fails takes the tree with it and
-/// refuses the spawn, because what is left of a tree whose install did not
-/// finish is worse than no tree at all: the agent would spend its first turn
-/// working that out.
+/// A missing path is a warning. A failing setup command discards the tree and
+/// fails the spawn, since a half-installed tree is worse than none.
 fn furnish_the_tree(
     config: &Config,
     agent_dir: &Path,
@@ -1086,8 +928,7 @@ fn furnish_the_tree(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Result<()> {
-    // The two a setup command cannot work out for itself. The tree it runs in
-    // and the repository behind it are the furnishing's own to say.
+    // What setup commands cannot work out for themselves.
     let env = [
         (crate::hook::ID_ENV.to_string(), id.to_string()),
         (
@@ -1111,20 +952,16 @@ fn furnish_the_tree(
             Ok(())
         }
         Err(e) => {
-            // Nothing half furnished stands.
             take_back(repo, id, tree, problems, to_terminal);
             Err(e)
         }
     }
 }
 
-/// Take back a tree the spawn is not going to use: it was cut a moment ago
-/// and holds nothing of the person's, so it goes with its branch. What the
-/// undo cannot do is said, and the refusal that brought it here is still the
-/// answer: the spawn is off either way.
+/// Discards a tree the spawn will not use, with its branch when amx named it.
 ///
-/// A branch that is not amx's own name — `--branch` onto one the person
-/// already had — is theirs, and is kept whatever happened here.
+/// A user's branch checked out with `--branch` is kept. Failures are warnings;
+/// the spawn has already failed.
 fn take_back(
     repo: &Path,
     id: &str,
@@ -1138,15 +975,12 @@ fn take_back(
     }
 }
 
-/// The tree whose folder-trust screen is amx's to answer on this spawn: the
-/// one it cut, or the linked worktree it was pointed at when it cut none.
+/// The tree whose folder-trust prompt amx may answer: the tree it cut, else
+/// `dir` when it is a linked worktree.
 ///
-/// The second is how `workflow run` dispatches every worker and reader, with
-/// `--no-worktree --dir <a tree it cut itself>`, and a linked worktree is
-/// derived from a repository whoever cut it, which is the same provenance a
-/// tree amx cut has. A checkout is the person's own to answer, a plain
-/// directory is derived from nothing, and a command asks no vendor anything,
-/// so none of those is answered for.
+/// A linked worktree covers `--no-worktree --dir <tree>` spawns, which is how
+/// `workflow run` dispatches. A main checkout or plain directory is the user's
+/// to trust, and a command meets no prompt.
 fn tree_to_trust<'a>(cut: Option<&'a Path>, dir: &'a Path, exec: bool) -> Option<&'a Path> {
     if exec {
         return None;
@@ -1154,22 +988,12 @@ fn tree_to_trust<'a>(cut: Option<&'a Path>, dir: &'a Path, exec: bool) -> Option
     cut.or_else(|| worktree::is_linked(dir).then_some(dir))
 }
 
-/// Write the vendor's own trust store for the tree the agent is about to
-/// start in, so that it starts on the task instead of on a question nobody
-/// has to think about.
+/// Marks `tree` trusted in the vendor's trust store so the agent skips the
+/// folder-trust prompt.
 ///
-/// The half of the answer that is a file. A vendor answered with a flag
-/// instead is answered in [`launched`], on the argv of the pane it is about,
-/// and nothing here runs for it — a store amx wrote for a pi agent would be
-/// another vendor's file touched over a screen pi never draws.
-///
-/// Never a reason to refuse the spawn. An agent that meets the screen is an
-/// agent somebody answers by hand, which is exactly where amx stood before it
-/// wrote anything at all, so a store amx cannot write is said once and the
-/// spawn goes on.
-///
-/// The answer is the store it wrote a key into, which is the key a spawn that
-/// fails afterwards has to take back out; nothing where it wrote none.
+/// Only for vendors that keep a store; flag-answered vendors are handled in
+/// [`launched`]. A failed write is a warning, since the prompt can still be
+/// answered by hand. Returns the store written, for undo.
 fn trust_the_tree(
     config: &Config,
     env: &std::collections::BTreeMap<String, String>,
@@ -1178,21 +1002,15 @@ fn trust_the_tree(
     problems: &mut impl Write,
     to_terminal: bool,
 ) -> Option<PathBuf> {
-    // The store is the person's own file, and nothing is written to it until
-    // they have said so once — `trust = true` in the config, the same consent
-    // the hooks stand behind at doctor --fix. Until then the screen is theirs
-    // to answer, and doctor points at the key.
+    // The store is the user's file: write only with `trust = true`.
     if !config.trust {
         return None;
     }
-    // Which vendors amx can answer for is the wider question, and `doctor`
-    // asks it. The one this write turns on is narrower: whose file it is.
     if !trust::writes_a_store(agent) {
         return None;
     }
     let store = trust::store_in(env)?;
-    // The vendor resolves a tree to the repository it belongs to, so that is
-    // what already covers it when the person has trusted the repository.
+    // The vendor resolves a tree to its repository, whose entry may cover it.
     let inherits = worktree::main_repo(tree).ok();
     match trust::seed(&store, tree, inherits.as_deref(), now()) {
         Ok(true) => Some(store),
@@ -1204,11 +1022,9 @@ fn trust_the_tree(
     }
 }
 
-/// The agent's own directory, which nobody else has any business reading.
+/// Creates an agent directory, owner-only, returning false if it exists.
 ///
-/// Deliberately not recursive: making the directory is the uniqueness claim,
-/// so one that is already there has to answer false rather than stand in for
-/// one this spawn made.
+/// Not recursive: creating it is the id claim.
 fn make_dir(dir: &Path) -> Result<bool> {
     use std::os::unix::fs::DirBuilderExt;
     match std::fs::DirBuilder::new().mode(paths::DIR_MODE).create(dir) {
@@ -1253,8 +1069,7 @@ mod tests {
         }
     }
 
-    /// A spawn of a shell command, which names no vendor because it launches
-    /// none.
+    /// An `--exec` spawn, which names no vendor.
     fn a_command(command: &str) -> NewArgs {
         NewArgs {
             task: Some(command.to_string()),
@@ -1299,18 +1114,14 @@ mod tests {
 
     #[test]
     fn the_record_names_the_vendor_this_spawn_resolved() {
-        // Which vendor an agent runs is settled here, out of the flag, the
-        // config and amx's own fallback, and nothing that reads the record
-        // afterwards can work it out again.
+        // The vendor is resolved only here, so the record must keep it.
         let launch = Launch::resolve(&Config::default(), &spawn(None, [None; 3])).unwrap();
         assert_eq!(
             vendor_written(false, &launch.agent).as_deref(),
             Some("claude")
         );
 
-        // A command spawn resolves a launch it never uses — what was typed is
-        // what runs — and a row claiming a vendor is one somebody goes looking
-        // for a conversation on.
+        // A command spawn resolves a launch it never uses and records no vendor.
         assert_eq!(
             vendor_written(a_command("make test").exec, &launch.agent),
             None
@@ -1325,8 +1136,7 @@ mod tests {
 
     #[test]
     fn dials_can_be_turned_back_to_the_vendors_own_by_name() {
-        // The only way to spawn once at whatever claude was going to do
-        // anyway, without editing the config file first.
+        // `default` overrides a configured dial for one spawn.
         let config = configured(Some("fable"), None, Some("max"));
         let launch = Launch::resolve(&config, &spawn(None, [Some(DEFAULT), None, None])).unwrap();
 
@@ -1336,9 +1146,8 @@ mod tests {
 
     #[test]
     fn dials_the_vendor_would_refuse_are_refused_here_first() {
-        // claude answers `--permission-mode nonsense` with an error naming the
-        // modes it takes, so amx saying it is the same answer sooner, before
-        // an id is minted or a pane is opened.
+        // claude rejects unknown modes too; amx rejects them before any id or
+        // pane exists.
         let refusal = Launch::resolve(
             &Config::default(),
             &spawn(None, [None, Some("acceptedits"), None]),
@@ -1357,10 +1166,8 @@ mod tests {
 
     #[test]
     fn new_refuses_a_directory_that_is_gone() {
-        // tmux opens a pane whose directory is missing in the home directory
-        // and says nothing, so an agent pointed at a worktree a run had since
-        // removed asked to trust the home directory (2026-09-18). The refusal
-        // comes before anything is minted or made.
+        // tmux silently opens a pane whose directory is missing in the home
+        // directory. The refusal comes before anything is created.
         let root = tempfile::TempDir::new().unwrap();
         let gone = root.path().join("worktrees").join("t1");
         let (mut out, mut problems) = (Vec::new(), Vec::new());
@@ -1389,9 +1196,8 @@ mod tests {
 
     #[test]
     fn a_refusal_is_yellow_on_a_terminal_and_plain_down_a_pipe() {
-        // A dial the vendor would refuse is answered before an id is minted or
-        // a directory is made, so this reaches the writer with nothing behind
-        // it — and the writer is the stderr the verb was handed.
+        // A bad dial is refused before any id or directory exists, on the
+        // writer the verb was given.
         let dir = tempfile::TempDir::new().unwrap();
         let refused = |to_terminal| {
             let (mut out, mut problems) = (Vec::new(), Vec::new());
@@ -1415,7 +1221,7 @@ mod tests {
         assert!(plain.starts_with("amx new: "), "{plain:?}");
         assert!(!plain.contains('\u{1b}'), "{plain:?}");
 
-        // A refusal is amx working as it should, so it is yellow and not red.
+        // A refusal is a warning (yellow), not a failure (red).
         let painted = refused(true);
         assert!(painted.starts_with("\u{1b}[33mamx new: "), "{painted:?}");
         assert!(painted.trim_end().ends_with("\u{1b}[39m"), "{painted:?}");
@@ -1424,9 +1230,8 @@ mod tests {
 
     #[test]
     fn dials_a_full_model_name_is_taken_because_that_dial_is_open() {
-        // The agent is named here, because a word no harness lists picks none
-        // and is refused. What this is about is the dial, which takes a value
-        // its own cycle never names.
+        // The agent is named because a model no harness lists is refused. The
+        // open model dial accepts a value outside its cycle.
         let launch = Launch::resolve(
             &Config::default(),
             &spawn(Some("claude"), [Some("claude-fable-5"), None, None]),
@@ -1435,10 +1240,8 @@ mod tests {
         assert_eq!(launch.dials.model, "claude-fable-5");
     }
 
-    /// A config whose file says which models each harness named runs. pi is
-    /// given a list wherever a test could reach it: the list that vendor holds
-    /// is one it prints when it is run, and a unit test that started a process
-    /// would be reading whatever is installed on the machine.
+    /// A config listing each harness's models. pi gets an explicit list so no
+    /// test runs the installed pi to list its models.
     fn listing(tables: &[(&str, &[&str])]) -> Config {
         Config {
             harnesses: tables
@@ -1458,7 +1261,7 @@ mod tests {
         }
     }
 
-    /// The same, for a harness that carries arguments rather than models.
+    /// A config giving `harness` extra arguments.
     fn carrying_args(harness: &str, args: &[&str]) -> Config {
         Config {
             harnesses: BTreeMap::from([(
@@ -1475,8 +1278,7 @@ mod tests {
 
     #[test]
     fn a_typed_model_runs_the_one_harness_that_lists_it() {
-        // Nobody types --agent: the word names the harness, and the harness
-        // amx is about to launch is whichever one offers it.
+        // Without `--agent`, the harness that lists the model is launched.
         let config = listing(&[("pi", &["openai/gpt-5"])]);
 
         let launch = Launch::resolve(&config, &spawn(None, [Some("gpt-5"), None, None])).unwrap();
@@ -1489,8 +1291,7 @@ mod tests {
 
     #[test]
     fn a_model_several_harnesses_list_stays_with_the_configured_one() {
-        // Both list it, so the tie goes to the harness the file already names,
-        // whichever of them that is.
+        // When both list it, the configured harness wins.
         let claudes = listing(&[("pi", &["opus"])]);
         let launch = Launch::resolve(&claudes, &spawn(None, [Some("opus"), None, None])).unwrap();
         assert_eq!(launch.agent, "claude");
@@ -1505,9 +1306,7 @@ mod tests {
 
     #[test]
     fn the_harnesses_are_asked_configured_first_and_then_in_the_tables_order() {
-        // The order is the whole rule: the configured harness where it lists
-        // the word, the first in the table where it does not, and never a
-        // listing run for a harness an earlier answer has already settled.
+        // Configured harness first, then table order.
         let named = |config: &Config| {
             asked(config)
                 .map(|vendor| vendor.name)
@@ -1537,8 +1336,7 @@ mod tests {
 
     #[test]
     fn a_model_no_harness_lists_is_refused_naming_what_each_takes() {
-        // Refused while the command is still on screen, with enough in the
-        // line to type the next one: nothing is minted and no pane is opened.
+        // The refusal names what each harness accepts.
         let config = listing(&[("pi", &["openai/gpt-5"])]);
 
         let refusal =
@@ -1554,9 +1352,8 @@ mod tests {
 
     #[test]
     fn a_harness_that_prints_its_models_is_named_by_how_many_and_what_prints_them() {
-        // Several hundred models is not a sentence, so the refusal says how
-        // many there are and what to run to read them. A list amx holds itself
-        // is short and is named in full.
+        // A printed listing is named by count and command; a configured list
+        // is named in full.
         let printed: Vec<String> = (0..490).map(|n| format!("openai/model-{n}")).collect();
         let pi = registry::entry("pi").expect("an entry for pi");
         assert_eq!(
@@ -1564,14 +1361,12 @@ mod tests {
             "pi takes 490 models (pi --list-models)"
         );
 
-        // And the same harness, once the file has said which models are its.
         let told = listing(&[("pi", &["openai/gpt-5"])]);
         assert_eq!(
             takes(pi, &told, &models::models_of(pi, &told)),
             "pi takes openai/gpt-5"
         );
 
-        // A vendor that prints its models as JSON is named the same way.
         let json = crate::vendor::second::BRANCHING;
         assert_eq!(
             takes(&json, &Config::default(), &printed[..3]),
@@ -1581,8 +1376,7 @@ mod tests {
 
     #[test]
     fn a_model_picks_no_harness_where_the_agent_was_named() {
-        // `--agent` is somebody saying which harness runs, and a model is not
-        // an argument with it.
+        // `--agent` fixes the harness; the model does not change it.
         let config = listing(&[("pi", &["openai/gpt-5"])]);
         let launch =
             Launch::resolve(&config, &spawn(Some("pi"), [Some("haiku"), None, None])).unwrap();
@@ -1593,9 +1387,8 @@ mod tests {
 
     #[test]
     fn a_model_picks_no_harness_for_a_configured_agent_amx_knows_nothing_about() {
-        // An agent with no entry has no list to be asked for, so a spawn under
-        // one is left exactly as it was: the model is the dial's business, and
-        // the dial does not exist.
+        // An unknown agent has no model list and no model dial, so the flag is
+        // refused without asking claude.
         let config = Config {
             agent: "mock-claude".to_string(),
             ..Config::default()
@@ -1613,10 +1406,8 @@ mod tests {
 
     #[test]
     fn the_sentinel_names_no_model_and_so_picks_no_harness() {
-        // `--model default` is the word for passing no model at all, and no
-        // harness lists it. Asking which one takes it would refuse every spawn
-        // that turned a dial back to the vendor's own behaviour — and would
-        // run a listing to do it.
+        // `--model default` passes no model, so it must not trigger a harness
+        // lookup, which would refuse it.
         let launch = Launch::resolve(
             &Config::default(),
             &spawn(None, [Some(DEFAULT), None, None]),
@@ -1629,7 +1420,7 @@ mod tests {
 
     #[test]
     fn a_harness_carries_the_arguments_its_own_table_gives_it() {
-        // Whenever it runs and however it was picked, once each.
+        // Configured args apply however the harness was picked, once each.
         let config = carrying_args("claude", &["--add-dir", "/tmp"]);
         let launch = Launch::resolve(&config, &spawn(None, [None; 3])).unwrap();
         assert_eq!(launch.agent, "claude --add-dir /tmp");
@@ -1667,9 +1458,7 @@ mod tests {
 
     #[test]
     fn a_dial_stands_down_from_a_flag_the_harnesss_own_arguments_carry() {
-        // The same law the agent command's own words are under: both halves
-        // end up in one argv, and a flag written there wins by the dial saying
-        // nothing rather than by anybody deciding between them.
+        // A flag already in the harness args wins: the dial adds nothing.
         let config = carrying_args("claude", &["--model", "opus"]);
         let args = spawn(None, [Some("haiku"), None, None]);
         let launch = Launch::resolve(&config, &args).unwrap();
@@ -1721,11 +1510,8 @@ mod tests {
 
     #[test]
     fn exec_a_command_runs_where_it_was_typed_and_never_in_a_tree_of_its_own() {
-        // A command is not a conversation: it has nothing to keep apart from
-        // the next one, and a tree amx cut is a checkout without the build a
-        // `cargo test` or an `npm test` was typed to run. So the question is
-        // not asked at all — this directory is not one to work in, and a
-        // command spawn never gets far enough to find out.
+        // A command runs against the checkout and its build, so it never gets a
+        // tree, even where an agent spawn would fail to cut one.
         let nowhere = Path::new("/nowhere/at/all");
         let config = Config::default();
 
@@ -1767,8 +1553,7 @@ mod tests {
         );
     }
 
-    /// git as these tests run it: none of the developer's own configuration
-    /// and an identity of its own.
+    /// Runs git with no user or system config and a fixed identity.
     fn setup(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .current_dir(dir)
@@ -1789,7 +1574,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim_end().to_string()
     }
 
-    /// A repository with one commit on `main` and no origin at all.
+    /// A repository with one commit on `main` and no origin.
     fn a_repo(dir: &tempfile::TempDir) -> PathBuf {
         let repo = dir.path().join("app");
         std::fs::create_dir_all(&repo).unwrap();
@@ -1810,10 +1595,9 @@ mod tests {
 
     #[test]
     fn a_failed_place_takes_the_carried_work_back() {
-        // `new --with-changes` moved the work out of the checkout and wrote a
-        // trust key for the tree, and then the pane would not start. The undo
-        // leaves the checkout as it was: its work back, no tree, no branch of
-        // amx's, no key.
+        // `--with-changes` carried the work and a trust key was written, then
+        // placing the pane failed. The undo restores the checkout and removes
+        // the tree, branch and key.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
         std::fs::write(repo.join("README.md"), "half an hour of work\n").unwrap();
@@ -1868,9 +1652,8 @@ mod tests {
 
     #[test]
     fn a_failed_place_keeps_the_tree_when_the_work_will_not_go_back() {
-        // Somebody wrote over the same line in the checkout meanwhile: the
-        // work cannot be put back, so the tree is the only place it is, and it
-        // stays, named.
+        // The checkout changed the same line meanwhile, so the stash cannot be
+        // applied back and the tree is kept.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
         std::fs::write(repo.join("README.md"), "the carried work\n").unwrap();
@@ -1922,7 +1705,7 @@ mod tests {
         );
         setup(&repo, &["push", "-q", "origin", "main"]);
 
-        // Somebody opens a request from a branch they called `perf-index`.
+        // A PR opened from a branch named `perf-index`.
         setup(&repo, &["checkout", "-q", "-b", "theirs"]);
         std::fs::write(repo.join("theirs.rs"), "theirs\n").unwrap();
         setup(&repo, &["add", "theirs.rs"]);
@@ -1932,7 +1715,7 @@ mod tests {
         setup(&repo, &["checkout", "-q", "main"]);
         setup(&repo, &["branch", "-D", "theirs"]);
 
-        // And this checkout has a `perf-index` of its own, never pushed.
+        // A local, unpushed `perf-index`.
         setup(&repo, &["checkout", "-q", "-b", "perf-index"]);
         std::fs::write(repo.join("mine.rs"), "mine\n").unwrap();
         setup(&repo, &["add", "mine.rs"]);
@@ -1979,9 +1762,8 @@ mod tests {
 
     #[test]
     fn a_failed_setup_on_a_persons_branch_keeps_the_branch_and_its_commits() {
-        // `--branch feature` onto a branch the person already had, carrying a
-        // commit nobody pushed. The setup fails and the tree is taken back;
-        // the branch is theirs and stays, with the commit on it.
+        // `--branch feature` on an existing local branch with an unpushed
+        // commit. Setup fails; the tree goes and the branch stays.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
         setup(&repo, &["checkout", "-b", "feature"]);
@@ -2022,10 +1804,7 @@ mod tests {
 
     #[test]
     fn a_branch_another_tree_already_holds_starts_no_agent() {
-        // git keeps one tree to a branch, and the checkout itself is a tree:
-        // `--branch main` in a repository standing on main is the everyday
-        // version of it. Asked before anything is made, so there is nothing
-        // to take back.
+        // git allows one worktree per branch, and the main checkout counts.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
 
@@ -2040,9 +1819,7 @@ mod tests {
 
     #[test]
     fn a_branch_that_is_neither_here_nor_on_the_origin_starts_no_agent() {
-        // Both halves have been tried by the time this is said: there is no
-        // such ref in this checkout, and the fetch that would have brought one
-        // came back with nothing.
+        // Neither a local branch nor a fetch from origin finds it.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
 
@@ -2058,9 +1835,8 @@ mod tests {
 
     #[test]
     fn a_branch_is_a_tree_whatever_the_key_says_and_nowhere_to_cut_one_is_refused() {
-        // The key answers for the spawns nobody said anything about. Naming a
-        // branch is somebody saying it, and outside a repository there is no
-        // branch of that name to say it about.
+        // `--branch` cuts a tree even with `worktrees = false`, and outside a
+        // repository it is refused.
         let dir = tempfile::TempDir::new().unwrap();
         let mut args = spawn(None, [None; 3]);
         args.branch = Some("spike".to_string());
@@ -2079,9 +1855,8 @@ mod tests {
 
     #[test]
     fn the_claim_is_the_mkdir_and_a_directory_already_there_is_not_ours() {
-        // Two spawns racing one name both believe it is free; the mkdir is
-        // what settles it. A directory that already exists must read as
-        // somebody else's claim — never as a success to clean up later.
+        // The mkdir settles a race for one name: an existing directory is
+        // another spawn's claim.
         let root = tempfile::TempDir::new().unwrap();
         let dir = root.path().join("fix-login-a1b");
 
@@ -2092,8 +1867,8 @@ mod tests {
         );
     }
 
-    /// A repository with a tree of amx's own in it, and a home to keep a
-    /// vendor's trust store in.
+    /// A tree path inside a repository, and an env whose home holds the
+    /// vendor's trust store.
     fn a_tree(dir: &tempfile::TempDir) -> (PathBuf, std::collections::BTreeMap<String, String>) {
         let tree = dir.path().join("app/.amx/worktrees/fix-login-a1b");
         std::fs::create_dir_all(&tree).unwrap();
@@ -2112,7 +1887,7 @@ mod tests {
         dial_the_env(&mut env, Some(&ELSEWHERE), "large");
         assert_eq!(env.get("SECOND_CONFIG").unwrap(), r#"{"size":"large"}"#);
 
-        // A value somebody set wins, and a model nobody turned writes nothing.
+        // An existing value wins, and the default model writes nothing.
         let mut env = spawn::env_snapshot([("SECOND_CONFIG".to_string(), "{}".to_string())]);
         dial_the_env(&mut env, Some(&ELSEWHERE), "large");
         assert_eq!(env.get("SECOND_CONFIG").unwrap(), "{}");
@@ -2120,7 +1895,6 @@ mod tests {
         dial_the_env(&mut env, Some(&ELSEWHERE), registry::DEFAULT);
         assert!(env.is_empty());
 
-        // A vendor whose model is a flag, or no vendor at all, writes nothing.
         for vendor in [registry::entry("claude"), None] {
             let mut env = spawn::env_snapshot([]);
             dial_the_env(&mut env, vendor, "opus");
@@ -2128,7 +1902,7 @@ mod tests {
         }
     }
 
-    /// A config whose person has said yes to the trust write.
+    /// A config with `trust = true`.
     fn agreed() -> Config {
         Config {
             trust: true,
@@ -2201,10 +1975,8 @@ mod tests {
 
     #[test]
     fn trust_writes_no_other_vendors_store_for_an_agent_answered_on_its_argv() {
-        // The store this write is about is claude's own file. pi claims the
-        // folder-trust capability too, and a guard that asked the capability
-        // question would have written `~/.claude.json` for a tree no claude
-        // will ever open.
+        // pi answers folder trust too, but with a flag; it must not get a
+        // `~/.claude.json` entry.
         let dir = tempfile::TempDir::new().unwrap();
         let (tree, env) = a_tree(&dir);
         let mut problems = Vec::new();
@@ -2220,9 +1992,7 @@ mod tests {
 
     #[test]
     fn trust_is_answered_on_the_argv_for_a_vendor_whose_answer_is_a_flag() {
-        // pi's half of the same key, and the reason the config is read here:
-        // `spawn` is handed none, and the flag has to reach the argv of the
-        // pane this spawn is about to start.
+        // pi takes the trust answer as a flag on its argv.
         let args = spawn(Some("pi"), [None; 3]);
         let launch = Launch::resolve(&agreed(), &args).unwrap();
 
@@ -2261,8 +2031,7 @@ mod tests {
 
         trust_the_tree(&agreed(), &env, "claude", &tree, &mut problems, true);
 
-        // A store amx cannot write is a warning and not a failure: the spawn
-        // went ahead, and what is left is a screen somebody answers by hand.
+        // An unwritable store is one warning; the spawn continues.
         let told = String::from_utf8(problems).unwrap();
         assert!(told.contains("trust store amx can read"), "{told}");
         assert_eq!(told.lines().count(), 1, "{told}");
@@ -2271,13 +2040,10 @@ mod tests {
 
     #[test]
     fn trust_is_answered_for_the_linked_worktree_a_no_worktree_spawn_was_pointed_at() {
-        // `workflow run` cuts its own trees and dispatches every worker with
-        // `--no-worktree --dir <tree>`, so nothing here cut anything, and
-        // until this the store was seeded for nothing: every claude reader in
-        // a repository nobody had trusted stopped at the screen and died
-        // there, with no event to say so. A linked worktree is derived from a
-        // repository whoever cut it, which is the same provenance a tree amx
-        // cut has. A checkout, a plain directory and a command are not.
+        // `workflow run` dispatches with `--no-worktree --dir <tree>`. Without
+        // trust for that linked worktree, a claude agent stops at the prompt
+        // with no hook to report it. A main checkout, a plain directory and a
+        // command get no trust.
         let dir = tempfile::TempDir::new().unwrap();
         let repo = a_repo(&dir);
         let theirs = dir.path().join("workflow/plan/t1");
@@ -2311,9 +2077,7 @@ mod tests {
 
     #[test]
     fn spawn_writes_the_minted_id_into_metasession_the_moment_a_vendor_opens_under_it() {
-        // Recorded at the moment the pane is started, rather than left None
-        // for a Started hook that a vendor with no hooks at all could never
-        // send.
+        // Recorded at spawn, since a vendor without hooks never reports one.
         assert_eq!(
             session_written(false, true, "fix-login-a1b"),
             Some("fix-login-a1b".to_string())
@@ -2332,9 +2096,8 @@ mod tests {
 
     #[test]
     fn dials_the_config_cannot_stop_a_spawn_the_way_a_flag_can() {
-        // A config file outlives the versions that wrote it, so a value this
-        // vendor cannot use is dropped and the spawn goes ahead. The file has
-        // already said so on its own terms when it was read.
+        // A config value the vendor cannot use is dropped, and the spawn goes
+        // ahead.
         let config = configured(Some("opus"), None, Some("high"));
         let launch = Launch::resolve(&config, &spawn(Some("mock-claude"), [None; 3])).unwrap();
 
