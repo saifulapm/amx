@@ -123,22 +123,32 @@ pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
         .collect()
 }
 
-/// One paragraph of the line in the rows it takes, measured in cells: a wide
-/// character is one char and two columns, and a row counted in chars would
-/// run off the edge of the screen. A character that does not fit in what is
-/// left of a row starts the next one.
+/// One paragraph of the line in the rows it takes, measured in cells (a wide
+/// character is two).
+///
+/// Rows break after a space, so a word that does not fit moves to the next row
+/// whole; a word longer than a row is broken where the row ends. Spaces may
+/// hang past the edge. Every character lands on exactly one row, which is what
+/// [`cursor_cell`] counts on.
 fn cut(paragraph: &str, room: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     let mut used = 0;
+    // Byte offset in the current row just past its last space.
+    let mut after_space = None;
     for one in paragraph.chars() {
         let wide = width_of(one.encode_utf8(&mut [0; 4]));
-        if used > 0 && used + wide > room {
-            rows.push(String::new());
-            used = 0;
+        let row = rows.last_mut().expect("there is always a row");
+        if used > 0 && used + wide > room && one != ' ' {
+            let carried = after_space.map(|at| row.split_off(at)).unwrap_or_default();
+            used = width_of(&carried);
+            rows.push(carried);
+            after_space = None;
         }
+        let row = rows.last_mut().expect("there is always a row");
+        row.push(one);
         used += wide;
-        if let Some(row) = rows.last_mut() {
-            row.push(one);
+        if one == ' ' {
+            after_space = Some(row.len());
         }
     }
     rows
@@ -378,12 +388,25 @@ pub(super) fn typed_rows(
 }
 
 /// Which character of a row the block stands on for a cursor `column` chars
-/// along it: that one, unless the cursor is past the end of a row with no cell
-/// left for it, where it stands on the last character instead.
+/// along it: that one, unless its cell is past the edge (the end of a full
+/// row, or a space hanging off it), where it stands on the last character
+/// still on screen.
 fn last_cell(text: &str, column: usize, room: usize) -> usize {
-    let length = text.chars().count();
-    match column >= length && width_of(text) >= room {
-        true => length.saturating_sub(1),
+    // Cells before the character at `column`, and the last one before it that
+    // starts on screen.
+    let mut start = 0;
+    let mut last = 0;
+    for (at, one) in text.chars().enumerate() {
+        if at == column {
+            break;
+        }
+        if start < room {
+            last = at;
+        }
+        start += width_of(one.encode_utf8(&mut [0; 4]));
+    }
+    match start >= room {
+        true => last,
         false => column,
     }
 }
@@ -1635,6 +1658,39 @@ mod tests {
              on it"
         );
         assert_eq!(composer_lines("", 8), [""]);
+    }
+
+    #[test]
+    fn composer_wraps_at_word_boundaries_and_breaks_only_an_overlong_word() {
+        assert_eq!(
+            composer_lines("you need to attach it", 10),
+            ["you need ", "to attach ", "it"],
+            "a word that does not fit moves down whole"
+        );
+        assert_eq!(
+            composer_lines("see abcdefghijkl", 6),
+            ["see ", "abcdef", "ghijkl"],
+            "a word longer than a row breaks where the row ends"
+        );
+        assert_eq!(
+            composer_lines("ab    cd", 3),
+            ["ab    ", "cd"],
+            "spaces hang past the edge rather than start a row"
+        );
+        let text = "Let me know if you have any question";
+        assert_eq!(
+            composer_lines(text, 12).concat(),
+            text,
+            "no character is lost"
+        );
+    }
+
+    #[test]
+    fn the_block_never_stands_past_the_edge_of_a_row() {
+        assert_eq!(last_cell("ab    ", 4, 3), 2, "on a hanging space");
+        assert_eq!(last_cell("abc", 3, 3), 2, "at the end of a full row");
+        assert_eq!(last_cell("abc", 1, 3), 1);
+        assert_eq!(last_cell("ab", 2, 3), 2, "with room left after it");
     }
 
     #[test]
