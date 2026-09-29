@@ -2005,8 +2005,14 @@ mod tests {
 
         // The lock is given back before setup runs, while the claim is still
         // held: the next spawn counts without waiting on this one's setup.
+        // Asked for a moment rather than once: a child another test forks
+        // while the lock is held shares it until that child execs.
         let lock = std::fs::File::open(home.path().join("spawn.lock")).unwrap();
-        lock.try_lock().expect("nobody holds the count");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while let Err(e) = lock.try_lock() {
+            assert!(Instant::now() < deadline, "nobody holds the count: {e:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(lock);
         assert!(
             at_capacity(&root, project.path(), 2, None)
