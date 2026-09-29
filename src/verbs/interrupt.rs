@@ -36,6 +36,7 @@
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
@@ -48,6 +49,10 @@ pub const INTERRUPT: &str = "interrupt";
 
 /// The key that ends the turn a vendor is in the middle of.
 const CANCELS: &str = "Escape";
+
+/// How far apart the presses go for a vendor that wants more than one: close
+/// enough that its first still has the cancel armed when the next lands.
+const BETWEEN_PRESSES: Duration = Duration::from_millis(300);
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str) -> Result<i32> {
@@ -94,9 +99,25 @@ pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
     if cut == Cut::Turn {
         let agent = Agent::open(root, id)?;
         recorded(&agent, view.meta.agent.as_deref())?;
-        Server::from_socket(view.meta.socket.clone()).send_keys(&view.meta.pane, &[CANCELS])?;
+        let server = Server::from_socket(view.meta.socket.clone());
+        // A record whose vendor amx no longer knows is pressed once, as every
+        // vendor was before one needed more.
+        let presses = crate::registry::entry(view.meta.agent.as_deref().unwrap_or_default())
+            .map_or(1, |vendor| vendor.cancel_presses);
+        pressed(presses, || server.send_keys(&view.meta.pane, &[CANCELS]))?;
     }
     Ok(cut)
+}
+
+/// Press the key `presses` times, [`BETWEEN_PRESSES`] apart.
+fn pressed(presses: u8, mut press: impl FnMut() -> Result<()>) -> Result<()> {
+    for n in 0..presses {
+        if n > 0 {
+            std::thread::sleep(BETWEEN_PRESSES);
+        }
+        press()?;
+    }
+    Ok(())
 }
 
 /// This agent as a reader has it now.
@@ -327,6 +348,32 @@ mod tests {
             "parked",
             "and the refusal says the pane has gone, not that the agent is idle"
         );
+    }
+
+    #[test]
+    fn interrupt_presses_as_many_times_as_the_vendor_asks_300_ms_apart() {
+        // opencode's first Escape only arms the cancel; the second cuts the
+        // turn. The fixture asks for three, and every table vendor for one.
+        let three = crate::vendor::second::ELSEWHERE.cancel_presses;
+        let one = crate::registry::entry("claude").unwrap().cancel_presses;
+        for presses in [three, one] {
+            let mut at = Vec::new();
+            pressed(presses, || {
+                at.push(std::time::Instant::now());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(at.len(), usize::from(presses));
+            for pair in at.windows(2) {
+                assert!(
+                    pair[1] - pair[0] >= BETWEEN_PRESSES,
+                    "{:?}",
+                    pair[1] - pair[0]
+                );
+            }
+        }
+        assert_eq!(three, 3);
+        assert_eq!(BETWEEN_PRESSES, std::time::Duration::from_millis(300));
     }
 
     #[test]
