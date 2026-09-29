@@ -1,60 +1,19 @@
-//! `amx doctor` — what amx needs from this machine, and what is missing.
+//! `amx doctor`: check what amx needs from this machine and say what is missing.
 //!
-//! Ten things have to be true before an agent can run: a tmux new enough to
-//! address panes by id, a vendor command to run, a config amx can read, amx's
-//! own files where each installed agent loads them, one amx on the PATH and
-//! this the one, a state root amx can keep an agent in, no handoff still
-//! carrying the spawner's environment from before that moved to a file of its
-//! own, no agent already stopped at a screen the vendor puts in front of the
-//! work, no tree amx cut still named in the vendor's own trust store after the
-//! tree itself has gone, and nothing amx made standing with no record. Each check that fails says what to do about it,
-//! because a check that only says "no" leaves somebody guessing at a machine
-//! they thought was fine.
+//! Each failing check carries a remedy. The checks cover tmux, the configured
+//! agent, the config, hook wiring for every installed agent, the amx on the
+//! PATH, the state root, handoffs that still carry the environment inline,
+//! agents stopped at a setup screen, trust-store keys for removed trees, and
+//! orphaned ids and trees. Two more run only when they apply: whether the
+//! running tmux server's directory still exists, and, with `--dir`, whether an
+//! agent started there would stop at its vendor's folder-trust screen, where it
+//! fires no hooks and waits for somebody to attach.
 //!
-//! Ten kinds of check, that is, rather than ten lines. The wiring one is
-//! asked of every agent this machine has and names which agent it is about, so
-//! somebody with claude and pi reads two of those lines and is asked the same
-//! ten things. An agent that is not installed is not a machine with something
-//! missing from it and gets no line at all.
-//!
-//! What two of them are worth depends on the vendor, and the vendor is what
-//! says. The table answers the first: one that reports nothing has no wiring to
-//! be missing. The vendor's own screens document answers the second — which of
-//! the screens amx can recognise stand in front of the work, so that a check
-//! naming an agent stopped at one holds no list of screens of its own — and
-//! whether amx knows how to answer the one it is stopped at decides what it is
-//! offered. A check that asked for a repair nobody can make would send somebody
-//! looking for a fault in their own machine.
-//!
-//! An eleventh is asked only where there is something to ask it of. When a tmux
-//! server is already running, and the machine can say where a process is
-//! standing, doctor checks that the directory that server is standing in still
-//! exists. A server holds the directory it was started in for as long as it
-//! lives, and once that goes, every pane it forks starts somewhere that is not
-//! there and dies at once. No server yet is not a fault, and neither is a
-//! platform amx cannot ask, so both go unsaid rather than answered green.
-//!
-//! A twelfth is asked only when doctor is pointed at a directory, `amx --dir
-//! <path> doctor`: whether an agent started there would meet its vendor's
-//! folder-trust screen. That screen is drawn in front of the session every
-//! hook comes from, so an agent that meets it reports nothing and sits there
-//! until somebody attaches, and a caller that cannot attach, `workflow run`
-//! starting a reader it will never look at, loses the agent to a question it
-//! never sees. The check reads the vendor's store and asks git what the
-//! directory is, and writes nothing anywhere, so that the caller can ask it at
-//! the top of a run and branch on the exit code.
-//!
-//! `--fix` makes two repairs, and both of them are amx's own files to mend.
-//! Rewriting a handoff that still carries the environment needs no asking: amx
-//! wrote every one of those files itself, and taking a stray key back out of
-//! one is not a change anybody could object to. Nor does forgetting a tree amx
-//! cut, which is amx's own key for a directory that is not there any more, and
-//! the file is copied aside before it goes. Nor does putting back the clock
-//! of a record that says it never worked while its log has turns in it.
-//!
-//! Wiring an agent is not among them. That writes under somebody's home, and
-//! it is `amx setup` that does it, named agent by named agent; doctor says
-//! which agent is unwired and prints the line that wires it.
+//! - An agent that is not installed gets no line; the configured one always does.
+//! - `--fix` touches only amx's own files: handoffs, trust-store keys for trees
+//!   amx removed (the store is backed up first), orphaned id directories and
+//!   zeroed clocks. Wiring an agent is `amx setup`'s job.
+//! - The `--dir` check writes nothing, so a caller can branch on the exit code.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -73,9 +32,8 @@ use crate::{derive, exit, install, registry, spawn, store, tmux, trust, worktree
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub name: &'static str,
-    /// What amx found, said plainly.
     pub found: String,
-    /// What to do about it, when there is something to do.
+    /// What to do about it; `None` when the check passes.
     pub remedy: Option<String>,
 }
 
@@ -101,133 +59,111 @@ impl Check {
     }
 }
 
-/// What amx found on the machine, gathered before anything is judged.
+/// Everything [`report`] judges, gathered from the machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Findings {
-    /// The installed tmux, or `None` when there is none.
+    /// The installed tmux version, if any.
     pub tmux: Option<(u32, u32)>,
-    /// The configured vendor command, and where it resolved to.
+    /// The configured agent command and where the PATH resolves it.
     pub vendor: String,
     pub vendor_path: Option<PathBuf>,
-    /// The config file, and anything amx had to say about reading it.
+    /// The config file and the warnings from reading it.
     pub config: PathBuf,
     pub config_warnings: Vec<String>,
-    /// The person's home, which every vendor's wiring is written under.
+    /// The home directory every vendor's wiring is written under.
     pub home: PathBuf,
-    /// One per agent this machine has, in table order: where its wiring goes
-    /// and what is there now.
+    /// One entry per agent to check, in table order.
     pub wirings: Vec<VendorWiring>,
-    /// This amx, and every amx the PATH finds in the order it looks — each
-    /// a file, named once however many names it goes by.
+    /// This amx, and every distinct amx file the PATH finds, in search order.
     pub exe: PathBuf,
     pub on_path: Vec<PathBuf>,
-    /// Where every agent's record is kept, and why amx cannot use it when it
-    /// cannot.
+    /// The state root, and why amx cannot use it when it cannot.
     pub state_root: PathBuf,
     pub state_error: Option<String>,
-    /// Handoffs still carrying the spawner's environment inline, from before
-    /// it moved to a file of its own beside the handoff.
+    /// Handoffs that still carry the spawner's environment inline.
     pub dirty_handoffs: Vec<PathBuf>,
-    /// The agents that never got past the vendor's own setup.
+    /// Agents stopped at a vendor setup screen.
     pub parked: Vec<Parked>,
-    /// The tmux server amx would put an agent on, when one is already running
-    /// and this machine can say where it is standing.
+    /// The tmux server amx would use, when one is running and its cwd can be
+    /// read.
     pub server: Option<StandingServer>,
-    /// The vendor's own trust store, for a vendor whose screen amx answers by
-    /// writing one, and the trees it still names that the disk has not got.
+    /// The vendor's trust store, for a vendor amx answers by writing one, and
+    /// the removed trees it still names.
     pub store: Option<PathBuf>,
     pub stale: Vec<PathBuf>,
-    /// The directory doctor was pointed at, when it was, and what the vendor
-    /// would do for an agent started there.
+    /// The `--dir` directory and whether its vendor would ask to trust it.
     pub folder: Option<Folder>,
-    /// Id directories with no record in them — a spawn that died between
-    /// claiming its id and writing it down — and how many seconds each has
-    /// stood.
+    /// Id directories with no record, left by a spawn that died between
+    /// claiming its id and writing the record, with their age in seconds.
     pub orphan_ids: Vec<(PathBuf, u64)>,
     /// Trees under a repository's `.amx/worktrees` that no record names.
     pub orphan_trees: Vec<PathBuf>,
-    /// Records whose clock says they never worked while their log has turns
-    /// in it, and the seconds those turns add up to.
+    /// Records whose clock is zero while their log has turns, with the
+    /// seconds those turns add up to.
     pub zeroed: Vec<(String, u64)>,
 }
 
-/// How long an id directory with no record stands before `--fix` takes it: a
-/// spawn in the middle of starting holds one for a moment, and this is far
-/// past any moment a spawn takes.
+/// Seconds an id directory without a record stands before `--fix` removes
+/// it. A starting spawn holds one only briefly.
 const ORPHAN_AGE: u64 = 600;
 
-/// A directory an agent would be started in, and whether its vendor would
-/// draw the folder-trust screen there. Read off the store and off git, and
-/// written nowhere.
+/// A directory an agent would start in, and whether its vendor would show the
+/// folder-trust screen there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folder {
     pub dir: PathBuf,
-    /// The repository this is a linked worktree of, when it is one. The vendor
-    /// resolves the tree to it before looking the folder up, and so does the
-    /// answer amx writes at a spawn.
+    /// The repository this is a linked worktree of. The vendor resolves the
+    /// tree to it before looking up trust, as amx does when it writes trust.
     pub repo: Option<PathBuf>,
-    /// Whether the store already lets an agent in, by the directory's own
-    /// entry or the repository's. `None` for a vendor that keeps no store amx
-    /// reads.
+    /// Whether the store trusts the directory or its repository. `None` for a
+    /// vendor whose store amx does not read.
     pub covered: Option<bool>,
-    /// The config's `trust` key, which is what has amx answer for a linked
-    /// worktree when the agent starts.
+    /// The config's `trust` key, which has amx answer for a linked worktree at
+    /// spawn.
     pub trust: bool,
 }
 
-/// One agent's wiring, read off the disk.
-///
-/// The vendor is carried by name and by entry both: the name is what a check
-/// about it says, and the entry is what says which files should be there.
+/// One agent's hook wiring, read off the disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorWiring {
     pub vendor: &'static str,
     pub hooks: Option<&'static Hooks>,
-    /// Where this agent's wiring goes, under the home.
+    /// Where this agent's wiring goes.
     pub wire: PathBuf,
     pub wired: install::Wired,
-    /// The wires a person opts into, each with where it would go and what is
-    /// there now. Empty is the usual state: most machines never ask.
+    /// Opt-in wires, each with its path and state. Usually empty.
     pub opt_in: Vec<(PathBuf, install::Wired)>,
 }
 
-/// The server amx would use, and where its own process is standing.
+/// The tmux server amx would use, and the directory its process is in.
 ///
-/// The socket comes along because the remedy is a command line, and a restart
-/// aimed at the wrong server is worse than no advice at all.
+/// The socket is kept so the remedy can address the right server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StandingServer {
     pub socket: tmux::Socket,
     pub cwd: tmux::ServerCwd,
 }
 
-/// An agent stopped at a screen the vendor puts in front of the work, and
-/// which screen it is. Nobody but the person at the keyboard can get it past
-/// one, so this is a check that names names rather than one amx can fix.
+/// An agent stopped at a vendor setup screen. Only a person can get it past.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parked {
     pub id: String,
     pub screen: Setup,
 }
 
-/// What is in the way.
+/// The screen a parked agent is stopped at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Setup {
-    /// A screen this agent's own vendor draws in front of the work, under the
-    /// name that vendor's document gives it, and whether it is one amx could
-    /// have answered for the tree it cut: the folder-trust question, on a
-    /// vendor whose answer amx knows how to write.
+    /// A setup screen from the vendor's ruleset, by rule name. `trust` is set
+    /// when it is the folder-trust question and amx can answer it for this
+    /// vendor.
     Gate { screen: String, trust: bool },
-    /// A screen no rule claims, under a record that has never left `starting`.
+    /// A screen no rule claims, under a record that never left `starting`.
     Unread,
 }
 
 impl Setup {
-    /// What is in the way, worded for the line that names the agent it stopped.
-    ///
-    /// A gate is named the way the vendor drawing it names it, because the
-    /// screen is the vendor's and so is the word for it. What is left is the
-    /// screen nobody has a rule for, which can only be described.
+    /// The screen, worded for the line that names the agent.
     fn says(&self) -> String {
         match self {
             Setup::Gate { screen, .. } => format!("its vendor's {screen} screen"),
@@ -236,11 +172,9 @@ impl Setup {
     }
 }
 
-/// Judge what was found.
+/// Judge the findings.
 ///
-/// Ten of these are asked on every machine. The eleventh is asked only where
-/// there is something to ask it of: a tmux server already running, on a
-/// platform that can say where a process is standing.
+/// The server and folder checks appear only when there is something to check.
 pub fn report(found: &Findings) -> Vec<Check> {
     let mut checks = vec![tmux_check(found), vendor_check(found), config_check(found)];
     checks.extend(found.wirings.iter().map(wiring_check));
@@ -254,11 +188,10 @@ pub fn report(found: &Findings) -> Vec<Check> {
     checks
 }
 
-/// Whether anything amx made stands with nothing naming it: an id directory
-/// no record was written into, or a tree no record names.
+/// Whether any id directory or worktree amx made has no record.
 ///
-/// The directories are amx's to clear, and `--fix` clears them. A tree is
-/// not: it may hold somebody's work, so it is named and left for them.
+/// `--fix` removes the id directories. Trees may hold work, so they are only
+/// named.
 fn orphan_check(found: &Findings) -> Check {
     let (ids, trees) = (found.orphan_ids.len(), found.orphan_trees.len());
     if ids == 0 && trees == 0 {
@@ -306,11 +239,9 @@ fn tmux_check(found: &Findings) -> Check {
     }
 }
 
-/// Whether the configured agent is there to run.
+/// Whether the configured agent is on the PATH.
 ///
-/// A command the table has no entry for is read as claude, the wrapper law,
-/// and said so on a passing line: it is a guess about the agent, not a fault
-/// on the machine.
+/// A command with no table entry is read as claude; that passes with a note.
 fn vendor_check(found: &Findings) -> Check {
     match &found.vendor_path {
         Some(path) if registry::entry(&found.vendor).is_none() => Check::ok(
@@ -345,17 +276,10 @@ fn config_check(found: &Findings) -> Check {
     )
 }
 
-/// Whether amx's hooks are where this vendor's reports would come from.
+/// Whether the files this vendor's entry ships are the ones installed.
 ///
-/// A vendor that reports nothing is not a machine with something missing from
-/// it: there is nothing to write, nothing for anybody to repair, and what amx
-/// has instead is the pane. A command amx has no entry for is measured neither
-/// way and is judged as the first vendor is — a wrapper somebody wrote around
-/// it loads the same files.
-///
-/// What is judged is whether the files the entry ships are the files that are
-/// there. Repairing it is `amx setup`'s, not doctor's: the remedy names the
-/// agent so that a person with two of them types the right line.
+/// A vendor without hooks passes: amx reads its pane instead. The remedy is
+/// `amx setup <agent>`, named per agent.
 fn wiring_check(found: &VendorWiring) -> Check {
     let who = found.vendor;
     let Some(hooks) = found.hooks else {
@@ -373,9 +297,8 @@ fn wiring_check(found: &VendorWiring) -> Check {
     };
 
     match &found.wired {
-        // The vendor's own word for what amx wrote there: pi loads an
-        // extension, claude loads a plugin, and a person sent to look at one
-        // under the other's name is a person looking for the wrong thing.
+        // Named in the vendor's own terms: pi loads an extension, claude a
+        // plugin.
         install::Wired::File {
             present: true,
             current: true,
@@ -393,10 +316,11 @@ fn wiring_check(found: &VendorWiring) -> Check {
     }
 }
 
-/// Whether amx's groups are in the vendor's hooks file, and each trusted in
-/// its config as the group stands now. A group codex has no trust for, or
-/// trust under a hash that is not the group's, is a group codex will not run
-/// until somebody answers its review screen.
+/// Whether amx's hook groups are in the vendor's hooks file and trusted in its
+/// config under their current hash.
+///
+/// codex does not run a group without matching trust until somebody answers
+/// its review screen.
 fn hooks_check(who: &str, dir: &Path, wired: &install::Wired) -> Check {
     let hooks = dir.join(install::HOOKS_FILE);
     let config = dir.join(install::CONFIG_FILE);
@@ -429,13 +353,10 @@ fn hooks_check(who: &str, dir: &Path, wired: &install::Wired) -> Check {
     }
 }
 
-/// The lines about the wires a person opted into.
+/// Lines for the opt-in wires that are installed.
 ///
-/// A vendor with one is judged only where it already stands: an absent opt-in
-/// file is a machine that never asked for the tool, which is not a fault and
-/// not something to send anybody to fix. A stale one is: it is amx's file, an
-/// older amx wrote it, and an upgrade of the reporting wire alone leaves the
-/// tool calling a verb whose shape has moved.
+/// An absent opt-in file passes silently: nobody asked for it. A stale one was
+/// written by an older amx and may call a verb whose shape has changed.
 fn opt_in_checks(found: &VendorWiring) -> Vec<Check> {
     found
         .opt_in
@@ -459,20 +380,16 @@ fn opt_in_checks(found: &VendorWiring) -> Vec<Check> {
         .collect()
 }
 
-/// The line that wires this check's agent.
+/// The command that wires `who`.
 fn setup_with(who: &str) -> String {
     format!("run `amx setup {who}`")
 }
 
 /// Whether the amx the PATH finds is this one, and the only one.
 ///
-/// Two installed amx diverge quietly. A pi somebody started by hand reports
-/// to whichever amx the PATH finds first, and `--fix` judges the wiring on
-/// disk against what the amx running it ships: so the one on the PATH takes
-/// the reports and passes its own wiring, the one that was rebuilt never
-/// runs, and a doctor run under the first says the machine is fine. It was,
-/// for an amx nobody meant to be using. Every amx on the PATH is named here
-/// so that the one this is not becomes the fault it is.
+/// Hooks report to the first amx on the PATH, and each amx judges the wiring
+/// against what it ships, so with two installs a rebuilt amx may never run
+/// while the other passes its own checks.
 fn amx_check(found: &Findings) -> Check {
     let exe = found.exe.display();
     let Some(first) = found.on_path.first() else {
@@ -511,18 +428,12 @@ fn amx_check(found: &Findings) -> Check {
     )
 }
 
-/// Whether the server amx would use is still standing somewhere that exists.
+/// Whether the tmux server amx would use still stands in a directory that
+/// exists.
 ///
-/// A tmux server keeps the directory it was started in for as long as it
-/// lives. Delete that directory and the server carries on holding it: every
-/// pane forked afterwards starts in a place that is not there, and the vendor
-/// exits before it draws a frame. From the outside that looks like an agent
-/// that failed in under a second having said nothing, which is a long way from
-/// the cause.
-///
-/// `None` where there is nothing to ask — no server yet, or no way to look —
-/// because a check nobody could act on is the kind that sends a person hunting
-/// a fault in their own machine.
+/// A server keeps its start directory for life. Once that is deleted, every
+/// pane it forks starts in a missing directory and the vendor exits at once,
+/// silently. `None` when no server is running or its cwd cannot be read.
 fn server_check(found: &Findings) -> Option<Check> {
     let standing = found.server.as_ref()?;
     let (pid, where_) = (standing.cwd.pid, standing.cwd.path.display());
@@ -541,7 +452,7 @@ fn server_check(found: &Findings) -> Option<Check> {
     })
 }
 
-/// How a tmux command line names this socket.
+/// How a tmux command line addresses `socket`.
 fn address(socket: &tmux::Socket) -> String {
     match socket {
         tmux::Socket::Name(name) => format!("-L {name}"),
@@ -549,13 +460,11 @@ fn address(socket: &tmux::Socket) -> String {
     }
 }
 
-/// Whether amx can keep an agent in the state root, and whether every record
-/// in it has the clock its log says it should.
+/// Whether amx can use the state root, and whether every record's clock
+/// matches its log.
 ///
-/// A record can say it never worked while its log has turns in it. It reads
-/// right, off the log, but only where a reader goes to the log for it; the
-/// number the record itself carries is the one `--fix` puts back, added up
-/// from the same turns. It is amx's own file, so the repair needs no asking.
+/// A record can carry a zero clock while its log has turns; `--fix` rebuilds
+/// the clock from the log.
 fn state_check(found: &Findings) -> Check {
     if let Some(why) = &found.state_error {
         return Check::wrong(
@@ -580,13 +489,10 @@ fn state_check(found: &Findings) -> Check {
     }
 }
 
-/// Whether any handoff still carries the spawner's environment inline, from
-/// before it moved to a file of its own beside the handoff.
+/// Whether any handoff still carries the spawner's environment inline.
 ///
-/// [`spawn::Handoff`] dropped its `env` field, so a record an older amx wrote
-/// still reads fine — serde drops the stray key rather than refusing it — but
-/// the bytes on disk go on holding somebody's environment long after the pane
-/// that needed it ever ran.
+/// [`spawn::Handoff`] no longer has an `env` field. serde ignores the stale
+/// key, but the file still holds the environment.
 fn env_check(found: &Findings) -> Check {
     let dirty = found.dirty_handoffs.len();
     if dirty == 0 {
@@ -622,11 +528,8 @@ fn setup_check(found: &Findings) -> Check {
     };
 
     let remedy = match &first.screen {
-        // The one screen amx can take off the person's hands, once they have
-        // said so: the config key is the consent the write stands behind. Only
-        // offered where the gate is the folder-trust question and the vendor
-        // standing at it is one amx answers that question for, because the key
-        // does nothing for any other.
+        // The config key is offered only for the folder-trust question, and
+        // only for a vendor whose answer amx writes.
         Setup::Gate { trust: true, .. } => format!(
             "answer it yourself: amx attach {}, or set trust = true in the \
              config and amx answers it for any linked worktree",
@@ -637,16 +540,11 @@ fn setup_check(found: &Findings) -> Check {
     Check::wrong("gate", what, remedy)
 }
 
-/// Whether the vendor's own trust store still names trees amx cut and removed.
+/// Whether the vendor's trust store still names trees amx cut and removed.
 ///
-/// The vendor writes a project entry for every directory it is ever started
-/// in, and amx cuts a tree per agent, so the file grows a key for each one and
-/// keeps it long after the tree has gone. Nothing the person did put those
-/// keys there, and nothing but amx knows which of them were its own.
-///
-/// A vendor that answers its folder-trust screen some other way keeps no store
-/// amx has ever written in, and that is not a machine with something missing
-/// from it.
+/// The vendor adds a project entry for every directory it starts in, so each
+/// removed agent tree leaves a key behind. A vendor without such a store
+/// passes.
 fn store_check(found: &Findings) -> Check {
     let Some(store) = &found.store else {
         return Check::ok(
@@ -671,16 +569,14 @@ fn store_check(found: &Findings) -> Check {
     Check::wrong("store", what, "run `amx doctor --fix`")
 }
 
-/// Whether an agent started in the directory doctor was pointed at would meet
-/// its vendor's folder-trust screen, when it was pointed at one.
+/// Whether an agent started in the `--dir` directory would meet its vendor's
+/// folder-trust screen.
 ///
-/// Three ways to be fine: the store covers the directory already, the vendor
-/// keeps no store amx reads, or the directory is a linked worktree and the
-/// config's key has amx answer for it at the spawn. What is left is a screen
-/// somebody has to answer by hand, and the remedy says where: the repository,
-/// for a tree, because its entry covers every tree in it and the key does the
-/// same; the directory itself for anything else, because a checkout and a
-/// plain directory are the person's own to trust.
+/// It passes when the store covers the directory, the vendor keeps no store
+/// amx reads, or the directory is a linked worktree and `trust = true` has amx
+/// answer at spawn. Otherwise the remedy names the repository for a worktree,
+/// since its entry covers every tree, and the directory itself for anything
+/// else.
 fn folder_check(found: &Findings) -> Option<Check> {
     let folder = found.folder.as_ref()?;
     let (who, dir) = (program(&found.vendor), folder.dir.display());
@@ -714,8 +610,8 @@ fn folder_check(found: &Findings) -> Option<Check> {
     })
 }
 
-/// Print the checks, offer the one repair amx can make, and answer with an
-/// exit code: zero when there is nothing left to do.
+/// Print the checks, apply the `--fix` repairs, and return OK only when every
+/// check then passes.
 pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Result<i32> {
     let mut current = found.clone();
     let mut checks = report(&current);
@@ -797,19 +693,12 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
     })
 }
 
-/// The agents this machine is asked about, and what is wired for each.
+/// The agents to check, and their wiring.
 ///
-/// Every entry in the table whose command the PATH finds, in table order, and
-/// the configured one whether or not it is there. A vendor that is not
-/// installed is not a machine with something missing from it, so it is not
-/// mentioned at all; the configured one is always asked about because its
-/// absence is a fault the `agent` check is already making, and because a
-/// machine with no agent installed should still read a hooks line rather than
-/// silently none.
-///
-/// The configured agent is resolved the way [`hooks_of`] resolves it: a
-/// command amx has no entry for is judged as the first vendor is, since a
-/// wrapper somebody wrote around claude loads the same files claude does.
+/// Every table entry whose program is on the PATH, in table order, plus the
+/// configured agent even when missing, so a machine with no agent still gets
+/// a hooks line. A configured command with no table entry is judged as the
+/// first vendor, since a wrapper around claude loads claude's files.
 fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) -> Vec<VendorWiring> {
     let configured = registry::entry(agent).or_else(|| registry::entries().first());
     registry::entries()
@@ -846,8 +735,8 @@ fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) ->
         .collect()
 }
 
-/// Look at the machine, and at `dir` when doctor was pointed at one, under
-/// `config` and what reading it said.
+/// Gather the findings under `config`, including `dir` when doctor was
+/// pointed at one.
 pub fn gather(
     config: &Config,
     config_warnings: Vec<String>,
@@ -858,14 +747,12 @@ pub fn gather(
     let path = std::env::var_os("PATH");
     let wirings = wirings(&config.agent, &home, &install::process_env, path.as_deref());
     let state_root = crate::paths::state_root()?;
-    // Only for the vendor whose screen amx answers by writing its store: any
-    // other keeps no file amx has ever left a key in. A store amx cannot read
-    // names no tree it can be sure of either, and `new` is where that file is
-    // refused by name.
+    // Only a vendor whose trust screen amx answers by writing its store has
+    // keys of amx's in it. An unreadable store yields no stale trees.
     let store = trust::writes_a_store(&config.agent)
         .then(|| {
-            // With the harness table's pairs laid over this environment, since
-            // that is the environment its agents read the store in.
+            // The harness table's env, since that is where its agents look for
+            // the store.
             let mut env = spawn::env_snapshot(std::env::vars());
             spawn::harness_env(&mut env, config, &config.agent);
             trust::store_in(&env)
@@ -889,8 +776,7 @@ pub fn gather(
         state_error: usable(&state_root),
         dirty_handoffs: dirty_handoffs(&state_root),
         parked: parked(
-            // A state root amx cannot read has no agents to report on, and the
-            // check above is where that is said. Here it means none were found.
+            // An unreadable state root is reported by the state check.
             &derive::views(&state_root, store::now()).unwrap_or_default(),
         ),
         orphan_ids: orphan_ids(&state_root, store::now()),
@@ -904,8 +790,7 @@ pub fn gather(
     })
 }
 
-/// Every record under `root` whose clock is zero while its log's turns add up
-/// to more. A root amx cannot read has none to report.
+/// Records under `root` with a zero clock whose log's turns add up to more.
 fn zeroed(root: &Path) -> Vec<(String, u64)> {
     derive::records(root)
         .unwrap_or_default()
@@ -918,9 +803,9 @@ fn zeroed(root: &Path) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// Write each zeroed record's clock back from its log, under its writer, and
-/// answer how many still needed it: one a hook added a span to since the
-/// reading has a clock of its own and is left alone.
+/// Write each zeroed record's clock from its log, under its writer, and return
+/// how many still needed it. A record that gained a span since the reading is
+/// left alone.
 fn rebuild_clocks(root: &Path, zeroed: &[(String, u64)]) -> Result<usize> {
     let mut rebuilt = 0;
     for (id, worked) in zeroed {
@@ -936,8 +821,8 @@ fn rebuild_clocks(root: &Path, zeroed: &[(String, u64)]) -> Result<usize> {
     Ok(rebuilt)
 }
 
-/// Every directory under `root` named like an id with no record in it, and
-/// how long it has stood.
+/// Id-named directories under `root` with no record, and their age in
+/// seconds.
 fn orphan_ids(root: &Path, now: u64) -> Vec<(PathBuf, u64)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -961,8 +846,8 @@ fn orphan_ids(root: &Path, now: u64) -> Vec<(PathBuf, u64)> {
     found
 }
 
-/// Every tree under `.amx/worktrees` in a repository amx has cut trees in —
-/// or the one doctor was pointed into — that no record names.
+/// Trees under `.amx/worktrees` that no record names, in every repository amx
+/// has cut trees in and in the one `dir` belongs to.
 fn orphan_trees(root: &Path, dir: Option<&Path>) -> Vec<PathBuf> {
     let named: Vec<PathBuf> = store::list(root)
         .unwrap_or_default()
@@ -998,18 +883,15 @@ fn orphan_trees(root: &Path, dir: Option<&Path>) -> Vec<PathBuf> {
 }
 
 /// What the vendor would do for an agent started in `dir`, read off the store
-/// and off git.
+/// and git.
 ///
-/// A store amx cannot read covers nothing, as far as this can tell: `new`
-/// refuses to write one by name, so the screen would be drawn and nobody
-/// would answer it, which is the answer given.
+/// A store amx cannot read counts as not covering the directory.
 fn folder(dir: &Path, store: Option<&Path>, trust: bool) -> Folder {
     let repo = worktree::is_linked(dir)
         .then(|| worktree::main_repo(dir).ok())
         .flatten();
     Folder {
-        // Resolved, because the line and the remedy name it, and `--dir .` is
-        // the usual way to ask.
+        // Canonical, since the line prints it and `--dir .` is common.
         dir: std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()),
         covered: store.map(|store| trust::covers(store, dir, repo.as_deref()).unwrap_or(false)),
         repo,
@@ -1017,9 +899,7 @@ fn folder(dir: &Path, store: Option<&Path>, trust: bool) -> Folder {
     }
 }
 
-/// Every handoff under `root` that still carries the spawner's environment
-/// inline. A root amx cannot read has none to report, the same as it has no
-/// agents.
+/// Handoffs under `root` that still carry the environment inline.
 fn dirty_handoffs(root: &Path) -> Vec<PathBuf> {
     store::list(root)
         .unwrap_or_default()
@@ -1031,7 +911,6 @@ fn dirty_handoffs(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether the handoff at `path` still has an `env` key in it.
 fn carries_env(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
@@ -1039,9 +918,8 @@ fn carries_env(path: &Path) -> bool {
         .is_some_and(|doc| doc.get("env").is_some())
 }
 
-/// Rewrite each dirty handoff without its stray `env` key, at the mode
-/// [`spawn::write_handoff`] promises. Answers how many actually needed it —
-/// one gone before this got to it is not a fault, just skipped.
+/// Rewrite each dirty handoff without its `env` key, at the mode
+/// [`spawn::write_handoff`] uses, and return how many needed it.
 fn clean_handoffs(dirty: &[PathBuf]) -> Result<usize> {
     let mut cleaned = 0;
     for path in dirty {
@@ -1065,9 +943,8 @@ fn clean_handoffs(dirty: &[PathBuf]) -> Result<usize> {
     Ok(cleaned)
 }
 
-/// Take each stale tree's key back out of the store, and answer how many
-/// there was anything to take out for — one the vendor rewrote away between
-/// the reading and this is not a fault, just nothing to do.
+/// Remove each stale tree's key from the store and return how many were
+/// still there.
 fn forget_trees(store: &Path, stale: &[PathBuf], now: u64) -> Result<usize> {
     let mut forgotten = 0;
     for tree in stale {
@@ -1078,10 +955,7 @@ fn forget_trees(store: &Path, stale: &[PathBuf], now: u64) -> Result<usize> {
     Ok(forgotten)
 }
 
-/// The server amx would start an agent on, when one is already running.
-///
-/// The same resolution a spawn does, so doctor judges the server that would
-/// actually be used rather than whichever one is easiest to find.
+/// The tmux server a spawn would use, when one is running.
 fn standing_server() -> Option<StandingServer> {
     let server = crate::spawn::server().ok()?;
     Some(StandingServer {
@@ -1090,28 +964,14 @@ fn standing_server() -> Option<StandingServer> {
     })
 }
 
-/// The agents stopped at a screen the vendor draws before it will do anything
-/// else, and which screen each of them is at.
+/// Agents stopped at a vendor setup screen, and which screen.
 ///
-/// Two shapes, because amx can name one of them and can only describe the
-/// other. A screen its vendor's document marks as a gate has a rule measured
-/// off a live vendor, so an agent stopped there is named for what it is — and
-/// named out of that document, which is what lets one check speak for every
-/// vendor's gates rather than for the first vendor's.
-///
-/// What is left is a screen no document has a rule for, and claude's login
-/// prompt is why there is a second shape at all: it cannot honestly be given a
-/// rule from here, because measuring it means logging a real claude out and a
-/// string nobody read off a running vendor is exactly what the ruleset's anchor
-/// law forbids.
-///
-/// So that one is described rather than named: a record that has never left
-/// `starting` — the vendor has begun no turn, and `SessionStart` alone does not
-/// move it — under a screen no rule claims. A vendor that changed its opening
-/// screen reads the same way, and so does one still drawing its first frame
-/// once the record has gone stale enough for the pane to be asked. That is the
-/// cost of describing it, and it is the cheaper mistake: the remedy is to
-/// attach and look, which is what a person would do anyway.
+/// A screen the vendor's ruleset marks as setup is named by its rule.
+/// Otherwise a record still `starting` (`SessionStart` alone does not move it)
+/// under a screen no rule claims is [`Setup::Unread`]. That covers claude's
+/// login prompt, which has no rule because measuring it means logging a real
+/// claude out. It also catches a changed opening screen or a slow first frame;
+/// the remedy, attach and look, is harmless either way.
 fn parked(views: &[View]) -> Vec<Parked> {
     views
         .iter()
@@ -1119,10 +979,8 @@ fn parked(views: &[View]) -> Vec<Parked> {
             let screen = if let Some(gate) = gate(view) {
                 Setup::Gate {
                     screen: gate.name.clone(),
-                    // The document says the screen is the folder-trust
-                    // question; the table says whether amx can answer that
-                    // question for the vendor drawing it. Both, or the offer
-                    // below is a config key that changes nothing.
+                    // The ruleset says it is the folder-trust question; the
+                    // table says whether amx can answer it for this vendor.
                     trust: gate.kind == Some(Kind::Trust) && trust::is_vendor(runs(view)),
                 }
             } else if view.state.state == Phase::Starting && view.phase() == Phase::Unknown {
@@ -1138,12 +996,10 @@ fn parked(views: &[View]) -> Vec<Parked> {
         .collect()
 }
 
-/// The gate this agent is standing at, when the screen its reader claimed is
-/// one its own vendor's document marks as one.
+/// The setup rule this agent's reader claimed, if any.
 ///
-/// The verdict has to say `waiting` as well: a rule is found again by the name
-/// on it, and a reader that concluded anything else has said the agent is past
-/// this screen or never reached it.
+/// The verdict must also be `waiting`: anything else means the agent is past
+/// the screen or never reached it.
 fn gate(view: &View) -> Option<&'static Rule> {
     if view.phase() != Phase::Waiting {
         return None;
@@ -1155,25 +1011,18 @@ fn gate(view: &View) -> Option<&'static Rule> {
         .find(|rule| rule.setup && rule.name == claimed)
 }
 
-/// What runs this agent, which is what finds both the document its screen was
-/// read against and the entry amx would answer a folder-trust screen from. A
-/// record naming no command falls back the way every other reader falls back —
-/// see [`crate::rules::of`].
+/// The command running this agent, which picks its ruleset and trust entry.
+/// A record naming none falls back as [`crate::rules::of`] does.
 fn runs(view: &View) -> &str {
     view.meta.agent.as_deref().unwrap_or_default()
 }
 
-/// Why amx cannot use `root`, when it cannot.
+/// Why amx cannot use `root`, if it cannot.
 ///
-/// An agent's directory is made with all of its missing parents at once, so
-/// the directory that has to take that write is the nearest ancestor already
-/// on disk: the root itself once amx has run here before, the directory above
-/// it on a machine where it has not. The root is read as well as written once
-/// it exists, because listing it is how every reader finds the agents.
-///
-/// The failure this exists for is quiet: a root that cannot be made and a
-/// machine that has simply never run an agent both list as no agents at all,
-/// and the difference only shows up as a spawn failing later.
+/// Agent directories are made with their missing parents, so the nearest
+/// existing ancestor must be writable. An existing root must also be readable,
+/// since readers list it. Without this check an unusable root lists as no
+/// agents, the same as an unused one.
 fn usable(root: &Path) -> Option<String> {
     let mut dir = root;
     while !dir.exists() {
@@ -1197,10 +1046,8 @@ fn usable(root: &Path) -> Option<String> {
     })
 }
 
-/// Run the verb against the machine, and against `dir` when there is one.
+/// Run the verb against the machine, and against `dir` when given.
 pub fn from_env(fix: bool, dir: Option<&Path>) -> Result<i32> {
-    // A directory that is not there is a different fault from a screen, and
-    // an agent could not be started in it whatever the store says.
     if let Some(dir) = dir
         && !dir.is_dir()
     {
@@ -1217,10 +1064,9 @@ pub fn from_env(fix: bool, dir: Option<&Path>) -> Result<i32> {
     run(&found, fix, crate::store::now(), &mut out)
 }
 
-/// The config an agent started in `dir` would run under, else one started in
-/// `cwd`: a project's file names the agent its work is written for, and that
-/// is the agent worth asking about. A working directory that has gone is the
-/// person's file alone.
+/// The config an agent started in `dir`, else `cwd`, would run under, since a
+/// project's file names the agent worth checking. With neither, the person's
+/// file alone.
 fn config_in(dir: Option<&Path>, cwd: Option<&Path>, root: &Path) -> (Config, Vec<String>) {
     match dir.or(cwd) {
         Some(here) => crate::config::for_dir_in(here, root),
@@ -1228,15 +1074,14 @@ fn config_in(dir: Option<&Path>, cwd: Option<&Path>, root: &Path) -> (Config, Ve
     }
 }
 
-/// The program a configured command runs, without its arguments.
+/// The first word of a configured command, path included.
 fn program(command: &str) -> &str {
     command.split_whitespace().next().unwrap_or(command)
 }
 
-/// Where a program resolves to, given a `PATH`.
+/// Where `program` resolves on `path`.
 fn on_path(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
-    // A command with a separator in it is a path, and a shell would not search
-    // for it either.
+    // A command with a slash is a path; a shell would not search for it.
     if program.contains('/') {
         let named = PathBuf::from(program);
         return runnable(&named).then_some(named);
@@ -1248,9 +1093,8 @@ fn on_path(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
         .find(|candidate| runnable(candidate))
 }
 
-/// Every program called `program` a `PATH` would run, in the order it looks,
-/// each file once: a file reached by two names is one install, and one
-/// install answering to two names is how the fault above is mended.
+/// Every runnable `program` on `path`, in search order, each file once however
+/// many names reach it.
 fn every_on_path(program: &str, path: Option<&OsStr>) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     for dir in path.map(std::env::split_paths).into_iter().flatten() {
@@ -1266,7 +1110,7 @@ fn every_on_path(program: &str, path: Option<&OsStr>) -> Vec<PathBuf> {
     found
 }
 
-/// Whether this is a file that could be run.
+/// Whether `path` is an executable file.
 fn runnable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
@@ -1281,8 +1125,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
-    /// The screens a vendor's document marks as gates in front of the work,
-    /// which is the list this check reads instead of holding one of its own.
+    /// The screens a vendor's ruleset marks as setup gates.
     fn gates(agent: &str) -> Vec<&'static Rule> {
         crate::rules::of(agent)
             .rules()
@@ -1291,12 +1134,8 @@ mod tests {
             .collect()
     }
 
-    /// One screen out of a vendor's document: what it means, and whether it is
-    /// one of that vendor's gates.
-    ///
-    /// No screen is spelled out in this file, for the reason none is spelled
-    /// out in the code it tests: the names are the vendors' own, and a test
-    /// holding a copy of one is the same list in a second place.
+    /// A rule name from a vendor's ruleset, by meaning and whether it is a
+    /// gate. Names are looked up so none is copied into this file.
     fn screen(agent: &str, means: Phase, gate: bool) -> &'static str {
         crate::rules::of(agent)
             .rules()
@@ -1306,7 +1145,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{agent:?} draws no such screen"))
     }
 
-    /// One agent's wiring, whole or missing, where its own entry puts it.
+    /// One agent's wiring, present or missing, where its entry puts it.
     fn wiring(vendor: &'static str, there: bool) -> VendorWiring {
         let hooks = registry::entry(vendor).and_then(|v| v.hooks.as_ref());
         VendorWiring {
@@ -1447,7 +1286,7 @@ mod tests {
             "zeroed-a1b",
             &[(1_010, "UserPromptSubmit"), (1_070, "Stop")],
         );
-        // Nothing to rebuild from: a log with no turns says nothing new.
+        // A log with no turns gives nothing to rebuild from.
         record("quiet-b2c", &[(1_000, "SessionStart")]);
 
         let found = Findings {
@@ -1470,14 +1309,10 @@ mod tests {
         assert!(super::zeroed(root.path()).is_empty());
     }
 
-    /// An agent as a reader hands it over. The record is deserialised rather
-    /// than built field by field, because that is how a real one arrives and a
-    /// field added to `Meta` tomorrow should not land here.
+    /// An agent as a reader returns it. The record is deserialised so new
+    /// `Meta` fields need no change here.
     ///
-    /// `agent` is the command in the pane, which is what decides whose screens
-    /// this record is read against. `None` is a record that names none — a
-    /// shell command, or one an older amx wrote — and reads the vendor every
-    /// reader falls back to.
+    /// `agent` picks the ruleset; `None` falls back to the default vendor.
     fn view(
         agent: Option<&str>,
         id: &str,
@@ -1511,8 +1346,7 @@ mod tests {
         }
     }
 
-    /// A directory nobody but its owner may write to is the whole of these
-    /// tests, and root is exempt from the permission bits.
+    /// Whether permission tests can run: root bypasses mode bits.
     fn not_root() -> bool {
         if nix::unistd::Uid::effective().is_root() {
             eprintln!("skipping: running as root, which every directory lets in");
@@ -1521,8 +1355,7 @@ mod tests {
         true
     }
 
-    /// git as the tests run it: none of the developer's own configuration,
-    /// and an identity of its own.
+    /// Run git with no user config and a fixed identity.
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .current_dir(dir)
@@ -1571,7 +1404,7 @@ mod tests {
         assert!(printed.contains("tmux"), "{printed}");
     }
 
-    /// A server standing in `path`, deleted or not.
+    /// A server whose cwd is `path`, stale or not.
     fn standing(path: &str, stale: bool) -> StandingServer {
         StandingServer {
             socket: crate::tmux::Socket::Name("default".to_string()),
@@ -1585,8 +1418,7 @@ mod tests {
 
     #[test]
     fn doctor_says_nothing_about_a_server_it_cannot_see() {
-        // No server running, or a platform with no way to look: either way
-        // there is nothing here to report and nothing to repair.
+        // No server, or no way to read its cwd: no line at all.
         let found = healthy();
         assert!(found.server.is_none());
         assert!(
@@ -1613,8 +1445,8 @@ mod tests {
 
     #[test]
     fn doctor_names_a_server_whose_directory_was_deleted() {
-        // The failure this check exists for: doctor was green while every
-        // agent died in under a second, because nothing asked this.
+        // Without this check doctor passed while every new agent died within
+        // a second.
         let mut found = healthy();
         found.server = Some(standing("/tmp/no-git-test", true));
 
@@ -1640,8 +1472,8 @@ mod tests {
 
     #[test]
     fn the_restart_names_the_socket_the_server_is_actually_on() {
-        // A remedy that said `-L default` for a server reached by path would
-        // send somebody to restart the wrong one.
+        // `-L default` for a server reached by path would restart the wrong
+        // one.
         let mut found = healthy();
         found.server = Some(StandingServer {
             socket: crate::tmux::Socket::Path(PathBuf::from("/run/user/1000/tmux/sock")),
@@ -1690,8 +1522,7 @@ mod tests {
 
     #[test]
     fn doctor_warns_of_an_agent_the_table_has_no_entry_for_and_passes_it() {
-        // A wrapper somebody wrote is read as claude, which is a guess worth
-        // saying out loud and not a fault: the machine runs it fine.
+        // An unknown wrapper is read as claude: worth a note, but it passes.
         let mut found = healthy();
         found.vendor = "/opt/bin/my-agent --fast".to_string();
         found.vendor_path = Some(PathBuf::from("/opt/bin/my-agent"));
@@ -1705,7 +1536,7 @@ mod tests {
             agent.found
         );
 
-        // A path to a vendor the table knows is that vendor, and says nothing.
+        // A path to a known vendor is that vendor, with no note.
         found.vendor = "/opt/pi/bin/pi".to_string();
         let agent = check(&found, "agent");
         assert!(agent.is_ok(), "{agent:?}");
@@ -1724,7 +1555,7 @@ mod tests {
         );
     }
 
-    /// A project whose allowed file names `agent`, under `root`'s consent.
+    /// A project whose config names `agent`, allowed under `root`.
     fn a_project_for(agent: &str, root: &Path) -> TempDir {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join(".amx")).unwrap();
@@ -1740,8 +1571,8 @@ mod tests {
 
     #[test]
     fn doctor_asks_about_the_agent_of_the_project_it_is_pointed_at_else_stands_in() {
-        // The agent row, the hooks lines and the store check all follow the
-        // agent this reads, so a codex project is asked about as codex.
+        // The agent, hooks and store checks follow this config, so a codex
+        // project is checked as codex.
         let state = TempDir::new().unwrap();
         let root = state.path().join("agents");
         let codex = a_project_for("codex", &root);
@@ -1783,9 +1614,7 @@ mod tests {
 
     #[test]
     fn doctor_says_a_vendor_that_reports_nothing_leaves_the_pane_to_read() {
-        // Hooks are a vendor's own doing, and one that has none is not a
-        // machine with something missing from it: there is nothing to wire and
-        // nothing to fix, and what amx has instead is the pane.
+        // A vendor without hooks has nothing to wire; amx reads its pane.
         let hooks = wiring_check(&VendorWiring {
             vendor: SECOND.name,
             hooks: None,
@@ -1800,7 +1629,7 @@ mod tests {
         assert!(hooks.found.contains(SECOND.name), "{}", hooks.found);
         assert!(hooks.found.contains("pane"), "{}", hooks.found);
 
-        // A vendor that does report is judged, and told which line wires it.
+        // A vendor with hooks is judged, and the remedy names its setup line.
         let hooks = wiring_check(&wiring("claude", false));
         assert!(!hooks.is_ok(), "{hooks:?}");
         let remedy = hooks.remedy.as_deref().unwrap();
@@ -1813,9 +1642,8 @@ mod tests {
 
     #[test]
     fn doctor_fails_hooks_whose_trust_is_missing_or_stale() {
-        // codex runs a group only while config.toml trusts it under the hash
-        // of the group as it stands, so amx's groups being in the file is half
-        // of being wired.
+        // codex runs a hook group only while config.toml trusts it under the
+        // group's current hash, so being in hooks.json is not enough.
         const HOOKS: Hooks = Hooks {
             wire: install::HOOKS_WIRE,
             ..crate::vendor::claude::HOOKS
@@ -1874,9 +1702,8 @@ mod tests {
 
     #[test]
     fn a_wrapper_somebody_wrote_is_judged_as_the_vendor_underneath_it_is() {
-        // A command amx has no entry for loads the files the first vendor
-        // loads, so the machine is asked about that vendor rather than about
-        // nothing at all.
+        // An unknown command is checked as the first vendor, whose files a
+        // wrapper loads.
         let asked = wirings("my-claude", Path::new("/home/dev"), &install::no_env, None);
         assert_eq!(
             asked.iter().map(|w| w.vendor).collect::<Vec<_>>(),
@@ -1887,10 +1714,8 @@ mod tests {
 
     #[test]
     fn an_agent_this_machine_has_not_got_is_not_asked_about() {
-        // Nothing is missing from a machine that never installed pi, so
-        // doctor says nothing about pi at all. The configured agent is the
-        // exception: its absence is the `agent` check's to report, and a
-        // hooks line about it is what names the line that wires it.
+        // An uninstalled pi gets no line. The configured agent always gets
+        // one, so its hooks line can name the setup command.
         let dir = TempDir::new().unwrap();
         let pi = dir.path().join("pi");
         std::fs::write(&pi, "#!/bin/sh\n").unwrap();
@@ -1919,9 +1744,7 @@ mod tests {
         );
     }
 
-    /// pi, wired the way its hooks say it will be: the entry in the table
-    /// does not carry them yet, so the check is asked about a vendor built
-    /// here that does.
+    /// pi with its hooks set here, independent of the table entry.
     static PI_WIRED: Vendor = Vendor {
         hooks: Some(crate::vendor::pi::HOOKS),
         ..crate::vendor::pi::VENDOR
@@ -1942,8 +1765,8 @@ mod tests {
         let hooks = wiring_check(&found);
         assert!(!hooks.is_ok());
         assert!(hooks.found.contains("no extension"), "{}", hooks.found);
-        // The verb, naming this check's own agent, so that a person with two
-        // of them types the right line.
+        // The remedy names this agent, so somebody with two runs the right
+        // one.
         assert_eq!(
             hooks.remedy.as_deref(),
             Some("run `amx setup pi`"),
@@ -1989,7 +1812,7 @@ mod tests {
         assert_eq!(on_path("nowhere", Some(&path)), None);
         assert_eq!(on_path("claude", None), None);
 
-        // A command that is a path is not looked for on the PATH at all.
+        // A path is checked directly, not searched for.
         assert_eq!(
             on_path(&claude.to_string_lossy(), None),
             Some(claude.clone())
@@ -2010,9 +1833,8 @@ mod tests {
 
     #[test]
     fn doctor_names_a_second_amx_on_the_path() {
-        // The machine this check exists for: two installs, and `amx doctor
-        // --fix` run under the stale one judged the stale extension against
-        // its own body, said ok, and the build carrying the fix never ran.
+        // Two installs: `amx doctor --fix` under the stale one judged the
+        // stale extension against its own copy and passed.
         let stale = PathBuf::from("/home/dev/.cargo/bin/amx");
         let fresh = PathBuf::from("/home/dev/.local/bin/amx");
 
@@ -2032,8 +1854,8 @@ mod tests {
         );
         assert_eq!(said(&found, false).0, exit::FAILURE);
 
-        // Run under the fresh one instead, the PATH still reaches the stale
-        // one first, and that is the one a pi started by hand reports to.
+        // Under the fresh one, the PATH still finds the stale one first, and
+        // hand-started agents report there.
         found.exe = fresh;
         let amx = check(&found, "amx");
         assert!(!amx.is_ok(), "{amx:?}");
@@ -2055,8 +1877,8 @@ mod tests {
             amx.found
         );
 
-        // Started by its path, with nothing on the PATH by that name: a pi
-        // somebody started by hand has no amx to report to.
+        // Run by path with no amx on the PATH: a hand-started agent has
+        // nowhere to report.
         let mut found = healthy();
         found.on_path = Vec::new();
         let amx = check(&found, "amx");
@@ -2074,7 +1896,7 @@ mod tests {
         );
     }
 
-    /// Whether `said` names no vendor in the table but the one in hand.
+    /// Whether `said` names no table vendor other than `in_hand`.
     fn names_no_other_vendor(said: &str, in_hand: &str) -> bool {
         let words: Vec<&str> = said
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
@@ -2098,12 +1920,11 @@ mod tests {
             amx
         };
         let real = program(&first, 0o755);
-        // The same file under a second name, which is how one install is
-        // meant to answer both.
+        // A symlink: one install under two names.
         std::os::unix::fs::symlink(&real, second.path().join("amx")).unwrap();
-        // A file that happens to be called amx and that no shell would run.
+        // Not executable, so not a program.
         program(&third, 0o644);
-        // And another program of the name, which is the fault.
+        // A second install: the fault.
         let other = program(&fourth, 0o755);
 
         let path = std::env::join_paths([second.path(), first.path(), third.path(), fourth.path()])
@@ -2128,8 +1949,7 @@ mod tests {
 
     #[test]
     fn doctor_names_an_unwritable_state_root_instead_of_saying_no_agents() {
-        // A state root nobody can write to and a machine that has simply never
-        // run an agent look the same from a listing: both say "no agents".
+        // An unwritable root and an unused one both list no agents.
         let mut found = healthy();
         found.state_root = PathBuf::from("/srv/amx/agents");
         found.state_error =
@@ -2176,14 +1996,14 @@ mod tests {
         std::fs::create_dir(&closed).unwrap();
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        // The root is two levels below a directory that will not take it, so
-        // the name in the answer is the directory that actually refused.
+        // The root is two levels below the read-only directory, which is the
+        // one named.
         let why = usable(&closed.join("amx/agents")).expect("nowhere to make it");
         assert!(why.contains(&closed.display().to_string()), "{why}");
     }
 
-    /// An agent record, with a handoff written the way `spawn` writes one —
-    /// only `meta.json` matters to `store::list`, so it need not parse.
+    /// An agent record holding `handoff`. `store::list` needs only `meta.json`
+    /// to exist, so it need not parse.
     fn a_record(root: &Path, id: &str, handoff: &[u8]) -> PathBuf {
         let dir = root.join(id);
         std::fs::create_dir(&dir).unwrap();
@@ -2253,9 +2073,8 @@ mod tests {
         assert!(after.get("env").is_none(), "{after}");
     }
 
-    /// Somebody's store, with the repository they work in, a key of their own,
-    /// and one key per tree amx cut in there — the shape a store that nobody
-    /// has ever pruned arrives in.
+    /// A claude trust store with two of the person's own keys and one key per
+    /// tree in `trees`.
     fn a_store(dir: &TempDir, trees: &[&Path]) -> PathBuf {
         let store = dir.path().join(".claude.json");
         let mut projects = serde_json::Map::new();
@@ -2279,9 +2098,8 @@ mod tests {
 
     #[test]
     fn doctor_counts_the_trees_the_vendors_store_still_names_after_they_went() {
-        // The store grows a key for every directory the vendor is started in,
-        // and amx cuts a tree per agent: a store nobody prunes carries one key
-        // per agent that ever ran, long after the tree it names has gone.
+        // The store gains a key per directory the vendor starts in, so every
+        // removed agent tree leaves one behind.
         let mut found = healthy();
         found.store = Some(PathBuf::from("/home/dev/.claude.json"));
         let store = check(&found, "store");
@@ -2309,9 +2127,7 @@ mod tests {
 
     #[test]
     fn doctor_asks_nothing_of_a_vendor_that_keeps_no_store_amx_writes() {
-        // pi's answer to the same screen is a flag on the argv, spent the
-        // moment the run ends: there is no file of the vendor's for amx to
-        // have left keys in, so there is nothing here to prune.
+        // A vendor answered by an argv flag, as pi is, has no store to prune.
         let mut found = healthy();
         found.vendor = SECOND.name.to_string();
         found.store = None;
@@ -2356,7 +2172,7 @@ mod tests {
         );
     }
 
-    /// A directory doctor was asked about, judged.
+    /// Findings for a `--dir` directory with the given answers.
     fn asked(repo: Option<&str>, covered: Option<bool>, trust: bool) -> Findings {
         Findings {
             folder: Some(Folder {
@@ -2371,9 +2187,8 @@ mod tests {
 
     #[test]
     fn doctor_says_whether_an_agent_started_in_a_directory_would_meet_the_trust_screen() {
-        // Asked only with --dir, so that a caller about to start a reader it
-        // cannot see finds out here instead of losing it to a screen nobody
-        // can attach to in time. Every answer is on the exit code.
+        // Only asked with --dir, so a caller can check before starting an
+        // agent it will never attach to. Every answer shows in the exit code.
         assert!(
             report(&healthy()).iter().all(|check| check.name != "trust"),
             "nothing was asked about, so nothing is said"
@@ -2471,8 +2286,7 @@ mod tests {
 
     #[test]
     fn doctor_names_the_agent_stopped_at_the_vendors_trust_question() {
-        // The folder-trust question, read as the vendor's document marks it
-        // rather than as a name this file knows.
+        // The rule name comes from claude's ruleset, never from this file.
         let gate = screen("claude", Phase::Waiting, true);
         let mut found = healthy();
         found.parked = parked(&[view(
@@ -2501,9 +2315,8 @@ mod tests {
 
     #[test]
     fn doctor_names_an_agent_stopped_at_another_vendors_gate() {
-        // The gates are the vendor's own, and pi's are screens claude never
-        // draws: a check that knew one vendor's rule by name said nothing at
-        // all about an agent that never got past any of these.
+        // pi's gates are its own screens; a check keyed on claude's rule
+        // names would miss them.
         let gates = gates("pi");
         assert!(!gates.is_empty(), "pi's document marks its own gates");
 
@@ -2527,9 +2340,7 @@ mod tests {
             let remedy = stopped.remedy.as_deref().unwrap();
             assert!(remedy.contains("amx attach port-cli-b91"), "{remedy}");
 
-            // The offer is the folder-trust question's alone. On a gate that
-            // asks anything else the config key answers nothing, whoever drew
-            // the screen.
+            // The trust key is offered only for the folder-trust question.
             if gate.kind != Some(Kind::Trust) {
                 assert!(!remedy.contains("trust = true"), "{remedy}");
             }
@@ -2538,12 +2349,9 @@ mod tests {
 
     #[test]
     fn the_offer_to_answer_a_gate_is_made_for_the_vendors_amx_answers_it_for() {
-        // The config key stands behind a write into one vendor's own store,
-        // and amx makes that write only for a command it has an entry for.
-        // These two are read against that vendor's screens — a wrapper is that
-        // program underneath, and a record naming nothing falls back to it —
-        // but the key would answer for neither, so the screen is still named
-        // and the question is left to whoever is at the keyboard.
+        // A wrapper and a record naming no command are read against claude's
+        // screens, but amx writes trust only for a command it has an entry
+        // for, so the key is not offered.
         for command in [Some("my-claude"), None] {
             let mut found = healthy();
             found.parked = parked(&[view(
@@ -2564,9 +2372,8 @@ mod tests {
 
     #[test]
     fn doctor_names_an_agent_the_vendor_never_let_start() {
-        // What a login prompt looks like from out here, and amx says only what
-        // it can see: a screen no rule claims, from an agent that has never
-        // reported anything.
+        // How a login prompt looks from outside: a screen no rule claims, on
+        // an agent that never reported.
         let mut found = healthy();
         found.parked = vec![Parked {
             id: "port-cli-b91".to_string(),
@@ -2614,17 +2421,14 @@ mod tests {
 
     #[test]
     fn only_an_agent_that_never_got_started_is_stopped_at_a_gate() {
-        // Every screen here is read out of the document of the vendor the
-        // record names, and most of these name none — what an older amx wrote,
-        // and what a shell command still writes — so they are read against the
-        // vendor every reader falls back to.
+        // Most records here name no command, as older records and shell
+        // commands do, so their screens come from the fallback ruleset.
         let working = screen("", Phase::Working, false);
         let idle = screen("", Phase::Idle, false);
         let asking = screen("", Phase::Waiting, false);
         let gate = screen("", Phase::Waiting, true);
-        // A gate of pi's that asks something other than whether to trust the
-        // folder, so that what it is offered turns on the screen and not on
-        // which vendor is standing at it.
+        // A pi gate other than folder trust: the trust offer depends on the
+        // screen, not the vendor.
         let elsewhere = gates("pi")
             .into_iter()
             .find(|rule| rule.kind != Some(Kind::Trust))
@@ -2654,14 +2458,12 @@ mod tests {
                 Some(gate),
             ),
             view(None, "login-e5f", Phase::Starting, Phase::Unknown, None),
-            // Interrupted mid-turn onto a screen no rule claims. The vendor let
-            // this one start, so it is not stopped at a gate.
+            // Interrupted mid-turn onto an unclaimed screen: it did start.
             view(None, "lost-f6g", Phase::Working, Phase::Unknown, None),
-            // Started, drawn, and sitting at its prompt with nothing to do.
+            // Started and idle at its prompt.
             view(None, "fresh-g7h", Phase::Starting, Phase::Idle, Some(idle)),
-            // Another vendor's gate, on a record that says so. Read against
-            // claude's screens this is a name no rule has, and the agent is
-            // one nobody would have been told about.
+            // A pi gate on a pi record. Read against claude's ruleset it
+            // would match no rule and go unreported.
             view(
                 Some("pi"),
                 "setup-h8i",
@@ -2704,8 +2506,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("agents");
         std::fs::create_dir(&root).unwrap();
-        // Write and search but no read: a listing of it fails outright, which
-        // is the other way a full state root passes for an empty one.
+        // Write and search but no read: listing fails, which would otherwise
+        // pass for an empty root.
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o300)).unwrap();
 
         let why = usable(&root);
