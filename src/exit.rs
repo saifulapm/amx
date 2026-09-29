@@ -1,37 +1,38 @@
 //! Process exit codes.
 //!
-//! These are amx's API: callers — a person's shell script and the orchestrator
-//! alike — branch on them. Changing a number here changes the contract.
+//! These are part of amx's interface: scripts and orchestrators branch on
+//! them, so changing a number is a breaking change.
 
-/// Success. `result`: the answer was printed.
+/// Success. For `result`, the answer was printed.
 pub const OK: i32 = 0;
 
-/// Failure, and no answer is coming. `result`: the agent is failed or stopped.
-/// Any verb: an id that names no agent.
+/// Failure with no answer coming. For `result`, the agent failed or was
+/// stopped. For any verb, the id names no agent.
 pub const FAILURE: i32 = 1;
 
-/// Blocked: `result`, `sub` and `interrupt` on a waiting agent (its question
-/// goes to stdout), `send` refused because the agent is waiting, `answer` with
-/// nothing pending, `new`, `sub`, `fork` and `resume` at a project's
-/// `max_agents` or the machine's `max_total`, `new` and `sub` past
-/// `subagent_depth`, `sub` past `max_children` or refused a `--permission`,
-/// `resume` on an agent still running.
+/// Blocked. Returned by:
+///
+/// - `result`, `sub` and `interrupt` on a waiting agent (the question goes to
+///   stdout);
+/// - `send` to a waiting agent, and `answer` with nothing pending;
+/// - `new`, `sub`, `fork` and `resume` at `max_agents` or `max_total`;
+/// - `new` and `sub` past `subagent_depth`, and `sub` past `max_children` or
+///   refused a `--permission`;
+/// - `resume` on an agent that is still running.
 pub const BLOCKED: i32 = 2;
 
 /// `result --timeout` expired.
 pub const TIMEOUT: i32 = 3;
 
-/// Malformed command line (`EX_USAGE`). An unknown verb or flag, a missing
-/// argument or an unparseable option value is not a state-machine outcome, so
-/// it never borrows one of the codes above. `--help` and `--version` are not
-/// failures and exit `OK`.
+/// Malformed command line (`EX_USAGE`): an unknown verb or flag, a missing
+/// argument, or an unparseable value. `--help` and `--version` exit `OK`.
 pub const USAGE: i32 = 64;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The numbers are the contract; this test is the tripwire that says so.
+    /// The numbers are the contract, so they are pinned.
     #[test]
     fn exit_codes_are_pinned() {
         assert_eq!(OK, 0);

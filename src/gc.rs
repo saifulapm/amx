@@ -1,15 +1,8 @@
-//! Forgetting agents that ended a long time ago.
+//! Removal of records for agents that ended long ago.
 //!
-//! Records are how an agent's answer outlives its pane, so they are kept well
-//! past the moment somebody stopped watching. What is swept is only what has
-//! plainly been read or abandoned: an agent whose command ended, a week ago.
-//!
-//! A stopped agent is never swept. Somebody stopped it on purpose, and its
-//! record is where the branch it left behind is named. Nor is any record whose
-//! tree is still on the disk, for the same reason.
-//!
-//! This is the one thing a reader writes, and it happens on `ls` because that
-//! is the command a person runs often and expects nothing of.
+//! Only `done` and `failed` records older than [`KEEP`] are swept. A stopped
+//! agent is kept, since its record names the branch it left behind, and so is
+//! any record whose worktree still exists. The sweep runs on `ls`.
 
 use crate::derive::Record;
 use crate::store::{Meta, Phase, State};
@@ -18,19 +11,15 @@ use crate::tmux::Server;
 /// How long a finished agent's record is kept.
 pub const KEEP: u64 = 7 * 24 * 60 * 60;
 
-/// Remove the records that have outlived their use, and answer with the ones
-/// that are left.
+/// Remove the records past keeping and return the rest.
 ///
-/// Over a reading somebody has already taken. Whether a record is worth keeping
-/// is the phase on it and when it was last heard from, which the listing has
-/// read the document for anyway — so that reading picks what might go, and
-/// most records are read once. What does go is asked again under its writer,
-/// because the listing's reading may be older than a resume.
+/// Candidates are picked from the listing's own reading, so most records are
+/// read once. Each candidate is checked again under its writer lock before it
+/// is removed, because the reading may predate a resume.
 pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
     let mut kept = Vec::new();
     for record in records {
-        // A record that will not go is not worth failing a listing over, and
-        // it is still on the disk to be listed.
+        // A record that fails to go is kept in the listing.
         if !past_keeping(&record.state, now) || holding(&record.meta) || !forgot(&record, now) {
             kept.push(record);
         }
@@ -38,14 +27,12 @@ pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
     kept
 }
 
-/// Remove one record the listing's reading says is past keeping, if it still
-/// is.
+/// Remove one record if it is still past keeping.
 ///
-/// The writer is taken before anything is decided and held until the record
-/// is gone: a resume takes it too, so it either finished before this and the
-/// record reads as running, or it waits and finds nothing to resume. A pane
-/// that still answers for the agent is somebody's to read, whatever the phase
-/// on the record says.
+/// The writer lock is held until the record is gone. `resume` takes the same
+/// lock, so it either finished first and the record reads as running, or it
+/// waits and finds no record. A record whose pane still answers is kept
+/// whatever its phase.
 fn forgot(record: &Record, now: u64) -> bool {
     let Ok(_writer) = record.agent.writer() else {
         return false;
@@ -59,16 +46,13 @@ fn forgot(record: &Record, now: u64) -> bool {
         && record.agent.remove().is_ok()
 }
 
-/// Whether a record's tree is still on the disk.
-///
-/// The record is the only thing that names the tree and its branch, and a tree
-/// nothing names is work nobody finds again: it stays until the tree has gone.
+/// Whether a record's worktree still exists. The record is the only thing
+/// that names the tree and its branch, so it is kept until the tree is gone.
 fn holding(meta: &Meta) -> bool {
     meta.worktree.as_ref().is_some_and(|tree| tree.exists())
 }
 
-/// Whether a record has outlived its use: a command that ended, long enough ago
-/// that whatever it answered has been read or abandoned.
+/// Whether a record is a finished command older than [`KEEP`].
 fn past_keeping(state: &State, now: u64) -> bool {
     matches!(state.state, Phase::Done | Phase::Failed)
         && now.saturating_sub(state.last_event.max(state.since)) > KEEP
@@ -112,8 +96,8 @@ mod tests {
         wrote(&agent, phase, last_event);
     }
 
-    /// Straight onto disk: the writer stamps `last_event` with now, and these
-    /// records are meant to be old.
+    /// Write the state directly: the writer would stamp `last_event` with now,
+    /// and these records must be old.
     fn wrote(agent: &Agent, phase: Phase, last_event: u64) {
         let state = State {
             state: phase,
@@ -128,7 +112,7 @@ mod tests {
         .unwrap();
     }
 
-    /// The records a listing has in hand by the time it sweeps.
+    /// The records a listing holds when it sweeps.
     fn read(root: &Path) -> Vec<Record> {
         crate::derive::records(root).expect("the records")
     }
@@ -155,17 +139,14 @@ mod tests {
         record(root.path(), "old-failed-c3d", Phase::Failed, NOW - KEEP - 1);
         record(root.path(), "just-done-e5f", Phase::Done, NOW - 60);
 
-        // What comes back is what the listing goes on to answer with, and the
-        // records are gone from the disk with it.
+        // The kept records are returned, and the rest are gone from disk.
         assert_eq!(ids(&sweep(read(root.path()), NOW)), ["just-done-e5f"]);
         assert_eq!(left(root.path()), ["just-done-e5f"]);
     }
 
     #[test]
     fn a_kept_tree_keeps_its_record() {
-        // A week-old finished agent whose tree is still on the disk: the
-        // record is the only thing that names the tree and its branch, so it
-        // stays until the tree has gone.
+        // A week-old finished record whose tree still exists is kept.
         let root = TempDir::new().unwrap();
         let tree = root.path().join("repo/.amx/worktrees/old-done-a1b");
         std::fs::create_dir_all(&tree).unwrap();
@@ -180,7 +161,7 @@ mod tests {
 
         assert_eq!(ids(&sweep(read(root.path()), NOW)), ["old-done-a1b"]);
 
-        // Once the tree has gone, so may the record.
+        // Once the tree is gone, the record may go.
         std::fs::remove_dir_all(&tree).unwrap();
         assert!(sweep(read(root.path()), NOW).is_empty());
     }
@@ -188,11 +169,11 @@ mod tests {
     #[test]
     fn reader_keeps_what_somebody_may_still_want() {
         let root = TempDir::new().unwrap();
-        // Finished, but recently: its answer is the reason it is kept.
+        // Finished recently.
         record(root.path(), "just-done-a1b", Phase::Done, NOW - 60);
-        // Stopped on purpose: its branch is named in the record.
+        // Stopped: the record names its branch.
         record(root.path(), "stopped-c3d", Phase::Stopped, NOW - KEEP - 1);
-        // Still going, however old the last event is.
+        // Still running, however old the last event.
         record(root.path(), "working-e5f", Phase::Working, NOW - KEEP - 1);
         record(root.path(), "waiting-g7h", Phase::Waiting, NOW - KEEP - 1);
 
@@ -202,11 +183,10 @@ mod tests {
 
     #[test]
     fn reader_picks_from_the_records_it_was_handed_and_asks_again_before_it_takes() {
-        // The state document each record was read from says the opposite of
-        // what is on the disk now. The reading picks what might go, so a
-        // record that grew old since is left for the next listing; the disk
-        // decides what does go, so a record resumed since is not taken out
-        // from under the agent now running in it.
+        // Each record's reading disagrees with the disk. The reading picks
+        // candidates, so a record that aged since is left for the next
+        // listing; the disk decides removal, so a record resumed since is
+        // kept.
         let root = TempDir::new().unwrap();
         record(root.path(), "old-done-a1b", Phase::Done, NOW - KEEP - 1);
         record(root.path(), "just-done-c3d", Phase::Done, NOW - 60);
@@ -222,8 +202,8 @@ mod tests {
 
     #[test]
     fn a_pane_that_still_answers_keeps_its_record() {
-        // A week-old finished record whose pane is still standing, on a
-        // private server of this test's own.
+        // A week-old finished record whose pane still exists, on a private
+        // tmux server.
         let server =
             Server::named(format!("amx-test-gc-{}", std::process::id())).with_conf("/dev/null");
         let (_, pane) = server

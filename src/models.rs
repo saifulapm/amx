@@ -1,12 +1,8 @@
-//! Which models a harness runs.
+//! The models each harness offers.
 //!
-//! A model can name the harness it belongs to only because each harness can be
-//! asked what it offers, and there are three places an answer comes from: the
-//! table somebody wrote for it, the model dial's own cycle, and the listing the
-//! vendor prints when it is asked for one. Nothing here knows a vendor's name.
-//! Which of the three a harness answers out of is the entry's to say, and the
-//! file's list is over both, because a person who has written down which models
-//! are this harness's has said so.
+//! A harness's list comes from the person's config if it names one, else from
+//! the vendor entry: the model dial's cycle, or a listing printed by the
+//! vendor's own program (plain rows or JSON). Nothing here names a vendor.
 
 use crate::config::Config;
 use crate::paths;
@@ -15,15 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-/// How long a listing read out of a vendor stands before it is read again.
+/// How long a listing read from a vendor is reused.
 ///
-/// Reading one starts the vendor's own program, and that is a second of the
-/// spawn somebody is waiting on. What a provider offers changes over days, so
-/// an hour is soon enough that a model added this morning is found this
-/// afternoon, and long enough that a person spawning all day pays for it once.
+/// Reading one runs the vendor's program, which costs about a second of a
+/// spawn. Provider model lists change over days, so an hour is fresh enough.
 const FRESH_FOR: Duration = Duration::from_secs(3600);
 
-/// Every model `vendor` is the one to run.
+/// Every model `vendor` offers.
 pub fn models_of(vendor: &Vendor, config: &Config) -> Vec<String> {
     let written = config.harness(vendor.name).models;
     if !written.is_empty() {
@@ -50,20 +44,15 @@ pub fn models_of(vendor: &Vendor, config: &Config) -> Vec<String> {
 
 /// Whether `word` names one of `list`.
 ///
-/// Whole, or the part after the slash: a vendor that reaches several providers
-/// writes a model as `provider/id`, and the id on its own is what somebody
-/// types. Never a part of a word — a model whose name merely contains another
-/// is a different model.
+/// Matches the whole name or the part after the slash, since multi-provider
+/// vendors write `provider/id` and people type the id. Substrings never match.
 pub fn lists_model(list: &[String], word: &str) -> bool {
     list.iter()
         .any(|model| model == word || model.rsplit_once('/').is_some_and(|(_, id)| id == word))
 }
 
-/// The model dial's own cycle, less the sentinel.
-///
-/// A vendor that prints no list offers what a key already cycles through, and
-/// the sentinel is the absence of a model rather than one of them. A vendor
-/// with no model dial at all offers nothing, and a word is never its.
+/// The model dial's cycle without the default sentinel. A vendor with no model
+/// dial offers nothing.
 fn cycle(vendor: &Vendor) -> Vec<String> {
     let Some(dial) = vendor.model else {
         return Vec::new();
@@ -75,20 +64,17 @@ fn cycle(vendor: &Vendor) -> Vec<String> {
         .collect()
 }
 
-/// Where a harness's listing is kept, or `None` when amx has nowhere to keep
-/// one — which costs a reading and nothing else.
+/// Where a harness's listing is cached, or `None` if there is nowhere to keep
+/// one.
 fn kept_at(name: &str) -> Option<PathBuf> {
     Some(paths::models_dir().ok()?.join(format!("{name}.txt")))
 }
 
-/// The listing `program` prints: what `cache` holds while that still stands,
-/// and the program's own answer, read by `read`, otherwise.
+/// The listing `program` prints, from `cache` while it is fresh, otherwise by
+/// running the program and parsing its output with `read`.
 ///
-/// Empty from a program that could not be run, would not answer, or printed
-/// nothing amx can read as a model. A harness nobody can be told about claims
-/// no models, which leaves the word to the next harness or to a refusal naming
-/// them all. Nothing is kept from such a run either, so a vendor installed a
-/// minute later is asked again rather than held to an hour of silence.
+/// Empty when the program cannot run, fails, or prints nothing parseable. An
+/// empty listing is not cached, so a vendor installed a minute later is found.
 fn printed(
     program: &str,
     argv: &[&str],
@@ -108,10 +94,8 @@ fn printed(
     read
 }
 
-/// What `cache` holds, while it was written inside the hour.
-///
-/// A file written later than now is one this machine's clock disagrees with,
-/// and reading the vendor again is the cheaper of the two mistakes.
+/// The cached listing, if written within [`FRESH_FOR`]. A file dated in the
+/// future is treated as stale.
 fn fresh(cache: &Path, now: SystemTime) -> Option<Vec<String>> {
     let written = std::fs::metadata(cache).ok()?.modified().ok()?;
     if now.duration_since(written).ok()? > FRESH_FOR {
@@ -126,22 +110,16 @@ fn fresh(cache: &Path, now: SystemTime) -> Option<Vec<String>> {
     (!kept.is_empty()).then_some(kept)
 }
 
-/// Run the listing the entry names and read what it printed.
+/// Run the listing command and parse what it printed.
 ///
-/// Asked again, once, where the kernel refused to run the program because
-/// somebody still had it open for writing: a package manager putting a new
-/// vendor in place that instant, or — where this was first seen, on CI on
-/// 2026-09-11 — a child forked by another thread of this process between its
-/// fork and its exec, still holding a script another test had just written.
-/// The window is a moment long, and a listing that came back empty for it
-/// would have been an hour of a harness claiming no models.
+/// Retried once on `ETXTBSY`: the program may still be open for writing, by a
+/// package manager installing it or by a child another thread forked before
+/// exec. Without the retry, that moment would cache an empty list for an hour.
 fn read_from(program: &str, argv: &[&str], read: fn(&str) -> Vec<String>) -> Vec<String> {
     let run = || {
         Command::new(program)
             .args(argv)
-            // A listing is read, never talked to. A vendor handed the
-            // terminal could sit there waiting on somebody who is waiting on
-            // it.
+            // Never give the vendor the terminal; it could wait on input.
             .stdin(Stdio::null())
             .output()
     };
@@ -159,11 +137,8 @@ fn read_from(program: &str, argv: &[&str], read: fn(&str) -> Vec<String>) -> Vec
     }
 }
 
-/// The models a listing names, as `provider/id`.
-///
-/// A header line, then a row per model whose first two columns are the provider
-/// and the id the model has there. What the columns past those say is what the
-/// vendor knows about the model rather than its name.
+/// Models from a plain listing, as `provider/id`: a header line, then one row
+/// per model whose first two columns are provider and id.
 fn rows(listing: &str) -> Vec<String> {
     listing
         .lines()
@@ -177,11 +152,9 @@ fn rows(listing: &str) -> Vec<String> {
         .collect()
 }
 
-/// The models a JSON listing offers: the `slug` of each of its `models` whose
-/// `visibility` is `list`, in the order it names them.
-///
-/// A model the vendor hides is one it keeps off its own picker, and not one a
-/// person names. A listing that will not read as that object offers nothing.
+/// Models from a JSON listing: the `slug` of each entry in `models` whose
+/// `visibility` is `list`, in order. Hidden models are left out, and anything
+/// that does not parse as that shape yields nothing.
 fn slugs(listing: &str) -> Vec<String> {
     let Ok(listing) = serde_json::from_str::<serde_json::Value>(listing) else {
         return Vec::new();
@@ -196,7 +169,7 @@ fn slugs(listing: &str) -> Vec<String> {
         .collect()
 }
 
-/// Write a listing down where the next spawn will find it.
+/// Cache a listing for the next spawn.
 fn keep(cache: &Path, list: &[String]) -> std::io::Result<()> {
     if let Some(dir) = cache.parent() {
         std::fs::create_dir_all(dir)?;
@@ -213,7 +186,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
-    /// A config whose file says which models one harness runs.
+    /// A config naming one harness's models.
     fn told(harness: &str, models: &[&str]) -> Config {
         Config {
             harnesses: BTreeMap::from([(
@@ -228,13 +201,13 @@ mod tests {
         }
     }
 
-    /// The entry for a harness these tests are about.
+    /// The registry entry for a harness.
     fn entry(name: &str) -> &'static Vendor {
         registry::entry(name).unwrap_or_else(|| panic!("an entry for {name}"))
     }
 
-    /// A stand-in for a vendor that prints its models: the listing it was given
-    /// when it is asked the way the entry says, and a refusal otherwise.
+    /// A stand-in vendor that prints `listing` when called with
+    /// `--list-models` and fails otherwise.
     fn a_vendor_printing(dir: &Path, name: &str, listing: &str) -> String {
         let path = dir.join(name);
         std::fs::write(
@@ -248,23 +221,21 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
-    /// Two models under a header, the way a vendor prints them.
+    /// Two models under a header, as a vendor prints them.
     const LISTING: &str = "provider  model          context\n\
                            openai     gpt-5          400K\n\
                            anthropic  claude-opus-5  1M\n";
 
     #[test]
     fn a_harness_runs_the_models_its_own_table_names() {
-        // The file is over the entry: somebody who has written the list down
-        // has said which models are this harness's, whatever it offers.
+        // The config's list wins over whatever the vendor offers.
         let config = told("claude", &["only-this-one"]);
         assert_eq!(models_of(entry("claude"), &config), ["only-this-one"]);
     }
 
     #[test]
     fn a_harness_with_no_table_runs_the_models_its_dial_cycles() {
-        // And the sentinel is not one of them: it is the word for passing no
-        // model at all, so no listing may hold it.
+        // The sentinel means "no model flag", so it is never listed.
         let list = models_of(entry("claude"), &Config::default());
         assert!(list.contains(&"haiku".to_string()), "{list:?}");
         assert!(!list.iter().any(|model| model == DEFAULT), "{list:?}");
@@ -307,9 +278,7 @@ mod tests {
 
     #[test]
     fn a_listing_read_inside_the_hour_is_the_one_already_kept() {
-        // The point of keeping it: the vendor is a process, and the second
-        // spawn of the morning should not pay for one. The program is asked
-        // the wrong way here, so an answer from it would be no answer at all.
+        // The second call asks the wrong way, so only the cache can answer.
         let dir = TempDir::new().unwrap();
         let vendor = a_vendor_printing(dir.path(), "prints-models", LISTING);
         let cache = dir.path().join("models/pi.txt");
@@ -349,8 +318,7 @@ mod tests {
 
     #[test]
     fn a_listing_nobody_could_read_is_no_models_and_nothing_kept() {
-        // Three ways for it to go wrong, one answer: a harness that claims no
-        // models, and no silence written down for the hour after it.
+        // Every failure yields no models and caches nothing.
         let dir = TempDir::new().unwrap();
         let cache = dir.path().join("models/pi.txt");
         let now = SystemTime::now();
@@ -375,8 +343,8 @@ mod tests {
         assert!(!cache.exists(), "nothing worth keeping was read");
     }
 
-    /// Models as codex 0.157.1's `debug models` prints them, cut to the keys
-    /// read and a few beside them: two a person names, then one it hides.
+    /// Models as codex 0.157.1's `debug models` prints them, trimmed: two
+    /// listed, one hidden.
     const JSON: &str = r#"{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list","priority":1},{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","priority":9},{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","priority":30}]}"#;
 
     #[test]

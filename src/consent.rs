@@ -1,32 +1,22 @@
-//! Which project files somebody has said amx may read.
+//! Consent for project config files.
 //!
-//! A repository's `.amx/config.toml` can name the program a pane runs, the
-//! shell lines run before and after a turn, and the keys the view binds. That
-//! is code, and a repository somebody cloned five minutes ago is code nobody
-//! here wrote. So a project file counts only once a person has allowed it, and
-//! only as long as it still says what it said then: `amx allow` keeps a copy of
-//! the bytes it was shown, and a file that no longer matches that copy is a
-//! file nobody has allowed. An agent that edits the file un-allows it by doing
-//! so, which is the point — the agent is the other party this is about.
+//! A repository's `.amx/config.toml` can name the program a pane runs, shell
+//! commands run around a turn, and view key bindings, so it is code. A project
+//! file counts only after `amx allow`, and only while its bytes match the copy
+//! taken then. An agent that edits the file revokes the consent.
 //!
-//! The copies are kept beside the agents, where the view's own file is: which
-//! files a person trusts is theirs and not any agent's. Each is named after
-//! the file it stands for, the path spelled out with `%` and `/` escaped, so
-//! the name is one directory entry and says which file it is. Bytes are
-//! compared rather than hashed: the files are a few hundred bytes, and a copy
-//! is what a person inspecting the directory can read.
+//! Copies live in `allowed/` next to the agents directory, one per file, named
+//! after the file's absolute path with `%` and `/` percent-escaped. The files
+//! are small, so bytes are compared directly and the copy stays readable.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// The directory beside the agents that holds the allowed copies.
+/// Directory next to the agents that holds the allowed copies.
 const ALLOWED: &str = "allowed";
 
-/// Whether the project file at `project_file` is one somebody allowed, as it
-/// stands now, reading the copies kept beside the agents under `root`.
-///
-/// A file that cannot be read is not allowed: there is nothing to compare,
-/// and nothing a caller could take a key from either.
+/// Whether `project_file` is allowed as it stands now, per the copies kept
+/// next to `root`. A file that cannot be read is not allowed.
 pub fn allowed_in(root: &Path, project_file: &Path) -> bool {
     let Some(copy) = copy_of(root, project_file) else {
         return false;
@@ -37,7 +27,7 @@ pub fn allowed_in(root: &Path, project_file: &Path) -> bool {
     }
 }
 
-/// Allow the file as it stands now: keep a copy of its bytes.
+/// Allow the file as it stands now by keeping a copy of its bytes.
 pub fn allow_in(root: &Path, project_file: &Path) -> Result<()> {
     let copy = copy_of(root, project_file).context("no place beside the agents to keep it")?;
     let bytes = std::fs::read(project_file)
@@ -47,7 +37,7 @@ pub fn allow_in(root: &Path, project_file: &Path) -> Result<()> {
     crate::store::write_atomic(&copy, &bytes)
 }
 
-/// Stop allowing the file. Whether there was a copy to remove.
+/// Revoke consent for the file. Returns whether there was a copy to remove.
 pub fn forget_in(root: &Path, project_file: &Path) -> Result<bool> {
     let Some(copy) = copy_of(root, project_file) else {
         return Ok(false);
@@ -59,7 +49,7 @@ pub fn forget_in(root: &Path, project_file: &Path) -> Result<bool> {
     }
 }
 
-/// Where the copy standing for `project_file` is kept.
+/// Path of the copy kept for `project_file`.
 fn copy_of(root: &Path, project_file: &Path) -> Option<PathBuf> {
     let file = std::path::absolute(project_file).ok()?;
     let name = file
@@ -92,11 +82,11 @@ mod tests {
         allow_in(&root, &file).unwrap();
         assert!(allowed_in(&root, &file));
 
-        // One byte is a different file: an agent that edits it un-allows it.
+        // Any edit revokes consent.
         std::fs::write(&file, "max_agents = 3\n").unwrap();
         assert!(!allowed_in(&root, &file));
 
-        // Allowed again as it stands, and then forgotten.
+        // Allow again, then forget.
         allow_in(&root, &file).unwrap();
         assert!(allowed_in(&root, &file));
         assert!(forget_in(&root, &file).unwrap());

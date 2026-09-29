@@ -1,14 +1,13 @@
 //! Agent ids.
 //!
-//! An id is `<stem>-<suffix>`: leading words of the task, lowercased and
-//! hyphenated to at most [`MAX_STEM`] characters, plus three base36 characters
-//! of entropy. It is unique under the state root because it *is* the agent's
-//! directory name there.
+//! An id is `<stem>-<suffix>`: the task's leading words, lowercased and
+//! hyphenated to at most [`MAX_STEM`] characters, plus three random base36
+//! characters. It is the agent's directory name under the state root, which
+//! makes it unique there.
 //!
-//! The charset — lowercase letters, digits, `-` — is checked wherever an id
-//! becomes a path, not only where one is minted. Ids travel: an orchestrating
-//! agent reads them out of another agent's output and hands them back to amx,
-//! so `../../elsewhere` has to be refused at use.
+//! The charset (lowercase letters, digits, `-`) is checked wherever an id
+//! becomes a path, not only when one is minted: ids come back from other
+//! agents' output, so `../../elsewhere` must be refused at use.
 
 use anyhow::{Result, bail};
 use std::path::Path;
@@ -16,12 +15,12 @@ use std::path::Path;
 /// Longest stem an id may carry, before its `-<suffix>`.
 pub const MAX_STEM: usize = 20;
 
-/// Stem used when the task text yields no usable characters at all.
+/// Stem used when the task text yields no usable characters.
 pub const FALLBACK_STEM: &str = "agent";
 
 const SUFFIX_LEN: usize = 3;
 
-/// How many suffixes to try before admitting the stem is crowded.
+/// How many suffixes to try before giving up on a stem.
 const MAX_ATTEMPTS: usize = 64;
 
 const BASE36: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -45,12 +44,12 @@ pub fn stem_from_task(task: &str) -> String {
         return trimmed.to_string();
     }
 
-    // Over the cap: keep whole leading words when the cap leaves room for one,
-    // and hard-truncate only a single overlong word. `hyphenated` is ASCII by
-    // construction, so slicing at MAX_STEM is always on a char boundary.
+    // Over the cap: keep whole leading words where one fits, and truncate
+    // only a single overlong word. `hyphenated` is ASCII, so slicing at
+    // MAX_STEM is on a char boundary.
     let capped = &trimmed[..MAX_STEM];
     if trimmed.as_bytes()[MAX_STEM] == b'-' {
-        // The cap landed on a word boundary — nothing was cut in half.
+        // The cap fell on a word boundary.
         return capped.to_string();
     }
     match capped.rsplit_once('-') {
@@ -74,21 +73,17 @@ pub fn generate(task: &str, state_root: &Path) -> Result<String> {
     );
 }
 
-/// Whether `id` is an id at all: the charset law, asked where an id becomes a
-/// path. It needs no filesystem, so readers can ask it anywhere.
+/// Whether `id` satisfies the id charset. Needs no filesystem access.
 pub fn is_valid(id: &str) -> bool {
     !id.is_empty() && id.chars().all(legal)
 }
 
-/// Validate a user-supplied `--name`: the same charset and the same
-/// uniqueness as a minted id, but deliberately not length-capped — the cap
-/// exists to keep *derived* stems readable, and a typed name is not derived.
+/// Validate a user-supplied `--name`.
 ///
-/// The ends are held to more than the charset: a hyphen is legal in the
-/// middle of an id but not at either edge, because that is where a vendor's
-/// own session-id rule tends to draw the line. `generate` has produced
-/// nothing else since the stem was first trimmed, so this asks a typed name
-/// for the shape a minted one already has.
+/// Same charset and uniqueness rules as a minted id, but no length cap: the
+/// cap exists to keep derived stems readable. The name must also start and
+/// end with a letter or digit, which is the shape vendors' session-id rules
+/// expect and the shape `generate` already produces.
 pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
     if name.is_empty() {
         bail!("a name cannot be empty");
@@ -101,9 +96,8 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
     }
     let held = state_root.join(name);
     if held.exists() {
-        // A directory with no record in it is a spawn that died between
-        // claiming the name and writing it down: nobody's agent, and doctor
-        // is what clears it.
+        // A directory without a record is a spawn that died before writing
+        // one; `amx doctor --fix` clears it.
         if !held.join(crate::store::META).exists() {
             bail!(
                 "name {name:?} is held by a spawn that never finished: \
@@ -120,7 +114,7 @@ fn legal(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
 }
 
-/// Whether `s` opens and closes on a letter or digit rather than a hyphen.
+/// Whether `s` starts and ends with a letter or digit.
 fn edges_are_alphanumeric(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && s.chars()
@@ -131,8 +125,8 @@ fn edges_are_alphanumeric(s: &str) -> bool {
 /// Three base36 characters that tell two ids with the same stem apart.
 ///
 /// `RandomState` is seeded by the OS and advances per call, so ids differ
-/// within one process as well as between runs. There is no RNG crate here and
-/// none is wanted: a suffix avoids collisions, it is not a secret.
+/// within one process as well as between runs. The suffix only avoids
+/// collisions and is not a secret, so no RNG crate is needed.
 fn suffix() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
@@ -288,10 +282,9 @@ mod tests {
         }
     }
 
-    /// pi's own rule for a session id it will accept, hand-rolled because
-    /// `regex` is not a dependency here: `/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/`,
-    /// measured from `dist/core/session-manager.js:16` at pi 0.84.4 and the
-    /// same line at 0.85.1.
+    /// pi's rule for a session id, hand-rolled because `regex` is not a
+    /// dependency: `/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/`, from
+    /// `dist/core/session-manager.js:16` in pi 0.84.4 and 0.85.1.
     fn matches_pis_session_id_pattern(s: &str) -> bool {
         s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
             && s.chars()
@@ -303,10 +296,7 @@ mod tests {
 
     #[test]
     fn every_generated_id_satisfies_the_rule_a_typed_name_must_meet() {
-        // generate has always trimmed a stem's edges and appended a base36
-        // suffix, so its output was already shaped this way before
-        // validate_name learned to ask for it. This is the proof of that,
-        // not the enforcement.
+        // `generate` already produces this shape; this test pins it.
         let root = TempDir::new().unwrap();
         for task in [
             "Fix the login bug",
@@ -324,9 +314,8 @@ mod tests {
 
     #[test]
     fn every_generated_id_is_one_pi_will_take_as_a_session_id() {
-        // The proposition the plan actually asks for: an id amx hands pi is
-        // one pi's own charset accepts, not merely one validate_name accepts
-        // under whatever charset it happens to enforce today.
+        // An id amx hands pi must pass pi's own charset, whatever charset
+        // `validate_name` enforces.
         let root = TempDir::new().unwrap();
         for task in [
             "Fix the login bug",

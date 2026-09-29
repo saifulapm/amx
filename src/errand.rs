@@ -1,18 +1,12 @@
-//! The command somebody asked to be run when an agent reaches a moment.
+//! Commands a person configured to run when an agent reaches a moment.
 //!
-//! Five keys, one per moment worth acting on — `on_waiting`, `on_idle`,
-//! `on_done`, `on_failed`, `on_stopped` — and each holds a shell command. What
-//! a person does with one is their own business: post to a chat, ring a bell,
-//! start the next agent. amx knows only when to run it and what to tell it.
+//! The keys are `on_waiting`, `on_idle`, `on_done`, `on_failed` and
+//! `on_stopped`, each a shell command. This module assembles the command;
+//! [`crate::notify::start`] runs it. Only the process that wrote the phase
+//! (the hook, or `stop`) starts one, so reading a record never does.
 //!
-//! This file assembles one; [`crate::notify::start`] runs it. Which amx runs
-//! it is which amx wrote the phase — the hook that recorded the event, or the
-//! `stop` that ended the agent — so a reading of a record never starts
-//! anything, however far behind the record it finds itself.
-//!
-//! The moment is named twice over, because a command gets both roads: the
-//! phase is in the environment as a word, and the event that moved the agent
-//! arrives on stdin as the same JSON line the event log got.
+//! The command gets the phase in [`STATE_ENV`] and the event that caused it
+//! on stdin, as the same JSON line the event log holds.
 
 use std::path::Path;
 
@@ -20,26 +14,19 @@ use crate::config::Config;
 use crate::notify::Errand;
 use crate::store::{Agent, Event, Meta, Phase};
 
-/// The phase the agent reached, in the word `ls --json` prints.
+/// The phase the agent reached, as `ls --json` spells it.
 pub const STATE_ENV: &str = "AMX_STATE";
 
-/// Whether anybody was looking at the agent's pane when the moment arrived.
+/// Whether the agent's pane was being watched when the moment arrived.
 ///
-/// `1` or `0` from the hook, which has already asked tmux that question to
-/// decide whether the notice was worth posting. Absent from `stop`, which asks
-/// nothing about a pane it is closing: a command that cares can tell the two
-/// apart, and one that does not reads either as the falsehood it is.
+/// `1` or `0` when the hook starts the command. Unset when `stop` does, since
+/// it does not ask about a pane it is closing.
 pub const WATCHED_ENV: &str = "AMX_WATCHED";
 
-/// The errand this moment is worth, where somebody has written one.
+/// The errand for this moment, if a command is configured for it.
 ///
-/// The project's own file over the person's, the way every other key layers,
-/// and asked of the project first: what to do when the work in a repository
-/// reaches a moment is that repository's to say, and a person who has set the
-/// key for everything still wanted it set for everything else.
-///
-/// One key is read off the project rather than the whole file laid up, because
-/// the caller is a hook holding the person's config already — see
+/// The project's key wins over the person's. Only that one key is read from
+/// the project file, since the hook already holds the person's config; see
 /// [`crate::config::project_key_in`].
 pub fn assembled(
     config: &Config,
@@ -54,18 +41,14 @@ pub fn assembled(
         Phase::Done => ("on_done", &config.on_done),
         Phase::Failed => ("on_failed", &config.on_failed),
         Phase::Stopped => ("on_stopped", &config.on_stopped),
-        // Starting, working and unknown are the agent on its way somewhere.
-        // Nothing has arrived to tell anybody about.
+        // The agent is on its way somewhere; nothing to report.
         _ => return None,
     };
 
-    // Where the agent works: its own tree where amx cut one, and else the
-    // directory it was started in. The same directory the project's file is
-    // looked up from, because the project an errand belongs to is the project
-    // the work is in.
+    // The agent's worktree if it has one, else its start directory. The
+    // project config is looked up from the same place.
     let dir = meta.worktree.clone().unwrap_or_else(|| meta.dir.clone());
-    // Consent is read under the root this record is kept in, which is the
-    // state directory every verb working on it was pointed at.
+    // Consent is read under the state root this record lives in.
     let root = agent.dir().parent().unwrap_or(agent.dir());
     let command = crate::config::project_key_in(&dir, key, root).or_else(|| person.clone())?;
 
@@ -83,17 +66,10 @@ pub fn assembled(
     })
 }
 
-/// What a command run for an agent is told about the agent it was run for.
+/// Environment for a command run on behalf of an agent.
 ///
-/// The one place those pairs are named, because two roads reach them: a moment
-/// key assembles an errand above, and a key somebody bound in the view runs a
-/// command in the same tree. Both are somebody's own command started off one
-/// agent, and a person who learnt the words on one road should not find the
-/// other spelling them differently.
-///
-/// The moment itself is not here. An errand is run because the agent reached
-/// one; a key is pressed whenever somebody presses it, and there is no phase
-/// the press is about.
+/// Shared by moment errands and view key bindings so both spell the variables
+/// the same way. The phase is not included: a key press has none.
 pub fn surroundings(agent: &Agent, meta: &Meta) -> Vec<(String, String)> {
     let mut env = vec![
         (crate::hook::ID_ENV.to_string(), meta.id.clone()),
@@ -102,21 +78,19 @@ pub fn surroundings(agent: &Agent, meta: &Meta) -> Vec<(String, String)> {
             spelled(agent.dir()),
         ),
     ];
-    // A scratch directory that could not be made is one thing the command
-    // cannot have; everything else it was going to be told still stands.
+    // A missing scratch directory drops only that variable.
     if let Ok(scratch) = crate::spawn::scratch(agent.dir()) {
         env.push((crate::spawn::AGENT_DIR_ENV.to_string(), spelled(&scratch)));
     }
     if let Some(tree) = &meta.worktree {
         env.push((crate::worktree::WORKTREE_ENV.to_string(), spelled(tree)));
     }
-    // The command is something an agent's moment started, and a claude run
-    // from one would otherwise report its whole session under this agent's id.
+    // Keep a claude started by the command from reporting under this agent.
     env.push((crate::hook::NESTED_ENV.to_string(), "1".to_string()));
     env
 }
 
-/// A path as a variable holds it.
+/// A path as an environment variable value.
 fn spelled(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -129,7 +103,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// A record on disk, and the meta that names it.
+    /// A record on disk and its meta.
     fn agent(root: &Path, dir: &Path, worktree: Option<PathBuf>) -> (Agent, Meta) {
         let meta = Meta {
             role: None,
@@ -190,7 +164,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{key} is what {phase} runs"));
             assert_eq!(errand.command, key);
 
-            // And the key is that moment's alone: no other phase reaches it.
+            // No other phase reaches this key.
             for other in [
                 Phase::Waiting,
                 Phase::Idle,
@@ -236,9 +210,7 @@ mod tests {
 
     #[test]
     fn errand_the_project_answers_the_moment_over_the_person() {
-        // What to run when the work in a repository reaches a moment is that
-        // repository's to say. The person's key stands for every project that
-        // has not said otherwise.
+        // The project's key wins; the person's key covers the rest.
         let root = TempDir::new().unwrap();
         let work = TempDir::new().unwrap();
         std::fs::create_dir_all(work.path().join(".amx")).unwrap();
@@ -251,7 +223,7 @@ mod tests {
         let file = crate::paths::project_config(work.path()).unwrap();
         let mut config = says("on_done", "the person's");
 
-        // A file nobody allowed says nothing, and the person's key stands.
+        // An unallowed project file is ignored.
         assert_eq!(
             assembled(&config, &agent, &meta, Phase::Done, &event())
                 .unwrap()
@@ -294,7 +266,7 @@ mod tests {
         )
         .unwrap();
 
-        // It runs where the agent works, which is the tree amx cut for it.
+        // It runs in the agent's worktree.
         assert_eq!(errand.dir, tree.path());
 
         let env: std::collections::HashMap<&str, &str> = errand
