@@ -59,10 +59,12 @@ pub fn run(
             match (wire, report.changed) {
                 (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
                 (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
-                (Wire::Plugin { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
-                (Wire::Plugin { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
-                (Wire::Placed { .. }, true) => writeln!(out, "removed the plugin at {path}")?,
-                (Wire::Placed { .. }, false) => writeln!(out, "no plugin of amx's at {path}")?,
+                (Wire::Plugin { .. } | Wire::Placed { .. }, true) => {
+                    writeln!(out, "removed the plugin at {path}")?
+                }
+                (Wire::Plugin { .. } | Wire::Placed { .. }, false) => {
+                    writeln!(out, "no plugin of amx's at {path}")?
+                }
                 (Wire::Hooks { .. }, true) => writeln!(out, "took amx's hooks out of {path}")?,
                 (Wire::Hooks { .. }, false) => writeln!(out, "no hooks of amx's in {path}")?,
             }
