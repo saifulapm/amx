@@ -60,6 +60,8 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
             Transcript::Claude => claude(entry, &mut said),
             Transcript::Pi => pi(entry, &mut said),
             Transcript::Codex => codex(entry, &mut said),
+            // Its shape is read off captured lists, not written yet.
+            Transcript::Opencode => {}
         }
     }
     said
@@ -69,7 +71,7 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
 /// or a codex rollout, and of a pi session the branch its last entry is on.
 fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
     match format {
-        Transcript::Claude | Transcript::Codex => entries(jsonl).collect(),
+        Transcript::Claude | Transcript::Codex | Transcript::Opencode => entries(jsonl).collect(),
         Transcript::Pi => branch(entries(jsonl).collect()),
     }
 }
@@ -319,6 +321,7 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
         Transcript::Codex => entry["payload"]["info"]["last_token_usage"]["input_tokens"]
             .as_u64()
             .unwrap_or(0),
+        Transcript::Opencode => 0,
     }
 }
 
@@ -347,7 +350,7 @@ pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, 
 /// pi keeps no title in its session file, and there is nothing to read.
 pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
     match format {
-        Transcript::Pi | Transcript::Codex => None,
+        Transcript::Pi | Transcript::Codex | Transcript::Opencode => None,
         Transcript::Claude => entries(jsonl)
             .filter_map(|entry| {
                 let title = match entry["type"].as_str()? {
@@ -427,7 +430,7 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
                 _ => None,
             }
         }
-        Transcript::Codex => None,
+        Transcript::Codex | Transcript::Opencode => None,
     }
 }
 

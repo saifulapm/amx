@@ -613,6 +613,11 @@ pub enum Transcript {
     /// turn's end under `event_msg`. Measured off codex 0.157.1's rollouts on
     /// 2026-09-28.
     Codex,
+    /// The message list opencode's plugin writes at each turn's end to
+    /// `$AMX_DIR/opencode-messages.jsonl`, one message a line, as
+    /// `message.list` gives it at 2.0.16 (2026-09-30). amx never opens
+    /// opencode's own database.
+    Opencode,
 }
 
 /// Something amx can do only where the vendor takes part.
