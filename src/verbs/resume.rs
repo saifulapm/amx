@@ -435,12 +435,14 @@ fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handof
 /// The flag and its value arrive joined or as two words, or as a subcommand
 /// right after the program, whichever the vendor's own spelling says.
 fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
-    build_continuation(handoff, session, &spelling(handoff))
+    build_continuation(handoff, session, spawn::vendor_of(handoff))
 }
 
-/// [`continuing`], with the vendor's own spelling passed in rather than looked
-/// up, so a spelling the table has never seen can be proved out here too.
-fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> Vec<String> {
+/// [`continuing`], with the vendor passed in rather than looked up, so a
+/// vendor the table has never seen can be proved out here too.
+fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>) -> Vec<String> {
+    let spec = spelling(vendor);
+    let task = spawn::as_typed(vendor, &handoff.task);
     let mut words = handoff.command.clone().into_iter().peekable();
     let mut command: Vec<String> = Vec::new();
 
@@ -449,13 +451,15 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
         // end of it, because a role's brief and a subagent's digest ride in
         // front of the task in the same word while the record keeps the task
         // alone. So the task is a suffix of that word, not the whole of it; an
-        // empty task is a suffix of everything and names nothing.
-        if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&handoff.task) {
+        // empty task is a suffix of everything and names nothing. It ends as
+        // it was typed, with the space a popup word was given.
+        if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&task) {
             break;
         }
         // The word `new` put in front of the task goes with it, or the
         // vendor would read everything written after it as a message.
-        if words.len() == 1 && Some(word.as_str()) == spawn::ends_options_of(handoff) {
+        if words.len() == 1 && Some(word.as_str()) == vendor.and_then(|vendor| vendor.ends_options)
+        {
             continue;
         }
         // Where `word` stood in the recorded command: a subcommand is one
@@ -487,8 +491,8 @@ fn build_continuation(handoff: &Handoff, session: &str, spec: &SessionSpec) -> V
 /// a command amx has measured nothing about: unmeasured is not refused
 /// ([`cannot_continue`] already says so), and claude's is the only spelling
 /// amx has ever assumed for one.
-fn spelling(handoff: &Handoff) -> SessionSpec {
-    spawn::vendor_of(handoff)
+fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
+    vendor
         .and_then(|vendor| vendor.session)
         .unwrap_or_else(unmeasured)
 }
@@ -641,7 +645,7 @@ mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
     use crate::tmux::{PaneId, Socket};
-    use crate::vendor::second::{BRANCHING, SECOND};
+    use crate::vendor::second::{BRANCHING, ELSEWHERE, SECOND};
     use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
@@ -850,10 +854,9 @@ mod tests {
     fn resume_reads_a_different_vendors_own_spelling_off_the_table() {
         // The second vendor resumes with a subcommand rather than a flag, and
         // its own conflict is spelled nothing like claude's.
-        let spec = SECOND.session.expect("the second vendor names a session");
         let started = handoff(&["second", "--open", "old", "go"], "go");
         assert_eq!(
-            build_continuation(&started, "abc-123", &spec),
+            build_continuation(&started, "abc-123", Some(&SECOND)),
             ["second", "again", "abc-123"]
         );
     }
@@ -863,9 +866,8 @@ mod tests {
         // The subcommand is the word after the program, then the id, then
         // every flag the agent was started with; a second resume takes the
         // first one's pair away rather than writing two.
-        let spec = SECOND.session.expect("the second vendor names a session");
         let started = handoff(&["second", "--care", "quick", "go"], "go");
-        let once = build_continuation(&started, "abc-123", &spec);
+        let once = build_continuation(&started, "abc-123", Some(&SECOND));
         assert_eq!(once, ["second", "again", "abc-123", "--care", "quick"]);
 
         let resumed = Handoff {
@@ -873,7 +875,7 @@ mod tests {
             command: once,
         };
         assert_eq!(
-            build_continuation(&resumed, "def-456", &spec),
+            build_continuation(&resumed, "def-456", Some(&SECOND)),
             ["second", "again", "def-456", "--care", "quick"]
         );
     }
@@ -884,7 +886,6 @@ mod tests {
         // dial as its flag and one word. Neither names a session, so a resume
         // keeps both where they stood, behind the subcommand and its id, and a
         // second resume does not write them again.
-        let spec = BRANCHING.session.expect("it names a session");
         let started = handoff(
             &[
                 "second",
@@ -897,7 +898,7 @@ mod tests {
             ],
             "go",
         );
-        let once = build_continuation(&started, "abc-123", &spec);
+        let once = build_continuation(&started, "abc-123", Some(&BRANCHING));
         assert_eq!(
             once,
             [
@@ -916,7 +917,7 @@ mod tests {
             task: "go".to_string(),
             command: once,
         };
-        let twice = build_continuation(&resumed, "def-456", &spec);
+        let twice = build_continuation(&resumed, "def-456", Some(&BRANCHING));
         assert_eq!(twice[..3], ["second", "again", "def-456"]);
         for word in BRANCHING.launch {
             assert_eq!(twice.iter().filter(|w| w == word).count(), 1, "{word}");
@@ -958,6 +959,27 @@ mod tests {
         );
         let after = handed_on(&carried, "def-456", None);
         assert_eq!(after.command, ["pi", "--session-id", "def-456"]);
+    }
+
+    #[test]
+    fn resume_drops_a_task_or_message_that_rode_on_the_prompt_flag() {
+        // A vendor with a prompt flag was handed the task as one `--say=`
+        // word, a brief in front of it and a popup's space after it. A later
+        // resume drops the whole word, and so does the one after a message.
+        let started = handoff(&["second", "--say=Brief.\n\nlook at #3 "], "look at #3");
+        assert_eq!(
+            build_continuation(&started, "abc-123", Some(&ELSEWHERE)),
+            ["second", "again", "abc-123"]
+        );
+
+        let messaged = handoff(
+            &["second", "again", "abc-123", "--say=-v is broken"],
+            "-v is broken",
+        );
+        assert_eq!(
+            build_continuation(&messaged, "def-456", Some(&ELSEWHERE)),
+            ["second", "again", "def-456"]
+        );
     }
 
     #[test]
@@ -1145,9 +1167,6 @@ mod tests {
         //
         // pi's own spelling, off the table: the vendor that branches by
         // naming the origin is the one this arm exists for.
-        let spec = crate::registry::entry("pi")
-            .and_then(|pi| pi.session)
-            .expect("pi declares a session vocabulary");
         for written in [
             &[
                 "pi",
@@ -1161,7 +1180,7 @@ mod tests {
         ] {
             let started = handoff(written, "go");
             assert_eq!(
-                build_continuation(&started, "port-it-b2c", &spec),
+                build_continuation(&started, "port-it-b2c", crate::registry::entry("pi")),
                 ["pi", "--session-id", "port-it-b2c"],
                 "{written:?}"
             );
@@ -1174,15 +1193,12 @@ mod tests {
         // none — the session it branched from rides on the resume flag beside
         // it, which is already replaced — so it is not this reader's to take,
         // and claude's argv comes back the way it always did.
-        let spec = crate::registry::entry("claude")
-            .and_then(|claude| claude.session)
-            .expect("claude declares a session vocabulary");
         let started = handoff(
             &["claude", "--resume=abc-123", "--fork-session", "go"],
             "go",
         );
         assert_eq!(
-            build_continuation(&started, "def-456", &spec),
+            build_continuation(&started, "def-456", crate::registry::entry("claude")),
             ["claude", "--fork-session", "--resume=def-456"]
         );
     }
