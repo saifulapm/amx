@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use crate::cli::{AgentArgs, Context as StartContext, NewArgs, SubArgs};
 use crate::config::Config;
-use crate::store::{Agent, Meta, Phase};
-use crate::verbs::{new, result};
+use crate::store::{Agent, Meta};
+use crate::verbs::{new, result, wait};
 use crate::{Severity, derive, exit, paths, registry, said, spawn, store};
 
 /// The verb, against the machine's own state directory.
@@ -325,25 +325,12 @@ fn inherit(config: &Config, parent: Option<&Meta>, spawn_args: &mut NewArgs) -> 
 
 /// How many children of `parent` have not reached a terminal phase.
 fn live_children(root: &Path, parent: &str) -> Result<usize> {
-    let mut count = 0;
-    for id in store::list(root)? {
-        let Ok(agent) = Agent::open(root, &id) else {
-            continue;
-        };
-        let Ok(meta) = agent.meta() else {
-            continue;
-        };
-        if meta.parent.as_deref() != Some(parent) {
-            continue;
-        }
-        let phase = derive::view(root, &id, store::now())
-            .map(|view| view.phase())
-            .unwrap_or(Phase::Unknown);
-        if !phase.is_terminal() {
-            count += 1;
-        }
-    }
-    Ok(count)
+    Ok(wait::children_of(root, parent)?
+        .iter()
+        .filter(|id| {
+            derive::view(root, id, store::now()).map_or(true, |view| !view.phase().is_terminal())
+        })
+        .count())
 }
 
 /// Write the child's id, and with `--json` the one object instead.
@@ -377,7 +364,7 @@ fn refuse(err: &mut impl Write, colours: bool, message: String) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Kind;
+    use crate::store::{Kind, Phase};
     use crate::tmux::{PaneId, Socket};
 
     #[test]
