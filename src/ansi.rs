@@ -471,19 +471,22 @@ impl Grid {
     /// One character where the cursor is, with the rows and the cells in front
     /// of it grown as blanks. The cursor moves on whether or not the cell fit.
     fn put(&mut self, c: char) {
-        let rows = (self.row + 1).saturating_sub(self.rows.len());
-        let width = self.rows.get(self.row).map_or(0, Vec::len);
-        let cells = (self.col + 1).saturating_sub(width);
-        if self.held.saturating_add(rows).saturating_add(cells) <= self.cap {
-            self.held += rows + cells;
-            if self.rows.len() < self.row + 1 {
-                self.rows.resize_with(self.row + 1, Vec::new);
+        // A cursor saturated at usize::MAX has no cell to fill.
+        if let (Some(tall), Some(wide)) = (self.row.checked_add(1), self.col.checked_add(1)) {
+            let rows = tall.saturating_sub(self.rows.len());
+            let width = self.rows.get(self.row).map_or(0, Vec::len);
+            let cells = wide.saturating_sub(width);
+            if self.held.saturating_add(rows).saturating_add(cells) <= self.cap {
+                self.held += rows + cells;
+                if self.rows.len() < tall {
+                    self.rows.resize_with(tall, Vec::new);
+                }
+                let row = &mut self.rows[self.row];
+                if row.len() < wide {
+                    row.resize(wide, ' ');
+                }
+                row[self.col] = c;
             }
-            let row = &mut self.rows[self.row];
-            if row.len() < self.col + 1 {
-                row.resize(self.col + 1, ' ');
-            }
-            row[self.col] = c;
         }
         self.col = self.col.saturating_add(1);
     }
@@ -518,7 +521,7 @@ impl Grid {
             'J' => match mode(params) {
                 0 => {
                     self.cut(self.row, self.col);
-                    self.keep_rows(self.row + 1);
+                    self.keep_rows(self.row.saturating_add(1));
                 }
                 1 => {
                     self.blank(self.row, self.col);
@@ -545,7 +548,7 @@ impl Grid {
     /// past there was drawn where it stands and stays there.
     fn blank(&mut self, row: usize, to: usize) {
         if let Some(cells) = self.rows.get_mut(row) {
-            for cell in cells.iter_mut().take(to + 1) {
+            for cell in cells.iter_mut().take(to.saturating_add(1)) {
                 *cell = ' ';
             }
         }
@@ -892,6 +895,20 @@ mod tests {
         assert_eq!(laid_out("row   \u{1b}[10Cx\u{1b}[1;5H\u{1b}[K"), "row");
         assert_eq!(laid_out("\n\n\n"), "");
         assert_eq!(laid_out(""), "");
+    }
+
+    #[test]
+    fn a_cursor_walked_to_the_end_of_the_address_space_does_not_panic() {
+        let far = "18446744073709551615";
+        assert_eq!(laid_out(&format!("ab\u{1b}[{far}Bx")), "ab");
+        assert_eq!(laid_out(&format!("ab\u{1b}[{far}Cx")), "ab");
+        assert_eq!(laid_out(&format!("ab\u{1b}[{far}C\u{1b}[1K")), "");
+        assert_eq!(laid_out(&format!("ab\ncd\u{1b}[{far}B\u{1b}[J")), "ab\ncd");
+        // And back from there, onto cells the capture could fill.
+        assert_eq!(
+            laid_out(&format!("\u{1b}[{far}C\u{1b}[{far}C\u{1b}[1Gx")),
+            "x"
+        );
     }
 
     #[test]
