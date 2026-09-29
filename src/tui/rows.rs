@@ -1337,18 +1337,21 @@ impl List {
             return;
         }
         let (probe, repo_of) = (self.probe, self.repo_of);
-        let fresh: Vec<(String, PathBuf)> = self
+        // Rebuilt from the agents on this reading, so one that has left the
+        // wall is dropped rather than kept for the life of the view.
+        let mut known = std::mem::take(&mut self.roots);
+        self.roots = self
             .views
             .iter()
-            .filter(|view| !self.roots.contains_key(view.id()))
             .map(|view| {
-                (
-                    view.id().to_string(),
-                    root_of(axis, &view.meta, probe, repo_of),
-                )
+                known.remove_entry(view.id()).unwrap_or_else(|| {
+                    (
+                        view.id().to_string(),
+                        root_of(axis, &view.meta, probe, repo_of),
+                    )
+                })
             })
             .collect();
-        self.roots.extend(fresh);
         if axis == Axis::Repo {
             self.remember_the_branches();
         }
@@ -3407,6 +3410,22 @@ mod tests {
             asked(),
             first,
             "a reading every second may not walk the same agent's ancestors again"
+        );
+    }
+
+    #[test]
+    fn axis_forgets_the_project_of_an_agent_that_left_the_wall() {
+        let mut list = over_the_disk(vec![
+            at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
+            at(view("busy-b2c", Phase::Working, 20), "/src/web"),
+        ]);
+        assert_eq!(list.roots.len(), 2);
+
+        list.show(vec![at(view("busy-b2c", Phase::Working, 20), "/src/web")]);
+        assert_eq!(
+            list.roots.keys().collect::<Vec<_>>(),
+            ["busy-b2c"],
+            "a view left open for days does not keep every agent it ever saw"
         );
     }
 
