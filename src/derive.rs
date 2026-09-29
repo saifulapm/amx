@@ -2468,7 +2468,11 @@ fn look(
         mut state,
     } = record;
     let rules = own_screens(&meta);
-    let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
+    // Only a quiescent rule reads `held`, and no rule reads a command's pane.
+    let held = match runs_a_command(&meta, &state) {
+        true => 0,
+        false => held_still(&agent, &mut state, screen.as_deref(), rules, now),
+    };
     let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
     note(&agent, rules, &mut state, &reading);
     if is_the_record(&meta, &reading) {
@@ -4816,6 +4820,28 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some(1_020),
             "and the screen on the pane now is the one the next look compares against"
         );
+    }
+
+    #[test]
+    fn held_still_is_not_kept_for_a_command() {
+        // No rule reads a command's pane, so its output moving is no reason
+        // to rewrite its record on every look.
+        let root = TempDir::new().unwrap();
+        a_record(root.path(), &meta(), &state(Phase::Starting, 1_000));
+        for (screen, now) in [(A_COMMAND, 1_010), ("running 3 tests\n", 1_011)] {
+            let record = records(root.path()).unwrap().pop().expect("the record");
+            let view = look(
+                root.path(),
+                record,
+                true,
+                Some(screen.to_string()),
+                now,
+                None,
+            );
+            assert_eq!(view.phase(), Phase::Working);
+        }
+        let agent = Agent::open(root.path(), &meta().id).unwrap();
+        assert_eq!(agent.state().unwrap().still, None);
     }
 
     #[test]
