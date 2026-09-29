@@ -2411,7 +2411,7 @@ fn where_it_ran(meta: &Meta) -> std::path::PathBuf {
 pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
-    let mut state = agent.state()?;
+    let state = agent.state()?;
     let server = Server::from_socket(meta.socket.clone());
     let rules = own_screens(&meta);
 
@@ -2442,6 +2442,32 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     )
     .then(|| server.capture(&meta.pane).ok())
     .flatten();
+    Ok(look(
+        root,
+        Record { agent, meta, state },
+        alive,
+        screen,
+        now,
+        beat,
+    ))
+}
+
+/// Conclude about one agent off a screen already taken, write down what the
+/// reading leaves on the record, and hand back the view.
+fn look(
+    root: &Path,
+    record: Record,
+    alive: bool,
+    screen: Option<String>,
+    now: u64,
+    beat: Option<u64>,
+) -> View {
+    let Record {
+        agent,
+        meta,
+        mut state,
+    } = record;
+    let rules = own_screens(&meta);
     let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
     let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
     note(&agent, rules, &mut state, &reading);
@@ -2454,7 +2480,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
     hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
     have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
 
-    Ok(seen(&agent, meta, state, reading))
+    seen(&agent, meta, state, reading)
 }
 
 /// One agent's record, read off the disk.
@@ -2554,33 +2580,14 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     let mut screens = screens_of(&pending, now);
     for (at, item) in pending.into_iter().enumerate() {
         let Pending {
-            record:
-                Record {
-                    agent,
-                    meta,
-                    mut state,
-                },
+            record,
             alive,
             beat,
         } = item;
         // Taken rather than borrowed: the reading is handed the screen, and
         // there is one reading it belongs to.
         let screen = screens[at].take();
-        let rules = own_screens(&meta);
-        let held = held_still(&agent, &mut state, screen.as_deref(), rules, now);
-
-        let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
-        note(&agent, rules, &mut state, &reading);
-        if is_the_record(&meta, &reading) {
-            let said = worth_writing_down(&meta, &reading);
-            write_the_reading(&agent, &mut state, &reading.verdict, said);
-        }
-        saw_it_working(&agent, &meta, &reading, now);
-        let config = crate::config::current();
-        hear_what_went_unsaid(root, &agent, &meta, &mut state, &reading, config);
-        have_a_line_where_one_is_wanted(root, &agent, &meta, &state, now);
-
-        views.push(seen(&agent, meta, state, reading));
+        views.push(look(root, record, alive, screen, now, beat));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
