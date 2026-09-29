@@ -14,12 +14,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::catalog::{FENCE, unquoted};
+
 /// What the directory of roles is called, under a config directory and under a
 /// project's `.amx`.
 const AGENTS: &str = "agents";
-
-/// The line that opens a frontmatter, and the line that closes it.
-const FENCE: &str = "---";
 
 /// One role, as its file speaks it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -187,20 +186,6 @@ fn split(text: &str) -> Option<(&str, &str)> {
         }
     }
     None
-}
-
-/// `value` without the quotes it may be written in, which are the file's own
-/// punctuation and not part of what it says.
-///
-/// The same law `catalog` reads a description under: a role file and a skill
-/// are written by the same hands.
-fn unquoted(value: &str) -> &str {
-    for mark in ['"', '\''] {
-        if let Some(inner) = value.strip_prefix(mark).and_then(|v| v.strip_suffix(mark)) {
-            return inner;
-        }
-    }
-    value
 }
 
 #[cfg(test)]

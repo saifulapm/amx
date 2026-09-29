@@ -52,7 +52,7 @@ const MARKDOWN: &str = "md";
 const STAR: &str = "*";
 
 /// The line that opens a frontmatter, and the line that closes it.
-const FENCE: &str = "---";
+pub const FENCE: &str = "---";
 
 /// Everything `catalog` can be asked for on this machine, by the word that
 /// asks for it.
@@ -298,7 +298,7 @@ fn description(text: &str) -> String {
 
 /// `value` without the quotes it may be written in, which are the file's own
 /// punctuation and not part of what it says.
-fn unquoted(value: &str) -> &str {
+pub fn unquoted(value: &str) -> &str {
     for mark in ['"', '\''] {
         if let Some(inner) = value.strip_prefix(mark).and_then(|v| v.strip_suffix(mark)) {
             return inner;
