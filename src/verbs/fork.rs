@@ -92,15 +92,13 @@ pub fn run(
     // It is the cap of the project the copy will run in, which is the one the
     // agent it copies ran in: the config the caller holds is the person's file
     // and says nothing about that project.
-    let (theirs, _) = crate::config::for_dir_in(&meta.dir, root);
-    let project = spawn::project_of(&meta.dir);
     // What the copy is for is what it was given to do, and the task it was
     // copied from when it was given nothing: a row with no task on it says
     // nothing about itself, and this one is about the same work as the agent
     // it came from.
     let task = prompt.unwrap_or(&meta.task);
     // Counted and claimed in one step, as in `new`.
-    let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
+    let taken = new::take_a_place(root, &meta.dir, || {
         let (copy, dir) = new::claim(root, None, task)?;
         Ok(((copy, dir.clone()), dir))
     })?;
@@ -181,13 +179,7 @@ fn start(
     )?;
     names_its_origin(root, id, origin, session)?;
 
-    let server = spawn::server()?;
-    let boot = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
-        "_boot".to_string(),
-        id.to_string(),
-    ];
-    let pane = spawn::place(&server, id, &origin.dir, &boot)?;
+    let (server, pane) = new::place_boot(id, &origin.dir)?;
 
     // A pane with no record is a copy nothing can find or stop, waiting on a
     // record that is never coming: it goes with the record that failed.

@@ -517,11 +517,9 @@ fn run_aloud(
     // file to answer. What is wrong with that file is not this spawn's to say —
     // one key of it is being asked about, and the answer to that is a pane or a
     // refusal.
-    let (theirs, _) = crate::config::for_dir(dir);
-    let project = spawn::project_of(dir);
     // Counted and claimed in one step, so two spawns at once cannot both
     // find the last place; the place is held until `start` has recorded it.
-    let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
+    let taken = take_a_place(root, dir, || {
         let (id, agent_dir) = claim(root, args.name.as_deref(), task)?;
         Ok(((id, agent_dir.clone()), agent_dir))
     })?;
@@ -564,6 +562,38 @@ fn run_aloud(
             Err(e)
         }
     }
+}
+
+/// Count `dir`'s project against its caps and, where there is room, claim a
+/// place for the agent `claim` makes, held until the claim is dropped.
+pub(crate) fn take_a_place<T>(
+    root: &Path,
+    dir: &Path,
+    claim: impl FnOnce() -> Result<(T, PathBuf)>,
+) -> Result<Result<(T, crate::store::Claim), String>> {
+    let (theirs, _) = crate::config::for_dir_in(dir, root);
+    spawn::take_a_place(
+        root,
+        &spawn::project_of(dir),
+        theirs.max_agents,
+        theirs.max_total,
+        claim,
+    )
+}
+
+/// Start `amx _boot <id>` in a pane of its own in `cwd`.
+pub(crate) fn place_boot(
+    id: &str,
+    cwd: &Path,
+) -> Result<(crate::tmux::Server, crate::tmux::PaneId)> {
+    let server = spawn::server()?;
+    let boot = [
+        std::env::current_exe()?.to_string_lossy().into_owned(),
+        "_boot".to_string(),
+        id.to_string(),
+    ];
+    let pane = spawn::place(&server, id, cwd, &boot)?;
+    Ok((server, pane))
 }
 
 /// The two places a spawn in `dir` may be asked for a role: the person's,
@@ -812,13 +842,7 @@ fn set_up(
         },
     )?;
 
-    let server = spawn::server()?;
-    let boot = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
-        "_boot".to_string(),
-        id.to_string(),
-    ];
-    let pane = spawn::place(&server, id, &cwd, &boot)?;
+    let (server, pane) = place_boot(id, &cwd)?;
     taken.placed = Some((server.clone(), pane.clone()));
 
     let session = session_written(

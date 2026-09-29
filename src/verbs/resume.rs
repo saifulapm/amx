@@ -38,7 +38,7 @@ use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
 use crate::vendor::{self, Capability, Resume, SessionSpec, Vendor};
-use crate::verbs::send;
+use crate::verbs::{new, send};
 use crate::{complain, derive, exit, paths, store, warn, worktree};
 
 /// What amx records when it brings an agent back.
@@ -271,14 +271,7 @@ fn lost_its_pane(view: &derive::View) -> bool {
 /// the machine's afternoon is spread over projects that each say for
 /// themselves what they can afford.
 fn take_a_place(root: &Path, id: &str, dir: &Path) -> Result<Result<store::Claim, String>> {
-    let (theirs, _) = crate::config::for_dir(dir);
-    let taken = spawn::take_a_place(
-        root,
-        &spawn::project_of(dir),
-        theirs.max_agents,
-        theirs.max_total,
-        || Ok(((), paths::agent_dir_in(root, id)?)),
-    )?;
+    let taken = new::take_a_place(root, dir, || Ok(((), paths::agent_dir_in(root, id)?)))?;
     Ok(taken.map(|((), place)| place))
 }
 
@@ -339,17 +332,11 @@ fn bring_back(
     // true to write, and a place that fails leaves the agent as it ended —
     // its answer, its exit and its log — with nothing beside it for a boot
     // that will never come.
-    let server = spawn::server()?;
-    let boot = vec![
-        std::env::current_exe()?.to_string_lossy().into_owned(),
-        "_boot".to_string(),
-        id.to_string(),
-    ];
     // The session the agent had is gone with the pane that held it, and the
     // one this makes wears the same name: an id is what addresses an agent,
     // whichever pane it is in this time.
-    let pane = match spawn::place(&server, id, &dir, &boot) {
-        Ok(pane) => pane,
+    let (server, pane) = match new::place_boot(id, &dir) {
+        Ok(placed) => placed,
         Err(e) => {
             let _ = std::fs::remove_file(agent.dir().join(spawn::BOOT_ENV));
             spawn::write_handoff(agent.dir(), &recorded)?;
