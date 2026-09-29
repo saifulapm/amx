@@ -55,12 +55,12 @@ pub fn format_of(agent: &str) -> Option<Transcript> {
 /// Everything said in the conversation, in order.
 pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
     let mut said = Vec::new();
-    for entry in &spoken(format, jsonl) {
+    for entry in spoken(format, jsonl) {
         match format {
-            Transcript::Claude => claude(entry, &mut said),
-            Transcript::Pi => pi(entry, &mut said),
-            Transcript::Codex => codex(entry, &mut said),
-            Transcript::Opencode => opencode(entry, &mut said),
+            Transcript::Claude => claude(&entry, &mut said),
+            Transcript::Pi => pi(&entry, &mut said),
+            Transcript::Codex => codex(&entry, &mut said),
+            Transcript::Opencode => opencode(&entry, &mut said),
         }
     }
     said
@@ -68,10 +68,14 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
 
 /// The entries a reading walks, in order: every line of a claude transcript
 /// or a codex rollout, and of a pi session the branch its last entry is on.
-fn spoken(format: Transcript, jsonl: &str) -> Vec<Value> {
+///
+/// Lines are parsed as they are walked, so a transcript of tens of megabytes
+/// is never held as one tree of values. A pi session is the exception: its
+/// branch is found from the whole file.
+fn spoken(format: Transcript, jsonl: &str) -> Box<dyn DoubleEndedIterator<Item = Value> + '_> {
     match format {
-        Transcript::Claude | Transcript::Codex | Transcript::Opencode => entries(jsonl).collect(),
-        Transcript::Pi => branch(entries(jsonl).collect()),
+        Transcript::Claude | Transcript::Codex | Transcript::Opencode => Box::new(entries(jsonl)),
+        Transcript::Pi => Box::new(branch(entries(jsonl).collect()).into_iter()),
     }
 }
 
@@ -128,7 +132,7 @@ fn branch(entries: Vec<Value>) -> Vec<Value> {
 /// codex writes where each turn ends, and its answer is read off that — see
 /// [`codex_answer`].
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
-    last_answer(format, &spoken(format, jsonl))
+    last_answer(format, &spoken(format, jsonl).collect::<Vec<_>>())
 }
 
 /// The answer at the end of a walk already read, which is what
@@ -164,9 +168,8 @@ fn cut_off(entry: &Value) -> bool {
 /// agent had said them, and this is the only place that tells the two apart.
 pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
     spoken(format, jsonl)
-        .iter()
         .filter(|entry| synthetic(format, entry))
-        .filter_map(answer_text)
+        .filter_map(|entry| answer_text(&entry))
         .collect()
 }
 
@@ -189,7 +192,7 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
 /// reason neither vendor's table names is repeated as the vendor spelled it
 /// rather than guessed at.
 pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
-    let entries = spoken(format, jsonl);
+    let entries: Vec<Value> = spoken(format, jsonl).collect();
     match format {
         Transcript::Codex => return codex_why(&entries),
         Transcript::Opencode => return opencode_why(&entries),
@@ -346,7 +349,7 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
 /// which a program polling a wall of agents pays twice a second. This reads it
 /// once and answers both.
 pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, Option<String>) {
-    let entries = spoken(format, jsonl);
+    let entries: Vec<Value> = spoken(format, jsonl).collect();
     (context_of(format, &entries), last_answer(format, &entries))
 }
 
@@ -374,7 +377,7 @@ pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
                 .trim();
                 (!title.is_empty()).then(|| title.to_string())
             })
-            .last(),
+            .next_back(),
     }
 }
 
@@ -866,7 +869,7 @@ fn detail(input: &Value) -> Option<String> {
 }
 
 /// Every line of the file that is a JSON document.
-fn entries(jsonl: &str) -> impl Iterator<Item = Value> + '_ {
+fn entries(jsonl: &str) -> impl DoubleEndedIterator<Item = Value> + '_ {
     jsonl
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
