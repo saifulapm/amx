@@ -771,9 +771,16 @@ pub fn live(root: &Path) -> Result<Vec<String>> {
 /// agents that read that file: whichever directory one was started in, it
 /// belongs to the project [`project_of`] finds behind that directory.
 pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
+    // Agents share directories, and each distinct one costs a git call.
+    let mut projects: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     let theirs = going(root)?
         .into_iter()
-        .filter(|meta| project_of(&meta.dir) == project)
+        .filter(|meta| {
+            projects
+                .entry(meta.dir.clone())
+                .or_insert_with_key(|dir| project_of(dir))
+                == project
+        })
         .collect();
     Ok(named(theirs))
 }
