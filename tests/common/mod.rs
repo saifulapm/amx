@@ -551,12 +551,16 @@ impl Default for Harness {
 pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     amx.until("the row", || amx.capture(view).contains(id).then_some(()));
     amx.tmux(&["send-keys", "-t", view, "Space"]);
-    amx.until("the card", || {
+    amx.until("the card, with its keys drawn under it", || {
         let drawn = amx.capture(view);
-        drawn
+        let ruled = drawn
             .lines()
-            .any(|line| line.contains(id) && line.contains('┈'))
-            .then_some(drawn)
+            .any(|line| line.contains(id) && line.contains('┈'));
+        // The view has no synchronized output, so a capture can land mid-frame.
+        // The card's key row is the last row the opening frame writes: once it
+        // is up, every row above it is too.
+        let keyed = drawn.lines().any(|line| line.contains("esc closes it"));
+        (ruled && keyed).then_some(drawn)
     })
 }
 
