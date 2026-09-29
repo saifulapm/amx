@@ -156,7 +156,6 @@ now() {
 }
 
 steps=$(mktemp "${TMPDIR:-/tmp}/mock-claude-steps.XXXXXX")
-trap 'rm -f "$steps"' EXIT
 sed -e "s|@TRANSCRIPT2@|$transcript2|g" \
 	-e "s|@TRANSCRIPT@|$transcript|g" \
 	-e "s|@SESSION2@|$session2|g" \
@@ -165,6 +164,12 @@ sed -e "s|@TRANSCRIPT2@|$transcript2|g" \
 
 # The steps are read on a descriptor of their own, so the pane's own stdin is
 # still stdin while a step runs: `await` has nowhere else to read a key from.
+# The file is unlinked once open instead of removed by an EXIT trap. An EXIT
+# trap makes bash 5.3 catch SIGHUP, and a hangup landing in a command
+# substitution then runs the trap there and spins forever.
+exec 3<"$steps"
+rm -f "$steps"
+
 while IFS= read -r line <&3 || [ -n "$line" ]; do
 	case "$line" in
 	'' | '#'*) continue ;;
@@ -190,6 +195,6 @@ while IFS= read -r line <&3 || [ -n "$line" ]; do
 		exit 65
 		;;
 	esac
-done 3<"$steps"
+done
 
 exit 0
