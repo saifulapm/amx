@@ -24,6 +24,14 @@ the vendor shares with the person (`Wire::Hooks`), and a catalog opened by
 something other than `/` (`Catalog.sigil`). The recipe holds, with the caveat
 that a third shape of program brings shapes of its own.
 
+opencode is the fourth, again one file, `src/vendor/opencode.rs`. Its new
+shapes were a model carried in the environment (`DialSpec.env`), a task that
+is one flag's value (`prompt_flag`), a plugin file amx places in the vendor's
+config directory (`Wire::Placed`), a signal the plugin hears to end a turn
+before its pane goes (`interrupt_signal`), composer characters that open a
+popup (`popups`), a cancel that takes two presses (`cancel_presses`), and a
+message list the plugin writes (`Transcript::Opencode`).
+
 ## The shape: a descriptor, not a trait
 
 A vendor is a `Vendor` value in a static table — no dynamic dispatch, no
@@ -649,9 +657,191 @@ go.
   may not set `CLAUDE_CONFIG_DIR`. A person's own `[codex.env]` still may,
   and setup, doctor and uninstall still read only the environment.
 
+## opencode
+
+opencode is the fourth real entry, in `src/vendor/opencode.rs`. Every value in
+it was read off opencode 2.0.16 between 2026-09-29 and 2026-09-30: the flags
+off its root command, and the rest off the source tag it was built from,
+v2.0.16, with a path under `packages/` and a line beside each value. The
+screens were driven live on 2026-09-30, and `docs/opencode-screens.md` is that
+pass. The measurement ran under a scratch `OPENCODE_CONFIG_DIR` copied from
+`~/.config/opencode`, on the free `opencode/longcat-2.5-preview-free`, which
+answers with no provider connected.
+
+**`--standalone`.** By default an opencode TUI joins a shared service, and the
+service runs in the environment of whichever client first started it. Under
+it a pane's `OPENCODE_CONFIG_CONTENT` does nothing, and a turn goes on after
+its pane is killed. So every opencode amx starts carries `--standalone` in
+`launch`, once, on `new` and `resume` alike, and runs a server of its own
+(`opencode serve --stdio`) that ends with the pane. amx never runs opencode
+outside a pane either: even `opencode --version` or `opencode models` starts
+the shared service, with the caller's environment.
+
+**The dials.** The TUI takes no model flag, so the model rides in the pane's
+environment as `OPENCODE_CONFIG_CONTENT` = `{"model":"<value>"}`, which
+opencode loads last, over every config file. That is on `new` only: a resumed
+session keeps its own model, and a variable the environment already carries
+stands. The dial is open, and the entry lists no models, since the command
+that would print them starts the shared service. `--auto` is the permission
+dial, bare, closed over `default` and `auto`. There is no effort dial: a
+`#variant` on the model loses to the variant opencode stores per model.
+
+**Sessions.** opencode mints its ids and takes none to start under, so the
+plugin's Started names the session. `--session <id>` resumes it, as two words;
+`-s`, `-c`, `--continue` and `--server` are what a resume replaces. There is
+no fork flag in the TUI, no variable naming the session in what opencode runs,
+and no trust screen, so there is no Fork, no Adopt and no Trust.
+
+**The task.** The root command's only positional is a directory, so a task or
+a message is one word, `--prompt=<text>`. On the home route `--prompt` fills
+the composer and does not submit, so the plugin presses `prompt.submit` every
+500 ms while the route is home, only under `AMX_ID` and a `--prompt=` word in
+its argv, and stops at the first session route, the first turn or 30 seconds.
+`--session <id> --prompt=` submits on its own. `@` and `/` open opencode's
+autocomplete, which takes the Enter, so a message whose last word opens with
+either gets one trailing space.
+
+**The wire.** opencode's TUI loads `plugins/<dir>/tui.*` under its config
+directory with no registration, and `OPENCODE_CONFIG_DIR` replaces that
+directory. `amx setup opencode` writes `plugins/amx/tui.js` there, plain JS
+out of `assets/opencode/tui.js`, and opens no other file: `opencode.json`,
+`tui.json` and `cli.json` are never touched. The plugin says nothing without
+`AMX_ID`, reports only its own route's session, walked to the root, and hands
+each moment to `amx _hook` the way claude's hooks do. A project's
+`[opencode.env]` may not set `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` or
+`OPENCODE_CONFIG_CONTENT`, since each picks which config runs, and the first
+picks where the plugin is.
+
+**The moments.** All eight are wired, three of them under names the plugin
+coins: Started is `session.selected`, the first session route, with `source`
+`startup` or `resume`; Prompted is `session.execution.started`; Taken is
+`session.inbox.delivered` for a message queued while a turn ran; Calling is
+`session.tool.called`; Asked is `permission.asked`; Notified is a
+`form.created` of kind `question`; Refused is `permission.rejected`, a
+`reject` reply or a cancelled form; and Ended is `session.execution.ended`,
+over succeeded, failed and interrupted.
+
+**The transcript.** At each Ended the plugin syncs the session's messages and
+writes the whole list, one message a line, to `$AMX_DIR/opencode-messages.jsonl`,
+and names that file as the transcript. amx never opens `opencode.db`.
+
+**Interrupt and stop.** The first Escape only arms opencode's cancel, so
+`interrupt` presses it twice, 300 ms apart. `stop` of an agent in a turn sends
+`SIGUSR2` to the pane; the plugin interrupts its session, which ends a turn
+even under a permission card, and `stop` waits up to five seconds for Ended
+before it ends the pane, warning with the session id when none came. The
+order matters: a server killed mid-turn keeps its claim on the session, and
+the next boot of the shared service, which shares the database, resumes it
+unattended.
+
+**The catalog.** A command runs as `/name`, out of `commands/` or `command/`
+in the config directory and in the project's `.opencode/`; agents come from
+`agents/` in the same two, and the TUI has no flag to run as one. A skill has
+no text spelling, so there are no skills. The built-ins are the app's, the
+session's, the prompt's and the server's, aliases and all.
+
+### What the dogfood saw on opencode 2.0.16
+
+On 2026-09-30. The rig: amx built from the entry above and installed with
+`cargo install --path . --root <scratch>`, that root first on the PATH; a
+scratch `OPENCODE_CONFIG_DIR` copied from `~/.config/opencode` and exported;
+and a scratch repository with one commit whose `.amx/config.toml` said
+`agent = "opencode"`, allowed with `amx allow`. The install went to a root of
+its own rather than `~/.cargo/bin`, which stands ahead of the machine's amx on
+the PATH, because another run was driving that amx at the time; for the same
+reason the agents went on a state directory and a tmux socket of their own
+(`AMX_STATE_DIR`, `AMX_TMUX_SOCKET`), beside a claude on the same wall.
+`opencode service start` under the same environment put the shared service up
+first (`opencode serve --service`, on 49374), and the database was the
+person's own, `~/.local/share/opencode/opencode.db`, read only with
+`sqlite3 -readonly`.
+
+`amx setup opencode` wrote the plugin to `<scratch>/plugins/amx/tui.js` and
+nothing else. `doctor`'s opencode row came up green: *the plugin at
+…/plugins/amx/tui.js*, and its agent row said opencode, read off the project's
+file. `doctor` failed only while the machine's own amx was still on the PATH
+behind the scratch one, which is its two-amx check doing its job; with that
+directory off the PATH (and claude linked in from a scratch bin) every row was
+green.
+
+**The Show.** `amx new --model opencode/longcat-2.5-preview-free "list the
+files here"` was refused at first; see the first finding. With the model
+written under `[opencode] models` it ran `opencode --standalone --prompt=list
+the files here`, with `OPENCODE_CONFIG_CONTENT={"model":"opencode/longcat-2.5-preview-free"}`
+and the scratch `OPENCODE_CONFIG_DIR` in the pane's environment, and an
+`opencode serve --stdio --port 0` under it. The row read `starting`, `working`
+two seconds later, `Running read` at six, and `done` (idle, printed) at twelve.
+The events were the plugin's own: `session.selected startup`,
+`session.execution.started`, `session.tool.called read`,
+`session.execution.ended`. `amx result` printed the answer, the four entries
+of the directory, out of the message list the plugin wrote to the record.
+
+`amx resume <id> "and count them"` refused an idle agent (*stop it before
+starting it again*), as it does for every vendor. After `amx stop` it ran
+`opencode --standalone --session ses_… --prompt=and count them`; the next
+events were `session.selected resume` and `session.execution.started` under
+the same session, and the free model took 33 seconds to answer: *There are
+**4** entries*, two directories and two files, the list from the turn before
+the stop.
+
+`amx new … "run the shell command sleep 60, then say finished"`, stopped
+fifteen seconds into the `sleep`: `amx stop` returned in 0.08 seconds, and
+`session.execution.ended` arrived in the same second, with no answer. The
+session's row in `opencode.db` read `idle_outcome` `interrupted`, the last
+message an `idle` row with outcome `interrupted`, and the `sleep 60` was gone.
+The pane's `opencode --standalone` and its `serve --stdio` were still in the
+process table the instant `stop` returned, and gone three seconds later; with
+the other opencode agent stopped too, `pgrep -f "serve --stdio"` found only
+the shells whose own command line carried those words, and no opencode.
+`opencode service restart` then came back on 49374, and thirty seconds later
+the stopped session still read `interrupted`, three messages, the last at the
+same `seq`: nothing resumed it.
+
+**Two vendors on the wall.** A claude spawned from the same repository with
+`--agent claude` stopped on its folder-trust screen and read `waiting` on
+`folder_trust`, beside opencode rows on `prompt`. No row read `unknown` and
+none carried the other vendor's rule.
+
+**The rest of the verbs.** `--permission auto` ran `opencode --standalone
+--auto --prompt=…`. `--effort high` was refused with *amx knows no effort dial
+for opencode*, and `--permission plan` with *opencode takes default, auto*,
+both exit 64 before anything was spawned. A task with `@a.txt` in the middle
+submitted on the first try and read the file. `amx send` to the idle agent
+started a turn (`session.execution.started`, then `session.tool.called
+shell`), and `amx interrupt` eight seconds into it wrote `interrupt` and
+`session.execution.ended` in the same second, and the row read `done`. `amx
+logs` read the message list back, a `› read a.txt` row for the tool, the
+answer, the message as `❯ now run sleep 40 in the shell` and `› shell sleep 40`.
+
+**What it found.** Three things. None is a wrong value in the entry, and none
+was fixed in this pass.
+
+- **A typed opencode model is refused where opencode is the configured agent.**
+  `amx new --model opencode/longcat-2.5-preview-free …` with `agent =
+  "opencode"` in the file exited 64: *opencode takes ; claude takes fable,
+  opus, sonnet, haiku; pi takes …; codex takes 0 models (codex debug
+  models)*. A typed model picks the harness whose list holds it, and
+  opencode's list is its cycle less the sentinel, which is empty; the dial
+  being open is never asked. Asking also ran `codex debug models` for a word
+  that was never going to be codex's. `--agent opencode` beside the same
+  model spawned it, as did the model written under `[opencode] models`, which
+  the shipped config already shows. The fix belongs to `picked` in
+  `src/verbs/new.rs`: a word no list holds could go to the configured
+  harness when its model dial is open, or the refusal could at least say
+  where to name the model instead of `opencode takes ` and nothing.
+- **The pane's processes outlive `stop` by a moment.** Right after `amx stop`
+  returned, the `opencode --standalone` and its server were still running,
+  for under three seconds. The turn was already over by then, so nothing ran
+  on, but a check typed the instant `stop` returns can find them.
+- **`pgrep -f "serve --stdio"` matches more than opencode.** Under a harness
+  that runs each command as `bash -c '<the whole line>'`, the shell's own
+  argv carries the words, so the check needs those shells filtered out. Not
+  amx's.
+
 ## What the dogfood saw
 
-This is pi's pass. codex's is at the end of [codex](#codex).
+This is pi's pass. codex's is at the end of [codex](#codex), and opencode's at
+the end of [opencode](#opencode).
 
 pi 0.84.4, 2026-09-05, on a scratch repository with `agent = "pi"` in the
 config, amx built from the entry above and put on the PATH in front of whatever
