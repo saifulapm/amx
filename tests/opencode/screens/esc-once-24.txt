@@ -1,0 +1,40 @@
+‹2  ⠧ Running sleep 6 + 
+                        
+ ┃                      
+ ┃  Run the shell       
+ ┃  command `sleep 60`  
+ ┃  with your shell     
+ ┃  tool, then reply    
+ ┃  with the single     
+ ┃  word done.          
+ ┃                      
+                        
+    + Thought · 1.2s    
+                        
+ ┃                      
+ ┃  ⠏ sleep 60          
+ ┃                      
+                        
+    Press ctrl+b to     
+    move running work   
+    to the background   
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+ ┃                      
+ ┃                      
+ ┃                      
+ ┃ LongCat 2.5 Pr…      
+ ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ 
+  ⬝⬝⬝⬝⬝esc...upt ↓ 1 sh 
+                        

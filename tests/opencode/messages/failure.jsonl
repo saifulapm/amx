@@ -1,0 +1,3 @@
+{"id":"msg_0ee977085001hpeJF1ygXHnOXJ","type":"user","text":"Say hello.","files":[],"agents":[],"time":{"created":1790709297379}}
+{"id":"msg_0ee9770f10014FORznpkwbV0IY","type":"assistant","agent":"build","model":{"id":"longcat-2.5-preview-free","providerID":"opencode","variant":"default"},"content":[],"snapshot":{"start":"e7e637780d18e6456376ef5901c2796b459fbc14"},"time":{"created":1790709297423,"completed":1790709297439},"finish":"error","error":{"type":"provider.invalid-request","message":"measurement: bad request","status":400}}
+{"id":"msg_0ee977123001Pvh83jd2gfRooX","type":"idle","outcome":"failed","time":{"created":1790709297443}}

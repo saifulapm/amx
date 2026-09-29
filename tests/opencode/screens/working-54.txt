@@ -1,0 +1,40 @@
+ ⠙ Running sleep command         +                    
+                                                      
+  ┃                                                   
+  ┃  Run the shell command `sleep 40` with your       
+  ┃  shell tool, then reply with the single word      
+  ┃  done.                                            
+  ┃                                                   
+                                                      
+     + Thought · 1.2s                                 
+                                                      
+  ┃                                                   
+  ┃  ⠦ sleep 40                                       
+  ┃                                                   
+                                                      
+     Press ctrl+b to move running work to the         
+     background                                       
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+  ┃                                                   
+  ┃                                                   
+  ┃                                                   
+  ┃  Build · LongCat 2.5 Preview Free                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   ■■⬝⬝⬝⬝⬝⬝esc interrupt  ↓ 1 shell  ctrl+p commands  
+                                                      

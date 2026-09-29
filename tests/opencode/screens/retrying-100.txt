@@ -1,0 +1,40 @@
+   Running s   done        Running s   Creating    Tea or co   Greeting  ⠇ New session            + 
+                                                                                                    
+  ┃                                                                                                 
+  ┃  Say hello.                                                                                     
+  ┃                                                                                                 
+                                                                                                    
+     ⚠ Retrying in 7s · attempt 6 · ConnectionRefused: Unable to connect. Is the computer able to   
+     access the url?                                                                                
+                                                                                                    
+     Build · LongCat 2.5 Preview Free                                                               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃  Build · LongCat 2.5 Preview Free OpenCode Zen                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   ■■■■■■⬝⬝ esc interrupt                                        shift+tab agents  ctrl+p commands  
+                                                                                                    

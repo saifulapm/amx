@@ -1,0 +1,40 @@
+ ⠦ Running sleep comm + 
+                        
+ ┃                      
+ ┃  Run the shell       
+ ┃  command `sleep 40`  
+ ┃  with your shell     
+ ┃  tool, then reply    
+ ┃  with the single     
+ ┃  word done.          
+ ┃                      
+                        
+    + Thought · 1.2s    
+                        
+ ┃                      
+ ┃  ⠙ sleep 40          
+ ┃                      
+                        
+    Press ctrl+b to     
+    move running work   
+    to the background   
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+ ┃                      
+ ┃                      
+ ┃                      
+ ┃ LongCat 2.5 Pr…      
+ ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ 
+  ⬝⬝⬝⬝⬝esc...upt ↓ 1 sh 
+                        

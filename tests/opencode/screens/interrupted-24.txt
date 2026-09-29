@@ -1,0 +1,40 @@
+‹2    Running sleep 6 + 
+                        
+ ┃                      
+ ┃  Run the shell       
+ ┃  command `sleep 60`  
+ ┃  with your shell     
+ ┃  tool, then reply    
+ ┃  with the single     
+ ┃  word done.          
+ ┃                      
+                        
+    + Thought · 1.2s    
+                        
+ ┃                      
+ ┃  $ sleep 60          
+ ┃                      
+ ┃   Background         
+ ┃                      
+ ┃  Tool execution      
+ ┃  interrupted         
+ ┃                      
+                        
+    Build · 29.9s · 15. 
+    1 tok/s ·           
+    interrupted         
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+ ┃                      
+ ┃                      
+ ┃                      
+ ┃ LongCat 2.5 Pr…      
+ ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ 
+ …/t1.t…/oc/repo:main   
+                        

@@ -1,0 +1,40 @@
+   Running sleep comm + 
+                        
+ ┃                      
+ ┃  Run the shell       
+ ┃  command `sleep 40`  
+ ┃  with your shell     
+ ┃  tool, then reply    
+ ┃  with the single     
+ ┃  word done.          
+ ┃                      
+                        
+    + Thought · 1.2s    
+                        
+ ┃                      
+ ┃  $ sleep 40          
+ ┃                      
+ ┃  {"exit":0,          
+ ┃  "truncated":false,  
+ ┃  "output":"",        
+ ┃  "status":           
+ ┃  "completed"}        
+ ┃                      
+                        
+    + Thought · 448ms   
+                        
+    done                
+                        
+    Build · 48.1s · 11. 
+    2 tok/s             
+                        
+                        
+                        
+                        
+ ┃                      
+ ┃                      
+ ┃                      
+ ┃ LongCat 2.5 Pr…      
+ ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ 
+ …/t1.t…/oc/repo:main   
+                        

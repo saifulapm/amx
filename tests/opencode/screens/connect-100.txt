@@ -1,0 +1,40 @@
+   Runnin   done     Runnin   Creati   Tea or   Greeti   New se   New se + New session              
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                        Connect an integration                           esc                        
+                                                                                                    
+                        Search                                                                      
+                                                                                                    
+                        Popular                                                                     
+                        OpenCode Console                                                            
+                        openai                                                                      
+                        github-copilot                                                              
+                                                                                                    
+                        Services                                                                    
+             ┃          azure                                                                       
+             ┃  Say     cloudflare-ai-gateway                                                       
+             ┃          cloudflare-workers-ai                                                       
+             ┃  Buil    digitalocean                                                                
+             ╹▀▀▀▀▀▀    Exa                                                     ▀▀▀▀▀▀▀▀            
+             …/amx/o    Firecrawl                                               commands            
+                        gitlab                                                                      
+                        Parallel                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                            2.0.16  
+                                                                                                    

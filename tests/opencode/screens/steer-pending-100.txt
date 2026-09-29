@@ -1,0 +1,40 @@
+   Running sleep command         ⠋ done                          +                                  
+                                                                                                    
+  ┃                                                                                                 
+  ┃  Run the shell command `sleep 30` with your shell tool, then reply with the single word done.   
+  ┃                                                                                                 
+                                                                                                    
+     + Thought · 772ms                                                                              
+                                                                                                    
+  ┃                                                                                                 
+  ┃  ⠙ sleep 30                                                                                     
+  ┃                                                                                                 
+                                                                                                    
+  ┃                                                                                                 
+  ┃  After that, also say the word banana.                                                          
+  ┃                                                                                                 
+                                                                                                    
+     Press ctrl+b to move running work to the background                                            
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃  Build · LongCat 2.5 Preview Free OpenCode Zen                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   ■■■⬝⬝⬝⬝⬝ esc interrupt                                               ↓ 1 shell  ctrl+p commands  
+                                                                                                    

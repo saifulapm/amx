@@ -1,0 +1,40 @@
+‹1    done    Runni   Creat ? Tea or coffee?        + 
+                                                      
+  ┃                                                   
+  ┃  Use your question tool to ask me one question:   
+  ┃  tea or coffee? Offer the two options. Do         
+  ┃  nothing else.                                    
+  ┃                                                   
+                                                      
+     + Thought · 1.6s                                 
+                                                      
+     → Asked 1 question                               
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+  ┃                                                   
+  ┃  Questions                                        
+  ┃                                                   
+  ┃  Tea or coffee?                                   
+  ┃                                                   
+  ┃  1. Tea                                           
+  ┃     A warm cup of tea                             
+  ┃  2. Coffee                                        
+  ┃     A warm cup of coffee                          
+  ┃  3. Type your own answer                          
+  ┃                                                   
+  ┃  ↑↓ select  enter submit  esc dismiss             
+  ┃                                                   
+                                                      

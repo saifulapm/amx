@@ -1,0 +1,157 @@
+# What amx can recognise on an opencode pane.
+#
+# The same job `assets/screen-rules.toml` does for claude and
+# `assets/screen-rules-codex.toml` does for codex. opencode reports through
+# amx's TUI plugin, so while it reports the pane is not the witness. It is read
+# where the plugin cannot speak for the person: a pane with no provider to
+# call, and the permission and question cards a turn stops on. A screen no rule
+# claims reads `unknown`.
+#
+# Rules are ORDERED: the first whose conditions hold decides. A rule holds when
+# every string in `all` appears and, if `any` is given, at least one of those
+# appears too. Matching is against the bottom FLOOR_LINES rows of the capture,
+# trailing blank rows trimmed, control characters replaced and case folded.
+#
+# ── The anchor law, on this vendor ───────────────────────────────────────────
+# Every string here was read off a live opencode. The source tree (tag v2.0.16,
+# the same code as the installed opencode v2.0.16) was read to know which
+# screens exist and how to raise them, and for nothing else.
+#
+# Measured on 2026-09-30 against opencode 2.0.16, launched `opencode
+# --standalone` on its default alternate screen, under a scratch
+# OPENCODE_CONFIG_DIR copied from ~/.config/opencode and scratch XDG data,
+# state and cache directories, on the free `opencode/longcat-2.5-preview-free`
+# with no login, in a private tmux server at 40 rows. Each screen was captured
+# the way `src/tmux.rs` captures one, `capture-pane -p -J`, at 220, 100, 54 and
+# 24 columns, by resizing the window with the screen up. The captures are in
+# tests/opencode/screens and src/rules.rs holds every rule below against them.
+# docs/opencode-screens.md is the inventory: how each screen was raised and
+# what the rest of the pane says.
+#
+# ── No furniture ─────────────────────────────────────────────────────────────
+# opencode's composer is a left bar (`┃`) closed by a half-block row
+# (`╹▀▀▀…`), with the agent and model under the input, and one footer row under
+# the bar: the directory, then `shift+tab agents  ctrl+p commands` on the home
+# route, or the spinner and `esc interrupt` mid-turn. That is not the box
+# `src/furniture.rs` walks up to, so this document carries no `[furniture]`
+# table and an opencode pane keeps every row it has.
+
+# The connect dialog. A message sent with no provider to call opens it over the
+# home route instead of starting a turn. At 100 columns its title (`Connect an
+# integration`) and `Search` are above the 24 rows a rule sees, and the list is
+# what is left:
+#
+#     Popular
+#     OpenCode Console
+#     openai
+#     github-copilot
+#
+#     Services
+#     azure
+#     …
+#
+# `popular` and the row under it are whole at all four widths; at 24 the row is
+# cut to `OpenCode Conso`. A `setup` gate: connecting a provider is the
+# person's to do.
+[[rule]]
+name = "connect"
+state = "waiting"
+kind = "question"
+setup = true
+all = ["popular"]
+any = ["opencode conso"]
+within = 1
+
+# No provider to call. Raised with the models catalog emptied
+# (`OPENCODE_MODELS_PATH` naming `{}`, `OPENCODE_DISABLE_MODELS_FETCH=1`), so
+# the free OpenCode Zen models were gone too. The model label under the
+# composer, at 100 columns:
+#
+#   ┃  Build · No provider selected Connect a provider
+#
+# At 24 it is cut to `No provider se…`, so that is the anchor. A task passed
+# with `--prompt` sits in the composer, and a send opens the connect dialog
+# above. A `setup` gate.
+[[rule]]
+name = "no_provider"
+state = "waiting"
+kind = "question"
+setup = true
+all = ["no provider se"]
+
+# A tool call waiting for permission, raised with a scratch
+# `{"permissions":[{"action":"shell","resource":"*","effect":"ask"}]}` in
+# OPENCODE_CONFIG_CONTENT (the default build agent ran `sleep` and `touch`
+# without asking). Drawn in the session in place of the composer. At 100
+# columns:
+#
+#   ┃  △ Permission required
+#   ┃
+#   ┃  $ touch hello.txt
+#   ┃
+#   ┃
+#   ┃   Allow once   Always allow   Reject             ctrl+f fullscreen  ⇆ select  enter confirm
+#
+# At 24 the title wraps after `△ Permission` and the choices are cut to `Allow
+# once   Always`. Both anchors are whole at all four widths. Only the shell
+# card was raised.
+[[rule]]
+name = "permission"
+state = "waiting"
+kind = "permission"
+all = ["allow once"]
+any = ["△ permission"]
+
+# The question tool's form, one question, drawn in place of the composer. At
+# 100 columns:
+#
+#   ┃  Questions
+#   ┃
+#   ┃  Tea or coffee?
+#   ┃
+#   ┃  1. Tea
+#   ┃     A warm cup of tea
+#   ┃  2. Coffee
+#   ┃     A warm cup of coffee
+#   ┃  3. Type your own answer
+#   ┃
+#   ┃  ↑↓ select  enter submit  esc dismiss
+#
+# The third choice is opencode's own. At 24 the hints are set in three narrow
+# columns (`↑↓   enter esc` over `sele submi dismi`), so `esc dismiss` is not
+# whole there, and `↑↓` is. The permission card says `⇆ select` instead.
+[[rule]]
+name = "question"
+state = "waiting"
+kind = "question"
+all = ["type your own"]
+any = ["↑↓"]
+
+# A running turn. The footer row under the composer:
+#
+#    ⬝⬝⬝⬝■■■■ esc interrupt                                  ↓ 1 shell  ctrl+p commands
+#
+# One Esc arms the interrupt for a few seconds and the row reads `esc again to
+# interrupt`. At 54 columns the spinner and `esc interrupt` run together
+# (`■■⬝⬝⬝⬝⬝⬝esc interrupt`), and at 24 opencode cuts the words to `esc...upt`
+# with three full stops, armed or not. A provider error being retried
+# (`⚠ Retrying in 9s · attempt 5 · …`) and a message steered in while the turn
+# runs keep the same footer. claude's `esc to interrupt` is none of these.
+[[rule]]
+name = "working"
+state = "working"
+any = ["esc interrupt", "esc again to interrupt", "esc...upt"]
+
+# The composer, idle: on the home route, after a turn, after an Esc'd turn and
+# after a turn that failed on a provider error. The row closing its bar is the
+# one thing on it at every width: the footer row under it names the directory
+# and at 54 and 24 columns nothing else, and the placeholder (`Ask anything…
+# "<an example>"`) is drawn on the home route only. Mid-turn, on the
+# no-provider home and behind the connect dialog the same row is drawn, which
+# is why those rules come first. The two cards replace the composer and draw
+# no such row.
+[[rule]]
+name = "prompt"
+state = "idle"
+quiescent = true
+all = ["╹▀▀▀"]

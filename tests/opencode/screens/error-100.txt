@@ -1,0 +1,40 @@
+   Running   done      Running   Creatin   Tea or    Greetin   New ses   New session              + 
+                                                                                                    
+  ┃                                                                                                 
+  ┃  Say hello.                                                                                     
+  ┃                                                                                                 
+                                                                                                    
+     Error: measurement: bad request                                                                
+                                                                                                    
+     Build · LongCat 2.5 Preview Free · 60ms                                                        
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃  Build · LongCat 2.5 Preview Free OpenCode Zen                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+  …/state/workflow/runs/amx/opencode-lands/t1.tmp/oc/repo:main   shift+tab agents  ctrl+p commands  
+                                                                                                    

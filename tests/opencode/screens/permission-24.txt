@@ -1,0 +1,40 @@
+‹3  ! Creating hello. + 
+                        
+ ┃                      
+ ┃  Run the shell       
+ ┃  command `touch      
+ ┃  hello.txt` with     
+ ┃  your shell tool,    
+ ┃  then reply with the 
+ ┃  single word done.   
+ ┃                      
+                        
+    + Thought · 850ms   
+                        
+ ┃                      
+ ┃  ⠸ touch hello.txt   
+ ┃                      
+                        
+    Press ctrl+b to     
+    move running work   
+    to the background   
+                        
+                        
+                        
+                        
+                        
+                        
+ ┃                      
+ ┃  △ Permission        
+ ┃    required          
+ ┃                      
+ ┃  $ touch hello.      
+ ┃  txt                 
+ ┃                      
+ ┃                      
+ ┃   Allow once   Always
+ ┃                      
+ ┃  ctrl+f      ⇆ select
+ ┃  fullscreen          
+ ┃                      
+                        

@@ -4551,4 +4551,181 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             );
         }
     }
+
+    // ── opencode 2.0.16, measured 2026-09-30 ─────────────────────────────────
+    // Every capture under tests/opencode/screens came off a live `opencode
+    // --standalone` in a private tmux server, `capture-pane -p -J`, at the
+    // width in its name and forty rows — see docs/opencode-screens.md.
+
+    fn opencode() -> Ruleset {
+        Ruleset::parse(include_str!("../assets/screen-rules-opencode.toml"))
+            .expect("opencode's screens parse")
+    }
+
+    /// One opencode screen at the four widths it was captured at.
+    macro_rules! opencode_widths {
+        ($name:literal) => {
+            [
+                (
+                    220,
+                    include_str!(concat!("../tests/opencode/screens/", $name, "-220.txt")),
+                ),
+                (
+                    100,
+                    include_str!(concat!("../tests/opencode/screens/", $name, "-100.txt")),
+                ),
+                (
+                    54,
+                    include_str!(concat!("../tests/opencode/screens/", $name, "-54.txt")),
+                ),
+                (
+                    24,
+                    include_str!(concat!("../tests/opencode/screens/", $name, "-24.txt")),
+                ),
+            ]
+        };
+    }
+
+    #[test]
+    fn rules_opencode_reads_the_screens_it_draws() {
+        assert_eq!(
+            named(&opencode()),
+            [
+                "connect",
+                "no_provider",
+                "permission",
+                "question",
+                "working",
+                "prompt"
+            ],
+            "order decides, so it is part of the data"
+        );
+    }
+
+    #[test]
+    fn rules_opencode_gates_a_run_with_no_provider_to_call() {
+        assert_eq!(
+            gates(&opencode()),
+            ["connect", "no_provider"],
+            "only the person can connect a provider"
+        );
+    }
+
+    #[test]
+    fn rules_opencode_names_every_screen_at_every_width() {
+        let opencode = opencode();
+        for (screen, captures, rule, means) in [
+            ("idle", opencode_widths!("idle"), "prompt", Phase::Idle),
+            (
+                "idle after a turn",
+                opencode_widths!("idle-after"),
+                "prompt",
+                Phase::Idle,
+            ),
+            (
+                "a turn running",
+                opencode_widths!("working"),
+                "working",
+                Phase::Working,
+            ),
+            (
+                "a turn running after one Esc",
+                opencode_widths!("esc-once"),
+                "working",
+                Phase::Working,
+            ),
+            (
+                "a turn interrupted with Esc twice",
+                opencode_widths!("interrupted"),
+                "prompt",
+                Phase::Idle,
+            ),
+            (
+                "a shell command waiting for permission",
+                opencode_widths!("permission"),
+                "permission",
+                Phase::Waiting,
+            ),
+            (
+                "the question tool's form",
+                opencode_widths!("question"),
+                "question",
+                Phase::Waiting,
+            ),
+            (
+                "no provider to call",
+                opencode_widths!("no-provider"),
+                "no_provider",
+                Phase::Waiting,
+            ),
+            (
+                "the connect dialog a send with no provider opens",
+                opencode_widths!("connect"),
+                "connect",
+                Phase::Waiting,
+            ),
+        ] {
+            for (width, capture) in captures {
+                let claimed = claim(&opencode, &as_read(capture), Phase::Working);
+                assert_eq!(
+                    (claimed.rule_name(), claimed.phase()),
+                    (Some(rule), Some(means)),
+                    "{screen} at {width} columns"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rules_opencode_names_what_a_turn_draws_around_its_footer() {
+        let opencode = opencode();
+        for (screen, capture, rule) in [
+            (
+                "a message steered into the turn, waiting for the next step",
+                include_str!("../tests/opencode/screens/steer-pending-100.txt"),
+                "working",
+            ),
+            (
+                "a provider error being retried",
+                include_str!("../tests/opencode/screens/retrying-100.txt"),
+                "working",
+            ),
+            (
+                "a turn that ended on a provider error",
+                include_str!("../tests/opencode/screens/error-100.txt"),
+                "prompt",
+            ),
+        ] {
+            assert_eq!(
+                claim(&opencode, &as_read(capture), Phase::Working).rule_name(),
+                Some(rule),
+                "{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_opencode_claims_nothing_on_a_shell_or_another_vendors_pane() {
+        let opencode = opencode();
+        for (what, screen) in [
+            ("a shell", A_SHELL),
+            ("claude at its prompt", IDLE_SCREEN),
+            ("claude mid-turn", WORKING_SCREEN),
+            ("pi at its prompt", A_PI_IDLE),
+            (
+                "codex at its prompt",
+                include_str!("../tests/codex/screens/idle-100.txt"),
+            ),
+            (
+                "codex mid-turn",
+                include_str!("../tests/codex/screens/working-100.txt"),
+            ),
+        ] {
+            assert_eq!(
+                claim(&opencode, &as_read(screen), Phase::Working),
+                Claim::Unclaimed,
+                "{what}"
+            );
+        }
+    }
 }

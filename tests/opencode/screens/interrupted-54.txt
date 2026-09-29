@@ -1,0 +1,40 @@
+   Running sle   done          Running sleep 60 com + 
+                                                      
+  ┃                                                   
+  ┃  Run the shell command `sleep 60` with your       
+  ┃  shell tool, then reply with the single word      
+  ┃  done.                                            
+  ┃                                                   
+                                                      
+     + Thought · 1.2s                                 
+                                                      
+  ┃                                                   
+  ┃  $ sleep 60                                       
+  ┃                                                   
+  ┃   Background                                      
+  ┃                                                   
+  ┃  Tool execution interrupted                       
+  ┃                                                   
+                                                      
+     Build · LongCat 2.5 Preview Free · 29.9s · 15.1  
+     tok/s · interrupted                              
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+  ┃                                                   
+  ┃                                                   
+  ┃                                                   
+  ┃  Build · LongCat 2.5 Preview Free                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+  …/a…/opencode-lands/t1.tmp/oc/repo:main  7.0K (1%)  
+                                                      

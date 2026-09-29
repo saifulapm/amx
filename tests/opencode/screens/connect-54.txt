@@ -1,0 +1,40 @@
+‹5    Greeti   New se   New se + New session          
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+     Connect an integration                   esc     
+                                                      
+     Search                                           
+                                                      
+     Popular                                          
+     OpenCode Console                                 
+     openai                                           
+     github-copilot                                   
+                                                      
+     Services                                         
+     azure                                            
+     cloudflare-ai-gateway                            
+     cloudflare-workers-ai                            
+     digitalocean                                     
+     Exa                                              
+     Firecrawl                                        
+     gitlab                                           
+     Parallel                                         
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      
+                                                      

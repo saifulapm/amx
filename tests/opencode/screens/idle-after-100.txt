@@ -1,0 +1,40 @@
+   Running sleep command         +                                                                  
+                                                                                                    
+  ┃                                                                                                 
+  ┃  Run the shell command `sleep 40` with your shell tool, then reply with the single word done.   
+  ┃                                                                                                 
+                                                                                                    
+     + Thought · 1.2s                                                                               
+                                                                                                    
+  ┃                                                                                                 
+  ┃  $ sleep 40                                                                                     
+  ┃                                                                                                 
+  ┃  {"exit":0,"truncated":false,"output":"","status":"completed"}                                  
+  ┃                                                                                                 
+                                                                                                    
+     + Thought · 448ms                                                                              
+                                                                                                    
+     done                                                                                           
+                                                                                                    
+     Build · LongCat 2.5 Preview Free · 48.1s · 11.2 tok/s                                          
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃  Build · LongCat 2.5 Preview Free OpenCode Zen                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+  ~/.local/state/workflow/runs/amx/opencode-lands/t1.tmp/oc/repo:main   7.1K (1%)  ctrl+p commands  
+                                                                                                    
