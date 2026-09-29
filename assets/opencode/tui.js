@@ -29,6 +29,8 @@ const SUBMIT_EVERY_MS = 500;
 const SUBMIT_FOR_MS = 30000;
 // The tool that draws a question form, whose input is the questions whole.
 const QUESTION_TOOL = "question";
+// The conversation's file beside the record.
+const TRANSCRIPT = "opencode-messages.jsonl";
 
 // The amx to report to: the one that started this pane says where it is, else
 // whichever amx is on the PATH.
@@ -107,7 +109,12 @@ export default {
       const id = mine();
       if (!id) return;
       selected = true;
-      report("session.selected", { session_id: id, source: resumed ? "resume" : "startup" });
+      const fields = { session_id: id, source: resumed ? "resume" : "startup" };
+      // Named from the start, so a card opened in the first turn reads the
+      // conversation (the task, until the first write) rather than the screen,
+      // whose last rows are opencode's composer.
+      if (record) fields.transcript_path = join(record, TRANSCRIPT);
+      report("session.selected", fields);
     }
 
     // The stream: what opencode is saying at this moment, written whole beside
@@ -181,14 +188,20 @@ export default {
       }
     }
 
-    // The conversation, written whole beside the record at each turn's end,
-    // one message a line. amx reads it there and never opens opencode's db.
-    async function transcript(id) {
+    // The conversation, written whole beside the record after each tool call,
+    // each text and each turn's end, one message a line. amx reads it there
+    // and never opens opencode's db. Writes go one at a time.
+    let writing = Promise.resolve();
+    function transcript(id) {
+      writing = writing.then(() => write(id));
+      return writing;
+    }
+    async function write(id) {
       if (!record) return undefined;
       try {
         await ctx.data.session.message.sync(id);
         const list = ctx.data.session.message.list(id) ?? [];
-        const path = join(record, "opencode-messages.jsonl");
+        const path = join(record, TRANSCRIPT);
         writeFileSync(`${path}.tmp`, list.map((message) => `${JSON.stringify(message)}\n`).join(""));
         renameSync(`${path}.tmp`, path);
         return path;
@@ -248,6 +261,7 @@ export default {
         tool_name: name,
         tool_input: name === QUESTION_TOOL ? data.input : trimmed(data.input),
       });
+      transcript(id);
     });
     on("permission.asked", (data, id) => {
       report("permission.asked", { session_id: id, tool_name: data.action });
@@ -277,10 +291,11 @@ export default {
       text += data.delta ?? "";
       stream(text);
     });
-    on("session.text.ended", (data) => {
+    on("session.text.ended", (data, id) => {
       if (typeof data.text === "string") said.push(data.text);
       text = "";
       endStream();
+      transcript(id);
     });
     for (const how of ["succeeded", "failed", "interrupted"]) {
       on(`session.execution.${how}`, (_data, id) => {

@@ -177,6 +177,7 @@ test("a turn is Started, Prompted, Calling and Ended, with its transcript", asyn
     assert.equal(r.bin, STUB);
   }
   assert.equal(got[0].source, "startup");
+  assert.equal(got[0].transcript_path, join(p.record, "opencode-messages.jsonl"));
   assert.match(got[1].prompt, /^Run the shell command `sleep 40`/);
   assert.equal(got[2].tool_name, "shell");
   assert.deepEqual(got[2].tool_input, { command: "sleep 40" });
@@ -185,7 +186,8 @@ test("a turn is Started, Prompted, Calling and Ended, with its transcript", asyn
   assert.equal(ended.stop_reason, "stop");
   const transcript = join(p.record, "opencode-messages.jsonl");
   assert.equal(ended.transcript_path, transcript);
-  assert.deepEqual(p.seen.synced, [session]);
+  assert.ok(p.seen.synced.length >= 2, "written mid-turn and at the end");
+  assert.ok(p.seen.synced.every((id) => id === session));
   assert.deepEqual(lines(transcript), messages("turn"));
   assert.equal(readFileSync(transcript, "utf8").split("\n").filter(Boolean).length, messages("turn").length);
 });
