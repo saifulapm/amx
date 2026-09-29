@@ -35,12 +35,12 @@ use crate::{complain, exit, paths, store};
 
 /// How often the record is read while waiting. Short enough that a caller
 /// chaining turns is not waiting on amx, long enough to cost nothing.
-const POLL: Duration = Duration::from_millis(200);
+pub(crate) const POLL: Duration = Duration::from_millis(200);
 
 /// How often the *pane* is read, once the record has gone quiet enough that a
 /// reading needs one. Reading two small files five times a second is free;
 /// asking tmux for a screen five times a second is not.
-const LOOK: Duration = Duration::from_secs(1);
+pub(crate) const LOOK: Duration = Duration::from_secs(1);
 
 /// The moment `hooks` call this event, from a record whose vendor has any.
 fn moment(hooks: Option<&Hooks>, event: &Event) -> Option<Moment> {
@@ -259,7 +259,7 @@ pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
 }
 
 /// How long to wait before reading again, given what the last reading cost.
-fn pace(evidence: &Evidence) -> Duration {
+pub(crate) fn pace(evidence: &Evidence) -> Duration {
     match evidence {
         Evidence::Screen | Evidence::Unknown => LOOK,
         Evidence::Record | Evidence::Gone | Evidence::LetGo | Evidence::Hooks => POLL,

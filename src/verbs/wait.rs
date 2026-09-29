@@ -22,20 +22,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::derive::{self, Evidence, Record, View};
+use crate::derive::{self, Record, View};
 use crate::store::{Agent, Phase};
-use crate::verbs::result::{self, Ended, Settled, Turns};
+use crate::verbs::result::{self, Ended, POLL, Settled, Turns, pace};
 use crate::{complain, exit, paths, store};
-
-/// How often the records are read while waiting — `result`'s own poll, for the
-/// same reason: short enough that a caller chaining turns is not waiting on
-/// amx, long enough to cost nothing.
-const POLL: Duration = Duration::from_millis(200);
-
-/// How often a *pane* is read, once a record has gone quiet enough that a
-/// reading needs one. Asking tmux for a screen five times a second is not free,
-/// and here there is a screen per agent named.
-const LOOK: Duration = Duration::from_secs(1);
 
 /// Run the verb against the machine.
 pub fn from_env(
@@ -212,17 +202,10 @@ fn settled(phase: Phase, wanted: Option<Phase>, ended: Ended) -> bool {
     }
 }
 
-/// How long to wait before reading again, given what the last reading cost.
-fn pace(evidence: &Evidence) -> Duration {
-    match evidence {
-        Evidence::Screen | Evidence::Unknown => LOOK,
-        Evidence::Record | Evidence::Gone | Evidence::LetGo | Evidence::Hooks => POLL,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derive::Evidence;
     use crate::store::{Event, Meta};
     use crate::tmux::{PaneId, Socket};
 
@@ -306,7 +289,7 @@ mod tests {
             assert_eq!(pace(&evidence), POLL, "{evidence:?}");
         }
         for evidence in [Evidence::Screen, Evidence::Unknown] {
-            assert_eq!(pace(&evidence), LOOK, "{evidence:?}");
+            assert_eq!(pace(&evidence), result::LOOK, "{evidence:?}");
         }
     }
 
