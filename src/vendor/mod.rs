@@ -16,6 +16,8 @@
 //! its questions in terms of the `agent` config key: a command line, arguments
 //! and all.
 
+use std::collections::BTreeMap;
+
 pub mod claude;
 pub mod codex;
 pub mod pi;
@@ -37,7 +39,19 @@ pub struct DialSpec {
     /// The setting this dial is, for a vendor that takes it as `flag
     /// key=value` rather than `flag value`: codex spells its effort `-c
     /// model_reasoning_effort=high`. `None` for a flag of the dial's own.
+    ///
+    /// For a dial carried in the environment, the key the value goes under in
+    /// the JSON object the variable holds.
     pub key: Option<&'static str>,
+    /// Whether the flag is the whole of what this dial writes: a closed dial
+    /// with one value beside [`DEFAULT`], whose flag says it. opencode's
+    /// `--auto`.
+    pub bare: bool,
+    /// The variable this dial is carried in rather than any argv, for a vendor
+    /// that takes it only there: [`env_dials`] writes it as `{"<key>":
+    /// "<value>"}`, and [`inject`] writes nothing. Such a dial's `flag` is
+    /// empty. Only a model dial is carried this way.
+    pub env: Option<&'static str>,
 }
 
 /// Where a vendor's models are written down.
@@ -479,6 +493,22 @@ pub struct Vendor {
     /// `amx interrupt` writes them down where it is, and `send` refuses to
     /// type after them until the vendor's next prompt.
     pub restores_queued_on_cancel: bool,
+    /// The flag a message rides on, as one `flag=<text>` word, for a vendor
+    /// that reads no bare word as a prompt: a task, a resume's message or a
+    /// fork's prompt. `None` from a vendor whose last word is its prompt.
+    pub prompt_flag: Option<&'static str>,
+    /// The characters that open a popup in this vendor's composer when they
+    /// open a word. A message whose last word opens with one gets one space
+    /// after it, or the popup takes the Enter that should have sent it. Empty
+    /// from a vendor whose Enter always sends.
+    pub popups: &'static [char],
+    /// How many Escapes, 300 ms apart, cut this vendor's turn. One for a
+    /// vendor whose first press cancels; opencode's first only arms.
+    pub cancel_presses: u8,
+    /// The signal that tells this vendor to end its turn before `stop` ends
+    /// its pane, sent to the pane's process. `None` from a vendor whose pane
+    /// is ended as it stands.
+    pub interrupt_signal: Option<nix::sys::signal::Signal>,
     /// Flags every process of this vendor is started with, whatever amx
     /// starts it for: `new` writes them right after the program, once, and
     /// `resume` and `fork` keep them where they stand. Empty from a vendor
@@ -679,8 +709,9 @@ pub fn accepts(dial: &DialSpec, value: &str) -> bool {
 
 /// The one place a dial becomes a vendor flag: for each dial resolved to
 /// something other than [`DEFAULT`], put its flag and value in front of
-/// `vendor_args` — the value as `key=value` for a keyed dial — unless that
-/// flag is already there.
+/// `vendor_args` — the value as `key=value` for a keyed dial, and the flag
+/// alone for a bare one — unless that flag is already there. A dial carried
+/// in the environment writes no argv at all: that is [`env_dials`].
 ///
 /// Already there means a whole token equal to the flag, or the `flag=value`
 /// spelling, in `vendor_args` or in `carried` — the arguments the agent
@@ -701,17 +732,49 @@ pub fn inject(
         let Some(spec) = dial else {
             continue;
         };
-        if value != DEFAULT && !already(carried, vendor_args, &spec) {
-            injected.push(spec.flag.to_string());
-            injected.push(match spec.key {
-                Some(key) => format!("{key}={value}"),
-                None => value.to_string(),
-            });
+        if spec.env.is_some() || value == DEFAULT || already(carried, vendor_args, &spec) {
+            continue;
         }
+        injected.push(spec.flag.to_string());
+        if spec.bare {
+            continue;
+        }
+        injected.push(match spec.key {
+            Some(key) => format!("{key}={value}"),
+            None => value.to_string(),
+        });
     }
 
     injected.extend(vendor_args.iter().cloned());
     injected
+}
+
+/// The variables a model dial carried in the environment puts into a new
+/// pane's env: `{"<key>":"<value>"}` under its variable, for a model other
+/// than [`DEFAULT`]. Nothing from a vendor whose model dial is a flag, and
+/// nothing when `env` already carries the variable: a value somebody set wins
+/// over the dial by the dial standing down, the way a flag they wrote does in
+/// [`inject`].
+pub fn env_dials(
+    vendor: &Vendor,
+    model: &str,
+    env: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let Some(DialSpec {
+        env: Some(variable),
+        key: Some(key),
+        ..
+    }) = vendor.model
+    else {
+        return Vec::new();
+    };
+    if model == DEFAULT || env.contains_key(variable) {
+        return Vec::new();
+    }
+    vec![(
+        variable.to_string(),
+        serde_json::json!({ key: model }).to_string(),
+    )]
 }
 
 /// Does the argv this spawn is heading for already carry this dial's flag,
@@ -744,7 +807,7 @@ fn already(carried: &[String], vendor_args: &[String], dial: &DialSpec) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use super::second::{BRANCHING, SECOND};
+    use super::second::{BRANCHING, ELSEWHERE, SECOND};
     use super::*;
 
     fn v(args: &[&str]) -> Vec<String> {
@@ -756,7 +819,10 @@ mod tests {
     /// it is proved that the shape is not claude's — once as the vendor a verb
     /// refuses a fork for, and once as one that branches by a subcommand.
     fn known() -> Vec<&'static Vendor> {
-        table().iter().chain([&SECOND, &BRANCHING]).collect()
+        table()
+            .iter()
+            .chain([&SECOND, &BRANCHING, &ELSEWHERE])
+            .collect()
     }
 
     #[test]
@@ -842,7 +908,8 @@ mod tests {
             let mut flags: Vec<(&str, Option<&str>)> = vendor
                 .dials()
                 .into_iter()
-                .filter_map(|(_, dial)| dial.map(|spec| (spec.flag, spec.key)))
+                .filter_map(|(_, dial)| dial.filter(|spec| spec.env.is_none()))
+                .map(|spec| (spec.flag, spec.key))
                 .collect();
             let declared = flags.len();
             flags.sort_unstable();
@@ -1775,6 +1842,145 @@ mod tests {
                 expected,
                 "{other:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_bare_dial_writes_its_flag_alone() {
+        // `--auto`, not `--auto auto`: the flag is the value.
+        assert_eq!(
+            inject(&ELSEWHERE, DEFAULT, "loose", DEFAULT, &[], &v(&["-x"])),
+            v(&["--loose", "-x"])
+        );
+        // And written by hand it stands down like any other.
+        assert_eq!(
+            inject(&ELSEWHERE, DEFAULT, "loose", DEFAULT, &v(&["--loose"]), &[]),
+            v(&[])
+        );
+    }
+
+    #[test]
+    fn a_dial_carried_in_the_env_writes_no_argv_and_a_variable_instead() {
+        assert_eq!(
+            inject(&ELSEWHERE, "large", DEFAULT, DEFAULT, &[], &v(&["-x"])),
+            v(&["-x"])
+        );
+        let none = BTreeMap::new();
+        assert_eq!(
+            env_dials(&ELSEWHERE, "large", &none),
+            [(
+                "SECOND_CONFIG".to_string(),
+                r#"{"size":"large"}"#.to_string()
+            )]
+        );
+        // A value is JSON however it is spelled.
+        assert_eq!(
+            env_dials(&ELSEWHERE, r#"a"b"#, &none)[0].1,
+            r#"{"size":"a\"b"}"#
+        );
+        assert!(env_dials(&ELSEWHERE, DEFAULT, &none).is_empty());
+        // A variable somebody set wins over the dial.
+        let set = BTreeMap::from([("SECOND_CONFIG".to_string(), "{}".to_string())]);
+        assert!(env_dials(&ELSEWHERE, "large", &set).is_empty());
+        // A model dial that is a flag has no variable to write.
+        assert!(env_dials(find("claude").unwrap(), "opus", &none).is_empty());
+        assert!(env_dials(&SECOND, "large", &none).is_empty());
+    }
+
+    #[test]
+    fn a_model_carried_in_opencodes_config_variable_is_its_model_key() {
+        // Ruling 8: opencode loads OPENCODE_CONFIG_CONTENT last, over every
+        // config file, so the model goes there as `{"model":"<value>"}`.
+        let opencode = Vendor {
+            model: Some(DialSpec {
+                cycle: &[DEFAULT],
+                open: true,
+                flag: "",
+                key: Some("model"),
+                bare: false,
+                env: Some("OPENCODE_CONFIG_CONTENT"),
+            }),
+            ..ELSEWHERE
+        };
+        assert_eq!(
+            env_dials(
+                &opencode,
+                "opencode/longcat-2.5-preview-free",
+                &BTreeMap::new()
+            ),
+            [(
+                "OPENCODE_CONFIG_CONTENT".to_string(),
+                r#"{"model":"opencode/longcat-2.5-preview-free"}"#.to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_bare_dial_is_closed_with_one_value_its_flag_says() {
+        // A bare flag carries no value, so a dial with two values to tell
+        // apart, or one open to any, has no way to say which it was set to.
+        for vendor in known() {
+            for (which, dial) in vendor.dials() {
+                let Some(spec) = dial.filter(|spec| spec.bare) else {
+                    continue;
+                };
+                assert!(!spec.open, "{}'s {which} dial", vendor.name);
+                assert_eq!(spec.cycle.len(), 2, "{}'s {which} dial", vendor.name);
+                assert_eq!(spec.key, None, "{}'s {which} dial", vendor.name);
+                assert!(spec.env.is_none(), "{}'s {which} dial", vendor.name);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_model_dial_is_carried_in_the_env_under_a_key_and_no_flag() {
+        // env_dials is asked about the model alone, so a permission or an
+        // effort carried there would be written nowhere at all.
+        for vendor in known() {
+            for (which, dial) in vendor.dials() {
+                let Some(spec) = dial.filter(|spec| spec.env.is_some()) else {
+                    continue;
+                };
+                assert_eq!(which, "model", "{}", vendor.name);
+                assert!(spec.key.is_some_and(|key| !key.is_empty()));
+                assert!(spec.env.is_some_and(|env| !env.is_empty()));
+                assert_eq!(spec.flag, "", "{} writes no argv for it", vendor.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_vendor_cuts_a_turn_in_one_press_or_more_and_prompts_on_a_flag() {
+        for vendor in known() {
+            assert!(vendor.cancel_presses >= 1, "{}", vendor.name);
+            if let Some(flag) = vendor.prompt_flag {
+                assert!(flag.starts_with('-'), "{}", vendor.name);
+                assert!(!flag.contains('='), "{}", vendor.name);
+            }
+            assert!(
+                vendor.popups.iter().all(|c| !c.is_whitespace()),
+                "{}",
+                vendor.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_vendors_before_opencode_keep_the_argv_and_keys_they_had() {
+        // The fields opencode brought are answered the way each of these
+        // behaved before them: a last word for a prompt, no popups, one
+        // Escape, no signal, and every dial a flag with its value.
+        for vendor in table() {
+            assert_eq!(vendor.prompt_flag, None, "{}", vendor.name);
+            assert!(vendor.popups.is_empty(), "{}", vendor.name);
+            assert_eq!(vendor.cancel_presses, 1, "{}", vendor.name);
+            assert_eq!(vendor.interrupt_signal, None, "{}", vendor.name);
+            for (which, dial) in vendor.dials() {
+                if let Some(spec) = dial {
+                    assert!(!spec.bare, "{}'s {which}", vendor.name);
+                    assert!(spec.env.is_none(), "{}'s {which}", vendor.name);
+                }
+            }
         }
     }
 }

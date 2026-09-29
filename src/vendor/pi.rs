@@ -22,6 +22,8 @@ pub const VENDOR: Vendor = Vendor {
         open: true,
         flag: "--model",
         key: None,
+        bare: false,
+        env: None,
     }),
     // The cycle above offers nothing, because pi's models are whatever its
     // providers hold rather than a handful of aliases: `--list-models` prints
@@ -42,6 +44,8 @@ pub const VENDOR: Vendor = Vendor {
         open: false,
         flag: "--thinking",
         key: None,
+        bare: false,
+        env: None,
     }),
     // `--session-id <id>` is mint-or-open (dist/main.js:337-344): it opens
     // the project session already under that id, or creates one under it if
@@ -191,6 +195,10 @@ pub const VENDOR: Vendor = Vendor {
     // back in the editor, joined, for somebody to submit or clear
     // (interactive-mode.js:2332 and 3761-3778). Read at 0.87.1 on 2026-09-26.
     restores_queued_on_cancel: true,
+    prompt_flag: None,
+    popups: &[],
+    cancel_presses: 1,
+    interrupt_signal: None,
     launch: &[],
 };
 

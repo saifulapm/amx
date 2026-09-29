@@ -26,6 +26,8 @@ pub const SECOND: Vendor = Vendor {
         open: false,
         flag: "-m",
         key: None,
+        bare: false,
+        env: None,
     }),
     // Its two words are the whole of what it offers, so they are found in the
     // cycle and nothing is ever run to ask: the shape a search over the table
@@ -40,6 +42,8 @@ pub const SECOND: Vendor = Vendor {
         open: true,
         flag: "--care",
         key: None,
+        bare: false,
+        env: None,
     }),
     // Unlike claude, it declares a start flag: proof that a vendor is free to
     // ask amx to open a session under an id amx chose. It resumes with a
@@ -77,6 +81,10 @@ pub const SECOND: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+    prompt_flag: None,
+    popups: &[],
+    cancel_presses: 1,
+    interrupt_signal: None,
     // Started with nothing but what a spawn asks of it.
     launch: &[],
 };
@@ -98,6 +106,8 @@ pub const BRANCHING: Vendor = Vendor {
         open: true,
         flag: "-c",
         key: Some("care"),
+        bare: false,
+        env: None,
     }),
     launch: &["--alone"],
     session: Some(SessionSpec {
@@ -114,6 +124,35 @@ pub const BRANCHING: Vendor = Vendor {
     ],
     hooks: Some(HOOKS),
     ends_options: Some("--"),
+    ..SECOND
+};
+
+/// The second vendor as it would be if its dials were written somewhere
+/// other than a flag and its value: the model in a variable of the pane's
+/// environment, and the permission as a flag with nothing after it. It takes
+/// a message only on a flag, opens a popup on `#`, cuts a turn on the third
+/// Escape and ends one on `SIGUSR1`.
+pub const ELSEWHERE: Vendor = Vendor {
+    model: Some(DialSpec {
+        cycle: &[DEFAULT, "small", "large"],
+        open: true,
+        flag: "",
+        key: Some("size"),
+        bare: false,
+        env: Some("SECOND_CONFIG"),
+    }),
+    permission: Some(DialSpec {
+        cycle: &[DEFAULT, "loose"],
+        open: false,
+        flag: "--loose",
+        key: None,
+        bare: true,
+        env: None,
+    }),
+    prompt_flag: Some("--say"),
+    popups: &['#'],
+    cancel_presses: 3,
+    interrupt_signal: Some(nix::sys::signal::Signal::SIGUSR1),
     ..SECOND
 };
 

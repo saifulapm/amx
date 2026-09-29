@@ -23,6 +23,8 @@ pub const VENDOR: Vendor = Vendor {
         open: true,
         flag: "--model",
         key: None,
+        bare: false,
+        env: None,
     }),
     // `codex debug models` prints the account's catalog as JSON
     // (cli/src/main.rs:258, 2068-2095): `models[]`, each with a `slug` and a
@@ -45,6 +47,8 @@ pub const VENDOR: Vendor = Vendor {
         open: false,
         flag: "--sandbox",
         key: None,
+        bare: false,
+        env: None,
     }),
     // codex has no effort flag, only the setting
     // `-c model_reasoning_effort=<v>` (config/src/config_toml.rs:392). Closed
@@ -58,6 +62,8 @@ pub const VENDOR: Vendor = Vendor {
         open: false,
         flag: "-c",
         key: Some("model_reasoning_effort"),
+        bare: false,
+        env: None,
     }),
     // codex mints its own ids and takes none (tui/src/cli.rs:11-88 names no
     // session flag), so nothing starts a session under an id amx chose: the
@@ -171,6 +177,10 @@ pub const VENDOR: Vendor = Vendor {
     // turn rather than restored (tui/src/chatwidget/input_restore.rs:316-378).
     // So nothing amx sent is ever waiting in the composer after a cancel.
     restores_queued_on_cancel: false,
+    prompt_flag: None,
+    popups: &[],
+    cancel_presses: 1,
+    interrupt_signal: None,
     // Every codex amx starts runs its own app server. Under the shared daemon
     // a hook runs in the daemon's environment, so `AMX_ID` never reaches
     // `amx _hook`, and a killed pane's turn runs on (tui/src/cli.rs:85,
