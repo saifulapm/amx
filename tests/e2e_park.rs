@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{Harness, ls, now, something_else_on_the_server, watching};
+use common::{Harness, clients_on, ls, now, something_else_on_the_server, watching};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -202,10 +202,7 @@ fn a_pane_somebody_is_looking_at_is_left_where_it_is() {
     let session = amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"]);
     watching(&amx, &session);
     amx.until("somebody looking at it", || {
-        (!amx
-            .tmux(&["list-clients", "-t", &session, "-F", "#{client_tty}"])
-            .is_empty())
-        .then_some(())
+        (!clients_on(&amx, &session).is_empty()).then_some(())
     });
 
     amx.until_state(id, "idle");
