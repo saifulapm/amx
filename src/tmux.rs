@@ -244,13 +244,14 @@ impl Server {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("running `tmux {}`", args.join(" ")))?;
-        if let Some(bytes) = stdin {
-            let mut pipe = child.stdin.take().expect("stdin was asked for");
-            pipe.write_all(bytes)
-                .with_context(|| format!("writing to `tmux {}`", args.join(" ")))?;
-            // Dropping the pipe is the end-of-input tmux waits for.
-        }
+        // Dropping the pipe is the end-of-input tmux waits for.
+        let wrote = match (stdin, child.stdin.take()) {
+            (Some(bytes), Some(mut pipe)) => pipe.write_all(bytes),
+            _ => Ok(()),
+        };
 
+        // Waited for whether or not the write went through: a tmux that exited
+        // without reading its input would otherwise stay a zombie.
         let out = child
             .wait_with_output()
             .with_context(|| format!("waiting for `tmux {}`", args.join(" ")))?;
@@ -258,6 +259,7 @@ impl Server {
             let stderr = String::from_utf8_lossy(&out.stderr);
             bail!("tmux {}: {}", args.join(" "), stderr.trim());
         }
+        wrote.with_context(|| format!("writing to `tmux {}`", args.join(" ")))?;
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     }
 
@@ -1965,6 +1967,30 @@ mod tests {
         let (_, pane) = server.new_session(&idle()).unwrap();
         let started = server.pane_field(&pane, "#{pane_start_command}").unwrap();
         assert!(started.contains("sleep 0.05"), "{started:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tmux_that_exits_without_reading_its_input_is_waited_for() {
+        fn unwaited() -> std::collections::BTreeSet<String> {
+            std::fs::read_to_string("/proc/thread-self/children")
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter(|pid| {
+                    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                        .is_ok_and(|comm| comm.trim() == "tmux")
+                })
+                .map(str::to_string)
+                .collect()
+        }
+
+        // `-V` prints the version and exits, so the input meets a closed pipe.
+        let server = Server::named("amx-unused").with_conf("/dev/null");
+        let input = vec![b'x'; 1 << 20];
+        let before = unwaited();
+        assert!(server.run_with_stdin(&["-V"], Some(&input)).is_err());
+        let left: Vec<_> = unwaited().difference(&before).cloned().collect();
+        assert!(left.is_empty(), "tmux was never waited for: {left:?}");
     }
 
     #[test]
