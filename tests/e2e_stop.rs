@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Harness, branches, with_a_worktree};
+use common::{Harness, branches, git, status, with_a_worktree};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -112,19 +112,8 @@ fn stop_keeps_a_branch_whose_commits_are_on_no_other_branch_and_says_how_many() 
     amx.until_state("fix-login-a1b", "done");
     for name in ["login.rs", "tests.rs"] {
         std::fs::write(Path::new(&tree).join(name), "fn login() {}\n").expect("a file");
-        for args in [&["add", name][..], &["commit", "-q", "-m", name][..]] {
-            let ok = std::process::Command::new("git")
-                .current_dir(&tree)
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_AUTHOR_NAME", "amx tests")
-                .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-                .env("GIT_COMMITTER_NAME", "amx tests")
-                .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-                .status()
-                .expect("running git");
-            assert!(ok.success());
-        }
+        git(Path::new(&tree), &["add", name]);
+        git(Path::new(&tree), &["commit", "-q", "-m", name]);
     }
 
     let out = said(&stop(
@@ -227,13 +216,7 @@ fn a_child_of_a_removed_parent_is_still_an_agent() {
     said(&stop(&amx, &["parent-a1b", "--force", "--delete"]));
     assert!(!amx.agent_dir("parent-a1b").exists());
 
-    let status = amx.amx(&["status", "child-b2c", "--json"]);
-    assert!(
-        status.status.success(),
-        "{}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let row: Value = serde_json::from_slice(&status.stdout).unwrap();
+    let row = status(&amx, "child-b2c");
     assert_eq!(row["id"], "child-b2c");
     assert_eq!(
         row["parent"], "parent-a1b",
