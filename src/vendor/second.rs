@@ -1,69 +1,35 @@
-//! A second vendor, so that the first one cannot quietly become the shape of
-//! everything.
+//! Fixture vendors for tests, deliberately unlike claude in every field.
 //!
-//! Test builds only, and never in the table: it is nobody's agent, nothing can
-//! spawn it, and it answers to no command anybody would type. Its whole job is
-//! to be unlike claude in every way the descriptor allows, so that a test
-//! which passes for both is a test of the machinery rather than of claude.
-//!
-//! It declares a dial claude does not spell the same way, leaves out one
-//! claude has, and its values are words claude has never heard of. When a
-//! later field arrives on the descriptor, the way to keep it honest is to
-//! answer it differently here.
+//! Test builds only and never in the table. A test that passes for claude and
+//! for these is testing the table machinery rather than claude's values. When
+//! a field is added to [`Vendor`], give it a non-claude value here.
 
 use super::{
     Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Resume, SessionSpec, Vendor,
     Wire, Wiring,
 };
 
-/// The fixture. Read the module docs before changing a value: each of these
-/// disagrees with claude on purpose.
+/// The base fixture: no hooks, no transcript, no fork and no trust screen.
 pub const SECOND: Vendor = Vendor {
     name: "second",
-    // A short flag, a closed set, and values that are nobody else's words.
     model: Some(DialSpec::closed("-m", &[DEFAULT, "small", "large"])),
-    // Its two words are the whole of what it offers, so they are found in the
-    // cycle and nothing is ever run to ask: the shape a search over the table
-    // has to answer out of the entry alone.
     models: Models::Cycle,
-    // No permission dial at all, which is the difference between a dial
-    // nobody has turned and a dial that does not exist.
     permission: None,
-    // Open where claude's is closed, and under a flag of its own.
     effort: Some(DialSpec::open("--care", &[DEFAULT, "quick", "thorough"])),
-    // Unlike claude, it declares a start flag: proof that a vendor is free to
-    // ask amx to open a session under an id amx chose. It resumes with a
-    // subcommand rather than a flag, the way codex does, and it names no fork
-    // shape at all, because it does not claim `Capability::Fork`.
+    // A start flag, which claude lacks, and a resume subcommand.
     session: Some(SessionSpec {
         start: Some("--open"),
         resume: Resume::Subcommand("again"),
         conflicts: &["--open"],
         fork: None,
     }),
-    // A session variable spelled nothing like the other one, so that a test
-    // reading it is reading the descriptor.
     session_env: Some("SECOND_SESSION"),
     not_inherited: &["SECOND_SESSION", "SECOND_PARENT"],
-    // Two of the six, so that half the questions a verb asks come back the
-    // other way. It carries a session on and can be taken over, and it has no
-    // hooks, no transcript, no way to branch and no trust screen: the shape of
-    // a vendor amx has to refuse things for.
     capabilities: &[Capability::Resume, Capability::Adopt],
-    // Nothing to wire and nothing to read: this vendor tells amx nothing about
-    // what it is doing, which is the shape install has to leave alone and the
-    // reason the capability above is asked before either is touched.
     hooks: None,
-    // Screens of its own, drawn out of nothing claude draws: see [`SCREENS`].
     screens: Some(SCREENS),
-    // And no conversation on disk to read, which is what a vendor that keeps
-    // no transcript has to answer.
     transcript: None,
-    // Nothing anybody can name on a line either: nobody has measured where
-    // this vendor keeps its skills or what it answers itself, which is the
-    // shape a reader of those places has to leave alone.
     catalog: None,
-    // Its task is its last word, whatever that word opens with.
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
@@ -71,20 +37,13 @@ pub const SECOND: Vendor = Vendor {
     popups: &[],
     cancel_presses: 1,
     interrupt_signal: None,
-    // Started with nothing but what a spawn asks of it.
     launch: &[],
 };
 
-/// The second vendor as it would be if it could branch a session: by a word
-/// right after the program, the way it already resumes, rather than by a flag.
+/// [`SECOND`] with a fork subcommand, hooks, a JSON model listing, a keyed
+/// effort dial, an options terminator and a launch flag.
 ///
-/// Beside [`SECOND`] rather than in place of it, because that one is the
-/// vendor a verb has to refuse a fork for. A vendor that forks has to report
-/// the session a copy opened, and this one declares no start flag to ask for
-/// one, so it reports through [`HOOKS`]. It prints its models as JSON, it
-/// ends its options before a message, it takes its effort as a setting under a
-/// flag it shares with other settings, and every process of it is started
-/// alone.
+/// With no start flag, it learns a fork's session id through [`HOOKS`].
 pub const BRANCHING: Vendor = Vendor {
     models: Models::Json(&["list", "models"]),
     effort: Some(DialSpec {
@@ -109,11 +68,9 @@ pub const BRANCHING: Vendor = Vendor {
     ..SECOND
 };
 
-/// The second vendor as it would be if its dials were written somewhere
-/// other than a flag and its value: the model in a variable of the pane's
-/// environment, and the permission as a flag with nothing after it. It takes
-/// a message only on a flag, opens a popup on `#`, cuts a turn on the third
-/// Escape and ends one on `SIGUSR1`.
+/// [`SECOND`] with the model dial carried in the environment, a bare
+/// permission flag, a prompt flag, a `#` popup, three-press cancel and a
+/// `SIGUSR1` interrupt.
 pub const ELSEWHERE: Vendor = Vendor {
     model: Some(DialSpec {
         key: Some("size"),
@@ -131,12 +88,10 @@ pub const ELSEWHERE: Vendor = Vendor {
     ..SECOND
 };
 
-/// Hooks in the second vendor's words, for a test that reads a payload.
+/// Hooks with every name unlike claude's, for tests that read payloads.
 ///
-/// Off the entry on purpose: [`SECOND`] is the vendor that reports nothing,
-/// and a verb has to refuse things for it. These are what a vendor that did
-/// report would say if every word of it were its own, so that a reading which
-/// passes under them is a reading of the record's vendor and not of claude.
+/// Not on [`SECOND`], which must stay the vendor without hooks; [`BRANCHING`]
+/// carries them.
 pub const HOOKS: Hooks = Hooks {
     wire: Wire::File {
         path: ".second/report.sh",
@@ -162,14 +117,8 @@ pub const HOOKS: Hooks = Hooks {
     question_kinds: &["pick"],
 };
 
-/// The second vendor's screens.
-///
-/// A document rather than a file, because nothing ships it: it exists so that
-/// a reader passing over both documents is reading the machinery and not
-/// claude. Every string in it disagrees with the first document — a different
-/// footer, a different rule glyph, a different spinner, choices with no cursor
-/// glyph in front of them, and a question the vendor writes above its options
-/// instead of on the anchor row.
+/// Screen rules for the fixture, differing from claude's in footer, rule
+/// glyph, spinner, choice markers and where the question sits.
 ///
 /// The pane it describes:
 ///
