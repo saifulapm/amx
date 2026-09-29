@@ -1,9 +1,10 @@
 //! The command line: every verb amx answers to.
 //!
-//! Bare `amx` has no subcommand — that is the front door (the cockpit), not a
-//! usage error. The four underscore verbs are amx talking to itself from
-//! inside a pane, a vendor hook, or a timer a tmux server is holding; they are
-//! hidden from help but are as much of the contract as the rest.
+//! Doc comments on these derive types are the `--help` text. Bare `amx` opens
+//! the view, or prints the table when stdout is not a terminal. The four
+//! underscore verbs are what amx runs against itself from a pane, a vendor
+//! hook or a tmux timer: hidden from help and completion, but still part of
+//! the contract.
 
 use crate::store::Phase;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -17,14 +18,12 @@ use std::path::{Path, PathBuf};
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Only the agents whose work is under this directory, and where the
-    /// view stands.
+    /// Only the agents working under this directory.
     ///
-    /// The front door's own narrowing, so `amx --dir /srv/app` is the list of
-    /// that project's agents and nothing else, drawn or printed. The view
-    /// opened by it stands in that directory as if it had been run there: the
-    /// header names it and a task typed at the view starts under it. A verb
-    /// that takes the same flag reads its own first.
+    /// With no verb, the view (or the table, when stdout is not a terminal)
+    /// lists only these agents, and a task typed in the view starts in this
+    /// directory. `ls`, `allow` and `doctor` read it too; a verb's own `--dir`
+    /// takes precedence.
     #[arg(long, value_name = "PATH")]
     pub dir: Option<PathBuf>,
 
@@ -33,7 +32,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// The verb as it was typed, or `None` for bare `amx`.
+    /// The verb as typed, or `None` for bare `amx`.
     pub fn verb(&self) -> Option<&'static str> {
         use Command::*;
         Some(match self.command.as_ref()? {
@@ -78,35 +77,31 @@ pub enum Command {
 
     /// Start a subagent on a task and wait for its answer.
     ///
-    /// A child is an ordinary agent whose record names the agent whose pane it
-    /// was started in: same spawn, same record, same view, and `amx logs` and
-    /// the card read it the way they read any other. This verb is `new` plus
-    /// `result` in one call, so a parent can ask a question and get the answer
-    /// back without a second command and without knowing an id it has not been
-    /// told yet.
+    /// `amx new` and `amx result` in one call. The child records the agent
+    /// whose pane it was started from as its parent, and by default runs in
+    /// that agent's directory.
     Sub(SubArgs),
 
     /// List agents and their states.
     Ls {
-        /// Print the stable JSON instead of the table.
+        /// Print stable JSON instead of the table.
         #[arg(long)]
         json: bool,
 
-        /// A directory filter: only the agents whose work is under it.
+        /// A directory filter: only the agents working under this directory.
         ///
-        /// An agent is that directory's when it runs under it, and a worktree
-        /// agent is its repository's wherever amx put the tree. Nothing is
-        /// hidden and nothing is written down: it is one reading of one
-        /// question, and the same agent is in two of them when the
-        /// directories nest.
+        /// An agent belongs to a directory when it runs under it, and a
+        /// worktree agent belongs to its repository wherever the tree is.
+        /// Nothing is stored, and an agent appears under every directory that
+        /// contains it.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
     },
 
-    /// Show one agent, and which signal that state came from.
+    /// Show one agent, and which signal its state came from.
     Status {
         id: String,
-        /// Print the stable JSON instead of the summary.
+        /// Print stable JSON instead of the summary.
         #[arg(long)]
         json: bool,
     },
@@ -115,7 +110,7 @@ pub enum Command {
     Send {
         id: String,
 
-        /// What to put in front of it.
+        /// The message.
         #[arg(
             required_unless_present = "file",
             conflicts_with = "file",
@@ -123,64 +118,53 @@ pub enum Command {
         )]
         text: Option<String>,
 
-        /// Read the message from this file instead, or from stdin for `-`.
+        /// Read the message from this file, or from stdin for `-`.
         ///
-        /// The same door `amx new --file` opens, for the follow-up too long to
-        /// quote into a shell: the file is read whole, its last newline taken
-        /// off, and what is left is the message.
+        /// The file is read whole, minus its final newline.
         #[arg(long, value_name = "PATH")]
         file: Option<PathBuf>,
     },
 
     /// Answer a waiting agent's question: y, n, 1-9, 1,3, enter, esc, or words.
     ///
-    /// The grammar is the question's rather than amx's. A permission prompt
-    /// and the folder-trust screen read one key. A question the vendor asked
-    /// itself offers a field beside its choices, so words of your own are an
-    /// answer to that one and to nothing else, and a question that takes more
-    /// than one choice — `.multi` in `amx status --json` — is answered by
-    /// naming them: `1,3`.
+    /// A permission prompt or the folder-trust screen takes one key. A
+    /// question the agent asks with a free-text field also takes your own
+    /// words. A question that takes several choices (`.multi` in `amx status
+    /// --json`) is answered with a list such as `1,3`.
     Answer {
-        /// The agent that is waiting on one.
+        /// The waiting agent.
         id: String,
-        /// What the question is answered with.
         #[command(flatten)]
         key: AnswerArgs,
     },
 
     /// Stop the turn an agent is in the middle of.
     ///
-    /// Escape at the pane: the turn ends where it stands and the agent goes
-    /// back to its prompt with the conversation behind it intact. It is for
-    /// the turn that has gone the wrong way, and the next `send` is what says
-    /// which way it should have gone.
-    ///
-    /// A question is not a turn — Escape there answers it, so `amx answer <id>
-    /// esc` is what dismisses one — and a command row has no vendor in it to
-    /// read a key, so `amx stop` is what ends one of those.
+    /// Presses Escape in the pane: the turn ends and the agent returns to its
+    /// prompt with the conversation intact. To dismiss a question, use `amx
+    /// answer <id> esc`; to end a command row, use `amx stop`.
     Interrupt { id: String },
 
-    /// Call an agent something else on the wall.
+    /// Change the name an agent is listed under.
     ///
-    /// The word in the name column and nothing else. The id is untouched — it
-    /// is what every verb takes and what the pane, the branch and the worktree
-    /// are named after — so `amx rename <id> <id>` is what puts the row back to
-    /// the name amx gives it.
+    /// Only the displayed name changes; the id, and the pane, branch and
+    /// worktree named after it, stay as they are. `amx rename <id> <id>`
+    /// restores the default name.
     Rename {
-        /// The agent being renamed.
+        /// The agent to rename.
         id: String,
-        /// What to call it.
+        /// The new name.
         name: String,
     },
 
-    /// Let amx read this project's `.amx/config.toml`.
+    /// Allow amx to use this project's `.amx/config.toml`.
     ///
-    /// A project file can name the program a pane runs and shell lines amx
-    /// runs for it, so amx reads none of it until it has been allowed. This
-    /// prints the file and keeps a copy of exactly what it printed: an edit,
-    /// an agent's included, un-allows it until it is allowed again.
+    /// A project config can name the program a pane runs and shell commands
+    /// amx runs, so amx ignores it until it is allowed. This prints the file
+    /// and records exactly what it printed; any later edit, including one by
+    /// an agent, has to be allowed again.
     Allow {
-        /// The project whose file it is, where it is not this directory.
+        /// The project directory, if not the current one.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
 
@@ -189,20 +173,19 @@ pub enum Command {
         forget: bool,
     },
 
-    /// Wait for the agent's turn to end and print its answer.
+    /// Wait for an agent's turn to end and print its answer.
     ///
-    /// With `--children`, wait for and print the answers of every child of
-    /// the named agent instead, one after another. `--json` keys them by
-    /// child id; a child stopped on a question is in the collection with its
-    /// question rather than hidden. The code is the most actionable thing
-    /// found: 3 the timeout ran out, 2 a question, 1 a failure, 0 every
-    /// answer. A parent with no children is a failure too.
+    /// With `--children`, wait for every child of the named agent and print
+    /// each answer in turn. `--json` keys them by child id, and a child
+    /// stopped on a question is included with its question. The exit code is
+    /// the most urgent outcome: 3 timed out, 2 a question, 1 a failure
+    /// (including no children), 0 every answer in.
     Result {
-        /// The agent whose answer to wait for.
+        /// The agent to wait for.
         #[arg(required_unless_present = "children", conflicts_with = "children")]
         id: Option<String>,
 
-        /// Collect every child of this agent's answers instead.
+        /// Wait for every child of this agent instead.
         #[arg(long, value_name = "ID")]
         children: Option<String>,
 
@@ -215,20 +198,17 @@ pub enum Command {
         timeout: Option<u64>,
     },
 
-    /// Wait for several agents at once and say which are ready.
+    /// Wait for several agents and say which are ready.
     ///
-    /// One clock over a fleet: it blocks until every agent named has settled —
-    /// its turn over, or stopped on a question — and prints `<id> <state>` for
-    /// each as each settles. `--any` ends at the first. What the agent said is
-    /// not here: `amx result <id>` hands that back, and returns at once for an
-    /// agent this has already named.
+    /// Blocks until every named agent has settled (its turn over, or stopped
+    /// on a question) and prints `<id> <state>` as each one does. `--any`
+    /// returns at the first. Answers are not printed: `amx result <id>`
+    /// prints one, at once for an agent that has already settled.
     ///
-    /// `--for <state>` waits for one named phase instead of for an ending, so
-    /// `--for working` is how a caller confirms a fleet started.
-    ///
-    /// `--children <id>` waits on every child of that agent instead of on
-    /// named ids, which is the fan-in for a parent that fanned out with
-    /// `amx sub --bg`. A parent with no children exits 1.
+    /// `--for <state>` waits for that state instead, so `--for working`
+    /// confirms a batch has started. `--children <id>` waits on every child
+    /// of that agent, the fan-in after `amx sub --bg`; a parent with no
+    /// children exits 1.
     Wait {
         /// The agents to wait on.
         #[arg(
@@ -242,11 +222,11 @@ pub enum Command {
         #[arg(long, value_name = "ID")]
         children: Option<String>,
 
-        /// Come back as soon as one of them has settled.
+        /// Return as soon as one of them has settled.
         #[arg(long)]
         any: bool,
 
-        /// Wait for this state instead of for a turn that is over.
+        /// Wait for this state instead of for a finished turn.
         #[arg(long = "for", value_name = "STATE", value_parser = a_phase)]
         state: Option<Phase>,
 
@@ -255,11 +235,11 @@ pub enum Command {
         timeout: Option<u64>,
     },
 
-    /// Attach to the agent's pane.
+    /// Attach to an agent's pane.
     ///
-    /// Without an id, the wall says which agent: the order the view draws
-    /// under the arrangement it was left in, stepped through from whichever
-    /// agent's session this was typed in. Made for a tmux key.
+    /// Without an id, the agent is picked by its place in the view's order,
+    /// counting from the agent whose session this runs in. Meant for tmux
+    /// key bindings.
     Attach {
         #[arg(
             required_unless_present_any = ["next", "prev", "waiting", "last"],
@@ -267,35 +247,33 @@ pub enum Command {
         )]
         id: Option<String>,
 
-        /// The agent after this one on the wall, wrapping at the foot.
+        /// The next agent in the view, wrapping at the end.
         #[arg(long, conflicts_with_all = ["prev", "waiting", "last"])]
         next: bool,
 
-        /// The agent before this one on the wall, wrapping at the top.
+        /// The previous agent in the view, wrapping at the start.
         #[arg(long, conflicts_with_all = ["next", "waiting", "last"])]
         prev: bool,
 
-        /// The first agent that is waiting on you.
+        /// The first agent waiting on you.
         #[arg(long, conflicts_with_all = ["next", "prev", "last"])]
         waiting: bool,
 
-        /// The agent you were in before this one.
+        /// The agent you were attached to before this one.
         #[arg(long, conflicts_with_all = ["next", "prev", "waiting"])]
         last: bool,
     },
 
     /// Print an agent's recent output without attaching to it.
     ///
-    /// Where the vendor keeps a transcript, this is the transcript: every
-    /// prompt, answer and tool call of the recent history, with the pane there
-    /// or gone. With no transcript to read it is the pane: the last of what it
-    /// has drawn, and as much of what has scrolled off it as tmux still holds.
-    /// Once that is gone too, what the agent answered with is what this prints.
-    /// `--lines` cuts whichever it is. `amx result` is the one that hands back
-    /// a turn's answer alone.
+    /// Reads the agent's transcript where the vendor keeps one: prompts,
+    /// answers and tool calls, whether or not the pane still exists. Without a
+    /// transcript it prints the pane, including the scrollback tmux still
+    /// holds, and once the pane is gone, the agent's last answer. `amx result`
+    /// prints a turn's answer alone.
     Logs {
         id: String,
-        /// How many lines of it to print.
+        /// How many lines to print.
         #[arg(
             long,
             value_name = "N",
@@ -308,105 +286,90 @@ pub enum Command {
     /// Stop an agent and decide what happens to its worktree and branch.
     Stop(StopArgs),
 
-    /// Clear away the finished agents whose work has landed.
+    /// Remove finished agents whose work has landed.
     ///
-    /// An agent whose pull request merged or closed, or whose branch somebody
-    /// merged themselves, is holding a record, a worktree and a branch that are
-    /// a copy of what the repository already has. This lists them with the
-    /// reason each is on the list, asks once, and then takes all three.
-    ///
-    /// A worktree holding work no commit has is kept, and its record with it.
+    /// An agent qualifies when its pull request merged or closed, its branch
+    /// was merged into the main line, or the origin no longer has its branch.
+    /// Lists them with the reason, asks once, then removes each one's record,
+    /// worktree and branch. A worktree with uncommitted work is kept, and so
+    /// is its record.
     Sweep {
-        /// Take them without asking.
+        /// Remove them without asking.
         #[arg(long)]
         force: bool,
     },
 
-    /// Forget the finished agents, whether or not their work landed.
+    /// Remove finished agents, whether or not their work landed.
     ///
-    /// Every agent whose turn is over — done, failed, or stopped — is holding a
-    /// record, and most of them are holding a worktree nothing outside amx will
-    /// ever have an opinion about. This lists them with the reason each one is
-    /// finished, asks once, and then takes the record and the worktree. Work
-    /// that landed goes the way `sweep` takes it, branch and all; everything
-    /// else keeps its branch.
-    ///
-    /// A worktree holding work no commit has is kept, and its record with it.
-    /// An agent sitting at its prompt has not finished and is not on the list.
+    /// Lists every agent whose turn is over (done, failed or stopped) with the
+    /// reason, asks once, then removes each one's record and worktree. Work
+    /// that landed goes the way `sweep` removes it, branch included; other
+    /// branches are kept. A worktree with uncommitted work is kept, and so is
+    /// its record. An agent idle at its prompt is not finished and is not
+    /// listed.
     Clear {
-        /// Take them without asking.
+        /// Remove them without asking.
         #[arg(long)]
         force: bool,
     },
 
-    /// Show the agent's worktree against the commit it started from.
+    /// Show an agent's worktree against the commit it started from.
     Diff {
         id: String,
-        /// Summarise the patch instead of printing it.
+        /// Print a diffstat instead of the patch.
         #[arg(long)]
         stat: bool,
-        /// Measure from this ref instead of the commit the record keeps.
+        /// Compare against this ref instead of the recorded base.
         ///
-        /// Any branch, tag or commit git will resolve. A tree amx cut is
-        /// measured from the commit it was cut from and a session from the
-        /// commit it started on; this names the base outright, for a record
-        /// that carries none or a caller who wants something narrower.
+        /// Any branch, tag or commit git resolves. For a record with no base,
+        /// or to narrow the comparison.
         #[arg(long, value_name = "REF")]
         from: Option<String>,
     },
 
-    /// Restart a stopped agent, continuing its recorded session.
+    /// Restart a stopped agent in its recorded session.
     ///
-    /// A message is the first turn of the agent that comes back. It rides the
-    /// vendor's argv as its prompt, where `new` puts a task, so the agent is
-    /// working the moment its pane exists rather than standing at its prompt
-    /// waiting to be told what happens next.
+    /// A message becomes the restarted agent's first turn. It is passed on the
+    /// vendor's command line, the way `new` passes a task, so the agent starts
+    /// working at once.
     Resume {
         #[arg(required_unless_present = "all")]
         id: Option<String>,
-        /// What to put to the agent as it comes back. Without one it picks up
-        /// where it was and waits for a turn.
+        /// The restarted agent's first message. Without one it waits at its
+        /// prompt.
         #[arg(value_parser = a_task, conflicts_with = "all")]
         message: Option<String>,
-        /// Every stopped agent, as after a tmux server death.
+        /// Every stopped agent, for example after the tmux server died.
         #[arg(long, conflicts_with = "id")]
         all: bool,
     },
 
     /// Start a second agent on a copy of this one's conversation.
     ///
-    /// The copy runs where the original ran, on everything it had been told up
-    /// to now, and goes its own way from there: a different approach to the
-    /// same problem, without giving up the one already tried. Both agents are
-    /// their own from the moment it starts, and nothing either does reaches the
-    /// other.
-    ///
-    /// It is the recorded session that is copied, so an agent that never
-    /// announced one cannot be forked at all — `amx new` is what starts an
-    /// agent with no conversation behind it.
+    /// The copy runs in the same directory with everything the original has
+    /// been told so far, then goes its own way; neither agent affects the
+    /// other. Only a recorded session can be copied, so an agent that never
+    /// reported one cannot be forked.
     Fork {
-        /// The agent whose conversation is copied.
+        /// The agent whose conversation to copy.
         id: String,
-        /// What the copy should do first. Without one it opens the
-        /// conversation and waits for a turn.
+        /// The copy's first task. Without one it opens the copied
+        /// conversation and waits.
         #[arg(value_parser = a_task)]
         task: Option<String>,
     },
 
-    /// Put the agent already running in this pane on the wall.
+    /// Add the agent already running in this pane to amx.
     ///
-    /// For the agent you started yourself, in your own tmux, and then wanted
-    /// beside the ones amx started: it gets a record, an id and a row, and
-    /// every verb that reads or answers an agent works on it from then on.
+    /// For an agent you started yourself, in your own tmux: it gets a record,
+    /// an id and a row, and every verb works on it from then on.
     ///
-    /// It is typed *inside* the agent being adopted, which is what tells amx
-    /// which pane and which conversation are meant — ask the agent to run it,
-    /// or run it yourself in its shell mode. Nothing is started, nothing is
-    /// sent, and the agent goes on with whatever it was doing.
+    /// Run it inside the agent being adopted, which is how amx knows the pane
+    /// and the conversation: ask the agent to run it, or use its shell mode.
+    /// Nothing is started or sent.
     ///
-    /// amx cut no worktree for it and holds no command it was launched with,
-    /// so `stop` takes its pane and nothing else, and there is nothing for
-    /// `resume` or `fork` to start again.
+    /// amx cut no worktree for it and has no command to relaunch it with, so
+    /// `stop` only closes its pane, and `resume` and `fork` cannot restart it.
     Adopt(AdoptArgs),
 
     /// Print the agents' event streams, merged.
@@ -421,86 +384,77 @@ pub enum Command {
         json: bool,
     },
 
-    /// Print the counts a status line has room for: ✽ moving, ⚠ waiting.
+    /// Print agent counts for a status line: ✽ moving, ⚠ waiting.
     ///
-    /// Meant for tmux's own `status-right '#(amx statusline)'`, but it is
-    /// plain text and prints nothing at all when no agent needs saying.
+    /// Meant for tmux, as `status-right '#(amx statusline)'`. Prints plain
+    /// text, and nothing at all when no agent needs mentioning.
     Statusline,
 
     /// Check what amx needs from this machine, and what is missing.
     ///
-    /// Ten things have to be true before an agent can run: tmux, the agent
-    /// command, the config, amx's own files where each installed agent loads
-    /// them, one amx on the PATH and this the one, a state directory to keep
-    /// records in, no handoff still carrying the spawner's environment from
-    /// before that moved to a file of its own, no agent already stopped at a
-    /// screen the vendor puts in front of the work, no tree amx cut still
-    /// named in the agent's own trust store after the tree itself has gone,
-    /// and nothing amx made standing with no record: an id directory a spawn
-    /// died in, or a tree no record names. `--fix` clears the directories
-    /// once they are ten minutes old and never touches a tree.
+    /// Ten things are checked: tmux, the agent command, the config, amx's
+    /// hooks for each installed agent, that the `amx` on the PATH is this
+    /// one, the state directory, handoffs still carrying the spawner's
+    /// environment, agents stopped at a vendor screen before their task,
+    /// trust-store entries for worktrees that are gone, and id directories or
+    /// worktrees with no record.
     ///
-    /// The wiring one is asked of every agent this machine has, so somebody
-    /// with claude and pi reads two of those lines. `amx setup` is what wires
-    /// one; doctor says which is unwired and prints the line.
+    /// When a tmux server is running, it also checks that the server's
+    /// working directory still exists: a server that outlived it cannot start
+    /// panes. As `amx --dir <path> doctor`, it checks whether an agent started
+    /// there would stop at the vendor's folder-trust screen, without writing
+    /// anything, and the exit code is the answer.
     ///
-    /// Where a tmux server is already running, an eleventh: that the directory
-    /// the server itself is standing in still exists. One that outlived its
-    /// own working directory kills every pane it starts.
-    ///
-    /// Pointed at a directory, `amx --dir <path> doctor`, a twelfth: whether
-    /// an agent started there would meet its vendor's folder-trust screen,
-    /// which no hook can report and which a caller that never attaches would
-    /// lose the agent to. Nothing is written to find out, and the exit code
-    /// is the answer.
+    /// `amx setup <agent>` wires an agent's hooks; doctor names any agent left
+    /// unwired.
     Doctor {
-        /// Mend what amx wrote itself: handoffs still carrying the
-        /// environment, and trust-store keys for trees amx cut.
+        /// Repair what amx wrote itself.
+        ///
+        /// Cleans the environment out of old handoffs, drops trust-store
+        /// entries for removed worktrees amx cut, removes id directories with
+        /// no record once they are ten minutes old, and rebuilds agent clocks
+        /// from their logs. It never removes a worktree.
         #[arg(long)]
         fix: bool,
     },
 
-    /// Wire an agent's hooks, so what it does reports back to amx.
+    /// Wire an agent's hooks so it reports to amx.
     ///
-    /// The agent is named, and never guessed: `amx setup claude` writes amx's
-    /// plugin where claude loads one from, `amx setup pi` writes amx's
-    /// extension where pi loads one from, and `amx setup codex` merges amx's
-    /// hooks into codex's `hooks.json` and trusts them in its `config.toml`.
-    /// A file amx did not write is copied aside before it is touched, and
-    /// `amx uninstall` puts the copy back.
-    ///
-    /// A machine usually has more than one agent on it, so a bare `amx setup`
-    /// prints the agents amx has an entry for and writes nothing.
+    /// `amx setup claude` and `amx setup opencode` write amx's plugin where
+    /// that agent loads plugins, `amx setup pi` writes amx's extension where
+    /// pi loads extensions, and `amx setup codex` merges amx's hooks into
+    /// codex's `hooks.json` and trusts them in its `config.toml`. A file amx
+    /// did not write is copied aside first, and `amx uninstall` puts it back.
+    /// Without an agent, it lists the agents amx knows and writes nothing.
     Setup {
-        /// Which agent to wire: `claude`, `pi` or `codex`.
+        /// The agent to wire: `claude`, `pi`, `codex` or `opencode`.
         vendor: Option<String>,
 
-        /// Also write what this agent offers beyond reporting.
+        /// Also install the agent's optional subagent tool.
         ///
-        /// A wire of its own, and one a person asks for by name: today only
-        /// pi has one, the `subagent` tool that hands a task to `amx sub`.
-        /// `amx uninstall` takes it back out, and a vendor without one says
-        /// so rather than writing something else.
+        /// Only pi has one: a `subagent` tool that hands a task to `amx sub`.
+        /// `amx uninstall` removes it. For an agent without one, setup says
+        /// so and writes nothing else.
         #[arg(long)]
         subagent: bool,
     },
 
-    /// Remove amx's hooks and state, restoring the settings backup.
+    /// Remove amx's hooks and state, restoring any file amx copied aside.
+    ///
+    /// Refuses while any agent is still running.
     Uninstall,
 
     /// Print the completion script for a shell.
     ///
-    /// It goes to stdout for the shell to keep or to read at every start,
-    /// whichever that shell does with these:
-    /// `amx completion fish > ~/.config/fish/completions/amx.fish`. What it
-    /// offers is this build's own surface, so a kept copy is written again
-    /// after an upgrade.
+    /// For example `amx completion fish > ~/.config/fish/completions/amx.fish`.
+    /// The script covers this build's verbs and flags, so write it again after
+    /// an upgrade.
     Completion {
-        /// The shell the script is written for.
+        /// The shell to write the script for.
         shell: clap_complete::Shell,
     },
 
-    /// Record one vendor hook event. Reads the payload on stdin.
+    /// Record one vendor hook event, read from stdin.
     #[command(name = "_hook", hide = true)]
     Hook,
 
@@ -512,7 +466,7 @@ pub enum Command {
     #[command(name = "_boot", hide = true)]
     Boot { id: String },
 
-    /// Let an idle agent's pane go, keeping everything else about it.
+    /// Close an idle agent's pane, keeping its record.
     #[command(name = "_park", hide = true)]
     Park { id: String },
 }
@@ -527,22 +481,16 @@ pub struct NewArgs {
     )]
     pub task: Option<String>,
 
-    /// Read the task from this file instead, or from stdin for `-`.
+    /// Read the task from this file, or from stdin for `-`.
     ///
-    /// A brief long enough to be worth writing down is a brief nobody wants to
-    /// quote into a shell: the file is read whole, its last newline taken off,
-    /// and what is left is the task exactly as a typed one would have been.
+    /// The file is read whole, minus its final newline.
     #[arg(long, value_name = "PATH")]
     pub file: Option<PathBuf>,
 
     /// Write the task in `$VISUAL`, `$EDITOR` or `vi` first.
     ///
-    /// `--file` for the brief you have not written yet: an empty file is opened
-    /// in your editor, and what you leave in it is the task, exactly as a typed
-    /// one would have been. There is no task on the command line beside it, and
-    /// no file either — that would be the task somewhere else already. An
-    /// editor closed on an empty file is an empty task and refused as one, and
-    /// an editor that exits unhappily starts no agent.
+    /// Opens an empty file, and what you save is the task. An empty file, or
+    /// an editor that exits with an error, starts no agent.
     #[arg(long, conflicts_with = "file")]
     pub edit: bool,
 
@@ -550,13 +498,12 @@ pub struct NewArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Spawn with a role's dials and brief.
+    /// Spawn with a role's settings and brief.
     ///
-    /// A role is a file amx reads: `~/.config/amx/agents/<name>.md`, with a
-    /// repository's `.amx/agents/<name>.md` over it. It is a default rather
-    /// than a lock — anything typed on this command line stands — and its
-    /// body, the brief, goes in front of the task the agent is handed. A name
-    /// amx does not know lists the roles this directory has.
+    /// A role is `~/.config/amx/agents/<name>.md`, or the project's
+    /// `.amx/agents/<name>.md`, which takes precedence. Its settings are
+    /// defaults that flags on this command line override, and its body goes
+    /// in front of the task. An unknown name lists the roles available here.
     #[arg(long, value_name = "NAME")]
     pub role: Option<String>,
 
@@ -564,72 +511,56 @@ pub struct NewArgs {
     #[arg(long)]
     pub dir: Option<PathBuf>,
 
-    /// Run in the directory as it is, without a worktree of its own.
+    /// Run in the directory itself, without a worktree of its own.
     #[arg(long)]
     pub no_worktree: bool,
 
-    /// Cut the worktree from this ref instead of from what is checked out.
+    /// Cut the worktree from this ref instead of the current checkout.
     ///
-    /// Any branch, tag or commit git will resolve. It is what the agent starts
-    /// on and what `diff` compares its work against, so `--base main` sends an
-    /// agent off the branch the work belongs on rather than off whatever the
-    /// last thing you were doing left behind. The `base` key says it for every
-    /// spawn; this flag says it for one.
+    /// Any branch, tag or commit git resolves. The agent starts on it and
+    /// `diff` compares against it. The `base` config key sets a default.
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
-    /// Start the agent on this branch, which already exists.
+    /// Start the agent on this existing branch.
     ///
-    /// The work carries on where somebody left it: a branch this checkout has
-    /// is cut on as it stands, and one only the origin has is fetched first. A
-    /// leading `origin/` comes off, since that is how a branch on the forge is
-    /// usually read out. The branch is what the record keeps, so the commits
-    /// land on it and `stop` leaves it where it is. It says what the tree is
-    /// on and where the work goes, so it is refused beside `--base`, `--pr`,
-    /// `--no-worktree` and `--exec`; `--with-changes` stands beside it, since
-    /// what you have not committed belongs on that branch as much as anywhere.
+    /// A local branch is used as it stands, and one only the origin has is
+    /// fetched first; a leading `origin/` is dropped. The commits land on the
+    /// branch, and `stop` keeps it. Cannot be combined with `--base`, `--pr`,
+    /// `--no-worktree` or `--exec`; `--with-changes` is allowed.
     #[arg(long, value_name = "NAME", conflicts_with_all = ["base", "pr", "no_worktree", "exec"])]
     pub branch: Option<String>,
 
-    /// Start the agent on this pull request instead.
+    /// Start the agent on this pull request.
     ///
-    /// `gh` is asked where the request's head is, its branch is fetched from
-    /// the origin, and the tree is cut on that branch at the commit the
-    /// request is at now. The branch is recorded, so the row says which
-    /// request it is on and `stop` keeps the branch rather than deleting work
-    /// somebody else is reviewing. The request says what the tree is cut from
-    /// and where it goes, so it is refused beside `--base`, `--with-changes`,
-    /// `--no-worktree` and `--exec`.
+    /// Asks `gh` for the request's head branch, fetches it from the origin,
+    /// and cuts the tree at the request's current commit. `stop` keeps the
+    /// branch. Cannot be combined with `--base`, `--with-changes`,
+    /// `--no-worktree` or `--exec`.
     #[arg(long, value_name = "N", conflicts_with_all = ["base", "with_changes", "no_worktree", "exec"])]
     pub pr: Option<u64>,
 
-    /// Move the uncommitted work here into the agent's tree.
+    /// Move this directory's uncommitted changes into the agent's worktree.
     ///
-    /// The half hour you had already spent when you thought to start an agent
-    /// on it. What git is tracking goes, staged or not, and the new file with
-    /// it, and this directory is left as its last commit had it; what
-    /// `.gitignore` names stays where it was made. There has to be a tree to
-    /// move it into and something to move, so it is refused beside
-    /// `--no-worktree` and `--exec`, and a directory with nothing uncommitted
-    /// in it starts no agent.
+    /// Tracked changes, staged or not, and new files move; ignored files stay.
+    /// This directory is left at its last commit. Cannot be combined with
+    /// `--no-worktree` or `--exec`, and a directory with nothing uncommitted
+    /// starts no agent.
     #[arg(long, conflicts_with_all = ["no_worktree", "exec"])]
     pub with_changes: bool,
 
-    /// Run the task as a shell command rather than give it to an agent.
+    /// Run the task as a shell command instead of giving it to an agent.
     ///
-    /// The whole of it goes to `sh -c`, so a pipeline or an `&&` is one row,
-    /// and the row ends done or failed by what the command exits with. It runs
-    /// in the directory as it is: a command has no conversation to keep, so
-    /// there is nothing for a worktree of its own to keep it apart from.
-    ///
-    /// There is no vendor here, which is why amx's four agent flags are
-    /// refused beside it, and nothing is passed through: the command is the
-    /// whole of what runs.
+    /// The whole task goes to `sh -c`, so a pipeline is one row, and the row
+    /// ends done or failed by the command's exit code. It runs in the
+    /// directory itself, without a worktree. `--agent`, `--model`,
+    /// `--permission`, `--effort`, `--role` and arguments after `--` are
+    /// refused.
     #[arg(long, conflicts_with_all = ["AgentArgs", "vendor_args", "role"])]
     pub exec: bool,
 
-    /// The vendor and the dials for this one spawn, `None` when the caller
-    /// named none of them and the config answers for all four.
+    /// The vendor and settings for this spawn; `None` when the caller named
+    /// none and the config decides.
     #[command(flatten)]
     pub agent: Option<AgentArgs>,
 
@@ -637,15 +568,15 @@ pub struct NewArgs {
     #[arg(last = true, value_name = "AGENT_ARGS")]
     pub vendor_args: Vec<String>,
 
-    /// A preamble the vendor reads and the record does not keep, set by a verb
-    /// that puts one in front of the task — a subagent's digest of its parent
-    /// (see `SubArgs::context`). Never on the command line.
+    /// A preamble the vendor reads but the record does not keep, such as a
+    /// subagent's digest of its parent (see [`SubArgs::context`]). Never set
+    /// from the command line.
     #[arg(skip)]
     pub context_brief: Option<String>,
 
-    /// The agent this one is a child of, set by `amx sub` and by nothing
-    /// else: `new` typed in a pane is a root whatever the pane's `AMX_ID`
-    /// says, and a child is asked for by name. Never on the command line.
+    /// The agent this one is a child of. Set only by `amx sub`: a plain `new`
+    /// is a root whatever the pane's `AMX_ID` says. Never set from the command
+    /// line.
     #[arg(skip)]
     pub parent: Option<String>,
 }
@@ -656,13 +587,10 @@ pub struct SubArgs {
     #[arg(value_parser = a_task)]
     pub task: String,
 
-    /// Cut the child a worktree of its own instead of sharing the parent's
-    /// directory.
+    /// Give the child its own worktree instead of the parent's directory.
     ///
-    /// A subagent is an extension of the parent's work, so it runs where the
-    /// parent runs by default: it sees the uncommitted files and needs no
-    /// branch to answer one question. `--worktree` is for the child that will
-    /// change something, and `--dir` is for the one sent somewhere else.
+    /// By default a child runs where its parent runs and sees the parent's
+    /// uncommitted files. This is for a child that will change things.
     #[arg(long)]
     pub worktree: bool,
 
@@ -670,11 +598,10 @@ pub struct SubArgs {
     #[arg(long)]
     pub dir: Option<PathBuf>,
 
-    /// Run the child in the directory as it is, without a worktree of its own.
+    /// Run the child in the directory itself, without a worktree of its own.
     ///
-    /// A child of a pane already does; this is for the spawn from outside any
-    /// pane, which is otherwise an ordinary `amx new` and cuts a tree. A
-    /// program reading a checkout's live diff wants the checkout, not a copy.
+    /// A child started from a pane already does. This is for `amx sub` run
+    /// outside any pane, which otherwise cuts a worktree like `amx new`.
     #[arg(long, conflicts_with = "worktree")]
     pub no_worktree: bool,
 
@@ -682,44 +609,38 @@ pub struct SubArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Spawn the child with a role's dials and brief.
+    /// Spawn the child with a role's settings and brief.
     ///
-    /// A role is a file amx reads — `~/.config/amx/agents/<name>.md`, or the
-    /// project's `.amx/agents/<name>.md` over it — and a default rather than a
-    /// lock: what the parent hands down is beaten by it, and anything typed on
-    /// this command line beats both. An unknown name lists the roles this
-    /// directory knows.
+    /// The same role files as `amx new --role`. The role overrides what the
+    /// parent passes down, and flags on this command line override both. An
+    /// unknown name lists the roles available here.
     #[arg(long, value_name = "NAME")]
     pub role: Option<String>,
 
     /// Record this agent as the parent, instead of the pane's own.
     ///
-    /// For a caller outside any pane -- a program dispatching a reader for a
-    /// worker's diff, or a fresh worker to take over from one that died --
-    /// which has no `$AMX_ID` to record and knows whose child this is. The
-    /// agent may have ended: a record is enough. An id amx has no record of
-    /// is refused, exit 64, before anything is claimed.
+    /// For a caller outside any pane, which has no `$AMX_ID`. The parent may
+    /// have ended but must have a record; an unknown id exits 64 before
+    /// anything is started.
     #[arg(long, value_name = "ID", conflicts_with = "no_parent")]
     pub parent: Option<String>,
 
-    /// Record no parent, even though this is being run inside a pane.
+    /// Record no parent, even when run inside an agent's pane.
     #[arg(long)]
     pub no_parent: bool,
 
-    /// What of the parent's context the child starts with.
+    /// How much of the parent's context the child starts with.
     ///
     /// `fresh`, the default, is the child's own task alone. `digest` puts the
-    /// parent's task and its latest word on it in front of that task — a
-    /// state, not the parent's conversation, which the child can still read
-    /// with `amx logs $AMX_PARENT`. `digest` with no parent is refused.
+    /// parent's task and its latest answer in front of it; the child can
+    /// still read the whole conversation with `amx logs $AMX_PARENT`.
+    /// `digest` without a parent is refused.
     #[arg(long, value_name = "WHEN")]
     pub context: Option<Context>,
 
     /// Print one JSON object instead of the answer and the id.
     ///
-    /// `{"id", "parent", "phase", "answer", "evidence"}`, so a caller
-    /// driving amx from a program reads the child, its family and its answer
-    /// off one line.
+    /// The object has `id`, `parent`, `phase`, `answer` and `evidence`.
     #[arg(long)]
     pub json: bool,
 
@@ -731,11 +652,11 @@ pub struct SubArgs {
     #[arg(long, value_name = "SECONDS")]
     pub timeout: Option<u64>,
 
-    /// The vendor and the dials for this one child.
+    /// The vendor and settings for this child.
     ///
-    /// A model and an effort are inherited from the parent when the child runs
-    /// the same vendor; anything named here wins. `--permission` is refused
-    /// unless the `subagents_may_escalate` key says otherwise.
+    /// The parent's model and effort are inherited when the child runs the
+    /// same vendor, and anything named here wins. `--permission` is refused
+    /// unless the `subagents_may_escalate` key allows it.
     #[command(flatten)]
     pub agent: Option<AgentArgs>,
 
@@ -746,10 +667,10 @@ pub struct SubArgs {
 
 #[derive(Debug, Args, Default)]
 pub struct AdoptArgs {
-    /// What the agent is working on, for the row to say. Without one the row
-    /// is named after the directory the pane is in.
+    /// What the agent is working on, shown in its row.
     ///
-    /// It is a label and nothing else: adopting sends the agent nothing.
+    /// Only a label: nothing is sent to the agent. Without it, the row is
+    /// named after the pane's directory.
     #[arg(long, value_name = "TEXT", value_parser = a_task)]
     pub task: Option<String>,
 
@@ -758,17 +679,11 @@ pub struct AdoptArgs {
     pub name: Option<String>,
 }
 
-/// Which vendor a spawn runs, and where its dials are pointed.
+/// The vendor for one spawn and the settings it launches with.
 ///
-/// One group because they are one decision: a dial only means anything
-/// against the vendor it is turned on, and the vendor amx is about to launch
-/// is the one that says which dials exist at all. Every field is optional and
-/// falls back to the config, which falls back to the vendor's own behaviour.
-///
-/// These are amx's flags, not the vendor's. Anything after `--` is the
-/// vendor's own and is passed through untouched, including the same words:
-/// `--model` before the separator turns amx's dial, `--model` after it is
-/// claude's flag, and a dial stands down rather than send the flag twice.
+/// Each field falls back to the config, then to the vendor's own default.
+/// These are amx's flags: anything after `--` goes to the vendor untouched,
+/// and a setting whose flag already appears there is not passed a second time.
 #[derive(Debug, Args, Clone, Default)]
 pub struct AgentArgs {
     /// The agent command to run instead of the configured one.
@@ -790,15 +705,11 @@ pub struct AgentArgs {
 
 /// What a question is answered with.
 ///
-/// One group because a question takes one answer. What is typed is the answer
-/// itself, and the flag is there for the answer that reads as something else:
-/// `--text 2` is the character `2` in the row the question offers for words of
-/// your own, which is what the vendor writes down when it is typed there, while
-/// a bare `2` is the second choice. Naming which one is meant is the only way
-/// to say it, so the two cannot be given together.
+/// A bare `2` picks the second choice, while `--text 2` types the character
+/// `2` into the question's free-text field; the two cannot be combined.
 #[derive(Debug, Args, Default)]
 pub struct AnswerArgs {
-    /// One key of the grammar, several choices, or words of your own.
+    /// A key of the grammar, a list of choices, or your own words.
     #[arg(
         value_name = "ANSWER",
         required_unless_present = "text",
@@ -806,12 +717,11 @@ pub struct AnswerArgs {
     )]
     pub key: Option<String>,
 
-    /// Words for the free-text row the question offers, whatever they look
-    /// like.
+    /// Words for the question's free-text field, taken literally.
     #[arg(long, value_name = "WORDS")]
     pub text: Option<String>,
 
-    /// A note to send beside the choice, where the question draws a field for
+    /// A note to send with the choice, where the question has a field for
     /// one.
     #[arg(long, value_name = "WORDS", conflicts_with = "text")]
     pub note: Option<String>,
@@ -821,11 +731,11 @@ pub struct AnswerArgs {
 pub struct StopArgs {
     pub id: String,
 
-    /// Take the defaults for everything, asking nothing.
+    /// Take the defaults for everything without asking.
     #[arg(long)]
     pub force: bool,
 
-    /// Remove the agent's record too, so nothing of it is left.
+    /// Remove the agent's record too.
     #[arg(long)]
     pub delete: bool,
 
@@ -838,16 +748,11 @@ pub struct StopArgs {
     pub branch: Option<Disposition>,
 }
 
-/// A task with something in it.
+/// Refuse a task that is empty or only whitespace.
 ///
-/// An empty task is not a small task: the vendor is handed an empty prompt,
-/// and what starts is an agent sitting at its prompt with nothing to do,
-/// holding a pane and a worktree while it does. It is easy to type by
-/// accident — `amx new "$TASK"` with `TASK` unset is one — so it is answered
-/// here, where nothing has been made yet and there is nothing to clean up.
-///
-/// Only wholly empty is refused. What is inside a task is the person's
-/// business, and a task is passed on exactly as it was typed.
+/// An empty prompt starts an agent with nothing to do that still holds a pane
+/// and a worktree; `amx new "$TASK"` with `TASK` unset is the usual cause.
+/// Anything else is passed on exactly as typed.
 fn a_task(text: &str) -> Result<String, String> {
     match text.trim().is_empty() {
         true => Err("an agent needs something to do".to_string()),
@@ -855,13 +760,10 @@ fn a_task(text: &str) -> Result<String, String> {
     }
 }
 
-/// One of the states amx reads an agent as being in.
+/// Parse a state name for `wait --for`.
 ///
-/// The eight words `amx ls --json` prints and nothing else: `amx wait --for` is
-/// given a state to hold out for, and a word amx has no state for is a wait
-/// that would never end. Refused here, where clap answers it as the usage error
-/// it is, and the refusal names all eight so the one that was meant is in front
-/// of whoever mistyped it.
+/// Only the eight words `amx ls --json` prints: any other word would be a wait
+/// that never ends. The error lists all eight.
 fn a_phase(word: &str) -> Result<Phase, String> {
     PHASES
         .into_iter()
@@ -886,22 +788,10 @@ const PHASES: [Phase; 8] = [
     Phase::Unknown,
 ];
 
-/// A task or a message read out of a file, or off stdin where the path is `-`.
+/// Read a task or message from a file, or from stdin when the path is `-`.
 ///
-/// The whole file, with one trailing newline taken off: every editor writes
-/// that newline and nobody means it as part of the text, and a `$(cat brief)`
-/// in a shell would have dropped it too. Nothing else is trimmed — what is
-/// inside a task is the person's business here as much as it is when it is
-/// typed.
-///
-/// Then through [`a_task`], because a file with nothing in it says exactly what
-/// an empty argument says: an agent with nothing to do, holding a pane while it
-/// does nothing. `send` refuses an empty file for the same reason — a message
-/// of no words is a turn spent on nothing.
-///
-/// One reader for both verbs, so `--file` means the same thing wherever it is
-/// typed: `amx new --file brief.md` and `amx send <id> --file notes.md` read
-/// the file the same way and refuse the same files.
+/// Shared by `new --file` and `send --file`. The text goes through [`a_text`],
+/// so an empty file is refused like an empty argument.
 pub fn text_of(path: &Path) -> Result<String, String> {
     let text = match path == Path::new("-") {
         true => std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}")),
@@ -910,26 +800,26 @@ pub fn text_of(path: &Path) -> Result<String, String> {
     a_text(&text)
 }
 
-/// The task inside text somebody wrote somewhere other than the command line:
-/// the last newline off, and then through [`a_task`].
+/// Read text written outside the command line as a task: one trailing newline
+/// removed, then [`a_task`].
 ///
-/// The reading itself, apart from where the text came from, because a file is
-/// not the only place it comes from: `new --edit` opens an editor, and the task
-/// it is closed on is read the same way the same editor's file would have been.
+/// Editors end a file with a newline nobody means as part of the text, and
+/// `$(cat file)` would drop it too. Nothing else is trimmed. Also used for
+/// what `new --edit` reads back from the editor.
 pub fn a_text(text: &str) -> Result<String, String> {
     a_task(text.strip_suffix('\n').unwrap_or(text))
 }
 
-/// What a child is handed of its parent's context.
+/// How much of its parent's context a child starts with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Context {
-    /// Its own task alone, as every child has started.
+    /// The child's own task alone.
     Fresh,
-    /// The parent's task and latest word, in front of the task.
+    /// The parent's task and latest answer, in front of the child's task.
     Digest,
 }
 
-/// What becomes of a worktree or a branch when its agent stops.
+/// What happens to a worktree or a branch when its agent stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Disposition {
     Keep,
@@ -942,12 +832,10 @@ impl Disposition {
     }
 }
 
-/// The exit code for a command line clap refused to parse.
+/// The exit code for a command line clap refused.
 ///
-/// `--help` and `--version` arrive here as errors too, and they are not
-/// failures: they exit `OK`. Everything else is a malformed command line, and
-/// a malformed command line is never a state-machine outcome — it does not
-/// borrow the blocked or failed codes.
+/// `--help` and `--version` arrive as errors too and exit 0. Anything else is
+/// a usage error, which never borrows the codes for an agent's outcome.
 pub fn usage_exit_code(err: &clap::Error) -> i32 {
     use clap::error::ErrorKind;
     match err.kind() {
@@ -958,28 +846,21 @@ pub fn usage_exit_code(err: &clap::Error) -> i32 {
     }
 }
 
-/// The completion script for one shell, as that shell reads it.
+/// The completion script for one shell, generated from the parser.
 ///
-/// Written out of the parser above rather than kept by hand, so a verb or a
-/// flag added there is offered without anyone remembering to say so.
-///
-/// It is rendered whole rather than streamed, because a shell reading half a
-/// script is worse off than one reading none.
+/// Rendered whole rather than streamed, so a shell never reads half a script.
 pub fn completion_script(shell: clap_complete::Shell) -> Vec<u8> {
     let mut script = Vec::new();
     clap_complete::generate(shell, &mut public_surface(), "amx", &mut script);
     script
 }
 
-/// The surface a completion is written from: what `amx --help` lists, and
-/// nothing it hides.
+/// The command tree completion is generated from: what `amx --help` lists.
 ///
-/// clap_complete writes out every subcommand a command holds, `hide` or not,
-/// so the four amx runs against itself have to be left behind rather than
-/// marked. Everything in front of the verb is carried across: the flags, the
-/// version that adds two more of them, and `disable_help_subcommand`, without
-/// which clap would build a `help` verb amx does not answer to and the script
-/// would offer that instead.
+/// clap_complete emits hidden subcommands too, so the underscore verbs are
+/// left out rather than marked hidden. The top-level flags, the version and
+/// `disable_help_subcommand` are carried over; without the last, clap would
+/// add a `help` verb amx does not answer to.
 fn public_surface() -> clap::Command {
     use clap::CommandFactory;
     let full = Cli::command();
@@ -1019,8 +900,6 @@ mod tests {
 
     #[test]
     fn ls_the_front_door_takes_a_directory_and_is_still_the_front_door() {
-        // `amx --dir <path>` is the same door with a narrower question behind
-        // it, so what it is not is a usage error looking for a verb.
         let cli = parse(&["amx", "--dir", "/srv/app"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.dir.as_deref(), Some(Path::new("/srv/app")));
@@ -1035,16 +914,14 @@ mod tests {
         assert!(json);
         assert_eq!(dir.as_deref(), Some(Path::new("/srv/app")));
 
-        // A relative directory is a directory: the shell is standing in one,
-        // and `--dir .` is the whole point of the flag.
+        // A relative directory is kept as typed.
         let cli = parse(&["amx", "ls", "--dir", "."]).unwrap();
         let Some(Command::Ls { dir, .. }) = cli.command else {
             panic!("expected ls");
         };
         assert_eq!(dir.as_deref(), Some(Path::new(".")));
 
-        // The front door's own flag, in front of the verb, where somebody who
-        // narrowed the view once will type it again.
+        // The top-level flag in front of the verb.
         let cli = parse(&["amx", "--dir", "/srv/app", "ls"]).unwrap();
         assert_eq!(cli.dir.as_deref(), Some(Path::new("/srv/app")));
         assert!(matches!(cli.command, Some(Command::Ls { dir: None, .. })));
@@ -1177,8 +1054,7 @@ mod tests {
         };
         assert!(args.with_changes);
 
-        // Both of these say the agent works in the directory as it stands, and
-        // there is nowhere for the work to be moved to.
+        // Neither has a worktree to move the changes into.
         for argv in [
             &["amx", "new", "port it", "--with-changes", "--no-worktree"][..],
             &["amx", "new", "--exec", "npm test", "--with-changes"],
@@ -1237,9 +1113,7 @@ mod tests {
             &["amx", "new", "--exec", "npm test", "--model", "opus"],
             &["amx", "new", "--exec", "npm test", "--permission", "plan"],
             &["amx", "new", "--exec", "npm test", "--effort", "high"],
-            // A command is the whole of what runs, so there is nowhere for
-            // arguments after the separator to go. Dropping them quietly is
-            // the one thing worse than saying so.
+            // Vendor arguments have nowhere to go, so they are refused.
             &["amx", "new", "--exec", "npm test", "--", "--watch"],
         ] {
             assert_eq!(code(argv), exit::USAGE, "{argv:?}");
@@ -1248,9 +1122,7 @@ mod tests {
 
     #[test]
     fn dials_a_spawn_that_names_none_of_them_leaves_the_config_its_say() {
-        // Absent is not the same as a dial turned to some neutral value: the
-        // config, and then the vendor's own behaviour, answer for what the
-        // caller never mentioned.
+        // No dial named leaves `agent` as `None`, so the config decides.
         let cli = parse(&["amx", "new", "port the importer"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1268,8 +1140,7 @@ mod tests {
 
     #[test]
     fn dials_the_vendors_own_model_flag_is_still_the_vendors() {
-        // amx's `--model` and claude's are the same word for the same thing,
-        // and the separator is what tells them apart. Neither reads the other.
+        // amx's `--model` before the separator, claude's after it.
         let cli = parse(&[
             "amx",
             "new",
@@ -1293,8 +1164,7 @@ mod tests {
 
     #[test]
     fn vendor_arguments_are_not_read_as_amxs_own() {
-        // `--help` after the separator is the vendor's business: amx must not
-        // print its own help and exit, it must pass the flag along.
+        // `--help` after the separator is passed on, not handled by amx.
         let cli = parse(&["amx", "new", "fix the log-in bug", "--", "--help"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1353,8 +1223,7 @@ mod tests {
         assert!(any);
         assert_eq!(state, Some(Phase::Idle));
 
-        // Every word `ls --json` prints is a state to wait for, and the
-        // refusal for anything else names all eight of them.
+        // Every word `ls --json` prints parses, and the error lists all eight.
         for phase in PHASES {
             assert_eq!(a_phase(phase.as_str()), Ok(phase));
         }
@@ -1384,7 +1253,7 @@ mod tests {
         assert_eq!(children.as_deref(), Some("p"));
         assert!(json);
 
-        // One of the two is required, and both together is neither.
+        // Exactly one of the two is required.
         assert!(parse(&["amx", "result"]).is_err());
         assert!(parse(&["amx", "wait"]).is_err());
         assert!(parse(&["amx", "wait", "--children", "p", "a"]).is_err());
@@ -1393,9 +1262,7 @@ mod tests {
 
     #[test]
     fn adopt_takes_a_label_for_the_row_and_nothing_about_where_to_look() {
-        // Which pane and which conversation come from the environment of the
-        // claude that ran it, so there is nothing to type: what is left is
-        // what the row should say.
+        // The pane and session come from the environment, so only the label is typed.
         let cli = parse(&["amx", "adopt"]).unwrap();
         let Some(Command::Adopt(args)) = cli.command else {
             panic!("expected adopt");
@@ -1418,8 +1285,7 @@ mod tests {
         assert_eq!(args.task.as_deref(), Some("port the importer"));
         assert_eq!(args.name.as_deref(), Some("importer"));
 
-        // A label with nothing in it is not a label, and a pane is not
-        // something this takes.
+        // An empty label is refused, and there is no positional pane.
         assert_eq!(code(&["amx", "adopt", "--task", "  "]), exit::USAGE);
         assert_eq!(code(&["amx", "adopt", "%7"]), exit::USAGE);
     }
@@ -1449,49 +1315,42 @@ mod tests {
         for argv in [
             &["amx", "nosuchverb"][..],
             &["amx", "ls", "--nosuchflag"],
-            // A narrowing has to say what to, at either door.
+            // `--dir` needs a value in either position.
             &["amx", "ls", "--dir"],
             &["amx", "--dir"],
             &["amx", "status"],
             &["amx", "logs"],
             &["amx", "send", "fix-a1b"],
             &["amx", "interrupt"],
-            // A rename says which agent and what to call it, and one of the
-            // two on its own says neither.
+            // rename needs both the id and the name.
             &["amx", "rename"],
             &["amx", "rename", "fix-a1b"],
             &["amx", "answer", "fix-a1b"],
-            // Which of the two a thing that reads as both is has to be said,
-            // and saying both says neither.
+            // A choice and `--text` cannot be combined.
             &["amx", "answer", "fix-a1b", "2", "--text", "2"],
-            // A note rides beside a choice, and there is no choice here.
+            // `--note` needs a choice to go with.
             &["amx", "answer", "fix-a1b", "--note", "keep it short"],
             &["amx", "answer", "fix-a1b", "--text", "2", "--note", "short"],
             &["amx", "result", "fix-a1b", "--timeout", "soon"],
-            // One answer is printed as it is: the JSON is the family's.
+            // `--json` is only for `--children`.
             &["amx", "result", "fix-a1b", "--json"],
-            // A wait says which agents, and holds out for a state amx has a
-            // reading for: a word nobody knows is a wait that never ends.
+            // wait needs ids, and `--for` needs a known state.
             &["amx", "wait"],
             &["amx", "wait", "a", "--for", "sleeping"],
-            // An attach says which agent, and the wall answering that is the
-            // one case where naming it too says it twice. Two directions is
-            // no direction, and neither is none of them beside no id.
+            // attach takes an id or exactly one direction.
             &["amx", "attach", "fix-a1b", "--next"],
             &["amx", "attach", "--next", "--prev"],
             &["amx", "attach"],
-            // Going back is a direction of its own, and it is still one.
             &["amx", "attach", "fix-a1b", "--last"],
             &["amx", "attach", "--last", "--waiting"],
-            // A reading of no lines is not a reading.
+            // `--lines` must be a positive number.
             &["amx", "logs", "fix-a1b", "--lines", "0"],
             &["amx", "logs", "fix-a1b", "--lines", "all"],
             &["amx", "stop", "fix-a1b", "--worktree", "burn"],
             &["amx", "resume"],
             &["amx", "resume", "fix-a1b", "--all"],
             &["amx", "resume", "--all", "carry on"],
-            // There is no conversation to copy without one to copy it from,
-            // and an empty turn is not a turn.
+            // fork needs an id, and an empty task is refused.
             &["amx", "fork"],
             &["amx", "fork", "fix-a1b", "  "],
             &["amx", "_exit", "fix-a1b"],
@@ -1534,15 +1393,14 @@ mod tests {
         assert_eq!(args.task, None, "the file is where the task is");
         assert_eq!(args.file.as_deref(), Some(Path::new("brief.md")));
 
-        // A dash is stdin, which is a file the shell holds open rather than
-        // one with a name.
+        // `-` is stdin.
         let cli = parse(&["amx", "new", "--file", "-"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
         assert_eq!(args.file.as_deref(), Some(Path::new("-")));
 
-        // A command is the row's task, so a command out of a file is one too.
+        // `--exec` reads its command from the file too.
         let cli = parse(&["amx", "new", "--exec", "--file", "release.sh"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1550,7 +1408,7 @@ mod tests {
         assert!(args.exec);
         assert_eq!(args.file.as_deref(), Some(Path::new("release.sh")));
 
-        // Two tasks is not a task: which of them was meant has to be said.
+        // A typed task and `--file` together are refused, as is `--file` with no path.
         for argv in [
             &["amx", "new", "port the importer", "--file", "brief.md"][..],
             &["amx", "new", "--file"],
@@ -1568,15 +1426,14 @@ mod tests {
         assert!(args.edit);
         assert_eq!(args.task, None, "the editor is where the task is");
 
-        // A command out of an editor is a task out of an editor, the same way
-        // `--exec --file` is.
+        // `--exec` takes its command from the editor too.
         let cli = parse(&["amx", "new", "--exec", "--edit"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
         };
         assert!(args.exec && args.edit);
 
-        // Two tasks is not a task, and no task at all is still none.
+        // Two sources of a task are refused, and so is none.
         for argv in [
             &["amx", "new", "port the importer", "--edit"][..],
             &["amx", "new", "--edit", "--file", "brief.md"],
@@ -1602,7 +1459,7 @@ mod tests {
         };
         assert_eq!(file.as_deref(), Some(Path::new("-")));
 
-        // A message typed beside a file is two messages, which is none.
+        // A typed message and `--file` together are refused.
         for argv in [
             &[
                 "amx",
@@ -1642,31 +1499,26 @@ mod tests {
         std::fs::write(&brief, "fix the login bug\n").unwrap();
         assert_eq!(text_of(&brief).unwrap(), "fix the login bug");
 
-        // One newline, the one every editor writes at the end. Anything else
-        // inside the file is the task as it was written.
+        // Only the one final newline is removed.
         std::fs::write(&brief, "fix the login bug\n\n").unwrap();
         assert_eq!(text_of(&brief).unwrap(), "fix the login bug\n");
         std::fs::write(&brief, "  fix the login bug").unwrap();
         assert_eq!(text_of(&brief).unwrap(), "  fix the login bug");
 
-        // A file with nothing in it is an empty task, and an empty task is
-        // refused wherever it was typed.
+        // An empty file is an empty task.
         for written in ["", "\n", "  \n"] {
             std::fs::write(&brief, written).unwrap();
             assert!(text_of(&brief).is_err(), "{written:?}");
         }
 
-        // And a file that is not there is named, because the name is what was
-        // mistyped.
+        // A missing file is named in the error.
         let refusal = text_of(&dir.path().join("nothing.md")).unwrap_err();
         assert!(refusal.contains("nothing.md"), "{refusal}");
     }
 
     #[test]
     fn clibatch_text_written_somewhere_else_is_read_the_way_a_files_text_is() {
-        // The reading [`text_of`] does once the file is read, which is what an
-        // editor's answer goes through too: one trailing newline off, and an
-        // empty task refused wherever it was written.
+        // What `text_of` does after reading, and what `new --edit` reuses.
         assert_eq!(a_text("fix the login bug\n").unwrap(), "fix the login bug");
         assert_eq!(
             a_text("fix the login bug\n\n").unwrap(),
@@ -1683,8 +1535,7 @@ mod tests {
 
     #[test]
     fn clibatch_a_task_reaches_the_vendor_as_it_was_typed() {
-        // Only wholly empty is refused. What is inside a task is the person's
-        // business, and amx tidying up their prompt for them is not a service.
+        // Only an empty task is refused; a task is never trimmed.
         let cli = parse(&["amx", "new", "  fix the login bug\n"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1699,16 +1550,13 @@ mod tests {
         let cli = parse(&["amx", "statusline"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Statusline)));
 
-        // It is typed once, into somebody's own tmux config, and never again.
-        // Hiding it would leave the one verb people have to be told about as
-        // the only one they cannot find in `amx --help`.
+        // It goes into a tmux config once, so it has to be findable in help.
         let listed = Cli::command()
             .get_subcommands()
             .any(|verb| verb.get_name() == "statusline" && !verb.is_hide_set());
         assert!(listed, "statusline is not in help");
 
-        // It takes nothing: what it prints is the same for everyone, and a
-        // dial here would be one more thing to get wrong inside a config file.
+        // It takes no arguments.
         assert_eq!(code(&["amx", "statusline", "fix-a1b"]), exit::USAGE);
     }
 
@@ -1731,8 +1579,7 @@ mod tests {
             );
         }
 
-        // Which shell is the whole of what it takes, and a shell amx cannot
-        // write for is better said than guessed at.
+        // The shell is required, and an unsupported one is refused.
         assert_eq!(code(&["amx", "completion"]), exit::USAGE);
         assert_eq!(code(&["amx", "completion", "nushell"]), exit::USAGE);
     }
@@ -1741,9 +1588,7 @@ mod tests {
     fn completion_offers_every_verb_a_person_can_type_and_none_of_the_others() {
         use clap_complete::Shell;
 
-        // The four amx runs against itself are kept out of help because they
-        // are not typed by hand, and a completion that types them for you is
-        // help by another name.
+        // The underscore verbs are hidden from help, so completion leaves them out too.
         for shell in [
             Shell::Bash,
             Shell::Elvish,
@@ -1767,20 +1612,18 @@ mod tests {
         }
     }
 
-    /// clap's own contract check: the derived surface is internally consistent
-    /// (no duplicate names, no conflicting short flags).
+    /// clap's own consistency check: no duplicate names or conflicting flags.
     #[test]
     fn the_surface_is_well_formed() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
     }
 
-    /// What amx says about itself: the README somebody reads before they run
-    /// it, and the skill an agent is given instead of reading anything.
+    /// The documents that describe the command line.
     const README: &str = include_str!("../README.md");
     const SKILL: &str = include_str!("../skill/amx/SKILL.md");
 
-    /// Every verb, as `amx --help` lists them, with the flags each one takes.
+    /// Every verb `amx --help` lists, with its long flags.
     fn listed_verbs() -> Vec<(String, Vec<String>)> {
         use clap::CommandFactory;
         Cli::command()
@@ -1798,8 +1641,7 @@ mod tests {
             .collect()
     }
 
-    /// Every verb amx answers to at all, the three it keeps out of help
-    /// included.
+    /// Every verb, hidden ones included.
     fn every_verb() -> Vec<String> {
         use clap::CommandFactory;
         Cli::command()
@@ -1808,13 +1650,11 @@ mod tests {
             .collect()
     }
 
-    /// Every key the view binds, read out of the table its `?` overlay is
-    /// drawn from.
+    /// Every key the view binds, read as text out of the table its `?` overlay
+    /// is drawn from.
     ///
-    /// That table belongs to the view and is not public to the rest of the
-    /// crate, so it is read as text. What pays for the parser is the length the
-    /// table declares: a table this cannot read comes back the wrong length and
-    /// says so, rather than quietly agreeing with whatever the README claims.
+    /// The table is private to the view. Checking the declared length makes a
+    /// change of shape fail here instead of passing quietly.
     fn keys_the_view_binds() -> Vec<&'static str> {
         let source = include_str!("tui/paint/help.rs");
         let (_, table) = source
@@ -1823,7 +1663,7 @@ mod tests {
         let (count, table) = table.split_once("] = [").expect("how many keys it holds");
         let (table, _) = table.split_once("\n];").expect("the end of it");
 
-        // Two literals to an entry, the key and then what it does.
+        // Two literals per entry: the key, then what it does.
         let written: Vec<&str> = table.split('"').skip(1).step_by(2).collect();
         let keys: Vec<&str> = written.into_iter().step_by(2).collect();
         assert_eq!(
@@ -1834,19 +1674,17 @@ mod tests {
         keys
     }
 
-    /// The verbs a document puts in a command line, read out of its code
-    /// alone: prose says `amx` about the program itself, and only code says it
-    /// about something a person can type.
+    /// The verbs a document uses in code spans and fences; prose is skipped.
     fn verbs_named_in(text: &str) -> Vec<String> {
         let mut named = Vec::new();
         for (at, chunk) in text.split("```").enumerate() {
             let code: Vec<&str> = match at % 2 == 1 {
                 true => vec![chunk],
-                // Outside a fence, the code is whatever is between backticks.
+                // Outside a fence, only what is between backticks.
                 false => chunk.split('`').skip(1).step_by(2).collect(),
             };
             for line in code.iter().flat_map(|code| code.lines()) {
-                // A comment inside a fence is prose that happens to be in one.
+                // A shell comment inside a fence is prose.
                 let line = line.split('#').next().unwrap_or_default();
                 for after in line.split("amx ").skip(1) {
                     let verb: String = after
@@ -1880,8 +1718,7 @@ mod tests {
 
     #[test]
     fn docs_the_readme_names_every_key_the_view_binds() {
-        // A key column may name two keys, and a person looking one of them up
-        // is looking up the one they pressed.
+        // A key column may name two keys; each must be documented.
         for key in keys_the_view_binds().iter().flat_map(|key| key.split(' ')) {
             assert!(
                 README.contains(&format!("`{key}`")),
@@ -1900,7 +1737,7 @@ mod tests {
         }
     }
 
-    /// What one verb's help offers, as `amx --help` lists it.
+    /// One verb's short help.
     fn about(verb: &str) -> String {
         use clap::CommandFactory;
         Cli::command()
@@ -1912,9 +1749,7 @@ mod tests {
 
     #[test]
     fn docs_the_help_for_answer_offers_the_grammar_the_verb_reads() {
-        // The one verb whose help has to be a grammar rather than a sentence:
-        // what it takes is not guessable, and getting it wrong types something
-        // at an agent that cannot be taken back.
+        // answer's short help must list the grammar the verb accepts.
         let (_, offered) = about("answer")
             .split_once(": ")
             .map(|(said, grammar)| (said.to_string(), grammar.to_string()))
@@ -1946,8 +1781,7 @@ mod tests {
 
     #[test]
     fn docs_the_help_and_the_readme_count_the_checks_doctor_makes() {
-        // Both of them write the number out, so both go stale silently. What
-        // is in the findings does not change how many checks are made of them.
+        // Both spell the number out, so both go stale without this.
         let checks = crate::verbs::doctor::report(&crate::verbs::doctor::Findings {
             tmux: None,
             vendor: String::new(),
@@ -1955,9 +1789,7 @@ mod tests {
             config: PathBuf::new(),
             config_warnings: Vec::new(),
             home: PathBuf::new(),
-            // One agent's wiring, so that `hooks` is among the kinds of
-            // check counted below: a machine with no agent installed is a
-            // machine the `agent` check is already red about.
+            // One agent, so the `hooks` check is counted.
             wirings: vec![crate::verbs::doctor::VendorWiring {
                 vendor: "claude",
                 hooks: None,
@@ -1971,10 +1803,7 @@ mod tests {
             state_error: None,
             dirty_handoffs: Vec::new(),
             parked: Vec::new(),
-            // The counted checks are the ones every machine is asked. The
-            // server check is asked only where there is a server to ask about,
-            // and the trust check only where doctor was pointed at a
-            // directory, so both are deliberately absent here.
+            // The server and folder-trust checks are conditional and not counted.
             server: None,
             store: None,
             stale: Vec::new(),
@@ -1983,9 +1812,7 @@ mod tests {
             orphan_trees: Vec::new(),
             zeroed: Vec::new(),
         });
-        // The kinds of check, not the lines: `hooks` is asked once per agent
-        // this machine has, so a person with claude and pi reads ten lines
-        // and is still asked the same ten things.
+        // Count kinds of check, not lines: `hooks` repeats per agent.
         let kinds: std::collections::BTreeSet<&str> = checks.iter().map(|c| c.name).collect();
         let counted = [
             "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -2014,9 +1841,7 @@ mod tests {
 
     #[test]
     fn docs_neither_document_names_a_verb_amx_does_not_have() {
-        // The other half of parity, and the half that rots quietly: a command
-        // line somebody copies out of the README fails at the shell, and one an
-        // agent copies out of the skill fails where nobody is reading.
+        // A command copied from either document must name a real verb.
         let verbs = every_verb();
         for (document, text) in [("README", README), ("skill", SKILL)] {
             for named in verbs_named_in(text) {
@@ -2049,8 +1874,7 @@ mod tests {
 
     #[test]
     fn docs_the_skill_teaches_the_loop() {
-        // The exit codes are the whole interface a caller has, so a skill that
-        // leaves one out is one that meets it unprepared.
+        // Every exit code is documented in the skill.
         for code in [
             exit::OK,
             exit::FAILURE,
@@ -2064,9 +1888,7 @@ mod tests {
             );
         }
 
-        // The question arrives during the wait and comes back where the answer
-        // would have been. A caller that does not know to read it there has
-        // nothing to answer with.
+        // The loop the skill teaches: start, wait, answer, send, stop.
         for taught in [
             "amx new",
             "amx result",
@@ -2082,8 +1904,8 @@ mod tests {
         }
     }
 
-    /// Every state a record can hold. A match rather than a list, so a state
-    /// added to the enum stops this compiling until it is here too.
+    /// Every state a record can hold. The exhaustive match stops this compiling
+    /// when a state is added.
     fn every_phase() -> Vec<Phase> {
         let all = [
             Phase::Starting,
@@ -2110,7 +1932,7 @@ mod tests {
         all.to_vec()
     }
 
-    /// The paragraph of a document that opens with these words.
+    /// The paragraph of a document that starts with `opening`.
     fn paragraph<'a>(text: &'a str, opening: &str) -> &'a str {
         let (_, from) = text
             .split_once(opening)
@@ -2120,8 +1942,7 @@ mod tests {
 
     #[test]
     fn docs_the_readme_listing_says_the_words_ls_prints() {
-        // The first thing the README shows is a listing, and a person holds
-        // their own `amx ls` against it.
+        // Every row of the README's sample listing uses a word `ls` prints.
         let (_, listing) = README.split_once("$ amx ls\n").expect("a listing");
         let (listing, _) = listing.split_once("```").expect("the end of it");
         let printed: Vec<&str> = every_phase().into_iter().map(Phase::word).collect();
@@ -2143,9 +1964,7 @@ mod tests {
                 "the README's states leave out `{}`",
                 phase.as_str()
             );
-            // The JSON says the state and the table says the word, and where
-            // those differ a program reading one and a person the other are
-            // told two things unless the README says which is which.
+            // Where the table's word differs from the JSON state, the README says so.
             if phase.word() != phase.as_str() {
                 assert!(
                     said.contains(&format!("`{}` as `{}`", phase.as_str(), phase.word())),
@@ -2159,9 +1978,7 @@ mod tests {
 
     #[test]
     fn docs_both_exit_tables_name_every_verb_that_exits_2() {
-        // Every verb with a refusal that returns `exit::BLOCKED`, by a read
-        // of src/verbs: a caller branching on 2 has to know which verbs can
-        // hand it one.
+        // Every verb that can return `exit::BLOCKED`, from a read of src/verbs.
         let blocking = [
             "answer",
             "fork",
@@ -2220,8 +2037,7 @@ mod tests {
 
     #[test]
     fn docs_ls_dir_is_called_a_directory_filter() {
-        // It narrows one reading and keeps nothing apart: another run's agent
-        // under the same directory is in it too.
+        // It filters one listing and does not isolate runs from each other.
         use clap::CommandFactory;
         let dir = Cli::command()
             .find_subcommand("ls")
