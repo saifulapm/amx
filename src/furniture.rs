@@ -1,172 +1,120 @@
-//! The vendor's own furniture, told apart from an agent's work.
+//! The vendor's chrome (composer box, statusline, mode footer, spinner line),
+//! told apart from the agent's output above it.
 //!
-//! One pane, two authors: the transcript rows an agent earned, and the chrome
-//! the vendor draws under them — composer box, statusline, mode footer, the
-//! spinner of a running turn. Two surfaces read a captured pane and neither
-//! wants the furniture: the card the view floats over an agent, and `amx
-//! logs` printing a screen into somebody's terminal. The walk lives here so
-//! the two cannot drift apart.
-//!
-//! The walk is here; what it walks over is not. Every anchor it steps on is
-//! one vendor's own glyph, measured off that vendor and written down in its
-//! screens document beside the rules that follow the same law — see
-//! `assets/screen-rules.toml`. A pane whose vendor amx has measured no chrome
-//! for keeps every row it has.
+//! The card and `amx logs` both cut the chrome off a captured pane and share
+//! this walk. Every anchor it steps on is one vendor's own glyph, read from
+//! the `[furniture]` table of that vendor's screens document. A vendor with no
+//! measured chrome keeps every row.
 
 use serde::Deserialize;
 
-/// The anchors that find one vendor's chrome, and the caps that keep the walk
-/// off the transcript above it.
+/// Anchors that find one vendor's chrome, and caps that keep the walk off the
+/// transcript above it.
 ///
-/// The `[furniture]` table of a vendor's screens document. A document that
-/// leaves it out has none of this measured, which is not the same as a vendor
-/// that draws nothing: it is amx not knowing, and the whole screen is then the
-/// right answer.
+/// The `[furniture]` table of a screens document. A document without one has
+/// nothing measured, and the whole screen is kept.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Furniture {
-    /// What the vendor's mode footer opens with, any one of them. The last row
-    /// of every pane it has the room to draw one in, and the anchor the whole
-    /// walk hangs off.
+    /// Openings of the mode footer, any one of them. The walk hangs off this
+    /// row.
     pub mode: Vec<String>,
-    /// The fragments the vendor's turn spinner always carries, all of them on
-    /// the one row. What tells the line a running turn spins from the line it
-    /// leaves behind when the turn is over.
+    /// Fragments the spinner line of a running turn always carries, all on one
+    /// row. They tell it from the line left behind once the turn is over.
     pub spinner: Vec<String>,
-    /// The frames the vendor pulses in front of that line's message, any one
-    /// of them and at the head of the row.
-    ///
-    /// The other way to find the same row, for a vendor that has more than one
-    /// thing to say on it: pi draws a single status line and swaps out which
-    /// of four messages is on it — one of them an extension's to write — so
-    /// there is no fragment all four carry and the frame is the whole of what
-    /// they share. A vendor whose message is fixed names fragments instead and
-    /// leaves this out.
-    #[serde(default)]
-    pub frames: Vec<String>,
-    /// The row the vendor draws while a model reasons and the reasoning is
-    /// hidden, whole and trimmed, any one of them. pi with `hideThinkingBlock`
-    /// draws `Thinking...` and nothing else of the run until text or a tool
-    /// row follows it (2026-09-18, 0.85.1): while that row is the last thing
-    /// above the spinner the turn is thinking, and once anything is under it
-    /// the thinking is over. A vendor that draws no such row leaves this out.
-    #[serde(default)]
-    pub thinking: Vec<String>,
-    /// The rule the vendor draws its composer's box with.
-    pub rule: char,
-    /// How many rows of statusline the walk will step over to reach the
-    /// composer's bottom border.
-    pub statusline: usize,
-    /// How many rows the composer's bottom border can take.
-    pub bottom: usize,
-    /// What a row the vendor draws UNDER its mode footer opens with, after
-    /// whatever it indents by, any one of them. The footer is the last row of
-    /// most panes and not of all of them: a vendor that reports on the agents
-    /// a turn started puts them below it.
-    #[serde(default)]
-    pub beneath: Vec<String>,
-    /// How many such rows, blank ones counted, the walk will step over from
-    /// the bottom before it must meet the footer. The cap on a step taken by
-    /// position, the same as `statusline` is on its own.
-    #[serde(default)]
-    pub panel: usize,
-    /// The fragments the row directly above the composer's top border carries,
-    /// where the vendor draws one there. Not every screen has it, so it is a
-    /// row the walk steps over when it is there rather than one it requires.
-    #[serde(default)]
-    pub hint: Vec<String>,
-    /// What the row the vendor draws between its spinner line and the
-    /// composer opens with, after whatever it indents by, any one of them. A
-    /// row the walk steps over on its way to the spinner when it is there.
-    #[serde(default)]
-    pub tip: Vec<String>,
-    /// What the row the vendor leaves behind when somebody cuts a turn short
-    /// in its own pane opens with, after whatever it indents by, any one of
+    /// Frames the vendor pulses at the head of its spinner line, any one of
     /// them.
     ///
-    /// Nothing is sent when a person presses esc, so this row is the only
-    /// account of that turn ending there is — see [`crate::derive`]. A vendor
-    /// that leaves no such row leaves this out, and amx waits the way it
-    /// always did.
+    /// For a vendor whose message varies: pi swaps between four messages on
+    /// one status line, one of them written by an extension, so the frame is
+    /// all they share. A vendor with a fixed message names `spinner` instead.
+    #[serde(default)]
+    pub frames: Vec<String>,
+    /// Whole, trimmed rows the vendor draws while hidden reasoning runs, any
+    /// one of them. pi 0.85.1 with `hideThinkingBlock` draws `Thinking...`
+    /// until text or a tool row follows it.
+    #[serde(default)]
+    pub thinking: Vec<String>,
+    /// The character the composer box is drawn with.
+    pub rule: char,
+    /// Most statusline rows the walk steps over to reach the composer.
+    pub statusline: usize,
+    /// Most rows the composer's bottom border can take.
+    pub bottom: usize,
+    /// Openings, after indent, of rows the vendor draws under its mode footer.
+    /// claude 2.1.270 lists the agents a turn started there.
+    #[serde(default)]
+    pub beneath: Vec<String>,
+    /// Most rows under the footer, blank ones included, the walk steps over.
+    #[serde(default)]
+    pub panel: usize,
+    /// Fragments of the optional row directly above the composer's top border.
+    #[serde(default)]
+    pub hint: Vec<String>,
+    /// Openings, after indent, of the optional row between the spinner line
+    /// and the composer.
+    #[serde(default)]
+    pub tip: Vec<String>,
+    /// Openings, after indent, of the row the vendor leaves when a turn is cut
+    /// short in its own pane.
+    ///
+    /// No hook fires on esc, so this row is the only record of that turn
+    /// ending. See [`crate::derive`].
     #[serde(default)]
     pub interrupted: Vec<String>,
-    /// What the vendor's mode footer carries while it still has a shell of its
-    /// own running, any one of them.
+    /// Fragments of the mode footer while the vendor still runs a shell of its
+    /// own, any one of them.
     ///
-    /// Not part of the walk: the footer is one row whatever is on its tail.
-    /// This is the one thing on a screen that says a count a hook wrote is
-    /// still true — see [`crate::derive`] and [`crate::store::State`]'s
-    /// `background`. A vendor that says nothing about its shells leaves this
-    /// out, and a reader asked about one is told it cannot say.
+    /// Not part of the walk. This is what says the background count a hook
+    /// wrote is still true. Empty means the vendor never says, and
+    /// [`Furniture::shells_running`] answers `None`.
     #[serde(default)]
     pub shells: Vec<String>,
-    /// Tails the vendor puts on its mode footer that are hints about a key
-    /// rather than counts of anything running, any one of them. Taken off the
-    /// footer before `shells` is matched, so a separator a hint brings with
-    /// it is not read as a shell's.
+    /// Footer tails that are key hints rather than counts, any one of them.
+    /// Removed before `shells` is matched, so a hint's separator is not read
+    /// as a shell.
     #[serde(default)]
     pub footer_hints: Vec<String>,
 }
 
-/// The vendor's own furniture, cut off the bottom of a capture.
-///
-/// The door the surfaces that print a pane come through, and the anchors come
-/// with them: the record says which vendor was started in the pane, so the
-/// walk is handed that vendor's own glyphs rather than whichever document the
-/// binary happens to bundle first.
+/// The rows of a capture above the vendor's chrome. See [`Furniture::cut`].
 pub fn cut<'a, 'b>(furniture: &Furniture, rows: &'a [&'b str]) -> &'a [&'b str] {
     furniture.cut(rows)
 }
 
 impl Furniture {
-    /// The chrome this vendor draws under every pane it has the room for: the
-    /// row it hangs off the composer's top border, that border, whatever is
-    /// staged in the box, the composer's bottom border, the statusline, the
-    /// mode footer, and whatever the vendor draws below that footer. None of
-    /// it is the agent's work, and all of it stands between a person and the
-    /// rows they opened the card to read.
+    /// The rows above the vendor's chrome: the hint row over the composer, the
+    /// composer box and whatever is staged in it, the statusline, the mode
+    /// footer, any panel under it, and the spinner line of a running turn.
     ///
-    /// **Read from the bottom, and every step capped.** A rule that found the
-    /// last footer row and cut everything below it reads the same and is not:
-    /// an agent that quotes a mode footer — `amx send` delivers captures of
-    /// other panes — and then stops on a permission prompt would have the
-    /// quotation found as the anchor and the prompt cut out from under it.
-    /// From the bottom a quotation is unreachable, because a screen with a
-    /// real prompt on it does not end in a footer. Where a step meets a shape
-    /// it was not measured against it gives back what it cut by position and
-    /// keeps what it cut by an anchor, so what a wrong number costs is
-    /// furniture left on the screen and never a row of work taken off it.
-    ///
-    /// claude's numbers were measured against a live 2.1.237 on 2026-08-21 at
-    /// 100, 30, 24, 23, 22, 21 and 20 columns and at pane heights 30, 12, 10,
-    /// 9 and 8, with the composer empty and with three and ten rows staged in
-    /// it — see the document they are written in.
+    /// The walk goes up from the bottom and every step is capped. From the
+    /// bottom, a quoted footer higher up (a capture delivered by `amx send`,
+    /// say) is never taken for the anchor. A step that meets a shape it was not
+    /// measured against gives back what it took by position and keeps what it
+    /// took by anchor, so a wrong cap leaves chrome on screen and never cuts a
+    /// row of work.
     pub fn cut<'a, 'b>(&self, rows: &'a [&'b str]) -> &'a [&'b str] {
         let at = match self.composer(rows) {
             Ok(at) => at,
             Err(kept) => return &rows[..kept],
         };
 
-        // And the line the vendor spins while a turn runs, which sits above
-        // the box with a blank row between them. A vendor that draws its
-        // working indicator in the top border itself — pi since 0.85.1 —
-        // has already lost it with that border; what this step finds on
-        // such a vendor is the row it keeps up there for a compaction.
+        // Then the spinner line above the box. A vendor that spins in the top
+        // border (pi since 0.85.1) lost it with the border; on pi this finds
+        // the row it keeps there for a compaction.
         match self.above_composer(rows, at) {
             Some(above) if self.spinning(rows[above]) => &rows[..above],
             _ => &rows[..at],
         }
     }
 
-    /// The row the walk finds directly above the composer, blank rows and the
-    /// vendor's hint over its top border stepped over: the one row a vendor
-    /// that spins a line above its box spins it on. `None` where the walk
-    /// finds no composer, or nothing above it.
+    /// The first row with content above the composer, past blanks and the
+    /// hint row: where a vendor that spins a line above its box spins it.
+    /// `None` when the walk finds no composer or nothing above it.
     pub fn spinner_row(&self, rows: &[&str]) -> Option<usize> {
         self.above_composer(rows, self.composer(rows).ok()?)
     }
 
-    /// The first row above `at` with anything on it, past a tip the vendor
-    /// draws under its spinner line.
+    /// The first non-blank row above `at`, past a tip row under the spinner.
     fn above_composer(&self, rows: &[&str], at: usize) -> Option<usize> {
         let row = rows[..at].iter().rposition(|row| !blank(row))?;
         match self.tip_row(rows[row]) {
@@ -175,23 +123,19 @@ impl Furniture {
         }
     }
 
-    /// The walk up from the bottom to the composer's top border: `Ok` with
-    /// how many rows sit above that border and the hint hung off it, or `Err`
-    /// with how many rows to keep where a step gave up before it got there.
+    /// Walks up from the bottom to the composer's top border. `Ok` is the
+    /// index where the chrome starts; `Err` is how many rows to keep when a
+    /// step gave up first.
     fn composer(&self, rows: &[&str]) -> Result<usize, usize> {
-        // Past the blank rows a pane is padded out with, to the last row the
-        // vendor actually drew on.
+        // Skip the blank rows the pane is padded with.
         let mut at = rows.len();
         while at > 0 && blank(rows[at - 1]) {
             at -= 1;
         }
 
-        // The panel a vendor draws under its own footer, which claude 2.1.270
-        // fills with the agents a turn started: a blank row, the main agent,
-        // and one row each for the subagents. Stepped over by position and
-        // capped like every other step of that kind — a panel taller than the
-        // measurement leaves the walk on a row that is no footer, and the
-        // screen is kept whole.
+        // The panel under the footer (claude 2.1.270 lists a turn's agents
+        // there), stepped over by position and capped. A taller panel leaves
+        // the walk on a row that is no footer, and the screen is kept whole.
         let mut under = 0;
         while at > 0
             && !self.mode_footer(rows[at - 1])
@@ -202,24 +146,18 @@ impl Furniture {
             under += 1;
         }
 
-        // The anchor. No footer, no cut: the screens carrying none are the
-        // blocking prompts, the full-screen dialogs, a pane too small for the
-        // vendor to draw its chrome in, and the seconds after a paste — and on
-        // every one of them the whole screen is the right answer. A vendor amx
-        // has measured no footer for carries none anywhere, and keeps every
-        // screen whole for the same reason.
+        // No footer, no cut: blocking prompts, full-screen dialogs, panes too
+        // small for chrome, the moment after a paste and unmeasured vendors all
+        // keep the whole screen.
         if at == 0 || !self.mode_footer(rows[at - 1]) {
             return Err(rows.len());
         }
         at -= 1;
         let footer = at;
 
-        // The statusline, which is whatever somebody configured and is not
-        // always there at all, so it is stepped over by position. The cap is
-        // what keeps the walk off the transcript: claude renders a transient
-        // warning flush against the composer's top border with no blank row
-        // between them, and a walk that ran upward until a blank row would
-        // have eaten it.
+        // The statusline is configurable and may be absent, so it is stepped
+        // over by position. The cap keeps the walk off the transcript: claude
+        // draws transient warnings flush against the composer's top border.
         let mut stepped = 0;
         while at > 0 && !self.rule_row(rows[at - 1]) {
             if stepped == self.statusline {
@@ -240,12 +178,9 @@ impl Furniture {
         }
         let bottom = at;
 
-        // Everything staged in the composer, however many rows of it there
-        // are. The walk is between the box's two borders now, so these rows
-        // are taken by position and never because one was recognised; what
-        // stops it is the top border, which ends in its rule wherever the
-        // label breaks. Reaching the cap means that border was never found,
-        // and a step that cannot find its border gives back what it took.
+        // Whatever is staged in the composer, taken by position until a row
+        // ending in the rule, which is the top border. Hitting the cap means
+        // the border was never found, so give back what was taken.
         let mut typed = 0;
         while at > 0 && !self.ends_in_rule(rows[at - 1]) {
             if typed == rows.len() / 2 {
@@ -258,46 +193,37 @@ impl Furniture {
             return Err(bottom);
         }
 
-        // The composer's top border: the row the scan stopped on, and only it.
+        // The top border.
         at -= 1;
 
-        // The row the vendor hangs off that border with no blank row between
-        // them — claude 2.1.270 right-aligns its effort there. It is the
-        // vendor's own writing, and it is also what the step below would
-        // otherwise find where it went looking for the spinner.
+        // The hint row hung off the top border with no gap (claude 2.1.270
+        // right-aligns its effort level there).
         if at > 0 && self.hint_row(rows[at - 1]) {
             at -= 1;
         }
         Ok(at)
     }
 
-    /// A row that is the vendor's rule and nothing else, which is what the
-    /// composer's bottom border is. Never a blank row: every character of an
-    /// empty string is a rule, and a blank row is not a border.
+    /// A row of nothing but the rule: the composer's bottom border. A blank
+    /// row is not a border.
     fn rule_row(&self, row: &str) -> bool {
         let drawn = row.trim();
         !drawn.is_empty() && drawn.chars().all(|glyph| glyph == self.rule)
     }
 
-    /// A row the vendor's rule ends. The composer's top border carries a
-    /// right-anchored label, so it is not a rule row — but its last character
-    /// is the rule wherever the label breaks, and that is what makes it
-    /// findable.
+    /// A row ending in the rule. The composer's top border carries a label,
+    /// but its last character is the rule wherever the label breaks.
     fn ends_in_rule(&self, row: &str) -> bool {
         row.trim_end().ends_with(self.rule)
     }
 
-    /// The vendor's mode footer, which is the last row of every pane it has
-    /// the room to draw one in. Read from what the row opens with, so a footer
-    /// the vendor indents is still a footer and a glyph mid-sentence is not.
+    /// Whether the row opens, after indent, like the mode footer.
     fn mode_footer(&self, row: &str) -> bool {
         let drawn = row.trim_start();
         self.mode.iter().any(|opening| drawn.starts_with(opening))
     }
 
-    /// A row of the panel the vendor draws under its mode footer. Read from
-    /// what the row opens with, the same way the footer is, so the indent the
-    /// vendor puts in front of it costs nothing.
+    /// Whether the row opens, after indent, like a panel row under the footer.
     fn beneath_row(&self, row: &str) -> bool {
         let drawn = row.trim_start();
         self.beneath
@@ -305,77 +231,58 @@ impl Furniture {
             .any(|opening| drawn.starts_with(opening))
     }
 
-    /// The row the vendor draws directly above the composer's top border, told
-    /// by any one of the fragments it carries: the row is right-aligned, so
-    /// where it starts is the pane's width and not the vendor's choice.
+    /// Whether the row carries a hint fragment. Matched anywhere, because the
+    /// row is right-aligned and where it starts depends on the pane width.
     fn hint_row(&self, row: &str) -> bool {
         self.hint.iter().any(|fragment| row.contains(fragment))
     }
 
-    /// A row the vendor draws between its spinner line and the composer, read
-    /// from what it opens with across the gap the vendor holds open.
+    /// Whether the row opens, after indent, like a tip row.
     fn tip_row(&self, row: &str) -> bool {
         let drawn = spaced(row.trim_start());
         self.tip.iter().any(|opening| drawn.starts_with(opening))
     }
 
-    /// The line the vendor spins while a turn runs, told apart from the line
-    /// it leaves behind when the turn is over.
+    /// Whether the row is the spinner line of a running turn: it carries every
+    /// `spinner` fragment, or opens with one of the `frames`.
     ///
-    /// Two anchors and either of them finds it: the fragments only the running
-    /// line carries, all of them on the row, and the frames the vendor pulses
-    /// in front of the message, any one of them at the head of it. Which of
-    /// the two a vendor is read by is that vendor's own document to say.
-    ///
-    /// A vendor amx has measured neither for has nothing to find, and an empty
-    /// list of fragments would say every row is one, so it says none is.
+    /// An empty `spinner` list matches no row rather than every row.
     pub fn spinning(&self, row: &str) -> bool {
         let fragments =
             !self.spinner.is_empty() && self.spinner.iter().all(|fragment| row.contains(fragment));
         fragments || self.framed(row)
     }
 
-    /// Whether this vendor's document names a spinning row at all: fragments
-    /// the row carries, or frames it opens with. A vendor measured for neither
-    /// has no line to find, and a reader should not pay for a screen to look.
+    /// Whether this vendor has a spinner line to find at all.
     pub fn spins(&self) -> bool {
         !self.spinner.is_empty() || !self.frames.is_empty()
     }
 
-    /// A row one of the vendor's spinner frames opens. Read from what the row
-    /// opens with, the same way the mode footer is: a frame the vendor indents
-    /// still opens the row, and the same glyph mid-sentence opens nothing.
-    ///
-    /// A run of the vendor's own rule in front of the frame is not the row
-    /// opening: pi 0.85.1 draws its spinner into the composer's top border,
-    /// `── ⠙ Working ───`, and that is the same status line it drew on a row
-    /// of its own before (2026-09-18).
+    /// Whether one of the frames opens the row, past indent and any run of the
+    /// rule. pi 0.85.1 draws its spinner into the composer's top border:
+    /// `── ⠙ Working ───`.
     fn framed(&self, row: &str) -> bool {
         let drawn = self.unruled(row);
         self.frames.iter().any(|frame| drawn.starts_with(frame))
     }
 
-    /// A row with the vendor's rule taken off both ends of it, and the space
-    /// beside the rule with it: what a status line drawn into a border says.
+    /// The row with the rule and the spaces beside it trimmed off both ends.
     pub fn unruled<'a>(&self, row: &'a str) -> &'a str {
         row.trim().trim_matches(self.rule).trim()
     }
 
-    /// Whether this row is the vendor's word for a reasoning run still hidden.
+    /// Whether the row is one of the vendor's hidden-reasoning rows.
     pub fn thinking(&self, row: &str) -> bool {
         let drawn = row.trim();
         self.thinking.iter().any(|label| label == drawn)
     }
 
-    /// Whether this screen is a turn somebody cut short in the pane itself and
-    /// nothing has happened on since.
+    /// Whether the last row of work, chrome cut, is the vendor's marker for a
+    /// turn interrupted in its own pane.
     ///
-    /// The last row the agent earned, chrome cut: the vendor leaves its word
-    /// for an interrupted turn in the transcript, where it stays for as long
-    /// as the session does, so the row being *last* is the whole of what says
-    /// the interrupt is the news rather than a thing that happened an hour
-    /// ago. Anything at all after it — the next prompt somebody typed, the
-    /// answer to it — and this is a screen about something else.
+    /// The marker stays in the transcript for the rest of the session, so only
+    /// its being last makes it current. Anything after it means the screen is
+    /// about something else.
     pub fn cut_by_hand(&self, rows: &[&str]) -> bool {
         if self.interrupted.is_empty() {
             return false;
@@ -390,17 +297,12 @@ impl Furniture {
             .any(|opening| drawn.starts_with(opening))
     }
 
-    /// Whether this screen says the vendor still has a shell of its own
-    /// running, or `None` from a vendor that never says either way.
+    /// Whether the mode footer says the vendor still runs a shell, or `None`
+    /// for a vendor that never says.
     ///
-    /// Read off the mode footer and nowhere else. It is the vendor's own
-    /// chrome, redrawn every frame, so it is about this second — where the
-    /// count on the record is about the second a turn ended, and goes stale
-    /// the moment somebody stops a shell from inside the pane.
-    ///
-    /// The lowest footer on the capture, because the walk finds the footer
-    /// from the bottom and for the reason it does: a screen may quote another
-    /// pane's footer, and a quotation is above the real one.
+    /// The footer is redrawn every frame, so it is current where the count on
+    /// the record dates from the end of the turn. The lowest footer is read,
+    /// because a quoted footer sits above the real one.
     pub fn shells_running(&self, rows: &[&str]) -> Option<bool> {
         if self.shells.is_empty() {
             return None;
@@ -414,25 +316,16 @@ impl Furniture {
     }
 }
 
-/// A row with nothing on it.
 fn blank(row: &str) -> bool {
     row.trim().is_empty()
 }
 
-/// A row with the gaps a vendor holds open written as the spaces they look
-/// like.
+/// The row with non-breaking spaces turned into spaces.
 ///
-/// claude pads its tool-result rows with a NON-BREAKING space — `⎿ \u{a0}` —
-/// so that the glyph and the words after it cannot be split by a wrap. On a
-/// screen, and in anything that captures one, that is a space; to a string
-/// comparison it is not, and the first anchor written across that gap was read
-/// off a live pane by eye and matched nothing at all (2026-09-21). An anchor
-/// is measured or it is nothing, and a character a person cannot see is one
-/// they cannot measure, so the gap is folded before the anchor is tried.
-///
-/// Only where an anchor spans one. The footer and the panel are found by a run
-/// of glyphs with no gap in them, and folding a row nothing is about to read
-/// would be work on every row of every capture.
+/// claude pads tool-result rows with U+00A0 (`⎿ \u{a0}`) so a wrap cannot
+/// split the glyph from its words. Anchors are written with a plain space,
+/// so the row is folded before an anchor that spans such a gap is tried.
+/// Only there: folding every row of every capture is wasted work.
 fn spaced(row: &str) -> String {
     row.replace('\u{a0}', " ")
 }
@@ -441,9 +334,8 @@ fn spaced(row: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A pane of the second vendor's, chrome and all: a composer box drawn
-    /// with `=`, a statusline, and a mode footer opening with a word rather
-    /// than a glyph. Nothing on it is a string claude draws.
+    /// The second vendor's pane: a composer drawn with `=`, a statusline, and
+    /// a mode footer that opens with a word. Nothing on it is claude's.
     const A_SECOND_VENDOR_PANE: &[&str] = &[
         "  It did the thing.",
         "",
@@ -454,8 +346,7 @@ mod tests {
         "  mode: careful",
     ];
 
-    /// The same pane with a turn running on it, which puts the vendor's own
-    /// spinner line above the box.
+    /// The same pane mid-turn, with the spinner line above the box.
     const A_SECOND_VENDOR_MID_TURN: &[&str] = &[
         "  It did the thing.",
         "",
@@ -467,7 +358,7 @@ mod tests {
         "  mode: careful",
     ];
 
-    /// claude's own chrome, transcribed from a live 2.1.237 on 2026-08-21.
+    /// claude 2.1.237 chrome.
     const A_CLAUDE_PANE: &[&str] = &[
         "  Ran the migration.",
         "",
@@ -478,12 +369,9 @@ mod tests {
         "  ⏵⏵ accept edits on (shift+tab to cycle)",
     ];
 
-    /// claude 2.1.270 with a subagent running, transcribed from
-    /// `/tmp/measure-270/c4-bgline-w100.txt` on 2026-09-14 at 100 columns. The
-    /// vendor draws the agents it is running UNDER its own mode footer, so the
-    /// last row of the pane is a subagent's and not the anchor the walk needs,
-    /// and a right-aligned `● high · /effort` sits directly on top of the
-    /// composer's border with no blank row between.
+    /// claude 2.1.270 at 100 columns with a subagent running. The agents are
+    /// listed under the mode footer, and a right-aligned `● high · /effort`
+    /// hint sits on the composer's top border with no blank row between.
     const A_BACKGROUND_LINE_PANE: &[&str] = &[
         "",
         " ▐▛███▛█   Claude Code v2.1.270 ",
@@ -517,10 +405,8 @@ mod tests {
         "  ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens",
     ];
 
-    /// The same vendor a turn later, from `/tmp/measure-270/c8-plan-after.txt`:
-    /// the footer is the last row again, but the hint row is drawn over the
-    /// composer with the spinner of the running turn directly above it and no
-    /// blank row anywhere between the three.
+    /// claude 2.1.270 a turn later: the footer is last again, and the spinner,
+    /// the hint row and the composer touch with no blank row between them.
     const A_PLAN_PANE_AFTER_A_SUBAGENT: &[&str] = &[
         "     │                                                                                             │",
         "     │ Terminal captures of the Claude Code v2.1.270 UI — startup box, transcript, status line and │",
@@ -554,8 +440,7 @@ mod tests {
         "  ⏸ plan mode on (shift+tab to cycle) · /tasks to see subagents · ← 2 agents",
     ];
 
-    /// A pane nobody has typed in yet, from `/tmp/measure-270/2-fresh.txt`:
-    /// the welcome box, the hint row over the composer, and nothing else.
+    /// A fresh claude 2.1.270 pane: the welcome box, the hint row and chrome.
     const A_FRESH_PANE: &[&str] = &[
         "",
         " ▐▛███▛█   Claude Code v2.1.270",
@@ -589,9 +474,7 @@ mod tests {
         "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents  ",
     ];
 
-    /// A pane whose turn is over, from `/tmp/measure-270/4-idle.txt`. This
-    /// vendor draws no hint row on it — which is why the row is measured as
-    /// one the walk looks for rather than one it can count on.
+    /// An idle claude 2.1.270 pane with no hint row.
     const AN_IDLE_PANE: &[&str] = &[
         "",
         " ▐▛███▛█   Claude Code v2.1.270",
@@ -625,11 +508,8 @@ mod tests {
         "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents  ",
     ];
 
-    /// The same live screen as `A_BACKGROUND_LINE_PANE` with the window
-    /// resized, from `/tmp/measure-270/c4-bgline-w54.txt` on 2026-09-14. The
-    /// panel under the footer is three rows here too, and the hint row is
-    /// still drawn; what the width moves is where the vendor breaks its own
-    /// sentences.
+    /// `A_BACKGROUND_LINE_PANE` at 54 columns. The panel and hint row are the
+    /// same; only the wrapping differs.
     const A_BACKGROUND_LINE_AT_54: &[&str] = &[
         "▝▜██████▀  Claude Max",
         "  ▝▝ ▝▝    /tmp/measure-270",
@@ -663,9 +543,8 @@ mod tests {
         "  ◯ general-purpose  Preparing… 49s · ↓ 10.2k tokens",
     ];
 
-    /// The same screen at 40 columns, from
-    /// `/tmp/measure-270/c4-bgline-w40.txt`, where the waiting line wraps
-    /// after `to` and the subagent's row has lost its label.
+    /// At 40 columns: the waiting line wraps and the subagent row loses its
+    /// label.
     const A_BACKGROUND_LINE_AT_40: &[&str] = &[
         "",
         "❯ /btw ",
@@ -699,8 +578,7 @@ mod tests {
         "  ◯ general-purpose 50s · ↓ 10.2k tokens",
     ];
 
-    /// At 30 columns, from `/tmp/measure-270/c4-bgline-w30.txt`: the waiting
-    /// line wraps after `background` and the statusline is elided mid-word.
+    /// At 30 columns: the statusline is elided mid-word.
     const A_BACKGROUND_LINE_AT_30: &[&str] = &[
         "",
         "❯ Use the Task tool to start  ",
@@ -734,9 +612,7 @@ mod tests {
         "  ◯ general-purpose 51s · ↓ ",
     ];
 
-    /// And at 24, from `/tmp/measure-270/c4-bgline-w24.txt`, the narrowest
-    /// pane of the pass: the waiting line takes three rows and the footer has
-    /// nothing left but its glyphs and two words.
+    /// At 24 columns: the waiting line takes three rows.
     const A_BACKGROUND_LINE_AT_24: &[&str] = &[
         "  whole job is to run   ",
         "  the shell command     ",
@@ -770,10 +646,7 @@ mod tests {
         "  ◯ general-purpose 51s ",
     ];
 
-    /// A pane whose turn is over, from `/tmp/measure-270/b6-idle.txt` — the
-    /// same shape as `AN_IDLE_PANE` and taken an hour earlier, except that the
-    /// vendor did draw the hint row on this one. Which is the pair that makes
-    /// the row a step the walk takes where it finds one.
+    /// An idle claude 2.1.270 pane that does draw the hint row.
     const AN_IDLE_PANE_WITH_A_HINT_ROW: &[&str] = &[
         "",
         " ▐▛███▛█   Claude Code v2.1.270",
@@ -813,14 +686,10 @@ mod tests {
 
     #[test]
     fn furniture_reads_an_interrupt_across_the_gap_the_vendor_holds_open() {
-        // Saiful's `tell-me-about-this-f1n`, captured off the live pane on
-        // 2026-09-21. The gap between the glyph and the words is a NON-BREAKING
-        // space, so the anchor first written here — read off a pane by eye,
-        // with two ordinary spaces in it — matched nothing, and the row went on
-        // saying `working` until a quiescent rule timed the prompt out.
-        //
-        // Written as the escape rather than as the character, because the whole
-        // fault was that the two look alike.
+        // Captured off a live claude pane. The gap after the glyph is U+00A0,
+        // so an anchor typed with plain spaces matched nothing and the row
+        // stayed `working` until a quiescent rule timed out. Written as an
+        // escape because the two characters look alike.
         let interrupted = [
             "❯ Tell me about this project",
             "",
@@ -841,8 +710,7 @@ mod tests {
         );
         assert!(claude().cut_by_hand(&interrupted));
 
-        // And the rows above it are tool results wearing the same gap, which
-        // are not interrupts: what makes the last one the news is the word.
+        // Tool results above it carry the same gap and are not interrupts.
         let finished = [
             "● Skill(mem)",
             "  ⎿ \u{a0}Error: Unknown skill: mem. Did you mean new?",
@@ -867,8 +735,7 @@ mod tests {
 
     #[test]
     fn furniture_is_cut_by_the_anchors_its_own_vendor_named() {
-        // The walk is the same walk; every glyph it steps on is the second
-        // vendor's, and claude shares not one of them.
+        // The same walk, with every glyph the second vendor's own.
         assert_eq!(
             second().cut(A_SECOND_VENDOR_PANE),
             ["  It did the thing.", ""]
@@ -885,9 +752,8 @@ mod tests {
 
     #[test]
     fn furniture_one_vendors_anchors_cut_nothing_off_anothers_pane() {
-        // Anchors are not nearly right on somebody else's chrome — they are
-        // absent. The walk finds no footer, and a screen it cannot read the
-        // bottom of keeps every row it has.
+        // Another vendor's anchors are absent from this chrome: no footer is
+        // found and nothing is cut.
         assert_eq!(second().cut(A_CLAUDE_PANE), A_CLAUDE_PANE);
         assert_eq!(
             crate::rules::of("claude")
@@ -899,9 +765,7 @@ mod tests {
 
     #[test]
     fn furniture_a_vendor_nobody_has_measured_keeps_its_whole_screen() {
-        // Which is the floor: amx does not know where this vendor's work ends
-        // and its chrome begins, so it cuts nothing rather than guessing at a
-        // border. Costing furniture on the screen, never a row of work off it.
+        // Nothing measured: cut nothing rather than guess at a border.
         let unmeasured = Furniture::default();
         assert_eq!(unmeasured.cut(A_CLAUDE_PANE), A_CLAUDE_PANE);
         assert_eq!(unmeasured.cut(A_SECOND_VENDOR_PANE), A_SECOND_VENDOR_PANE);
@@ -917,10 +781,8 @@ mod tests {
 
     #[test]
     fn furniture_the_walk_steps_under_the_footer_to_reach_it() {
-        // The footer is no longer the last row this vendor draws: 2.1.270 puts
-        // the agents a turn started under it, a blank row and then one row an
-        // agent. A walk that wanted the footer at the bottom found a subagent
-        // there instead and kept all thirty rows, chrome and all.
+        // claude 2.1.270 lists the agents a turn started under its footer, so
+        // the footer is no longer the last row.
         let kept = claude().cut(A_BACKGROUND_LINE_PANE);
         assert_eq!(kept, &A_BACKGROUND_LINE_PANE[..21]);
         assert_eq!(
@@ -932,10 +794,8 @@ mod tests {
 
     #[test]
     fn furniture_the_walk_cuts_the_hint_row_and_what_is_over_it() {
-        // The hint row sits on the composer's top border with no blank row
-        // between, so the step that looks for the spinner above the box met it
-        // instead and both rows survived onto the card. Above it here is a
-        // running turn's spinner, which goes with it.
+        // The hint row sits on the top border with no gap. The spinner line
+        // above it goes too.
         let kept = claude().cut(A_PLAN_PANE_AFTER_A_SUBAGENT);
         assert_eq!(kept, &A_PLAN_PANE_AFTER_A_SUBAGENT[..23]);
         assert!(
@@ -947,28 +807,20 @@ mod tests {
 
     #[test]
     fn furniture_the_hint_row_is_cut_off_a_pane_with_nothing_above_it() {
-        // Nobody has typed in this one, so what the hint row stands on is the
-        // blank middle of a fresh pane and the welcome box is the whole of the
-        // screen's content.
+        // A fresh pane: the welcome box is all the content.
         assert_eq!(claude().cut(A_FRESH_PANE), &A_FRESH_PANE[..24]);
     }
 
     #[test]
     fn furniture_a_pane_with_no_hint_row_is_cut_where_it_always_was() {
-        // The hint row is a row the walk looks for and never one it requires:
-        // this vendor draws none here, and the cut is the one it made before
-        // the row was measured at all.
+        // No hint row here. The walk looks for one and does not require it.
         assert_eq!(claude().cut(AN_IDLE_PANE), &AN_IDLE_PANE[..25]);
     }
 
     #[test]
     fn furniture_the_narrow_widths_are_cut_where_the_wide_one_is() {
-        // Both of the rows this vendor put where the walk expected none are
-        // drawn at every width it was measured at: three rows of panel under
-        // the footer, and the hint row on the composer's border. So the cut
-        // falls in the same place on all four captures, and the row it leaves
-        // at the bottom is the turn's own last row wherever the width broke
-        // the sentence.
+        // The panel and the hint row are drawn at every width, so the cut falls
+        // in the same place and the waiting line is kept whole.
         for (width, pane) in [
             (54, A_BACKGROUND_LINE_AT_54),
             (40, A_BACKGROUND_LINE_AT_40),
@@ -987,10 +839,7 @@ mod tests {
 
     #[test]
     fn furniture_an_idle_pane_that_does_draw_the_hint_row_loses_it() {
-        // The pane AN_IDLE_PANE is, an hour earlier and with the hint row on
-        // it: the two together are why the row is one the walk steps over
-        // where it finds one rather than one it counts on. Everything the walk
-        // took off the other comes off this one, and the hint row with it.
+        // AN_IDLE_PANE with the hint row drawn: it comes off too.
         let kept = claude().cut(AN_IDLE_PANE_WITH_A_HINT_ROW);
         assert_eq!(kept, &AN_IDLE_PANE_WITH_A_HINT_ROW[..24]);
         assert!(
@@ -1001,10 +850,8 @@ mod tests {
 
     #[test]
     fn furniture_a_panel_taller_than_the_measurement_keeps_the_whole_screen() {
-        // Which is the law the walk is built on paying out again: the rows
-        // under the footer are stepped over by position, and a step that runs
-        // out of room before it finds its anchor gives back everything it took
-        // rather than guessing where the work ends.
+        // The panel is stepped over by position, so one taller than the cap
+        // gives every row back.
         let mut pane = A_CLAUDE_PANE.to_vec();
         pane.extend(std::iter::repeat_n(
             "  ◯ general-purpose  Preparing…  3s",
@@ -1015,10 +862,8 @@ mod tests {
 
     #[test]
     fn furniture_a_footer_hint_is_no_shell_and_a_count_of_agents_is_one() {
-        // claude ends its footer `· ← for agents` in every mode, idle or not,
-        // measured at 2.1.278 on all six (docs/claude-screens.md). That tail
-        // is a hint about a key and says nothing is running. The same place
-        // reads `← 5 agents` while some are, and that is a count.
+        // claude 2.1.278 ends its footer with `· ← for agents` in every mode,
+        // which is a key hint. `← 5 agents` in the same place is a count.
         for footer in [
             "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
             "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
