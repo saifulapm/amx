@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{AMX, Harness};
+use common::{AMX, Harness, git};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -1131,24 +1131,6 @@ fn new_gives_an_agent_its_own_worktree_in_a_repository() {
         "the commit it was cut from"
     );
     assert_eq!(meta["dir"], worktree.to_string_lossy().as_ref());
-}
-
-/// git in a repository the harness made, with none of the developer's own
-/// configuration behind it.
-fn git(repo: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(repo)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("running git");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
 #[test]

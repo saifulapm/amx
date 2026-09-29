@@ -362,30 +362,7 @@ impl Harness {
     pub fn a_repo(&self) -> PathBuf {
         let repo = self.home.path().join("repo");
         std::fs::create_dir_all(&repo).expect("the repository");
-        let git = |args: &[&str]| {
-            let out = Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
-                .env("GIT_AUTHOR_NAME", "amx tests")
-                .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-                .env("GIT_COMMITTER_NAME", "amx tests")
-                .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-                .output()
-                .expect("running git");
-            assert!(
-                out.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.name", "amx tests"]);
-        git(&["config", "user.email", "tests@example.invalid"]);
-        std::fs::write(repo.join("README.md"), "before\n").expect("a file to commit");
-        git(&["add", "README.md"]);
-        git(&["commit", "-m", "first"]);
+        a_repo_at(&repo);
         repo
     }
 
@@ -863,6 +840,111 @@ pub fn something_else_on_the_server(amx: &Harness) {
         "-c",
         "while :; do sleep 0.05; done",
     ]);
+}
+
+/// Run git in `dir` with no global or system config and a fixed identity, and
+/// answer with its stdout, trailing whitespace trimmed.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "amx tests")
+        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
+        .env("GIT_COMMITTER_NAME", "amx tests")
+        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
+/// Make `dir` a git repository on `main` with one commit.
+pub fn a_repo_at(dir: &Path) {
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "amx tests"]);
+    git(dir, &["config", "user.email", "tests@example.invalid"]);
+    std::fs::write(dir.join("README.md"), "before\n").expect("a file to commit");
+    git(dir, &["add", "README.md"]);
+    git(dir, &["commit", "-m", "first"]);
+}
+
+/// `git branch --list` in `repo`.
+pub fn branches(repo: &Path) -> String {
+    git(repo, &["branch", "--list"])
+}
+
+/// Spawn an agent playing `scenario` with a worktree of its own in `repo`, and
+/// answer with the worktree's path.
+pub fn with_a_worktree(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
+    let out = amx
+        .amx_command(&[
+            "new",
+            "--name",
+            id,
+            "--dir",
+            &repo.to_string_lossy(),
+            "--agent",
+            &amx.mock(),
+            "fix the login bug",
+        ])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
+        .output()
+        .expect("running amx new");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    amx.meta(id)["worktree"]
+        .as_str()
+        .expect("a worktree")
+        .to_string()
+}
+
+/// [`with_a_worktree`] played to the end of a turn that finishes.
+pub fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
+    let tree = with_a_worktree(amx, id, repo, "finishes");
+    amx.until_state(id, "done");
+    tree
+}
+
+/// Commit a file in `tree`, so the agent's branch has work main does not.
+pub fn work_on_the_branch(tree: &str, name: &str) {
+    let tree = Path::new(tree);
+    std::fs::write(tree.join(name), "fn login() {}\n").expect("a file to commit");
+    git(tree, &["add", name]);
+    git(tree, &["commit", "-m", "fix the login bug"]);
+}
+
+/// The `pr.json` a forge lookup writes: request `number` on the agent's branch,
+/// merged at the head `tree` stands on now.
+pub fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
+    let head = git(Path::new(tree), &["rev-parse", "HEAD"]);
+    std::fs::write(
+        amx.agent_dir(id).join("pr.json"),
+        json!({
+            "asked": now(),
+            "branch": format!("amx/{id}"),
+            "prs": [{ "number": number, "standing": "merged" }],
+            "merged_heads": [head],
+        })
+        .to_string(),
+    )
+    .expect("writing pr.json");
+}
+
+/// Merge the agent's branch into the checked-out branch of `repo`.
+pub fn merged_by_hand(repo: &Path, id: &str) {
+    git(
+        repo,
+        &["merge", "--no-ff", "-m", "merge", &format!("amx/{id}")],
+    );
 }
 
 /// Where the vendor's stand-in and its scenarios live.

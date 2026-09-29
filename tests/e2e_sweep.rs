@@ -8,11 +8,14 @@
 
 mod common;
 
-use common::Harness;
+use common::{
+    Harness, a_merged_request, an_ended_agent, branches, git, merged_by_hand, with_a_worktree,
+    work_on_the_branch,
+};
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn sweep(amx: &Harness, args: &[&str]) -> Output {
     amx.amx(&[&["sweep"], args].concat())
@@ -39,90 +42,6 @@ fn said(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// git as these tests run it: none of the developer's own configuration, and
-/// an identity of its own for the merges they make.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "amx tests")
-        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-        .env("GIT_COMMITTER_NAME", "amx tests")
-        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn branches(repo: &Path) -> String {
-    git(repo, &["branch", "--list"])
-}
-
-/// An agent with a tree of its own in `repo`, played to the end of `scenario`.
-fn an_agent(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
-    let out = amx
-        .amx_command(&[
-            "new",
-            "--name",
-            id,
-            "--dir",
-            &repo.to_string_lossy(),
-            "--agent",
-            &amx.mock(),
-            "fix the login bug",
-        ])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    amx.meta(id)["worktree"]
-        .as_str()
-        .expect("a worktree")
-        .to_string()
-}
-
-/// An agent that has ended, the ordinary way: it answered and stopped.
-fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
-    let tree = an_agent(amx, id, repo, "finishes");
-    amx.until_state(id, "done");
-    tree
-}
-
-/// What a look at the forge would have written down beside the record: the
-/// request on this agent's branch, that it went in, and the head it was at —
-/// where the tree in `tree` stands now.
-fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
-    let head = git(Path::new(tree), &["rev-parse", "HEAD"])
-        .trim()
-        .to_string();
-    let asked = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("a clock")
-        .as_secs();
-    std::fs::write(
-        amx.agent_dir(id).join("pr.json"),
-        json!({
-            "asked": asked,
-            "branch": format!("amx/{id}"),
-            "prs": [{ "number": number, "standing": "merged" }],
-            "merged_heads": [head],
-        })
-        .to_string(),
-    )
-    .expect("writing pr.json");
-}
-
 /// A `gh` of the test's own, answering every question with `said`, in a
 /// directory to put first on the path.
 ///
@@ -147,23 +66,6 @@ fn an_origin(repo: &Path) -> PathBuf {
     git(repo, &["remote", "add", "origin", &bare.to_string_lossy()]);
     git(repo, &["push", "-q", "origin", "main"]);
     bare
-}
-
-/// A commit of the agent's own, which is what puts its branch somewhere main
-/// is not.
-fn work_on_the_branch(tree: &str, name: &str) {
-    let tree = Path::new(tree);
-    std::fs::write(tree.join(name), "fn login() {}\n").expect("a file to commit");
-    git(tree, &["add", name]);
-    git(tree, &["commit", "-m", "fix the login bug"]);
-}
-
-/// The other way work lands: somebody merged the branch themselves.
-fn merged_by_hand(repo: &Path, id: &str) {
-    git(
-        repo,
-        &["merge", "--no-ff", "-m", "merge", &format!("amx/{id}")],
-    );
 }
 
 #[test]
@@ -377,7 +279,7 @@ fn sweep_ends_an_agent_that_is_somehow_still_running_before_it_takes_the_tree() 
     // sweep arrives. What puts the agent on the list is the record saying the
     // work is over — somebody stopped watching this one a while ago — while
     // the vendor sits in its pane holding the tree open.
-    let tree = an_agent(&amx, "watch-log-c3d", &repo, "works-without-end");
+    let tree = with_a_worktree(&amx, "watch-log-c3d", &repo, "works-without-end");
     amx.until_state("watch-log-c3d", "working");
     let pane = amx.pane_of("watch-log-c3d");
     amx.set_state("watch-log-c3d", json!({ "state": "done" }));

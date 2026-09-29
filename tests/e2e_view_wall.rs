@@ -9,9 +9,9 @@
 mod common;
 
 use common::{
-    Harness, a_pane_showing, agents, bar, card_on, click, clients_on, coloured, coloured_line,
-    finished, foreground, mouse, now, pane_field, press, rgb, sgr_at, text_in, types, until_empty,
-    watching,
+    Harness, a_merged_request, a_pane_showing, agents, an_ended_agent, bar, card_on, click,
+    clients_on, coloured, coloured_line, finished, foreground, git, merged_by_hand, mouse, now,
+    pane_field, press, rgb, sgr_at, text_in, types, until_empty, watching, work_on_the_branch,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -2752,94 +2752,6 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     amx.until("the empty wall", || {
         amx.capture(&view).contains("no agents").then_some(())
     });
-}
-
-/// git as these tests run it: none of the developer's own configuration, and
-/// an identity of its own for the commits and merges they make.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "amx tests")
-        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-        .env("GIT_COMMITTER_NAME", "amx tests")
-        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// An agent with a tree of its own in `repo`, played to the end the ordinary
-/// way: it answered and stopped. The tree it left is where its work is.
-fn an_ended_agent(amx: &Harness, id: &str, repo: &Path) -> String {
-    let out = amx
-        .amx_command(&[
-            "new",
-            "--name",
-            id,
-            "--dir",
-            &repo.to_string_lossy(),
-            "--agent",
-            &amx.mock(),
-            "fix the login bug",
-        ])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    amx.until_state(id, "done");
-    amx.meta(id)["worktree"]
-        .as_str()
-        .expect("a worktree")
-        .to_string()
-}
-
-/// A commit of the agent's own, which is what puts its branch somewhere main
-/// is not.
-fn work_on_the_branch(tree: &str, name: &str) {
-    let tree = Path::new(tree);
-    std::fs::write(tree.join(name), "fn login() {}\n").expect("a file to commit");
-    git(tree, &["add", name]);
-    git(tree, &["commit", "-m", "fix the login bug"]);
-}
-
-/// What a look at the forge would have written down beside the record: the
-/// request on this agent's branch, that it went in, and the head it was at —
-/// where the tree in `tree` stands now.
-fn a_merged_request(amx: &Harness, id: &str, number: u64, tree: &str) {
-    let head = git(Path::new(tree), &["rev-parse", "HEAD"])
-        .trim()
-        .to_string();
-    std::fs::write(
-        amx.agent_dir(id).join("pr.json"),
-        json!({
-            "asked": now(),
-            "branch": format!("amx/{id}"),
-            "prs": [{ "number": number, "standing": "merged" }],
-            "merged_heads": [head],
-        })
-        .to_string(),
-    )
-    .expect("writing pr.json");
-}
-
-/// The other way work lands: somebody merged the branch themselves.
-fn merged_by_hand(repo: &Path, id: &str) {
-    git(
-        repo,
-        &["merge", "--no-ff", "-m", "merge", &format!("amx/{id}")],
-    );
 }
 
 /// The wall the sweep has something to say about: two ended agents with work

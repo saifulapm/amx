@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, branches, with_a_worktree};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -18,33 +18,6 @@ fn said(out: &Output) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// An agent playing a scenario, with a worktree of its own in `repo`.
-fn with_a_worktree(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
-    let out = amx
-        .amx_command(&[
-            "new",
-            "--name",
-            id,
-            "--dir",
-            &repo.to_string_lossy(),
-            "--agent",
-            &amx.mock(),
-            "fix the login bug",
-        ])
-        .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
-        .output()
-        .expect("running amx new");
-    assert!(
-        out.status.success(),
-        "amx new: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    amx.meta(id)["worktree"]
-        .as_str()
-        .expect("a worktree")
-        .to_string()
 }
 
 /// The same, with the vendor's stand-in installed under the name the trust
@@ -129,16 +102,6 @@ fn copies_beside(store: &Path) -> Vec<String> {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with(".claude.json.amx-backup-"))
         .collect()
-}
-
-fn branches(repo: &Path) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(repo)
-        .args(["branch", "--list"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .expect("running git");
-    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[test]

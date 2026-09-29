@@ -2,21 +2,12 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, git, with_a_worktree};
 use serde_json::json;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-
-/// An agent with a worktree of its own in `repo`, and the tree it got.
-fn with_a_worktree(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> PathBuf {
-    started(amx, id, scenario, &["--dir", &repo.to_string_lossy()]);
-    amx.meta(id)["worktree"]
-        .as_str()
-        .expect("a worktree")
-        .into()
-}
 
 /// An agent playing a scenario, started the way a person starts one.
 fn started(amx: &Harness, id: &str, scenario: &str, args: &[&str]) {
@@ -37,24 +28,6 @@ fn started(amx: &Harness, id: &str, scenario: &str, args: &[&str]) {
         "amx new: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// git in a repository the harness made, with none of the developer's own
-/// configuration behind it.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("running git");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
 /// The kinds one agent's lines carry, in the order the stream printed them.
@@ -132,7 +105,12 @@ fn diff_measures_a_record_with_no_base_from_the_branch_it_is_on() {
 fn diff_from_names_the_commit_to_measure_from() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     git(&tree, &["commit", "-am", "the work"]);
 
@@ -160,7 +138,12 @@ fn diff_from_names_the_commit_to_measure_from() {
 fn diff_shows_the_work_including_a_file_git_has_never_heard_of() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
 
     // The agent's own work, while it is still working.
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
@@ -203,7 +186,12 @@ const VIEWER: &str =
 fn diff_at_a_terminal_goes_through_the_viewer_the_config_names() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     amx.config(VIEWER);
 
@@ -220,7 +208,12 @@ fn diff_at_a_terminal_goes_through_the_viewer_the_config_names() {
 fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     amx.config(VIEWER);
     let copy = amx.home().join("viewed.patch");
@@ -252,7 +245,12 @@ fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
     // hundred-file patch scrolling past does not.
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
 
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the new file");
@@ -292,7 +290,12 @@ fn diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
     git(&repo, &["commit", "-am", "second"]);
     let cut_from = git(&repo, &["rev-parse", "HEAD"]);
 
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
     std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the agent's file");
     git(&tree, &["add", "login.rs"]);
     git(&tree, &["commit", "-m", "the agent's own commit"]);
@@ -363,7 +366,12 @@ fn diff_measures_the_agent_that_works_in_the_directory_as_it_is() {
 fn diff_names_the_branch_when_the_tree_is_gone() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    let tree = with_a_worktree(&amx, "fix-login-a1b", &repo, "works-without-end");
+    let tree = PathBuf::from(with_a_worktree(
+        &amx,
+        "fix-login-a1b",
+        &repo,
+        "works-without-end",
+    ));
     std::fs::remove_dir_all(&tree).expect("removing the tree");
 
     let out = amx.amx(&["diff", "fix-login-a1b"]);

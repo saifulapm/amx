@@ -8,8 +8,8 @@
 mod common;
 
 use common::{
-    Harness, agents, bar, coloured, coloured_line, finished, foreground, in_force, pane_field,
-    press, sgr_at, starts_at, types, until_empty,
+    Harness, a_repo_at, agents, bar, coloured, coloured_line, finished, foreground, git, in_force,
+    pane_field, press, sgr_at, starts_at, types, until_empty,
 };
 use serde_json::{Value, json};
 
@@ -107,39 +107,6 @@ fn a_view_that_can_start_claude(amx: &Harness, config: &str) -> String {
     );
     until_empty(amx, &view);
     view
-}
-
-/// Make a directory a git repository with one commit in it, so an agent
-/// started there can be given a tree of its own.
-fn a_repo_at(dir: &std::path::Path) {
-    git(dir, &["init", "-b", "main"]);
-    git(dir, &["config", "user.name", "amx tests"]);
-    git(dir, &["config", "user.email", "tests@example.invalid"]);
-    std::fs::write(dir.join("README.md"), "before\n").expect("a file to commit");
-    git(dir, &["add", "README.md"]);
-    git(dir, &["commit", "-m", "first"]);
-}
-
-/// What git says in that directory, for the tests that have to name a commit
-/// the way the record names it.
-fn git(dir: &std::path::Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "amx tests")
-        .env("GIT_AUTHOR_EMAIL", "tests@example.invalid")
-        .env("GIT_COMMITTER_NAME", "amx tests")
-        .env("GIT_COMMITTER_EMAIL", "tests@example.invalid")
-        .output()
-        .expect("running git");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
 /// The one agent the view started, once its record is whole.
