@@ -54,7 +54,15 @@ the machinery honest against a shape no real entry happens to take.
   setting: the dial is written `<flag> <key>=<value>`, which is codex's
   `-c model_reasoning_effort=high`, and it stands down only for a `-c` that
   already names its own key, since a `-c` for anything else says nothing
-  about this dial.
+  about this dial. `bare` is for a dial whose flag is the whole of it: a
+  closed dial with one value beside the sentinel, written as the flag alone,
+  opencode's `--auto`. `env` is for a model the vendor takes only from a
+  variable: `inject` writes no argv for it, its `flag` is empty, and
+  `vendor::env_dials` gives the pair for a new pane's environment, the
+  variable and `{"<key>":"<value>"}`, standing down when the environment
+  already carries that variable. opencode's model goes into
+  `OPENCODE_CONFIG_CONTENT` as `{"model":"<value>"}`, on `new` only, since a
+  resumed session keeps its own model.
 - **`models`** — where this vendor's models are written down, so that a model
   somebody named can be looked for without anything knowing a vendor's name.
   `Models::Cycle` says the model dial's own cycle is the whole list, which is
@@ -107,9 +115,12 @@ the machinery honest against a shape no real entry happens to take.
   `Hooks`: the file is named on a hook payload and nowhere else, so a vendor
   that reports nothing never puts one on a record.
 - **`hooks`** — which files amx writes and where (the `wire`: `Wire::Plugin`,
-  claude's plugin directory; `Wire::File`, pi's extension; or `Wire::Hooks`,
+  claude's plugin directory; `Wire::File`, pi's extension; `Wire::Hooks`,
   amx's groups merged into a hooks file the vendor and the person share and
-  trusted in the config beside it, which is codex's), the vendor's own name
+  trusted in the config beside it, which is codex's; or `Wire::Placed`, one
+  file of amx's at `path` inside `$<dir_env>`, else `dir` under the home,
+  which is opencode's `plugins/amx/tui.js` in `OPENCODE_CONFIG_DIR` and is
+  installed, read and removed the way a file wire is), the vendor's own name
   for each of the eight moments amx listens for (started, prompted, taken,
   calling, asked, refused, notified, ended), its tool matcher, its question
   tool, its two notification types, the sentence it writes on a permission
@@ -122,8 +133,10 @@ the machinery honest against a shape no real entry happens to take.
   reports nothing, and then install has nothing to wire and leaves the
   machine alone.
 - **`transcript`** — the shape of the conversation file a report names,
-  `Transcript::Claude`, `Transcript::Pi` or `Transcript::Codex` (the rollout
-  jsonl codex appends under `$CODEX_HOME/sessions/`), for
+  `Transcript::Claude`, `Transcript::Pi`, `Transcript::Codex` (the rollout
+  jsonl codex appends under `$CODEX_HOME/sessions/`) or `Transcript::Opencode`
+  (the message list opencode's plugin writes to
+  `$AMX_DIR/opencode-messages.jsonl` at each turn's end), for
   `crate::conversation` to read it by. `None` from a vendor whose file nobody
   has sat down with.
 - **`ends_options`** — the word after which the vendor reads no word as a
@@ -138,6 +151,20 @@ the machinery honest against a shape no real entry happens to take.
   vendor was holding behind the turn back in its composer. pi's does, so
   `amx interrupt` writes them down and `send` refuses to type after them
   until the next prompt.
+- **`prompt_flag`** — the flag a task, a resume's message or a fork's prompt
+  rides on as one `<flag>=<text>` word, for a vendor that reads no bare word
+  as a prompt. opencode's is `--prompt`; `None` from a vendor whose last word
+  is its prompt.
+- **`popups`** — the characters that open a popup in the vendor's composer
+  when they open a word. A message whose last word opens with one gets one
+  trailing space, or the popup takes the Enter. opencode's are `@` and `/`;
+  empty from a vendor whose Enter always sends.
+- **`cancel_presses`** — how many Escapes, 300 ms apart, cut a turn. One for
+  claude, pi and codex; two for opencode, whose first press only arms.
+- **`interrupt_signal`** — the signal `stop` sends the pane's process to end a
+  turn before it ends the pane. opencode's is `SIGUSR2`, which its plugin
+  answers by interrupting the session; `None` from a vendor whose pane is
+  ended as it stands.
 - **`screens`** — the document naming what this vendor's screens look like,
   in the format of `assets/screen-rules.toml`: ordered rules, each built from
   measured anchors, with the capture, the version and the date each anchor
@@ -236,8 +263,8 @@ Started's `source`, Prompted's `prompt`, Calling's `tool_name`, Notified's
 `message`, Ended's `last_assistant_message` — so a key a vendor leaves out
 is a blank there and nothing worse.
 
-A vendor whose wire `listens()` (a `Wire::File`, amx's own code inside the
-vendor) reads what `_hook` prints back: the record's directory, which is how
+A vendor whose wire `listens()` (a `Wire::File` or a `Wire::Placed`, amx's own
+code inside the vendor) reads what `_hook` prints back: the record's directory, which is how
 a pane amx did not start learns where to write `live` and `heartbeat`. A
 settings, plugin or hooks wire is the vendor's own hook runner, and gets
 nothing back: claude puts what a hook prints into the conversation, and codex
@@ -782,7 +809,12 @@ claimed the screen is worth.
    through no hooks declares a start flag, since there is no report coming to
    name the copy's session — declared screens parse, and a vendor that prints
    its models names an argv to print them with that is not empty and opens
-   with a flag. A new entry inherits every one.
+   with a flag, a bare dial is closed with one value beside the sentinel,
+   only a model dial is carried in the environment and then under a key and
+   no flag, a turn is cut in one press or more, and a prompt flag is a flag
+   with no `=` in it. The entries before opencode answer its fields as they
+   behaved before them: no prompt flag, no popups, one press, no signal and
+   no bare or carried dial. A new entry inherits every one.
 4. **Prove the conformance.** `tests/mock_claude/` is a stand-in that replays
    scenarios — hook payloads, transcripts, screens — against the real tmux.
    A second vendor's harness takes the same shape: a fake that speaks the
