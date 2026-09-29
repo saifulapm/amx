@@ -454,10 +454,8 @@ fn read_transcript(
     view: &View,
     ask: fn(crate::vendor::Transcript, &str) -> Option<String>,
 ) -> Option<String> {
-    let path = view.meta.transcript.as_ref()?;
-    let text = std::fs::read_to_string(path).ok()?;
     let format = crate::conversation::format_of(view.meta.agent.as_deref().unwrap_or_default())?;
-    ask(format, &text)
+    ask(format, &Agent::transcript_tail(&view.meta)?)
 }
 
 #[cfg(test)]
@@ -868,6 +866,48 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn result_reads_the_answer_off_the_end_of_a_long_transcript() {
+        let root = tempfile::TempDir::new().unwrap();
+        let kept = tempfile::TempDir::new().unwrap();
+        let transcript = kept.path().join("session.jsonl");
+        let mut text = String::new();
+        for n in 0..2_000 {
+            let filler = "x".repeat(100);
+            text.push_str(&format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":\"step {n} {filler}\"}}}}\n"
+            ));
+        }
+        text.push_str(concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":",
+            "[{\"type\":\"text\",\"text\":\"the login bug is fixed\"}]}}\n",
+        ));
+        std::fs::write(&transcript, text).unwrap();
+
+        a_family_with_a_question(root.path());
+        let agent = Agent::open(root.path(), "scout-c3d").unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .update_meta(|meta| meta.transcript = Some(transcript.clone()))
+            .unwrap();
+        writer.append(&Event::new(TURN_END, json!({}))).unwrap();
+        writer
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.question = None;
+                state.options.clear();
+            })
+            .unwrap();
+        drop(writer);
+
+        let mut out = Vec::new();
+        let code = run(root.path(), "scout-c3d", None, false, &mut out).unwrap();
+        assert_eq!(
+            (code, String::from_utf8(out).unwrap()),
+            (exit::OK, "the login bug is fixed\n".to_string())
         );
     }
 
