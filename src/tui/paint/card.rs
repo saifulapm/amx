@@ -28,12 +28,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use super::input::{COMPOSER_CAP, behind, rows_of, typed_rows};
+use super::input::{COMPOSER_CAP, behind, composer_lines, rows_of, typed_rows};
 use super::prose;
 use super::style::{bold, colour, dim, request_colour};
 use super::text::{RULE, SEPARATOR, fit, inert, width_of};
@@ -868,19 +868,17 @@ pub(super) fn card_rows(
     answering: Option<&Composer>,
     width: u16,
 ) -> u16 {
-    let inner = width;
-    let asked = card
-        .question
-        .as_deref()
-        .map_or(0, |question| wrapped(question, inner).min(ASKED_TALL));
-    let listed = choices(&card.options, inner as usize, boxed(showing)).len();
+    let asked = card.question.as_deref().map_or(0, |question| {
+        asked_rows(question, width).len().min(ASKED_TALL)
+    });
+    let listed = choices(&card.options, width as usize, boxed(showing)).len();
     // Counted no further than the card could ever grow: the body can be a
     // patch of thousands of rows, and this runs on every frame.
     let shown = length(card).min(CARD_TALL as usize);
 
     let rows = RULE_ROW
         + usize::from(!prs.is_empty())
-        + asked as usize
+        + asked
         + usize::from(tab(showing).is_some())
         + listed
         + usize::from(added(card, showing).is_some())
@@ -965,7 +963,7 @@ fn shells_running(n: u32) -> String {
 
 /// How many rows of a wrapped question the card gives before it stops: the
 /// words of it a person needs to decide, with the pane underneath for the rest.
-const ASKED_TALL: u16 = 3;
+const ASKED_TALL: usize = 3;
 
 /// The card: its rule, what its branch has open, which question of the call
 /// this is, what one agent is asking, the choices it offers, the row the vendor
@@ -1060,12 +1058,15 @@ pub(super) fn float(
     // anything draws them. ratatui would *delete* the invisible format
     // characters on its own, which is exactly the wrong treatment — deleting
     // a zero-width lets one choice wear another's spelling.
-    let question = card.question.as_deref().map(inert);
+    let question = card
+        .question
+        .as_deref()
+        .map(|question| asked_rows(question, said.width));
     let options: Vec<String> = card.options.iter().map(|option| inert(option)).collect();
     let asked = take(
         question
-            .as_deref()
-            .map_or(0, |question| wrapped(question, said.width).min(ASKED_TALL)),
+            .as_ref()
+            .map_or(0, |rows| rows.len().min(ASKED_TALL) as u16),
     );
     // Which question of the call this is comes before the choices, because it
     // decides what the choices mean: the tab behind this one asks something
@@ -1125,11 +1126,10 @@ pub(super) fn float(
     if let Some(strip) = strip.filter(|_| tabbed > 0) {
         frame.render_widget(Paragraph::new(Line::styled(strip, dim())), tabbing);
     }
-    if let Some(question) = question {
+    if let Some(rows) = question {
+        let lines: Vec<Line> = rows.into_iter().map(Line::raw).collect();
         frame.render_widget(
-            Paragraph::new(question)
-                .wrap(Wrap { trim: true })
-                .style(Style::new().fg(theme.waiting)),
+            Paragraph::new(lines).style(Style::new().fg(theme.waiting)),
             asking,
         );
     }
@@ -1699,21 +1699,10 @@ const RESUME: &str = "resume";
 /// And on one past listening, which is the whole of what would come of it.
 const NOBODY: &str = "nothing is listening";
 
-/// How many rows text takes when it is wrapped to a width, measured in cells:
-/// a wide character is one char and two columns, and a character that does
-/// not fit in what is left of a row starts the next one.
-fn wrapped(text: &str, width: u16) -> u16 {
-    let width = width.max(1) as usize;
-    let (mut rows, mut used) = (1usize, 0);
-    for one in text.chars() {
-        let wide = width_of(one.encode_utf8(&mut [0; 4]));
-        if used > 0 && used + wide > width {
-            rows += 1;
-            used = 0;
-        }
-        used += wide;
-    }
-    rows.min(u16::MAX as usize) as u16
+/// The question, made inert and wrapped at its words into rows `width` cells
+/// wide. Both the row count and the drawing come from this, so they agree.
+fn asked_rows(question: &str, width: u16) -> Vec<String> {
+    composer_lines(&inert(question), width.max(1) as usize)
 }
 
 /// Which rows of a screen the card shows: the last of the `end` rows the body
@@ -3405,6 +3394,28 @@ index e69de29..0000000
             "a choice wider than the card is cut, and says it was"
         );
         assert!(choices(&[], 40, false).is_empty());
+    }
+
+    #[test]
+    fn card_gives_the_question_every_row_its_words_wrap_to() {
+        // 37 characters are two rows of 20 cut anywhere, and three cut at
+        // the spaces.
+        let mut card = asking(&[], None);
+        card.question = Some("reconciliation authentication tokens?".to_string());
+        let screen = drawn(a_fleet(), Some(card), (20, 24));
+        assert!(
+            screen.iter().any(|line| line.trim() == "tokens?"),
+            "{screen:?}"
+        );
+
+        // A newline in the question starts a row of its own.
+        let mut card = asking(&[], None);
+        card.question = Some("Keep it?\nThe port\nneeds one".to_string());
+        let screen = drawn(a_fleet(), Some(card), (40, 24));
+        assert!(
+            screen.iter().any(|line| line.trim() == "needs one"),
+            "{screen:?}"
+        );
     }
 
     #[test]
