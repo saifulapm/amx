@@ -1,42 +1,26 @@
-# The palette amx paints with on a terminal whose background is light.
+# The palette for a terminal with a light background.
 #
-# The same six roles saying the same six things as `default`, at the other end
-# of the contrast. A colour picked to carry on a dark terminal is a colour that
-# dissolves into a white one -- the amber goes to nothing, and the off-black the
-# cursor's bar is painted in takes the row's own text down with it, which is a
-# line of the wall a person cannot read at all. That was the fault: amx over ssh
-# from a phone in light mode, with the cursor's row blank.
+# The same six roles as `default`, with colours that stay readable on white.
+# The five states are GitHub's light palette. Every value is a hex colour
+# rather than a name, since a name takes whatever the terminal's scheme gives
+# it; use `terminal` to follow the scheme.
 #
-# Every value here is a measured one rather than a name, `accent` included, for
-# the reason the default's are: a name is whatever the person's scheme says it
-# is, and a scheme chosen for a light terminal is not a thing amx can assume.
-# Somebody who wants their own scheme's answer has `terminal`, which is that
-# theme's whole point.
-#
-# The five states are GitHub's own light palette, which is a set measured for
-# white by people who had to: this is a view that sits beside a browser open on
-# a pull request as often as beside a dark pane.
-#
-# A value is a colour named the way a terminal names one ("cyan"), a 256-colour
-# index ("134"), or a hex ("#4eba65"). Copy this file to
-# ~/.config/amx/themes/<name>.toml and point `theme` in config.toml at <name>.
+# A value is a terminal colour name ("cyan"), a 256-colour index ("134") or a
+# hex colour ("#4eba65"). To make your own theme, copy this file to
+# ~/.config/amx/themes/<name>.toml and set `theme = "<name>"` in config.toml.
 
-# Something is waiting on a person. The default's amber is unreadable on white,
-# so this is the same hue with the light taken out of it rather than a
-# different idea.
+# Something is waiting on a person. A darker amber, since the default's is
+# unreadable on white.
 waiting = "#9a6700"
-# It went the way it was meant to.
+# It finished as intended.
 done = "#1a7f37"
-# It was attempted and it failed.
+# It was attempted and failed.
 failed = "#cf222e"
-# It was ended by hand, and nothing more is coming.
+# It was ended by hand.
 stopped = "#6e7781"
-# What the next agent will be allowed to do without asking, said under the line
-# that would start it.
+# The permission the next agent will start with, shown under the line that
+# starts it.
 accent = "#0550ae"
-# The line the cursor is on. A background rather than a foreground, so it says
-# where the cursor is without taking a colour away from what the line was
-# already saying -- which only holds while the text on it still carries against
-# this. A shade above the page rather than below it, which is the light
-# terminal's own answer to the default's off-black.
+# Background of the cursor's row: a shade darker than the page, light enough
+# that the row's text stays readable.
 cursor = "#d8dee4"

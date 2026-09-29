@@ -1,37 +1,26 @@
-# The palette amx paints with when nothing says otherwise.
+# The default palette, for a dark terminal.
 #
-# Five of the six are claude's own, measured off the 2.1.237 binary: a view
-# sitting beside claude's should not be a different shade of the same idea.
-# `accent` is the sixth, and it says where it came from below.
+# Five colours are claude's own, taken from the 2.1.237 binary, so the view
+# matches the claude panes beside it. `accent` is the terminal's cyan.
 #
-# Six colours is the whole of it, and most of the screen wears none of them:
-# what a row is, where the cursor is and what a group holds are said in words,
-# in weight and in the dim the terminal already has. A colour here is spent on
-# one thing -- how it went, or that it wants a person -- so that the two or
-# three of them on a wall of forty rows are the two or three worth looking at.
+# Colour marks only outcomes and things waiting on a person; everything else is
+# said with words, weight and the terminal's dim.
 #
-# A value is a colour named the way a terminal names one ("cyan"), a 256-colour
-# index ("134"), or a hex ("#4eba65"). Copy this file to
-# ~/.config/amx/themes/<name>.toml and point `theme` in config.toml at <name>.
+# A value is a terminal colour name ("cyan"), a 256-colour index ("134") or a
+# hex colour ("#4eba65"). To make your own theme, copy this file to
+# ~/.config/amx/themes/<name>.toml and set `theme = "<name>"` in config.toml.
 
 # Something is waiting on a person.
 waiting = "#ffc107"
-# It went the way it was meant to.
+# It finished as intended.
 done = "#4eba65"
-# It was attempted and it failed.
+# It was attempted and failed.
 failed = "#ff6b80"
-# It was ended by hand, and nothing more is coming.
+# It was ended by hand.
 stopped = "#999999"
-# What the next agent will be allowed to do without asking, said under the line
-# that would start it. The one thing about an agent that does not exist yet
-# worth a colour, because it is the one a person is about to press enter past:
-# the dials above the list say what they are in the word `next:` instead.
-#
-# The terminal's own cyan rather than a value out of the binary: what colour
-# claude paints its own permission row is not something amx has measured, and
-# an RGB nobody measured would read as one that was.
+# The permission the next agent will start with, shown under the line that
+# starts it. The terminal's cyan, since claude's own colour for its permission
+# row has not been measured.
 accent = "cyan"
-# The line the cursor is on. A background rather than a foreground: it says
-# where the cursor is without taking a colour away from what the line was
-# already saying.
+# Background of the cursor's row, so the row keeps its own foreground colours.
 cursor = "#373737"
