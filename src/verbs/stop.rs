@@ -21,6 +21,8 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use nix::sys::signal::Signal;
+
 use crate::cli::{Disposition, StopArgs};
 use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{PaneId, Server};
@@ -95,7 +97,100 @@ pub fn run(
 /// not the one read is a resume that landed in between, and that agent is one
 /// nobody asked to stop: false, and nothing touched.
 fn stop_one(root: &Path, id: &str, read: &Meta, out: &mut impl Write) -> Result<bool> {
+    let agent = Agent::open(root, id)?;
+    let signal = read
+        .agent
+        .as_deref()
+        .and_then(crate::registry::entry)
+        .and_then(|vendor| vendor.interrupt_signal);
+    if !turn_ended(&agent, read, signal, GRACE, signalled)? {
+        warn!("amx stop: {}", no_ending(read));
+    }
     stop_one_ending(root, id, read, out, end)
+}
+
+/// Tell a vendor with a signal for it to end the turn it is in, and wait up to
+/// `patience` for the record to say it has. False only where the signal went
+/// and no ending came.
+///
+/// Before the writer is taken, because the ending is a hook, and a hook writes
+/// under it. A vendor whose pane is killed mid-turn can leave the turn claimed
+/// where the next process to open the session finds it: opencode's service
+/// holds a killed server's claim until it boots again.
+///
+/// `send` says whether the signal went; a pane that is no longer this agent's
+/// took nothing, and there is nothing to wait on.
+fn turn_ended(
+    agent: &Agent,
+    read: &Meta,
+    signal: Option<Signal>,
+    patience: Duration,
+    send: impl FnOnce(&Server, &PaneId, &str, Signal) -> Result<bool>,
+) -> Result<bool> {
+    let in_a_turn = |phase: Phase| matches!(phase, Phase::Working | Phase::Waiting);
+    let Some(signal) = signal else {
+        return Ok(true);
+    };
+    let meta = agent.meta()?;
+    // A resume that landed since the read is left to the ending below to say.
+    if (&meta.socket, &meta.pane) != (&read.socket, &read.pane) || !in_a_turn(agent.state()?.state)
+    {
+        return Ok(true);
+    }
+    let server = Server::from_socket(meta.socket.clone());
+    if !send(&server, &meta.pane, &meta.id, signal)? {
+        return Ok(true);
+    }
+    let deadline = Instant::now() + patience;
+    loop {
+        if !in_a_turn(agent.state()?.state) {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Send `signal` to the vendor in this agent's pane, if the pane is still
+/// this agent's.
+///
+/// Not to the pane's own process: that is the shell that runs the vendor and
+/// then records how it ended, and a signal with its default action ends the
+/// shell rather than the turn. The vendor is its child.
+fn signalled(server: &Server, pane: &PaneId, id: &str, signal: Signal) -> Result<bool> {
+    if !server.answers_for_now(pane, id)? {
+        return Ok(false);
+    }
+    let mut sent = false;
+    for child in children(server.pane_pid(pane)?) {
+        sent |= nix::sys::signal::kill(nix::unistd::Pid::from_raw(child), signal).is_ok();
+    }
+    Ok(sent)
+}
+
+/// The processes `pid` started, as Linux lists them. None where it cannot say.
+fn children(pid: i32) -> Vec<i32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|child| child.parse().ok())
+        .collect()
+}
+
+/// What stop says of a turn that did not end when asked: the session it may
+/// have left claimed, by name, since that is what the next resume opens.
+fn no_ending(meta: &Meta) -> String {
+    let session = match &meta.session {
+        Some(session) => format!("session {session}"),
+        None => "its session".to_string(),
+    };
+    format!(
+        "{}'s turn did not end within {}s; ending its pane anyway, and {session} may still be held as running",
+        meta.id,
+        GRACE.as_secs()
+    )
 }
 
 /// The same, with the way a pane is ended handed in, so a test can say what
@@ -169,7 +264,7 @@ fn stopped(agent: &Agent, meta: &Meta) {
 /// standing: how a vendor is ended is the same question there, and a second
 /// answer to it would be a second thing to get the grace period wrong in.
 pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
-    use nix::sys::signal::{Signal, killpg};
+    use nix::sys::signal::killpg;
     use nix::unistd::Pid;
 
     if !server.answers_for_now(pane, id)? {
@@ -522,6 +617,127 @@ mod tests {
         });
 
         assert_eq!(agent.state().unwrap().state, Phase::Done);
+    }
+
+    #[test]
+    fn stop_signals_a_turn_to_end_and_waits_for_the_ending() {
+        // Working or waiting, a vendor with a signal is told to end its turn
+        // first, and stop waits until the record says it has.
+        let signal = crate::vendor::second::ELSEWHERE.interrupt_signal;
+        for phase in [Phase::Working, Phase::Waiting] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent = record(dir.path(), "busy-a1b", "%3", phase);
+            let read = agent.meta().unwrap();
+
+            let mut sent = None;
+            let ended = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    agent
+                        .writer()
+                        .unwrap()
+                        .update_state(|state| state.state = Phase::Idle)
+                        .unwrap();
+                });
+                turn_ended(&agent, &read, signal, GRACE, |_, pane, id, signal| {
+                    sent = Some((pane.clone(), id.to_string(), signal));
+                    Ok(true)
+                })
+                .unwrap()
+            });
+
+            assert!(ended, "{phase}");
+            assert_eq!(
+                sent,
+                Some((
+                    PaneId::new("%3").unwrap(),
+                    "busy-a1b".to_string(),
+                    nix::sys::signal::Signal::SIGUSR1
+                )),
+                "{phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_sends_no_signal_where_there_is_no_turn_or_no_signal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let signal = crate::vendor::second::ELSEWHERE.interrupt_signal;
+        for phase in [Phase::Idle, Phase::Starting, Phase::Done, Phase::Stopped] {
+            let agent = record(dir.path(), &format!("{phase}-a1b"), "%3", phase);
+            let read = agent.meta().unwrap();
+            let ended = turn_ended(&agent, &read, signal, GRACE, |_, _, _, _| {
+                panic!("{phase} has no turn to end")
+            });
+            assert!(ended.unwrap(), "{phase}");
+        }
+
+        let agent = record(dir.path(), "claude-a1b", "%3", Phase::Working);
+        let read = agent.meta().unwrap();
+        let ended = turn_ended(&agent, &read, None, GRACE, |_, _, _, _| {
+            panic!("a vendor with no signal is ended as it stands")
+        });
+        assert!(ended.unwrap());
+    }
+
+    #[test]
+    fn stop_warns_naming_the_session_when_no_ending_comes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent = record(dir.path(), "deaf-a1b", "%3", Phase::Working);
+        let read = agent.meta().unwrap();
+        let signal = crate::vendor::second::ELSEWHERE.interrupt_signal;
+
+        let started = Instant::now();
+        let ended = turn_ended(
+            &agent,
+            &read,
+            signal,
+            Duration::from_millis(200),
+            |_, _, _, _| Ok(true),
+        )
+        .unwrap();
+        assert!(!ended);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+
+        let named = no_ending(&Meta {
+            session: Some("ses_4f2a".to_string()),
+            ..read.clone()
+        });
+        assert!(named.contains("deaf-a1b"), "{named}");
+        assert!(named.contains("ses_4f2a"), "{named}");
+        assert_eq!(GRACE, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn stop_signals_the_vendor_under_the_panes_wrapper_not_the_wrapper() {
+        // The pane runs `sh -c '"$0" "$@"; amx _exit ...'`, and a signal with
+        // its default action kills that shell, which then never records how
+        // the vendor ended. The vendor is the shell's child.
+        let mut wrapper = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#""$0" "$@"; true"#)
+            .args(["sleep", "30"])
+            .spawn()
+            .unwrap();
+        let pid = wrapper.id() as i32;
+        let mut under = Vec::new();
+        for _ in 0..100 {
+            under = children(pid);
+            if !under.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let comm = |pid: i32| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap();
+        assert_eq!(under.len(), 1, "{under:?}");
+        assert_eq!(comm(under[0]).trim(), "sleep");
+
+        let _ = wrapper.kill();
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(under[0]),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = wrapper.wait();
     }
 
     #[test]
