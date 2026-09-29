@@ -142,22 +142,16 @@ pub fn run_family(
         complain!("amx result: {parent} has no children");
         return Ok(exit::FAILURE);
     }
-    let deadline = timeout.map(|patience| Instant::now() + patience);
-
-    let mut pending = children.clone();
-    while !pending.is_empty() {
-        pending.retain(|id| {
-            derive::view(root, id, store::now())
-                .and_then(|view| crate::verbs::wait::ready(root, id, view.phase(), None))
-                .map(|ready| !ready)
-                .unwrap_or(true)
-        });
-        if pending.is_empty() || deadline.is_some_and(|at| Instant::now() >= at) {
-            break;
-        }
-        std::thread::sleep(POLL);
-    }
-    let timed_out = !pending.is_empty();
+    let waited = crate::verbs::wait::run(
+        root,
+        &children,
+        None,
+        false,
+        None,
+        timeout,
+        &mut std::io::sink(),
+    )?;
+    let timed_out = waited == exit::TIMEOUT;
 
     let mut waiting = false;
     let mut failed = false;
@@ -786,6 +780,52 @@ mod tests {
             assert_eq!(code, exit::FAILURE, "json {json}");
             assert!(out.is_empty(), "json {json}: {out:?}");
         }
+    }
+
+    #[test]
+    fn result_children_refuses_a_child_whose_record_goes_mid_wait() {
+        // `amx stop --delete` on a child the family is waiting on: the wait
+        // ends with the error `wait` gives, rather than running to the
+        // deadline (or forever, with no deadline).
+        let root = tempfile::TempDir::new().unwrap();
+        a_family_with_a_question(root.path());
+        let child = Agent::open(root.path(), "scout-c3d").unwrap();
+        let writer = child.writer().unwrap();
+        writer
+            .append(&Event::new(send::SEND, json!({ "text": "and the linter" })))
+            .unwrap();
+        writer
+            .observe(|state| {
+                state.state = Phase::Idle;
+                state.question = None;
+            })
+            .unwrap();
+        drop(writer);
+
+        let started = Instant::now();
+        let waited = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                child.remove().unwrap();
+            });
+            let patience = Some(Duration::from_secs(10));
+            run_family(
+                root.path(),
+                "lead-a1b",
+                patience,
+                false,
+                false,
+                &mut Vec::new(),
+            )
+        });
+
+        let refused = waited.expect_err("a child that is gone");
+        assert!(refused.to_string().contains("scout-c3d"), "{refused:#}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     /// claude's word for a turn ending, as its entry spells it.

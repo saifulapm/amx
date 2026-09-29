@@ -164,7 +164,7 @@ pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
 
 /// Whether this agent's reading is what the wait was for, reading its log
 /// only where the answer turns on it.
-pub(crate) fn ready(root: &Path, id: &str, phase: Phase, wanted: Option<Phase>) -> Result<bool> {
+fn ready(root: &Path, id: &str, phase: Phase, wanted: Option<Phase>) -> Result<bool> {
     let ended = match wanted {
         Some(_) => Ended::NotYet,
         None => result::ended(root, id, phase)?,
