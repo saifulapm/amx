@@ -1,32 +1,19 @@
-//! `amx resume` — start an agent's command again, on the session it had.
+//! `amx resume`: restart an agent's command on the vendor session it had.
 //!
-//! A resume is a continuation, not a second agent: the id, the directory, the
-//! branch and the event log are the ones the agent already had, and the only
-//! thing that changes about it is the pane it lives in. What makes that
-//! possible is the vendor's own session, recorded from a hook the first time
-//! the agent announced one — without one there is nothing to pick up, and
-//! saying so beats starting the task over. The command the agent was started
-//! with is the other half, written down beside the record. An adopted claude
-//! has the session and not the command, because amx never started it, and it
-//! goes back the way it came: by hand.
+//! The id, directory, branch and event log stay the same; only the pane is
+//! new. A resume needs the session recorded from the vendor's reports and the
+//! handoff written at spawn. An adopted agent has a session but no handoff, so
+//! it cannot be resumed.
 //!
-//! Two orderings here are the whole of the verb's correctness. The pane is
-//! placed **before** the record is touched, since there is no pane id to
-//! record until tmux has made one, and a place that fails must leave the agent
-//! as it ended rather than starting over a pane that never came. And the whole
-//! of the record — the pane, then the reset to `starting` — is written under
-//! the writer **before** the new pane can be heard from: a pane starts hooking
-//! the moment it exists, and its hooks wait at that lock, so none of them meets
-//! a record that still says the agent ended and turns away — including the one
-//! carrying the new session id.
-//!
-//! A message rides the same command. It is the first turn of the agent that
-//! comes back, and it travels on the vendor's argv rather than as a `send`
-//! afterwards: a send confirms itself against the pane within five seconds and
-//! a vendor is still starting then, while the argv is the one road that cannot
-//! race the vendor's startup. What the log gets is the send anyway, written
-//! before the vendor can say anything, so a `result` in another shell waits for
-//! the turn the message asks for rather than handing back the turn before it.
+//! - The pane is placed before the record is touched. There is no pane id to
+//!   record until tmux makes one, and a failed place leaves the agent as it
+//!   ended.
+//! - The record update (the pane, then the reset to `starting`) happens under
+//!   the writer lock taken before the pane exists. The new pane's hooks wait on
+//!   that lock, so none of them sees a record that still says the agent ended.
+//! - A message rides the vendor argv, which cannot race the vendor's startup
+//!   the way a `send` would. A send event is still logged before the vendor can
+//!   report, so `result` waits for the turn the message starts.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -41,31 +28,22 @@ use crate::vendor::{self, Capability, Resume, SessionSpec, Vendor};
 use crate::verbs::{new, send};
 use crate::{complain, derive, exit, paths, store, warn, worktree};
 
-/// What amx records when it brings an agent back.
+/// Event kind logged when an agent is resumed.
 const RESUMED: &str = "resume";
 
-/// What bringing an agent back came to, for the doors that reach an agent
-/// rather than start one.
+/// Outcome of a resume started from `amx attach` or the view.
 pub enum Comeback {
-    /// It is in a pane again, on the session it had.
+    /// Back in a pane on its old session.
     Back,
-    /// Nothing was started, and this says why.
+    /// Nothing was started, for this reason.
     No(String),
 }
 
-/// Bring back an agent whose pane is gone, for the two doors somebody reaches
-/// one through.
+/// Resume an agent whose pane is gone, for `amx attach` and the view's enter
+/// key.
 ///
-/// `amx attach` and the view's enter key are both a person asking to look at
-/// an agent, and an agent whose pane went is one there is nothing to look at.
-/// Picking its session up is the answer to what they asked for rather than a
-/// second command they have to think of.
-///
-/// The caller has already found the pane gone, so there is no has-it-ended
-/// question left here: what is left is whether there is a session behind it
-/// and whether the machine has room, and both of those come back as the
-/// sentence to put in front of somebody. Anything else is a failure and is
-/// raised.
+/// The caller has already found the pane gone. A missing session or handoff
+/// and a full cap come back as [`Comeback::No`]; anything else is an error.
 pub fn again(
     root: &Path,
     _config: &Config,
@@ -75,15 +53,10 @@ pub fn again(
     picked_up(root, id, None, env)
 }
 
-/// The same, with a first turn for the agent that comes back.
+/// [`again`], with an optional first message for the resumed agent.
 ///
-/// The card's line is the door that carries one: what somebody typed at an
-/// agent that has ended is the thing they want it to do next, and a resume
-/// that dropped it would bring the agent back with nothing to say to it. The
-/// message travels the way `amx resume <id> "message"` carries one — on the
-/// vendor's argv, from [`bring_back`] — and the gates in front of it are the
-/// same, because whether there is anything to pick up is not a question the
-/// message changes.
+/// The view sends what was typed at an ended agent's card here. The message
+/// rides the vendor argv, as with `amx resume <id> <message>`.
 pub fn picked_up(
     root: &Path,
     id: &str,
@@ -106,23 +79,16 @@ pub fn picked_up(
     Ok(Comeback::Back)
 }
 
-/// Whether there is anything to bring this agent back on, for a door that has
-/// to say so before anybody types.
+/// Whether the agent has both a usable session and a handoff to resume from.
 ///
-/// The two halves a resume needs — the session it was carried on, and the
-/// command to carry it — asked as a yes or no. Not the cap: a project that is
-/// full this second has room the next, and a card that told somebody nothing
-/// would come of their line over a count would be wrong as often as it was
-/// right. What the cap answers is the resume itself, in a sentence.
+/// The cap is not checked: it can change before the resume runs.
 pub fn can_come_back(meta: &Meta, dir: &Path) -> bool {
     to_continue(meta).is_ok() && to_start(dir, &meta.id).is_ok()
 }
 
 /// Run the verb against the machine.
 ///
-/// The config the caller holds is the person's file, and nothing here reads
-/// it: an agent comes back where it ran, and the cap it answers to is that
-/// project's.
+/// The caller's config is unused: caps come from the agent's own project.
 pub fn from_env(
     _config: &Config,
     id: Option<&str>,
@@ -135,7 +101,7 @@ pub fn from_env(
     run(&root, id, message, all, &env, &mut out)
 }
 
-/// The verb, with everything it reads named.
+/// The verb, against the given state root and environment.
 pub fn run(
     root: &Path,
     id: Option<&str>,
@@ -150,7 +116,7 @@ pub fn run(
     }
 }
 
-/// One agent, named.
+/// Resume one named agent.
 fn one(
     root: &Path,
     id: &str,
@@ -159,10 +125,8 @@ fn one(
     out: &mut impl Write,
 ) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
-    // Before the state is looked at, because the state is not what is wrong: a
-    // command row has nothing in its pane that reads a prompt, whatever it left
-    // off doing. Saying it is running instead would send somebody off to stop
-    // it and type the same thing again.
+    // Checked before the phase: a command row never takes a message,
+    // whatever its phase.
     if message.is_some() && is_a_command(&view) {
         complain!(
             "amx resume: {id} is a command, and a command has no vendor to take a \
@@ -170,8 +134,8 @@ fn one(
         );
         return Ok(exit::FAILURE);
     }
-    // A reading tmux could not be asked for is the record as written, and a
-    // parked record reads idle: say what stood in the way rather than that.
+    // When tmux cannot be asked, the view falls back to the record, which
+    // reads a parked agent as idle. Raise tmux's error instead.
     if !view.phase().is_terminal() {
         Server::from_socket(view.meta.socket.clone()).answers_for_now(&view.meta.pane, id)?;
     }
@@ -195,33 +159,23 @@ fn one(
     Ok(exit::OK)
 }
 
-/// Whether this row is a command amx ran rather than an agent it started.
-///
-/// The vendor is what a record names, and `--exec` names none: nothing amx
-/// launched for that row reads a prompt, so there is nothing there for a
-/// message to be put to.
+/// Whether the row is an `--exec` command, which records no vendor.
 fn is_a_command(view: &derive::View) -> bool {
     view.meta.agent.is_none()
 }
 
-/// Whether there is nothing in a pane for a resume to be started over the top
-/// of, which is the one outcome nobody asked for.
+/// Whether no vendor is running in the agent's pane.
 ///
-/// An agent that has ended is the plain case. The other is an agent amx let go:
-/// the record reads idle because idle is where it was when its pane was taken,
-/// and reading that as an agent to leave alone would refuse the one command
-/// that brings a parked agent back — see [`crate::verbs::park`]. Every other
-/// idle agent is a vendor sitting at its prompt in a pane, and a second command
-/// started in front of it is a conversation nobody can follow.
+/// True for an ended agent and for one amx parked, which reads idle but has no
+/// pane (see [`crate::verbs::park`]). Any other idle agent is a vendor at its
+/// prompt, and starting a second one over it would split the conversation.
 fn nothing_is_running(view: &derive::View) -> bool {
     view.phase().is_terminal() || view.verdict.evidence == derive::Evidence::LetGo
 }
 
-/// Every agent whose pane is gone — the morning after a tmux server died.
+/// Resume every agent whose pane disappeared, as after a tmux server died.
 ///
-/// Only the stopped ones: an agent that ran to the end of its command has
-/// nothing outstanding, and a sweep that started every finished agent on the
-/// machine would be a way to lose an afternoon.
+/// Agents that finished, or were stopped with `amx stop`, are left alone.
 fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
     let stopped: Vec<_> = derive::views(root, store::now())?
         .into_iter()
@@ -233,10 +187,8 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
     }
 
     for view in stopped {
-        // Each agent against the cap of its own project, and a project that is
-        // full is not the sweep's ending either: a server takes every project
-        // on the machine with it when it dies, and the agents of the ones with
-        // room still come back.
+        // Each agent counts against its own project's cap. A full project
+        // skips its agents; the others still come back.
         let _place = match take_a_place(root, view.id(), &view.meta.dir)? {
             Ok(place) => place,
             Err(full) => {
@@ -244,9 +196,7 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
                 continue;
             }
         };
-        // One agent that cannot come back is not the sweep's ending. The
-        // others still can, and this is the command somebody runs when the
-        // whole wall went at once.
+        // One failure does not stop the sweep.
         match bring_back(root, view.id(), None, env) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
             Err(e) => complain!("amx resume: {}: {e:#}", view.id()),
@@ -255,34 +205,25 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
     Ok(exit::OK)
 }
 
-/// Whether a sweep brings this agent back: stopped because its pane went,
-/// not because somebody stopped it. A record that says it was stopped on
-/// purpose stays stopped until it is named.
+/// Whether the agent stopped because its pane vanished, rather than by
+/// `amx stop`.
 fn lost_its_pane(view: &derive::View) -> bool {
     view.phase() == Phase::Stopped && view.verdict.evidence == derive::Evidence::Gone
 }
 
-/// A place under the caps for bringing `id` back, held until the returned
-/// claim is dropped, or the sentence saying the project an agent came from, or
-/// the machine over it, is already running as many agents as it will.
-///
-/// The cap is read from the project the agent ran in rather than from the
-/// config this command was started with: an agent comes back where it was, and
-/// the machine's afternoon is spread over projects that each say for
-/// themselves what they can afford.
+/// Claim a place for `id` under the caps of the project `dir` belongs to, or
+/// return the refusal. The place is held until the claim is dropped.
 fn take_a_place(root: &Path, id: &str, dir: &Path) -> Result<Result<store::Claim, String>> {
     let taken = new::take_a_place(root, dir, || Ok(((), paths::agent_dir_in(root, id)?)))?;
     Ok(taken.map(|((), place)| place))
 }
 
-/// Put the agent back in a pane, continuing what it was doing.
+/// Place the agent in a new pane on its old session and update the record.
 ///
-/// All of it happens under the agent's writer lock. The has-it-ended check
-/// and the respawn are one action: of two resumes racing, the second waits
-/// at the lock and then reads the `starting` state and the live pane the
-/// first wrote, so one session is never continued into two panes. The gates
-/// in [`one`] and [`sweep`] are for saying so politely; this one is for
-/// being right.
+/// Runs under the agent's writer lock, so the ended check and the respawn are
+/// one step: a concurrent second resume waits, then finds the `starting` state
+/// and live pane the first wrote. The checks in [`one`] and [`sweep`] only
+/// give friendlier refusals.
 fn bring_back(
     root: &Path,
     id: &str,
@@ -292,11 +233,8 @@ fn bring_back(
     let agent = Agent::open(root, id)?;
     let writer = agent.writer()?;
 
-    // The raw record rather than the derived view, which may take this very
-    // lock to note a question it read off a pane. An agent has ended when its
-    // record says so, or when the pane the record names is gone — or answers
-    // for somebody else, which is the same ending: a pane number that came
-    // round again on a later server is another agent running, not this one.
+    // Read the raw record: deriving a view may take this same lock. A pane
+    // that answers for another id (a reused pane number) counts as gone.
     let current = writer.state()?;
     let meta = agent.meta()?;
     if !current.state.is_terminal()
@@ -312,15 +250,10 @@ fn bring_back(
         .with_context(|| format!("reading what {id} was started with"))?;
     let dir = ready_dir(&meta)?;
 
-    // The vendor is the one the agent was started with, and the environment is
-    // the one this command was run with — the same rule `new` follows, because
-    // an hour-old environment is nobody's idea of the one to run in.
+    // The caller's current environment, as in `new`. Harness pairs come from
+    // the agent's own project config, then amx's id goes on top so a harness
+    // table cannot override it.
     let mut env = env.clone();
-    // What the file says this harness runs with, from the project the agent
-    // ran in rather than the one this command was typed in: an agent comes
-    // back where it was, on the vendor it was started with. Then amx's own id
-    // over the top, as in `new`: a table that set the id would have this agent
-    // reporting under somebody else's name.
     if let Some(agent) = &meta.agent {
         spawn::harness_env(&mut env, &crate::config::for_dir(&meta.dir).0, agent);
     }
@@ -328,13 +261,8 @@ fn bring_back(
     spawn::write_boot_env(agent.dir(), &env)?;
     spawn::write_handoff(agent.dir(), &handed_on(&recorded, session, message))?;
 
-    // The pane before the record: until tmux has made one there is nothing
-    // true to write, and a place that fails leaves the agent as it ended —
-    // its answer, its exit and its log — with nothing beside it for a boot
-    // that will never come.
-    // The session the agent had is gone with the pane that held it, and the
-    // one this makes wears the same name: an id is what addresses an agent,
-    // whichever pane it is in this time.
+    // Place before touching the record. On failure, drop the boot env and
+    // restore the handoff so the agent stays as it ended.
     let (server, pane) = match new::place_boot(id, &dir) {
         Ok(placed) => placed,
         Err(e) => {
@@ -344,10 +272,9 @@ fn bring_back(
         }
     };
 
-    // Still under the writer taken at the top: a hook the new pane fires
-    // waits at the lock until all of this is on the record. The pane goes
-    // first, so a reader that finds the record starting again finds it
-    // naming the pane it is starting in.
+    // Still under the writer lock, so the new pane's hooks wait for all of
+    // this. The pane goes first, so a reader that sees `starting` sees the
+    // new pane.
     writer.update_meta(|meta| {
         meta.socket = server.socket().clone();
         meta.pane = pane;
@@ -358,19 +285,15 @@ fn bring_back(
     ))?;
     writer.update_state_heard(agent.heartbeat(), |state| {
         *state = State {
-            // Nobody is asking this session for anything, so nothing after the
-            // session opens will say the agent is there. What only this
-            // command knows goes on the record for the hook that opens it.
+            // Without a message no turn starts, so nothing reports after the
+            // session opens. See `State::opens_idle`.
             opens_idle: message.is_none(),
             ..state.for_a_new_session()
         }
     })?;
-    // A message is on the record before the vendor can say anything, which is
-    // [`send::deliver`]'s order and for its reason: a `result` in another shell
-    // reads the last send to know which turn it is waiting for, and one written
-    // after the vendor was heard would leave a window in which the turn before
-    // the message read as this one's answer. There is no paste to go with it —
-    // the message is already in the argv the pane runs.
+    // Log the message as a send before the vendor can report, in the same
+    // order as `send::deliver`, so a `result` in another shell waits for this
+    // turn. There is no paste: the message is already on the argv.
     if let Some(message) = message {
         writer.append(&Event::new(
             send::SEND,
@@ -381,19 +304,11 @@ fn bring_back(
     Ok(())
 }
 
-/// What the agent is being asked for this time, and the words that ask it.
+/// The handoff for this resume: the continuation argv, plus `message` as the
+/// new task when there is one.
 ///
-/// Without a message the handoff is the one the agent already had: the task it
-/// was started on, and the vendor's own argv for the session it opened.
-///
-/// A message replaces both. It goes last, where `new` puts a task and `fork`
-/// puts its prompt, and it becomes the handoff's task — which is what makes the
-/// next resume drop it. [`continuing`] strips a last word equal to the task
-/// written beside it, so the message written down here is the message taken off
-/// there, and no later resume asks for it a second time.
-///
-/// [`Meta::task`] is untouched by any of it. That is the work the row is about,
-/// and a follow-up turn is not a new piece of work.
+/// The message goes last, where `new` puts a task, and becomes the handoff's
+/// task so the next resume strips it again. [`Meta::task`] is not changed.
 fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handoff {
     let mut command = continuing(recorded, session);
     if let Some(message) = message {
@@ -406,27 +321,17 @@ fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handof
     }
 }
 
-/// The vendor's argv for a session it already has.
+/// The recorded argv rewritten to resume `session`.
 ///
-/// The agent is launched with what it was launched with the first time, minus
-/// the two things this command decides for itself.
-///
-/// The **task** goes: it was put to this session in its first turn, and handing
-/// it over again would ask for the work twice. Every **flag naming a session**
-/// goes with it — `--session-id`, because it asks the vendor to *start* a
-/// session under a chosen id, which is the opposite instruction to the one this
-/// command carries, and `--resume`, because a resumed agent's recorded command
-/// already carries the one the last resume wrote. Two of them would leave which
-/// session the vendor opens up to the vendor.
-///
-/// The flag and its value arrive joined or as two words, or as a subcommand
-/// right after the program, whichever the vendor's own spelling says.
+/// Drops the task, which the session already has, and every flag naming a
+/// session (a start flag such as `--session-id`, or an earlier `--resume`),
+/// then adds the vendor's resume flag or subcommand.
 fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
     build_continuation(handoff, session, spawn::vendor_of(handoff))
 }
 
-/// [`continuing`], with the vendor passed in rather than looked up, so a
-/// vendor the table has never seen can be proved out here too.
+/// [`continuing`] with the vendor passed in, so tests can use vendors outside
+/// the table.
 fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>) -> Vec<String> {
     let spec = spelling(vendor);
     let mut command = without_session(handoff, vendor, &spec);
@@ -439,6 +344,11 @@ fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>)
 }
 
 /// The recorded argv without its task and without any word naming a session.
+///
+/// Shared by resume and fork. The task is the last word, matched as a suffix
+/// because `new` writes a role brief or subagent digest in front of it in the
+/// same word. A session flag's value is taken only when the next word does not
+/// start with `-`: claude documents `--resume`'s value as optional.
 pub(crate) fn without_session(
     handoff: &Handoff,
     vendor: Option<&Vendor>,
@@ -449,32 +359,22 @@ pub(crate) fn without_session(
     let mut command: Vec<String> = Vec::new();
 
     while let Some(word) = words.next() {
-        // Only the last word is the task, which is where `new` put it — at the
-        // end of it, because a role's brief and a subagent's digest ride in
-        // front of the task in the same word while the record keeps the task
-        // alone. So the task is a suffix of that word, not the whole of it; an
-        // empty task is a suffix of everything and names nothing. It ends as
-        // it was typed, with the space a popup word was given.
+        // The task, possibly with a brief in front and a popup space after.
+        // An empty task matches nothing.
         if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&task) {
             break;
         }
-        // The word `new` put in front of the task goes with it, or the
-        // vendor would read everything written after it as a message.
+        // The end-of-options word `new` put before the task goes with it.
         if words.len() == 1 && Some(word.as_str()) == vendor.and_then(|vendor| vendor.ends_options)
         {
             continue;
         }
-        // Where `word` stood in the recorded command: a subcommand is one
-        // only right after the program.
+        // A subcommand only counts right after the program.
         let first = handoff.command.len() - words.len() - 1 == 1;
         let Some(value_is_a_word_of_its_own) = spec.names_a_session(&word, first) else {
             command.push(word);
             continue;
         };
-        // The value goes with the flag it belongs to. A word that begins with
-        // `-` is never one: the vendor documents `--resume`'s value as
-        // optional, and an optional value is not taken from a word that could
-        // be a flag in its own right.
         if value_is_a_word_of_its_own && words.peek().is_some_and(|next| !next.starts_with('-')) {
             words.next();
         }
@@ -482,30 +382,25 @@ pub(crate) fn without_session(
     command
 }
 
-/// The vendor's own session vocabulary, read off the table by the program the
-/// recorded command names. Claude's — the vendor amx was written against — for
-/// a command amx has measured nothing about: unmeasured is not refused
-/// ([`cannot_continue`] already says so), and claude's is the only spelling
-/// amx has ever assumed for one.
+/// The vendor's session vocabulary, or claude's for a command with no table
+/// entry.
 pub(crate) fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
     vendor
         .and_then(|vendor| vendor.session)
         .unwrap_or_else(unmeasured)
 }
 
-/// Claude's own session vocabulary. See [`spelling`].
+/// Claude's session vocabulary.
 fn unmeasured() -> SessionSpec {
     vendor::claude::VENDOR
         .session
         .expect("claude declares a session vocabulary")
 }
 
-/// Where the agent runs, put back if it is not there any more.
+/// The agent's directory, restoring its worktree if `stop` removed it.
 ///
-/// The tree `stop` removes by default is the tree a resume needs, and nothing
-/// was lost when it went: `stop` never removes a tree holding work no commit
-/// has, so everything that was in it is on the branch. Checking that branch out
-/// again is the whole of the repair.
+/// `stop` only removes a tree whose work is committed, so checking the branch
+/// out again restores everything.
 fn ready_dir(meta: &Meta) -> Result<PathBuf> {
     if meta.dir.is_dir() {
         return Ok(meta.dir.clone());
@@ -524,8 +419,7 @@ fn ready_dir(meta: &Meta) -> Result<PathBuf> {
     }
 }
 
-/// The repository a tree that is no longer there belonged to: the nearest
-/// directory above it that still exists, and the repository holding that.
+/// The repository holding the nearest existing ancestor of a removed tree.
 fn repo_above(tree: &Path) -> Result<PathBuf> {
     let mut above = tree.parent();
     while let Some(dir) = above {
@@ -538,12 +432,7 @@ fn repo_above(tree: &Path) -> Result<PathBuf> {
     bail!("nothing is left of {}", tree.display())
 }
 
-/// The session this agent is carried on by, or the sentence saying why there
-/// is none to carry it.
-///
-/// Read out of the record in one place, because two commands ask it: the verb
-/// on its way to a respawn, and the doors that only want to know whether there
-/// is anything to bring back before they say so to somebody.
+/// The recorded session to resume, or why there is none.
 fn to_continue(meta: &Meta) -> Result<&str, String> {
     let Some(session) = meta.session.as_deref() else {
         return Err(format!(
@@ -552,9 +441,8 @@ fn to_continue(meta: &Meta) -> Result<&str, String> {
             meta.id
         ));
     };
-    // The recorded id was written from a hook payload, and a resume is where it
-    // becomes part of a command line: it is checked at the moment it is used,
-    // not only at the moment it was written down.
+    // The id came from a hook payload; validate it where it becomes an
+    // argument.
     if !is_session_id(session) {
         return Err(format!(
             "the session recorded for {} is not a session id, so it will not be handed on",
@@ -564,25 +452,17 @@ fn to_continue(meta: &Meta) -> Result<&str, String> {
     Ok(session)
 }
 
-/// Whether there is a command to start again, or the sentence saying why there
-/// is not.
+/// Whether there is a handoff to restart from and its vendor can resume, or
+/// why not.
 ///
-/// Every agent amx started has what it was started with written down beside
-/// its record. An adopted agent has none: somebody ran it themselves, in a
-/// pane amx never opened, so there is a session here and no command to carry
-/// it. That is a different thing missing to a missing session, and whoever
-/// reached for this agent is told which.
-///
-/// A third thing can be missing, and it is the vendor's: a command amx can
-/// read, and a vendor that will not be told to carry a session on.
+/// An adopted agent has a session but no handoff.
 fn to_start(dir: &Path, id: &str) -> Result<(), String> {
     if !dir.join(spawn::HANDOFF).exists() {
         return Err(format!(
             "{id} was started by hand rather than by amx, so there is no command to start again"
         ));
     }
-    // A handoff that will not read is not this question's to answer: the
-    // respawn reads it again in a moment and says what was wrong with it.
+    // An unreadable handoff is reported by the respawn when it reads it.
     let recorded = spawn::read_handoff(dir).ok();
     match cannot_continue(recorded.as_ref().and_then(spawn::vendor_of), id) {
         Some(refusal) => Err(refusal),
@@ -590,17 +470,11 @@ fn to_start(dir: &Path, id: &str) -> Result<(), String> {
     }
 }
 
-/// Why this vendor cannot be told to carry a session on, when it cannot.
+/// Why this vendor cannot resume a session, if it cannot.
 ///
-/// `--resume` is claude's flag, and a vendor without one of its own would meet
-/// it as an argument it does not know: the pane dies on its first line while
-/// the record says the agent came back. What amx would have started instead is
-/// a fresh agent on the same task, which is `amx new` and is the person's to
-/// ask for.
-///
-/// A command amx has no entry for is not refused. amx has measured nothing
-/// about it, and nothing measured is no reason to take away what somebody's
-/// own wrapper command does today.
+/// Without resume support the vendor would reject the flag and the pane would
+/// die at once while the record says the agent came back. A command with no
+/// table entry is not refused.
 fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     let vendor = vendor?;
     if !vendor.can(Capability::Resume) {
@@ -610,9 +484,7 @@ fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
             vendor.name
         ));
     }
-    // A capability with no spelling to answer it: refused the same way as an
-    // absent capability, because there is just as little here to carry a
-    // session on with.
+    // A claimed capability with no session vocabulary is refused the same way.
     vendor.session.is_none().then(|| {
         format!(
             "{id} runs {}, which names no session vocabulary, so there is \
@@ -622,11 +494,8 @@ fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     })
 }
 
-/// Whether a recorded session id is one.
-///
-/// A word amx is about to hand the vendor as an argument, checked for being a
-/// word and nothing else: an id that could read as a flag, or that carries
-/// anything but the characters an id is made of, is not passed on.
+/// Whether a recorded session id is safe to pass as an argument: 1 to 64
+/// ASCII alphanumerics, `-` or `_`, not starting with `-`.
 pub(crate) fn is_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -651,7 +520,7 @@ mod tests {
         }
     }
 
-    /// An agent as a reader hands it over.
+    /// A derived view of a test agent in `phase`, read from `evidence`.
     fn read_as(phase: Phase, evidence: Evidence) -> derive::View {
         derive::View {
             meta: Meta {
@@ -691,13 +560,10 @@ mod tests {
 
     #[test]
     fn resume_brings_back_an_agent_whose_pane_amx_let_go() {
-        // A parked agent reads idle, because idle is where it was when its
-        // pane went. Nothing is running it: the vendor is gone and the session
-        // is waiting to be picked up, which is the whole of what a resume
-        // does.
+        // A parked agent reads idle but has no vendor running.
         assert!(nothing_is_running(&read_as(Phase::Idle, Evidence::LetGo)));
 
-        // An agent that ended is the other one there is nothing to interrupt.
+        // Ended agents have nothing running either.
         for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
             assert!(
                 nothing_is_running(&read_as(phase, Evidence::Record)),
@@ -705,9 +571,7 @@ mod tests {
             );
         }
 
-        // And an agent in a pane is turned away whatever it is doing there —
-        // including sitting idle at its prompt, which is a pane a second
-        // command would be started over the top of.
+        // An agent with a live pane is refused in every phase, idle included.
         for phase in [
             Phase::Starting,
             Phase::Working,
@@ -726,8 +590,7 @@ mod tests {
     fn resume_all_brings_back_only_an_agent_whose_pane_went() {
         assert!(lost_its_pane(&read_as(Phase::Stopped, Evidence::Gone)));
 
-        // `amx stop` writes the ending on the record, and a sweep that undid
-        // it would start again what somebody meant to end.
+        // An ending `amx stop` wrote is deliberate, so the sweep leaves it.
         assert!(!lost_its_pane(&read_as(Phase::Stopped, Evidence::Record)));
         for phase in [Phase::Done, Phase::Failed] {
             assert!(!lost_its_pane(&read_as(phase, Evidence::Record)), "{phase}");
@@ -737,9 +600,8 @@ mod tests {
 
     #[test]
     fn resume_refuses_a_tmux_that_cannot_be_asked_and_starts_nothing() {
-        // A parked agent is one no pane answers for, and a tmux that could not
-        // be asked has not said so: bringing it back could be a second pane
-        // beside the one it still has.
+        // If tmux cannot be asked, the pane may still exist, so resuming could
+        // start a second one.
         let state = TempDir::new().unwrap();
         let root = state.path().join("agents");
         std::fs::create_dir_all(&root).unwrap();
@@ -780,8 +642,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut meta = read_as(Phase::Stopped, Evidence::Record).meta;
 
-        // Both halves, or neither: the session the agent was carried on, and
-        // the command that carries it.
+        // Needs both the session and the handoff.
         assert!(
             !can_come_back(&meta, dir.path()),
             "there is no command to start again"
@@ -798,9 +659,8 @@ mod tests {
 
     #[test]
     fn resume_refuses_a_vendor_that_cannot_carry_a_session_on() {
-        // The second vendor can be told to carry a session on, so the one that
-        // cannot is built here: what a verb asks is a capability, not a name,
-        // and the table is free to answer either way.
+        // The test vendor can resume, so build one that cannot. The check is on
+        // the capability, not the name.
         let cannot = Vendor {
             capabilities: &[Capability::Adopt],
             ..SECOND
@@ -827,9 +687,7 @@ mod tests {
 
     #[test]
     fn resume_refuses_a_vendor_that_names_no_session_vocabulary() {
-        // A capability with nothing behind it, which is a different way of
-        // being unable to answer to the one the vendor's own name is missing
-        // from `capabilities` entirely, and refused the same way.
+        // The capability is claimed but no vocabulary backs it.
         let cannot = Vendor {
             session: None,
             ..SECOND
@@ -848,8 +706,8 @@ mod tests {
 
     #[test]
     fn resume_reads_a_different_vendors_own_spelling_off_the_table() {
-        // The second vendor resumes with a subcommand rather than a flag, and
-        // its own conflict is spelled nothing like claude's.
+        // The test vendor resumes with a subcommand and has its own
+        // conflicting flag.
         let started = handoff(&["second", "--open", "old", "go"], "go");
         assert_eq!(
             build_continuation(&started, "abc-123", Some(&SECOND)),
@@ -859,9 +717,8 @@ mod tests {
 
     #[test]
     fn resume_puts_a_subcommand_right_after_the_program_and_replaces_it() {
-        // The subcommand is the word after the program, then the id, then
-        // every flag the agent was started with; a second resume takes the
-        // first one's pair away rather than writing two.
+        // Program, subcommand, id, then the original flags. A second resume
+        // replaces the first pair.
         let started = handoff(&["second", "--care", "quick", "go"], "go");
         let once = build_continuation(&started, "abc-123", Some(&SECOND));
         assert_eq!(once, ["second", "again", "abc-123", "--care", "quick"]);
@@ -878,10 +735,8 @@ mod tests {
 
     #[test]
     fn resume_keeps_the_launch_words_and_a_keyed_dial_once() {
-        // `new` wrote the launch words right after the program and the keyed
-        // dial as its flag and one word. Neither names a session, so a resume
-        // keeps both where they stood, behind the subcommand and its id, and a
-        // second resume does not write them again.
+        // Launch words and a keyed dial name no session, so they stay after
+        // the subcommand and id, and a second resume does not repeat them.
         let started = handoff(
             &[
                 "second",
@@ -922,8 +777,8 @@ mod tests {
 
     #[test]
     fn resume_says_which_half_is_missing_before_it_starts_anything() {
-        // Two things can be missing and they are told apart: the command amx
-        // would start again, and the vendor's way of carrying a session on.
+        // A missing handoff and a vendor that cannot resume get different
+        // refusals.
         let dir = TempDir::new().unwrap();
         let said = to_start(dir.path(), "fix-login-a1b").expect_err("no handoff at all");
         assert!(said.contains("started by hand"), "{said}");
@@ -931,16 +786,16 @@ mod tests {
         spawn::write_handoff(dir.path(), &handoff(&["claude", "go"], "go")).unwrap();
         assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
 
-        // A command amx has no entry for is started again as it always was.
+        // A command with no table entry is not refused.
         spawn::write_handoff(dir.path(), &handoff(&["mock-claude", "go"], "go")).unwrap();
         assert_eq!(to_start(dir.path(), "fix-login-a1b"), Ok(()));
     }
 
     #[test]
     fn resume_ends_pis_options_before_a_message_and_drops_the_old_end() {
-        // A task `new` handed pi rides behind `--`, which goes with it; a
-        // message goes behind a `--` of its own, and one opening with `@`
-        // with a space in front, so it is words rather than a file.
+        // pi's task sits behind `--`, which is dropped with it. A message gets
+        // its own `--`, and a leading `@` gets a space so pi does not read it
+        // as a file.
         let started = handoff(
             &["pi", "--session-id", "abc-123", "--", " @alice asked"],
             "@alice asked",
@@ -959,9 +814,9 @@ mod tests {
 
     #[test]
     fn resume_drops_a_task_or_message_that_rode_on_the_prompt_flag() {
-        // A vendor with a prompt flag was handed the task as one `--say=`
-        // word, a brief in front of it and a popup's space after it. A later
-        // resume drops the whole word, and so does the one after a message.
+        // A prompt-flag vendor got the task as one `--say=` word with a brief
+        // in front and a popup space after. Resume drops the whole word, for a
+        // task or a message.
         let started = handoff(&["second", "--say=Brief.\n\nlook at #3 "], "look at #3");
         assert_eq!(
             build_continuation(&started, "abc-123", Some(&ELSEWHERE)),
@@ -985,8 +840,7 @@ mod tests {
             "fix the login bug",
         );
 
-        // Without one, the handoff is what a resume has always written: the
-        // task the agent was started on, and the words that continue it.
+        // Without a message the task is unchanged.
         let carried = handed_on(&started, "abc-123", None);
         assert_eq!(carried.task, "fix the login bug");
         assert_eq!(
@@ -994,8 +848,7 @@ mod tests {
             ["claude", "--model", "opus", "--resume=abc-123"]
         );
 
-        // With one it goes last, where `new` puts a task, and the handoff says
-        // the message is what this agent was asked for.
+        // A message goes last and becomes the handoff's task.
         let carried = handed_on(&started, "abc-123", Some("and now the linter"));
         assert_eq!(carried.task, "and now the linter");
         assert_eq!(
@@ -1009,8 +862,7 @@ mod tests {
             ]
         );
 
-        // Which is what the next resume reads, and why it drops the message
-        // rather than asking for it a second time.
+        // So the next resume drops it.
         let after = handed_on(&carried, "def-456", None);
         assert_eq!(
             after.command,
@@ -1034,8 +886,8 @@ mod tests {
 
     #[test]
     fn resume_does_not_put_the_task_a_second_time() {
-        // A task that looks like a flag, and one that appears twice: only the
-        // last word is the task, because that is where `new` put it.
+        // Only the last word is the task, even when it looks like a flag and
+        // appears earlier too.
         let started = handoff(&["claude", "--model", "--model"], "--model");
         assert_eq!(
             continuing(&started, "abc"),
@@ -1045,18 +897,15 @@ mod tests {
 
     #[test]
     fn resume_drops_a_task_a_role_put_its_brief_in_front_of() {
-        // A role dispatch hands the vendor `brief\n\ntask` in one word and
-        // records the task alone, so the word the task has to be found in is
-        // longer than the task. It still goes: the session already had it, and
-        // handing it over again asks the agent for the work twice.
+        // A role spawn passes `brief\n\ntask` as one word and records only
+        // the task, so the task is matched as a suffix.
         let started = handoff(
             &["claude", "You are a scout.\n\nfix the login bug"],
             "fix the login bug",
         );
         assert_eq!(continuing(&started, "abc"), ["claude", "--resume=abc"]);
 
-        // An agent started on no task at all ends on a word that is not one,
-        // and an empty suffix must not take it.
+        // An empty task must not match the last word.
         let started = handoff(&["claude", "--model", "opus"], "");
         assert_eq!(
             continuing(&started, "abc"),
@@ -1087,8 +936,7 @@ mod tests {
 
     #[test]
     fn clibatch_resume_carries_everything_the_agent_was_started_with() {
-        // The arguments are the agent's, not the first turn's: a directory it
-        // was given access to is one it still needs.
+        // Every original argument, such as `--add-dir`, is kept.
         let started = handoff(
             &[
                 "claude",
@@ -1117,9 +965,8 @@ mod tests {
 
     #[test]
     fn clibatch_resuming_twice_asks_for_one_session_and_not_two() {
-        // Each resume records what it launched, so the next one reads a command
-        // that already carries a `--resume`. Handing the vendor two of them
-        // leaves which session it opens up to the vendor.
+        // A resumed command already carries `--resume`; the next resume
+        // replaces it rather than adding a second.
         let started = handoff(&["claude", "--add-dir", "/srv/data", "go"], "go");
         let after_one = Handoff {
             command: continuing(&started, "abc-123"),
@@ -1130,8 +977,8 @@ mod tests {
             ["claude", "--add-dir", "/srv/data", "--resume=def-456"]
         );
 
-        // However it was written the first time, including by hand after the
-        // separator on `amx new`.
+        // Every spelling is replaced, including one typed after `--` on
+        // `amx new`.
         for written in [
             &["claude", "--resume", "old", "go"][..],
             &["claude", "--resume=old", "go"],
@@ -1145,8 +992,7 @@ mod tests {
             );
         }
 
-        // The value is optional, so the word after one is only its value when
-        // it could be: a flag after `--resume` is a flag, and it stays.
+        // `--resume`'s value is optional, so a following flag is kept.
         let started = handoff(&["claude", "--resume", "--verbose", "go"], "go");
         assert_eq!(
             continuing(&started, "def-456"),
@@ -1156,13 +1002,9 @@ mod tests {
 
     #[test]
     fn resume_drops_the_flag_naming_the_session_a_copy_was_branched_from() {
-        // A copy is opened under an id of its own, so its recorded command
-        // carries both the flag that branched it and the one that minted that
-        // id. Handing pi the pair again is a session it already has under a
-        // flag asking it to be made: "Session already exists with id".
-        //
-        // pi's own spelling, off the table: the vendor that branches by
-        // naming the origin is the one this arm exists for.
+        // A pi copy's command carries the fork flag and a start flag with the
+        // copy's own id. Passing both again makes pi fail with "Session
+        // already exists with id".
         for written in [
             &[
                 "pi",
@@ -1185,10 +1027,8 @@ mod tests {
 
     #[test]
     fn resume_leaves_a_bare_fork_marker_where_the_vendor_wrote_it() {
-        // Only a flag naming a session is replaced. claude's marker names
-        // none — the session it branched from rides on the resume flag beside
-        // it, which is already replaced — so it is not this reader's to take,
-        // and claude's argv comes back the way it always did.
+        // claude's `--fork-session` names no session (the origin rides on
+        // `--resume`), so resume leaves it.
         let started = handoff(
             &["claude", "--resume=abc-123", "--fork-session", "go"],
             "go",
