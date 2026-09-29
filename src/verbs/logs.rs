@@ -264,12 +264,7 @@ fn capture(server: &Server, pane: &PaneId, lines: u32) -> Result<String> {
 /// walks the paint of: this is going to somebody's terminal, and a terminal is
 /// an interpreter. What the pane looks like painted is what `attach` is for.
 fn tail_of(capture: &str, lines: usize) -> String {
-    let sanitized = tmux::sanitize(capture);
-    let mut kept: Vec<&str> = sanitized.lines().collect();
-    while kept.last().is_some_and(|line| line.trim().is_empty()) {
-        kept.pop();
-    }
-    kept[kept.len().saturating_sub(lines)..].join("\n")
+    last_lines(&tmux::sanitize(capture), lines)
 }
 
 #[cfg(test)]
