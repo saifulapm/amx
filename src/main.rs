@@ -399,11 +399,12 @@ mod tests {
     /// Every source that has anything to say on stderr. A verb printing there
     /// with `eprintln!` is one saying it in whatever colour was already in
     /// force, which is the split this pair of macros exists to keep.
-    const VERBS: [(&str, &str); 22] = [
+    const VERBS: [(&str, &str); 26] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("allow", include_str!("verbs/allow.rs")),
         ("answer", include_str!("verbs/answer.rs")),
         ("attach", include_str!("verbs/attach.rs")),
+        ("clear", include_str!("verbs/clear.rs")),
         ("diff", include_str!("verbs/diff.rs")),
         ("doctor", include_str!("verbs/doctor.rs")),
         ("events", include_str!("verbs/events.rs")),
@@ -417,15 +418,23 @@ mod tests {
         ("result", include_str!("verbs/result.rs")),
         ("resume", include_str!("verbs/resume.rs")),
         ("send", include_str!("verbs/send.rs")),
+        ("setup", include_str!("verbs/setup.rs")),
         ("status", include_str!("verbs/status.rs")),
         ("statusline", include_str!("verbs/statusline.rs")),
         ("stop", include_str!("verbs/stop.rs")),
+        ("sub", include_str!("verbs/sub.rs")),
+        ("sweep", include_str!("verbs/sweep.rs")),
         ("uninstall", include_str!("verbs/uninstall.rs")),
         ("wait", include_str!("verbs/wait.rs")),
     ];
 
     #[test]
     fn every_verb_says_its_piece_through_one_of_the_two_severities() {
+        let files = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/verbs"))
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_name() != "mod.rs")
+            .count();
+        assert_eq!(files, VERBS.len(), "a verb this test does not read");
         for (verb, source) in VERBS {
             // Only what ships: a test of its own may print however it likes,
             // and what it prints goes to whoever is running the suite.
