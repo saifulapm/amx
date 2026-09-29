@@ -800,9 +800,13 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
         .spawn()
         .context("running `git diff`")?;
     let mut printed = child.stdout.take().expect("stdout was asked for");
-    std::io::copy(&mut printed, out).context("reading the diff")?;
-
+    let copied = std::io::copy(&mut printed, out);
+    // Waited for even when the reader stopped early (a viewer quit halfway):
+    // closing the pipe ends a git still writing, and the view is a process
+    // that lives on, where an unwaited child stays a zombie.
+    drop(printed);
     let finished = child.wait_with_output().context("waiting for `git diff`")?;
+    copied.context("reading the diff")?;
     if !finished.status.success() {
         bail!(
             "git diff {from}: {}",
@@ -1564,6 +1568,44 @@ mod tests {
         let mut out = Vec::new();
         let refused = diff(&tree.path, "0f1e2d3", false, &mut out).unwrap_err();
         assert!(format!("{refused:#}").contains("0f1e2d3"), "{refused:#}");
+    }
+
+    /// The git processes this thread started and has not waited for.
+    #[cfg(target_os = "linux")]
+    fn unwaited_gits() -> std::collections::BTreeSet<String> {
+        std::fs::read_to_string("/proc/thread-self/children")
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter(|pid| {
+                std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                    .is_ok_and(|comm| comm.trim() == "git")
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worktree_diff_waits_for_git_when_the_reader_stops_early() {
+        struct Quit;
+        impl Write for Quit {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let repo = a_repo();
+        let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
+        let long: String = (0..20_000).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(tree.path.join("long.txt"), long).unwrap();
+
+        let before = unwaited_gits();
+        assert!(diff(&tree.path, &tree.base, false, &mut Quit).is_err());
+        let left: Vec<_> = unwaited_gits().difference(&before).cloned().collect();
+        assert!(left.is_empty(), "git diff was never waited for: {left:?}");
     }
 
     #[test]
