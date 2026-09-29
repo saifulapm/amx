@@ -45,7 +45,7 @@ use crate::derive::{Evidence, View};
 use crate::pr::{self, Pr, Standing};
 use crate::store::{Ask, Meta, Phase};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -1557,18 +1557,17 @@ impl List {
     /// it.
     fn ordered(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.views.len()).filter(|&n| self.keeps(n)).collect();
-        order.sort_by(|&a, &b| {
-            self.rank(a)
-                .cmp(&self.rank(b))
-                .then_with(|| self.seat(a).cmp(&self.seat(b)))
-                .then_with(|| match self.family(a) {
-                    Group::Completed => ended(&self.views[b])
-                        .cmp(&ended(&self.views[a]))
-                        .then_with(|| self.views[a].id().cmp(self.views[b].id())),
-                    // A stable sort, so everything else keeps the order it was
-                    // read in, which is the order the agents were started in.
-                    _ => Ordering::Equal,
-                })
+        // Keyed once per agent: `family` walks a subtree and `seat` scans the
+        // group's order, too much to repeat on every comparison.
+        order.sort_by_cached_key(|&n| {
+            let view = &self.views[n];
+            let ending = match self.family(n) {
+                Group::Completed => Some((Reverse(ended(view)), view.id())),
+                // A stable sort, so everything else keeps the order it was
+                // read in, which is the order the agents were started in.
+                _ => None,
+            };
+            (self.rank(n), self.seat(n), ending)
         });
         order
     }
