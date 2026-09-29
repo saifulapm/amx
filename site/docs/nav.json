@@ -1,0 +1,10 @@
+[
+  { "slug": "quick-start", "title": "Quick start" },
+  { "slug": "view", "title": "The view" },
+  { "slug": "commands", "title": "Commands" },
+  { "slug": "scripting", "title": "Scripting" },
+  { "slug": "worktrees", "title": "Worktrees and branches" },
+  { "slug": "agents", "title": "Agents" },
+  { "slug": "configuration", "title": "Configuration" },
+  { "slug": "how-it-works", "title": "How it works" }
+]
