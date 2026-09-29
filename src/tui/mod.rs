@@ -48,6 +48,7 @@ use crossterm::terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +59,7 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
+use crate::vendor::Transcript;
 use crate::verbs::interrupt::{self, Cut};
 use crate::verbs::ls::Scope;
 use crate::verbs::resume::Comeback;
@@ -728,6 +730,8 @@ struct Screen {
     /// card rather than on it, so that a card built anywhere else — a patch is
     /// — is one the next pass takes again.
     taken: Option<Taken>,
+    /// The transcript behind the card, as far as it has been read.
+    heard: Heard,
     /// How far the card's body has been paged from its natural edge, and how
     /// far one page is. The paint owns the clamp: only it knows the rows the
     /// body was given.
@@ -1815,6 +1819,7 @@ impl Screen {
             Look::Away => {
                 self.card = None;
                 self.taken = None;
+                self.heard = Heard::default();
             }
             Look::Screen => {
                 // A cursor on a heading or on the fold is not a cursor on
@@ -1837,7 +1842,8 @@ impl Screen {
                 if !held && !self.stands() {
                     let width = self.body_width();
                     let taken = self.list.selected().map(|view| {
-                        let (card, fresh) = card_of(view, &self.root, width, self.theme);
+                        let (card, fresh) =
+                            card_of(view, &self.root, width, self.theme, &mut self.heard);
                         let taken = Taken {
                             id: card.id.clone(),
                             phase: card.phase,
@@ -4109,7 +4115,13 @@ fn holding(view: &View) -> bool {
 /// What the card was read from comes back beside it — see [`Freshness`] — so
 /// that the pass which asks for it next can tell whether all of that would
 /// come to the same card.
-fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, Freshness) {
+fn card_of(
+    view: &View,
+    root: &Path,
+    width: u16,
+    theme: Theme,
+    heard: &mut Heard,
+) -> (Card<Body>, Freshness) {
     let agent = Agent::open(root, view.id()).ok();
     // Whether the line at the foot of the card would reach anybody, read
     // through the door that would refuse it.
@@ -4173,7 +4185,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
         .as_ref()
         .filter(|_| working)
         .map(|agent| as_read(agent.dir().join(crate::store::LIVE)));
-    if !asks && let Some(said) = conversation_of(&view.meta, working) {
+    if !asks && let Some(said) = conversation_of(&view.meta, working, heard) {
         // What it is saying now, under the record: the vendor's own stream
         // where there is one, and only while a turn runs — a finished turn's
         // words are all on the record already. Where the vendor streams
@@ -4280,19 +4292,93 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
 /// shape under whoever opened it. Only a working one — an agent that is
 /// waiting, or whose turn is over, has nothing about to land behind the empty
 /// file, and what it has to show is elsewhere.
-fn conversation_of(
+fn conversation_of<'a>(
     meta: &crate::store::Meta,
     working: bool,
-) -> Option<Vec<crate::conversation::Said>> {
+    heard: &'a mut Heard,
+) -> Option<Cow<'a, [crate::conversation::Said]>> {
     let path = meta.transcript.as_ref()?;
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let said = std::fs::read_to_string(path)
-        .map(|text| crate::conversation::read(format, &text))
-        .unwrap_or_default();
+    let said = heard.of(path, format);
     if said.is_empty() {
-        return working.then(|| vec![crate::conversation::Said::Prompt(meta.task.clone())]);
+        return working
+            .then(|| Cow::Owned(vec![crate::conversation::Said::Prompt(meta.task.clone())]));
     }
-    Some(said)
+    Some(Cow::Borrowed(said))
+}
+
+/// A transcript already read into what was said, kept so that the next card
+/// on the same file reads only what changed.
+///
+/// A long session's transcript runs to tens of megabytes and parsing it whole
+/// takes hundreds of milliseconds, while a working agent's card is taken again
+/// every second. claude and codex only append whole lines, so their files are
+/// read on from where the last read stopped. A pi reading depends on the
+/// file's last entry and opencode's file is rewritten, so those are read whole,
+/// and only when the file has changed.
+#[derive(Default)]
+struct Heard {
+    path: PathBuf,
+    /// Device, inode, length and mtime of the file at the last read.
+    stamp: Option<(u64, u64, u64, Option<SystemTime>)>,
+    /// Bytes read into `said`, through the end of the last whole line.
+    read: u64,
+    said: Vec<crate::conversation::Said>,
+}
+
+impl Heard {
+    /// Everything said in the transcript at `path`, or nothing where it
+    /// cannot be read.
+    fn of(&mut self, path: &Path, format: Transcript) -> &[crate::conversation::Said] {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::os::unix::fs::MetadataExt;
+
+        let opened = std::fs::File::open(path).and_then(|file| {
+            let about = file.metadata()?;
+            let stamp = (about.dev(), about.ino(), about.len(), about.modified().ok());
+            Ok((file, stamp))
+        });
+        let Ok((mut file, stamp)) = opened else {
+            *self = Heard::default();
+            return &self.said;
+        };
+        let same = self.path == path
+            && self
+                .stamp
+                .is_some_and(|(dev, ino, ..)| (dev, ino) == (stamp.0, stamp.1));
+        if same && self.stamp == Some(stamp) {
+            return &self.said;
+        }
+        let appends = matches!(format, Transcript::Claude | Transcript::Codex);
+        if !(same && appends && stamp.2 >= self.read) {
+            *self = Heard {
+                path: path.to_path_buf(),
+                ..Heard::default()
+            };
+        }
+        let mut bytes = Vec::new();
+        if file
+            .seek(SeekFrom::Start(self.read))
+            .and_then(|_| file.read_to_end(&mut bytes))
+            .is_err()
+        {
+            *self = Heard::default();
+            return &self.said;
+        }
+        // A line still being written is left for the next read.
+        let whole = match appends {
+            true => bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |at| at + 1),
+            false => bytes.len(),
+        };
+        let text = String::from_utf8_lossy(&bytes[..whole]);
+        self.said.extend(crate::conversation::read(format, &text));
+        self.read += whole as u64;
+        self.stamp = Some(stamp);
+        &self.said
+    }
 }
 
 /// The chrome the vendor in this agent's pane draws under it.
@@ -5532,7 +5618,13 @@ mod tests {
                     ..State::default()
                 },
             );
-            let (card, _) = card_of(&agent, Path::new(""), 76, Theme::default());
+            let (card, _) = card_of(
+                &agent,
+                Path::new(""),
+                76,
+                Theme::default(),
+                &mut Heard::default(),
+            );
             assert_eq!(card.body.says(), long, "the whole answer, {phase:?}");
             assert!(card.answer, "an answer reads forward, {phase:?}");
         }
@@ -5550,7 +5642,17 @@ mod tests {
                 ..State::default()
             },
         );
-        assert!(!card_of(&busy, Path::new(""), 76, Theme::default()).0.answer);
+        assert!(
+            !card_of(
+                &busy,
+                Path::new(""),
+                76,
+                Theme::default(),
+                &mut Heard::default()
+            )
+            .0
+            .answer
+        );
 
         // And an idle agent with nothing recorded falls back to it too:
         // there is no pane here to capture, so its card is simply empty.
@@ -5564,7 +5666,13 @@ mod tests {
                 ..State::default()
             },
         );
-        let (card, _) = card_of(&quiet, Path::new(""), 76, Theme::default());
+        let (card, _) = card_of(
+            &quiet,
+            Path::new(""),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert!(!card.answer);
         assert_eq!(card.body.says(), "");
     }
@@ -5589,7 +5697,13 @@ mod tests {
         for path in [held.path().join("unwritten.jsonl"), empty] {
             let mut view = reading("port-a1b", Phase::Working, State::default());
             view.meta.transcript = Some(path.clone());
-            let (card, _) = card_of(&view, root.path(), 76, Theme::default());
+            let (card, _) = card_of(
+                &view,
+                root.path(),
+                76,
+                Theme::default(),
+                &mut Heard::default(),
+            );
             let says = card.body.says();
             assert!(
                 says.starts_with("❯ port the importer"),
@@ -5616,23 +5730,41 @@ mod tests {
 
         let adopted = reading("port-a1b", Phase::Working, State::default());
         assert_eq!(
-            card_of(&adopted, root.path(), 76, Theme::default())
-                .0
-                .body
-                .says(),
+            card_of(
+                &adopted,
+                root.path(),
+                76,
+                Theme::default(),
+                &mut Heard::default()
+            )
+            .0
+            .body
+            .says(),
             "",
             "an adopted agent has no transcript to stand in for"
         );
 
         let mut asking = stopped_on_a_question("ask-b2c");
         asking.meta.transcript = Some(unwritten.clone());
-        let (card, _) = card_of(&asking, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &asking,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert_eq!(card.body.says(), "", "a card that is asking shows nothing");
         assert!(card.question.is_some());
 
         let mut done = finished_saying("done-c3d", "the answer");
         done.meta.transcript = Some(unwritten);
-        let (card, _) = card_of(&done, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &done,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert_eq!(card.body.says(), "the answer", "the answer it left");
         assert!(card.answer);
     }
@@ -5666,7 +5798,13 @@ mod tests {
 
         // While it runs, read up from the end, where what is landing is.
         let running = reading("build-a1b", Phase::Working, State::default());
-        let (card, _) = card_of(&running, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &running,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert_eq!(card.body.says(), output);
         assert!(!card.answer, "a running command's card follows its output");
 
@@ -5683,7 +5821,13 @@ mod tests {
                     ..State::default()
                 },
             );
-            let (card, _) = card_of(&ended, root.path(), 76, Theme::default());
+            let (card, _) = card_of(
+                &ended,
+                root.path(),
+                76,
+                Theme::default(),
+                &mut Heard::default(),
+            );
             assert_eq!(card.body.says(), output, "{phase:?}");
             assert!(card.answer, "read forward, {phase:?}");
             assert_eq!(card.body.anchor(), 0, "from the top, {phase:?}");
@@ -5712,7 +5856,13 @@ mod tests {
         );
         view.meta.agent = Some("claude".to_string());
 
-        let (card, _) = card_of(&view, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &view,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert_eq!(card.body.says(), "could not read the state file");
         assert!(card.answer, "a dead vendor's card is read forward");
     }
@@ -5730,7 +5880,13 @@ mod tests {
         printed(root.path(), "build-a1b", &log);
 
         let running = reading("build-a1b", Phase::Working, State::default());
-        let (card, _) = card_of(&running, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &running,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         let says = card.body.says();
         let rows: Vec<&str> = log.lines().map(str::trim_end).collect();
         assert!(
@@ -5759,7 +5915,13 @@ mod tests {
         printed(root.path(), "quiet-a1b", "");
 
         let quiet = reading("quiet-a1b", Phase::Working, State::default());
-        let (card, _) = card_of(&quiet, root.path(), 76, Theme::default());
+        let (card, _) = card_of(
+            &quiet,
+            root.path(),
+            76,
+            Theme::default(),
+            &mut Heard::default(),
+        );
         assert_eq!(card.body.says(), "");
     }
 
@@ -7625,6 +7787,141 @@ diff --git a/src/bar.rs b/src/bar.rs
             screen.card.as_ref().map(|card| card.body.says()),
             Some("the first answer\n\nthe second answer".to_string()),
             "the card follows the file it was read from"
+        );
+    }
+
+    /// What `heard` holds for the transcript at `path`, one entry a string.
+    fn heard_of(heard: &mut Heard, path: &Path, format: Transcript) -> Vec<String> {
+        heard
+            .of(path, format)
+            .iter()
+            .map(|said| format!("{said:?}"))
+            .collect()
+    }
+
+    fn append(path: &Path, text: &str) {
+        use std::io::Write;
+        let mut file = std::fs::File::options().append(true).open(path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn heard_reads_a_growing_claude_transcript_on_from_where_it_stopped() {
+        use std::io::Write;
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("session.jsonl");
+        std::fs::write(&path, transcript("first")).unwrap();
+        let mut heard = Heard::default();
+        let text = |said: &str| format!("{:?}", crate::conversation::Said::Text(said.into()));
+        assert_eq!(
+            heard_of(&mut heard, &path, Transcript::Claude),
+            [text("first")]
+        );
+
+        // The first line changed in place and a second appended: only the
+        // appended bytes are read.
+        let mut file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.write_all(transcript("FIRST").as_bytes()).unwrap();
+        file.write_all(transcript("second").as_bytes()).unwrap();
+        drop(file);
+        assert_eq!(
+            heard_of(&mut heard, &path, Transcript::Claude),
+            [text("first"), text("second")]
+        );
+
+        // Half a line waits for the rest of it.
+        let third = transcript("third");
+        let (head, tail) = third.split_at(12);
+        append(&path, head);
+        assert_eq!(heard_of(&mut heard, &path, Transcript::Claude).len(), 2);
+        append(&path, tail);
+        assert_eq!(
+            heard_of(&mut heard, &path, Transcript::Claude),
+            [text("first"), text("second"), text("third")]
+        );
+
+        // A file renamed over it is read from the start.
+        let fresh = held.path().join("fresh.jsonl");
+        std::fs::write(&fresh, transcript("again")).unwrap();
+        std::fs::rename(&fresh, &path).unwrap();
+        assert_eq!(
+            heard_of(&mut heard, &path, Transcript::Claude),
+            [text("again")]
+        );
+
+        // And a file that has gone reads as nothing.
+        std::fs::remove_file(&path).unwrap();
+        assert!(heard_of(&mut heard, &path, Transcript::Claude).is_empty());
+    }
+
+    #[test]
+    fn heard_a_line_at_a_time_is_the_whole_file_read_at_once() {
+        // Reading on from where the last read stopped is only right while the
+        // reader keeps no state between lines.
+        let claude = [
+            serde_json::json!({"type": "user", "message": {"content": "port the importer"}}),
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "src/importer.rs"}},
+            ]}}),
+            serde_json::json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "fn main() {}"},
+            ]}}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove",
+                "reason": "absorbed_mid_turn", "content": "and the tests"}),
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Ported."},
+            ]}}),
+        ]
+        .map(|entry| format!("{entry}\n"))
+        .concat();
+        let codex = include_str!("../../tests/codex/rollouts/turn-steer-abort-kill-resume.jsonl");
+
+        for (format, whole) in [
+            (Transcript::Claude, claude.as_str()),
+            (Transcript::Codex, codex),
+        ] {
+            let held = TempDir::new().unwrap();
+            let path = held.path().join("session.jsonl");
+            std::fs::write(&path, "").unwrap();
+            let mut heard = Heard::default();
+            for line in whole.split_inclusive('\n') {
+                append(&path, line);
+                heard.of(&path, format);
+            }
+            assert_eq!(
+                heard.said,
+                crate::conversation::read(format, whole),
+                "{format:?}"
+            );
+            assert!(
+                heard.said.len() > 3,
+                "a fixture with something in it, {format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn heard_reads_a_transcript_its_vendor_writes_over_whole() {
+        // opencode's list is written over as the turn goes, so a longer file
+        // is not the old one with more on the end.
+        let held = TempDir::new().unwrap();
+        let path = held.path().join("messages.jsonl");
+        let said = |text: &str| {
+            let entry = serde_json::json!({"type": "assistant",
+                "content": [{"type": "text", "text": text}]});
+            format!("{entry}\n")
+        };
+        std::fs::write(&path, said("draft")).unwrap();
+        let mut heard = Heard::default();
+        assert_eq!(heard_of(&mut heard, &path, Transcript::Opencode).len(), 1);
+
+        std::fs::write(&path, said("final") + &said("and more")).unwrap();
+        assert_eq!(
+            heard_of(&mut heard, &path, Transcript::Opencode),
+            [
+                format!("{:?}", crate::conversation::Said::Text("final".into())),
+                format!("{:?}", crate::conversation::Said::Text("and more".into())),
+            ]
         );
     }
 
@@ -9623,10 +9920,16 @@ diff --git a/src/bar.rs b/src/bar.rs
             }),
             ("a card", |screen| {
                 screen.look = Look::Screen;
-                screen.card = screen
-                    .list
-                    .selected()
-                    .map(|view| card_of(view, Path::new(""), 76, Theme::default()).0);
+                screen.card = screen.list.selected().map(|view| {
+                    card_of(
+                        view,
+                        Path::new(""),
+                        76,
+                        Theme::default(),
+                        &mut Heard::default(),
+                    )
+                    .0
+                });
             }),
         ];
 
