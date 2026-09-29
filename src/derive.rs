@@ -1939,26 +1939,23 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The same prompt with the vendor's own count of the shells it still has
-    /// on its mode footer, as claude 2.1.278 draws it. The one thing on a
-    /// screen that says a count a Stop hook wrote is still true.
+    /// The same prompt with claude 2.1.278's count of running shells on its
+    /// mode footer: what says a Stop hook's count is still true.
     const A_SCREEN_WITH_A_SHELL: &str = "\
 ✻ Worked for 2m 26s · 1 shell still running
 ❯
   ⏵⏵ bypass permissions on · 1 shell
 ";
 
-    /// And the same screen once the shell is stopped, which is the footer with
-    /// no tail on it at all.
+    /// The same screen once the shell is stopped: the footer has no tail.
     const A_SCREEN_WITH_NO_SHELL: &str = "\
 ✻ Worked for 2m 26s
 ❯
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 ";
 
-    /// A turn somebody pressed esc on in the pane itself, as claude 2.1.278
-    /// draws it: the vendor's own row for an interrupted tool call, and
-    /// nothing under it but the chrome. No hook is sent about any of it.
+    /// claude 2.1.278 after esc in the pane: its row for an interrupted tool
+    /// call with only chrome under it. No hook is sent.
     const AN_INTERRUPTED_SCREEN: &str = "\
 ● Bash(sleep 120)
   Ran 1 shell command
@@ -1971,8 +1968,8 @@ mod tests {
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 ";
 
-    /// The same row with a turn under way over it, which is where it sits for
-    /// the rest of the session: a screen about something else.
+    /// The same row with a later turn running over it, where it stays for the
+    /// rest of the session.
     const A_SCREEN_PAST_AN_INTERRUPT: &str = "\
   ⎿  Interrupted · What should Claude do instead?
 
@@ -1991,8 +1988,8 @@ mod tests {
 
     const A_SHELL: &str = "$ ls\nCargo.toml  src\n$\n";
 
-    /// A command's pane part way through: what it has printed so far, and the
-    /// blank rows a capture of a screen taller than its output ends on.
+    /// A command's pane part way through, with the blank rows a capture of a
+    /// taller screen ends on.
     const A_COMMAND: &str = "\
 running 2 tests
 test reads_the_row ... ok
@@ -2000,9 +1997,8 @@ test reads_the_line ... ok
 
 ";
 
-    /// A turn running, as claude 2.1.240 draws it: the agent's own output, the
-    /// vendor's spinner line over the composer, and the mode footer that is on
-    /// every screen this vendor draws.
+    /// A running turn in claude 2.1.240: output, the spinner line over the
+    /// composer, and the mode footer that is on every claude screen.
     const A_WORKING_SCREEN: &str = "\
 ● Read(src/main.rs)
   ⎿  Read 210 lines
@@ -2014,14 +2010,13 @@ test reads_the_line ... ok
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The vendor's own notification about a dialog it will not describe,
-    /// whole. It says a question exists and not one word about what it wants.
+    /// The vendor's notification about a dialog, whole. It says a question
+    /// exists and nothing about what it asks.
     const A_PLACEHOLDER: &str = "Claude needs your permission";
 
-    /// The vendor's own menu, captured off a live claude 2.1.240 at 220
-    /// columns on 2026-08-25 and cut to the rows a floor of 24 would reach.
-    /// The two rows under the choices are the vendor's own furniture: neither
-    /// is in the payload the tool call carried.
+    /// claude 2.1.240's menu at 220 columns, cut to the rows a floor of 24
+    /// reaches. The two rows under the choices are chrome, not part of the
+    /// tool call's payload.
     const A_MENU: &str = "\
 ────────────────────────────────────────────────────────
  ☐ License
@@ -2039,12 +2034,10 @@ Which license should the LICENSE file contain?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
-    /// The prompt pi leaves when a turn is over: the rows the agent earned,
-    /// the vendor's own composer box, and under it the working directory and
-    /// the stats line it keeps beneath every screen. Not one anchor on it is
-    /// claude's — the shape is `assets/screen-rules-pi.toml`'s, measured off a
-    /// live 0.84.4. It opens on the row itself rather than on a continued
-    /// line, because pi indents what it draws by a column and `\` would eat it.
+    /// pi's prompt after a turn (0.84.4): the agent's rows, the composer box,
+    /// and the directory and stats line under every pi screen. Nothing on it
+    /// is claude's. Starts on the row itself, since pi indents by a column and
+    /// a trailing `\` would eat it.
     const A_PI_PROMPT: &str = " ran the migration
 
  Took 15.2s
@@ -2056,16 +2049,13 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)
 ";
 
-    /// What a reading of a finished pi turn writes to the record: the whole
-    /// transcript above the box, with the vendor's furniture already cut off
-    /// the bottom of it. pi's startup banner, the prompt somebody typed, the
-    /// bash call with its output and the line it ended on, a read, and under
-    /// them all the one sentence that was asked for.
+    /// What reading a finished pi turn writes to the record: the transcript
+    /// above the box with the chrome cut off. The startup banner, the prompt,
+    /// a bash call with its output, a read, and under them the one sentence
+    /// asked for.
     ///
-    /// Measured at 100 columns off a live 0.84.4 on 2026-09-05 and written out
-    /// row by row, renderer by renderer, in `docs/pi-screens.md`. Opens on the
-    /// row itself rather than on a continued line, the way [`A_PI_PROMPT`]
-    /// does and for the same reason.
+    /// pi 0.84.4 at 100 columns; see `docs/pi-screens.md`. Starts on the row
+    /// itself, like [`A_PI_PROMPT`].
     const A_PI_TURN: &str = " pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
  Press ctrl+o to show full startup help and loaded resources.
@@ -2091,9 +2081,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
  The file describes recent changes to caching and timeout configuration.";
 
-    /// The same turn at 40 columns, which is the width the answer wraps at.
-    /// Every tool row above it is the string it is at 100 columns; the
-    /// sentence is two rows.
+    /// The same turn at 40 columns, where the answer wraps onto two rows. The
+    /// tool rows are unchanged.
     const A_PI_TURN_AT_40: &str = " look up its docs. Ask it how to use or
  extend Pi.
 
@@ -2119,7 +2108,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  The file describes recent changes to
  caching and timeout configuration.";
 
-    /// A permission box, which is a screen with a question on it.
+    /// A permission box: a screen asking a question.
     const A_BLOCKING_SCREEN: &str = "\
 ────────────────────────────────
  Bash command
@@ -2162,16 +2151,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         }
     }
 
-    /// An agent's directory on disk, for the readings that go looking beside
-    /// the record for what the agent is saying now.
+    /// An agent's directory on disk, for readings that look beside the record
+    /// for what the agent is saying now.
     fn an_agent(root: &TempDir) -> Agent {
         Agent::create(root.path(), &meta()).expect("a record")
     }
 
     #[test]
     fn a_view_prints_who_an_agent_is_a_child_of() {
-        // `--json` is what a program drawing its own wall reads, so it carries
-        // the two fields it would nest a row by.
+        // `--json` carries the two fields a program nests rows by.
         let mut child = meta();
         child.parent = Some("scout-a1b".to_string());
         child.depth = 2;
@@ -2183,8 +2171,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(view.json()["parent"], "scout-a1b");
         assert_eq!(view.json()["depth"], 2);
 
-        // A root prints null and 0, which is what a record from an older amx
-        // reads as.
+        // A root prints null and 0, as does a record from an older amx.
         let root = View::new(
             meta(),
             state(Phase::Working, 1_000),
@@ -2208,8 +2195,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         started(0, state, alive, screen, now)
     }
 
-    /// The same reading of an agent started at a stated moment, which is what
-    /// a finished run with no spans of work on it is measured from.
+    /// [`reading`] for an agent started at `created`, which an ended run with
+    /// no spans is measured from.
     fn started(
         created: u64,
         state: &State,
@@ -2220,8 +2207,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         heard_from(true, created, state, alive, screen, now)
     }
 
-    /// The same reading, on a vendor that does or does not report through
-    /// hooks — see [`reports`].
+    /// [`reading`] on a vendor that does or does not report through hooks;
+    /// see [`reports`].
     fn heard_from(
         reports: bool,
         created: u64,
@@ -2243,8 +2230,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         )
     }
 
-    /// The same reading over a screen that has held still long enough for a
-    /// quiescent rule to end a turn on it — see [`SETTLED_LOOKS`].
+    /// [`reading`] over a screen that has held still long enough for a
+    /// quiescent rule to end a turn; see [`SETTLED_LOOKS`].
     fn settled(state: &State, screen: &str, now: u64) -> Verdict {
         read(
             state,
@@ -2264,9 +2251,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         reading(state, alive, screen, now).verdict
     }
 
-    /// The same reading with a beat on the record, as epoch seconds — see
-    /// [`Agent::heartbeat`]. Against pi's document, because pi is the vendor
-    /// whose report beats.
+    /// [`reading`] with a heartbeat on the record, in epoch seconds; see
+    /// [`Agent::heartbeat`]. Against pi's document, since pi's report beats.
     fn beating(state: &State, screen: Option<&str>, now: u64, heartbeat: Option<u64>) -> Reading {
         read(
             state,
@@ -2298,11 +2284,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_reads_the_pane_the_moment_the_hooks_say_waiting() {
-        // The record says waiting and cannot say what for: the event that put
-        // the box up carried no tool name, and the notification that would
-        // have described it is six seconds behind. The hooks are as fresh as
-        // they ever get, and the pane is still the only place the question and
-        // the choices under it are written.
+        // The record says waiting without saying what for: the event that put
+        // the box up named no tool, and the describing notification is six
+        // seconds behind. The hooks are fresh, and the pane is still the only
+        // place the question and its choices are.
         let first_look = reading(
             &state(Phase::Waiting, 1_000),
             true,
@@ -2324,8 +2309,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(asking.text, "Do you want to proceed?");
         assert_eq!(asking.options, ["Yes", "No"]);
 
-        // A pane that cannot be read leaves the conclusion exactly where the
-        // hooks left it.
+        // A pane that cannot be read leaves the hooks' conclusion as it is.
         let unreadable = reading(&state(Phase::Waiting, 1_000), true, None, 1_000);
         assert_eq!(unreadable.verdict.phase, Phase::Waiting);
         assert_eq!(unreadable.verdict.evidence, Evidence::Hooks);
@@ -2334,10 +2318,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_reads_the_pane_past_a_question_that_names_nothing() {
-        // The vendor's dialog host sends the dialog's title and nothing else,
-        // so the record ends up holding a sentence that says a question
-        // exists. A caller can do as much with that as with an empty field,
-        // and the pane is where the rest of it is.
+        // The vendor's dialog host sends only the dialog's title, so the record
+        // holds a sentence saying a question exists. That is no more use than
+        // an empty field, and the rest is on the pane.
         let mut placeheld = state(Phase::Waiting, 1_000);
         placeheld.question = Some(A_PLACEHOLDER.to_string());
         let asking = reading(&placeheld, true, Some(A_BLOCKING_SCREEN), 1_000)
@@ -2346,8 +2329,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(asking.text, "Do you want to proceed?");
         assert_eq!(asking.options, ["Yes", "No"]);
 
-        // The sentence that does name the tool is the vendor telling a caller
-        // something, and a reader holding one does not go to the pane at all.
+        // The sentence naming the tool is actionable, so a reader holding one
+        // does not go to the pane.
         let mut told = state(Phase::Waiting, 1_000);
         told.question = Some(format!("{A_PLACEHOLDER} to use Bash"));
         assert_eq!(
@@ -2359,15 +2342,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_replaces_a_question_a_screen_read_and_keeps_one_a_hook_reported() {
-        // Which of the two laws a reading is under used to be the vendor's
-        // business, and #SX6QK58A is what that cost: pi has reported through
-        // an extension since fa96854, so a question pi never reported — the
-        // login box, the trust selector, the startup gate, none of which fires
-        // an event — was treated as pi's own word and stood on the record
-        // while the pane moved on to the next of them.
-        //
-        // So the question answers for itself, on a vendor that reports as much
-        // as on one that does not.
+        // Deciding by vendor fails: pi reports through an extension, but its
+        // login box, trust selector and startup gate fire no event, so those
+        // questions were treated as pi's own word and stayed on the record
+        // while the pane moved on. The question's own source decides, on
+        // reporting vendors as on others.
         let vendor = Meta {
             parent: None,
             depth: 0,
@@ -2398,9 +2377,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             state
         };
 
-        // The vendor's own words about its own state, and a picture of them is
-        // not something to put in front of them. The screen fills what the
-        // hooks left empty and nothing else.
+        // A reported question is the vendor's own words: the screen only fills
+        // what the hooks left empty.
         let heard = looked_at_the_dialog("Claude needs your permission to use Bash", true);
         assert_eq!(
             heard.question.as_deref(),
@@ -2409,10 +2387,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(heard.options, ["Skip"], "which was nothing here");
         assert!(heard.reported, "and it is still the vendor's word");
 
-        // An earlier look at the same pane, and a pane holds one screen at a
-        // time. The later reading replaces it whole — the question and the
-        // choices drawn under it together — so a screen's answers never end up
-        // under another screen's question.
+        // An earlier look at the same pane: the later reading replaces the
+        // question and its choices together, so one screen's choices never
+        // end up under another screen's question.
         let read = looked_at_the_dialog("Which license should the LICENSE file contain?", false);
         assert_eq!(read.question.as_deref(), Some("Do you want to proceed?"));
         assert_eq!(read.options, ["Yes", "No"]);
@@ -2423,11 +2400,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     fn reader_lets_the_menu_on_the_screen_say_what_answers_it() {
         use crate::store::Kind;
 
-        // A record an older amx wrote: the vendor asks itself for permission
-        // to use its own question tool, that event arrived after the tool call
-        // that drew the menu, and `permission` is what was left on the record.
-        // The menu is on the pane, and a caller reading `permission` is told
-        // to answer a menu with y or n.
+        // A record from an older amx: the vendor asks itself permission to
+        // use its question tool after the menu is drawn, leaving `permission`
+        // on the record, and a caller told to answer a menu with y or n.
         let mut stale = state(Phase::Waiting, 1_000);
         stale.kind = Some(Kind::Permission);
         stale.question = Some("Claude needs your permission to use Ask User Question".to_string());
@@ -2442,10 +2417,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         );
         assert_eq!(view.json()["kind"], "question");
 
-        // It goes the one way only. A record that says a question is being
-        // asked is the vendor's own account of its own state, and a rule that
-        // named some other screen is amx's reading of a picture: the screen
-        // fills what the hooks left empty and corrects nothing.
+        // Only that way round. A record saying a question is asked is the
+        // vendor's own account, and a rule naming another screen only fills
+        // what the hooks left empty.
         let mut told = state(Phase::Waiting, 1_000);
         told.kind = Some(Kind::Question);
         let box_screen = reading(&told, true, Some(A_BLOCKING_SCREEN), 1_100);
@@ -2458,7 +2432,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             Some(Kind::Question)
         );
 
-        // And a screen no rule claimed says nothing about the kind either way.
+        // A screen no rule claimed says nothing about the kind.
         let mut held = state(Phase::Waiting, 1_000);
         held.kind = Some(Kind::Permission);
         let unclaimed = reading(&held, true, Some(A_SHELL), 1_500);
@@ -2473,10 +2447,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     fn reader_never_hands_a_caller_the_placeholder() {
         use crate::store::Kind;
 
-        // Whatever the pane said or failed to say, none of these reaches
-        // anybody: a row carrying one says an agent is waiting, which is what
-        // a row carrying nothing says, and it says it in words that read like
-        // an answer.
+        // None of these reaches anybody: a row carrying one reads like an
+        // answer while saying no more than an empty row.
         for nothing in [A_PLACEHOLDER, "Claude is waiting for your input", "   "] {
             let held = State {
                 state: Phase::Waiting,
@@ -2505,10 +2477,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     fn reader_lets_the_pane_answer_what_the_placeholder_was_holding() {
         use crate::store::Kind;
 
-        // The forgetting comes before the record is asked whether the screen
-        // tells it anything. Otherwise the placeholder sits in the one field
-        // the screen was going to fill, the record learns nothing, and the
-        // next reader finds it there and asks the pane all over again.
+        // The placeholder goes before the record is asked whether the screen
+        // adds anything; otherwise it holds the field the screen would fill
+        // and every later reader goes back to the pane.
         let mut state = State {
             state: Phase::Waiting,
             question: Some(A_PLACEHOLDER.to_string()),
@@ -2536,15 +2507,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_has_no_question_from_a_screen_it_never_looked_at() {
-        // A record that already says what is being asked has nothing to learn
-        // from the pane, so fresh hooks answer without a capture.
+        // A record that already names the question needs no capture while the
+        // hooks are fresh.
         let mut told = state(Phase::Waiting, 1_000);
         told.question = Some("Do you want to proceed?".to_string());
         let fresh = reading(&told, true, Some(A_BLOCKING_SCREEN), 1_000);
         assert_eq!(fresh.verdict.evidence, Evidence::Hooks);
         assert_eq!(fresh.asking, None);
 
-        // Neither has an agent that is working, whatever is on its screen.
+        // Nor does a working agent, whatever is on its screen.
         let mid_turn = reading(
             &state(Phase::Working, 1_000),
             true,
@@ -2554,7 +2525,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(mid_turn.verdict.phase, Phase::Working);
         assert_eq!(mid_turn.asking, None);
 
-        // And a screen that is not asking anything says nothing about it.
+        // A screen that is not asking anything says nothing about it.
         let quiet = reading(
             &state(Phase::Starting, 1_000),
             true,
@@ -2567,10 +2538,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_takes_what_a_working_agent_is_doing_off_the_spinner_line() {
-        // The hooks have gone quiet mid-turn, so the record's account of what
-        // this agent is doing is as old as the silence: the tool it names may
-        // have finished a minute ago. The vendor's own line is on the pane and
-        // it is about now.
+        // The hooks went quiet mid-turn, so the tool the record names may have
+        // finished a minute ago. The vendor's line on the pane is current.
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let reading = reading(&told, true, Some(A_WORKING_SCREEN), 1_100);
@@ -2583,9 +2552,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             "the glyph is the vendor's pulse rather than a word about the turn"
         );
 
-        // Onto the card's rule and no further. It is the vendor's chrome — a
-        // gerund it picked, a clock the row keeps in its own column — so the
-        // row goes on saying what the last tool call wrote.
+        // For the card's rule only. It is chrome (a gerund, a clock the row
+        // already shows), so the row keeps what the last tool call wrote.
         let root = TempDir::new().unwrap();
         let view = seen(&an_agent(&root), meta(), told, reading);
         assert_eq!(
@@ -2597,11 +2565,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_reads_the_spinner_line_while_the_hooks_are_fresh_and_name_no_tool() {
-        // The prompt went in a second ago: the hooks are fresh, the record
-        // says working, and nothing on it says what is being run because no
-        // tool has been called yet. The vendor's line is up the whole time, so
-        // it is read now — for the card's rule, which is the one place the
-        // vendor's own words about a turn under way belong.
+        // A second after the prompt: fresh hooks, working, and no tool called
+        // yet, so the record names nothing. The spinner line is read now for
+        // the card's rule.
         let told = state(Phase::Working, 1_000);
         let fresh = reading(&told, true, Some(A_WORKING_SCREEN), 1_001);
         assert_eq!(fresh.verdict.phase, Phase::Working);
@@ -2627,14 +2593,14 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
              the gerund the vendor is spinning"
         );
 
-        // A pane the vendor has not drawn its line on yet says nothing, and
-        // the row stays as empty as the record left it.
+        // Before the vendor draws its line, the row stays as empty as the
+        // record.
         let blank = reading(&told, true, Some(IDLE_SCREEN), 1_001);
         assert_eq!(blank.verdict.phase, Phase::Working);
         assert_eq!(blank.doing, None);
 
-        // Both measured vendors spin a row — claude by the fragments on it,
-        // pi by the braille frame it opens with — so both are asked.
+        // Both measured vendors spin a row, claude by its fragments and pi by
+        // its braille frame, so both are asked.
         assert!(wants_the_screen(
             rules::of("claude"),
             &told,
@@ -2655,9 +2621,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_reads_the_spinner_line_through_whichever_glyph_is_on_it() {
-        // The glyph cycles through six shapes and a vendor bump may bring a
-        // seventh. What they have in common is that they are one character and
-        // not a word, which is the whole of what this leans on.
+        // The glyph cycles through six shapes and may gain more; all that is
+        // relied on is one character that is not a word.
         for glyph in ["✻", "✽", "✢", "✶", "·", "*"] {
             let screen = format!(
                 "{glyph} Smooshing… (7s · thinking with xhigh effort)\n────────────────────────────────────────\n❯\n────────────────────────────────────────\n  ⏵⏵ auto mode on\n"
@@ -2673,9 +2638,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_finds_the_spinning_line_by_the_vendors_own_fragments() {
-        // Two punctuation fragments are what claude's line always carries, and
-        // they are claude's: another vendor spins a line of its own, on which
-        // they never appear. Both are read off the document that says so.
+        // claude's line always carries two punctuation fragments, read from
+        // claude's document. Another vendor's line never has them.
         let second = second_vendors_screens();
         let its_own = " thinking for 12s about the file you named\n = compose =\n";
         assert_eq!(
@@ -2696,9 +2660,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn reader_reads_pis_spinner_out_of_the_border_and_its_thinking_row_above_it() {
-        // pi 0.85.1 draws its status into the composer's top border, and with
-        // thinking hidden it draws `Thinking...` for the run until text or a
-        // tool row follows (Saiful's setting; 2026-09-18).
+        // pi 0.85.1 draws its status in the composer's top border, and with
+        // `hideThinkingBlock` it draws `Thinking...` until text or a tool row
+        // follows.
         let pi = rules::of("pi");
         let thinking = "\
  First think about the sky.
@@ -2726,8 +2690,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "a row under Thinking... is the thinking over, and the border says what it says"
         );
 
-        // A status line an extension wrote, and the one pi draws on a row of
-        // its own, still read as they did.
+        // A status line an extension wrote, and pi's own status row, still
+        // read as before.
         let compacting = " ⠼ Compacting context... (escape to cancel)\n────────\n";
         assert_eq!(
             doing(pi, compacting).as_deref(),
@@ -2737,9 +2701,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_what_an_agent_is_doing_only_where_it_read_it() {
-        // Fresh hooks and a record that names what is being run: the line is
-        // read, since the card's rule wants the vendor's words the whole turn,
-        // but the row keeps the record's own account while that tool runs.
+        // Fresh hooks and a named tool: the line is read for the card, but the
+        // row keeps the record's account while the tool runs.
         let mut running = state(Phase::Working, 1_000);
         running.summary = Some("Running Bash".to_string());
         let fresh = reading(&running, true, Some(A_WORKING_SCREEN), 1_000);
@@ -2761,14 +2724,14 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "and the view carries the vendor's line beside it"
         );
 
-        // And a screen with no turn running on it says nothing about one: a
-        // question, a prompt nobody is at, and a shell amx cannot account for.
+        // A screen with no turn running says nothing about one: a question, an
+        // idle prompt, or an unknown shell.
         for screen in [A_BLOCKING_SCREEN, IDLE_SCREEN, A_SHELL] {
             let reading = reading(&state(Phase::Starting, 1_000), true, Some(screen), 1_100);
             assert_eq!(reading.doing, None, "{screen}");
         }
 
-        // What the record says is what the row says, then.
+        // So the row says what the record says.
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let reading = reading(&told, true, Some(A_SHELL), 1_500);
@@ -2781,9 +2744,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_what_a_working_agent_is_saying_off_its_stream() {
-        // pi is writing prose with no tool running. The record's summary is
-        // the tool that finished — pi reports no end to a tool call — and the
-        // stream is what is happening now, so the stream is what the row says.
+        // pi is writing prose with no tool running. The record's summary is the
+        // finished tool (pi reports no tool end), so the stream wins.
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let root = TempDir::new().unwrap();
@@ -2799,8 +2761,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(view.line(), Some("The redirect drops the query."));
         assert_eq!(view.json()["summary"], "The redirect drops the query.");
 
-        // A tool running has no stream: the vendor takes it down as the
-        // message ends. The record's word stands.
+        // A running tool has no stream: the vendor takes it down when the
+        // message ends. The record stands.
         std::fs::remove_file(&streaming).unwrap();
         let quiet = seen(
             &agent,
@@ -2810,7 +2772,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         assert_eq!(quiet.line(), Some("Running Bash"));
 
-        // A stream a vendor left behind a finished turn is not its answer.
+        // A stream left behind a finished turn is not its answer.
         std::fs::write(&streaming, "\nThe redirect drops the query.\n\nFixing it.").unwrap();
         let mut ended = state(Phase::Idle, 1_000);
         ended.result = Some("the redirect keeps the query now".to_string());
@@ -2823,8 +2785,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(done.line(), Some("the redirect keeps the query now"));
     }
 
-    /// A claude transcript part way through a turn: the agent has said a
-    /// sentence, and the call under it is appended as the turn goes on.
+    /// A claude transcript mid-turn: a sentence, and the call after it.
     const A_SENTENCE: &str = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The importer keeps its own clock.\"}]}}\n";
     const A_CALL: &str = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n";
 
@@ -2843,9 +2804,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             ..meta()
         };
 
-        // The hooks went quiet on a call ten minutes ago and the vendor's line
-        // is up on the pane. The transcript is newer than either: the agent
-        // answered that call and has said a sentence since.
+        // The hooks went quiet on a call ten minutes ago. The transcript is
+        // newer than the record and the spinner: the agent answered that call
+        // and has said a sentence since.
         let mut told = state(Phase::Working, 1_000);
         told.summary = Some("Running Bash".to_string());
         let row = |meta: &Meta, screen, now| {
@@ -2862,8 +2823,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "the newest line of the conversation, over the line the vendor spins"
         );
 
-        // The next call lands: the tool and the one argument worth a row, in
-        // place of the tool the last hook named.
+        // The next call lands: the tool and its one argument worth a row.
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
         assert_eq!(
             row(&keeping_one, None, 1_000).as_deref(),
@@ -2871,11 +2831,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "fresh hooks are still the older account of the same call"
         );
 
-        // Nothing said this turn leaves the row where it was: a transcript
-        // holding only what the person typed says nothing a reader wants, and
-        // a record naming no transcript is not read for one. The vendor's
-        // spinner line is on the pane either way and is no answer here — it is
-        // the card rule's, not the row's.
+        // Nothing said this turn leaves the row alone: a transcript holding
+        // only the user's prompt says nothing useful, and a record with no
+        // transcript is not read for one. The spinner line is for the card.
         std::fs::write(
             &session,
             "{\"type\":\"user\",\"message\":{\"content\":\"port the importer\"}}\n",
@@ -2887,8 +2845,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             }
         }
 
-        // And the vendor's own stream comes first of all: it is the sentence
-        // being written as the row is drawn.
+        // The vendor's stream comes first: it is the sentence being written.
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).unwrap();
         std::fs::write(
             agent.dir().join(crate::store::LIVE),
@@ -2900,8 +2857,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some("Reading the importer's clock.")
         );
 
-        // A turn that has ended is answered off the record, whatever the
-        // transcript still holds.
+        // A finished turn is answered off the record, whatever the transcript
+        // holds.
         let mut ended = state(Phase::Idle, 1_000);
         ended.result = Some("the importer keeps the clock now".to_string());
         let done = seen(
@@ -2915,10 +2872,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_keeps_a_rewrite_of_this_turn_until_the_transcript_moves() {
-        // A `summary_command` has written a line about the turn under way,
-        // over an answer it read the whole of. The transcript's last line is
-        // one row of the same work, so the rewrite is the better of the two
-        // until the agent says something the rewrite cannot have read.
+        // A `summary_command` rewrite of the running turn covers the whole of
+        // it, so it beats the transcript's last line until the agent says
+        // something the rewrite cannot have read.
         let root = TempDir::new().unwrap();
         let agent = an_agent(&root);
         let session = root.path().join("session.jsonl");
@@ -2955,7 +2911,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         });
         assert_eq!(row().as_deref(), Some("Porting the importer's clock."));
 
-        // The transcript moving is what takes it back.
+        // The transcript moving takes it back.
         ask(Asked {
             turn: told.since,
             at: written - 1,
@@ -2963,8 +2919,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         });
         assert_eq!(row().as_deref(), Some("Read src/importer.rs"));
 
-        // A line written about the turn before this one says nothing about
-        // this one, and an ask still out has written no line at all.
+        // A line about the previous turn says nothing about this one, and an
+        // ask still out has written no line.
         for asked in [
             Asked {
                 turn: told.since - 1,
@@ -2981,9 +2937,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             assert_eq!(row().as_deref(), Some("Read src/importer.rs"));
         }
 
-        // Nor does the line the vendor spins overtake it. That line says the
-        // turn is running and how long for, and the rewrite says what it is
-        // running: the row gives up its one line to the second of those.
+        // The spinner line does not overtake it either: it says how long the
+        // turn has run, the rewrite says what it is doing.
         ask(Asked {
             turn: told.since,
             at: written + 1,
@@ -3000,8 +2955,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_the_stream_beside_the_record() {
-        // The whole way through: a working agent whose vendor is streaming to
-        // its record reads, on the wall, as saying the stream's first line.
+        // Throughout: a working agent whose vendor streams reads as the
+        // stream's first line.
         let root = TempDir::new().unwrap();
         let server = Own(
             Server::named(format!("amx-derive-live-{}", std::process::id())).with_conf("/dev/null"),
@@ -3032,9 +2987,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_what_a_finished_turn_left_on_the_pane() {
-        // pi's own prompt, against pi's own document: what comes back is the
-        // rows the agent earned, and none of the box, working directory or
-        // stats line the vendor drew under them.
+        // pi's prompt against pi's document: the agent's rows come back
+        // without the box, directory or stats line under them.
         let ended = read(
             &state(Phase::Starting, 1_000),
             0,
@@ -3052,18 +3006,15 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some(" ran the migration\n\n Took 15.2s")
         );
 
-        // A turn still running has not answered anything, a screen with a
-        // question on it is asking rather than answering, and a screen no rule
-        // claims is not a reading at all.
+        // A running turn, a screen asking a question and an unclaimed screen
+        // have no answer to read.
         for screen in [A_WORKING_SCREEN, A_BLOCKING_SCREEN, A_SHELL] {
             let reading = reading(&state(Phase::Starting, 1_000), true, Some(screen), 1_100);
             assert_eq!(reading.said, None, "{screen}");
         }
 
-        // The reading is about the screen and says nothing about whether it is
-        // worth keeping: whose pane is worth writing down is
-        // `answers_on_the_pane`'s question, and the record write is where it is
-        // asked.
+        // The reading does not decide whether the screen is worth keeping;
+        // `answers_on_the_pane` does, at the record write.
         let claude = reading(
             &state(Phase::Starting, 1_000),
             true,
@@ -3080,13 +3031,10 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_writes_a_pane_down_only_where_nothing_else_will_ever_say_it() {
-        // A vendor that reports through no hooks and keeps no conversation has
-        // a pane that is the only account of a turn there will ever be; the
-        // test-only second vendor is that shape. claude and pi say what they
-        // answered themselves — a hook payload, a transcript — and a picture
-        // of those words is not something to write beside them. A command amx
-        // has no entry for is measured neither way, which is the reading
-        // `logs` gives one too.
+        // Only a vendor with neither hooks nor a transcript has its answers
+        // on the pane alone; the test-only second vendor is that shape. claude
+        // and pi report their answers themselves. An unregistered command
+        // counts as neither, as it does for `logs`.
         let ran = |agent: Option<&str>| {
             answers_on_the_pane(vendor_of(&Meta {
                 parent: None,
@@ -3106,8 +3054,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert!(!ran(None), "and a record naming no command at all");
     }
 
-    /// Whether a reading of this record went to the pane at all, which is the
-    /// question [`wants_the_screen`] has to answer without going there.
+    /// Whether a reading of this record captured the pane, the question
+    /// [`wants_the_screen`] answers without capturing.
     fn looked_at_the_pane(
         meta: &Meta,
         state: &State,
@@ -3134,20 +3082,18 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_which_readings_need_a_pane_before_it_takes_one() {
-        // A wall's screens are asked for in one call, so which of them are
-        // wanted is worked out from the records before the first is taken.
-        // That answer has to be the one the reading itself reaches: a reading
-        // that wanted a screen nobody asked for would conclude `unknown` off a
-        // capture that was never taken, and one that did not would have amx
-        // pay for a screen it reads nothing off.
+        // A wall works out which screens it wants from the records before
+        // capturing, and must agree with the reading: wanting too few reads
+        // `unknown` off a capture never taken, too many pays for unread
+        // captures.
         let mut asked = state(Phase::Waiting, 1_000);
         asked.question = Some("Do you want to proceed?".to_string());
         let mut placeheld = state(Phase::Waiting, 1_000);
         placeheld.question = Some(A_PLACEHOLDER.to_string());
         let mut running = state(Phase::Working, 1_000);
         running.summary = Some("Running Bash".to_string());
-        // A turn amx cut short is read off the pane from the moment the key
-        // landed, however fresh the record is and whatever it says it is doing.
+        // A turn amx cut short is read off the pane at once, however fresh
+        // the record.
         let mut cut = running.clone();
         cut.interrupted_at = 1_001;
 
@@ -3164,8 +3110,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             state(Phase::Failed, 1_000),
             state(Phase::Stopped, 1_000),
         ];
-        // A command is the other half of it: the two have to agree about a
-        // record that names no vendor as well as about one that does.
+        // Commands too: the two must agree on records with and without a
+        // vendor.
         let started_by = [
             Meta {
                 parent: None,
@@ -3182,10 +3128,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                 for alive in [true, false] {
                     // Fresh, on the last second of freshness, and stale.
                     for now in [1_000, 1_000 + FRESH, 1_100] {
-                        // And with nothing beating, a beat as fresh as the
-                        // window allows, and one past it: a beat moves what the
-                        // reading believes, so it has to move both of these or
-                        // neither.
+                        // And with no beat, a beat as fresh as the window
+                        // allows, and one past it: a beat must move both
+                        // answers or neither.
                         for beat in [None, Some(now - FRESH), Some(now - FRESH - 1)] {
                             assert_eq!(
                                 wants_the_screen(
@@ -3208,7 +3153,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         }
     }
 
-    /// A tmux server of this test's own, gone when the test is.
+    /// A tmux server owned by the test, killed on drop.
     struct Own(Server);
 
     impl Drop for Own {
@@ -3217,17 +3162,12 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         }
     }
 
-    /// A pane with a screen on it and nothing running but a sleep, on a
-    /// server nothing else is using.
+    /// A pane showing `screen` over a sleep, on its own server.
     ///
-    /// In a session named for the agent whose pane it is, the way
-    /// [`crate::spawn::place`] names them: that name is what makes the pane
-    /// answer for that agent and nobody else.
-    ///
-    /// Waited for on the last row the screen has anything on it, which is a
-    /// row of its vendor's own chrome on every screen here: a capture carrying
-    /// that row is a capture of the whole screen, and half a screen is a pane
-    /// no vendor ever drew.
+    /// In a session named for agent `id`, as [`crate::spawn::place`] names
+    /// them, which is what makes the pane answer for that agent. Waits until
+    /// the screen's last non-blank row (vendor chrome on every screen here) is
+    /// captured, so the capture holds the whole screen.
     fn a_pane_showing(server: &Server, id: &str, screen: &str) -> crate::tmux::PaneId {
         let showing = [
             "sh",
@@ -3262,9 +3202,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         panic!("the screen never reached the pane");
     }
 
-    /// An agent's record on disk: how it was started, and what it was last
-    /// heard doing. Written rather than recorded through a writer, because a
-    /// reading is about a record that has gone quiet and a test says when.
+    /// Writes an agent's record straight to disk, bypassing the writer, so a
+    /// test controls when it went quiet.
     fn a_record(root: &Path, meta: &Meta, state: &State) {
         let agent = Agent::create(root, meta).expect("a record");
         std::fs::write(
@@ -3281,10 +3220,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Own(Server::named(format!("amx-derive-{}", std::process::id())).with_conf("/dev/null"));
         let socket = server.0.socket().clone();
 
-        // Two agents on one server, both gone quiet, each with a different
-        // screen on its pane. The screens are taken in one call, and what
-        // says they were handed back to the right readings is that the two
-        // readings differ.
+        // Two quiet agents on one server with different screens. The screens
+        // are captured in one call; the readings differing shows each got its
+        // own.
         let asking = a_pane_showing(&server.0, "asks-a1b", A_BLOCKING_SCREEN);
         let idle = a_pane_showing(&server.0, "idles-b2c", IDLE_SCREEN);
         for (id, pane, phase) in [
@@ -3297,8 +3235,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                     parent: None,
                     depth: 0,
                     id: id.to_string(),
-                    // Both are claude agents: a record naming no vendor is a
-                    // command, and a command's row is its own output.
+                    // Both run claude: a record naming no vendor is a
+                    // command.
                     agent: Some("claude".to_string()),
                     model: None,
                     effort: None,
@@ -3331,11 +3269,10 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_gives_a_pane_to_the_one_agent_it_answers_for() {
-        // Two records naming one pane, which is what a machine hands out on
-        // its own: a server dies with a reboot, the records of the agents that
-        // were on it never hear their pane go, and the next server numbers its
-        // panes from %0 again. The pane answers for the agent whose session it
-        // is in, and the other record has lost it as surely as if it had gone.
+        // Two records naming one pane, as after a reboot: the server died, the
+        // records never saw their panes go, and the new server numbers from %0
+        // again. The pane answers for the agent whose session it is in; the
+        // other record has lost it.
         let root = TempDir::new().unwrap();
         let server = Own(
             Server::named(format!("amx-derive-owner-{}", std::process::id()))
@@ -3371,7 +3308,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "a pane answering for somebody else is a pane this record lost"
         );
 
-        // A wall reads them the same way, off the one listing it takes.
+        // A wall reads them the same way off its one listing.
         let wall = views(root.path(), 1_100).expect("a reading");
         let seen = |id: &str| {
             wall.iter()
@@ -3383,9 +3320,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(seen("lost-it-b2c").phase(), Phase::Stopped);
         assert_eq!(seen("lost-it-b2c").verdict.evidence, Evidence::Gone);
 
-        // And a record amx parked keeps the state it was parked in, which is
-        // what it does for a pane that is missing: both are the record naming
-        // a pane it no longer has.
+        // A parked record keeps its state, as it does for a missing pane:
+        // both name a pane they no longer have.
         let mut parked = state(Phase::Idle, 1_000);
         parked.parked_at = 1_050;
         let lost = Agent::open(root.path(), "lost-it-b2c").expect("the record");
@@ -3406,13 +3342,10 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         let socket = server.0.socket().clone();
 
-        // Two agents that have both gone quiet at a finished turn, each on the
-        // vendor whose prompt is on its pane. Both vendors say what they
-        // answered themselves — claude in its Stop payload and its transcript,
-        // pi in the report its extension sends when the turn settles and the
-        // session file that report names — and a picture of those words is not
-        // something to write down beside them. The reading still says what
-        // the screen says: idle, by the vendor's own rule.
+        // Two quiet agents at finished turns, each on its own vendor's prompt.
+        // claude and pi both report their answers (claude in its Stop payload
+        // and transcript, pi through its extension's report and session file),
+        // so nothing is written from the screen. The reading still says idle.
         let pi = a_pane_showing(&server.0, "pi-a1b", A_PI_PROMPT);
         let claude = a_pane_showing(&server.0, "claude-b2c", IDLE_SCREEN);
         for (id, agent, pane) in [("pi-a1b", "pi", &pi), ("claude-b2c", "claude", &claude)] {
@@ -3490,10 +3423,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             &state(Phase::Working, 1_000),
         );
 
-        // Nothing is listening on that socket, so anything that asked tmux
-        // about this agent finds no pane and calls it stopped. What the
-        // records say is that it is working, and that is the whole of what a
-        // surface has before it has waited for anything.
+        // Nothing listens on that socket, so asking tmux would find no pane
+        // and call it stopped. The records say working, and that is all a
+        // surface has before it waits for anything.
         let recorded = recorded(root.path(), 1_100).expect("the records");
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].phase(), Phase::Working);
@@ -3511,9 +3443,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_the_record_as_written_where_a_tmux_that_cannot_be_asked_is() {
-        // A tmux that never ran said nothing about the pane, so the reading is
-        // the record's, and nothing is written over it: a working agent read
-        // as stopped would end every wait on it.
+        // A tmux that never ran said nothing about the pane, so the record
+        // stands and nothing is written: calling it stopped would end every
+        // wait on it.
         let root = TempDir::new().unwrap();
         a_record(
             root.path(),
@@ -3544,9 +3476,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_a_record_that_has_ended_the_same_way_with_or_without_a_look() {
-        // The record ended it, and a reader that has looked at nothing says
-        // so in the same words as one that has: this is not a guess either
-        // reader is making.
+        // The record ended it, and readers with and without a look agree.
         let root = TempDir::new().unwrap();
         let mut done = state(Phase::Done, 1_000);
         done.ended = 1_000;
@@ -3570,9 +3500,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_takes_an_ended_run_with_no_spans_but_turns_in_its_log_off_the_log() {
-        // The record added nothing up, and the log has a minute's turn in a
-        // day-long run. A minute is what it worked: the whole run is only for
-        // a log with no turn edges in it.
+        // No spans on the record, and the log has a minute's turn in a
+        // day-long run: it worked a minute. The whole run is only for a log
+        // with no turn edges.
         let root = TempDir::new().unwrap();
         let mut done = state(Phase::Done, 90_000);
         done.ended = 90_000;
@@ -3606,7 +3536,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let read = view(root.path(), &turned.id, 99_000).unwrap();
         assert_eq!((read.verdict.worked, read.verdict.age), (60, 60));
 
-        // A log with no turn edges is still read as the whole of the run.
+        // A log with no turn edges still reads as the whole run.
         std::fs::write(agent.events_path(), "").unwrap();
         let spanless = &recorded(root.path(), 99_000).unwrap()[0];
         assert_eq!(spanless.verdict.worked, 89_100);
@@ -3646,9 +3576,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn records_skips_an_agent_removed_after_the_listing() {
-        // `amx clear` or a sweep in another amx can remove a directory
-        // between `store::list` and the open. That costs the one record, not
-        // the whole listing.
+        // `amx clear` or a sweep in another amx can remove a directory between
+        // `store::list` and the open. That costs the one record, not the whole
+        // listing.
         let root = TempDir::new().unwrap();
         a_record(root.path(), &meta(), &state(Phase::Idle, 1_000));
         let listed = vec!["going-g0e".to_string(), meta().id];
@@ -3672,7 +3602,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     #[test]
     fn reader_takes_the_record_when_the_record_says_how_it_ended() {
         for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
-            // Long stale, no pane, and it does not matter: this is over.
+            // Long stale and no pane, but the record says it is over.
             let verdict = decided(&state(phase, 100), false, Some(A_SHELL), 10_000);
             assert_eq!(verdict.phase, phase);
             assert_eq!(verdict.evidence, Evidence::Record);
@@ -3701,20 +3631,17 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_believes_a_fresh_beat_the_way_it_believes_a_hook() {
-        // Half a minute into a tool call the record is as stale as the quiet,
-        // and the screen under it is one no rule claims — so the reading had
-        // nothing left to say about a turn that was plainly still going. The
-        // vendor's own report is alive for as long as the turn is, and beats on
-        // the record to say so: that is a report of the same thing a hook
-        // reports, and it is heard the same way.
+        // Half a minute into a tool call the record is stale and the screen
+        // is one no rule claims. The vendor's report beats on the record while
+        // the turn runs, and a beat is heard like a hook.
         let running = state(Phase::Working, 1_000);
         let beaten = beating(&running, Some(A_SHELL), 1_030, Some(1_028));
         assert_eq!(beaten.verdict.phase, Phase::Working);
         assert_eq!(beaten.verdict.evidence, Evidence::Hooks);
         assert_eq!(beaten.verdict.age, 2, "the beat is the last thing heard");
 
-        // Nothing beating, and a beat older than the window, are both a record
-        // nothing has spoken for since it went quiet.
+        // No beat, or one older than the window, leaves the record unheard
+        // from.
         for beat in [None, Some(1_030 - FRESH - 1)] {
             let quiet = beating(&running, Some(A_SHELL), 1_030, beat);
             assert_eq!(quiet.verdict.phase, Phase::Unknown, "{beat:?}");
@@ -3724,9 +3651,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_the_screen_once_the_hooks_have_gone_quiet() {
-        // Nothing outstanding on the record, so the idle rule may decide at
-        // once — this is the parked agent that would otherwise sit at
-        // `starting` for ever.
+        // Nothing outstanding, so the idle rule decides at once: this is the
+        // parked agent that would otherwise sit at `starting`.
         let verdict = decided(
             &state(Phase::Starting, 1_000),
             true,
@@ -3742,8 +3668,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     #[test]
     fn reader_does_not_end_a_running_turn_on_one_look() {
         // The idle screen and a mid-turn pause are the same bytes. With a turn
-        // on the record, one look at a still screen decides nothing, and the
-        // record stands with its age beside it.
+        // on the record, one look at a still screen decides nothing.
         let verdict = decided(
             &state(Phase::Working, 1_000),
             true,
@@ -3758,11 +3683,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_leaves_a_turn_whose_shells_are_still_running_at_work() {
-        // The prompt a finished turn sits at and the prompt a turn that left
-        // shells running sits at are nearly the same bytes: the vendor has
-        // finished and what it started has not. The count the stop wrote is
-        // what tells the two apart, so the rule that reads the prompt names
-        // the screen and does not end the turn.
+        // A finished turn's prompt and one with shells still running behind it
+        // look alike. The count the Stop hook wrote tells them apart, so the
+        // rule names the screen without ending the turn.
         let mut running = state(Phase::Working, 1_000);
         running.background = 2;
 
@@ -3771,7 +3694,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(verdict.evidence, Evidence::Hooks);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"), "and says why");
 
-        // With nothing running the same screen after the same wait ends it.
+        // With nothing running, the same screen after the same wait ends it.
         let verdict = settled(&state(Phase::Working, 1_000), IDLE_SCREEN, 1_100);
         assert_eq!(verdict.phase, Phase::Idle);
         assert_eq!(verdict.evidence, Evidence::Screen);
@@ -3779,9 +3702,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_spends_a_shell_count_the_screen_has_stopped_agreeing_with() {
-        // Nothing is sent when somebody stops a background shell from inside
-        // the pane, so the count is about the second the turn ended. Without
-        // this the row said `working` for as long as the agent lived.
+        // Nothing is sent when somebody stops a background shell in the pane,
+        // so the count goes stale. Without this the row said `working` until
+        // the agent died.
         let mut running = state(Phase::Working, 1_000);
         running.background = 2;
 
@@ -3789,13 +3712,13 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(verdict.phase, Phase::Idle, "the count is spent");
         assert_eq!(verdict.evidence, Evidence::Screen);
 
-        // And the same screen with the vendor's own count on its footer keeps
-        // the turn where the hooks left it.
+        // The same screen with the vendor's shell count on its footer keeps
+        // the turn running.
         let verdict = settled(&running, A_SCREEN_WITH_A_SHELL, 1_100);
         assert_eq!(verdict.phase, Phase::Working);
 
-        // The patience is the quiescent rule's own, unchanged: one look at a
-        // still prompt ends nothing, count or no count.
+        // The quiescent wait is unchanged: one look at a still prompt ends
+        // nothing.
         let verdict = decided(&running, true, Some(A_SCREEN_WITH_NO_SHELL), 1_100);
         assert_eq!(verdict.phase, Phase::Working);
         assert_eq!(verdict.evidence, Evidence::Hooks);
@@ -3803,10 +3726,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_takes_a_vendor_that_says_nothing_about_its_shells_at_the_count() {
-        // A screen with no footer amx has measured a shell tail on says
-        // nothing either way, and silence is not `no shells`: reading it as
-        // one would end every turn that left a shell running on every vendor
-        // amx has not measured one for.
+        // A footer with no measured shell tail says nothing either way, and
+        // silence is not "no shells".
         let rules = rules::of("pi");
         assert!(
             rules
@@ -3819,25 +3740,23 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_ends_a_turn_somebody_cut_short_in_the_pane_on_the_first_look() {
-        // claude fires no hook for an interrupt, so a key pressed in front of
-        // it leaves the record saying a turn is running and nothing but the
-        // pane to say otherwise. The vendor's own row for it is that word, so
-        // the freshness window does not hold the row at `working` and the
-        // quiescent rule under it is handed its patience as served.
+        // claude fires no hook on esc, so only the pane says the turn ended.
+        // Its interrupted row does, so neither the fresh window nor the
+        // quiescent wait holds the row at `working`.
         let running = state(Phase::Working, 1_000);
         let verdict = decided(&running, true, Some(AN_INTERRUPTED_SCREEN), 1_001);
         assert_eq!(verdict.phase, Phase::Idle);
         assert_eq!(verdict.evidence, Evidence::Screen);
         assert_eq!(verdict.rule.as_deref(), Some("idle_prompt"));
 
-        // The row stays in the transcript for the rest of the session, so what
-        // makes it this turn's news is being the last row the agent earned.
-        // With a turn under way over it, the hooks decide as they always did.
+        // The row stays in the transcript for the session, so only being the
+        // last row makes it news. With a turn running over it, the hooks
+        // decide.
         let verdict = decided(&running, true, Some(A_SCREEN_PAST_AN_INTERRUPT), 1_001);
         assert_eq!(verdict.phase, Phase::Working);
         assert_eq!(verdict.evidence, Evidence::Hooks);
 
-        // And a vendor that leaves no such row waits the way it always did.
+        // A vendor with no such row waits as before.
         assert!(
             !rules::of("pi")
                 .furniture()
@@ -3847,12 +3766,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_ends_a_turn_amx_cut_short_as_soon_as_the_prompt_is_up() {
-        // claude fires no hook for an interrupt, so the record is left saying a
-        // turn is running that amx itself ended: the freshness window would
-        // hold it there, and the idle screen it is sitting at would then have
-        // to hold still for half a minute before a quiescent rule could speak.
-        // The stamp is amx's own word that the turn is over, so the pane is
-        // read on the first look and the rule that reads a prompt may end it.
+        // claude fires no hook on an interrupt, so the record says a turn amx
+        // itself ended is running. The stamp is amx's word that it is over, so
+        // the pane is read on the first look and the prompt rule may end it.
         let mut cut = state(Phase::Working, 1_000);
         cut.interrupted_at = 1_002;
 
@@ -3864,12 +3780,10 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_ends_a_turn_cut_short_in_the_second_the_vendor_last_spoke_in() {
-        // The record keeps both times in whole seconds, and a turn full of
-        // tool calls sends a hook about once a second: the key lands in the
-        // second the last one did more often than not. Weighing the two
-        // stamps read that as no interrupt at all and the row sat out the
-        // whole wait — ruling #M9DAPT6P. The stamp is not a clock to compare;
-        // it stands until the vendor speaks, and here it is standing.
+        // Both stamps are whole seconds and a busy turn hooks about once a
+        // second, so the key often lands in the same second as the last hook.
+        // Comparing them read that as no interrupt. The stamp stands until the
+        // vendor speaks.
         let mut tied = state(Phase::Working, 1_000);
         tied.interrupted_at = 1_000;
 
@@ -3881,9 +3795,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_a_cut_turn_that_is_still_drawing_as_working() {
-        // The key is sent and nothing waits for it: a vendor part way through a
-        // tool call is still spinning when the next look arrives. The stamp
-        // says to go to the pane, not what to find there.
+        // The key is sent without waiting, so the vendor may still be spinning
+        // at the next look. The stamp says to read the pane, not what to find.
         let mut cut = state(Phase::Working, 1_000);
         cut.interrupted_at = 1_002;
 
@@ -3895,11 +3808,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_takes_a_hook_after_an_interrupt_as_the_agent_speaking_again() {
-        // Something the vendor says after the key is its own account of a
-        // moment the stamp knows nothing about — a turn somebody sent next, a
-        // question it stopped on — so the hook that carried it takes the stamp
-        // off the record, and the record is the best evidence there is again.
-        // The hook is what is driven here, because no other hand clears it.
+        // The vendor's next event is its own account of a later moment (the
+        // next turn, a question), so the hook that carries it clears the stamp.
+        // Only the hook clears it, so the hook is driven here.
         let mut spoke = state(Phase::Working, 1_010);
         spoke.interrupted_at = 1_002;
         crate::hook::apply(
@@ -3913,18 +3824,17 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(fresh.evidence, Evidence::Hooks);
         assert_eq!(fresh.rule, None, "and the screen decided nothing");
 
-        // And once it goes quiet the screen has to hold still to end the turn,
-        // the way it does over any other running turn.
+        // Once quiet again, the screen has to hold still to end the turn, as
+        // over any running turn.
         let quiet = decided(&spoke, true, Some(IDLE_SCREEN), 1_100);
         assert_eq!(quiet.phase, Phase::Working);
         assert_eq!(quiet.evidence, Evidence::Hooks);
         assert_eq!(quiet.rule.as_deref(), Some("idle_prompt"), "unsettled");
     }
 
-    /// claude's chrome, whole, with `tick` standing in for whatever changes
-    /// every second — a statusline's elapsed timer or its token count — under
-    /// a transcript that never moves. Two calls with different ticks are two
-    /// different captures of the same still screen.
+    /// claude's chrome over a transcript that never moves, with `tick`
+    /// standing in for a statusline value that changes every second. Two
+    /// ticks are two captures of the same still screen.
     fn a_ticking_screen(tick: u64) -> String {
         format!(
             "\
@@ -3939,8 +3849,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         )
     }
 
-    /// An agent whose record says a turn is running, for the readings that
-    /// write to one.
+    /// An agent whose record says a turn is running.
     fn a_quiet_agent(root: &Path, id: &str) -> Agent {
         a_record(
             root,
@@ -4004,10 +3913,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "and a look is not something the agent said"
         );
 
-        // A process of its own, opening the record cold: what the look before
-        // it watched is there to be read, so the screen has held still for as
-        // long as the stamp says rather than for as long as this process has
-        // been looking.
+        // A fresh process reads the stamp the previous look left, so the
+        // screen has held still as long as the stamp says.
         let mut next = agent.state().unwrap();
         assert_eq!(
             held_still(
@@ -4051,7 +3958,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn held_still_is_not_kept_for_a_command() {
-        // No rule reads a command's pane, so its output moving is no reason
+        // No rule reads a command's pane, so its output changing is no reason
         // to rewrite its record on every look.
         let root = TempDir::new().unwrap();
         a_record(root.path(), &meta(), &state(Phase::Starting, 1_000));
@@ -4092,17 +3999,16 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(verdict.evidence, Evidence::Unknown);
         assert_eq!(verdict.age, 500, "and how long it has been out of touch");
 
-        // A pane that cannot be captured is the same answer.
+        // A pane that cannot be captured gives the same answer.
         let unreadable = decided(&state(Phase::Working, 1_000), true, None, 1_500);
         assert_eq!(unreadable.phase, Phase::Unknown);
     }
 
     #[test]
     fn reader_reads_a_running_command_off_the_line_it_last_printed() {
-        // No vendor on the record, so there is nothing to go stale and no
-        // document to hold against the pane. That the pane is still there is
-        // the whole of what says the command is running, and the last row it
-        // printed is the whole of what the row can say about it.
+        // No vendor on the record: nothing goes stale and no rules apply. A
+        // live pane means the command is running, and its last printed row is
+        // the summary.
         let ran = meta();
         let starting = state(Phase::Starting, 1_000);
         let printed = || Some(A_COMMAND.to_string());
@@ -4126,8 +4032,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(view.json()["state"], "working");
         assert_eq!(view.json()["summary"], "test reads_the_line ... ok");
 
-        // A pane the command has left is not a command still running, and an
-        // exit code is not something read off a screen.
+        // A command whose pane is gone is not running, and an exit code is
+        // not read off a screen.
         let gone = conclude(
             &meta(),
             &starting,
@@ -4155,8 +4061,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(ended.verdict.phase, Phase::Failed);
         assert_eq!(ended.verdict.evidence, Evidence::Record);
 
-        // A record that names a vendor is read against that vendor's screens,
-        // whatever its pane happens to have on it.
+        // A record naming a vendor is read against that vendor's screens.
         let agent = Meta {
             parent: None,
             depth: 0,
@@ -4180,10 +4085,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_gives_a_running_command_the_whole_of_its_life_as_its_work() {
-        // A command's record never leaves Starting, so it never opens a span
-        // and the spans add up to nothing for as long as it runs. What it has
-        // been doing all that while is the command: a command started five
-        // seconds ago has worked five seconds.
+        // A command's phase never leaves `starting`, so it never opens a span.
+        // Its work is its whole life: started five seconds ago, worked five.
         let starting = state(Phase::Starting, 1_000);
         assert_eq!(starting.worked_by(1_005), 0, "no span was ever opened");
 
@@ -4204,10 +4107,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_keeps_a_reporting_vendors_settled_word_on_a_screen_nobody_claims() {
-        // pi's hooks said the turn ended a minute ago, and the pane has pi's
-        // update notice drawn over the prompt, which no rule claims. The
-        // vendor said the turn is over and nothing has said otherwise, so the
-        // record stands, at its age.
+        // pi's hooks said the turn ended a minute ago, and pi's update notice
+        // over the prompt is claimed by no rule. Nothing has contradicted the
+        // vendor, so the record stands, at its age.
         let idle = heard_from(
             true,
             0,
@@ -4220,22 +4122,22 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(idle.verdict.evidence, Evidence::Hooks);
         assert_eq!(idle.verdict.age, 60);
 
-        // A question the vendor named stays a question for the same reason.
+        // A question the vendor named stays for the same reason.
         let mut asked = state(Phase::Waiting, 1_000);
         asked.question = Some("Run echo hi?".to_string());
         let waiting = heard_from(true, 0, &asked, true, Some(A_SHELL), 1_060);
         assert_eq!(waiting.verdict.phase, Phase::Waiting);
         assert_eq!(waiting.verdict.evidence, Evidence::Hooks);
 
-        // A turn on the record as running is still unknown: nothing has said
-        // it ended, and a screen nobody measured is where a question amx
-        // missed would be. So is a record nothing has reported about yet.
+        // A turn recorded as running is still unknown: nothing said it ended,
+        // and an unmeasured screen may be a missed question. So is a record
+        // with nothing reported yet.
         for phase in [Phase::Working, Phase::Starting] {
             let mid = heard_from(true, 0, &state(phase, 1_000), true, Some(A_SHELL), 1_060);
             assert_eq!(mid.verdict.phase, Phase::Unknown, "{phase}");
         }
 
-        // And a vendor that reports nothing has no word to keep.
+        // A vendor that reports nothing has no word to keep.
         let silent = heard_from(
             false,
             0,
@@ -4249,9 +4151,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_freezes_the_clock_on_a_run_that_has_ended() {
-        // Started at 1_000, worked ten seconds and stood at a question for the
-        // hour in between. Ten seconds is what it worked, and a run that
-        // worked ten seconds worked ten seconds whenever anybody asks.
+        // Started at 1_000, worked ten seconds and waited at a question for
+        // the hour between. It worked ten seconds, whenever anybody asks.
         let mut done = state(Phase::Done, 4_610);
         done.ended = 4_610;
         done.worked = 10;
@@ -4280,8 +4181,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_ticks_the_work_column_only_while_the_agent_works() {
-        // Working: the spans already added up and the open one, moving with
-        // the clock.
+        // Working: the added-up spans plus the open one, moving with the
+        // clock.
         let mut working = state(Phase::Working, 1_000);
         working.worked = 120;
         assert_eq!(
@@ -4289,9 +4190,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             120 + FRESH
         );
 
-        // Waiting: frozen where the work stopped — an hour at a question
-        // nobody answered is nobody's work. The wait is still the age, which
-        // is what the card reads it off.
+        // Waiting: frozen where the work stopped. The wait is still the age,
+        // which the card reads.
         let mut waiting = state(Phase::Waiting, 2_000);
         waiting.worked = 120;
         let read = reading(&waiting, true, None, 2_000 + FRESH).verdict;
@@ -4306,8 +4206,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             120
         );
 
-        // Ended: what it worked, for good, with the whole run standing in
-        // where no spans were ever added up — the same answers the age gives.
+        // Ended: what it worked, for good, or the whole run where no spans
+        // were added up; the same as the age.
         let mut done = state(Phase::Done, 4_610);
         done.ended = 4_610;
         done.worked = 10;
@@ -4321,10 +4221,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_its_number_in_one_set_of_units() {
-        // The units are decided here, where the number is worked out, and
-        // every surface that prints it says them by asking. Two surfaces with
-        // a set of units each is how one of them comes to print a bare number
-        // while the other prints 4s.
+        // Every surface prints the number through `in_words`, so the units
+        // cannot differ between them.
         assert_eq!(in_words(0), "0s");
         assert_eq!(in_words(45), "45s");
         assert_eq!(in_words(59), "59s");
@@ -4334,8 +4232,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(in_words(86_399), "23h");
         assert_eq!(in_words(86_400), "1d");
 
-        // And the reading a surface has in its hand goes through it: the run
-        // that worked ten seconds says ten seconds, in words, a day later.
+        // A reading's number goes through it too, a day later as well.
         let mut done = state(Phase::Done, 4_610);
         done.ended = 4_610;
         done.worked = 10;
@@ -4345,9 +4242,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_counts_a_span_of_work_nothing_ever_closed() {
-        // The pane went out from under a turn, so nothing wrote the phase out
-        // of working and the last span is open on the record. It closes where
-        // every ending amx did not see closes: at the last thing it heard.
+        // The pane went mid-turn, so the last span is still open on the
+        // record. It closes at the last thing heard.
         let mut killed = state(Phase::Working, 1_300);
         killed.since = 1_200;
         killed.worked = 20;
@@ -4362,10 +4258,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_reads_a_run_with_no_spans_on_it_as_the_whole_of_the_run() {
-        // A record written before amx added spans up, and one of an agent that
-        // never worked at all, are the same record to a reader: with nothing
-        // added up, the row says how long the run was alive, which is what it
-        // has always said.
+        // A record from before spans were added up, and one of an agent that
+        // never worked, both show how long the run was alive.
         let mut older = state(Phase::Done, 1_300);
         older.ended = 1_300;
         assert_eq!(older.worked, 0);
@@ -4374,8 +4268,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_dates_an_ending_nobody_stamped_from_the_last_thing_it_said() {
-        // A record written by an older amx has no stamp on it, and records
-        // outlive the amx that wrote them.
+        // A record written by an older amx has no end stamp.
         let unstamped = state(Phase::Done, 1_300);
         assert_eq!(unstamped.ended, 0);
         assert_eq!(
@@ -4383,33 +4276,31 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             300
         );
 
-        // The pane went without recording an exit: the reader ends the run,
-        // and the run is as long as the last thing anybody heard.
+        // The pane went without recording an exit: the run lasts until the
+        // last thing heard.
         let killed = state(Phase::Working, 1_300);
         let verdict = started(1_000, &killed, false, None, 5_000).verdict;
         assert_eq!(verdict.phase, Phase::Stopped);
         assert_eq!(verdict.evidence, Evidence::Gone);
         assert_eq!(verdict.age, 300, "and it does not tick after it");
 
-        // An ending before the agent was started is a record somebody edited,
-        // and a run of no length is the only honest answer to it.
+        // An end before the start is a hand-edited record; a run of no length
+        // is the only honest answer.
         assert_eq!(started(9_000, &unstamped, true, None, 9_100).verdict.age, 0);
     }
 
     #[test]
     fn reader_tells_a_pane_amx_let_go_from_one_that_died() {
-        // amx took the pane away from an idle agent an hour after its turn
-        // ended. Nothing about the agent changed: it is still idle, and the
-        // next enter, attach or resume gives it a pane again.
+        // amx closed the pane of an agent idle for an hour. It is still idle,
+        // and the next enter, attach or resume gives it a pane.
         let mut parked = state(Phase::Idle, 1_000);
         parked.parked_at = 4_600;
         let verdict = started(900, &parked, false, None, 4_700).verdict;
         assert_eq!(verdict.phase, Phase::Idle);
         assert_eq!(verdict.evidence, Evidence::LetGo);
 
-        // The same record without the stamp is a pane that went of its own
-        // accord — killed, or its server died — which is where a reader has
-        // always ended it.
+        // Without the stamp, the pane went by itself (killed, or its server
+        // died), so the run is stopped.
         let died = state(Phase::Idle, 1_000);
         let verdict = started(900, &died, false, None, 4_700).verdict;
         assert_eq!(verdict.phase, Phase::Stopped);
@@ -4425,18 +4316,16 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_how_long_a_waiting_agent_has_waited() {
-        // It stopped on a question at 1_000. The vendor's own notification
-        // about the box lands six seconds later, and a row that started
-        // counting there would be timing amx's news rather than the wait.
+        // It stopped on a question at 1_000. The vendor's notification about
+        // the box lands six seconds later and must not restart the wait.
         let mut asked = state(Phase::Waiting, 1_000);
         asked.last_event = 1_006;
         let verdict = started(900, &asked, true, Some(A_BLOCKING_SCREEN), 1_300).verdict;
         assert_eq!(verdict.phase, Phase::Waiting);
         assert_eq!(verdict.age, 300, "since it stopped, not since it spoke");
 
-        // A screen amx read a question off says a question is up and not when
-        // it went up: the record is still mid-turn, so how long since anything
-        // was heard is the whole of what amx can say.
+        // A question read off the screen does not say when it went up, and
+        // the record is still mid-turn, so the age is time since last heard.
         let mut mid_turn = state(Phase::Working, 1_000);
         mid_turn.last_event = 1_100;
         let verdict = started(900, &mid_turn, true, Some(A_BLOCKING_SCREEN), 1_300).verdict;
@@ -4448,7 +4337,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     #[test]
     fn reader_ages_from_whichever_is_later() {
         // A record written before its first event has a `since` and no
-        // `last_event`; the agent is not therefore an hour stale.
+        // `last_event`; the agent is not an hour stale.
         let mut fresh = state(Phase::Starting, 0);
         fresh.since = 1_000;
         assert_eq!(decided(&fresh, true, None, 1_002).age, 2);
@@ -4458,11 +4347,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     fn reader_has_a_kind_for_every_screen_that_blocks() {
         use crate::store::Kind;
 
-        // Every rule that stops an agent stops it on something somebody has to
-        // answer, and what may be sent back depends on which. A blocking rule
-        // added without a kind would leave a caller guessing again — in any
-        // document, because the law is about screens that block and not about
-        // whose they are.
+        // Every blocking rule, in every document, needs a kind: what may be
+        // sent back depends on it.
         let second = second_vendors_screens();
         for screens in [rules::of("claude"), &second] {
             for rule in screens.rules() {
@@ -4491,10 +4377,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     fn reader_takes_what_a_screen_wants_back_from_the_document_that_named_it() {
         use crate::store::Kind;
 
-        // The rules say which screen is on the pane and the same rule says
-        // what that screen wants back. Written in Rust as a match on rule
-        // names, this read every other vendor's document with claude's names
-        // in hand: its own screens would each have answered nothing at all.
+        // The rule that names the screen also says what it wants back. A Rust
+        // match on claude's rule names would give every other vendor's screens
+        // no kind at all.
         let second = second_vendors_screens();
         assert_eq!(asked_kind(&second, Some("choice")), Some(Kind::Question));
         assert_eq!(
@@ -4504,8 +4389,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
     }
 
-    /// The screens of the vendor amx keeps to prove that none of this is
-    /// claude's shape.
+    /// The screens of the second vendor, which shares nothing with claude.
     fn second_vendors_screens() -> Ruleset {
         let screens = crate::vendor::second::SECOND
             .screens
@@ -4519,9 +4403,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
         let claimed = |rule: &str| verdict(Phase::Waiting, Evidence::Screen, Some(rule));
 
-        // Nothing on the record: the screen is all there is, and the
-        // folder-trust screen is the one kind no hook can ever report, because
-        // it stands in front of the session every hook comes from.
+        // Nothing on the record, so the screen decides. No hook can report the
+        // folder-trust screen: it stands in front of the session.
         let read = View {
             meta: meta(),
             state: State::default(),
@@ -4544,8 +4427,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(told.kind(), Some(Kind::Question));
     }
 
-    /// A call of two questions, the second taking more than one choice, as a
-    /// hook folded it onto the record.
+    /// A call of two questions, the second multi-select, as a hook recorded
+    /// it.
     fn a_call_of_two() -> State {
         use crate::store::{Ask, Choice, Kind};
 
@@ -4593,14 +4476,14 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         let json = waiting.json();
 
-        // What was there before means what it always meant: the question on
-        // the screen and the choices under it.
+        // The existing fields mean what they did: the showing question and its
+        // choices.
         assert_eq!(json["question"], "Which runtime should the service target?");
         assert_eq!(json["options"][0], "Node");
         assert_eq!(json["options"][1], "Deno");
         assert_eq!(json["kind"], "question");
 
-        // And beside them, the part no screen carries.
+        // Plus what no screen carries.
         assert_eq!(json["multi"], false, "the one showing takes one choice");
         assert_eq!(json["questions"].as_array().unwrap().len(), 2);
         assert_eq!(json["questions"][0]["header"], "Runtime");
@@ -4614,8 +4497,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_which_question_of_a_call_is_the_one_showing() {
-        // A caller answering a call of several is told what to answer next by
-        // the same fields it read the first time.
+        // A caller answering a call of several finds the next question in the
+        // same fields.
         let mut state = a_call_of_two();
         state.answered("Node");
 
@@ -4635,9 +4518,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     fn reader_hands_a_program_what_the_branch_has_open() {
         use crate::pr::{Pr, Standing};
 
-        // A program reading `--json` is the one caller that cannot see a
-        // colour, so the number goes out beside the word the colour came from
-        // rather than beside the colour.
+        // `--json` readers cannot see colour, so the word the colour comes
+        // from goes out with the number.
         let view = View::new(
             meta(),
             state(Phase::Done, 1_300),
@@ -4671,8 +4553,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_hands_a_program_the_title_the_session_goes_under() {
-        // The word the wall puts where the id was, so a program drawing its
-        // own list of agents has the same word to put there.
+        // The title the wall shows in place of the id.
         let seen = |title: Option<&str>| {
             View::new(
                 meta(),
@@ -4697,9 +4578,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_hands_a_program_the_name_somebody_gave_the_agent() {
-        // The word a rename put on the row, which is what a person reading a
-        // wall has been calling this agent since. A program drawing its own
-        // rows wants the same word, and the id beside it is what both address.
+        // The name a rename gave the row. A program drawing its own rows
+        // wants the same name; the id is what both address.
         let seen = |name: Option<&str>| {
             View::new(
                 meta(),
@@ -4735,8 +4615,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "a run that has ended still said something worth a line"
         );
 
-        // Mid-turn there is nothing to boil down: what is on the row then is
-        // what the agent is doing, and it is different by the next reading.
+        // Mid-turn the row shows what the agent is doing, so nothing is
+        // summarised.
         assert!(!wants_a_line(&ended(Phase::Working, Some(answered), None)));
         assert!(!wants_a_line(&ended(Phase::Waiting, Some(answered), None)));
         // A turn that ended without an answer, and a line already written.
@@ -4754,8 +4634,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let at = TempDir::new().unwrap();
         let said = "fixed the redirect\nand ran the suite\n";
 
-        // The answer arrives on stdin, whole, and what comes back is the first
-        // line with anything on it.
+        // The answer goes in on stdin whole; the first non-blank line comes
+        // back.
         assert_eq!(
             ask_for_a_line("tr a-z A-Z", at.path(), "fix-login-a1b", said).as_deref(),
             Some("FIXED THE REDIRECT")
@@ -4765,7 +4645,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some("second thoughts")
         );
 
-        // It runs where the agent ran, and is told which agent it is about.
+        // It runs where the agent ran and is told which agent it is about.
         assert_eq!(
             ask_for_a_line("pwd", at.path(), "fix-login-a1b", said).as_deref(),
             Some(std::fs::canonicalize(at.path()).unwrap().to_str().unwrap())
@@ -4781,9 +4661,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some("fix-login-a1b")
         );
 
-        // And told it is not the agent. The command people write here is
-        // `claude -p`, which reports through the same hooks under the same id
-        // as the agent it is summarising.
+        // And told it is not the agent: the usual command is `claude -p`,
+        // which would otherwise report through the agent's hooks under its id.
         assert_eq!(
             ask_for_a_line(
                 "printf '%s\\n' \"$AMX_NESTED\"",
@@ -4795,8 +4674,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some("1")
         );
 
-        // A command that fails, and one that says nothing, say nothing. The
-        // row keeps the answer it had.
+        // A command that fails or prints nothing gives no line; the row keeps
+        // its answer.
         assert_eq!(ask_for_a_line("exit 3", at.path(), "x", said), None);
         assert_eq!(ask_for_a_line("true", at.path(), "x", said), None);
         assert_eq!(
@@ -4807,18 +4686,15 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn summary_command_takes_an_answer_longer_than_a_pipe_holds() {
-        // A megabyte is an ordinary long turn and several times what a pipe
-        // holds on any of these machines. Handing one to a command that writes
-        // back what it reads stops both of them where the answer goes in and
-        // what comes back is read on the one thread: the command's own pipe
-        // fills, it stops reading, and amx is still writing into a pipe
-        // nothing is draining. `tr a-z A-Z` is the shape of it, and it is the
-        // shape the key's own documentation offers.
+        // A megabyte is an ordinary long turn and far more than a pipe holds.
+        // With the write and the read on one thread, a command that echoes its
+        // input (`tr a-z A-Z`) fills its stdout pipe and stops reading while
+        // amx is still writing: a deadlock.
         let at = TempDir::new().unwrap();
         let answer = format!("fixed the redirect\n{}\n", "y".repeat(1024 * 1024));
 
-        // On a thread of its own so the deadlock is a failure rather than a
-        // suite that never ends.
+        // On its own thread, so a deadlock fails the test instead of hanging
+        // the suite.
         let (said, heard) = std::sync::mpsc::channel();
         let ran_in = at.path().to_path_buf();
         std::thread::spawn(move || {
@@ -4830,14 +4706,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(line.as_deref(), Some("fixed the redirect"));
     }
 
-    /// The queue is one place for the whole process, and every test about it
-    /// is a thread of one test binary sharing that place. Two of them running
-    /// at once would each see the other's turn in the queue and read it as its
-    /// own, so they take turns here instead.
-    ///
-    /// Taken through a poisoned lock rather than around one: a test that
-    /// panicked holding this has failed already, and the next one failing for
-    /// having asked about it is a second failure about the first.
+    /// Serialises the tests that use the process-wide ask queue, which would
+    /// otherwise see each other's asks. Taken through a poisoned lock, since a
+    /// test that panicked holding it has already failed.
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn the_queue_to_itself() -> std::sync::MutexGuard<'static, ()> {
@@ -4850,9 +4721,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     fn summary_asks_about_one_turn_at_a_time() {
         let _queue = the_queue_to_itself();
 
-        // What answers is whatever somebody configured, routinely a model
-        // call, so a view opened on a week of finished agents queues them
-        // rather than starting one for every row at once.
+        // The command is often a model call, so a view over many finished
+        // agents queues them instead of starting one per row.
         assert!(may_ask());
         assert!(!may_ask(), "the next turn waits until this one is answered");
 
@@ -4924,15 +4794,13 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
              thing either of them shares"
         );
 
-        // A turn nobody may ask about again does not stand in the queue for
-        // the rows under it, which is the whole of what those rows would get:
-        // this one is the first row of every reading.
+        // A turn that cannot be asked about again does not hold the queue for
+        // the rows after it.
         have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_001);
         assert!(may_ask(), "the queue is where it was");
         done_asking();
 
-        // The command answered, with a line or with nothing, and either way
-        // the question has been put.
+        // Settled, with a line or without: the question has been put.
         settle_the_ask(&agent, ended.since, 1_002);
         assert!(!claim_the_turn(
             &agent,
@@ -4956,8 +4824,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             .unwrap();
         drop(writer);
 
-        // Nothing on this thread has declared it is staying for the answer,
-        // which is every verb but the view.
+        // This thread has not declared it stays, like every verb but the view.
         have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_000);
 
         assert!(
@@ -4995,14 +4862,13 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             "a reader staying for the answer claims a turn exactly as it always has"
         );
 
-        // The command runs on a thread of its own; wait for it to settle and
-        // free the queue before the next test takes it.
+        // The command runs on its own thread; wait for it to settle and free
+        // the queue for the next test.
         the_command_comes_back();
     }
 
-    /// Wait for the ask on its own thread to settle and free the queue, so a
-    /// test reads the record the command wrote and the next test takes the
-    /// queue as it found it.
+    /// Waits for the ask thread to settle and free the queue, so the test
+    /// reads what the command wrote and the next test finds the queue free.
     fn the_command_comes_back() {
         let waited = std::time::Instant::now();
         loop {
@@ -5051,8 +4917,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         assert_eq!(written.since, ended.since, "and the turn is the same turn");
 
-        // The record moved on while the command was still running: this line
-        // is about a turn that is over, and the row is about the one it is on.
+        // The record moved on while the command ran: the line is about a turn
+        // that is over.
         let writer = agent.writer().unwrap();
         writer
             .update_state(|state| {
@@ -5085,9 +4951,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         };
 
         assert_eq!(REWRITE, 180, "three minutes");
-        // A finished turn's answer is what it is, so the line about it is
-        // written once. A turn under way is different work every minute, and
-        // the line about it is worth writing again as the work moves.
+        // A finished answer is summarised once; a running turn is summarised
+        // again as it moves.
         assert!(!worth_asking(
             answered(1_000),
             100,
@@ -5107,12 +4972,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             About::TheTurnSoFar
         ));
 
-        // A permission box moves the phase and `since` with it, and the same
-        // work goes on under the new number. The clock is what paces the
-        // rewrite, not the number: the ask answered a minute ago holds
-        // whatever turn it was written about, and so does the line the turn
-        // before this one ended on. A finished turn's own line is a new
-        // question straight away, as it always was.
+        // A permission box moves `since` while the same work goes on, so the
+        // clock paces the rewrite, whatever turn the last ask was about. A
+        // finished turn's own line is asked for straight away.
         assert!(!worth_asking(
             answered(1_000),
             200,
@@ -5127,8 +4989,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         ));
         assert!(worth_asking(answered(1_000), 200, 1_001, About::TheAnswer));
 
-        // An ask still out is still out, whichever question it put: it is
-        // being answered, or it went with the verb that made it.
+        // An ask still out is still out, whichever question it put.
         let out = Some(Asked {
             turn: 100,
             at: 1_000,
@@ -5143,8 +5004,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert!(worth_asking(out, 100, 1_000 + AGAIN, About::TheTurnSoFar));
     }
 
-    /// A record of a turn under way, over a transcript holding a sentence and
-    /// the call after it.
+    /// A running turn over a transcript holding a sentence and the call after
+    /// it.
     fn a_running_turn(root: &TempDir) -> (Meta, Agent, State) {
         let session = root.path().join("session.jsonl");
         std::fs::write(&session, format!("{A_SENTENCE}{A_CALL}")).expect("a transcript");
@@ -5155,9 +5016,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             model: None,
             effort: None,
             transcript: Some(session),
-            // Somewhere the command can be run: `where_it_ran` is the agent's
-            // own directory, and a command cannot start in one that is not
-            // there.
+            // `where_it_ran` is the agent's directory, which must exist for
+            // the command to start in.
             dir: root.path().to_path_buf(),
             ..meta()
         };
@@ -5178,9 +5038,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let root = TempDir::new().unwrap();
         let (meta, agent, running) = a_running_turn(&root);
 
-        // What goes in is the turn as `amx logs` prints it — everything said
-        // so far and not merely the last row of it — and the line that comes
-        // back is on the record while the turn runs.
+        // The command gets the turn as `amx logs` prints it, not just the last
+        // row, and its line goes on the record while the turn runs.
         have_a_line_rewritten(root.path(), &agent, &meta, &running, "tr '\\n' ' '", 1_000);
         the_command_comes_back();
         assert_eq!(
@@ -5192,7 +5051,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(asked.turn, running.since, "about the turn under way");
         assert!(asked.over, "and the ask is over");
 
-        // Asked again once three minutes have passed, and not before.
+        // Asked again once `REWRITE` has passed, and not before.
         let again = "printf 'porting the importer\\n'";
         have_a_line_rewritten(
             root.path(),
@@ -5227,8 +5086,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let root = TempDir::new().unwrap();
         let (meta, agent, running) = a_running_turn(&root);
 
-        // Nothing on this thread has declared it is staying for the answer,
-        // which is every verb but the view.
+        // This thread has not declared it stays, like every verb but the view.
         have_a_line_rewritten(
             root.path(),
             &agent,
@@ -5282,16 +5140,13 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some("porting the importer")
         );
 
-        // The turn ended while the command was thinking. `since` moves with
-        // the phase, so the turn this line is about is not the turn the record
-        // is on, and a line about work that is over does not stand in front of
-        // the answer.
+        // The turn ended while the command ran. `since` moved with the phase,
+        // so the line is about a turn that is over and must not land.
         let writer = agent.writer().unwrap();
         let ended = writer
             .observe(|state| {
                 state.state = Phase::Idle;
-                // The stamp laid down by hand, so the two turns are a second
-                // apart rather than however long this test took to get here.
+                // Set by hand so the two turns are one second apart.
                 state.since = running.since + 1;
                 state.summary = None;
                 state.result = Some("the importer keeps the clock now".to_string());
@@ -5314,10 +5169,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_drops_the_line_about_a_turn_it_watched_end() {
-        // A rewrite of the turn under way is a sentence about work that is
-        // over the moment the turn ends, and what a row says about a turn that
-        // has ended is its answer. A record the hooks move is cleared by the
-        // hook that ends the turn; this is the vendor that has none.
+        // A rewrite of the running turn is stale once the turn ends, and a
+        // finished turn shows its answer. Hooks clear it on vendors that have
+        // them; this is the vendor without.
         let root = TempDir::new().unwrap();
         let agent = an_agent(&root);
         let writer = agent.writer().unwrap();
@@ -5344,7 +5198,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
     }
 
-    /// A claude agent's record on disk, at `state`, as its hooks last left it.
+    /// A claude agent's record on disk, at `state`.
     fn a_claude_record(root: &TempDir, state: &State) -> (Agent, Meta) {
         let meta = Meta {
             agent: Some("claude".to_string()),
@@ -5369,8 +5223,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     #[test]
     fn a_hooked_turn_cut_by_hand_is_written_idle() {
         // claude sends nothing when esc ends a turn in its pane, so the record
-        // says working until something writes otherwise. The reader that
-        // watched the prompt come up is that something.
+        // says working until the reader that sees the prompt writes otherwise.
         let root = TempDir::new().unwrap();
         let mut running = state(Phase::Working, 1_000);
         running.summary = Some("Running Bash".to_string());
@@ -5433,8 +5286,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         assert_eq!(agent.events().unwrap().len(), 1);
 
-        // And a prompt with a shell still running behind it is not the turn's
-        // end, whatever the rule reads the prompt as.
+        // A prompt with a shell still running behind it is not the turn's end.
         let running = state(Phase::Working, 1_000);
         let shells = read(
             &running,
@@ -5452,9 +5304,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn a_turn_cut_mid_tool_books_work_up_to_the_last_working_look() {
-        // The last hook fires as the tool starts, and esc cuts the turn half a
-        // minute later. The screens read in between are the account of that
-        // half minute, and the turn's work runs to the last of them.
+        // The last hook fires as the tool starts and esc cuts the turn half a
+        // minute later. The turn's work runs to the last look that saw it
+        // working.
         let cut = |looks: &[u64]| {
             let root = TempDir::new().unwrap();
             let mut running = state(Phase::Working, 1_003);
@@ -5518,8 +5370,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(written.worked, 3);
         assert_eq!(agent.seen(), None);
 
-        // And a look that saw work does not put off the next one: the reader
-        // weighs the vendor's beat, not its own stamp, before taking a screen.
+        // A look that saw work does not delay the next one: the reader weighs
+        // the vendor's beat, not its own stamp.
         let root = TempDir::new().unwrap();
         let (agent, _) = a_claude_record(&root, &state(Phase::Working, 1_003));
         agent.saw_working(1_044).unwrap();
@@ -5535,9 +5387,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn a_box_answered_by_hand_is_written_working() {
-        // A permission box answered in the pane sends nothing either: the
-        // tool runs, and the record goes on saying waiting on a question
-        // nobody is being asked.
+        // A permission box answered in the pane sends nothing either: the tool
+        // runs and the record still says waiting.
         let root = TempDir::new().unwrap();
         let mut waiting = state(Phase::Waiting, 1_000);
         waiting.asks(Some("Do you want to proceed?".to_string()));
@@ -5576,8 +5427,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_coherence_a_call_that_is_over_goes_with_its_question() {
-        // The questions behind the one showing are as answered as it is, and
-        // an agent that is back at work is not being asked any of them.
+        // The questions behind the one showing are answered too, and a working
+        // agent is not being asked any of them.
         let working = View::new(
             meta(),
             a_call_of_two(),
@@ -5593,11 +5444,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     fn reader_coherence_gives_one_account_of_an_agent_that_has_finished() {
         use crate::store::Kind;
 
-        // The record the agent read-readme-md-and-799 was left with on
-        // 2026-08-20: done, with the answer of its last turn, and with the
-        // vendor's idle nudge still on it as the question. The hooks no longer
-        // write a record like this one, and records outlive the amx that wrote
-        // them, so a reader gives one answer whatever it is handed.
+        // A record from an older amx: done, with its last answer, and the
+        // vendor's idle nudge still on it as the question. The reader must
+        // still give one consistent answer.
         let answered = State {
             state: Phase::Done,
             exit: Some(0),
@@ -5628,12 +5477,10 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_a_row_takes_the_last_thing_a_screen_said_and_not_the_first() {
-        // A result read off a pane is a whole transcript, and the answer is at
-        // the bottom of it: above it are this turn's tool calls and whatever
-        // the vendor has not repainted of the turn before. The columns that
-        // print this take the first line of what they are handed, so a pi row
-        // carried a shell command from some minutes ago while the sentence
-        // somebody asked for sat four rows below it on the same record.
+        // A result read off a pane is the whole cut screen: this turn's tool
+        // calls and leftovers of the turn before, with the answer at the
+        // bottom. Columns showing one line must get the answer, not an old
+        // shell command above it.
         let read_off_a_screen = |screen: &str| State {
             state: Phase::Idle,
             result: Some(screen.to_string()),
@@ -5657,9 +5504,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
              the card print"
         );
 
-        // The same answer at 40 columns, where pi wrapped it over two rows.
-        // Both of them, so that a column taking the first line of this takes
-        // the opening of the answer rather than the end of it.
+        // At 40 columns pi wraps the answer over two rows; the line starts at
+        // the opening of the answer.
         let wrapped = View::new(
             meta(),
             read_off_a_screen(A_PI_TURN_AT_40),
@@ -5670,9 +5516,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             Some(" The file describes recent changes to\n caching and timeout configuration."),
         );
 
-        // And an answer the vendor reported in its own words is not a picture
-        // of anything: it opens where the answer opens, and it is handed over
-        // whole.
+        // An answer the vendor reported in its own words is handed over whole.
         let reported = State {
             state: Phase::Done,
             result: Some("Three that made me stop and re-read:\n\nThe cache.".to_string()),
@@ -5711,9 +5555,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(waiting.state.options, ["Yes", "No"]);
         assert_eq!(waiting.kind(), Some(Kind::Permission));
 
-        // A reader that cannot say what the agent is doing cannot say the
-        // question is answered either, and the one thing somebody has to act
-        // on is the last thing to hide from them.
+        // A reader that cannot tell what the agent is doing cannot tell the
+        // question was answered either, so the question stays.
         let unreadable = View::new(
             meta(),
             asked.clone(),
@@ -5722,8 +5565,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(unreadable.line(), Some("Do you want to proceed?"));
         assert_eq!(unreadable.kind(), Some(Kind::Permission));
 
-        // Back at work: whatever that question was, it was answered on the
-        // pane, and it is not what this agent is doing now.
+        // Back at work: the question was answered on the pane.
         let working = State {
             summary: Some("Running Bash".to_string()),
             ..asked
