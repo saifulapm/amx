@@ -2132,9 +2132,6 @@ fn asking(standing: Standing) -> bool {
     }
 }
 
-/// The shape `new` gives a worktree (`src/worktree.rs`).
-const WORKTREES: &str = ".amx/worktrees";
-
 /// Which project an agent is running in.
 fn project_of(meta: &Meta, probe: fn(&Path) -> bool) -> PathBuf {
     // A worktree amx made says which repository it was cut from, in the shape
@@ -2142,7 +2139,7 @@ fn project_of(meta: &Meta, probe: fn(&Path) -> bool) -> PathBuf {
     // any other shape is one somebody moved or a record somebody edited, and
     // it is grouped by where it actually runs rather than by a guess.
     if let Some(tree) = &meta.worktree {
-        return repo_of(tree).unwrap_or_else(|| meta.dir.clone());
+        return crate::worktree::repo_of(tree).unwrap_or_else(|| meta.dir.clone());
     }
 
     // An agent started without a worktree records the directory it was asked
@@ -2196,16 +2193,6 @@ fn root_of(
 /// A directory read back to the repository that holds it, as git answers.
 fn main_repo_of(dir: &Path) -> Option<PathBuf> {
     crate::worktree::main_repo(dir).ok()
-}
-
-/// The repository a worktree of amx's own shape was cut from, read backwards.
-fn repo_of(tree: &Path) -> Option<PathBuf> {
-    let repo = tree.parent()?.parent()?.parent()?;
-    // Component-wise, so `<repo>/x.amx/worktrees/<id>` is not the match a
-    // comparison of strings would have made it. An empty repository half names
-    // nowhere, and a blank heading is worse than saying where it runs.
-    let shaped = tree.parent()?.strip_prefix(repo) == Ok(Path::new(WORKTREES));
-    (shaped && !repo.as_os_str().is_empty()).then(|| repo.to_path_buf())
 }
 
 /// Whether a directory is the top of a repository. An entry rather than a
