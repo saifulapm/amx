@@ -382,130 +382,18 @@ pub fn title(list: &List) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::derive::{Evidence, Verdict, View};
-    use crate::store::{Meta, Phase, State};
-    use crate::tmux::{PaneId, Socket};
-    use crate::tui::paint::{Card, draw};
+    use crate::derive::View;
+    use crate::store::Phase;
+    use crate::tui::paint::fixtures::{
+        a_fleet, cells, drawn, heading_of, launching, painted, showing, theme, view,
+    };
     use crate::tui::rows::Narrow;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
     use ratatui::style::Color;
     use std::path::PathBuf;
-
-    /// The palette a screen nobody handed a theme is painted in, which is the
-    /// one every screen built here has and the one these colours are read out
-    /// of: what the tests are about is which role a thing is painted in, and
-    /// the values are the theme's business.
-    fn theme() -> Theme {
-        Theme::default()
-    }
-
-    fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
-        View {
-            meta: Meta {
-                role: None,
-                parent: None,
-                depth: 0,
-                id: id.to_string(),
-                task: "fix the login bug".to_string(),
-                agent: None,
-                model: None,
-                effort: None,
-                dir: PathBuf::from("/srv/app"),
-                worktree: None,
-                branch: None,
-                base: None,
-                socket: Socket::Name("amx".to_string()),
-                pane: PaneId::new("%1").unwrap(),
-                bg: false,
-                session: None,
-                transcript: None,
-                created: 1,
-            },
-            state: State {
-                state: phase,
-                summary: said.map(str::to_string),
-                since: 1,
-                last_event: 1,
-                ..State::default()
-            },
-            verdict: Verdict {
-                phase,
-                evidence: Evidence::Hooks,
-                rule: None,
-                age,
-                // The rows print the worked seconds; most of these tests only
-                // care that a number is where the column is, so the helper
-                // hands both clocks the same one.
-                worked: age,
-            },
-            doing: None,
-        }
-    }
-
-    /// The view, with a reading in it. The card is read as it is planted,
-    /// the way the view itself builds one.
-    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
-        let mut screen = Screen::default();
-        screen.list.show(views);
-        screen.card = card.map(Card::read);
-        screen
-    }
-
-    /// What a view of this size draws, cell by cell.
-    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    /// What a view of this size puts on the screen, line by line.
-    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
-        let buffer = cells(screen, size);
-        (0..size.1)
-            .map(|row| {
-                (0..size.0)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
-
-    /// What the view puts on a screen of this size, line by line.
-    fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
-        painted(&showing(views, card), size)
-    }
-
-    /// What a heading line says: the group's own words, the count where the
-    /// group is shut, and how many failed under it where any did.
-    fn heading_of(line: &str) -> &str {
-        line.trim()
-    }
-
-    /// The two agents a card is opened over, so there is a list to still be
-    /// drawn behind it.
-    fn a_fleet() -> Vec<View> {
-        vec![
-            view("ask-a1b", Phase::Waiting, None, 29),
-            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
-        ]
-    }
 
     /// A screen with room for the whole header, at the width the mockup was
     /// drawn at.
     const WIDE: (u16, u16) = (100, 12);
-
-    /// The view with a launch profile that says where it is running: the
-    /// directory is read from the disk when a real view opens, and a test says
-    /// what the disk would have answered.
-    fn launching(views: Vec<View>) -> Screen {
-        let mut screen = showing(views, None);
-        screen.profile.dir = "~/code/amx".to_string();
-        screen
-    }
 
     /// One line of what a view of this size draws.
     fn screen_line(screen: &Screen, size: (u16, u16), row: usize) -> String {

@@ -1722,169 +1722,16 @@ fn head(end: usize, wanted: usize, away: usize) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::derive::{Evidence, Verdict, View};
-    use crate::pr::Standing;
-    use crate::store::{Meta, State};
-    use crate::tmux::{PaneId, Socket};
+    use crate::derive::View;
     use crate::tui::act::Asking;
-    use crate::tui::paint::draw;
+    use crate::tui::paint::fixtures::{
+        a_fleet, asking, block, cells, command, drawn, heading_of, on_a_branch, over_the_forge,
+        painted, showing, theme, view,
+    };
     use crate::tui::paint::header::space_rows;
     use crate::tui::paint::wall::{LIVE, pulse, set};
     use crate::tui::rows::FOLD_AT;
     use crate::tui::{Mode, Screen};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
-    use std::path::PathBuf;
-
-    /// The palette a screen nobody handed a theme is painted in, which is the
-    /// one every screen built here has and the one these colours are read out
-    /// of: what the tests are about is which role a thing is painted in, and
-    /// the values are the theme's business.
-    fn theme() -> Theme {
-        Theme::default()
-    }
-
-    fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
-        View {
-            meta: Meta {
-                role: None,
-                parent: None,
-                depth: 0,
-                id: id.to_string(),
-                task: "fix the login bug".to_string(),
-                agent: Some("claude".to_string()),
-                model: None,
-                effort: None,
-                dir: PathBuf::from("/srv/app"),
-                worktree: None,
-                branch: None,
-                base: None,
-                socket: Socket::Name("amx".to_string()),
-                pane: PaneId::new("%1").unwrap(),
-                bg: false,
-                session: None,
-                transcript: None,
-                created: 1,
-            },
-            state: State {
-                state: phase,
-                summary: said.map(str::to_string),
-                since: 1,
-                last_event: 1,
-                ..State::default()
-            },
-            verdict: Verdict {
-                phase,
-                evidence: Evidence::Hooks,
-                rule: None,
-                age,
-                // The rows print the worked seconds; most of these tests only
-                // care that a number is where the column is, so the helper
-                // hands both clocks the same one.
-                worked: age,
-            },
-            doing: None,
-        }
-    }
-
-    /// The same row run by a shell command rather than a vendor: the record a
-    /// `!cmd` or an `--exec` spawn writes, which is one with no agent on it.
-    fn command(id: &str, phase: Phase) -> View {
-        let mut view = view(id, phase, Some("cargo build"), 5);
-        view.meta.agent = None;
-        view
-    }
-
-    /// The view, with a reading in it. The card is read as it is planted,
-    /// the way the view itself builds one.
-    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
-        let mut screen = Screen::default();
-        screen.list.show(views);
-        screen.card = card.map(Card::read);
-        screen
-    }
-
-    /// The card a waiting agent's row opens: what it is asking, the choices it
-    /// offers, and the screen it is asking on.
-    fn asking(options: &[&str], kind: Option<Kind>) -> Card {
-        Card {
-            id: "ask-a1b".to_string(),
-            phase: Phase::Waiting,
-            question: Some("Which fixture should the port keep?".to_string()),
-            options: options.iter().map(|label| (*label).to_string()).collect(),
-            walked: false,
-            kind,
-            body: "$ cargo test\nDo you want to proceed?".to_string(),
-            changes: false,
-            answer: false,
-            listening: true,
-            queued: Vec::new(),
-        }
-    }
-
-    /// The same reading, on a branch of its own.
-    fn on_a_branch(mut view: View, branch: &str) -> View {
-        view.meta.branch = Some(branch.to_string());
-        view
-    }
-
-    /// A forge holding one failing request for the agent that is asking, and
-    /// two for the one beside it — the second attempt and the first.
-    fn a_forge(meta: &crate::store::Meta) -> Vec<Pr> {
-        match meta.branch.as_deref() {
-            Some("amx/ask-a1b") => vec![Pr {
-                number: 12,
-                standing: Standing::Failing,
-            }],
-            Some("amx/busy-b2c") => vec![
-                Pr {
-                    number: 40,
-                    standing: Standing::Open,
-                },
-                Pr {
-                    number: 7,
-                    standing: Standing::Merged,
-                },
-            ],
-            _ => Vec::new(),
-        }
-    }
-
-    /// The view over that forge.
-    fn over_the_forge(views: Vec<View>, card: Option<Card>) -> Screen {
-        let mut screen = Screen::default();
-        screen.list.asking(a_forge);
-        screen.list.show(views);
-        screen.card = card.map(Card::read);
-        screen
-    }
-
-    /// What a view of this size draws, cell by cell.
-    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    /// What a view of this size puts on the screen, line by line.
-    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
-        let buffer = cells(screen, size);
-        (0..size.1)
-            .map(|row| {
-                (0..size.0)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
-
-    /// What the view puts on a screen of this size, line by line.
-    fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
-        painted(&showing(views, card), size)
-    }
 
     /// The card as it stands on the screen, top to bottom: the band at the
     /// foot of the list, which opens on its rule and runs to the keys.
@@ -1897,20 +1744,6 @@ mod tests {
         };
         let foot = screen.len() - 1 - space_rows(screen.len() as u16) as usize;
         screen[top..foot].iter().map(String::as_str).collect()
-    }
-
-    /// What a heading line says: the group's own words, the count where the
-    /// group is shut, and how many failed under it where any did.
-    fn heading_of(line: &str) -> &str {
-        line.trim()
-    }
-
-    /// Which cell of this row the block is standing in: the one drawn in
-    /// reverse video, which is where the next character somebody types will
-    /// land and the only thing on the screen that says so.
-    fn block(screen: &Screen, size: (u16, u16), row: u16) -> Option<u16> {
-        let cells = cells(screen, size);
-        (0..size.0).find(|column| cells[(*column, row)].modifier.contains(Modifier::REVERSED))
     }
 
     /// Which column of a drawn line a word starts in, counted in cells rather
@@ -1929,15 +1762,6 @@ mod tests {
             .map(|column| buffer[(column, row)].symbol())
             .collect();
         buffer[(column_of(&line, word) as u16, row)].fg
-    }
-
-    /// The two agents a card is opened over, so there is a list to still be
-    /// drawn behind it.
-    fn a_fleet() -> Vec<View> {
-        vec![
-            view("ask-a1b", Phase::Waiting, None, 29),
-            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
-        ]
     }
 
     fn a_talk(prompt: &str, answer: &str) -> Vec<Said> {

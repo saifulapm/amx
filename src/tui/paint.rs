@@ -385,6 +385,193 @@ fn reverse(buffer: &mut Buffer, from: (u16, u16), to: (u16, u16)) {
     }
 }
 
+/// Screens and readings the paint tests share.
+#[cfg(test)]
+mod fixtures {
+    use super::{Card, draw};
+    use crate::derive::{Evidence, Verdict, View};
+    use crate::pr::{Pr, Standing};
+    use crate::store::{Kind, Meta, Phase, State};
+    use crate::theme::Theme;
+    use crate::tmux::{PaneId, Socket};
+    use crate::tui::Screen;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Modifier;
+    use std::path::PathBuf;
+
+    /// The default palette, which every screen built here is painted in.
+    pub(super) fn theme() -> Theme {
+        Theme::default()
+    }
+
+    /// A claude agent's reading in `phase`, saying `said`, `age` seconds old.
+    pub(super) fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
+        View {
+            meta: Meta {
+                role: None,
+                parent: None,
+                depth: 0,
+                id: id.to_string(),
+                task: "fix the login bug".to_string(),
+                agent: Some("claude".to_string()),
+                model: None,
+                effort: None,
+                dir: PathBuf::from("/srv/app"),
+                worktree: None,
+                branch: None,
+                base: None,
+                socket: Socket::Name("amx".to_string()),
+                pane: PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+            state: State {
+                state: phase,
+                summary: said.map(str::to_string),
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+            verdict: Verdict {
+                phase,
+                evidence: Evidence::Hooks,
+                rule: None,
+                age,
+                // The rows print the worked seconds; both clocks get `age`.
+                worked: age,
+            },
+            doing: None,
+        }
+    }
+
+    /// A row run by a shell command (`!cmd` or `--exec`): no agent on it.
+    pub(super) fn command(id: &str, phase: Phase) -> View {
+        let mut view = view(id, phase, Some("cargo build"), 5);
+        view.meta.agent = None;
+        view
+    }
+
+    /// The same reading, on a branch of its own.
+    pub(super) fn on_a_branch(mut view: View, branch: &str) -> View {
+        view.meta.branch = Some(branch.to_string());
+        view
+    }
+
+    /// A waiting agent and a working one, for a list to draw behind a card.
+    pub(super) fn a_fleet() -> Vec<View> {
+        vec![
+            view("ask-a1b", Phase::Waiting, None, 29),
+            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+        ]
+    }
+
+    /// The card a waiting agent's row opens: a question, its choices, and the
+    /// pane it is asked on.
+    pub(super) fn asking(options: &[&str], kind: Option<Kind>) -> Card {
+        Card {
+            id: "ask-a1b".to_string(),
+            phase: Phase::Waiting,
+            question: Some("Which fixture should the port keep?".to_string()),
+            options: options.iter().map(|label| (*label).to_string()).collect(),
+            walked: false,
+            kind,
+            body: "$ cargo test\nDo you want to proceed?".to_string(),
+            changes: false,
+            answer: false,
+            listening: true,
+            queued: Vec::new(),
+        }
+    }
+
+    /// A forge with one failing request for `ask-a1b`, and a live one plus
+    /// an older merged one for `busy-b2c`.
+    pub(super) fn a_forge(meta: &Meta) -> Vec<Pr> {
+        match meta.branch.as_deref() {
+            Some("amx/ask-a1b") => vec![Pr {
+                number: 12,
+                standing: Standing::Failing,
+            }],
+            Some("amx/busy-b2c") => vec![
+                Pr {
+                    number: 40,
+                    standing: Standing::Open,
+                },
+                Pr {
+                    number: 7,
+                    standing: Standing::Merged,
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The view over these readings, with the card read as the view reads one.
+    pub(super) fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// The same, over [`a_forge`].
+    pub(super) fn over_the_forge(views: Vec<View>, card: Option<Card>) -> Screen {
+        let mut screen = Screen::default();
+        screen.list.asking(a_forge);
+        screen.list.show(views);
+        screen.card = card.map(Card::read);
+        screen
+    }
+
+    /// The view with a launch profile opened on `~/code/amx`.
+    pub(super) fn launching(views: Vec<View>) -> Screen {
+        let mut screen = showing(views, None);
+        screen.profile.dir = "~/code/amx".to_string();
+        screen
+    }
+
+    /// The cells a view of this size draws.
+    pub(super) fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The rows a view of this size draws, trailing blanks trimmed.
+    pub(super) fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
+        let buffer = cells(screen, size);
+        (0..size.1)
+            .map(|row| {
+                (0..size.0)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The rows drawn for these readings at this size.
+    pub(super) fn drawn(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
+        painted(&showing(views, card), size)
+    }
+
+    /// A heading row without its indent.
+    pub(super) fn heading_of(line: &str) -> &str {
+        line.trim()
+    }
+
+    /// The column of this row drawn in reverse video, which is the cursor
+    /// block.
+    pub(super) fn block(screen: &Screen, size: (u16, u16), row: u16) -> Option<u16> {
+        let cells = cells(screen, size);
+        (0..size.0).find(|column| cells[(*column, row)].modifier.contains(Modifier::REVERSED))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

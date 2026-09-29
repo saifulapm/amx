@@ -871,115 +871,14 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::derive::{Evidence, Verdict, View};
-    use crate::store::{Kind, Meta, Phase, State};
-    use crate::tmux::{PaneId, Socket};
+    use crate::derive::View;
+    use crate::store::{Kind, Phase};
+    use crate::tui::paint::Card;
     use crate::tui::paint::empty::WELCOME;
-    use crate::tui::paint::{Card, draw};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
+    use crate::tui::paint::fixtures::{
+        a_fleet, asking, block, cells, launching, painted, showing, theme, view,
+    };
     use ratatui::style::{Color, Modifier};
-    use std::path::PathBuf;
-
-    /// The palette a screen nobody handed a theme is painted in, which is the
-    /// one every screen built here has and the one these colours are read out
-    /// of: what the tests are about is which role a thing is painted in, and
-    /// the values are the theme's business.
-    fn theme() -> Theme {
-        Theme::default()
-    }
-
-    fn view(id: &str, phase: Phase, said: Option<&str>, age: u64) -> View {
-        View {
-            meta: Meta {
-                role: None,
-                parent: None,
-                depth: 0,
-                id: id.to_string(),
-                task: "fix the login bug".to_string(),
-                agent: Some("claude".to_string()),
-                model: None,
-                effort: None,
-                dir: PathBuf::from("/srv/app"),
-                worktree: None,
-                branch: None,
-                base: None,
-                socket: Socket::Name("amx".to_string()),
-                pane: PaneId::new("%1").unwrap(),
-                bg: false,
-                session: None,
-                transcript: None,
-                created: 1,
-            },
-            state: State {
-                state: phase,
-                summary: said.map(str::to_string),
-                since: 1,
-                last_event: 1,
-                ..State::default()
-            },
-            verdict: Verdict {
-                phase,
-                evidence: Evidence::Hooks,
-                rule: None,
-                age,
-                // The rows print the worked seconds; most of these tests only
-                // care that a number is where the column is, so the helper
-                // hands both clocks the same one.
-                worked: age,
-            },
-            doing: None,
-        }
-    }
-
-    /// The view, with a reading in it. The card is read as it is planted,
-    /// the way the view itself builds one.
-    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
-        let mut screen = Screen::default();
-        screen.list.show(views);
-        screen.card = card.map(Card::read);
-        screen
-    }
-
-    /// The card a waiting agent's row opens: what it is asking, the choices it
-    /// offers, and the screen it is asking on.
-    fn asking(options: &[&str], kind: Option<Kind>) -> Card {
-        Card {
-            id: "ask-a1b".to_string(),
-            phase: Phase::Waiting,
-            question: Some("Which fixture should the port keep?".to_string()),
-            options: options.iter().map(|label| (*label).to_string()).collect(),
-            walked: false,
-            kind,
-            body: "$ cargo test\nDo you want to proceed?".to_string(),
-            changes: false,
-            answer: false,
-            listening: true,
-            queued: Vec::new(),
-        }
-    }
-
-    /// What a view of this size draws, cell by cell.
-    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    /// What a view of this size puts on the screen, line by line.
-    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
-        let buffer = cells(screen, size);
-        (0..size.1)
-            .map(|row| {
-                (0..size.0)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
 
     /// The weight and the strength a word on the wall was drawn at, for the
     /// tests about what a line being typed does to what it is drawn over.
@@ -992,24 +891,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{word:?} is on none of {lines:?}"));
         let at = line.find(word).expect("the word on the row");
         cells(screen, size)[(line[..at].chars().count() as u16, row as u16)].modifier
-    }
-
-    /// The two agents a card is opened over, so there is a list to still be
-    /// drawn behind it.
-    fn a_fleet() -> Vec<View> {
-        vec![
-            view("ask-a1b", Phase::Waiting, None, 29),
-            view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
-        ]
-    }
-
-    /// The view with a launch profile that says where it is running: the
-    /// directory is read from the disk when a real view opens, and a test says
-    /// what the disk would have answered.
-    fn launching(views: Vec<View>) -> Screen {
-        let mut screen = showing(views, None);
-        screen.profile.dir = "~/code/amx".to_string();
-        screen
     }
 
     /// The row the keys are drawn on, which is the last one on the screen.
@@ -1105,14 +986,6 @@ mod tests {
         composer.insert(text);
         screen.mode = Mode::Typing(composer);
         screen
-    }
-
-    /// Which cell of this row the block is standing in: the one drawn in
-    /// reverse video, which is where the next character somebody types will
-    /// land and the only thing on the screen that says so.
-    fn block(screen: &Screen, size: (u16, u16), row: u16) -> Option<u16> {
-        let cells = cells(screen, size);
-        (0..size.0).find(|column| cells[(*column, row)].modifier.contains(Modifier::REVERSED))
     }
 
     /// A line long enough to need more rows than any screen will give it.

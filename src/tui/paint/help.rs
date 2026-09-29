@@ -481,46 +481,12 @@ fn under(group: usize) -> impl Iterator<Item = &'static (&'static str, &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::derive::View;
     use crate::tui::keyname::spelt;
+    use crate::tui::paint::fixtures::{cells, painted, showing};
     use crate::tui::paint::header::{header_rows, space_rows};
-    use crate::tui::paint::{Card, draw};
     use crate::tui::{Mode, Screen};
     use crossterm::event::{KeyCode, KeyEvent};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
-
-    /// The view, with a reading in it. The card is read as it is planted,
-    /// the way the view itself builds one.
-    fn showing(views: Vec<View>, card: Option<Card>) -> Screen {
-        let mut screen = Screen::default();
-        screen.list.show(views);
-        screen.card = card.map(Card::read);
-        screen
-    }
-
-    /// What a view of this size draws, cell by cell.
-    fn cells(screen: &Screen, size: (u16, u16)) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
-        terminal.draw(|frame| draw(frame, screen)).unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    /// What a view of this size puts on the screen, line by line.
-    fn painted(screen: &Screen, size: (u16, u16)) -> Vec<String> {
-        let buffer = cells(screen, size);
-        (0..size.1)
-            .map(|row| {
-                (0..size.0)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
 
     /// The overlay on a screen this size.
     fn overlay(size: (u16, u16)) -> Vec<String> {
