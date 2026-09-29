@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_screen_cannot_drive_the_terminal_it_is_printed_into() {
+    fn logs_a_screen_cannot_drive_the_terminal_it_is_printed_into() {
         // Every byte here was written by something that is not amx, and a
         // terminal is an interpreter. The same sieve a captured pane goes
         // through everywhere else in amx: replaced, never deleted, so the

@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_the_json_line_is_the_record_with_whose_it_is_added() {
+    fn events_the_json_line_is_the_record_with_whose_it_is_added() {
         // The key set is the contract every script reading this stream is
         // written against: a key may be added, never renamed or dropped.
         let printed = json(
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_the_json_line_hands_over_a_payload_whole() {
+    fn events_the_json_line_hands_over_a_payload_whole() {
         // The stream a person reads takes the first line of a phrase and
         // strips it; this one is read by programs, and a payload cut down is a
         // payload that lied. It is one line and inert for a different reason:
