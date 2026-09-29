@@ -543,7 +543,7 @@ pub fn end_session(server: &Server, id: &str) -> Result<()> {
 pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Result<PaneId> {
     meets_the_floor(crate::tmux::version()?)?;
     let name = session_name(id);
-    let command = borrow(command);
+    let command: Vec<&str> = command.iter().map(String::as_str).collect();
     let (session, pane) = server.new_session(&Spawn {
         name: Some(&name),
         cwd: Some(cwd),
@@ -966,10 +966,6 @@ pub fn take_a_place<T>(
 /// The record `new` writes once the pane exists.
 pub fn record(root: &Path, meta: &Meta) -> Result<Agent> {
     Agent::create(root, meta)
-}
-
-fn borrow(args: &[String]) -> Vec<&str> {
-    args.iter().map(String::as_str).collect()
 }
 
 #[cfg(test)]
