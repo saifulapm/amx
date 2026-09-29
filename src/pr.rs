@@ -486,7 +486,7 @@ fn write(
     prs: Vec<Pr>,
     merged_heads: &[String],
     asked: u64,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let recorded = Recorded {
         asked,
         branch: branch.to_string(),
@@ -494,10 +494,7 @@ fn write(
         merged_heads: merged_heads.to_vec(),
     };
     let said = serde_json::to_string(&recorded)?;
-    let beside = dir.join(format!("{CACHE}.new"));
-    std::fs::write(&beside, said)?;
-    let _ = crate::paths::keep_to_the_owner(&beside, crate::paths::FILE_MODE);
-    std::fs::rename(&beside, dir.join(CACHE))
+    crate::store::write_atomic(&dir.join(CACHE), said.as_bytes())
 }
 
 /// The branches a look is already out for. One question at a time per agent:
@@ -928,8 +925,13 @@ mod tests {
             prs,
             "a fresh answer is the answer, and no forge is asked at all"
         );
-        assert!(
-            !dir.path().join(format!("{CACHE}.new")).exists(),
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [CACHE],
             "and the file it was written through is not left lying about"
         );
     }
