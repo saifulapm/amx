@@ -278,12 +278,33 @@ pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
 
 /// A message as the word amx hands `vendor`: with one space in front where it
 /// opens with `@` and the vendor would read that as a file to attach — see
-/// [`Vendor::attaches_at`].
+/// [`Vendor::attaches_at`] — typed the way [`as_typed`] types it, and after
+/// the vendor's [`Vendor::prompt_flag`] and `=` where it takes one.
 pub fn as_words(vendor: Option<&Vendor>, message: &str) -> String {
-    if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
-        format!(" {message}")
+    let typed = as_typed(vendor, message);
+    let typed = if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
+        format!(" {typed}")
     } else {
-        message.to_string()
+        typed
+    };
+    match vendor.and_then(|vendor| vendor.prompt_flag) {
+        Some(flag) => format!("{flag}={typed}"),
+        None => typed,
+    }
+}
+
+/// A message as amx types it at `vendor`'s composer: with one space after it
+/// where its last word opens a popup — see [`Vendor::popups`]. A message that
+/// already ends in a space has no last word to open one.
+pub fn as_typed(vendor: Option<&Vendor>, message: &str) -> String {
+    let last = message
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or_default();
+    let popups = vendor.map(|vendor| vendor.popups).unwrap_or_default();
+    match last.chars().next() {
+        Some(first) if popups.contains(&first) => format!("{message} "),
+        _ => message.to_string(),
     }
 }
 
@@ -1361,6 +1382,40 @@ mod tests {
             false,
         );
         assert_eq!(claude, ["claude", "@alice asked for this"]);
+    }
+
+    #[test]
+    fn spawn_a_message_rides_on_the_prompt_flag_as_one_word() {
+        // A vendor that reads no bare word as a prompt is handed the message
+        // as one `flag=<text>` word, so a message opening with `-` is never
+        // read as a flag of its own. One whose last word opens a popup gets a
+        // space after it, or the popup takes the Enter.
+        use crate::vendor::second::ELSEWHERE;
+
+        let vendor = Some(&ELSEWHERE);
+        assert_eq!(as_words(vendor, "-v is broken"), "--say=-v is broken");
+        assert_eq!(as_words(vendor, "look at #3"), "--say=look at #3 ");
+        assert_eq!(as_words(vendor, "#3 is fixed"), "--say=#3 is fixed");
+        assert_eq!(as_words(vendor, "look at #3 "), "--say=look at #3 ");
+
+        let claude = registry::entry("claude");
+        assert_eq!(as_words(claude, "look at #3"), "look at #3");
+        assert_eq!(as_words(None, "-v is broken"), "-v is broken");
+    }
+
+    #[test]
+    fn spawn_a_message_is_typed_with_a_space_only_after_a_popup_word() {
+        use crate::vendor::second::ELSEWHERE;
+
+        let vendor = Some(&ELSEWHERE);
+        assert_eq!(as_typed(vendor, "look at #3"), "look at #3 ");
+        assert_eq!(as_typed(vendor, "#3"), "#3 ");
+        assert_eq!(as_typed(vendor, "#3 is fixed"), "#3 is fixed");
+        assert_eq!(as_typed(vendor, "look at @3"), "look at @3");
+        assert_eq!(as_typed(vendor, ""), "");
+        for other in [registry::entry("claude"), registry::entry("pi"), None] {
+            assert_eq!(as_typed(other, "look at #3"), "look at #3");
+        }
     }
 
     #[test]
