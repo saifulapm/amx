@@ -360,16 +360,9 @@ fn report(
         return Ok(exit::OK);
     }
     let view = derive::view(root, id, store::now())?;
-    let object = serde_json::json!({
-        "id": view.id(),
-        "parent": view.meta.parent,
-        "phase": view.phase().as_str(),
-        "answer": answer,
-        "evidence": view.verdict.evidence,
-        "question": view.state.question,
-        "options": view.state.options,
-        "kind": view.kind(),
-    });
+    let mut object = result::answer_json(&view, answer);
+    object["id"] = serde_json::json!(view.id());
+    object["parent"] = serde_json::json!(view.meta.parent);
     writeln!(out, "{}", serde_json::to_string(&object)?)?;
     Ok(exit::OK)
 }
@@ -443,5 +436,18 @@ mod tests {
         assert_eq!(object["question"], "Which runner?");
         assert_eq!(object["options"], serde_json::json!(["Node", "Deno"]));
         assert_eq!(object["kind"], "question");
+        assert_eq!(object["parent"], "lead-a1b");
+        let keys: Vec<&str> = object
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "answer", "evidence", "id", "kind", "options", "parent", "phase", "question"
+            ]
+        );
     }
 }

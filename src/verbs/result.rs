@@ -166,7 +166,6 @@ pub fn run_family(
             Settled::Interrupted | Settled::Unanswered => None,
             _ => view.state.result.clone().or_else(|| transcript(&view)),
         };
-        let question = view.state.question.clone();
         match settled {
             Settled::Question => waiting = true,
             Settled::Nothing | Settled::Interrupted | Settled::Unanswered => failed = true,
@@ -174,20 +173,10 @@ pub fn run_family(
             _ => {}
         }
         if json {
-            family.insert(
-                id.clone(),
-                serde_json::json!({
-                    "phase": phase.as_str(),
-                    "answer": answer,
-                    "evidence": view.verdict.evidence,
-                    "question": question,
-                    "options": view.state.options,
-                    "kind": view.kind(),
-                }),
-            );
+            family.insert(id.clone(), answer_json(&view, answer));
         } else {
             writeln!(out, "{id} {phase}")?;
-            if let Some(question) = &question {
+            if let Some(question) = &view.state.question {
                 send::line(&send::rendered(question, to_terminal), out)?;
                 for choice in send::numbered(&view.state.options) {
                     send::line(&send::rendered(&choice, to_terminal), out)?;
@@ -209,6 +198,18 @@ pub fn run_family(
         exit::FAILURE
     } else {
         exit::OK
+    })
+}
+
+/// One agent's answer as `result --children --json` and `sub --json` print it.
+pub(crate) fn answer_json(view: &View, answer: Option<String>) -> serde_json::Value {
+    serde_json::json!({
+        "phase": view.phase().as_str(),
+        "answer": answer,
+        "evidence": view.verdict.evidence,
+        "question": view.state.question,
+        "options": view.state.options,
+        "kind": view.kind(),
     })
 }
 
