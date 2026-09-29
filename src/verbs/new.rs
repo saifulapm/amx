@@ -1536,13 +1536,16 @@ mod tests {
                 .map(|vendor| vendor.name)
                 .collect::<Vec<&str>>()
         };
-        assert_eq!(named(&Config::default()), ["claude", "pi", "codex"]);
+        assert_eq!(
+            named(&Config::default()),
+            ["claude", "pi", "codex", "opencode"]
+        );
         assert_eq!(
             named(&Config {
                 agent: "pi --approve".to_string(),
                 ..Config::default()
             }),
-            ["pi", "claude", "codex"],
+            ["pi", "claude", "codex", "opencode"],
             "the configured command, read as the harness it runs"
         );
         assert_eq!(
@@ -1550,7 +1553,7 @@ mod tests {
                 agent: "mock-claude".to_string(),
                 ..Config::default()
             }),
-            ["claude", "pi", "codex"],
+            ["claude", "pi", "codex", "opencode"],
             "an agent amx has no entry for is nobody in the table"
         );
     }

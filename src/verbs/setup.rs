@@ -255,6 +255,40 @@ mod tests {
     }
 
     #[test]
+    fn setup_writes_opencodes_plugin_where_its_tui_loads_one() {
+        // Into the config dir `OPENCODE_CONFIG_DIR` names, else the person's,
+        // and nowhere else: no config file of theirs is opened (Ruling 3).
+        let home = TempDir::new().unwrap();
+        let plugin = home.path().join(".config/opencode/plugins/amx/tui.js");
+
+        let (code, printed) = said(Some("opencode"), home.path(), 1);
+
+        assert_eq!(code, exit::OK, "{printed}");
+        assert!(printed.contains("wrote the plugin to"), "{printed}");
+        assert!(printed.contains(&plugin.display().to_string()), "{printed}");
+        let written = std::fs::read_to_string(&plugin).expect("the plugin");
+        assert!(written.starts_with("// installed by amx\n"), "{written}");
+        assert!(written.contains("\"_hook\""), "it reports through amx");
+        for theirs in ["opencode.json", "cli.json", "tui.json"] {
+            assert!(!home.path().join(".config/opencode").join(theirs).exists());
+        }
+        assert!(
+            said(Some("opencode"), home.path(), 2)
+                .1
+                .contains("nothing to do")
+        );
+
+        let moved = TempDir::new().unwrap();
+        let env = |name: &str| {
+            (name == "OPENCODE_CONFIG_DIR").then(|| moved.path().as_os_str().to_owned())
+        };
+        let mut out = Vec::new();
+        let code = run(Some("opencode"), false, home.path(), &env, 3, &mut out).unwrap();
+        assert_eq!(code, exit::OK);
+        assert!(moved.path().join("plugins/amx/tui.js").exists());
+    }
+
+    #[test]
     fn setup_run_again_writes_nothing_and_says_so() {
         let home = TempDir::new().unwrap();
         for agent in ["claude", "pi"] {
@@ -343,10 +377,10 @@ mod tests {
     fn setup_refuses_a_name_amx_has_no_entry_for() {
         let home = TempDir::new().unwrap();
 
-        let (code, printed) = said(Some("opencode"), home.path(), 1);
+        let (code, printed) = said(Some("aider"), home.path(), 1);
 
         assert_eq!(code, exit::USAGE, "{printed}");
-        assert!(printed.contains("opencode"), "it names what was asked for");
+        assert!(printed.contains("aider"), "it names what was asked for");
         for vendor in registry::entries() {
             assert!(printed.contains(vendor.name), "{printed}");
         }

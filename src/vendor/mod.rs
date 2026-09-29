@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 pub mod claude;
 pub mod codex;
+pub mod opencode;
 pub mod pi;
 
 /// A vendor that exists to keep this module honest. Test builds only: it is
@@ -658,7 +659,7 @@ pub const DEFAULT: &str = "default";
 /// change what it answers. The table is the whole of what makes a second
 /// vendor possible, and a test-only [`second`] proves that nothing in here is
 /// shaped around the first.
-static TABLE: [Vendor; 3] = [claude::VENDOR, pi::VENDOR, codex::VENDOR];
+static TABLE: [Vendor; 4] = [claude::VENDOR, pi::VENDOR, codex::VENDOR, opencode::VENDOR];
 
 /// The hooks a record's `agent` reports through, read in that vendor's own
 /// words: `None` from a vendor with none.
@@ -843,9 +844,9 @@ mod tests {
     }
 
     #[test]
-    fn the_table_lists_claude_first_then_pi_then_codex() {
+    fn the_table_lists_claude_first_then_pi_then_codex_then_opencode() {
         let names: Vec<_> = table().iter().map(|v| v.name).collect();
-        assert_eq!(names, ["claude", "pi", "codex"]);
+        assert_eq!(names, ["claude", "pi", "codex", "opencode"]);
         assert!(
             !names.contains(&SECOND.name),
             "the second vendor is a fixture, not an agent anybody can spawn"
@@ -858,7 +859,7 @@ mod tests {
         // config keys to obey and nothing to inject. mock-claude is the
         // fixture every end to end test spawns, and it must stay unregistered.
         assert!(find("mock-claude").is_none());
-        assert!(find("opencode").is_none());
+        assert!(find("aider").is_none());
         assert!(find("").is_none());
     }
 
@@ -2001,7 +2002,7 @@ mod tests {
         // The fields opencode brought are answered the way each of these
         // behaved before them: a last word for a prompt, no popups, one
         // Escape, no signal, and every dial a flag with its value.
-        for vendor in table() {
+        for vendor in table().iter().filter(|vendor| vendor.name != "opencode") {
             assert_eq!(vendor.prompt_flag, None, "{}", vendor.name);
             assert!(vendor.popups.is_empty(), "{}", vendor.name);
             assert_eq!(vendor.cancel_presses, 1, "{}", vendor.name);

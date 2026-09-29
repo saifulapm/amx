@@ -4562,6 +4562,21 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             .expect("opencode's screens parse")
     }
 
+    #[test]
+    fn rules_opencode_is_the_document_an_opencode_pane_is_read_by() {
+        // amx starts opencode with its launch word first and the task on
+        // `--prompt=`.
+        let read = of("opencode --standalone --prompt=fix the login bug");
+        assert!(std::ptr::eq(read, of("opencode")));
+        assert!(std::ptr::eq(
+            read,
+            of("/usr/local/bin/opencode --standalone")
+        ));
+        assert_eq!(named(read), named(&opencode()));
+        assert!(!std::ptr::eq(read, of("claude")));
+        assert!(!std::ptr::eq(read, of("codex")));
+    }
+
     /// One opencode screen at the four widths it was captured at.
     macro_rules! opencode_widths {
         ($name:literal) => {

@@ -4954,6 +4954,14 @@ mod tests {
         );
         profile.effort = "minimal".to_string();
         profile.cycle_vendor();
+        assert_eq!(profile.agent, "opencode");
+        assert_eq!(
+            profile.effort,
+            registry::DEFAULT,
+            "opencode has no effort dial, so the dial rests at the sentinel"
+        );
+        profile.effort = "minimal".to_string();
+        profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
         assert_eq!(
             profile.effort,
@@ -5064,6 +5072,8 @@ mod tests {
         assert_eq!(profile.agent, "pi", "then the other registered vendors");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "codex");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "opencode");
 
         profile.cycle_vendor();
         assert_eq!(
@@ -5094,6 +5104,8 @@ mod tests {
         );
         profile.cycle_vendor();
         assert_eq!(profile.agent, "codex");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "opencode");
 
         profile.cycle_vendor();
         assert_eq!(
@@ -5110,13 +5122,15 @@ mod tests {
 
     #[test]
     fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
-        // Three registered vendors, so the key walks from claude to pi to
-        // codex and a third press brings it back.
+        // Four registered vendors, so the key walks from claude to pi to
+        // codex to opencode and a fourth press brings it back.
         let mut profile = Profile::default();
         profile.cycle_vendor();
         assert_eq!(profile.agent, "pi");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "codex");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "opencode");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude");
 
@@ -5132,6 +5146,8 @@ mod tests {
         assert_eq!(profile.agent, "pi");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "codex");
+        profile.cycle_vendor();
+        assert_eq!(profile.agent, "opencode");
         profile.cycle_vendor();
         assert_eq!(profile.agent, "claude --add-dir ..");
     }

@@ -3667,7 +3667,10 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:");
         let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the table");
-        assert_eq!(offered(&found), ["agent:claude", "agent:pi", "agent:codex"]);
+        assert_eq!(
+            offered(&found),
+            ["agent:claude", "agent:pi", "agent:codex", "agent:opencode"]
+        );
         assert_eq!(
             (found.word, found.chosen),
             (0..6, 0),
@@ -3697,13 +3700,15 @@ mod tests {
         assert_eq!(line.suggest.as_ref().expect("the list").chosen, 1);
         line.choose(1);
         line.choose(1);
+        line.choose(1);
         assert_eq!(
             line.suggest.as_ref().expect("the list").chosen,
             0,
             "past the last of them is the first"
         );
         line.choose(-1);
-        assert_eq!(line.suggest.as_ref().expect("the list").chosen, 2);
+        assert_eq!(line.suggest.as_ref().expect("the list").chosen, 3);
+        line.choose(-1);
         line.choose(-1);
         assert_eq!(line.suggest.as_ref().expect("the list").chosen, 1);
 

@@ -3516,6 +3516,172 @@ mod tests {
     }
 
     #[test]
+    fn hook_an_opencode_turn_reads_each_plugin_name_as_its_moment() {
+        // Every name the plugin reports under (plan opencode-lands Ruling 4),
+        // as its payload arrives from assets/opencode/tui.js, folded into an
+        // opencode record in the order a turn sends them.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                agent: Some("opencode --standalone".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crate::vendor::hooks_for("opencode --standalone"),
+            Some(crate::vendor::opencode::HOOKS)
+        );
+        let send = |payload: Value| {
+            run(
+                Some(agent.id()),
+                root.path(),
+                &mut payload.to_string().as_bytes(),
+                &mut std::io::sink(),
+                &quiet(),
+                None,
+            )
+        };
+        let id = "ses_f11706b91ffeWbVsNizrHjNypj";
+
+        assert_eq!(
+            send(json!({
+                "hook_event_name": "session.selected",
+                "session_id": id,
+                "source": "startup"
+            })),
+            exit::OK
+        );
+        assert_eq!(agent.meta().unwrap().session.as_deref(), Some(id));
+
+        send(json!({
+            "hook_event_name": "session.execution.started",
+            "session_id": id,
+            "prompt": "say hi"
+        }));
+        let state = agent.state().unwrap();
+        assert_eq!((state.state, state.turn_open), (Phase::Working, true));
+
+        send(json!({
+            "hook_event_name": "session.tool.called",
+            "session_id": id,
+            "tool_name": "bash",
+            "tool_input": { "command": "ls" }
+        }));
+        assert_eq!(
+            agent.state().unwrap().summary.as_deref(),
+            Some("Running bash")
+        );
+
+        send(json!({
+            "hook_event_name": "permission.asked",
+            "session_id": id,
+            "tool_name": "bash"
+        }));
+        let state = agent.state().unwrap();
+        assert_eq!(
+            (state.state, state.kind, state.question),
+            (Phase::Waiting, Some(Kind::Permission), None),
+            "opencode writes no sentence a payload carries"
+        );
+
+        send(json!({ "hook_event_name": "permission.rejected", "session_id": id }));
+        let state = agent.state().unwrap();
+        assert_eq!(
+            state.state,
+            Phase::Working,
+            "the turn goes on with the refusal"
+        );
+
+        send(json!({
+            "hook_event_name": "form.created",
+            "session_id": id,
+            "kind": "question",
+            "message": "Tea or coffee?"
+        }));
+        let state = agent.state().unwrap();
+        assert_eq!(
+            (state.state, state.kind, state.question.as_deref()),
+            (Phase::Waiting, Some(Kind::Question), Some("Tea or coffee?"))
+        );
+
+        send(json!({ "hook_event_name": "permission.rejected", "session_id": id }));
+        send(json!({ "hook_event_name": "session.inbox.delivered", "session_id": id }));
+        let state = agent.state().unwrap();
+        assert_eq!(
+            (state.state, state.turn_open),
+            (Phase::Working, true),
+            "a steered message leaves the turn open"
+        );
+
+        send(json!({
+            "hook_event_name": "session.execution.ended",
+            "session_id": id,
+            "stop_reason": "stop",
+            "last_assistant_message": "hi"
+        }));
+        let state = agent.state().unwrap();
+        assert_eq!(
+            (state.state, state.turn_open, state.result.as_deref()),
+            (Phase::Idle, false, Some("hi"))
+        );
+    }
+
+    #[test]
+    fn hook_an_opencode_menu_is_its_question_tool_and_a_cut_turn_has_no_answer() {
+        let mut meta = Meta {
+            agent: Some("opencode --standalone".to_string()),
+            ..meta()
+        };
+        let mut state = State::default();
+        apply(
+            &json!({
+                "hook_event_name": "session.tool.called",
+                "tool_name": "question",
+                "tool_input": { "questions": [{
+                    "question": "Tea or coffee?",
+                    "header": "Drink",
+                    "options": [{ "label": "Tea", "description": "A warm cup" }]
+                }] }
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(
+            (state.state, state.kind),
+            (Phase::Waiting, Some(Kind::Question))
+        );
+
+        let mut state = State::default();
+        apply(
+            &json!({
+                "hook_event_name": "session.execution.ended",
+                "stop_reason": "aborted",
+                "last_assistant_message": "half an answer"
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!((state.state, state.result), (Phase::Idle, None));
+
+        // A session the pane was resumed onto is the agent's own, not another.
+        let ours = Meta {
+            session: Some("ses_ours".to_string()),
+            ..meta.clone()
+        };
+        let opening = |source: &str| {
+            json!({
+                "hook_event_name": "session.selected",
+                "session_id": "ses_other",
+                "source": source
+            })
+        };
+        assert!(anothers(&ours, &opening("startup")));
+        assert!(!anothers(&ours, &opening("resume")));
+    }
+
+    #[test]
     fn hook_an_adopted_session_reaches_the_record_that_is_still_running() {
         // One conversation can be on two records: an agent amx started and
         // stopped, and the claude somebody resumed it in by hand and adopted.
