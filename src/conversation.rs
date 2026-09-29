@@ -845,13 +845,14 @@ fn tool(name: Option<&str>, input: &Value, said: &mut Vec<Said>) {
 /// Named by the arguments both vendors' tools spell, in the order a reader
 /// would want them; a call spelling none of these is a name on its own.
 fn detail(input: &Value) -> Option<String> {
-    const WORTH_A_ROW: [&str; 8] = [
+    const WORTH_A_ROW: [&str; 9] = [
         "command",
         "file_path",
         "path",
         "pattern",
         "url",
         "query",
+        "skill",
         "description",
         "prompt",
     ];
@@ -904,6 +905,15 @@ mod tests {
             name: name.to_string(),
             detail: detail.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn a_skill_call_names_the_skill() {
+        let jsonl = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Skill\",\"input\":{\"skill\":\"desktop\",\"args\":\"screenshot the bar\"}}]}}\n";
+        assert_eq!(
+            read(Transcript::Claude, jsonl),
+            vec![tool("Skill", Some("desktop"))]
+        );
     }
 
     #[test]
