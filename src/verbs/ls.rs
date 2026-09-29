@@ -33,9 +33,13 @@ pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Writ
     // twice.
     let records = gc::sweep(derive::records(root)?, now);
 
-    // Narrowed once, before either reader is answered, so the table and the
-    // JSON are the same reading of the same agents.
-    let views = scope.narrow(derive::views_of(root, records, now));
+    // Narrowed before the reading, so an agent outside the scope costs no
+    // screen and no summary.
+    let records = records
+        .into_iter()
+        .filter(|record| scope.covers(&record.meta))
+        .collect();
+    let views = derive::views_of(root, records, now);
     if json {
         let listed: Vec<_> = views.iter().map(View::json).collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&listed)?)?;
@@ -495,6 +499,42 @@ mod tests {
         assert_eq!(text.lines().count(), 1, "{text}");
         assert!(text.contains("just-done-c3d"), "{text}");
         assert_eq!(crate::store::list(root.path()).unwrap(), ["just-done-c3d"]);
+    }
+
+    #[test]
+    fn ls_dir_reads_the_agents_under_it_and_sweeps_every_record() {
+        const NOW: u64 = 1_800_000_000;
+        let root = tempfile::TempDir::new().unwrap();
+        on_disk(root.path(), "here-a1b", Phase::Done, NOW - 60);
+        on_disk(root.path(), "there-c3d", Phase::Done, NOW - 60);
+        on_disk(
+            root.path(),
+            "old-there-e5f",
+            Phase::Done,
+            NOW - gc::KEEP - 1,
+        );
+        for id in ["there-c3d", "old-there-e5f"] {
+            crate::store::Agent::open(root.path(), id)
+                .unwrap()
+                .writer()
+                .unwrap()
+                .update_meta(|meta| meta.dir = PathBuf::from("/srv/other"))
+                .unwrap();
+        }
+
+        let scope = Scope::of(Some(Path::new("/srv/app"))).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(
+            run(root.path(), false, &scope, NOW, &mut out).unwrap(),
+            exit::OK
+        );
+
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("here-a1b"), "{text}");
+        let mut left = crate::store::list(root.path()).unwrap();
+        left.sort();
+        assert_eq!(left, ["here-a1b", "there-c3d"]);
     }
 
     #[test]
