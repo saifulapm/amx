@@ -38,7 +38,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::paths;
 use crate::tmux::{PaneId, Socket};
 
-const META: &str = "meta.json";
+pub(crate) const META: &str = "meta.json";
 const STATE: &str = "state.json";
 const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";

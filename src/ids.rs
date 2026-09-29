@@ -104,7 +104,7 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
         // A directory with no record in it is a spawn that died between
         // claiming the name and writing it down: nobody's agent, and doctor
         // is what clears it.
-        if !held.join("meta.json").exists() {
+        if !held.join(crate::store::META).exists() {
             bail!(
                 "name {name:?} is held by a spawn that never finished: \
                  `amx doctor --fix` clears it"
