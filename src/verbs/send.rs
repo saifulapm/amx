@@ -32,7 +32,7 @@
 //! sentences, and a caller reading amx's stderr should not find three ways of
 //! saying that an agent has ended.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -128,8 +128,9 @@ pub fn run(
     }
 
     let agent = Agent::open(root, id)?;
-    let hooks = crate::vendor::hooks_for(view.meta.agent.as_deref().unwrap_or_default());
-    let taken = submissions(hooks.as_ref(), &agent.events()?);
+    // Where the log ends before the send: the confirmation is looked for in
+    // what is appended after it, so the wait never re-reads the whole log.
+    let from = std::fs::metadata(agent.events_path()).map_or(0, |log| log.len());
 
     let server = Server::from_socket(view.meta.socket.clone());
     match delivered(&agent, &server, &view.meta.pane, text)? {
@@ -157,7 +158,7 @@ pub fn run(
         return Ok(exit::OK);
     }
 
-    if took_it(root, &view.meta, &agent, taken, CONFIRM)? {
+    if took_it(root, &view.meta, &agent, from, CONFIRM)? {
         return Ok(exit::OK);
     }
     complain!(
@@ -287,13 +288,7 @@ pub(crate) fn ends_its_own_paste(text: &str) -> bool {
 /// asks it to, and while a send waits nobody is asking. So the wait asks, and
 /// what the reading writes down is what it then finds in the log — one word,
 /// read the one way, whoever said it.
-fn took_it(
-    root: &Path,
-    meta: &Meta,
-    agent: &Agent,
-    before: usize,
-    patience: Duration,
-) -> Result<bool> {
+fn took_it(root: &Path, meta: &Meta, agent: &Agent, from: u64, patience: Duration) -> Result<bool> {
     let deadline = Instant::now() + patience;
     let looking = only_a_reader_will_say(meta);
     let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
@@ -303,7 +298,7 @@ fn took_it(
             // and the deadline below is what answers for that.
             let _ = derive::view(root, agent.id(), store::now());
         }
-        if submissions(hooks.as_ref(), &agent.events()?) > before {
+        if submissions(hooks.as_ref(), &events_from(agent, from)?) > 0 {
             return Ok(true);
         }
         if Instant::now() >= deadline {
@@ -314,6 +309,25 @@ fn took_it(
             false => POLL,
         });
     }
+}
+
+/// The events appended to `agent`'s log from byte `from` on.
+fn events_from(agent: &Agent, from: u64) -> Result<Vec<Event>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = agent.events_path();
+    let mut log = match std::fs::File::open(&path) {
+        Ok(log) => log,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut tail = Vec::new();
+    log.seek(SeekFrom::Start(from))
+        .and_then(|_| log.read_to_end(&mut tail))
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&tail)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
 }
 
 /// Whether the only word that will ever say this message was taken is a
@@ -728,6 +742,28 @@ mod tests {
             Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
         ];
         assert_eq!(submissions(claude, &mixed), 1);
+    }
+
+    #[test]
+    fn send_waits_only_on_what_the_log_gained_after_the_send() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut meta = asking(None, &[], None).meta;
+        meta.agent = Some("claude".to_string());
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        let log = |event: Event| agent.writer().unwrap().append(&event).unwrap();
+        log(Event::new(SUBMITTED, json!({})));
+
+        let from = std::fs::metadata(agent.events_path()).unwrap().len();
+        assert!(events_from(&agent, from).unwrap().is_empty());
+        assert!(
+            !took_it(root.path(), &meta, &agent, from, Duration::ZERO).unwrap(),
+            "a prompt from before the send is not its confirmation"
+        );
+
+        log(Event::new(SEND, json!({ "text": "and the linter" })));
+        log(Event::new(SUBMITTED, json!({})));
+        assert_eq!(events_from(&agent, from).unwrap().len(), 2);
+        assert!(took_it(root.path(), &meta, &agent, from, Duration::ZERO).unwrap());
     }
 
     #[test]
