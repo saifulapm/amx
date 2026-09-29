@@ -450,10 +450,25 @@ fn asked(
     if force {
         return Ok(fallback);
     }
+    Ok(
+        match confirm(question, fallback == Disposition::Delete, input, out)? {
+            true => Disposition::Delete,
+            false => Disposition::Keep,
+        },
+    )
+}
 
-    let hint = match fallback {
-        Disposition::Delete => "[Y/n]",
-        Disposition::Keep => "[y/N]",
+/// Ask a yes/no question on `out`. An empty line, anything that is not yes or
+/// no, and no input at all are `default`.
+pub(crate) fn confirm(
+    question: &str,
+    default: bool,
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+) -> Result<bool> {
+    let hint = match default {
+        true => "[Y/n]",
+        false => "[y/N]",
     };
     write!(out, "{question} {hint} ")?;
     out.flush()?;
@@ -462,12 +477,12 @@ fn asked(
     if input.read_line(&mut answer)? == 0 {
         // Nobody there to ask: the default is the answer.
         writeln!(out)?;
-        return Ok(fallback);
+        return Ok(default);
     }
     Ok(match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Disposition::Delete,
-        "n" | "no" => Disposition::Keep,
-        _ => fallback,
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        _ => default,
     })
 }
 

@@ -224,18 +224,7 @@ pub fn holding(meta: &Meta) -> Option<PathBuf> {
 /// one that loses nothing, and anything that is not plainly yes — a shrug, a
 /// typo, nobody there at all — takes it.
 fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Result<bool> {
-    write!(out, "clear {count}? [y/N] ")?;
-    out.flush()?;
-
-    let mut answer = String::new();
-    if input.read_line(&mut answer)? == 0 {
-        writeln!(out)?;
-        return Ok(false);
-    }
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    stop::confirm(&format!("clear {count}?"), false, input, out)
 }
 
 #[cfg(test)]
