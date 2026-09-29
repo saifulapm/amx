@@ -1,0 +1,315 @@
+#!/bin/sh
+# A stand-in for opencode 2.0.16, replaying a scenario of steps.
+#
+# It is called `opencode`, and reached through the PATH, for the reason codex's
+# and pi's stand-ins are: amx keys its vendor table by the program an agent
+# command runs, and a fixture sharing amx's own code would only ever prove
+# that amx agrees with itself.
+#
+# What it answers for:
+#
+#   the argv          `opencode [--standalone] [--auto] [-s|--session <id>]
+#                     [-c|--continue] [--server <url>] [--prompt=<text>]
+#                     [<dir>]`, read the way the TUI's root command reads it
+#                     (cli/src/commands/commands.ts:26-58). A value opening
+#                     with `-` is never taken as a word of its own, so
+#                     `--prompt -v` is a prompt with nothing in it, which is
+#                     a refusal. Without `--standalone` the TUI would join the
+#                     shared service, started with somebody else's env, so the
+#                     stand-in refuses to run there at all (plan
+#                     opencode-lands Ruling 1).
+#   the session       opencode mints its own `ses_` id, and says it at the
+#                     first session route. `--session <id>` opens the one kept
+#                     under that id and refuses one with none.
+#   the model         `OPENCODE_CONFIG_CONTENT`, the config loaded over every
+#                     other, carries `{"model":"<value>"}` (Ruling 8).
+#   the plugin        amx's `plugins/amx/tui.js`, whose reports this plays:
+#                     `amx _hook` with the payload on stdin, in the pane's own
+#                     env, and nothing at all without `AMX_ID` (Ruling 3).
+#   SIGUSR2           the plugin interrupts its session, which ends a running
+#                     turn as `aborted` wherever it is, a card up or not
+#                     (Ruling 6).
+#   the screens       the captures in tests/opencode/screens, painted whole in
+#                     one write, at the widest width captured that fits the
+#                     pane, bottom rows kept.
+#
+# How it was called, what it did with the session, the model and the prompt
+# are written before the first repaint, where `capture-pane -S -` reads them
+# back. Each argv word is quoted, so a trailing space can be seen.
+#
+# Steps, one per line. Blank lines and `#` comments are ignored.
+#
+#   screen <name>   repaint with tests/opencode/screens/<name>-<width>.txt.
+#   sleep <ms>      wait. A long trailing sleep keeps the agent alive.
+#   hook <event> <json>
+#                   report a moment the way the plugin reports one, under the
+#                   plugin's own event name. `session_id` is added where the
+#                   json names none; `session.selected` gets the source this
+#                   run opened with, `session.execution.started` the prompt
+#                   this turn was given, and `session.execution.ended` the
+#                   message list, where one was written.
+#   messages <name> write tests/opencode/messages/<name>.jsonl whole to
+#                   `$AMX_DIR/opencode-messages.jsonl`, as the plugin writes
+#                   the session's messages at a turn's end.
+#   await line      block until a line is typed at the pane: the next turn's
+#                   prompt, bracketed paste taken off.
+#   await esc       block until Escape reaches the pane.
+#
+# Environment:
+#   MOCK_OPENCODE_SCENARIO   the scenario to replay (required)
+
+set -u
+
+scenario=${MOCK_OPENCODE_SCENARIO:-}
+if [ -z "$scenario" ]; then
+	echo "mock opencode: \$MOCK_OPENCODE_SCENARIO names the scenario to replay" >&2
+	exit 64
+fi
+if [ ! -r "$scenario" ]; then
+	echo "mock opencode: cannot read the scenario $scenario" >&2
+	exit 66
+fi
+
+here=$(dirname "$0")
+screens=$here/../opencode/screens
+fixtures=$here/../opencode/messages
+sessions=${XDG_DATA_HOME:-$HOME/.local/share}/opencode/sessions
+
+words=
+for arg do
+	words="$words '$arg'"
+done
+printf 'argv:%s\n' "$words"
+
+standalone=0
+auto=0
+origin=
+prompt=
+value_of=
+for arg do
+	if [ -n "$value_of" ]; then
+		case $arg in
+		-*)
+			echo "Not enough arguments following: $value_of" >&2
+			exit 1
+			;;
+		esac
+		case $value_of in
+		session) origin=$arg ;;
+		prompt) prompt=$arg ;;
+		esac
+		value_of=
+		continue
+	fi
+	case $arg in
+	--standalone) standalone=$((standalone + 1)) ;;
+	--auto) auto=1 ;;
+	-s | --session) value_of=session ;;
+	--session=*) origin=${arg#--session=} ;;
+	--prompt) value_of=prompt ;;
+	--prompt=*) prompt=${arg#--prompt=} ;;
+	--server) value_of=server ;;
+	-c | --continue)
+		echo "mock opencode: --continue opens a session nobody named" >&2
+		exit 65
+		;;
+	-*)
+		echo "Unknown argument: $arg" >&2
+		exit 1
+		;;
+	*) ;;
+	esac
+done
+if [ -n "$value_of" ]; then
+	echo "Not enough arguments following: $value_of" >&2
+	exit 1
+fi
+if [ "$standalone" -ne 1 ]; then
+	echo "mock opencode: --standalone $standalone times; once, or the shared service runs this" >&2
+	exit 70
+fi
+
+mint() {
+	id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s%s' "$$" "$(date +%s%N)")
+	printf 'ses_%s' "$(printf '%s' "$id" | tr -d '-' | cut -c1-26)"
+}
+
+if [ -n "$origin" ]; then
+	if [ ! -f "$sessions/$origin" ]; then
+		echo "Session not found: $origin" >&2
+		exit 1
+	fi
+	session=$origin
+	source=resume
+	printf 'session: resumed %s\n' "$session"
+else
+	session=$(mint)
+	source=startup
+	mkdir -p "$sessions"
+	: >"$sessions/$session"
+	printf 'session: started %s\n' "$session"
+fi
+
+# The model the config loaded last names, as one string value.
+model=$(printf '%s' "${OPENCODE_CONFIG_CONTENT:-}" |
+	sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+printf 'model: %s\n' "${model:-default}"
+printf 'auto: %s\n' "$auto"
+printf "prompt: '%s'\n" "$prompt"
+
+if [ -t 1 ]; then
+	printf '\033[?2004h'
+	stty -echo </dev/tty 2>/dev/null
+fi
+
+# ── The screens ──────────────────────────────────────────────────────────────
+# Captured off opencode 2.0.16 on 2026-09-30 at 220, 100, 54 and 24 columns
+# (docs/opencode-screens.md). As codex's stand-in paints them.
+size=$( (stty size </dev/tty) 2>/dev/null)
+rows=${size% *}
+width=${size#* }
+case $rows in '' | *[!0-9]*) rows=24 ;; esac
+case $width in '' | *[!0-9]*) width=80 ;; esac
+
+CLEAR=$(printf '\033[H\033[2J')
+
+draw() {
+	file=
+	for w in 24 54 100 220; do
+		[ -f "$screens/$1-$w.txt" ] || continue
+		if [ -z "$file" ] || [ "$w" -le "$width" ]; then
+			file=$screens/$1-$w.txt
+		fi
+	done
+	if [ -z "$file" ]; then
+		echo "mock opencode: $scenario: no screen called \`$1\`" >&2
+		exit 65
+	fi
+	screen=$(sed 's/[[:space:]]*$//' "$file" | cat -s | tail -n "$((rows - 1))")
+	cat <<EOF
+$CLEAR$screen
+EOF
+}
+
+# A wait a signal can cut into: the trap runs, and the wait carries on.
+napping=
+nap() {
+	[ "$1" -gt 0 ] || return 0
+	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")" &
+	napping=$!
+	while kill -0 "$napping" 2>/dev/null; do
+		wait "$napping"
+	done
+	napping=
+}
+
+quoted() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+record=${AMX_DIR:-}
+listed=${record:+$record/opencode-messages.jsonl}
+running=0
+
+# One report, the way the plugin makes one: silent without AMX_ID, and to the
+# amx the pane names, else the one on the PATH.
+deliver() {
+	event=${1%% *}
+	json=${1#"$event"}
+	json=${json# }
+	[ -n "$json" ] || json='{}'
+	[ -n "${AMX_ID:-}" ] || return 0
+
+	fields="\"hook_event_name\":\"$event\""
+	has() { case "$json" in *"\"$1\""*) return 0 ;; esac; return 1; }
+	has session_id || fields="$fields,\"session_id\":\"$session\""
+	case $event in
+	session.selected)
+		has source || fields="$fields,\"source\":\"$source\""
+		;;
+	session.execution.started)
+		running=1
+		has prompt || fields="$fields,\"prompt\":\"$(quoted "$prompt")\""
+		;;
+	session.execution.ended)
+		running=0
+		if ! has transcript_path && [ -n "$listed" ] && [ -f "$listed" ]; then
+			fields="$fields,\"transcript_path\":\"$(quoted "$listed")\""
+		fi
+		;;
+	esac
+
+	interior=$(printf '%s' "$json" |
+		sed -e 's/^[[:space:]]*{[[:space:]]*//' -e 's/[[:space:]]*}[[:space:]]*$//')
+	[ -z "$interior" ] || fields="$fields,$interior"
+
+	printf '%s' "{$fields}" | "${AMX_BIN:-amx}" _hook >/dev/null 2>&1
+}
+
+list() {
+	if [ ! -f "$fixtures/$1.jsonl" ]; then
+		echo "mock opencode: $scenario: no messages called \`$1\`" >&2
+		exit 65
+	fi
+	[ -n "$listed" ] || return 0
+	cp "$fixtures/$1.jsonl" "$listed.tmp" && mv "$listed.tmp" "$listed"
+}
+
+# SIGUSR2: the plugin interrupts the session, and a running turn ends.
+interrupted() {
+	[ "$running" -eq 1 ] || return 0
+	printf 'signal: USR2\n'
+	draw interrupted
+	deliver 'session.execution.ended {"stop_reason":"aborted"}'
+}
+trap interrupted USR2
+trap '[ -z "$napping" ] || kill "$napping" 2>/dev/null; exit 129' HUP TERM
+
+await() {
+	case $1 in
+	line)
+		IFS= read -r typed </dev/tty || exit 0
+		esc=$(printf '\033')
+		typed=$(printf '%s' "$typed" | sed -e "s/${esc}\[200~//g" -e "s/${esc}\[201~//g" -e 's/\r$//')
+		prompt=$typed
+		printf "typed: '%s'\n" "$typed"
+		;;
+	esc)
+		old=$(stty -g </dev/tty)
+		stty -icanon min 1 time 0 </dev/tty
+		esc=$(printf '\033')
+		while :; do
+			key=$(dd bs=1 count=1 </dev/tty 2>/dev/null) || exit 0
+			[ "$key" = "$esc" ] && break
+		done
+		stty "$old" </dev/tty
+		;;
+	*)
+		echo "mock opencode: $scenario: nothing to await called \`$1\`" >&2
+		exit 65
+		;;
+	esac
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+	'' | '#'*) continue ;;
+	esac
+	verb=${line%% *}
+	rest=${line#"$verb"}
+	rest=${rest# }
+
+	case "$verb" in
+	screen) draw "$rest" ;;
+	sleep) nap "$rest" ;;
+	hook) deliver "$rest" ;;
+	messages) list "$rest" ;;
+	await) await "$rest" ;;
+	*)
+		echo "mock opencode: $scenario: no step called \`$verb\`" >&2
+		exit 65
+		;;
+	esac
+done <"$scenario"
+
+exit 0

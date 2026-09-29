@@ -1,0 +1,13 @@
+# A turn two Escapes end: the first only arms the cancel.
+screen idle
+hook session.selected
+hook session.execution.started
+screen working
+hook session.tool.called {"tool_name":"shell","tool_input":{"command":"sleep 60"}}
+await esc
+screen esc-once
+await esc
+messages interrupt
+hook session.execution.ended {"stop_reason":"aborted"}
+screen interrupted
+sleep 60000

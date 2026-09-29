@@ -1,0 +1,9 @@
+# The question tool's form, as tests/opencode/events/question.jsonl has it.
+screen idle
+hook session.selected
+hook session.execution.started
+screen working
+hook session.tool.called {"tool_name":"question","tool_input":{"questions":[{"question":"Tea or coffee?","header":"Drink","options":[{"label":"Tea","description":"A warm cup of tea"},{"label":"Coffee","description":"A warm cup of coffee"}]}]}}
+hook form.created {"kind":"question","message":"Tea or coffee?"}
+screen question
+sleep 60000

@@ -1,0 +1,12 @@
+# One turn on the task, a shell call inside it, and the answer at its end,
+# as tests/opencode/events/turn.jsonl has it.
+screen idle
+hook session.selected
+hook session.execution.started
+screen working
+hook session.tool.called {"tool_name":"shell","tool_input":{"command":"sleep 40"}}
+sleep 200
+messages turn
+hook session.execution.ended {"stop_reason":"stop","last_assistant_message":"done"}
+screen idle-after
+sleep 60000

@@ -1,0 +1,10 @@
+# A turn stopped on a permission card, which only SIGUSR2 ends from outside.
+screen idle
+hook session.selected
+hook session.execution.started
+screen working
+hook session.tool.called {"tool_name":"shell","tool_input":{"command":"rm -rf build"}}
+messages permission
+hook permission.asked {"tool_name":"shell"}
+screen permission
+sleep 60000

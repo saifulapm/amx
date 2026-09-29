@@ -1,0 +1,15 @@
+# A turn, then a message typed at the composer, and its turn.
+screen idle
+hook session.selected
+hook session.execution.started
+screen working
+messages turn
+hook session.execution.ended {"stop_reason":"stop","last_assistant_message":"the tests pass now"}
+screen idle-after
+await line
+hook session.execution.started
+screen working
+messages steer
+hook session.execution.ended {"stop_reason":"stop","last_assistant_message":"the linter is clean"}
+screen idle-after
+sleep 60000
