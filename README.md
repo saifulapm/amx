@@ -34,7 +34,7 @@ done     tidy-the-imports-d4e      2m  the imports are sorted
 
 ```sh
 cargo install --path .
-amx setup claude      # or `amx setup pi`, `amx setup codex`: whichever agents you have
+amx setup claude      # or `amx setup pi`, `codex`, `opencode`: whichever agents you have
 amx doctor
 ```
 
@@ -52,7 +52,7 @@ Every check that fails says what to do about it.
 
 Ten kinds of check rather than ten lines. The wiring one is asked of every
 agent you have installed and names which agent it is about, so a machine with
-claude, pi and codex reads three of those lines; an agent you have not got is
+claude, pi, codex and opencode reads four of those lines; an agent you have not got is
 not a fault and is not mentioned. `amx setup` is what wires one — `doctor` only
 says which is unwired, and prints the line that fixes it.
 
@@ -94,6 +94,7 @@ it, and `doctor` says so until they are.
 amx setup claude   # amx's plugin into ~/.claude/skills/amx
 amx setup pi       # amx's extension into ~/.pi/agent/extensions/amx.ts
 amx setup codex    # amx's hooks into $CODEX_HOME/hooks.json, trusted in its config.toml
+amx setup opencode # amx's plugin into $OPENCODE_CONFIG_DIR/plugins/amx/tui.js
 ```
 
 Reporting is not the only wire an agent can carry. `amx setup pi --subagent`
@@ -120,7 +121,10 @@ on its hooks-review screen, so codex starts with no such screen. Both files are
 copied aside before the first edit, and `amx uninstall` puts the copies back
 when nothing else has touched the files since, and otherwise takes out only
 what amx added. `amx setup codex` reads `CODEX_HOME` from the environment it
-runs in, so run it with the same one your agents get. Every wire runs
+runs in, so run it with the same one your agents get. opencode's is a plugin
+file, `plugins/amx/tui.js` in `$OPENCODE_CONFIG_DIR`, else `~/.config/opencode`,
+which opencode's TUI loads with no entry in any config file; `amx setup
+opencode` reads `OPENCODE_CONFIG_DIR` the same way. Every wire runs
 `amx _hook` off your PATH rather than a path written into a file, so they want
 one amx there — which is a thing `doctor` checks — and keep working after amx
 moves on disk.
@@ -1299,7 +1303,8 @@ whichever variable the vendor names its session in, which it puts in the
 environment of every command it starts. `$CLAUDE_CODE_SESSION_ID` is claude's,
 `$PI_SESSION_ID` is pi's and `$CODEX_SESSION_ID` is codex's, and the one that
 is here is what says which vendor is in the pane: what somebody started themselves need not be what
-`amx new` would spawn. Without them there is nothing to adopt and amx says so
+`amx new` would spawn. opencode puts no such variable in what it runs, so an
+opencode session cannot be adopted. Without them there is nothing to adopt and amx says so
 rather than guessing at which agent on the machine was meant. An agent outside
 tmux cannot be adopted at all: adopt needs it to be running inside a tmux pane,
 because a pane is the only thing amx can watch and type at.
@@ -1788,7 +1793,7 @@ transcript, resume, fork, adopt, trust. A verb asks before it acts, so
 `amx fork` on a vendor that cannot branch a session is a refusal naming the
 gap, not a spawn that fails somewhere in a pane.
 
-Three commands have an entry today. `claude` is the one amx runs unless told
+Four commands have an entry today. `claude` is the one amx runs unless told
 otherwise, and it reports through a plugin `amx setup claude` writes where
 claude loads one from. `pi` is the second, and it reports through an extension
 `amx setup pi` writes where pi loads one from — one event per moment the way
@@ -1800,8 +1805,15 @@ config, which `amx setup codex` merges amx's groups into and trusts, as
 Every codex amx starts runs as `codex --no-daemon`, its own app server rather
 than the shared one, because under the shared one a hook never learns which
 agent it is about. An agent without its wiring is read off its pane instead,
-and `doctor` says so. `agent = "pi"` in the config, or `--agent pi` on one
-spawn, runs it for every new agent; `codex` the same.
+and `doctor` says so. `opencode` reports through a plugin `amx setup opencode`
+writes into its config directory, which names the message list it writes at
+each turn's end, and every opencode amx starts runs as `opencode --standalone`,
+a server of its own that ends with the pane: the shared service runs in
+whatever environment first started it, and a turn on it outlives the pane.
+`amx stop` of an opencode turn interrupts it before the pane goes, so the next
+start of that service finds nothing left to resume. `agent = "pi"` in the
+config, or `--agent pi` on one spawn, runs it for every new agent; `codex` and
+`opencode` the same.
 
 An entry also says where that vendor's models are found, which is what lets a
 typed model pick the harness. claude's are a handful of aliases, so the entry
@@ -1811,10 +1823,13 @@ providers hold, so the entry carries the command that prints them instead — `p
 id first — and amx runs it when it has to, keeping what it read for an hour so a
 morning of spawns costs one pi process. codex's are the account's, printed by
 `codex debug models` as JSON, and amx takes the ones codex's own picker lists.
+opencode's entry carries none, since `opencode models` starts opencode's shared
+service to answer: an opencode model is taken with `--agent opencode` beside
+it, or from the config's `[opencode] models`, and refused otherwise.
 A harness's own `models` in the config stands in place of any of these, and a listing is never run once an earlier harness's
 list has answered the word.
 
-A command the table has no entry for — `agent = "opencode"` — gets the floor:
+A command the table has no entry for — `agent = "aider"` — gets the floor:
 a real pane, a row that reads what the screen says, and no pretending beyond
 that — the same footing every `--exec` command stands on.
 
@@ -1851,7 +1866,7 @@ was these words, and `true` and `false` still read as desktop and off.
 table per harness:
 
 ```toml
-agent = "claude"          # the command a new agent runs: claude, pi, codex or your own
+agent = "claude"          # the command a new agent runs: claude, pi, codex, opencode or your own
 max_agents = 5            # how many live agents in a project before `new` refuses
 max_total = 10            # a ceiling over every project on the machine
 max_children = 8          # live children one parent may have; 0 is no ceiling
@@ -1951,7 +1966,7 @@ sentence naming what amx does on that key, and bound to nothing. It is the one
 table a project's file lays over yours an entry at a time, so a repository
 binds the key its work wants without unbinding the keys you press everywhere.
 
-Each harness amx has an entry for — claude, pi and codex today — can have a
+Each harness amx has an entry for — claude, pi, codex and opencode today — can have a
 table of its own, named after the command it runs:
 
 ```toml

@@ -40,7 +40,8 @@ registers the agent that ran it — you, whether claude, pi or codex — as an
 agent of amx's, so the user sees this session on their wall beside the ones amx
 started. From codex, run it in shell mode (`!amx adopt`) or ask for it through
 the shell tool: either way codex hands it `$CODEX_SESSION_ID`, which is how amx
-knows the session. Run it when they ask for
+knows the session. opencode names its session in nothing the commands it runs
+can see, so an opencode session cannot be adopted. Run it when they ask for
 that and never on your own. It starts nothing and sends nothing.
 
 ## Exit codes are the interface
@@ -259,7 +260,14 @@ when one is in a state you did not expect.
   approach costs nothing of the one already tried. The copy runs in the same
   directory as the original, so do not drive both at the same files at once.
   An agent that never recorded a session cannot be forked, and the refusal says
-  so: that is what `amx new` is for.
+  so: that is what `amx new` is for. Nor can an opencode one, which has no way
+  to start on a copy of a session.
+- **Every vendor takes the same verbs.** `--agent opencode` (or `pi`, `codex`)
+  starts that one instead of the configured agent; `new`, `send`, `result`,
+  `interrupt` and `stop` read the same on each. A typed `--model` picks the
+  harness whose list holds it, and opencode lists nothing of its own: pass
+  `--agent opencode` beside an opencode model, or it is refused unless the
+  config names it under `[opencode] models`.
 - **A long command can have a row too.** `amx new --exec 'cargo test --all'`
   runs it in a pane and hands back an id, so a build you would otherwise sit
   through runs beside the agents. Do not wait on it with `result`: a command
