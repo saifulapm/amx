@@ -18,9 +18,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
-/// Every role a theme file may name. Anything else is warned about and ignored.
-pub const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
-
 /// The themes that ship inside the binary, by the name `theme` may call them.
 const SHIPPED: [(&str, &str); 3] = [
     ("default", include_str!("../assets/themes/default.toml")),
@@ -164,11 +161,6 @@ pub fn source_in(themes: &Path, named: &str) -> Source {
         true => Source::File(themes.join(named)),
         false => Source::File(themes.join(format!("{named}{EXTENSION}"))),
     }
-}
-
-/// What `named` names, in the themes directory this machine keeps.
-pub fn source(named: &str) -> Result<Source> {
-    Ok(source_in(&themes_dir()?, named))
 }
 
 /// The theme `named`, with warnings for the caller to print.
@@ -382,6 +374,9 @@ mod tests {
     use super::*;
     use ratatui::style::Color;
     use tempfile::TempDir;
+
+    /// Every role a theme file may name.
+    const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
 
     #[test]
     fn the_defaults_are_the_colours_the_view_paints_today() {
@@ -731,14 +726,12 @@ mod tests {
         // Reads the ambient environment and never touches it: whichever home
         // it finds, a name amx ships is answered out of the binary and a name
         // it does not is a file in the themes directory next to config.toml.
-        let Ok(shipped) = source("default") else {
+        let Ok(themes) = themes_dir() else {
             return;
         };
-        assert_eq!(shipped, Source::Shipped("default"));
+        assert_eq!(source_in(&themes, "default"), Source::Shipped("default"));
 
-        let Ok(mine) = source("solarized") else {
-            return;
-        };
+        let mine = source_in(&themes, "solarized");
         let path = mine.path().expect("a name amx does not ship is a file");
         assert!(
             path.ends_with("amx/themes/solarized.toml"),

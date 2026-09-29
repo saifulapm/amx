@@ -28,7 +28,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::vendor::{Hooks, Wire};
+use crate::vendor::Wire;
 
 /// The events amx listens to, under the vendor's own names for them, in
 /// wiring order.
@@ -38,8 +38,8 @@ use crate::vendor::{Hooks, Wire};
 /// more — the wires ship written — but the tests that hold a shipped file to
 /// its entry ask event by event, and that is the whole of what keeps the two
 /// from drifting.
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
-pub fn events(hooks: &Hooks) -> impl Iterator<Item = &'static str> {
+#[cfg(test)]
+pub fn events(hooks: &crate::vendor::Hooks) -> impl Iterator<Item = &'static str> {
     hooks.events.iter().map(|wiring| wiring.event)
 }
 
@@ -970,7 +970,7 @@ fn staged(part: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::claude;
+    use crate::vendor::{Hooks, claude};
     use tempfile::TempDir;
 
     fn hooks(settings: &Value, event: &str) -> Vec<String> {

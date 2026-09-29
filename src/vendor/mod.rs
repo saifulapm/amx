@@ -106,6 +106,7 @@ pub enum Moment {
     Ended,
 }
 
+#[cfg(test)]
 impl Moment {
     /// Every moment amx listens for. A vendor that reports at all names all of
     /// them: what amx does with an event it was never told about is nothing.
