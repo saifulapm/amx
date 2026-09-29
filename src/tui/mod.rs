@@ -3408,7 +3408,7 @@ impl Screen {
         let (mut ids, mut why, mut held) = (Vec::new(), Vec::new(), Vec::new());
         for (at, reason) in finished {
             let view = &wall[at];
-            if holding(view) {
+            if verbs::clear::holding(&view.meta).is_some() {
                 held.push(view.id().to_string());
             }
             ids.push(view.id().to_string());
@@ -4035,21 +4035,6 @@ fn kept_a_tree(outcome: Result<(String, bool)>) -> Option<Notice> {
         Ok((said, false)) => Notice::Advice(said),
         Err(e) => Notice::Failed(format!("{e:#}")),
     })
-}
-
-/// Whether the tree behind a row `c` found still holds work no commit has.
-///
-/// Asked on the press, of the finished rows and no others: it is a git call
-/// per tree, and the wall is read again every second. A tree amx cannot
-/// get an answer about counts as holding work, which is the reading
-/// [`sweep::take_landed`](verbs::sweep::take_landed) takes of the same
-/// question — the two have to agree, or the row says one thing and the press
-/// after it does another.
-fn holding(view: &View) -> bool {
-    view.meta
-        .worktree
-        .as_deref()
-        .is_some_and(|tree| tree.exists() && crate::worktree::is_dirty(tree).unwrap_or(true))
 }
 
 /// The card for one agent: what it is asking and the answers it is offering;

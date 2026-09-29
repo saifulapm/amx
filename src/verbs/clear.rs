@@ -213,7 +213,7 @@ fn still_over(agent: &Agent) -> Result<Meta> {
 ///
 /// A tree amx cannot read is read as dirty: the answer that keeps the work is
 /// the answer to give when git will not say.
-fn holding(meta: &Meta) -> Option<PathBuf> {
+pub fn holding(meta: &Meta) -> Option<PathBuf> {
     let tree = meta.worktree.as_ref()?;
     (tree.exists() && worktree::is_dirty(tree).unwrap_or(true)).then(|| tree.clone())
 }
