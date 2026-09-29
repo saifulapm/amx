@@ -255,8 +255,10 @@ fn repository(meta: &Meta) -> PathBuf {
     let Some(tree) = &meta.worktree else {
         return meta.dir.clone();
     };
-    worktree::main_repo(tree)
-        .ok()
+    // The tree's `.git` file first: the view asks this of every finished
+    // agent on every reading, and `main_repo` is a git subprocess.
+    worktree::repo_of_linked(tree)
+        .or_else(|| worktree::main_repo(tree).ok())
         .or_else(|| worktree::repo_of(tree))
         .unwrap_or_else(|| meta.dir.clone())
 }
@@ -718,5 +720,19 @@ mod tests {
                 "{typed:?}"
             );
         }
+    }
+
+    #[test]
+    fn sweep_names_the_repository_a_tree_was_cut_in_as_git_does() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
+        let tree = meta.worktree.clone().unwrap();
+        assert_eq!(repository(&meta), worktree::main_repo(&tree).unwrap());
+
+        // A tree already removed is named by where amx cut it.
+        let named = repository(&meta);
+        worktree::remove(&named, &tree).unwrap();
+        assert_eq!(repository(&meta), worktree::repo_of(&tree).unwrap());
     }
 }
