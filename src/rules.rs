@@ -259,15 +259,7 @@ impl Ruleset {
     /// this same screen has been on the pane — together they decide whether a
     /// quiescent rule is allowed to end a turn.
     pub fn claim(&self, capture: &str, recorded: Phase, held: u64) -> Claim<'_> {
-        let screen = Screen::new(capture);
-        // Ordered: the first rule that holds decides, and the rest are not
-        // asked. A screen the specific rules have named is not also the
-        // furniture underneath them.
-        let Some(rule) = self
-            .rules
-            .iter()
-            .find(|rule| rule.holds(&screen, &self.furniture))
-        else {
+        let Some(rule) = self.ruling(capture) else {
             return Claim::Unclaimed;
         };
         if rule.may_decide(recorded, held) {
@@ -287,12 +279,17 @@ impl Ruleset {
     /// — it governs which rule may end a turn, and no rule that asks a
     /// question is quiescent.
     pub fn asking(&self, capture: &str) -> Option<Question> {
+        self.ruling(capture)?.question(capture)
+    }
+
+    /// The first rule in document order that holds on the capture. Order
+    /// matters: a screen a specific rule names is not also the furniture
+    /// under it.
+    fn ruling(&self, capture: &str) -> Option<&Rule> {
         let screen = Screen::new(capture);
-        let rule = self
-            .rules
+        self.rules
             .iter()
-            .find(|rule| rule.holds(&screen, &self.furniture))?;
-        rule.question(capture)
+            .find(|rule| rule.holds(&screen, &self.furniture))
     }
 }
 
