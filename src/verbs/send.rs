@@ -41,7 +41,7 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Ask, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::vendor::{Capability, Hooks, Moment};
-use crate::{complain, exit, paths, store, warn};
+use crate::{complain, exit, paths, registry, spawn, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
@@ -235,9 +235,11 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
         )));
     }
 
+    // Recorded as written, and typed with the space a popup word needs.
+    let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
     writer.observe(|state| state.seq += 1)?;
-    server.paste(pane, text)?;
+    server.paste(pane, &spawn::as_typed(vendor, text))?;
     server.send_keys(pane, &["Enter"]).map(|()| Delivered::Sent)
 }
 
