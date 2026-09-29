@@ -1,4 +1,4 @@
-# A turn that never ends, for the caller who puts a deadline on waiting.
+# A turn that never ends, for tests of deadlines.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "watch the log"}
 print watching the log

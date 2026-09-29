@@ -1,4 +1,4 @@
-# A turn two Escapes end: the first only arms the cancel.
+# A turn ended by two Escapes; the first only arms the cancel.
 screen idle
 hook session.selected
 hook session.execution.started

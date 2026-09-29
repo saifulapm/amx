@@ -1,5 +1,5 @@
-# A turn, then the message somebody types at the idle composer, which opens a
-# second turn: a UserPromptSubmit carrying what was typed, and a Stop.
+# A turn, then a message typed at the idle composer, which opens a second turn:
+# a UserPromptSubmit with the typed text, and a Stop.
 screen idle
 sleep 50
 hook SessionStart {}

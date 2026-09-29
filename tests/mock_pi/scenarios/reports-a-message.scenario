@@ -1,6 +1,5 @@
-# An agent that answers, sits at its prompt, and then takes what somebody
-# sends it. The second agent_start is the vendor's own word that the text
-# arrived; the second agent_settled is the answer that belongs to it.
+# An agent that answers, idles, then takes a sent message. The second
+# agent_start marks the text arriving; the second agent_settled is its answer.
 screen boot
 hook session_start {}
 sleep 50

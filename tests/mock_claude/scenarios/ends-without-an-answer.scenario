@@ -1,6 +1,5 @@
-# A command that ends without the vendor ever announcing an answer: no Stop
-# hook, and no transcript either. The turn is over and amx has nothing to hand
-# back — which is a failure to answer, not an empty answer.
+# A command that ends with no Stop hook and no transcript: a failure to answer,
+# distinct from an empty answer.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "tidy the imports"}
 print tidying the imports

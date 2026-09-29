@@ -1,6 +1,5 @@
-# A turn under way that takes what somebody sends it only when the turn is
-# over: the second UserPromptSubmit is the vendor's own word, four seconds on,
-# that the queued message went in.
+# A running turn that takes a queued message only when it finishes: the second
+# UserPromptSubmit, four seconds on, marks the message going in.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "run the tests"}
 print working on it

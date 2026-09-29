@@ -1,6 +1,6 @@
-# A turn the provider refused. codex sends no Stop for it: the rollout's
-# task_complete carries the error and no answer, and the pane draws the error
-# above an idle composer.
+# A turn the provider refused. codex sends no Stop: the rollout's task_complete
+# carries the error and no answer, and the pane shows the error above an idle
+# composer.
 screen idle
 sleep 50
 hook SessionStart {}

@@ -1,6 +1,5 @@
-# A worker as a program dispatches one: it says how it was called, works
-# through the brief it was pointed at, answers in more than one line, and then
-# sits at its prompt for whoever wants to look in on it.
+# A dispatched worker: prints its argv, works through a brief, answers in
+# several lines, then idles at its prompt.
 argv
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "read the brief and execute it exactly"}

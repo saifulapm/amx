@@ -1,5 +1,5 @@
-# One turn on the task, a shell call inside it, and the answer at its end,
-# as tests/opencode/events/turn.jsonl has it.
+# One turn with a shell call and the answer at its end, as in
+# tests/opencode/events/turn.jsonl.
 screen idle
 hook session.selected
 hook session.execution.started

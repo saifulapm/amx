@@ -1,9 +1,8 @@
-# A pi somebody started themselves and `amx adopt` took over mid-life. Its
-# pane carries no AMX_DIR, so where the record is comes back from the hook:
-# it reports its session a few times while the adoption happens - a report
-# made before there is a record is answered with nothing - then takes a turn
-# and streams the answer it is writing to the directory the last answer
-# named, and takes the stream away before the turn settles.
+# A pi started by hand and taken over by `amx adopt`. With no AMX_DIR, the
+# record directory comes back from the hook: it reports its session a few times
+# while adoption happens (a report before the record exists gets no answer),
+# then streams its answer to the last directory named and removes the stream
+# before the turn settles.
 screen idle
 hook session_start {}
 sleep 1000

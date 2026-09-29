@@ -1,4 +1,4 @@
-# An agent whose command ends badly, without a Stop hook to announce it.
+# A command that ends badly, with no Stop hook.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "port the importer"}
 print connecting to the api...

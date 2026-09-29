@@ -1,9 +1,6 @@
-# An agent stopped at the vendor's folder-trust gate, as claude 2.1.259 draws
-# it at 54 columns. There are no hooks under it on purpose: the vendor puts
-# this screen in front of a session rather than inside one, so the screen is
-# the whole of what a reader has to go on. The choices carry no numbers at this
-# version and the cursor opens on the exit, which is the shape that decides
-# what the question reads back as.
+# claude's folder-trust gate at 54 columns, as 2.1.259 draws it. No hooks: the
+# gate comes before the session, so the screen is all a reader has. The choices
+# are unnumbered and the cursor starts on the exit.
 print ──────────────────────────────────────────────────────
 print  Accessing workspace:
 print
@@ -24,5 +21,5 @@ print  ❯ No, exit
 print    Yes, I trust this folder
 print
 print  Enter to confirm · Esc to cancel
-# The gate waits for a person, and nothing else ever ends it.
+# The gate waits for a person.
 sleep 600000

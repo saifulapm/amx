@@ -1,4 +1,4 @@
-# An agent that answers and then ends of its own accord.
+# An agent that answers and then exits on its own.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "say hello"}
 print hello

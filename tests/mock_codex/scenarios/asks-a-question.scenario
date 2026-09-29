@@ -1,5 +1,5 @@
-# A turn that calls request_user_input: a PreToolUse naming the tool and the
-# questions it is about to draw, then the question on the pane, waiting.
+# A turn that calls request_user_input: a PreToolUse naming the tool and its
+# questions, then the question on the pane, waiting.
 screen idle
 sleep 50
 hook SessionStart {}

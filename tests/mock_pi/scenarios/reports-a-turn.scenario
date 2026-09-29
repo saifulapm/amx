@@ -1,7 +1,6 @@
-# A turn the way pi reports one through amx's extension: the session it
-# opened, the turn beginning, the tool it ran, and the turn settling with its
-# answer on it — beside the screens pi draws meanwhile, and the session file
-# it appends to as it goes. The agent is still there afterwards, the way pi is.
+# A turn as reported through amx's extension: session start, turn start, the
+# tool call, and the turn settling with its answer, beside pi's screens and the
+# session file it appends to.
 screen boot
 hook session_start {}
 sleep 50

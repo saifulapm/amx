@@ -1,6 +1,5 @@
-# A turn in a session claude names itself. The name arrives as a line of its
-# own in the transcript, within seconds of the first prompt and under the id
-# the hooks announced, which is the only place the vendor ever writes it down.
+# A session claude names itself: the name arrives as an `ai-title` line in the
+# transcript under the hooks' session id, the only place claude writes it.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "fix the login bug"}
 transcript {"type":"ai-title","aiTitle":"Login bug in the session cookie","sessionId":"@SESSION@"}

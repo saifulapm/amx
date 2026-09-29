@@ -1,10 +1,10 @@
-# An agent that stops on a permission question and waits to be answered.
+# An agent stopped on a permission question, waiting for an answer.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "remove the build directory"}
 sleep 50
 hook Notification {"message": "Claude needs your permission to use Bash"}
-# The permission box, as a live claude draws it: a full-width rule with the
-# request under it, and no mode footer anywhere beneath.
+# The permission box as claude draws it: a full-width rule, the request under
+# it, and no mode footer below.
 print ────────────────────────────────────────────────
 print  Bash command
 print    rm -rf build

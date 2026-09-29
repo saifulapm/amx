@@ -1,7 +1,6 @@
-# One turn, reported the way codex 0.157.1 reports one: SessionStart at the
-# first turn and never at launch, the prompt, a shell call, and Stop with the
-# answer on it. The rollout gets the turn's edges, the prompt as codex records
-# what was typed, and the answer.
+# One turn as codex 0.157.1 reports it: SessionStart at the first turn rather
+# than at launch, the prompt, a shell call, and Stop with the answer. The
+# rollout gets the turn's start and end, the typed prompt and the answer.
 screen idle
 sleep 50
 hook SessionStart {}

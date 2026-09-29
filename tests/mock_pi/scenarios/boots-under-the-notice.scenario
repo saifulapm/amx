@@ -1,6 +1,5 @@
-# A fresh pi with a newer pi available, which is most of the time: the boot
-# screen with the Update Available box drawn above the composer, then a turn
-# taken under it. Nothing is reported; the pane is what a reader has.
+# A fresh pi with the Update Available box above the composer, then a turn
+# under it. Nothing is reported; the pane is all a reader has.
 screen notice
 sleep 8000
 screen notice-working

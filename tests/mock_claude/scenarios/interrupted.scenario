@@ -1,18 +1,13 @@
-# A turn somebody cuts short at the pane. The vendor is working when the key
-# arrives, and Escape is the whole of what ends the turn: nothing else moves
-# this scenario on.
+# A turn cut short with Escape at the pane; only Escape moves it on.
 #
-# The mode footer claude keeps up while it works is left off the working
-# screen here, so the footer appearing is the key having arrived and nothing
-# else. What a screen with one on it either way costs a reader is the idle
-# rule's business, and `tests/e2e_reader.rs` is where that is asked.
+# The working screen has no mode footer, so the footer appearing means the key
+# arrived. How a footer affects the idle rule is tested in tests/e2e_reader.rs.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "port the importer"}
 print I'll port the importer.
 await Escape
-# The turn ended where it stood, and claude is back at its prompt with the
-# conversation behind it. No Stop: the hooks are written around turns that run
-# to their end, and this one did not.
+# The turn ends where it stood and claude is back at its prompt. No Stop hook
+# fires for an interrupted turn.
 print ❯
 print   Opus 5 (1M context) │ ◈ 2% │ mock-claude (amx/port-importer-c3d) │ ◖ xhigh
 print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

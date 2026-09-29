@@ -1,4 +1,4 @@
-# A turn stopped on a permission card, which only SIGUSR2 ends from outside.
+# A turn stopped on a permission card; only SIGUSR2 ends it from outside.
 screen idle
 hook session.selected
 hook session.execution.started

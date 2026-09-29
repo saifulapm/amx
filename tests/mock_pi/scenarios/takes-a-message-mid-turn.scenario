@@ -1,7 +1,5 @@
-# A turn under way that takes what somebody sends it only when it gets to it:
-# pi starts no new agent for a message steered into a running turn, and the
-# user message it then starts, three seconds on, is its one word that the
-# text went in.
+# A running turn that takes a steered message when it gets to it. pi starts no
+# new agent for it; the user message_start three seconds on marks it going in.
 screen boot
 hook session_start {}
 sleep 50

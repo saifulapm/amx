@@ -1,9 +1,7 @@
-# An agent stopped on the menu its question tool draws, at 24 columns, as
-# claude 2.1.259 draws it. The box's height is the agent's own choice, and two
-# one-sentence descriptions are enough to push its top past the rows a rule may
-# see: the marker on the first choice scrolls away while the whole bottom of
-# the box stays. The footer wraps in three at this width, which leaves
-# `Enter to select` on the row it opens and breaks `Esc to cancel` in half.
+# The question tool's menu at 24 columns, as claude 2.1.259 draws it. Two long
+# descriptions push the box's top and the first choice's marker above the rows a
+# rule may see, while the bottom stays. The footer wraps into three rows,
+# leaving `Enter to select` on the first and splitting `Esc to cancel`.
 print ────────────────────────
 print  ☐ Indentation
 print
@@ -36,5 +34,5 @@ print
 print Enter to select · ↑/↓ to
 print navigate · Esc to
 print cancel
-# The menu waits for an answer, and nothing else ends it.
+# The menu waits for an answer.
 sleep 600000

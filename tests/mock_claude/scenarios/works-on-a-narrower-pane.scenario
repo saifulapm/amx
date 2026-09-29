@@ -1,7 +1,6 @@
-# The same running turn at 24 columns, where 2.1.259 keeps the parenthesis and
-# drops what is inside it after the elapsed time. Half of the tail survives at
-# each of these two widths and never the same half, which is why neither is
-# what the spinner is recognised by.
+# The same running turn at 24 columns, where 2.1.259 keeps the elapsed time in
+# the parenthesis and drops the detail after it. A different part of the tail
+# survives at each width, so the spinner is not recognised by the tail.
 print ● Finagling… (2s)
 print ────────────────────────
 print ❯

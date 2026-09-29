@@ -1,5 +1,3 @@
-# One screen and out, for a test that runs the stand-in itself rather than
-# driving a pane. How it was called and what it did with the session it was
-# handed are said before the first repaint, so there is nothing to wait for
-# after it.
+# One screen and exit, for a test that runs the stand-in directly. The argv
+# and session outcome are printed before the repaint.
 screen boot

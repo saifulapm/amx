@@ -1,8 +1,4 @@
-# A pi with no provider to run a turn with, stopped where `/login` leaves it:
-# the dialog asking for that provider's key, in the slot the composer had. The
-# rows above the box are the vendor's own warning that it has no models, which
-# is what a pane nobody has logged in carries from the moment it starts. The
-# agent is still there afterwards, the way pi is: whoever is driving this
-# scenario decides when it ends.
+# A pi with no provider, stopped where `/login` leaves it: the key prompt in
+# the composer's slot, under pi's warning that it has no models.
 screen login
 sleep 600000

@@ -1,7 +1,5 @@
-# A turn whose transcript carries the vendor's own usage numbers, so a caller
-# reading status can see what the next turn would send back. The pause before
-# the transcript is written gives the caller's first status call, right after
-# dispatch, a window to land on nothing read yet, rather than race it.
+# A turn whose transcript carries usage numbers. The pause before the
+# transcript lets a status call right after dispatch see nothing read yet.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "say hello"}
 sleep 500

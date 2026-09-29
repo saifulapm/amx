@@ -1,6 +1,5 @@
-# A turn that is still running, with the line the vendor spins while it works.
-# The hooks go quiet inside a turn, so this is what the screen has to say for
-# itself once they have.
+# A running turn with claude's spinner line, which is what the screen shows
+# once the hooks go quiet mid-turn.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "port the importer"}
 print I'll port the importer.

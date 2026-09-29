@@ -1,7 +1,6 @@
-# A turn that ended with nothing to hand back and a reason for it. The Stop
-# hook carries no answer, and the transcript's last message is empty with the
-# vendor's own `stop_reason` on it — the only place the reason is written down,
-# since the hook says the turn ended and no more than that.
+# A turn that ends with no answer and a reason: the Stop hook carries no
+# answer, and the last transcript message is empty with `stop_reason` set, the
+# only place the reason is written.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "summarise the change"}
 transcript {"type":"user","timestamp":"@NOW@","message":{"content":"summarise the change"}}

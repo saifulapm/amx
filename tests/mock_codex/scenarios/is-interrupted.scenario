@@ -1,7 +1,6 @@
-# A turn running a shell command until Escape reaches the pane. codex sends no
-# Stop for an Esc'd turn: the rollout gets turn_aborted, and the pane gets
-# `■ Conversation interrupted` over the composer, which is all anything can
-# read the turn's end off.
+# A shell command running until Escape reaches the pane. codex sends no Stop for
+# an interrupted turn: the rollout gets turn_aborted and the pane shows
+# `■ Conversation interrupted` over the composer, the only signs of the end.
 screen idle
 sleep 50
 hook SessionStart {}
