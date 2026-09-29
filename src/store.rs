@@ -1054,6 +1054,16 @@ pub fn now() -> u64 {
         .unwrap_or_default()
 }
 
+/// A file's mtime in epoch seconds, or `None` where there is no file.
+fn modified_at(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|file| file.modified())
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
+}
+
 /// One agent's directory.
 #[derive(Debug, Clone)]
 pub struct Agent {
@@ -1134,12 +1144,7 @@ impl Agent {
     /// nothing else, and a file the wire only has to touch is one it can beat
     /// on cheaply.
     pub fn heartbeat(&self) -> Option<u64> {
-        std::fs::metadata(self.dir.join(HEARTBEAT))
-            .and_then(|beat| beat.modified())
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|since| since.as_secs())
+        modified_at(&self.dir.join(HEARTBEAT))
     }
 
     /// When a reader last saw this agent's pane say its turn is running, in
@@ -1147,12 +1152,7 @@ impl Agent {
     ///
     /// [`heartbeat`]: Self::heartbeat
     pub fn seen(&self) -> Option<u64> {
-        std::fs::metadata(self.dir.join(SEEN))
-            .and_then(|seen| seen.modified())
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|since| since.as_secs())
+        modified_at(&self.dir.join(SEEN))
     }
 
     /// Stamp [`SEEN`] at `at`. A reader's note and nothing else, so it takes
