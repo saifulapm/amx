@@ -30,20 +30,17 @@
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
 use crate::vendor::{Capability, ForkSpec, Resume, Vendor};
-use crate::verbs::resume;
-use crate::{Severity, exit, ids, paths, said};
+use crate::verbs::{new, resume};
+use crate::{Severity, exit, paths, said};
 
 /// What amx records when it copies a conversation.
 const FORKED: &str = "fork";
-
-/// How many minted ids to try to claim before giving up.
-const MAX_CLAIMS: usize = 8;
 
 /// Run the verb against the machine.
 ///
@@ -104,7 +101,7 @@ pub fn run(
     let task = prompt.unwrap_or(&meta.task);
     // Counted and claimed in one step, as in `new`.
     let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
-        let (copy, dir) = claim(root, task)?;
+        let (copy, dir) = new::claim(root, None, task)?;
         Ok(((copy, dir.clone()), dir))
     })?;
     let ((copy, dir), _place) = match taken {
@@ -420,43 +417,13 @@ fn copied_session(meta: &Meta) -> Result<String> {
     Ok(session.to_string())
 }
 
-/// Claim an id for the copy by making its directory, which is how `new` claims
-/// one: the mkdir is the uniqueness check, two spawns in flight can both
-/// believe a name is free, and only one of them can make the directory.
-fn claim(root: &Path, task: &str) -> Result<(String, PathBuf)> {
-    for _ in 0..MAX_CLAIMS {
-        let id = ids::generate(task, root)?;
-        let dir = paths::agent_dir_in(root, &id)?;
-        if make_dir(&dir)? {
-            return Ok((id, dir));
-        }
-    }
-    bail!(
-        "no id for {task:?} could be claimed under {} after {MAX_CLAIMS} draws",
-        root.display()
-    )
-}
-
-/// The copy's own directory, which nobody else has any business reading.
-///
-/// Deliberately not recursive: making the directory is the uniqueness claim, so
-/// one that is already there has to answer false rather than stand in for one
-/// this fork made.
-fn make_dir(dir: &Path) -> Result<bool> {
-    use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(paths::DIR_MODE).create(dir) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tmux::{PaneId, Socket};
     use crate::vendor::SessionSpec;
     use crate::vendor::second::{BRANCHING, SECOND};
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn handoff(command: &[&str], task: &str) -> Handoff {
@@ -1021,7 +988,7 @@ mod tests {
         // Two agents on one conversation are otherwise indistinguishable, and
         // the question somebody asks a week later is which came first.
         let root = TempDir::new().unwrap();
-        let (copy, dir) = claim(root.path(), "fix the login bug").unwrap();
+        let (copy, dir) = new::claim(root.path(), None, "fix the login bug").unwrap();
         assert!(dir.is_dir(), "the claim is the directory");
 
         names_its_origin(root.path(), &copy, &meta("fix-login-a1b", None), "abc-123").unwrap();

@@ -522,7 +522,7 @@ fn run_aloud(
     // Counted and claimed in one step, so two spawns at once cannot both
     // find the last place; the place is held until `start` has recorded it.
     let taken = spawn::take_a_place(root, &project, theirs.max_agents, theirs.max_total, || {
-        let (id, agent_dir) = claim(root, args, task)?;
+        let (id, agent_dir) = claim(root, args.name.as_deref(), task)?;
         Ok(((id, agent_dir.clone()), agent_dir))
     })?;
     let ((id, agent_dir), _place) = match taken {
@@ -619,15 +619,15 @@ const MAX_CLAIMS: usize = 8;
 /// two spawns in flight can both believe a name is free, but the directory
 /// can only be made by one of them, and nothing the loser has to clean up
 /// exists yet.
-fn claim(root: &Path, args: &NewArgs, task: &str) -> Result<(String, PathBuf)> {
-    if let Some(name) = &args.name {
+pub(crate) fn claim(root: &Path, name: Option<&str>, task: &str) -> Result<(String, PathBuf)> {
+    if let Some(name) = name {
         ids::validate_name(name, root)?;
         let dir = paths::agent_dir_in(root, name)?;
         // A typed name that loses the claim was taken, however recently.
         if !make_dir(&dir)? {
             bail!("name {name:?} is already taken");
         }
-        return Ok((name.clone(), dir));
+        return Ok((name.to_string(), dir));
     }
     // generate already avoids every directory that exists, so losing a draw
     // to a spawn in flight is next to never — and answered with another draw.
@@ -1234,7 +1234,7 @@ fn trust_the_tree(
 /// one this spawn made.
 fn make_dir(dir: &Path) -> Result<bool> {
     use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+    match std::fs::DirBuilder::new().mode(paths::DIR_MODE).create(dir) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),

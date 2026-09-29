@@ -61,7 +61,8 @@ use crate::rules::{Claim, Ruleset};
 use crate::store::{Agent, Event, Meta, Phase, State, now};
 use crate::tmux::{PaneId, PaneOwners, Server, Socket};
 use crate::vendor::{Capability, Vendor};
-use crate::{exit, ids, paths, registry, rules, spawn};
+use crate::verbs::new;
+use crate::{exit, paths, registry, rules, spawn};
 
 /// What amx records when it takes over an agent it did not start.
 const ADOPTED: &str = "adopt";
@@ -127,7 +128,7 @@ pub fn run(
         .capture(&pane)
         .with_context(|| format!("reading what is on {pane}"))?;
 
-    let (id, claimed) = claim(root, args, &task)?;
+    let (id, claimed) = new::claim(root, args.name.as_deref(), &task)?;
     let meta = Meta {
         role: None,
         parent: None,
@@ -203,45 +204,6 @@ fn hold(root: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
     nix::fcntl::Flock::lock(dir, nix::fcntl::FlockArg::LockExclusive)
         .map_err(|(_, errno)| errno)
         .with_context(|| format!("locking {}", root.display()))
-}
-
-/// How many minted ids to try to claim before giving up.
-const MAX_CLAIMS: usize = 8;
-
-/// Claim an id by making its directory, as `new` does: the mkdir is the
-/// uniqueness check, so a name taken since it was looked at is refused before
-/// the pane is touched.
-fn claim(root: &Path, args: &AdoptArgs, task: &str) -> Result<(String, PathBuf)> {
-    if let Some(name) = &args.name {
-        ids::validate_name(name, root)?;
-        let dir = paths::agent_dir_in(root, name)?;
-        if !make_dir(&dir)? {
-            bail!("name {name:?} is already taken");
-        }
-        return Ok((name.clone(), dir));
-    }
-    for _ in 0..MAX_CLAIMS {
-        let id = ids::generate(task, root)?;
-        let dir = paths::agent_dir_in(root, &id)?;
-        if make_dir(&dir)? {
-            return Ok((id, dir));
-        }
-    }
-    bail!(
-        "no id for {task:?} could be claimed under {} after {MAX_CLAIMS} draws",
-        root.display()
-    )
-}
-
-/// Make an agent's directory, answering false when it is there already.
-/// Deliberately not recursive, since making it is the claim.
-fn make_dir(dir: &Path) -> Result<bool> {
-    use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(paths::DIR_MODE).create(dir) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("creating {}", dir.display())),
-    }
 }
 
 /// Write `meta` down, then put its id on the pane it names.
@@ -516,6 +478,7 @@ fn label(dir: &Path, vendor: &Vendor) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids;
     use crate::tmux::Spawn;
     use crate::vendor::second::SECOND;
     use std::sync::atomic::{AtomicUsize, Ordering};
