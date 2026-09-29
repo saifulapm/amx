@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::config::HarnessConfig;
 use crate::derive::{Evidence, Verdict};
@@ -12,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 
-/// What arrives from a script, and then nobody at the terminal at all.
+/// Keys from a script, then `Gone` once it runs out.
 struct Script(std::vec::IntoIter<Typed>);
 
 impl Keys for Script {
@@ -21,7 +20,7 @@ impl Keys for Script {
     }
 }
 
-/// What the view called the terminal, in the order it said so.
+/// The titles the view set, in order.
 #[derive(Default)]
 struct Said(Vec<String>);
 
@@ -31,36 +30,31 @@ impl Titles for Said {
     }
 }
 
-/// A key held down with control, which is how the chords are typed.
 fn ctrl(key: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL)
 }
 
-/// A key held down with alt, which is how the dials are turned.
 fn alt(key: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT)
 }
 
-/// The keys of a word, one at a time, the way somebody types it.
+/// The keys of `text`, one per character.
 fn word(text: &str) -> Vec<KeyCode> {
     text.chars().map(KeyCode::Char).collect()
 }
 
-/// The anchors a body planted straight into a card is walked against,
-/// which are the fallback vendor's. No body planted that way carries a row
-/// of anybody's chrome: those tests are about where the card stands, not
-/// about what came off the pane under it.
+/// The fallback vendor's furniture, for bodies planted straight into a card.
+/// Those tests are about where the card stands, so no body carries chrome.
 fn chrome() -> &'static crate::furniture::Furniture {
     crate::rules::of("").furniture()
 }
 
-/// An agent whose command ended `ago` seconds back: no pane, and nothing
-/// to ask tmux about.
+/// Records an agent whose command ended `ago` seconds ago, with no pane.
 fn finished(root: &Path, id: &str, result: &str, ago: u64) {
     finished_in(root, id, result, ago, "/srv/app");
 }
 
-/// The same, for a test about which directory an agent worked in.
+/// [`finished`] with the agent's directory given.
 fn finished_in(root: &Path, id: &str, result: &str, ago: u64, dir: &str) {
     let at = now() - ago;
     let agent = Agent::create(
@@ -87,8 +81,8 @@ fn finished_in(root: &Path, id: &str, result: &str, ago: u64, dir: &str) {
         },
     )
     .unwrap();
-    // Written rather than recorded through a writer, because when an agent
-    // ended is what orders the finished ones and a test says when.
+    // Written directly so the test sets when the agent ended, which orders the
+    // finished rows.
     let state = State {
         state: Phase::Done,
         exit: Some(0),
@@ -104,8 +98,8 @@ fn finished_in(root: &Path, id: &str, result: &str, ago: u64, dir: &str) {
     .unwrap();
 }
 
-/// Hold the view open on a screen of this size until the script runs out,
-/// and answer with what it exited with and what was last on the screen.
+/// Runs the view on a 50x10 screen until the script runs out, and returns the
+/// exit code and the last frame.
 fn held(root: &Path, keys: &[KeyCode]) -> (i32, String) {
     pressing(
         root,
@@ -115,19 +109,17 @@ fn held(root: &Path, keys: &[KeyCode]) -> (i32, String) {
     )
 }
 
-/// The same, for a script with chords in it.
+/// [`held`] for a script with chords in it.
 fn pressing(root: &Path, keys: Vec<KeyEvent>) -> (i32, String) {
     driving(root, keys.into_iter().map(Typed::Key).collect())
 }
 
-/// And the same for a script with anything else in it: a paste is not a
-/// key, and the view has to be handed one to be shown taking it.
+/// [`held`] for a script of any input, pastes included.
 fn driving(root: &Path, script: Vec<Typed>) -> (i32, String) {
     drawn_about(root, &Scope::default(), script, None)
 }
 
-/// And the same for a view opened about one directory rather than the
-/// whole machine, or one that keeps what somebody arranges.
+/// [`held`] for a view with a scope and, optionally, a view file.
 fn drawn_about(
     root: &Path,
     scope: &Scope,
@@ -137,8 +129,7 @@ fn drawn_about(
     drawn_painted(root, scope, script, remembering, Painting::default())
 }
 
-/// And the same for a view opened on a theme that had something to say
-/// for itself.
+/// [`drawn_about`] with a given theme.
 fn drawn_painted(
     root: &Path,
     scope: &Scope,
@@ -158,8 +149,7 @@ fn drawn_painted(
     (code, screen)
 }
 
-/// The last frame as it was drawn, for a test about what the view painted
-/// in rather than about the words it wrote.
+/// The last frame's buffer, for tests about styling.
 fn buffered(
     root: &Path,
     scope: &Scope,
@@ -184,8 +174,7 @@ fn buffered(
     (code, terminal.backend().buffer().clone())
 }
 
-/// And the same for a view opened under a config somebody wrote, for the
-/// tests about what the file itself puts on the screen.
+/// The last frame of a view run under `config`.
 fn drawn_under(root: &Path, config: &Config, script: Vec<Typed>) -> String {
     let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
     watch(
@@ -212,9 +201,7 @@ fn drawn_under(root: &Path, config: &Config, script: Vec<Typed>) -> String {
         .join("\n")
 }
 
-/// The same again, answering with how many frames the view drew rather
-/// than what the last of them said: what a storm of events costs is the
-/// drawing it asks for.
+/// How many frames the view drew for the script.
 fn frames(root: &Path, script: Vec<Typed>) -> usize {
     let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
     watch(
@@ -233,9 +220,8 @@ fn frames(root: &Path, script: Vec<Typed>) -> usize {
     terminal.get_frame().count()
 }
 
-/// And the same again, answering with what the view called the terminal.
-/// A title is said when it stops being true, so the list of them is the
-/// frames that changed what there was to say.
+/// The titles the view set while running the script. A title is set only
+/// when it changes.
 fn titles(root: &Path, script: Vec<Typed>) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
     let mut said = Said::default();
@@ -255,9 +241,8 @@ fn titles(root: &Path, script: Vec<Typed>) -> Vec<String> {
     said.0
 }
 
-/// An agent the record says stopped on a question `ago` seconds back, on a
-/// socket nothing is listening on: whatever asks tmux about this one finds
-/// no pane at all.
+/// Records an agent that stopped on a question `ago` seconds ago, on a socket
+/// no tmux server listens on.
 fn waiting(root: &Path, id: &str, ago: u64) {
     let at = now() - ago;
     let agent = Agent::create(
@@ -305,12 +290,9 @@ fn view_draws_the_records_before_it_asks_tmux_about_a_pane() {
     let root = TempDir::new().unwrap();
     waiting(root.path(), "asks-a1b", 30);
 
-    // The frame a view opens on is the records', which say an agent is
-    // waiting on somebody. The reading behind it is the one that asks
-    // tmux, finds no pane and calls the agent stopped — so the two frames
-    // call the terminal two different things, in the order they were
-    // drawn, and the first of them was drawn before any of that was
-    // asked.
+    // The opening frame comes from the records, which say the agent is waiting.
+    // The first reading asks tmux, finds no pane and calls it stopped, so the
+    // title changes between the first two frames.
     let said = titles(
         root.path(),
         vec![Typed::Key(KeyEvent::from(KeyCode::Char('q')))],
@@ -330,9 +312,8 @@ fn view_draws_the_records_before_it_asks_tmux_about_a_pane() {
 fn a_theme_that_would_not_read_says_why_where_the_view_says_everything() {
     let root = TempDir::new().unwrap();
 
-    // The palette falls back to the built-in one on its own, so the view
-    // opens whatever the file did. What it may not do is open in colours
-    // nobody asked for and say nothing about it.
+    // A theme that fails to load falls back to the built-in palette, and the view
+    // has to say so.
     let (_, screen) = drawn_painted(
         root.path(),
         &Scope::default(),
@@ -355,9 +336,8 @@ fn a_theme_written_under_the_open_view_is_what_the_next_frame_is_painted_in() {
     finished(root.path(), "fix-login-a1b", "did what it was asked", 60);
     let themes = TempDir::new().unwrap();
 
-    // The view opens on a name with no file under it and the built-in
-    // palette, which is where somebody goes and writes the file. Nothing
-    // is closed and nothing is pressed.
+    // The view opens on a theme name with no file yet, so it uses the built-in
+    // palette until the file appears.
     let watching = Watch::of_in(themes.path(), "mine");
     std::fs::write(themes.path().join("mine.toml"), "done = \"#ff00ff\"\n").unwrap();
 
@@ -387,9 +367,7 @@ fn a_theme_put_right_takes_its_own_complaint_off_the_screen() {
     let watching = Watch::of_in(themes.path(), "mine");
     std::fs::write(themes.path().join("mine.toml"), "done = \"#ff00ff\"\n").unwrap();
 
-    // Opened on a file that would not read, so the view is saying why.
-    // The file it names is the one that has just been written, and the
-    // reason went with it.
+    // Opened on a theme file that fails to parse, so the view shows why.
     let (_, screen) = drawn_painted(
         root.path(),
         &Scope::default(),
@@ -413,8 +391,7 @@ fn a_theme_says_nothing_over_a_notice_somebody_else_put_there() {
     screen.say_of_the_theme(&["ignoring mine.toml".to_string()]);
     screen.notice = Some(Notice::Failed("could not stop fix-login-a1b".to_string()));
 
-    // The file was put right, but what is on the footer now is not the
-    // theme's to take down.
+    // The theme file is fixed, but the notice now showing is not the theme's.
     screen.say_of_the_theme(&[]);
     let said = match &screen.notice {
         Some(Notice::Failed(said) | Notice::Refused(said) | Notice::Advice(said)) => said.as_str(),
@@ -487,8 +464,7 @@ fn profile_the_effort_dial_offers_the_levels_the_vendor_declares() {
         assert_eq!(profile.effort, want, "claude's own levels, in its order");
     }
 
-    // A level the vendor turned to would not take rests at the sentinel,
-    // the way every other dial settles under a vendor somebody turned.
+    // A level the new vendor does not take falls back to the sentinel.
     profile.effort = "xhigh".to_string();
     profile.cycle_vendor();
     assert_eq!(profile.agent, "pi");
@@ -522,9 +498,8 @@ fn profile_the_effort_dial_offers_the_levels_the_vendor_declares() {
 
 #[test]
 fn header_dials_the_model_dial_stays_on_the_harness_on_the_row() {
-    // alt+m walks the models of the harness the row names and no other's:
-    // a model belongs to the harness that runs it, and reaching for
-    // another harness's model would be the vendor key's job.
+    // alt+m walks the models of the harness on the row and never another
+    // harness's; switching harness is the vendor key's job.
     let told = |models: &[&str]| HarnessConfig {
         models: models.iter().map(|model| model.to_string()).collect(),
         args: Vec::new(),
@@ -547,8 +522,7 @@ fn header_dials_the_model_dial_stays_on_the_harness_on_the_row() {
         assert_eq!(profile.agent, "claude", "and the harness never moves");
     }
 
-    // And under pi, pi's own models. The vendor key is the only door to
-    // another harness's list.
+    // After a vendor switch, pi's own models.
     profile.cycle_vendor();
     assert_eq!(profile.agent, "pi");
     assert_eq!(profile.model, registry::DEFAULT);
@@ -602,8 +576,8 @@ fn header_dials_the_model_dial_takes_this_harnesss_written_models() {
 
 #[test]
 fn header_dials_the_vendor_cycle_starts_at_the_command_config_asked_for() {
-    // A vendor amx has no entry for is still what the file asked for, and
-    // the cycle is the only thing that could put it back.
+    // An unregistered vendor from the config is still where the cycle starts and
+    // returns to.
     let config = Config {
         agent: "mock-claude".to_string(),
         ..Config::default()
@@ -671,8 +645,7 @@ fn header_dials_a_turned_vendor_takes_the_dials_it_declares_and_no_others() {
 
 #[test]
 fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
-    // Four registered vendors, so the key walks from claude to pi to
-    // codex to opencode and a fourth press brings it back.
+    // Four registered vendors, so the fourth press is back at claude.
     let mut profile = Profile::default();
     profile.cycle_vendor();
     assert_eq!(profile.agent, "pi");
@@ -683,9 +656,8 @@ fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
     profile.cycle_vendor();
     assert_eq!(profile.agent, "claude");
 
-    // And the same vendor with arguments of its own: no cycle knows what
-    // they were, so only a full trip through the other vendor puts them
-    // back.
+    // A vendor command with arguments: only a full cycle back to the configured
+    // command restores them.
     let config = Config {
         agent: "claude --add-dir ..".to_string(),
         ..Config::default()
@@ -703,9 +675,8 @@ fn header_dials_the_vendor_key_leaves_a_command_it_could_not_put_back() {
 
 #[test]
 fn header_dials_a_vendor_amx_never_heard_of_declares_none() {
-    // The config loader clears a dial an unregistered vendor cannot take,
-    // and the profile is the second half of that law: no entry, no dial,
-    // and nothing for a key to turn.
+    // The config loader clears dials an unregistered vendor cannot take; the
+    // profile offers none either.
     let config = Config {
         agent: "mock-claude".to_string(),
         model: Some("opus".to_string()),
@@ -792,8 +763,7 @@ fn header_dials_turn_under_the_keys_that_say_so() {
     press(&mut screen, alt('w'));
     assert!(!screen.profile.worktree);
 
-    // And they are live while somebody is typing a task, because that is
-    // the moment before the spawn they are about.
+    // The dials also turn while a task line is open.
     screen.mode = Mode::Typing(Composer::new(Asking::Task));
     press(&mut screen, alt('m'));
     assert_eq!(screen.profile.model, "opus");
@@ -819,7 +789,7 @@ fn header_dials_turn_under_the_keys_that_say_so() {
     );
 }
 
-/// A reading of an agent, as a reader hands one to the view.
+/// A reading of an agent, as derive hands one to the view.
 fn reading(id: &str, phase: Phase, state: State) -> View {
     View::new(
         Meta {
@@ -853,8 +823,7 @@ fn reading(id: &str, phase: Phase, state: State) -> View {
     )
 }
 
-/// One that has stopped on a question of the vendor's own, which is the
-/// question that takes words as well as a key.
+/// An agent stopped on a vendor question that takes words as well as a key.
 fn stopped_on_a_question(id: &str) -> View {
     reading(
         id,
@@ -871,8 +840,7 @@ fn stopped_on_a_question(id: &str) -> View {
     )
 }
 
-/// The same question with the payload that says it takes more than one
-/// choice, which is the one place that flag is ever written down.
+/// The same question, marked as taking more than one choice.
 fn stopped_on_a_checkbox_question(id: &str) -> View {
     let mut view = stopped_on_a_question(id);
     view.state.asking = vec![Ask {
@@ -894,7 +862,7 @@ fn stopped_on_a_checkbox_question(id: &str) -> View {
     view
 }
 
-/// The view showing these agents, with the cursor where it opens.
+/// A screen showing these agents, cursor where it opens.
 fn watching(views: Vec<View>) -> Screen {
     let mut screen = Screen::default();
     screen.list.show(views);
@@ -903,10 +871,9 @@ fn watching(views: Vec<View>) -> Screen {
 
 #[test]
 fn the_view_keeps_the_projects_its_agents_run_in_for_a_line_to_offer() {
-    // What a `d:` is offered besides the directories under the cursor,
-    // read off the same records the wall is drawn from: an agent in a tree
-    // amx cut belongs to the repository it was cut from, and a project two
-    // agents run in is one word rather than two.
+    // The projects a `d:` offers come from the records: an agent in an amx tree
+    // belongs to the repository the tree was cut from, and two agents in one
+    // project give one entry.
     let mut screen = Screen::default();
     let mut cut = reading("port-a1b", Phase::Working, State::default());
     cut.meta.worktree = Some(PathBuf::from("/srv/api/.amx/worktrees/port-a1b"));
@@ -922,12 +889,12 @@ fn the_view_keeps_the_projects_its_agents_run_in_for_a_line_to_offer() {
     );
 }
 
-/// The agent that was on the wall before a line was typed.
+/// The agent on the wall before a line was typed.
 fn was_there() -> View {
     reading("fix-login-a1b", Phase::Idle, State::default())
 }
 
-/// And the one the line started.
+/// The agent the line started.
 fn just_started() -> View {
     reading("port-b2c", Phase::Working, State::default())
 }
@@ -937,8 +904,8 @@ fn the_cursor_lands_on_the_agent_the_line_started_when_the_wall_shows_it() {
     let mut screen = watching(vec![was_there()]);
     assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
 
-    // What starting a line leaves behind: the agent is running and the
-    // wall is one reading old, so there is no row for the cursor yet.
+    // Just after a start the agent runs but the wall is a reading old, so it has
+    // no row yet.
     screen.started = Some("port-b2c".to_string());
     screen.showing(vec![was_there(), just_started()]);
     screen.land_on_what_was_started();
@@ -954,14 +921,13 @@ fn the_cursor_waits_for_no_agent_the_narrowing_on_the_screen_hides() {
     let mut screen = watching(vec![was_there()]);
     screen.started = Some("port-b2c".to_string());
 
-    // The reading after the start, narrowed to what somebody asked for,
-    // which the new agent is not among.
+    // The next reading is narrowed and does not include the new agent.
     screen.showing(vec![was_there()]);
     screen.land_on_what_was_started();
     assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
 
-    // And it is not waited for: a reading that widens the wall again
-    // leaves the cursor where the person at it left it.
+    // The started agent is dropped, so a later reading that shows it leaves the
+    // cursor alone.
     screen.showing(vec![was_there(), just_started()]);
     screen.land_on_what_was_started();
     assert_eq!(screen.list.selected().unwrap().id(), "fix-login-a1b");
@@ -988,15 +954,14 @@ fn card_opens_on_the_question_under_the_cursor_with_the_line_to_answer_it() {
         "with the line to answer it on, and nothing typed at it yet"
     );
 
-    // A digit fills the line at a question that takes more than one
-    // choice: there a digit is one box being named, and the line waits for
-    // the rest of them and for the key that submits.
+    // At a question that takes several choices, a digit names one box and goes on
+    // the line; the line waits for the rest and the submit key.
     let mut screen = watching(vec![stopped_on_a_checkbox_question("ask-a1b")]);
     press(&mut screen, KeyCode::Char(' '));
     press(&mut screen, KeyCode::Char('2'));
     assert_eq!(screen.answering().expect("still typing").text, "2");
 
-    // And one key closes the line and the card it was typed on together.
+    // Esc closes the line and the card together.
     press(&mut screen, KeyCode::Esc);
     assert!(screen.card.is_none());
     assert!(screen.answering().is_none());
@@ -1013,10 +978,8 @@ fn card_reads_a_digit_at_a_question_that_takes_one_choice_as_that_choice() {
         .act(key(KeyCode::Char(' ')), root.path(), &config, None)
         .unwrap();
 
-    // Which key is which choice, and which keys are characters. The line
-    // has to be empty, because a digit among words somebody is writing is
-    // a character of them, and the number has to be one the card is
-    // showing: a 3 at a question offering two choices is nothing to send.
+    // A digit is a choice only on an empty line and only when the card shows that
+    // many choices; a 3 at a two-choice question is a character.
     let line = screen.answering().expect("the line to answer on");
     assert_eq!(
         screen.picking(line, key(KeyCode::Char('2'))),
@@ -1029,10 +992,8 @@ fn card_reads_a_digit_at_a_question_that_takes_one_choice_as_that_choice() {
         "and alt+1 is the key that reaches the first agent on the wall"
     );
 
-    // Pressed, it never reaches the line: it is the answer, and it goes as
-    // it is pressed. Nothing is listening behind a record written by hand,
-    // so what it comes to is a notice — the fact under test is that the
-    // key was spent on answering rather than typed.
+    // The digit is sent as the answer and never reaches the line. No agent is
+    // behind a hand-written record, so the reply fails with a notice.
     screen
         .act(key(KeyCode::Char('2')), root.path(), &config, None)
         .unwrap();
@@ -1042,7 +1003,7 @@ fn card_reads_a_digit_at_a_question_that_takes_one_choice_as_that_choice() {
     );
     assert!(screen.notice.is_some(), "and what came of it is said");
 
-    // A line with something on it takes the digit as the character it is.
+    // On a line with text, a digit is a character.
     let mut screen = watching(vec![stopped_on_a_question("ask-a1b")]);
     for code in [KeyCode::Char(' '), KeyCode::Char('k'), KeyCode::Char('2')] {
         screen.act(key(code), root.path(), &config, None).unwrap();
@@ -1050,7 +1011,7 @@ fn card_reads_a_digit_at_a_question_that_takes_one_choice_as_that_choice() {
     assert_eq!(screen.answering().expect("still typing").text, "k2");
 }
 
-/// One that has finished, with the answer it left.
+/// An agent that finished with the answer `result`.
 fn finished_saying(id: &str, result: &str) -> View {
     reading(
         id,
@@ -1068,10 +1029,9 @@ fn finished_saying(id: &str, result: &str) -> View {
 
 #[test]
 fn card_holds_the_whole_recorded_answer_and_not_the_pane() {
-    // An agent whose turn is over and whose record holds its answer gets
-    // that whole answer as the card's body, read from the top — idle at
-    // its prompt, done, failed or stopped alike. The pane is never
-    // consulted: it is a viewport claude scrolls on its own.
+    // A finished turn whose record holds an answer shows that whole answer, read
+    // from the top, for idle, done, failed and stopped alike. The pane is not
+    // read: claude scrolls its viewport on its own.
     let long: String = (0..60).map(|n| format!("line {n}\n")).collect();
     for phase in [Phase::Idle, Phase::Done, Phase::Failed, Phase::Stopped] {
         let agent = reading(
@@ -1096,8 +1056,7 @@ fn card_holds_the_whole_recorded_answer_and_not_the_pane() {
         assert!(card.answer, "an answer reads forward, {phase:?}");
     }
 
-    // A working agent's card is still the pane's picture, whatever the
-    // record holds from its last turn.
+    // A working agent's card is still the pane, whatever the record holds.
     let busy = reading(
         "busy-b2c",
         Phase::Working,
@@ -1121,8 +1080,8 @@ fn card_holds_the_whole_recorded_answer_and_not_the_pane() {
         .answer
     );
 
-    // And an idle agent with nothing recorded falls back to it too:
-    // there is no pane here to capture, so its card is simply empty.
+    // An idle agent with no recorded answer falls back to the pane too; there is
+    // no pane here, so the card is empty.
     let quiet = reading(
         "quiet-c3d",
         Phase::Idle,
@@ -1146,11 +1105,9 @@ fn card_holds_the_whole_recorded_answer_and_not_the_pane() {
 
 #[test]
 fn card_on_a_transcript_with_nothing_on_it_yet_is_the_task_the_agent_was_given() {
-    // The seconds between a vendor being started and its first turn
-    // landing on the transcript. The record names the file, amx knows the
-    // shape to read it by, and there is nothing in it to read. What the
-    // agent was asked is the conversation as far as it has gone, so the
-    // card is that, with what the agent is saying now under it.
+    // Between a vendor starting and its first turn landing, the named transcript
+    // is missing or empty. The card shows the task as the first prompt, with the
+    // live stream under it.
     let root = TempDir::new().unwrap();
     let dir = root.path().join("port-a1b");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1159,8 +1116,7 @@ fn card_on_a_transcript_with_nothing_on_it_yet_is_the_task_the_agent_was_given()
     let held = TempDir::new().unwrap();
     let empty = held.path().join("empty.jsonl");
     std::fs::write(&empty, "").unwrap();
-    // A file the vendor has not created yet, and one it created and has
-    // written nothing to.
+    // A file not created yet, and one created empty.
     for path in [held.path().join("unwritten.jsonl"), empty] {
         let mut view = reading("port-a1b", Phase::Working, State::default());
         view.meta.transcript = Some(path.clone());
@@ -1186,11 +1142,9 @@ fn card_on_a_transcript_with_nothing_on_it_yet_is_the_task_the_agent_was_given()
 
 #[test]
 fn card_stands_the_task_in_for_a_working_agents_transcript_and_no_other() {
-    // An empty transcript is a turn about to land, and a turn about to
-    // land is a working agent. Nobody else is handed the task in place of
-    // a conversation: an adopted agent names no transcript at all, a card
-    // that is asking shows nothing older than the question, and an agent
-    // whose turn is over has its answer on the record.
+    // Only a working agent gets the task in place of an empty transcript: an
+    // adopted agent names no transcript, an asking card shows only the question,
+    // and a finished agent has its answer on the record.
     let root = TempDir::new().unwrap();
     let held = TempDir::new().unwrap();
     let unwritten = held.path().join("unwritten.jsonl");
@@ -1236,8 +1190,7 @@ fn card_stands_the_task_in_for_a_working_agents_transcript_and_no_other() {
     assert!(card.answer);
 }
 
-/// A command's record with what it printed beside it, which is where its
-/// own boot pipes the pane.
+/// Writes a command's printed output beside its record.
 fn printed(root: &Path, id: &str, output: &str) -> PathBuf {
     let dir = root.join(id);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1247,23 +1200,20 @@ fn printed(root: &Path, id: &str, output: &str) -> PathBuf {
 
 #[test]
 fn card_on_a_command_row_is_what_the_command_printed() {
-    // The one row of the wall with no vendor behind it, and the one whose
-    // pane is piped into a file. The card is that file: whole, in the
-    // paint the command printed it in, with nothing cut off the bottom —
-    // the anchors the walk would hold are a vendor's, and a command that
-    // prints a rule and a prompt is printing its own work.
+    // A command row's card is its output file, whole and in its own colours. No
+    // furniture is cut, because the anchors belong to vendors and a command that
+    // prints a rule and a prompt is printing its own output.
     let root = TempDir::new().unwrap();
     printed(
         root.path(),
         "build-a1b",
         "make: entering\n\n────\n❯ \n────\n  statusline\n",
     );
-    // Off the grid the bytes are laid on: the blank the prompt row ends in
-    // and the row the last newline opened are cells the command left alone,
-    // so they are not part of the reading.
+    // The trailing blank of the prompt row and the row after the last newline are
+    // cells the command never wrote, so they are not in the reading.
     let output = "make: entering\n\n────\n❯\n────\n  statusline";
 
-    // While it runs, read up from the end, where what is landing is.
+    // While it runs, the card reads up from the end.
     let running = reading("build-a1b", Phase::Working, State::default());
     let (card, _) = card_of(
         &running,
@@ -1275,7 +1225,7 @@ fn card_on_a_command_row_is_what_the_command_printed() {
     assert_eq!(card.body.says(), output);
     assert!(!card.answer, "a running command's card follows its output");
 
-    // Once it has ended, the same file from the top of it.
+    // Once it has ended, the card reads from the top.
     for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
         let ended = reading(
             "build-a1b",
@@ -1303,9 +1253,8 @@ fn card_on_a_command_row_is_what_the_command_printed() {
 
 #[test]
 fn card_on_a_vendor_that_died_before_it_spoke_is_what_it_printed() {
-    // A vendor that never announced a session left no conversation and no
-    // answer; the bytes its boot kept are the last thing it said, and the
-    // card is those rather than an empty pane.
+    // A vendor that died before announcing a session has no conversation and no
+    // answer; its boot output is the card.
     let root = TempDir::new().unwrap();
     printed(
         root.path(),
@@ -1336,10 +1285,8 @@ fn card_on_a_vendor_that_died_before_it_spoke_is_what_it_printed() {
 
 #[test]
 fn card_on_a_long_command_row_is_the_end_of_what_it_printed() {
-    // The card is taken again every second it is open, and a build's log
-    // grows for as long as the build runs, so what the card holds is the
-    // end of the file: 3840 numbered rows of 80 bytes here, of which the
-    // last quarter megabyte opens on row 565.
+    // A running build's log keeps growing, so the card holds the end of it:
+    // 3840 rows of 80 bytes, whose last 256 KiB starts on row 565.
     let root = TempDir::new().unwrap();
     let log: String = (1..=3840)
         .map(|n| format!("{:<79}\n", format!("row {n}")))
@@ -1374,10 +1321,8 @@ fn card_on_a_long_command_row_is_the_end_of_what_it_printed() {
 
 #[test]
 fn card_on_a_command_that_has_printed_nothing_is_empty() {
-    // An empty file is a command that has said nothing yet, and the card
-    // says nothing back. The pane is not consulted for it: a capture would
-    // be somebody else's program read with a vendor's anchors held against
-    // it, and whatever those cut would be the command's own work.
+    // An empty output file is an empty card. The pane is not captured: that would
+    // read another program's screen against a vendor's anchors.
     let root = TempDir::new().unwrap();
     printed(root.path(), "quiet-a1b", "");
 
@@ -1394,11 +1339,9 @@ fn card_on_a_command_that_has_printed_nothing_is_empty() {
 
 #[test]
 fn card_cuts_a_pane_with_the_furniture_of_the_vendor_the_record_names() {
-    // pi's chrome carries not one of claude's anchors, so a card that
-    // walked a pi pane with the document amx falls back to would float the
-    // vendor's own box and stats line over the work the card was opened
-    // for. Which anchors the walk holds is the command the record kept at
-    // the spawn.
+    // pi's chrome has none of claude's anchors, so walking a pi pane with the
+    // fallback anchors would leave pi's box and stats line on the card. The
+    // anchors come from the command recorded at spawn.
     let pane = [
         " the work itself",
         "",
@@ -1424,10 +1367,8 @@ fn card_cuts_a_pane_with_the_furniture_of_the_vendor_the_record_names() {
 
 #[test]
 fn card_reads_the_recorded_answer_rather_than_taking_a_copy_of_it() {
-    // The card is built with the record's own words read: one walk, and
-    // no copy of an answer that would only have been walked later. A card
-    // is taken again on every pass a question is up for, so the copy is
-    // not a one-off.
+    // The card walks the record's answer where it lies instead of copying it
+    // first; a question card is retaken on every pass, so the copy would repeat.
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     screen.look = Look::Screen;
 
@@ -1462,8 +1403,8 @@ fn card_pages_under_the_page_keys_and_a_cursor_move_resets_it() {
     assert!(screen.card.is_some(), "the card is open");
     assert_eq!(screen.scroll.away.get(), 0, "on its natural edge");
 
-    // A recorded answer is read down from its top: pgdn leaves the edge,
-    // pgup comes back toward it, and never past it.
+    // A recorded answer reads down from its top: pgdn leaves the edge, pgup comes
+    // back and stops there.
     press(&mut screen, KeyCode::PageDown);
     let away = screen.scroll.away.get();
     assert!(away > 0, "paged away from the top");
@@ -1475,8 +1416,7 @@ fn card_pages_under_the_page_keys_and_a_cursor_move_resets_it() {
     press(&mut screen, KeyCode::PageUp);
     assert_eq!(screen.scroll.away.get(), 0, "the edge is where it stops");
 
-    // The arrows keep their meaning: the cursor walks on with the card
-    // following, and the next agent's card stands on its own edge.
+    // The arrows still move the cursor, and the next card opens on its own edge.
     press(&mut screen, KeyCode::PageDown);
     press(&mut screen, KeyCode::Down);
     assert_eq!(
@@ -1516,9 +1456,8 @@ fn keys_j_and_k_walk_the_list_the_way_the_arrows_do() {
     press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
     assert_eq!(on(&screen), "done-a1b", "and k walks back up");
 
-    // With a card open the arrows walk and the letters do not: the card
-    // opens with a line at its foot, and every letter is a character of
-    // what is being typed there.
+    // With a card open the arrows walk and the letters do not: the card's line
+    // takes every letter.
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     assert_eq!(
@@ -1535,12 +1474,8 @@ fn keys_j_and_k_walk_the_list_the_way_the_arrows_do() {
     assert_eq!(screen.answering().expect("the card's line").text, "j");
 }
 
-/// Two agents with nothing in common but being on the wall, for the tests
-/// about finding one of them.
-///
-/// Distinct tasks on purpose: the fixture gives every view the same one,
-/// and a search reaches the task, so a pair that shared it would match
-/// both and prove nothing.
+/// Two agents with distinct tasks. A search also matches the task, so a shared
+/// task would match both.
 fn a_fleet_to_search() -> Vec<View> {
     let mut asking = stopped_on_a_question("ask-a1b");
     asking.meta.task = "fix the login bug".to_string();
@@ -1549,7 +1484,7 @@ fn a_fleet_to_search() -> Vec<View> {
     vec![asking, ported]
 }
 
-/// Which agents the list is drawn with, which is what a narrowing changes.
+/// The ids of the agents the list shows.
 #[cfg(test)]
 fn showing_ids(screen: &Screen) -> Vec<String> {
     screen
@@ -1582,7 +1517,7 @@ fn find_slash_narrows_the_list_as_it_is_typed_and_enter_keeps_it() {
     );
     assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
 
-    // Every keystroke, not the enter at the end of them.
+    // The list narrows on every keystroke.
     press(&mut screen, KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(
         showing_ids(&screen),
@@ -1596,7 +1531,7 @@ fn find_slash_narrows_the_list_as_it_is_typed_and_enter_keeps_it() {
     press(&mut screen, KeyEvent::from(KeyCode::Backspace));
     assert_eq!(showing_ids(&screen), ["port-b2c"], "backspace widens it");
 
-    // Enter is what keeps it: the line goes and the narrowing stays.
+    // Enter closes the line and keeps the narrowing.
     press(&mut screen, KeyEvent::from(KeyCode::Enter));
     assert!(matches!(screen.mode, Mode::List), "back on the agents");
     assert_eq!(showing_ids(&screen), ["port-b2c"], "still narrowed");
@@ -1617,9 +1552,8 @@ fn find_backspace_on_an_empty_line_leaves_the_find() {
     assert!(matches!(screen.mode, Mode::List), "the mark is taken back");
     assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
 
-    // A backspace with a character to take takes the character: the way
-    // out is the key after the last one, not the one that empties the
-    // line.
+    // A backspace with a character left deletes it; only the next one leaves the
+    // find.
     press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
     press(&mut screen, KeyEvent::from(KeyCode::Char('p')));
     press(&mut screen, KeyEvent::from(KeyCode::Backspace));
@@ -1670,7 +1604,7 @@ fn find_esc_clears_a_narrowing_that_is_already_standing() {
         screen.act(key, root.path(), &config, None).unwrap();
     };
 
-    // Found and kept, so the line has gone and the narrowing has not.
+    // Found and kept: the line is gone and the narrowing stays.
     press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
     for key in word("port") {
         press(&mut screen, KeyEvent::from(key));
@@ -1678,9 +1612,8 @@ fn find_esc_clears_a_narrowing_that_is_already_standing() {
     press(&mut screen, KeyEvent::from(KeyCode::Enter));
     assert_eq!(showing_ids(&screen), ["port-b2c"]);
 
-    // Esc is what drops it, on the list rather than only on the line: a
-    // narrowing outlives the line it was typed on, so the key that clears
-    // it has to as well.
+    // Esc on the list drops a narrowing too, since it outlives the line it was
+    // typed on.
     press(&mut screen, KeyEvent::from(KeyCode::Esc));
     assert_eq!(
         showing_ids(&screen),
@@ -1707,8 +1640,7 @@ fn find_esc_puts_the_card_away_before_it_touches_the_narrowing() {
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     assert!(screen.card.is_some(), "a card over the narrowed wall");
 
-    // One layer a press, innermost first: the card is what is in front of
-    // the list, so it goes before the list itself changes under it.
+    // Esc closes the card first, before touching the narrowing.
     press(&mut screen, KeyEvent::from(KeyCode::Esc));
     assert!(screen.card.is_none(), "the card went");
     assert_eq!(showing_ids(&screen), ["port-b2c"], "and the narrowing held");
@@ -1726,8 +1658,7 @@ fn find_is_the_only_way_to_narrow_by_name_now_that_a_is_not_a_token() {
         screen.act(key, root.path(), &config, None).unwrap();
     };
 
-    // `a:` is a word in a task now, not a filter, so a task line holding
-    // one is a task and the line says so.
+    // `a:` is plain text in a task now, not a filter.
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for key in word("a:port") {
         press(&mut screen, KeyEvent::from(key));
@@ -1739,8 +1670,7 @@ fn find_is_the_only_way_to_narrow_by_name_now_that_a_is_not_a_token() {
     );
     press(&mut screen, KeyEvent::from(KeyCode::Esc));
 
-    // And on a find line it is the name to look for, colon and all,
-    // rather than a token that means something.
+    // On a find line it is the name to look for, colon included.
     press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
     for key in word("a:port") {
         press(&mut screen, KeyEvent::from(key));
@@ -1785,7 +1715,7 @@ fn keys_gg_reaches_the_top_of_the_list_and_g_alone_waits_for_it() {
     };
     let on = |screen: &Screen| screen.list.cursor();
 
-    // G is one press and goes to the foot.
+    // G goes to the foot in one press.
     press(&mut screen, KeyEvent::from(KeyCode::Char('G')));
     assert_eq!(
         screen.list.selected().map(|view| view.id()),
@@ -1793,7 +1723,7 @@ fn keys_gg_reaches_the_top_of_the_list_and_g_alone_waits_for_it() {
         "G lands on the last agent there is"
     );
 
-    // One g moves nothing and says it is waiting for its second.
+    // One g moves nothing and waits for the second.
     let foot = on(&screen);
     press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
     assert_eq!(on(&screen), foot, "one g moves nothing");
@@ -1820,9 +1750,7 @@ fn keys_a_g_waiting_for_its_second_is_cancelled_by_any_other_key() {
     press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
     assert!(screen.going);
 
-    // The key that is not the second g does its own job, whole, and takes
-    // the waiting one with it: a press that half-happened would be worse
-    // than one that did not.
+    // Any other key cancels the pending g and does its own job in full.
     press(&mut screen, KeyEvent::from(KeyCode::Char('k')));
     assert!(!screen.going, "the g is gone");
     assert!(
@@ -1830,7 +1758,7 @@ fn keys_a_g_waiting_for_its_second_is_cancelled_by_any_other_key() {
         "and k walked, rather than being eaten by the g in front of it"
     );
 
-    // Which means a g after that one is a fresh first press, not a second.
+    // So the next g is a fresh first press.
     press(&mut screen, KeyEvent::from(KeyCode::Char('g')));
     assert!(screen.going);
     let before = screen.list.cursor();
@@ -1857,8 +1785,8 @@ fn keys_alt_arrows_bring_back_the_lines_sent_and_the_plain_ones_keep_the_card_mo
     let opened_on = screen.card.as_ref().map(|card| card.id.clone());
     assert!(opened_on.is_some(), "space opens the card");
 
-    // Back through the replies sent, newest first, and forward again to
-    // the empty line the walk began on.
+    // alt+up walks back through the replies sent, newest first; alt+down returns
+    // to the empty draft.
     press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(line(&screen), "ship it");
     press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
@@ -1873,8 +1801,7 @@ fn keys_alt_arrows_bring_back_the_lines_sent_and_the_plain_ones_keep_the_card_mo
         "and none of that moved the card"
     );
 
-    // The plain arrows are still the card's: they move it to the next
-    // agent, whichever way the next one is.
+    // The plain arrows still move the card to the next agent.
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     if screen.card.as_ref().map(|card| card.id.clone()) == opened_on {
         press(&mut screen, KeyEvent::from(KeyCode::Up));
@@ -1908,8 +1835,8 @@ fn keys_a_task_line_walks_the_lines_sent_on_the_plain_arrows() {
     press(&mut screen, KeyEvent::from(KeyCode::Char('i')));
     assert_eq!(line(&screen), "hi");
 
-    // A task line has no card for the arrows to move, so plain up is the
-    // walk back, and it walks the tasks and not the replies.
+    // A task line has no card to move, so plain up walks back through the tasks,
+    // not the replies.
     press(&mut screen, KeyEvent::from(KeyCode::Up));
     assert_eq!(line(&screen), "port the importer");
     press(&mut screen, KeyEvent::from(KeyCode::Up));
@@ -1921,7 +1848,7 @@ fn keys_a_task_line_walks_the_lines_sent_on_the_plain_arrows() {
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     assert_eq!(line(&screen), "hi", "and down past the newest is the draft");
 
-    // The alt arrows do the same here, so one chord works on every line.
+    // The alt arrows work here too, so one chord works on every line.
     press(&mut screen, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(line(&screen), "port the importer");
 }
@@ -1934,8 +1861,7 @@ fn replied_keeps_the_line_it_sent_and_not_one_refused() {
     screen.replied(Ok(Replied::Yes("sent to done-a1b".to_string())), sent);
     assert_eq!(screen.sent.lines_for(&Asking::Reply), ["ship it"]);
 
-    // A line the agent would not take is still being written, and is not
-    // a line sent.
+    // A refused line is still being written, so it is not kept.
     let mut refused = Composer::new(Asking::Reply);
     refused.insert("not yet");
     screen.replied(Ok(Replied::No("busy".to_string())), refused);
@@ -1957,13 +1883,12 @@ fn remembered_keeps_the_lines_sent_for_the_next_view() {
     screen.remember_line(&Asking::Task, "port the importer");
     screen.remember_line(&Asking::Reply, "ship it");
 
-    // Written as it happens, and read back by whichever view opens next.
+    // Written immediately, for the next view to read.
     let read = Remembered::read(&path);
     assert_eq!(read.sent.lines_for(&Asking::Task), ["port the importer"]);
     assert_eq!(read.sent.lines_for(&Asking::Reply), ["ship it"]);
 
-    // A file an older amx wrote, which knows nothing of lines sent, still
-    // reads, with nothing to bring back.
+    // A file from an older amx without `sent` still reads.
     std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
     assert_eq!(Remembered::read(&path).sent, act::Backlog::default());
 }
@@ -1987,7 +1912,7 @@ fn a_pin_in_one_view_lands_in_the_other_on_the_next_reading() {
         ..watching(fleet())
     };
 
-    // The left view pins the row under its cursor and writes as it goes.
+    // The left view pins its cursor row and writes the file.
     left.list.top();
     while left.list.selected().is_none() {
         left.list.down();
@@ -1997,7 +1922,7 @@ fn a_pin_in_one_view_lands_in_the_other_on_the_next_reading() {
     assert!(left.list.arrangement().has_pinned("one-a1b"));
     assert!(Remembered::read(&path).arrangement.has_pinned("one-a1b"));
 
-    // The right view has not looked at the file yet.
+    // The right view has not read the file yet.
     assert!(!right.list.arrangement().has_pinned("one-a1b"));
     right.adopt_the_view();
     assert!(
@@ -2034,8 +1959,7 @@ fn a_line_sent_before_the_next_reading_does_not_hide_the_other_views_pin() {
     assert!(left.list.hold_or_let_go());
     left.keep(true);
 
-    // The right view sends a line before its next reading, which writes
-    // the file the pin is in.
+    // The right view sends a line before its next reading, writing the file.
     right.remember_line(&Asking::Task, "port the importer");
     right.adopt_the_view();
     assert!(
@@ -2067,8 +1991,8 @@ fn a_pin_this_view_makes_does_not_take_the_other_views_off_the_file() {
     assert!(right.list.hold_or_let_go());
     right.keep(true);
 
-    // The left view opened before that and has not read since, so its
-    // arrangement knows nothing of the other pin.
+    // The left view opened before that and has not read since, so it does not
+    // know the other pin.
     let mut left = Screen {
         remembering: Some(path.clone()),
         ..watching(fleet())
@@ -2111,14 +2035,12 @@ fn keys_v_shows_what_each_row_runs_and_the_next_view_opens_on_the_same_wall() {
         "written as it is pressed, the way the arrangement is"
     );
 
-    // The same key takes it away again, and that is remembered too: a
-    // choice that could only be made and not unmade would be a key
-    // somebody presses once by accident and lives with.
+    // Pressing it again hides the column, and that is saved too.
     press(&mut screen, KeyCode::Char('v'));
     assert!(!screen.vendor);
     assert!(!Remembered::read(&path).vendor);
 
-    // A view opened on the file the last one left comes up on that wall.
+    // The next view opens with the column as the file says.
     press(&mut screen, KeyCode::Char('v'));
     let next = Screen {
         vendor: Remembered::read(&path).vendor,
@@ -2129,8 +2051,7 @@ fn keys_v_shows_what_each_row_runs_and_the_next_view_opens_on_the_same_wall() {
         "the next view opens where the last one was left"
     );
 
-    // And a file an older amx wrote, which knows nothing of the column,
-    // still reads, with the column down.
+    // A file from an older amx without `vendor` reads with the column hidden.
     std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
     assert!(!Remembered::read(&path).vendor);
 }
@@ -2144,11 +2065,9 @@ fn keys_l_goes_in_the_way_enter_does_and_leaves_the_card_to_space() {
             .act(KeyEvent::from(key), root.path(), &config, None)
             .unwrap()
     };
-    // `l` is the letter vim walks right with, and what is to the right of a
-    // row is the agent on it. So it is enter's third spelling: whatever
-    // enter makes of the row under the cursor, this makes of it too — here,
-    // the same reach for a pane, which on a record no state directory has
-    // fails the same way for both.
+    // `l` is vim's right, and right of a row is its agent, so `l` does what enter
+    // does. Here both fail the same way reaching a pane for a record with no
+    // state directory.
     let went_in = |key| {
         let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
         let reached = screen.act(KeyEvent::from(key), root.path(), &config, None);
@@ -2165,21 +2084,17 @@ fn keys_l_goes_in_the_way_enter_does_and_leaves_the_card_to_space() {
     );
     assert!(!went_in(KeyCode::Char('l')).1, "and it opens no card");
 
-    // The card is space's alone, which is what it was before `l` was ever
-    // a second way to open one.
+    // Only space opens the card.
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     press(&mut screen, KeyCode::Char(' '));
     assert!(screen.card.is_some(), "space opens the card");
 
-    // Over one, `l` is a character of what is being typed: the card opened
-    // with the line at its foot, and every letter is text for as long as
-    // one is up.
+    // With a card open, `l` is text on the card's line.
     press(&mut screen, KeyCode::Char('l'));
     assert!(screen.card.is_some(), "and leaves it open");
     assert_eq!(screen.answering().expect("the card's line").text, "l");
 
-    // Which is why esc is the way out rather than h: it closes the line
-    // and the card together, whatever has been typed on it.
+    // Esc closes the line and the card together.
     press(&mut screen, KeyCode::Esc);
     assert!(screen.card.is_none(), "esc closes the card");
     assert!(matches!(screen.mode, Mode::List), "and the line with it");
@@ -2198,7 +2113,7 @@ fn card_pages_half_a_page_under_ctrl_d_and_ctrl_u() {
     };
 
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
-    // What the last frame gave the body, which is what a whole page is.
+    // The page size the last frame gave the body.
     screen.scroll.page.set(10);
 
     press(&mut screen, ctrl('d'));
@@ -2220,8 +2135,8 @@ fn card_pages_under_ctrl_f_and_ctrl_b_exactly_as_the_page_keys() {
         screen.act(key, root.path(), &config, None).unwrap();
     };
 
-    // A recorded answer is read down from its top: ctrl+f leaves the edge
-    // the way pgdn does, and ctrl+b comes back the way pgup does.
+    // A recorded answer reads down from its top: ctrl+f leaves the edge like pgdn,
+    // ctrl+b comes back like pgup.
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     press(&mut screen, ctrl('f'));
     assert!(
@@ -2231,8 +2146,7 @@ fn card_pages_under_ctrl_f_and_ctrl_b_exactly_as_the_page_keys() {
     press(&mut screen, ctrl('b'));
     assert_eq!(screen.scroll.away.get(), 0, "and ctrl+b is the page back");
 
-    // A patch is read down from its top too, so the same two keys lead
-    // the same way, exactly as the page keys do.
+    // A patch also reads down from its top, so the keys go the same way.
     screen.look = Look::Changes;
     screen.card = Some(Card {
         id: "done-a1b".to_string(),
@@ -2268,10 +2182,8 @@ fn card_line_leaves_ctrl_f_and_ctrl_b_to_the_card_like_the_page_keys() {
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     assert!(screen.answering().is_some(), "the line is up");
 
-    // A chord is somebody reaching past the line, not a character in it,
-    // so these page the card under it exactly as they do with no line
-    // there at all. A question is read up from the screen it was asked
-    // on, so ctrl+b is the one that leaves the edge.
+    // Chords are not text, so they page the card under the line. A question reads
+    // up from the bottom, so ctrl+b leaves the edge.
     press(&mut screen, ctrl('b'));
     assert_eq!(screen.scroll.away.get(), 1, "ctrl+b paged the card");
     press(&mut screen, ctrl('f'));
@@ -2284,7 +2196,7 @@ fn card_holding_a_patch_pages_the_other_way_round() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     let mut screen = watching(vec![finished_saying("done-a1b", "an answer")]);
-    // A patch in hand, the way `d` leaves one.
+    // A patch card, as `d` leaves one.
     screen.look = Look::Changes;
     screen.card = Some(Card {
         id: "done-a1b".to_string(),
@@ -2305,14 +2217,14 @@ fn card_holding_a_patch_pages_the_other_way_round() {
             .unwrap();
     };
 
-    // A patch is read down from its top: pgdn leaves the edge.
+    // A patch reads down from its top: pgdn leaves the edge.
     press(&mut screen, KeyCode::PageDown);
     assert!(screen.scroll.away.get() > 0, "paged down into the patch");
     press(&mut screen, KeyCode::PageUp);
     assert_eq!(screen.scroll.away.get(), 0, "and back to the top");
 }
 
-/// A patch of two files, which is two hunks to step between.
+/// A patch of two files, one hunk each.
 const TWO_HUNKS: &str = "\
 diff --git a/src/foo.rs b/src/foo.rs
 --- a/src/foo.rs
@@ -2336,13 +2248,12 @@ fn keys_ctrl_n_and_ctrl_p_step_the_hunks_of_a_changes_card_alone() {
         screen.act(key, root.path(), &config, None).unwrap();
     };
 
-    // A card of what the agent said is not a patch, and the keys have
-    // nothing to step through on one.
+    // On a card that is not a patch the keys have no hunks to step through.
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     press(&mut screen, ctrl('n'));
     assert_eq!(screen.scroll.at_hunk(), None, "no patch to step through");
 
-    // A patch in hand, the way `d` leaves one.
+    // A patch card, as `d` leaves one.
     screen.look = Look::Changes;
     screen.card = Some(Card {
         id: "done-a1b".to_string(),
@@ -2368,23 +2279,19 @@ fn keys_ctrl_n_and_ctrl_p_step_the_hunks_of_a_changes_card_alone() {
     press(&mut screen, ctrl('p'));
     assert_eq!(screen.scroll.at_hunk(), Some(0), "and the one before it");
 
-    // The card's line takes neither of them as a character: a chord is
-    // somebody reaching past the line, exactly as the page keys are. What
-    // was on it goes with the hunk it was typed under.
+    // The line takes neither chord as text. Its words stay with the hunk they
+    // were typed under.
     press(&mut screen, KeyEvent::from(KeyCode::Char('x')));
     press(&mut screen, ctrl('n'));
     assert_eq!(screen.scroll.at_hunk(), Some(1), "stepped from under it");
     assert_eq!(screen.scroll.remarked(Some(0)), "x", "kept on the hunk");
 
-    // And what it is standing on is the hunk itself, which is what the
-    // line sends the words with: the file and the line a comment on it
-    // names.
+    // The hunk under the cursor gives the file and line a comment names.
     let (at, hunk) = screen.at_hunk().expect("a hunk under the cursor");
     assert_eq!((at, hunk.path.as_str(), hunk.line), (1, "src/bar.rs", 8));
 }
 
-/// A view standing at the line under a card of that patch, which is where
-/// a review is written.
+/// A screen with the card's line open under a patch of [`TWO_HUNKS`].
 fn reviewing() -> Screen {
     let mut screen = watching(vec![finished_saying("done-a1b", "an answer")]);
     screen.look = Look::Changes;
@@ -2420,8 +2327,8 @@ fn card_line_carries_its_words_to_the_hunk_it_steps_off() {
         }
     };
 
-    // The top of the patch is where a review opens, and what is written
-    // there is its opening rather than a note on any hunk.
+    // Words written at the top of the patch are the review's opening, not a note
+    // on a hunk.
     types(&mut screen, "looks close");
     press(&mut screen, ctrl('n'));
     assert_eq!(screen.scroll.remarked(None), "looks close");
@@ -2437,8 +2344,7 @@ fn card_line_carries_its_words_to_the_hunk_it_steps_off() {
     assert_eq!(screen.scroll.remarked(Some(0)), "why this row?");
     assert_eq!(screen.scroll.noted(), vec![0], "one note behind the line");
 
-    // Stepped back, the words come back onto the line with the cursor at
-    // the end of them: a note is edited where it was written.
+    // Stepping back puts the kept words on the line, cursor at their end.
     press(&mut screen, ctrl('p'));
     let line = screen.answering().expect("the line");
     assert_eq!(line.text, "why this row?");
@@ -2447,8 +2353,7 @@ fn card_line_carries_its_words_to_the_hunk_it_steps_off() {
     assert_eq!(screen.scroll.at_hunk(), None, "and the top above them");
     assert_eq!(screen.answering().expect("the line").text, "looks close");
 
-    // A line emptied by hand takes back what was kept there, which is the
-    // only way a review loses a part of itself short of esc.
+    // Emptying the line by hand drops the note kept there.
     for _ in 0.."looks close".len() {
         press(&mut screen, KeyEvent::from(KeyCode::Backspace));
     }
@@ -2463,18 +2368,16 @@ fn card_line_sends_the_whole_review_as_one_message() {
     let card = screen.card.as_ref().expect("the card");
     let hunks = card.body.hunks();
 
-    // Nothing written yet, so the line alone is the message, which is what
-    // the card has always sent: the hunk under the cursor in front of the
-    // words, byte for byte as `on_hunk` writes it.
+    // With nothing kept, the line alone is the message: the hunk under the
+    // cursor, then the words, as `on_hunk` writes it.
     screen.scroll.to_hunk(hunks, true);
     assert_eq!(
         screen.written(&screen.review("why this row?")),
         act::on_hunk(&hunks[0], "why this row?")
     );
 
-    // With a review behind it, one message: the opening, then every noted
-    // hunk in patch order, the line's own words standing as the note on
-    // the hunk it was typed under.
+    // With a review kept, one message: the opening, then each noted hunk in patch
+    // order, with the line's words as the note on the current hunk.
     screen.scroll.remark(None, "looks close");
     screen.scroll.remark(Some(0), "why this row?");
     screen.scroll.to_hunk(hunks, true);
@@ -2488,8 +2391,8 @@ fn card_line_sends_the_whole_review_as_one_message() {
         )
     );
 
-    // An empty line sends what is kept and nothing of its own, and an
-    // opening with no note on any hunk is nothing to send at all.
+    // An empty line sends what is kept; an opening with no note on any hunk is
+    // nothing to send.
     assert_eq!(screen.noted(""), vec![0]);
     screen.scroll.remark(Some(0), "");
     assert!(screen.noted("").is_empty());
@@ -2538,8 +2441,8 @@ fn card_paged_away_stops_following_until_paged_back() {
     screen.follow_the_cursor();
     screen.card.as_mut().expect("a card").body = Body::screen(chrome(), "what she was reading");
 
-    // Paged away, the card holds still between rereads: recapturing under
-    // somebody's eyes would move the text they are on.
+    // Paged away, the card holds between rereads so the text does not move under
+    // the reader.
     screen.scroll.away.set(3);
     screen.follow_the_cursor();
     assert_eq!(
@@ -2575,9 +2478,7 @@ fn card_held_still_lets_a_question_through() {
     screen.card.as_mut().expect("a card").body = Body::screen(chrome(), "old capture");
     screen.scroll.away.set(3);
 
-    // The agent stops on a question while somebody is reading history:
-    // the question is what the view exists to surface, so it takes the
-    // card back from the hold.
+    // A question takes the card back from the hold.
     screen.list.show(vec![stopped_on_a_question("ask-a1b")]);
     screen.follow_the_cursor();
     assert!(
@@ -2591,8 +2492,8 @@ fn card_held_still_lets_a_question_through() {
 fn card_holding_a_patch_yields_to_an_arrow_wherever_it_lands() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
-    // One agent: the cursor has nowhere to go, and the press still swaps
-    // a demoted patch for the agent's own card the way it always did.
+    // One agent, so the cursor cannot move; the press still replaces a patch
+    // with the agent's own card.
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     screen.look = Look::Changes;
     screen.card = Some(Card {
@@ -2627,9 +2528,8 @@ fn card_asking_is_never_held_still() {
     screen.follow_the_cursor();
     screen.card.as_mut().expect("a card").question = Some("an old question".to_string());
 
-    // Whatever the offset says, a question is always fresh: the record
-    // moves under the card while the vendor redraws, and a held card
-    // would pair the old question with the new tab.
+    // A question card is always retaken: the record moves while the vendor
+    // redraws, and a held card would pair the old question with the new tab.
     screen.scroll.away.set(3);
     screen.follow_the_cursor();
     assert_eq!(
@@ -2655,8 +2555,7 @@ fn card_line_leaves_the_page_keys_to_the_card() {
     press(&mut screen, KeyCode::Char(' '));
     assert!(screen.answering().is_some(), "the line is up");
 
-    // A line has no use for a page key, so the card under it takes both
-    // of them and nothing lands on the line.
+    // The line has no use for page keys, so the card under it takes them.
     press(&mut screen, KeyCode::PageUp);
     assert_eq!(screen.scroll.away.get(), 1, "pgup paged the card");
     press(&mut screen, KeyCode::PageDown);
@@ -2670,9 +2569,8 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
     let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
     let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
 
-    // What a line reads: the characters, the keys that move along it, and
-    // the ones that end it. A letter is a letter however the shift key
-    // was held.
+    // The line takes characters, the keys that move along it and the keys that end
+    // it. A letter counts whether or not shift was held.
     for key in [
         plain(KeyCode::Char('j')),
         plain(KeyCode::Char('q')),
@@ -2705,8 +2603,8 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
         );
     }
 
-    // And everything else, which walks the wall, pages the card or acts
-    // on an agent, exactly as it does with no line up.
+    // Every other key walks the wall, pages the card or acts on an agent, as it
+    // does with no line up.
     for key in [
         plain(KeyCode::Up),
         plain(KeyCode::Down),
@@ -2730,8 +2628,8 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
         );
     }
 
-    // Bar the two arrows while words are offered under the line: then
-    // they walk the words, exactly as they do under the task line.
+    // Except the two arrows while suggestions are open: they walk the suggestions,
+    // as under the task line.
     let mut offering = Composer::new(Asking::Reply);
     offering.suggest = Some(act::Suggest {
         word: 0..1,
@@ -2749,10 +2647,9 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
 
 #[test]
 fn card_line_offers_the_words_of_the_agents_own_vendor_and_directory() {
-    // The card's line goes to an agent already running, so what it offers
-    // is read where that agent runs — not under the directory the view
-    // was opened in, which has nothing called this — and the arrows walk
-    // the words offered rather than the wall for as long as they stand.
+    // The card's line suggests from the directory the agent runs in, which the
+    // view's own directory knows nothing about, and the arrows walk the
+    // suggestions while they are open.
     let root = TempDir::new().unwrap();
     let there = TempDir::new().unwrap();
     for file in ["importer.rs", "imports.rs"] {
@@ -2785,7 +2682,7 @@ fn card_line_offers_the_words_of_the_agents_own_vendor_and_directory() {
     }
     assert_eq!(offered(&screen), ["@importer.rs", "@imports.rs"]);
 
-    // Down walks the words, and the cursor stays on the row it was on.
+    // Down walks the suggestions; the cursor stays on its row.
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     assert_eq!(
         screen
@@ -2805,7 +2702,7 @@ fn card_line_offers_the_words_of_the_agents_own_vendor_and_directory() {
         "and tab takes the word the choice is on"
     );
 
-    // A dial typed there is a word of the message: nothing is offered.
+    // A dial token typed there is part of the message, so nothing is suggested.
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     for key in word("m:") {
         press(&mut screen, KeyEvent::from(key));
@@ -2829,8 +2726,7 @@ fn card_line_leaves_the_keys_it_has_no_use_for_to_the_list() {
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     assert!(screen.answering().is_some(), "the card's line is up");
 
-    // Each of these does to the list exactly what it does with no line
-    // there at all: a key a line has no use for was never the line's.
+    // Each of these does to the list what it does with no line open.
     press(&mut screen, shift(KeyCode::Down));
     assert_eq!(
         ordered(&screen),
@@ -2857,8 +2753,7 @@ fn card_line_leaves_the_keys_it_has_no_use_for_to_the_list() {
     );
 }
 
-/// The view with a card open on the agent under the cursor and the line at
-/// its foot standing empty, which is where these two keys are read.
+/// A screen with a card open on the cursor's agent and its line empty.
 fn carded(root: &Path, config: &Config, views: Vec<View>) -> Screen {
     let mut screen = watching(views);
     screen
@@ -2880,8 +2775,7 @@ fn card_line_reads_space_on_an_empty_line_as_the_key_that_closes_the_card() {
     };
     let space = KeyEvent::from(KeyCode::Char(' '));
 
-    // Nothing typed is nothing for a space to stand between, so the key
-    // that opened the card is still the key that puts it away.
+    // On an empty line, space is the key that closes the card.
     let mut screen = carded(
         root.path(),
         &config,
@@ -2896,8 +2790,7 @@ fn card_line_reads_space_on_an_empty_line_as_the_key_that_closes_the_card() {
         "with the cursor still on the row the card was opened from"
     );
 
-    // A character on the line, and it is the space it is: a message with
-    // two words in it is a message somebody has to be able to write.
+    // With text on the line, a space is a character.
     let mut screen = carded(
         root.path(),
         &config,
@@ -2919,11 +2812,9 @@ fn card_line_reads_enter_on_an_empty_line_as_the_lists_own_enter() {
     };
     let enter = KeyEvent::from(KeyCode::Enter);
 
-    // On a row it is the attach it is on the list. The wall here is a
-    // reading written by hand and never put on disk, so what the attempt
-    // comes back with is the store saying it has never heard of the agent
-    // — which is a thing only the list's enter could have gone looking
-    // for.
+    // On a row, enter attaches as on the list. The wall here is a hand-made
+    // reading with nothing on disk, so the attempt fails with the store not
+    // knowing the agent, which only the list's enter would look up.
     let mut screen = carded(root.path(), &config, a_wall());
     let tried = screen.act(enter, root.path(), &config, None);
     assert!(
@@ -2937,7 +2828,7 @@ fn card_line_reads_enter_on_an_empty_line_as_the_lists_own_enter() {
         "which took none of the keypress"
     );
 
-    // On the heading over it, it shuts the group.
+    // On the heading, enter shuts the group.
     let mut screen = carded(root.path(), &config, a_wall());
     press(&mut screen, KeyEvent::from(KeyCode::Up));
     assert!(screen.list.on_heading(), "the cursor is on the heading");
@@ -2948,7 +2839,7 @@ fn card_line_reads_enter_on_an_empty_line_as_the_lists_own_enter() {
         showing_ids(&screen)
     );
 
-    // And on the fold it gives back the rows the fold is holding.
+    // On the fold, enter unfolds it.
     let mut screen = watching(a_folding_wall());
     press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
     for _ in 0..rows::FOLD_AT + 2 {
@@ -3003,11 +2894,8 @@ fn card_holds_the_agent_it_is_showing_while_the_cursor_is_on_a_heading() {
         Some("done-a1b")
     );
 
-    // Up onto the heading over the group. A heading is not an agent, so
-    // there is no other card to show — and the card holds still on the
-    // one it was showing rather than going, because a card that came and
-    // went under a cursor passing over a heading would take its line and
-    // the keys that go with it along.
+    // Up onto the heading. A heading has no card of its own, so the card stays on
+    // the agent it was showing instead of closing and taking its line with it.
     press(&mut screen, KeyEvent::from(KeyCode::Up));
     assert!(screen.list.on_heading(), "the cursor is on the heading");
     assert_eq!(
@@ -3020,12 +2908,9 @@ fn card_holds_the_agent_it_is_showing_while_the_cursor_is_on_a_heading() {
 
 #[test]
 fn card_kept_by_an_arrow_that_takes_no_other_card_stays_where_it_opened() {
-    // A finished conversation opens on its end, and an arrow that lands
-    // on no other agent — onto the heading over it, or at the end of the
-    // list where there is nowhere to go — keeps that card. It has to keep
-    // it where it opened: a press that threw the card back to its first
-    // words would be a press that changed what somebody was reading
-    // while taking them to no other agent.
+    // A finished conversation opens on its end. An arrow that lands on no other
+    // agent, onto the heading or past the end of the list, keeps the card where
+    // it opened.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     let held = TempDir::new().unwrap();
@@ -3046,7 +2931,7 @@ fn card_kept_by_an_arrow_that_takes_no_other_card_stays_where_it_opened() {
 
     let opened = at_its_end(&mut screen, "opened");
 
-    // Down, with no row under this one to land on.
+    // Down, with no row below to land on.
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     assert_eq!(
         screen.card.as_ref().map(|card| card.id.as_str()),
@@ -3057,7 +2942,7 @@ fn card_kept_by_an_arrow_that_takes_no_other_card_stays_where_it_opened() {
         opened
     );
 
-    // Up, onto the heading over the group, where the card holds.
+    // Up onto the heading, where the card holds.
     press(&mut screen, KeyEvent::from(KeyCode::Up));
     assert!(screen.list.on_heading(), "the cursor is on the heading");
     assert_eq!(at_its_end(&mut screen, "held on a heading"), opened);
@@ -3077,8 +2962,8 @@ fn card_is_taken_again_every_pass_while_it_asks() {
         )
         .unwrap();
 
-    // The call moves to its next question: answering one tab advances the
-    // record at once, while the vendor is still redrawing its pane.
+    // Answering one tab of a call advances the record at once, while the vendor
+    // is still redrawing its pane.
     screen.list.show(vec![reading(
         "ask-a1b",
         Phase::Waiting,
@@ -3093,8 +2978,7 @@ fn card_is_taken_again_every_pass_while_it_asks() {
         },
     )]);
 
-    // The pass between rereads takes the card again, so a question the
-    // record has moved past is never left on the screen.
+    // The pass between rereads retakes the card, so it shows the new question.
     screen.freshen();
     assert_eq!(
         screen
@@ -3108,8 +2992,7 @@ fn card_is_taken_again_every_pass_while_it_asks() {
         "and the line being typed on the card survives the retake"
     );
 
-    // A diff was taken when somebody asked for it, and a pass is not
-    // somebody asking again.
+    // A diff is taken on request, and a pass does not retake it.
     screen.look = Look::Changes;
     screen.card.as_mut().expect("the card is open").changes = true;
     screen.card.as_mut().expect("the card is open").body = Body::patch("+ a line");
@@ -3122,12 +3005,9 @@ fn card_is_taken_again_every_pass_while_it_asks() {
 
 #[test]
 fn card_of_a_waiting_agent_with_no_question_keeps_the_readings_cadence() {
-    // The one waiting agent whose card is a capture: amx never read a
-    // question for it, so the pane is the only place the question is
-    // written. Every other capture on this screen is taken at the
-    // reading's cadence and this one was taken on every pass as well —
-    // a tmux fork per tick, per keystroke and per mouse move, for as long
-    // as somebody left the card open.
+    // A waiting agent with no recorded question has the pane as its card, and the
+    // capture is a tmux fork. It keeps the reading's cadence instead of being
+    // retaken on every tick, keystroke and mouse move.
     let mut screen = watching(vec![reading(
         "hush-a1b",
         Phase::Waiting,
@@ -3153,8 +3033,7 @@ fn card_of_a_waiting_agent_with_no_question_keeps_the_readings_cadence() {
         "the card the reading took is the card still on the screen"
     );
 
-    // The reading takes it again, which is the cadence the rest of the
-    // wall is read at.
+    // The reading retakes it, at the same cadence as the rest of the wall.
     screen.follow_the_cursor();
     assert_eq!(
         paint::walks(),
@@ -3163,7 +3042,7 @@ fn card_of_a_waiting_agent_with_no_question_keeps_the_readings_cadence() {
     );
 }
 
-/// A claude transcript holding one answer, as its vendor writes one.
+/// A claude transcript holding one answer.
 fn transcript(said: &str) -> String {
     let turn = serde_json::json!({
         "type": "assistant",
@@ -3172,9 +3051,7 @@ fn transcript(said: &str) -> String {
     format!("{turn}\n")
 }
 
-/// The view with its card open on an agent whose conversation is the
-/// transcript at `path`, which is a card read from a file rather than
-/// from a pane.
+/// A screen with its card open on an idle agent whose transcript is `path`.
 fn watching_a_transcript(path: &Path) -> Screen {
     let mut view = reading(
         "port-a1b",
@@ -3195,12 +3072,9 @@ fn watching_a_transcript(path: &Path) -> Screen {
 
 #[test]
 fn card_line_growing_keeps_the_end_of_the_conversation_in_view() {
-    // A finished conversation opens on its end, which is what somebody
-    // is replying to. The line at the foot grows a row at a time as the
-    // reply is written, and the rows it takes come off the top of what the
-    // card shows, never off its end: a card that let the conclusion slide
-    // out of view under the words being written about it would be a card
-    // hiding the one thing the reply is about.
+    // A finished conversation opens on its end. As the reply line grows, the rows
+    // it takes come off the top of the card, so the end of the conversation stays
+    // in view.
     let held = TempDir::new().unwrap();
     let path = held.path().join("session.jsonl");
     let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
@@ -3258,10 +3132,8 @@ fn card_line_growing_keeps_the_end_of_the_conversation_in_view() {
 
 #[test]
 fn card_stands_until_a_file_it_was_read_from_moves() {
-    // Taking a card reads the agent's whole transcript and draws every
-    // turn of it into rows, and between readings the file has usually not
-    // been written to at all. What it was read at says so, and the card
-    // already on the screen is the card the reading would have taken.
+    // Taking a card reads and draws the whole transcript, and between readings
+    // the file has usually not changed, so the card on screen stands.
     let held = TempDir::new().unwrap();
     let path = held.path().join("session.jsonl");
     std::fs::write(&path, transcript("the first answer")).unwrap();
@@ -3271,7 +3143,7 @@ fn card_stands_until_a_file_it_was_read_from_moves() {
         Some("the first answer".to_string())
     );
 
-    // Nothing has written to the file, so the card is left where it is.
+    // The file has not changed, so the card is not retaken.
     screen.card.as_mut().expect("a card").body = Body::said("what she was reading");
     screen.follow_the_cursor();
     assert_eq!(
@@ -3280,8 +3152,7 @@ fn card_stands_until_a_file_it_was_read_from_moves() {
         "the transcript stood, so the card was not read again"
     );
 
-    // The agent answers again, and the file the card was read from is not
-    // the file it is now.
+    // The agent answers again and the file changes.
     let both = transcript("the first answer") + &transcript("the second answer");
     std::fs::write(&path, both).unwrap();
     screen.follow_the_cursor();
@@ -3292,7 +3163,7 @@ fn card_stands_until_a_file_it_was_read_from_moves() {
     );
 }
 
-/// What `heard` holds for the transcript at `path`, one entry a string.
+/// What `heard` holds for the transcript at `path`, one debug string per entry.
 fn heard_of(heard: &mut Heard, path: &Path, format: Transcript) -> Vec<String> {
     heard
         .of(path, format)
@@ -3320,8 +3191,8 @@ fn heard_reads_a_growing_claude_transcript_on_from_where_it_stopped() {
         [text("first")]
     );
 
-    // The first line changed in place and a second appended: only the
-    // appended bytes are read.
+    // The first line is changed in place and a second appended; only the appended
+    // bytes are read.
     let mut file = std::fs::File::options().write(true).open(&path).unwrap();
     file.write_all(transcript("FIRST").as_bytes()).unwrap();
     file.write_all(transcript("second").as_bytes()).unwrap();
@@ -3331,7 +3202,7 @@ fn heard_reads_a_growing_claude_transcript_on_from_where_it_stopped() {
         [text("first"), text("second")]
     );
 
-    // Half a line waits for the rest of it.
+    // A partial line waits for the rest of it.
     let third = transcript("third");
     let (head, tail) = third.split_at(12);
     append(&path, head);
@@ -3351,15 +3222,15 @@ fn heard_reads_a_growing_claude_transcript_on_from_where_it_stopped() {
         [text("again")]
     );
 
-    // And a file that has gone reads as nothing.
+    // A missing file reads as nothing.
     std::fs::remove_file(&path).unwrap();
     assert!(heard_of(&mut heard, &path, Transcript::Claude).is_empty());
 }
 
 #[test]
 fn heard_a_line_at_a_time_is_the_whole_file_read_at_once() {
-    // Reading on from where the last read stopped is only right while the
-    // reader keeps no state between lines.
+    // Reading on from the last offset is only correct while the reader keeps no
+    // state between lines.
     let claude = [
         serde_json::json!({"type": "user", "message": {"content": "port the importer"}}),
         serde_json::json!({"type": "assistant", "message": {"content": [
@@ -3404,8 +3275,8 @@ fn heard_a_line_at_a_time_is_the_whole_file_read_at_once() {
 
 #[test]
 fn heard_reads_a_transcript_its_vendor_writes_over_whole() {
-    // opencode's list is written over as the turn goes, so a longer file
-    // is not the old one with more on the end.
+    // opencode's list is rewritten as the turn goes, so a longer file is not the
+    // old one with more appended.
     let held = TempDir::new().unwrap();
     let path = held.path().join("messages.jsonl");
     let said = |text: &str| {
@@ -3429,10 +3300,8 @@ fn heard_reads_a_transcript_its_vendor_writes_over_whole() {
 
 #[test]
 fn card_on_a_finished_conversation_opens_on_its_last_rows_and_reads_as_unpaged() {
-    // A conversation card is anchored past its last row, and only the
-    // paint knows how many rows the card was given. So the first frame
-    // clamps it to the last page there is: the end of the last answer,
-    // where the conclusion of it is, with the rest a page up.
+    // A conversation card is anchored past its last row and only the paint knows
+    // the card's height, so the first frame clamps it to the last page.
     let held = TempDir::new().unwrap();
     let path = held.path().join("session.jsonl");
     let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
@@ -3453,13 +3322,12 @@ fn card_on_a_finished_conversation_opens_on_its_last_rows_and_reads_as_unpaged()
     assert!(!card.contains("line 0 "), "and not its top:\n{card}");
     assert!(card.contains("more"), "with the rest a page up:\n{card}");
 
-    // And it reads as a card nobody has paged, which is what lets it
-    // follow its agent back to work: a card that read as paged would hold
-    // still on every reading from here on.
+    // It reads as unpaged, so it keeps following its agent; a paged card would
+    // hold still on every reading.
     assert!(!screen.scroll.paged(), "opened where it stands");
     assert_eq!(screen.scroll.away.get(), screen.scroll.opened.get());
 
-    // The page keys still leave it, and come back to where it opened.
+    // The page keys still leave it and come back to where it opened.
     let opened = screen.scroll.away.get();
     assert!(opened > 0, "a body taller than the card");
     screen.paged(true);
@@ -3472,9 +3340,8 @@ fn card_on_a_finished_conversation_opens_on_its_last_rows_and_reads_as_unpaged()
 
 #[test]
 fn card_is_taken_again_in_the_palette_a_theme_reread_brought() {
-    // Somebody edits the palette with the view open beside them. The
-    // card's rows were drawn in the colours the file used to say and no
-    // file behind it has moved, so the reread is what says it is stale.
+    // The palette changes while no file behind the card has moved, so the theme
+    // reread is what marks the card stale.
     let held = TempDir::new().unwrap();
     let path = held.path().join("session.jsonl");
     std::fs::write(&path, transcript("the first answer")).unwrap();
@@ -3502,15 +3369,13 @@ fn card_freshness_is_the_pair_each_file_was_read_at() {
     let fresh = Freshness::Files(vec![(path.clone(), at)]);
     assert!(!fresh.moved(), "nothing has written to it");
 
-    // A turn lands on the transcript, and the file is longer than the
-    // length the card read it at.
+    // A turn is appended, so the file is longer than when the card read it.
     let both = transcript("the first answer") + &transcript("the second answer");
     std::fs::write(&path, both).unwrap();
     assert!(fresh.moved(), "a turn was appended");
 
-    // The same bytes back, at the moment they were written. The pair is
-    // the whole of what a card holds against a file — nothing reads one to
-    // find out — so a file standing on both is a file it can go on showing.
+    // The same bytes back with the original mtime. Length and mtime are all a
+    // card checks, so the file counts as unchanged.
     std::fs::write(&path, transcript("the first answer")).unwrap();
     let (_, written) = at.expect("the file was there to be read");
     std::fs::File::options()
@@ -3521,8 +3386,8 @@ fn card_freshness_is_the_pair_each_file_was_read_at() {
         .unwrap();
     assert!(!fresh.moved(), "the same bytes at the same moment");
 
-    // A pane is not a file: nothing on disk says whether a vendor has
-    // redrawn one, so a card holding a capture is always out of date.
+    // Nothing on disk says a vendor redrew its pane, so a captured card always
+    // counts as moved.
     assert!(Freshness::Pane.moved());
 }
 
@@ -3537,16 +3402,15 @@ fn card_keeps_an_answer_line_up_for_as_long_as_a_question_is_pending() {
             .unwrap();
     };
 
-    // The card opens with the line to answer on, and the choice pressed
-    // spends it: the record has no agent behind it here, so the reply
-    // fails, which leaves the mode where a submitted answer leaves it.
+    // The card opens with its line, and pressing a choice spends it. No agent is
+    // behind this record, so the reply fails and the mode is left as a sent answer
+    // leaves it.
     press(&mut screen, KeyCode::Char(' '));
     press(&mut screen, KeyCode::Char('1'));
     assert!(screen.answering().is_none(), "the line was spent");
 
-    // The call advances to its next tab while the card is still open, and
-    // the pass between rereads takes the card again: the line to answer
-    // the new question comes back on its own, with nothing typed at it.
+    // The call moves to its next tab while the card is open, and the pass between
+    // rereads brings back an empty line for the new question.
     screen.list.show(vec![reading(
         "ask-a1b",
         Phase::Waiting,
@@ -3573,9 +3437,8 @@ fn card_keeps_an_answer_line_up_for_as_long_as_a_question_is_pending() {
         "the answer line is there whenever a question is pending, empty"
     );
 
-    // And when the last answer resolves the call, the line stands on: the
-    // agent is at work rather than waiting, and a card on an agent at
-    // work is still a card with something to say to it.
+    // When the last answer resolves the call, the line stays: the agent is working
+    // and the card still takes a message.
     press(&mut screen, KeyCode::Char('2'));
     screen.list.show(vec![reading(
         "ask-a1b",
@@ -3653,9 +3516,8 @@ fn card_is_where_a_reply_is_typed_whatever_the_agent_is_doing() {
         "the card the choices are on opens with the line to answer on"
     );
 
-    // An agent between turns takes a message on that same line: the card
-    // is where anything said to an agent is typed, so there is no band of
-    // its own under the wall for one.
+    // An agent between turns takes a message on the same line; there is no
+    // separate band for it.
     let mut screen = watching(vec![reading(
         "fix-login-b2c",
         Phase::Idle,
@@ -3713,7 +3575,7 @@ fn acts_the_status_line_is_offered_once_and_never_written_anywhere() {
     assert!(kept.exists());
 }
 
-/// The agents the list is drawing, in the order it has them.
+/// The ids of the agents the list shows, in order.
 fn ordered(screen: &Screen) -> Vec<String> {
     screen
         .list
@@ -3767,9 +3629,8 @@ fn acts_shift_with_an_arrow_moves_the_agent_rather_than_the_cursor() {
         "and back where it was"
     );
 
-    // One of them pinned over the wall, and then a move reaches what is
-    // left of the group it came out of: the first row there has a heading
-    // above it and nothing to be moved into.
+    // With one agent pinned, a move reaches the first row of what is left of its
+    // group, which has a heading above it and nothing to move into.
     press(&mut screen, KeyEvent::from(KeyCode::Down));
     press(&mut screen, ctrl('t'));
     assert_eq!(ordered(&screen), ["busy-b2c", "busy-a1b", "busy-c3d"]);
@@ -3800,8 +3661,7 @@ fn acts_what_the_view_keeps_opens_the_next_one_and_leaves_the_file_alone() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-    // A file an older amx wrote, which knows about the offer and nothing
-    // about arranging anything.
+    // A file from an older amx that knows only the statusline offer.
     let kept = root.path().join("view.json");
     std::fs::write(&kept, b"{\"statusline\": true}\n").unwrap();
 
@@ -3856,8 +3716,7 @@ fn acts_ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
     finished(root.path(), "second-b2c", "wrote the tests", 120);
     let left = || crate::store::list(root.path()).unwrap().len();
 
-    // The view opens on the newest of them, which is the row the key is
-    // read on.
+    // The view opens on the newest agent, where the key is read.
     let (_, armed) = pressing(root.path(), vec![ctrl('x')]);
     assert!(armed.contains("ctrl+x again forgets"), "{armed}");
     assert!(
@@ -3866,8 +3725,7 @@ fn acts_ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
     );
     assert_eq!(left(), 2, "and one press forgets nothing");
 
-    // A second press with the cursor somewhere else arms the row it is on
-    // rather than finishing what the first one started.
+    // A second press on another row arms that row instead of finishing the first.
     let (_, moved) = pressing(
         root.path(),
         vec![ctrl('x'), KeyEvent::from(KeyCode::Down), ctrl('x')],
@@ -3880,8 +3738,8 @@ fn acts_ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
     assert_eq!(left(), 1);
 }
 
-/// An agent whose record still reads live, behind a socket nothing is on:
-/// the phase the wall shows is the reading a test hands it.
+/// Records an agent whose state still reads live, behind a socket with no
+/// server; the test hands the wall its phase.
 fn idle(root: &Path, id: &str) {
     let agent = Agent::create(
         root,
@@ -3936,8 +3794,7 @@ fn acts_ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it
         },
     )]);
 
-    // The first press is the same press on every row: a live agent is
-    // stopped, and the row is armed in the same move.
+    // The first press stops a live agent and arms the row in the same move.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     let agent = Agent::open(root.path(), "quiet-a1b").unwrap();
     assert_eq!(agent.state().unwrap().state, Phase::Stopped);
@@ -3952,8 +3809,8 @@ fn acts_ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it
         "and stopping is not forgetting"
     );
 
-    // The second press inside the window forgets it, even while the list
-    // still holds the reading from before the stop.
+    // The second press inside the window forgets it, even while the list still
+    // holds the reading from before the stop.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     let Some(Notice::Advice(said)) = &screen.notice else {
         panic!("the second press said nothing")
@@ -3972,18 +3829,16 @@ fn acts_ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forge
     finished(root.path(), "second-b2c", "wrote the tests", 120);
     let left = || crate::store::list(root.path()).unwrap().len();
 
-    // Up from the row the view opens on is the heading over it. The first
-    // press arms every finished row under it, each saying so where its
-    // summary was, and the footer asks nothing. Fifty columns is narrower
-    // than the sweep's warning, so the summary column cuts it the way it
-    // cuts anything else: what fits is enough to say which press this is,
-    // and the sentence whole is the paint's own test.
+    // Up from the opening row is the heading. The first press arms every finished
+    // row under it, each saying so in its summary column, and the footer asks
+    // nothing. At 50 columns the warning is cut like any summary; the full
+    // sentence is tested in the paint.
     let (_, armed) = pressing(root.path(), vec![KeyEvent::from(KeyCode::Up), ctrl('x')]);
     assert_eq!(armed.matches("ctrl+x again stops").count(), 2, "{armed}");
     assert!(!armed.contains("forget 2 finished"), "{armed}");
     assert_eq!(left(), 2, "and arming is all that has happened");
 
-    // A key that is not the second press forgets nothing.
+    // Any other key forgets nothing.
     let (_, kept) = pressing(
         root.path(),
         vec![
@@ -3995,8 +3850,7 @@ fn acts_ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forge
     assert_eq!(left(), 2);
     assert!(!kept.contains("forgot"), "{kept}");
 
-    // The second press on the heading, inside the window, forgets them
-    // all.
+    // The second press on the heading, inside the window, forgets them all.
     let (_, swept) = pressing(
         root.path(),
         vec![KeyEvent::from(KeyCode::Up), ctrl('x'), ctrl('x')],
@@ -4018,11 +3872,9 @@ fn acts_ctrl_x_says_a_tree_it_kept_as_something_that_did_not_happen() {
     .unwrap();
     let mut screen = watching(vec![held]);
 
-    // Two presses, the same as any other forget. The second one finds
-    // work no commit has, keeps the tree and the record that names it,
-    // and says so where a forget that went through would have said it —
-    // so the colour is the only thing telling somebody which of the two
-    // they got.
+    // Two presses, as for any forget. The second finds uncommitted work, keeps the
+    // tree and its record, and says so where the forget would have; only the
+    // colour tells the two outcomes apart.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     let Some(Notice::Refused(said)) = &screen.notice else {
@@ -4080,8 +3932,8 @@ fn acts_ctrl_x_on_a_heading_arms_a_live_row_without_stopping_it() {
     )]);
     screen.list.up();
 
-    // The first press over the group arms its rows and does nothing else:
-    // the live agent is still running, and nothing is refused.
+    // The first press on the group only arms its rows: the live agent keeps
+    // running and nothing is refused.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     let agent = Agent::open(root.path(), "quiet-a1b").unwrap();
     assert_eq!(
@@ -4100,8 +3952,7 @@ fn acts_ctrl_x_on_a_heading_arms_a_live_row_without_stopping_it() {
         "and the first press forgets nothing"
     );
 
-    // The second press on the heading stops it and forgets it, in the
-    // window a row gets.
+    // The second press on the heading stops it and forgets it.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert!(crate::store::list(root.path()).unwrap().is_empty());
 }
@@ -4122,9 +3973,9 @@ fn in_phase(id: &str, phase: Phase) -> View {
 
 #[test]
 fn ctrl_x_a_row_press_under_a_heading_arm_stops_before_forgetting() {
-    // The heading armed two live agents. A press on one of their rows is
-    // that row's own first press: it stops the agent and arms the row, and
-    // the record stands.
+    // The heading armed two live agents. A press on one of their rows is that
+    // row's own first press: it stops the agent and arms the row, and the record
+    // stays.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "busy-a1b");
@@ -4159,10 +4010,9 @@ fn ctrl_x_a_row_press_under_a_heading_arm_stops_before_forgetting() {
 
 #[test]
 fn ctrl_x_a_first_press_on_another_heading_only_arms() {
-    // Working was armed; one of its agents ended into Completed, where a
-    // finished row already was. Working is still on the wall, so a press
-    // on Completed is Completed's own first press, and the live agent left
-    // under Working is nobody's business.
+    // Working was armed and one of its agents ended into Completed. Working is
+    // still on the wall, so a press on Completed is Completed's own first press
+    // and leaves the agent still under Working alone.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     for id in ["busy-a1b", "busy-b2c", "done-c3d"] {
@@ -4232,14 +4082,14 @@ fn ctrl_x_a_reread_moves_no_pointer_onto_another_agent() {
         .unwrap();
     screen.hover = Some(at);
 
-    // The same wall again: the pointer stays where it was resting.
+    // The same wall again: the pointer stays.
     screen.showing(vec![
         in_phase("ask-a1b", Phase::Waiting),
         in_phase("busy-b2c", Phase::Working),
     ]);
     assert_eq!(screen.hover, Some(at));
 
-    // The agent it rested on moves group, and another comes to that line.
+    // The agent under the pointer changes group and another takes its line.
     screen.showing(vec![
         in_phase("ask-a1b", Phase::Done),
         in_phase("busy-b2c", Phase::Waiting),
@@ -4249,9 +4099,8 @@ fn ctrl_x_a_reread_moves_no_pointer_onto_another_agent() {
 
 #[test]
 fn ctrl_x_a_vanished_armed_row_forgets_nothing() {
-    // A finished row armed, then gone from the wall — forgotten in another
-    // shell. The row that drifted into its line is somebody else's, and
-    // the press meant for the one that went must not forget it.
+    // An armed finished row is forgotten in another shell. The row that moves
+    // into its line must not be forgotten by the press meant for the first.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "done-a1b");
@@ -4294,8 +4143,7 @@ fn acts_ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse()
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(screen.armed(), ["quiet-a1b".to_string()]);
 
-    // The clock runs past the window with nobody pressing anything, which
-    // is what the arm is read against.
+    // Move the arm's clock past the window without a press.
     let arm = screen.arm.as_mut().expect("the arm the press left");
     arm.at = arm
         .at
@@ -4306,8 +4154,8 @@ fn acts_ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse()
         "the rows have nothing left to say about a press that lapsed"
     );
 
-    // So the next press is a first press again: it arms the group and
-    // stops nothing, rather than finishing what the lapsed one started.
+    // So the next press is a first press again: it arms the group and stops
+    // nothing.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(
         Agent::open(root.path(), "quiet-a1b")
@@ -4330,8 +4178,7 @@ fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
-    // A row the stop cannot read a state off, which is as far as stopping
-    // gets before it has done anything.
+    // A row whose state cannot be read, so its stop fails before doing anything.
     idle(root.path(), "broken-b2c");
     let broken = Agent::open(root.path(), "broken-b2c").unwrap();
     std::fs::write(broken.dir().join("state.json"), "not a reading").unwrap();
@@ -4353,8 +4200,7 @@ fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(screen.armed().len(), 2, "both rows are armed either way");
 
-    // The row that would not stop is the row that is not forgotten, and
-    // the rest of the group goes.
+    // The row that would not stop is kept, and the rest of the group goes.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(
         crate::store::list(root.path()).unwrap(),
@@ -4374,8 +4220,7 @@ fn acts_ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
     finished(root.path(), "done-b2c", "wrote the tests", 60);
-    // The project axis is where one heading stands over live and finished
-    // rows at once.
+    // On the project axis one heading covers live and finished rows at once.
     let mut screen = Screen::default();
     screen.list.turn();
     screen.list.show(vec![
@@ -4417,10 +4262,9 @@ fn acts_ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
 
 #[test]
 fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_cursor() {
-    // Found in review: an agent that ends while the window is open
-    // dissolves the heading it was under, and the live group below drifts
-    // up into the cursor's index. A second press there must finish the
-    // sweep, never stop the group that drifted in.
+    // An agent that ends while the window is open dissolves its heading, and the
+    // live group below moves up into the cursor's index. The second press there
+    // must finish the sweep, never stop the group that moved in.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "ask-a1b");
@@ -4447,9 +4291,8 @@ fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_curso
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(screen.armed(), ["ask-a1b".to_string()]);
 
-    // The reading catches up: the armed agent has ended on its own, its
-    // heading is gone, and the working heading now sits where the cursor's
-    // index is.
+    // The next reading: the armed agent has ended, its heading is gone, and the
+    // working heading now sits at the cursor's index.
     screen.list.show(vec![
         reading(
             "ask-a1b",
@@ -4466,8 +4309,8 @@ fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_curso
     ]);
     screen.keep_the_sweep();
 
-    // The second press forgets what the first one armed, and the group
-    // that drifted into the cursor was never the sweep's business.
+    // The second press forgets what the first armed and leaves the working group
+    // alone.
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert!(
         !crate::store::list(root.path())
@@ -4486,11 +4329,9 @@ fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_curso
 
 #[test]
 fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
-    // An agent that ends while the window is open moves to the completed
-    // group, so on the state axis the heading that was pressed can
-    // dissolve under the cursor by the next reading. The armed rows are
-    // what the press was about, and the heading now standing over them is
-    // where the second press finds them.
+    // An agent that ends while the window is open moves to completed, so on the
+    // state axis the pressed heading can dissolve by the next reading. The second
+    // press finds the armed rows under the heading now over them.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -4507,8 +4348,8 @@ fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
     screen.list.up();
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
 
-    // The agent ends of its own accord: the idle heading is gone and the
-    // row sits under completed, with the cursor on that heading.
+    // The agent ends on its own: the idle heading is gone and the row is under
+    // completed, with the cursor on that heading.
     screen.list.show(vec![reading(
         "quiet-a1b",
         Phase::Stopped,
@@ -4528,8 +4369,7 @@ fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
     );
 }
 
-/// git as these tests run it: none of the developer's own configuration
-/// and an identity of its own.
+/// Runs git with no user configuration and a fixed identity.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .current_dir(dir)
@@ -4550,8 +4390,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
-/// A repository with one commit in it, which is what the key that clears
-/// the finished asks its questions of.
+/// A repository with one commit.
 fn a_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     git(dir.path(), &["init", "-b", "main"]);
@@ -4561,9 +4400,8 @@ fn a_repo() -> TempDir {
     dir
 }
 
-/// An agent that has ended, with a tree cut from `repo` and left where it
-/// was: its branch holds exactly what main holds, so git reads the work as
-/// in the main line without anybody having to merge anything.
+/// Records an ended agent with a tree cut from `repo` and left in place. Its
+/// branch holds exactly what main holds, so git reads the work as landed.
 fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
     let tree = crate::worktree::create(repo, id, None).unwrap();
     let meta = Meta {
@@ -4612,13 +4450,12 @@ fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
     )
 }
 
-/// The key that clears the finished, which is read anywhere on the list.
+/// The `c` key.
 fn c() -> KeyEvent {
     KeyEvent::from(KeyCode::Char('c'))
 }
 
-/// One somebody stopped: finished, with nothing outside amx that could
-/// ever have an opinion about it — no branch, no request.
+/// A stopped agent with no branch and no pull request.
 fn was_stopped(id: &str) -> View {
     reading(
         id,
@@ -4660,7 +4497,7 @@ fn keys_c_arms_every_finished_row_with_its_reason_and_the_press_after_takes_them
         was_stopped("first-a1b"),
         was_stopped("second-b2c"),
         was_stopped("third-c3d"),
-        // And one mid-turn, which no press here is about.
+        // And one mid-turn, which `c` ignores.
         at_work("quiet-d4e"),
     ]);
 
@@ -4702,8 +4539,7 @@ fn keys_c_arms_every_finished_row_with_its_reason_and_the_press_after_takes_them
     assert!(screen.arm.is_none(), "and the arm is taken with them");
 }
 
-/// The press is about the fleet, and the wall is only as long as there is
-/// screen for it.
+/// `c` covers the whole fleet, not only the rows the screen has room for.
 #[test]
 fn keys_c_reaches_the_finished_rows_the_fold_is_holding_back() {
     let root = TempDir::new().unwrap();
@@ -4729,9 +4565,8 @@ fn keys_c_reaches_the_finished_rows_the_fold_is_holding_back() {
     );
 }
 
-/// Five seconds rather than the two `ctrl+x` had: the press is about a
-/// wall of rows rather than the one under the cursor, and reading a wall
-/// of reasons takes longer than reading one.
+/// The arming window is five seconds, long enough to read a wall of reasons
+/// before pressing again.
 #[test]
 fn keys_c_still_clears_four_seconds_after_the_press_that_armed_it() {
     let root = TempDir::new().unwrap();
@@ -4759,7 +4594,7 @@ fn keys_c_arms_what_has_landed_and_the_press_after_it_clears_them() {
     let config = Config::default();
     let first = has_landed(root.path(), repo.path(), "fix-login-a1b");
     let second = has_landed(root.path(), repo.path(), "port-importer-b2c");
-    // And one still at work, which no press here is about.
+    // And one still at work, which `c` ignores.
     idle(root.path(), "quiet-c3d");
     let mut screen = watching(vec![
         first,
@@ -4852,9 +4687,8 @@ fn keys_c_marks_a_tree_that_holds_work_no_commit_has_and_counts_it_when_it_keeps
     );
 }
 
-/// The row said what the second press would do, so the second press does
-/// it: a tree tidied inside the two-second window is still passed by,
-/// because the sweep is not asked about it twice.
+/// The second press does what the rows said: a tree cleaned up inside the
+/// window is still passed by, because the sweep is not asked twice.
 #[test]
 fn keys_c_passes_by_a_row_it_marked_whatever_the_tree_holds_by_the_second_press() {
     let root = TempDir::new().unwrap();
@@ -4919,8 +4753,7 @@ fn keys_c_and_ctrl_x_do_not_finish_each_other_s_press() {
     let mut screen = watching(vec![has_landed(root.path(), repo.path(), "fix-login-a1b")]);
     let still_there = || crate::store::list(root.path()).unwrap().len();
 
-    // A ctrl+x inside c's window is somebody reaching for the other key,
-    // so it forgets nothing c had marked and arms the row it is on.
+    // A ctrl+x inside c's window forgets nothing c marked and arms its own row.
     screen.act(c(), root.path(), &config, None).unwrap();
     screen.act(ctrl('x'), root.path(), &config, None).unwrap();
     assert_eq!(
@@ -4933,8 +4766,7 @@ fn keys_c_and_ctrl_x_do_not_finish_each_other_s_press() {
         "and the row under the cursor is armed for its own second press"
     );
 
-    // And the other way about: c does not finish what ctrl+x started, it
-    // asks the wall its own question again.
+    // The other way round: c does not finish a ctrl+x arm, it asks again.
     screen.act(c(), root.path(), &config, None).unwrap();
     assert_eq!(still_there(), 1, "which takes nothing either");
     assert!(
@@ -4943,13 +4775,12 @@ fn keys_c_and_ctrl_x_do_not_finish_each_other_s_press() {
     );
 }
 
-/// The key that lands the cursor on the first agent that needs somebody,
-/// which is read wherever the cursor is standing.
+/// The `w` key.
 fn w() -> KeyEvent {
     KeyEvent::from(KeyCode::Char('w'))
 }
 
-/// One mid-turn, which is the wall a person is waiting out.
+/// A working agent.
 fn at_work(id: &str) -> View {
     reading(
         id,
@@ -4971,8 +4802,7 @@ fn keys_w_lands_the_cursor_on_the_first_agent_that_needs_you() {
         stopped_on_a_question("ask-a1b"),
     ]);
 
-    // From somewhere else on the wall: the key is for somebody who has
-    // been reading the rows that are still working.
+    // From elsewhere on the wall, below the working rows.
     screen.list.bottom();
     assert_eq!(
         screen.list.selected().unwrap().id(),
@@ -5016,15 +4846,14 @@ fn keys_w_says_nothing_is_waiting_when_every_agent_is_at_work() {
     );
 }
 
-/// The key that goes back along the trail every terminal amx hands over
-/// is written on.
+/// The backspace key.
 fn backspace() -> KeyEvent {
     KeyEvent::from(KeyCode::Backspace)
 }
 
-/// A state root with a trail of its own: the file is kept beside the
-/// agents, so a root that is a temporary directory itself would leave the
-/// trail wherever temporary directories are made.
+/// A state root inside `state`. The trail file sits beside the agents
+/// directory, so a root that is the temporary directory itself would put the
+/// trail outside it.
 fn a_root(state: &TempDir) -> PathBuf {
     state.path().join("agents")
 }
@@ -5035,15 +4864,14 @@ fn keys_backspace_lands_the_cursor_on_the_agent_you_were_last_in() {
     let root = a_root(&state);
     let mut screen = watching(vec![at_work("port-import-b2c"), at_work("fix-login-c3d")]);
 
-    // Where this terminal has been, oldest press first: the two rows on
-    // the wall, and then an agent it has since forgotten.
+    // The terminal's trail, oldest first: the two rows on the wall, then an agent
+    // since forgotten.
     for id in ["fix-login-c3d", "port-import-b2c", "forgotten-z9z"] {
         verbs::attach::note_visited(&root, id);
     }
 
-    // Standing in the agent somebody came to last: going back is the one
-    // they came from, which is the trail read past the row under the
-    // cursor and past the name the wall no longer holds.
+    // On the agent visited last, going back reads the trail past the cursor's row
+    // and past the name no longer on the wall.
     screen.list.land_on("port-import-b2c");
     screen
         .act(backspace(), &root, &Config::default(), None)
@@ -5066,9 +4894,8 @@ fn keys_backspace_says_there_is_nowhere_to_go_back_to() {
     let root = a_root(&state);
     let mut screen = watching(vec![at_work("port-import-b2c"), at_work("fix-login-c3d")]);
 
-    // A trail with nobody on it to go back to: the agent under the cursor,
-    // and one the wall has forgotten. The words are `amx attach --last`'s
-    // own, because the key and the verb answer the same question.
+    // A trail with only the cursor's agent and a forgotten one. The message is
+    // `amx attach --last`'s own.
     for id in ["forgotten-z9z", "port-import-b2c"] {
         verbs::attach::note_visited(&root, id);
     }
@@ -5094,18 +4921,15 @@ fn acts_peeking_at_an_agent_writes_the_look_on_its_record() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-    // The view opens on the newest ending, so the card opens on that one.
-    // The wall says nothing about who has been to read what, so the look is
-    // worth nothing on the screen and everything on the record: the next
-    // view opens knowing it, and the ordering keeps the unread rows in
-    // front of the fold.
+    // The view opens on the newest ending, so the card opens on that one. The
+    // wall shows nothing for having read a card, but the record keeps it for the
+    // next view and the fold ordering.
     let (code, painted) = buffered(
         root.path(),
         &Scope::default(),
         vec![
             Typed::Key(KeyEvent::from(KeyCode::Char(' '))),
-            // The chord, because q is a character on the line the card
-            // opened with.
+            // ctrl+c, because q is text on the card's line.
             Typed::Key(ctrl('c')),
         ],
         None,
@@ -5157,10 +4981,9 @@ fn acts_alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-    // Both have ended with nothing recorded to pick up again, so neither
-    // can be reached and the view says so by name — which is how a test
-    // reads which row was counted to. The cursor is on the first of them
-    // and was never moved.
+    // Neither ended agent has anything recorded to pick up, so reaching fails
+    // with its name, which shows which row was counted. The cursor stays on the
+    // first.
     let (_, second) = pressing(
         root.path(),
         vec![alt('2'), KeyEvent::from(KeyCode::Char('q'))],
@@ -5179,8 +5002,8 @@ fn acts_alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
         "{first}"
     );
 
-    // A digit past the end of the wall says so rather than going quiet:
-    // the digits count agents, and a heading is not one.
+    // A digit past the end of the wall says so. The digits count agents, not
+    // headings.
     let (_, past) = pressing(
         root.path(),
         vec![alt('9'), KeyEvent::from(KeyCode::Char('q'))],
@@ -5213,9 +5036,8 @@ fn acts_ctrl_r_opens_the_line_on_the_name_the_row_is_carrying() {
     );
 }
 
-/// Every key a terminal can send this view: the printable characters, the
-/// keys with names of their own, and each of them under every chord that
-/// can be held down in front of it.
+/// Every key a terminal can send the view: printable characters and named
+/// keys, each under every modifier combination.
 fn every_key() -> Vec<KeyEvent> {
     let named = [
         KeyCode::Enter,
@@ -5249,8 +5071,7 @@ fn every_key() -> Vec<KeyEvent> {
         .collect()
 }
 
-/// What the keys on the screen would call this one, so that what a brute
-/// force found bound can be looked for among them.
+/// The name the keys overlay would give this key.
 fn named(key: KeyEvent) -> String {
     let mut said = String::new();
     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -5259,8 +5080,8 @@ fn named(key: KeyEvent) -> String {
     if key.modifiers.contains(KeyModifiers::ALT) {
         said.push_str("alt+");
     }
-    // Shift is worth naming on the one key a terminal sends it with.
-    // Everywhere else it arrives as the character it typed.
+    // Shift is named only on BackTab; elsewhere it arrives as the character it
+    // typed.
     if key.code == KeyCode::BackTab
         || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
     {
@@ -5283,7 +5104,7 @@ fn named(key: KeyEvent) -> String {
     said
 }
 
-/// Whether the keys on the screen name this one.
+/// Whether the keys overlay names this key.
 fn listed(key: KeyEvent) -> bool {
     let named = named(key);
     paint::HELP
@@ -5291,11 +5112,8 @@ fn listed(key: KeyEvent) -> bool {
         .any(|(keys, _)| keys.split(' ').any(|key| key == named || runs(key, &named)))
 }
 
-/// Whether a key column naming a run of keys names this one.
-///
-/// `alt+1..9` is nine bindings, and nine rows saying the same words nine
-/// times would be a screen somebody has to read to find out they all do
-/// the same thing.
+/// Whether a key column naming a run of keys, such as `alt+1..9`, names this
+/// one.
 fn runs(column: &str, named: &str) -> bool {
     let Some((first, last)) = column.split_once("..") else {
         return false;
@@ -5309,8 +5127,7 @@ fn runs(column: &str, named: &str) -> bool {
     }
 }
 
-/// Everything one keypress could leave different, as something two
-/// screens can be told apart by.
+/// Everything one keypress could change, as a string to compare.
 fn standing(screen: &Screen) -> String {
     let mode = match &screen.mode {
         Mode::List => "list".to_string(),
@@ -5342,9 +5159,8 @@ fn standing(screen: &Screen) -> String {
     )
 }
 
-/// A fleet with somewhere for the cursor to stand on every kind of line
-/// there is: an agent that is running, the headings over the groups, and
-/// enough finished ones to put a fold under them.
+/// A fleet with every kind of line for the cursor: a running agent, group
+/// headings and enough finished agents for a fold.
 fn a_wall() -> Vec<View> {
     let mut views = vec![stopped_on_a_question("ask-a1b")];
     views.extend((0..5).map(|n| {
@@ -5363,8 +5179,7 @@ fn a_wall() -> Vec<View> {
     views
 }
 
-/// The same wall with more endings than one group shows, so there is a
-/// fold under them to walk onto.
+/// [`a_wall`] with more finished agents than one group shows, so it folds.
 fn a_folding_wall() -> Vec<View> {
     let mut views = a_wall();
     views.extend((5..rows::FOLD_AT + 2).map(|n| {
@@ -5383,15 +5198,13 @@ fn a_folding_wall() -> Vec<View> {
     views
 }
 
-/// A place the cursor can stand, and what to call it in a failure.
+/// A place the cursor can stand, and its name for failure messages.
 type Standing = (&'static str, fn(&mut Screen));
 
-/// Press one key on a view standing where `stand` puts it, and answer
-/// whether the key did anything at all.
+/// Whether pressing `key` on a screen placed by `stand` does anything.
 ///
-/// A key that leaves the screen where it was may still have done
-/// something: the ones that hand the terminal to a tmux client or to an
-/// editor say so by what they answer with rather than by what they change.
+/// Keys that hand the terminal to tmux or an editor say so by what they return,
+/// not by changing the screen.
 fn acts_on(key: KeyEvent, root: &Path, stand: fn(&mut Screen)) -> bool {
     let mut screen = watching(a_wall());
     stand(&mut screen);
@@ -5407,9 +5220,8 @@ fn acts_on(key: KeyEvent, root: &Path, stand: fn(&mut Screen)) -> bool {
 #[test]
 fn keymap_every_key_the_list_acts_on_is_named_among_the_keys() {
     let root = TempDir::new().unwrap();
-    // Every kind of line the cursor stops on, because the same key does
-    // different things on each of them, and a card over the list, which is
-    // the other place the list's own keys are read.
+    // Each kind of line the cursor stops on, since one key does different things
+    // on each, plus a card over the list.
     let standing: [Standing; 4] = [
         ("an agent's row", |_| {}),
         ("a heading", |screen| screen.list.up()),
@@ -5457,9 +5269,7 @@ fn keys_o_says_which_row_has_no_pull_request_and_leaves_a_heading_alone() {
     };
     let o = KeyEvent::from(KeyCode::Char('o'));
 
-    // A row amx cut no branch for has no request to open, and the answer
-    // says which row that was: a wall is a screen full of them, and a
-    // person who pressed this is looking at one.
+    // A row with no branch has no pull request, and the message names the row.
     let mut screen = watching(a_wall());
     press(&mut screen, o);
     let Some(Notice::Refused(said)) = &screen.notice else {
@@ -5467,8 +5277,7 @@ fn keys_o_says_which_row_has_no_pull_request_and_leaves_a_heading_alone() {
     };
     assert_eq!(said, "no pull request on ask-a1b");
 
-    // A heading is a group rather than an agent, and a group has no
-    // request. Nothing said, because nothing was asked for.
+    // A heading has no pull request; nothing is said.
     let mut screen = watching(a_wall());
     screen.list.up();
     assert!(screen.list.on_heading(), "the cursor is on the heading");
@@ -5481,8 +5290,7 @@ fn keys_alt_d_answers_with_the_row_to_read_and_names_the_key_that_reads_it() {
     let root = TempDir::new().unwrap();
     let mut screen = watching(a_wall());
 
-    // Nothing in the config is nothing to read the patch with, and the
-    // answer says which key would have named it.
+    // With no diff key in the config, the message names the key to set.
     let doing = screen
         .act(alt('d'), root.path(), &Config::default(), None)
         .unwrap();
@@ -5492,8 +5300,7 @@ fn keys_alt_d_answers_with_the_row_to_read_and_names_the_key_that_reads_it() {
     };
     assert!(said.contains("diff"), "the key is named: {said}");
 
-    // With one, the key answers with the agent under the cursor, for the
-    // loop to give the terminal up on.
+    // With one, the key returns the cursor's agent for the loop to hand off.
     let config = Config {
         diff: Some("delta".to_string()),
         ..Config::default()
@@ -5504,7 +5311,7 @@ fn keys_alt_d_answers_with_the_row_to_read_and_names_the_key_that_reads_it() {
     };
     assert_eq!(id, "ask-a1b");
 
-    // A heading is a group rather than an agent, and a group has no patch.
+    // A heading has no patch.
     let mut screen = watching(a_wall());
     screen.list.up();
     assert!(screen.list.on_heading(), "the cursor is on the heading");
@@ -5517,8 +5324,8 @@ fn keys_alt_d_answers_with_the_row_to_read_and_names_the_key_that_reads_it() {
 fn keys_a_bound_key_runs_on_the_row_and_is_read_after_every_key_amx_binds() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
-    // Three spellings: one nothing else answers to, and two the view
-    // already binds — a dial and the key that closes it.
+    // Three spellings: one unbound, and two the view already binds (a dial and
+    // the close key).
     let bound = || {
         keyname::bound_by(&BTreeMap::from([
             ("alt+g".to_string(), "lazygit".to_string()),
@@ -5550,9 +5357,8 @@ fn keys_a_bound_key_runs_on_the_row_and_is_read_after_every_key_amx_binds() {
              what it runs"
     );
 
-    // A key amx binds keeps its meaning, whatever a table says about it:
-    // the dials turn before the list is asked, and the list's own keys
-    // answer before anything of somebody's own.
+    // A key amx binds keeps its meaning: the dials are checked first, then the
+    // list's own keys, then the config's.
     let mut screen = watching_them();
     let doing = screen.act(alt('a'), root.path(), &config, None).unwrap();
     assert!(matches!(doing, Doing::Carry), "alt+a is still the dial");
@@ -5567,8 +5373,7 @@ fn keys_a_bound_key_runs_on_the_row_and_is_read_after_every_key_amx_binds() {
         .unwrap();
     assert!(matches!(doing, Doing::Close), "q still closes the view");
 
-    // A heading is a group rather than an agent, so there is no tree to
-    // run anything in, as with alt+d.
+    // A heading has no tree to run the command in, as with alt+d.
     let mut screen = watching_them();
     screen.list.up();
     assert!(screen.list.on_heading(), "the cursor is on the heading");
@@ -5577,10 +5382,9 @@ fn keys_a_bound_key_runs_on_the_row_and_is_read_after_every_key_amx_binds() {
     assert!(screen.notice.is_none(), "and nothing is said about it");
 }
 
-/// A tmux server of this test's own, gone when the test is.
+/// A tmux server owned by the test, killed on drop.
 ///
-/// The rows `i` has anything to send a key to are rows a reader calls live,
-/// and a record naming a pane that is not there is not one of them.
+/// `i` only acts on rows the reader calls live, which needs a real pane.
 struct TestServer(Server);
 
 impl TestServer {
@@ -5591,14 +5395,12 @@ impl TestServer {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        // An empty conf, so nothing in the developer's ~/.tmux.conf can
-        // change what these tests measure.
+        // An empty config so the developer's ~/.tmux.conf cannot affect the tests.
         Self(Server::named(&name).with_conf("/dev/null"))
     }
 
-    /// A pane for this agent, in a session named the way a spawn names
-    /// one, which is what makes the pane answer for it rather than for
-    /// nobody.
+    /// A pane for this agent, in a session named as spawn names one, so the pane
+    /// answers for the agent.
     fn pane(&self, id: &str) -> PaneId {
         self.0
             .new_session(&Spawn {
@@ -5617,7 +5419,7 @@ impl Drop for TestServer {
     }
 }
 
-/// The record a key is weighed against, written where the verb reads it.
+/// Writes the record a key is checked against.
 fn a_record(
     root: &Path,
     id: &str,
@@ -5657,7 +5459,7 @@ fn a_record(
     agent
 }
 
-/// The socket and pane of a record nothing answers for.
+/// A socket and pane that nothing answers for.
 fn no_pane() -> (Socket, PaneId) {
     (
         Socket::Name("amx-not-a-server".to_string()),
@@ -5671,9 +5473,8 @@ fn keys_i_cuts_short_the_turn_and_says_which_rows_have_none_to_cut() {
     let config = Config::default();
     let server = TestServer::new();
     let i = KeyEvent::from(KeyCode::Char('i'));
-    // What the press said, and in which of the three voices: a key that
-    // did what it was asked and one that says why it could not are the
-    // same words in different weights.
+    // The notice's text and kind: the same words mean different things as advice
+    // and as a refusal.
     let press = |views: Vec<View>| -> String {
         let mut screen = watching(views);
         screen.act(i, root.path(), &config, None).unwrap();
@@ -5685,9 +5486,8 @@ fn keys_i_cuts_short_the_turn_and_says_which_rows_have_none_to_cut() {
         }
     };
 
-    // A turn at a live pane is the one thing the key ends, and the verb
-    // writes it down before it types: what the view says afterwards is
-    // that it happened.
+    // A turn at a live pane is the one thing the key ends; the verb logs it before
+    // sending the key.
     let working = State {
         state: Phase::Working,
         since: now(),
@@ -5713,10 +5513,9 @@ fn keys_i_cuts_short_the_turn_and_says_which_rows_have_none_to_cut() {
         .collect();
     assert_eq!(kinds, ["interrupt"], "the turn it cut short is on the log");
 
-    // The three rows nothing is sent to, each named by what is at its pane
-    // instead: a question Escape would answer rather than end, a command
-    // with no vendor in it to read a key, and an agent with no turn to cut
-    // short at all.
+    // The three rows nothing is sent to, each named by what is at its pane: a
+    // question Escape would dismiss, a command with no vendor, and an agent with
+    // no turn running.
     let asking = stopped_on_a_question("ask-b2c");
     a_record(
         root.path(),
@@ -5749,8 +5548,8 @@ fn keys_i_cuts_short_the_turn_and_says_which_rows_have_none_to_cut() {
         "refused: build-c3d is a command, not an agent; ctrl+x stops it"
     );
 
-    // The parked one is the row whose phase alone would say idle, so the
-    // refusal says what the verb's own does: the pane amx took away.
+    // A parked agent reads idle, so the refusal says what the verb says: amx took
+    // its pane away.
     let parked = State {
         state: Phase::Idle,
         since: now(),
@@ -5797,9 +5596,8 @@ fn keys_f_opens_a_line_that_copies_the_row_and_turns_a_command_away() {
         screen.act(f, root.path(), &config, None).unwrap();
     };
 
-    // An agent's row opens the line, labelled with the agent it would be
-    // a copy of: the cursor may walk anywhere while the task is typed, and
-    // what the copy is of was decided by the press.
+    // On an agent's row the fork line opens, bound to that agent however the
+    // cursor moves while the task is typed.
     let mut agent = reading("port-a1b", Phase::Idle, State::default());
     agent.meta.agent = Some("claude".to_string());
     let mut screen = watching(vec![agent]);
@@ -5811,9 +5609,8 @@ fn keys_f_opens_a_line_that_copies_the_row_and_turns_a_command_away() {
     assert_eq!(line.about().as_deref(), Some("port-a1b"));
     assert!(screen.notice.is_none(), "and nothing to say about it");
 
-    // A command amx ran has no vendor in its pane and so no conversation
-    // to copy. Said where the keys are said, and no line opened: a task
-    // typed at it could never be given to anybody.
+    // A command has no vendor and so no conversation to copy; the key says so and
+    // opens no line.
     let mut screen = watching(vec![reading("ls-b2c", Phase::Working, State::default())]);
     press(&mut screen);
     let Some(Notice::Refused(said)) = &screen.notice else {
@@ -5831,11 +5628,8 @@ fn keys_f_opens_a_line_that_copies_the_row_and_turns_a_command_away() {
 
 #[test]
 fn keys_f_enters_an_empty_line_as_a_copy_waiting_for_a_turn() {
-    // The one line enter is pressed on with nothing typed: every other
-    // line the view opens is dropped empty, and this one is a copy that
-    // has been given no first turn. What proves it went is the verb
-    // answering about an agent amx has no record of, which is as far as an
-    // empty root lets a fork get.
+    // The fork line is the only line entered empty, which forks with no first turn.
+    // The verb reports an unknown agent, which is as far as an empty root gets.
     let root = TempDir::new().unwrap();
     let config = Config::default();
     let mut agent = reading("port-a1b", Phase::Idle, State::default());
@@ -5871,8 +5665,7 @@ fn keys_f_on_a_heading_is_a_key_about_no_agent_at_all() {
     assert!(matches!(screen.mode, Mode::List), "and no line is opened");
 }
 
-/// The wall as it stands: the headings and the agents under them, in the
-/// order the list draws them.
+/// The headings and agents on the wall, in drawing order.
 fn wall(screen: &Screen) -> Vec<String> {
     screen
         .list
@@ -5904,8 +5697,7 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
         ["Needs input", "ask-a1b", "Completed", "done-b2c"]
     );
 
-    // Under everything, though it is the one agent asking: where a row is
-    // drawn is not an answer to its question.
+    // Moved under everything, even though it is the one agent asking.
     press(&mut screen, z);
     assert_eq!(
         wall(&screen),
@@ -5919,15 +5711,14 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
         "and the cursor went with it"
     );
 
-    // And the same key wakes it, back under what it is doing.
+    // The same key wakes it.
     press(&mut screen, z);
     assert_eq!(
         wall(&screen),
         ["Needs input", "ask-a1b", "Completed", "done-b2c"]
     );
 
-    // A heading is a group rather than an agent, and a group is not a row
-    // to put away.
+    // A heading is not a row to put away.
     screen.list.up();
     assert!(screen.list.on_heading(), "the cursor is on the heading");
     press(&mut screen, z);
@@ -5940,11 +5731,9 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
 #[test]
 fn keymap_the_letters_the_card_gave_up_are_bound_nowhere() {
     let root = TempDir::new().unwrap();
-    // Both belonged to the card: r opened it and h put it away. Every card
-    // ends with a line now, so over one they are characters, and a letter
-    // bound on the list alone would be a key that means one thing on half
-    // the screens there are. space and l open the card and esc puts it
-    // away, which is the whole of what these two were for.
+    // Both were card keys: r opened it and h closed it. Every card now ends with a
+    // line, so over one they are text; space and l open the card and esc closes
+    // it.
     for key in [
         KeyEvent::from(KeyCode::Char('r')),
         KeyEvent::from(KeyCode::Char('h')),
@@ -5960,9 +5749,8 @@ fn keymap_the_letters_the_card_gave_up_are_bound_nowhere() {
 #[test]
 fn keymap_a_chord_the_view_never_bound_reaches_none_of_its_keys() {
     let root = TempDir::new().unwrap();
-    // Each of these carries a key the list does act on. Held down with
-    // something the list never asked for, they are somebody reaching past
-    // the view: alt+q is a window being arranged, not a view being closed.
+    // Each carries a key the list acts on, but under a modifier the list never
+    // binds: alt+q is window management, not a request to close the view.
     for key in [alt('q'), ctrl('q'), ctrl('n'), alt('?')] {
         assert!(
             !acts_on(key, root.path(), |_| {}),
@@ -6001,9 +5789,8 @@ fn axis_turns_under_the_key_that_says_so() {
     );
     assert_eq!(code, exit::OK);
     let drawn: Vec<&str> = screen.lines().map(str::trim_end).collect();
-    // Where the heading starts, not the whole of it: what a heading carries
-    // out to the edge beside the path, and the cell it is inset by, are the
-    // wall's own business.
+    // Only where the heading starts; what it carries beside the path and its inset
+    // belong to the wall's own tests.
     assert!(
         drawn[2].trim_start().starts_with("/srv/app"),
         "the heading is where the agent is, not what it needs:\n{screen}"
@@ -6052,8 +5839,7 @@ fn axis_narrows_the_list_by_state_from_the_find_line() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-    // The tokens are the find line's now, and it narrows as they are typed
-    // rather than waiting for an enter.
+    // The tokens belong to the find line now, which narrows as they are typed.
     let mut keys = vec![KeyCode::Char('/')];
     keys.extend(word("s:working"));
     keys.push(KeyCode::Enter);
@@ -6134,8 +5920,7 @@ fn view_says_what_to_call_the_terminal_when_it_changes_and_not_otherwise() {
     );
 }
 
-/// A config that binds a key of somebody's own, and one spelling nothing
-/// can press.
+/// A config binding one key to a command, and one spelling nothing can press.
 fn binding() -> Config {
     Config {
         keys: BTreeMap::from([
@@ -6173,9 +5958,8 @@ fn view_says_the_spellings_it_could_not_read_on_the_frame_it_opens_on() {
 #[test]
 fn view_shows_the_keys_somebody_bound_where_it_shows_the_ones_it_binds() {
     let root = TempDir::new().unwrap();
-    // The keys screen, paged to the end of itself: a screen this small
-    // holds a handful of keys at a time, and what somebody bound stands
-    // under the last of amx's own.
+    // The keys overlay paged to its end: a screen this small holds a few keys at
+    // a time, and the user's bindings follow amx's own.
     let mut script = vec![Typed::Key(KeyEvent::from(KeyCode::Char('?')))];
     script.extend((0..paint::HELP.len()).map(|_| Typed::Key(KeyEvent::from(KeyCode::PageDown))));
     let keys = drawn_under(root.path(), &binding(), script);
@@ -6208,7 +5992,7 @@ fn view_opened_about_a_directory_draws_that_directory_alone() {
         90,
         "/srv/app/importer",
     );
-    // The one a comparison of strings alone would have drawn with them.
+    // The one a plain string comparison would have grouped with them.
     finished_in(root.path(), "alike-c3d", "read the log", 120, "/srv/app2");
     finished_in(root.path(), "far-d4e", "cut a release", 150, "/srv/other");
 
@@ -6250,9 +6034,8 @@ fn view_walks_the_agents_and_peeks_at_the_one_under_the_cursor() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
 
-    // Down onto the older of them, and a closer look at it. The view is
-    // closed on the chord rather than on q: the card opened with a line
-    // at its foot, and a letter there is a letter.
+    // Down onto the older one and open its card. The view is closed with ctrl+c,
+    // because q is text on the card's line.
     let (code, screen) = pressing(
         root.path(),
         vec![
@@ -6292,8 +6075,7 @@ fn view_says_it_cannot_reach_an_agent_rather_than_going_quiet() {
 
 #[test]
 fn a_line_being_typed_has_the_keys_of_the_list_in_it() {
-    // Every one of these is a key the list acts on. While somebody is
-    // typing they are letters, or the composer could not be used at all.
+    // Each of these is a list key, but while a line is open they are text.
     let root = TempDir::new().unwrap();
     let mut keys = vec![KeyCode::Char('n')];
     keys.extend(word("drop the queue and quit"));
@@ -6342,8 +6124,8 @@ fn composer_folds_a_long_paste_on_the_lines_a_paragraph_is_written_on() {
         ..Screen::default()
     };
 
-    // At the list, which opens a task line: twenty rows stand as one, and
-    // what the line will be sent as is every one of them.
+    // At the list, a paste opens a task line: twenty rows fold into one marker,
+    // and the line sends all of them.
     let mut screen = Screen::default();
     screen.pasted(&long, &config);
     assert_eq!(
@@ -6351,7 +6133,7 @@ fn composer_folds_a_long_paste_on_the_lines_a_paragraph_is_written_on() {
         ("[Pasted text #1]".to_string(), long.clone())
     );
 
-    // A reply is the other line somebody writes a paragraph around.
+    // A reply is the other line long pastes fold on.
     let mut screen = typing(Asking::Reply);
     screen.pasted(&long, &config);
     assert_eq!(
@@ -6359,8 +6141,7 @@ fn composer_folds_a_long_paste_on_the_lines_a_paragraph_is_written_on() {
         ("[Pasted text #1]".to_string(), long.clone())
     );
 
-    // A name and a find line are each one word, and a marker on either
-    // would stand for nothing they do.
+    // A name and a find line are single words, so a marker on either is useless.
     for asking in [
         Asking::Name {
             id: "ask-a1b".to_string(),
@@ -6382,8 +6163,7 @@ fn composer_adds_a_paste_to_the_line_somebody_was_already_typing() {
             .into_iter()
             .map(|code| Typed::Key(KeyEvent::from(code))),
     );
-    // A terminal that ends its lines with a carriage return is ending
-    // lines, and the composer reads them as the newlines they are.
+    // Carriage returns in a paste read as newlines.
     script.push(Typed::Paste("the importer\rand its tests".to_string()));
 
     let (_, screen) = driving(root.path(), script);
@@ -6410,9 +6190,8 @@ fn composer_walks_its_cursor_and_types_where_it_is_left_standing() {
     }
     assert_eq!(line(&screen).1, 17, "typing leaves the cursor after it");
 
-    // A character at a time with the arrows, both ends with home and end
-    // and with the chords a terminal has always had for them, and a word
-    // at a time with control held.
+    // The arrows move a character, home/end and ctrl+a/ctrl+e move to the ends,
+    // and ctrl with an arrow moves a word.
     for (key, at) in [
         (KeyEvent::from(KeyCode::Left), 16),
         (KeyEvent::from(KeyCode::Right), 17),
@@ -6428,7 +6207,7 @@ fn composer_walks_its_cursor_and_types_where_it_is_left_standing() {
         assert_eq!(line(&screen).1, at, "{key:?}");
     }
 
-    // And what is typed lands where the cursor was left standing.
+    // Typing inserts at the cursor.
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     assert_eq!(line(&screen), ("port then importer".to_string(), 9));
 }
@@ -6444,11 +6223,9 @@ fn composer_enters_a_word_already_spelled_the_way_the_choice_spells_it() {
         Mode::Typing(composer) => (composer.text.clone(), composer.at),
         _ => panic!("the line is not open"),
     };
-    // The band as the vendor's files would fill it. Put there by hand
-    // rather than read: the catalog hangs off the home directory, which
-    // is nobody's to write into from a test in this process, and what is
-    // being read here is what the key does with the band, not where the
-    // band came from.
+    // Suggestions set by hand: the catalog is read from the home directory, which
+    // a test must not write to, and the test is about what the key does with
+    // them.
     let banded = |screen: &mut Screen, word: std::ops::Range<usize>, spelled: &[&str]| {
         let Mode::Typing(composer) = &mut screen.mode else {
             panic!("the line is not open");
@@ -6467,8 +6244,8 @@ fn composer_enters_a_word_already_spelled_the_way_the_choice_spells_it() {
         });
     };
 
-    // A word short of the one the choice is on: enter finishes the word,
-    // the way tab does, and the line stays open.
+    // On a word short of the chosen suggestion, enter completes it like tab and
+    // the line stays open.
     let mut screen = Screen::default();
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for key in word("agent:claude /rev") {
@@ -6486,10 +6263,9 @@ fn composer_enters_a_word_already_spelled_the_way_the_choice_spells_it() {
         "and starts nothing"
     );
 
-    // The same word spelled out, with itself the one thing under it: that
-    // word is finished, and enter does what enter does on the line. A
-    // task of three characters, so that what enter does is ask rather
-    // than start, which is what a test in this process can watch it do.
+    // On a word already spelled as its only suggestion, enter acts on the line.
+    // A three-character task, so enter asks before starting, which a test can
+    // observe.
     let mut screen = Screen::default();
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for key in word("agent:claude /go") {
@@ -6519,15 +6295,14 @@ fn composer_asks_for_the_agents_when_tab_is_pressed_on_an_empty_task_line() {
         ..Screen::default()
     };
 
-    // Nothing on the line is nothing to take, so the key writes the mark
-    // that asks what there is.
+    // On an empty line, tab writes the `@` mark that opens suggestions.
     let mut screen = Screen::default();
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     press(&mut screen, KeyEvent::from(KeyCode::Tab));
     assert_eq!(line(&screen), "@");
 
-    // A line with a word on it has one, and a word nothing answers to is
-    // left where it was typed.
+    // On a line with a word, tab has that word; one with no suggestions is left
+    // as typed.
     let mut screen = Screen::default();
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for key in word("port") {
@@ -6536,8 +6311,7 @@ fn composer_asks_for_the_agents_when_tab_is_pressed_on_an_empty_task_line() {
     press(&mut screen, KeyEvent::from(KeyCode::Tab));
     assert_eq!(line(&screen), "port");
 
-    // The other three are not lines a vendor reads a mark on, so the key
-    // does there what it did before.
+    // The other lines do not read the mark, so tab does what it did before.
     for asking in [
         Asking::Reply,
         Asking::Name {
@@ -6553,9 +6327,8 @@ fn composer_asks_for_the_agents_when_tab_is_pressed_on_an_empty_task_line() {
 
 #[test]
 fn composer_completes_a_file_of_the_project_the_line_was_opened_under() {
-    // A line opened under a project's heading runs in that project, so
-    // the files it offers are that project's: the directory the view was
-    // opened in has nothing called this.
+    // A line opened under a project heading runs in that project, so it suggests
+    // that project's files; the view's own directory has none of these.
     let root = TempDir::new().unwrap();
     let there = TempDir::new().unwrap();
     std::fs::write(there.path().join("quenched.md"), "").unwrap();
@@ -6600,8 +6373,8 @@ fn composer_takes_back_what_the_cursor_is_standing_after() {
         press(&mut screen, KeyEvent::from(key));
     }
 
-    // Backspace takes the character behind the cursor rather than the last
-    // one on the line, and delete the one under it.
+    // Backspace deletes the character behind the cursor, delete the one under
+    // it.
     press(
         &mut screen,
         KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
@@ -6612,8 +6385,7 @@ fn composer_takes_back_what_the_cursor_is_standing_after() {
     press(&mut screen, KeyEvent::from(KeyCode::Delete));
     assert_eq!(line(&screen), ("port theimporter".to_string(), 8));
 
-    // And the word behind it goes whole, by either of the two chords a
-    // terminal offers for it.
+    // The word behind the cursor goes whole with either ctrl+w or alt+backspace.
     press(&mut screen, ctrl('w'));
     assert_eq!(line(&screen), ("port importer".to_string(), 5));
     press(
@@ -6697,8 +6469,8 @@ fn composer_alt_n_enters_the_line_the_way_enter_does_and_goes_with_it() {
         screen.act(key, root.path(), &config, None).unwrap();
     };
 
-    // A line the dials refuse is refused whichever key entered it, and
-    // nothing was made on the way to finding out.
+    // A line the dials refuse is refused whichever key entered it, and nothing is
+    // started.
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for code in word("p:nonsense port it") {
         press(&mut screen, KeyEvent::from(code));
@@ -6718,8 +6490,7 @@ fn composer_alt_n_enters_the_line_the_way_enter_does_and_goes_with_it() {
              happen rather than as advice"
     );
 
-    // And a task barely long enough to be one is asked about first: the
-    // key that goes with the agent is still the key that starts it.
+    // A task barely long enough to be one asks first, whichever key entered it.
     let mut screen = Screen::default();
     press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
     for code in word("fix") {
@@ -6738,25 +6509,24 @@ fn acts_the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     let mut screen = Screen::default();
 
-    // Read from the record rather than from the list, which is a second
-    // old and knows nothing about an agent younger than that.
+    // Read from the record: the list is a reading old and does not know the new
+    // agent.
     screen
         .landing(root.path(), &Config::default(), "first-a1b", None)
         .unwrap();
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("nothing was said about where the agent went")
     };
-    // Nothing was ever recorded for this one to be picked up again, so
-    // what it is told is which of the two is missing.
+    // Nothing was recorded to resume this one, so the message names what is
+    // missing.
     assert!(said.contains("first-a1b"), "{said}");
     assert!(said.contains("session"), "{said}");
 }
 
 #[test]
 fn acts_enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
-    // A pane that is gone is not the answer to what enter asked, and it is
-    // not the reason either: what the row wants is the session it would
-    // have been carried back on, and this one never had one.
+    // The pane is gone, but what blocks enter is that the agent never had a
+    // session to resume, so that is what the message says.
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     let view = derive::view(root.path(), "first-a1b", now()).unwrap();
@@ -6779,16 +6549,15 @@ fn composer_ctrl_g_takes_the_line_to_the_editor_and_leaves_it_open() {
     let config = Config::default();
     let mut screen = Screen::default();
 
-    // On the list it opens a task line and goes straight to the editor
-    // with it, so a task worth a paragraph costs one keystroke.
+    // On the list, ctrl+g opens a task line and goes straight to the editor.
     let doing = screen.act(ctrl('g'), root.path(), &config, None).unwrap();
     assert!(matches!(doing, Doing::Edit));
     let line = screen.banded().expect("a line for the editor to fill");
     assert_eq!(line.label(), "TASK");
     assert!(line.text.is_empty());
 
-    // And on a line somebody is already typing, it is that line that goes
-    // and that line the view is still holding when it comes back.
+    // On a line already being typed, that line goes to the editor and comes back
+    // to the same composer.
     let Mode::Typing(composer) = &mut screen.mode else {
         panic!("no line to edit")
     };
@@ -6819,8 +6588,7 @@ fn composer_asks_once_before_starting_an_agent_on_a_task_of_three_letters() {
         "and the question is all that has happened"
     );
 
-    // Any key but the one it asked for keeps the line, exactly as it was
-    // typed: a task is worth more than the keystroke that interrupted it.
+    // Any key but y keeps the line exactly as typed.
     keys.push(KeyCode::Char('n'));
     let (_, kept) = held(root.path(), &keys);
     assert!(kept.contains("❯ fix"), "{kept}");
@@ -6858,9 +6626,8 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
     }
 }
 
-/// A left click as a terminal sends one: the press says where the hand
-/// landed, and the release is what acts, there being no telling a click
-/// from the start of a drag until the button comes up.
+/// A left click: the press records the position and the release acts, since a
+/// click and the start of a drag look the same until the button comes up.
 fn click(
     screen: &mut Screen,
     column: u16,
@@ -6882,7 +6649,7 @@ fn click(
     )
 }
 
-/// The same, as the two events a script hands the loop.
+/// [`click`] as the two events a script hands the loop.
 fn clicking(column: u16, row: u16) -> [Typed; 2] {
     [
         Typed::Mouse(mouse(MouseEventKind::Down(MouseButton::Left), column, row)),
@@ -6890,16 +6657,15 @@ fn clicking(column: u16, row: u16) -> [Typed; 2] {
     ]
 }
 
-/// Draw the screen, so the map the mouse reads is a frame's.
+/// Draws the screen so the mouse map is a real frame's.
 ///
-/// Twelve rows unless a test wants its own: two of header, one of space,
-/// and the list from row three — a heading on it and the agents under
-/// that.
+/// Twelve rows by default: two of header, one blank, and the list from row
+/// three, a heading and then its agents.
 fn a_frame(screen: &mut Screen) {
     a_frame_of(screen, (60, 12));
 }
 
-/// The same, at a size a test picks.
+/// [`a_frame`] at a given size.
 fn a_frame_of(screen: &mut Screen, size: (u16, u16)) {
     let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
     terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
@@ -6916,10 +6682,9 @@ fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
     a_frame(&mut screen);
     assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
-    // The second agent's row, which is two under the heading on row 3.
-    // The cursor lands before the click goes on to reach for the window,
-    // and nothing here has a record to carry back — the reaching itself
-    // is the e2e test's to prove.
+    // The second agent's row, two under the heading on row 3. The cursor lands
+    // before the click tries to reach the window; with no record to resume, the
+    // reach itself is left to the e2e tests.
     let _ = click(&mut screen, 5, 5, root.path(), &config);
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
 
@@ -6940,9 +6705,8 @@ fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
 fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
-    // Two finished past the fold: a heading, the rows a group shows, and
-    // the fold on the row under them, on a screen with room to draw all of
-    // it.
+    // Two finished agents past the fold: a heading, the rows the group shows and
+    // the fold under them, on a screen tall enough for all of it.
     let height = (rows::FOLD_AT + 10) as u16;
     let mut screen = watching(
         (0..rows::FOLD_AT + 2)
@@ -6956,8 +6720,7 @@ fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
         "a heading, the drawn rows and the fold"
     );
 
-    // The fold is the row under the drawn agents, and the list starts on
-    // the fourth row of the screen.
+    // The fold is the row under the drawn agents; the list starts on row 3.
     click(
         &mut screen,
         5,
@@ -6972,8 +6735,7 @@ fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
         "the fold gave its rows back"
     );
 
-    // A click past the end of the list lands on nothing and moves
-    // nothing.
+    // A click past the end of the list lands on nothing and moves nothing.
     let before = screen.list.selected().unwrap().id().to_string();
     a_frame_of(&mut screen, (60, height));
     click(
@@ -6992,11 +6754,9 @@ fn mouse_click_on_a_row_reaches_for_the_agents_window_like_enter() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
 
-    // On a 50x10 harness screen the heading is row 2 and the one agent
-    // row 3. The click lands the cursor and then goes to bring the
-    // window forward the way enter does; this agent has no session to
-    // carry back, and the refusal naming that is the proof the click
-    // went that far.
+    // On the 50x10 screen the heading is row 2 and the agent row 3. The click
+    // lands the cursor and then reaches for the window as enter does; the agent
+    // has no session to resume, and that refusal shows the click got that far.
     let script = clicking(5, 3)
         .into_iter()
         .chain([Typed::Key(KeyEvent::from(KeyCode::Char('q')))])
@@ -7037,8 +6797,7 @@ fn mouse_hover_tints_a_name_and_moves_no_cursor() {
         "and the keyboard's cursor did not move"
     );
 
-    // A heading is hovered the way a row is; off the list there is
-    // nothing to tint.
+    // A heading takes the hover like a row; off the list nothing is tinted.
     resting(&mut screen, 5, 3);
     assert_eq!(screen.hover, Some(0), "the heading over them is hovered");
     resting(&mut screen, 5, 0);
@@ -7056,8 +6815,8 @@ fn ctrl_x_is_read_on_the_row_or_heading_under_the_pointer() {
     a_frame(&mut screen);
     assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
-    // The pointer rests on the other row: the press lands the cursor
-    // there and arms that row, not the one the cursor was on.
+    // With the pointer on the other row, the press lands the cursor there and
+    // arms that row.
     screen
         .moused(
             mouse(MouseEventKind::Moved, 5, 5),
@@ -7072,7 +6831,7 @@ fn ctrl_x_is_read_on_the_row_or_heading_under_the_pointer() {
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
     assert_eq!(screen.armed(), ["done-b2c"]);
 
-    // And on the heading, the press is the group's.
+    // On the heading, the press belongs to the group.
     screen
         .moused(
             mouse(MouseEventKind::Moved, 5, 3),
@@ -7096,8 +6855,8 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
         finished_saying("done-a1b", "the first answer"),
         finished_saying("done-b2c", "the second answer"),
     ]);
-    // Tall enough that the card's band leaves both rows where they are,
-    // so the pointer keeps naming the row it named before one opened.
+    // Tall enough that opening the card does not move either row, so the pointer
+    // still names the same row.
     a_frame_of(&mut screen, (60, 24));
     assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
 
@@ -7119,27 +6878,25 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
     };
     let carded = |screen: &Screen| screen.card.as_ref().map(|card| card.id.clone());
 
-    // The pointer rests on the row the cursor is not on: space lands the
-    // cursor there and opens that row's card, not the cursor's.
+    // The pointer rests on the row the cursor is not on: space moves the cursor
+    // there and opens that row's card.
     resting(&mut screen, 5);
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
     assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
 
-    // The pointer moves to the other row with the card still up: space
-    // opens that row rather than closing what is open.
+    // The pointer moves to the other row with the card up: space opens that row
+    // instead of closing the card.
     resting(&mut screen, 4);
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
     assert_eq!(carded(&screen).as_deref(), Some("done-a1b"));
 
-    // Pressed again with the pointer where the cursor already is, it is
-    // the toggle it has always been.
+    // With the pointer on the cursor's row, space toggles the card.
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(carded(&screen), None, "space closed the card");
 
-    // And with no pointer on the list, the key is the cursor's as it was
-    // before there was a pointer to read.
+    // With no pointer on the list, space acts on the cursor as before.
     resting(&mut screen, 5);
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
@@ -7180,22 +6937,20 @@ fn a_key_press_retires_the_pointer_and_the_next_movement_brings_it_back() {
     };
     let carded = |screen: &Screen| screen.card.as_ref().map(|card| card.id.clone());
 
-    // The pointer is parked on the last row and the hands are back on the
-    // keyboard: `j` walks the cursor and the pointer stops counting.
+    // The pointer is parked on the last row and the keyboard takes over: `j` moves
+    // the cursor and the pointer stops counting.
     resting(&mut screen, 6);
     assert_eq!(screen.hover, Some(3), "the third agent's line is hovered");
     press(&mut screen, KeyCode::Char('j'));
     assert_eq!(screen.hover, None, "the key press retired the pointer");
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
 
-    // So space opens the row the cursor walked to, not the one somebody
-    // left the pointer over.
+    // So space opens the cursor's row, not the one under the idle pointer.
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
     assert_eq!(carded(&screen).as_deref(), Some("done-b2c"));
 
-    // And the next movement is a pointer again: space after it opens the
-    // row it came to rest on.
+    // The next movement makes the pointer count again.
     press(&mut screen, KeyCode::Char(' '));
     assert_eq!(carded(&screen), None, "space closed the card");
     resting(&mut screen, 6);
@@ -7224,9 +6979,8 @@ fn going_into_an_agent_retires_the_pointer() {
         .unwrap();
     assert_eq!(screen.hover, Some(2));
 
-    // Whoever went in had the terminal, and mouse capture was off for as
-    // long as they did: the line the view was holding is about a screen
-    // that has been somebody else's since.
+    // Mouse capture was off while the terminal was lent, so the hover line is
+    // stale.
     screen.went_into("done-b2c".to_string());
     assert_eq!(screen.lent.as_deref(), Some("done-b2c"));
     assert_eq!(screen.hover, None);
@@ -7247,10 +7001,8 @@ fn going_into_an_agent_puts_away_the_card_it_was_gone_into_from() {
         .unwrap();
     assert!(screen.card.is_some(), "the card somebody went in from");
 
-    // A card is a look at a pane from outside it, and whoever went into
-    // that pane is inside it now. Left up, it is what they come back out
-    // to on the `ctrl+z`: a photograph of the screen they were just on,
-    // taken before they were on it.
+    // The card showed the pane from outside, and the user is now inside it; left
+    // up, it would be a stale picture on return with ctrl+z.
     screen.went_into("done-a1b".to_string());
     assert!(screen.card.is_none(), "and it went in with them");
     assert!(matches!(screen.look, Look::Away));
@@ -7262,10 +7014,9 @@ fn mouse_moves_that_queued_up_cost_one_frame_between_them() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
 
-    // A hand crossing the wall sends a movement per cell it crosses, and
-    // they arrive faster than the view draws. What the pointer is over is
-    // where it came to rest, so a run of them is worth one frame: a frame
-    // each is the whole list redrawn six times to move one tint six rows.
+    // Pointer movements arrive one per cell, faster than the view draws. Only
+    // where the pointer stops matters, so a run of them costs one frame instead of
+    // redrawing the list for each.
     let mut storm: Vec<Typed> = (3..9)
         .map(|row| Typed::Mouse(mouse(MouseEventKind::Moved, 5, row)))
         .collect();
@@ -7284,10 +7035,8 @@ fn mouse_moves_that_queued_up_cost_one_frame_between_them() {
 
 #[test]
 fn mouse_moves_collapse_to_where_the_pointer_came_to_rest() {
-    // The run is read to its end and what ended it is handed back: a key
-    // behind a hundred movements is still the next thing somebody meant
-    // to do, and a view that swallowed it would be losing keystrokes to a
-    // mouse.
+    // The run is read to its end and whatever ended it is handed back, so a key
+    // queued behind the movements is not lost.
     let mut keys = Script(
         vec![
             Typed::Mouse(mouse(MouseEventKind::Moved, 5, 6)),
@@ -7304,8 +7053,7 @@ fn mouse_moves_collapse_to_where_the_pointer_came_to_rest() {
         "and the key that ended it is kept for the next pass"
     );
 
-    // A click is not a movement, so nothing is read past it: it is acted
-    // on where it arrived.
+    // A click is not a movement, so nothing is read past it.
     let mut alone = Script(vec![Typed::Key(KeyEvent::from(KeyCode::Char('n')))].into_iter());
     let click = mouse(MouseEventKind::Down(MouseButton::Left), 5, 5);
     let (pressed, ended) = at_rest(&mut alone, click);
@@ -7318,9 +7066,9 @@ fn mouse_moves_collapse_to_where_the_pointer_came_to_rest() {
 
 #[test]
 fn a_late_shade_reply_never_reaches_the_list_and_typing_still_does() {
-    // A terminal slower than the shade probe's wait answers into the key
-    // loop, where its `:` and `/` would open a line. It is dropped whole;
-    // the same keys typed by somebody, and alt and `]` alone, get through.
+    // A terminal slower than the shade probe answers into the key loop, where its
+    // `:` and `/` would open a line. The reply is dropped whole; the same keys
+    // typed by hand, and alt and `]` alone, get through.
     let mut script: Vec<Typed> = vec![Typed::Key(alt(']'))];
     script.extend(
         word("11;rgb:ffff/ffff/ffff")
@@ -7349,8 +7097,8 @@ fn a_late_shade_reply_never_reaches_the_list_and_typing_still_does() {
     assert_eq!(reached, typed);
 }
 
-/// More finished agents than a band in one of these frames is tall, so
-/// there is a list to scroll and a cursor that can leave the screen.
+/// More finished agents than the band holds, so the list scrolls and the
+/// cursor can leave the screen.
 fn a_tall_wall() -> Vec<View> {
     (0..20)
         .map(|n| finished_saying(&format!("row-{n:02}-a1b"), "did what it was asked"))
@@ -7365,10 +7113,9 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     a_frame(&mut screen);
     let on = screen.list.cursor();
 
-    // The pointer resting on a row, and three lines of wheel under it: the
-    // window is three rows down the list, the cursor is where it was —
-    // off the top of the band now — and the line the pointer was on goes
-    // with the rows that moved out from under it.
+    // Three wheel steps with the pointer on a row: the window moves three rows,
+    // the cursor stays (now above the band), and the hover goes with the rows
+    // that moved.
     screen
         .moused(
             mouse(MouseEventKind::Moved, 5, 5),
@@ -7393,11 +7140,9 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     assert_eq!(screen.list.cursor(), on, "and no cursor moved");
     assert_eq!(screen.hover, None, "the rows moved under the pointer");
 
-    // A click lands on the row the frame drew rather than on the row the
-    // list would have drawn there unscrolled: the band opens on row 3 of
-    // the screen, which is the item the window stands on.
-    // The reach past the landing has no record to carry a window back
-    // from, which is not what this is about: the cursor is.
+    // A click lands on the row the frame drew, not the unscrolled one: the band
+    // starts on row 3, which is the window's top item. Reaching the window after
+    // the landing fails for lack of a record, which is not under test here.
     let _ = click(&mut screen, 5, 3, root.path(), &config);
     assert_eq!(
         screen.list.selected().unwrap().id(),
@@ -7411,8 +7156,7 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
         "and the cursor it landed on is on the screen, so nothing followed"
     );
 
-    // Wheel-up past the top is the top, not a window over rows there are
-    // none of.
+    // Wheel-up past the top stops at the top.
     for _ in 0..9 {
         screen
             .moused(
@@ -7440,8 +7184,8 @@ fn keys_move_the_cursor_and_the_window_comes_after_it() {
     };
     a_frame(&mut screen);
 
-    // G is the end of the list, and the window is on its last page: the
-    // wheel has nowhere further down to go from there.
+    // G goes to the end of the list and the window to its last page, so the wheel
+    // cannot go further down.
     press(&mut screen, KeyCode::Char('G'));
     a_frame(&mut screen);
     assert_eq!(screen.list.cursor(), items - 1);
@@ -7451,16 +7195,15 @@ fn keys_move_the_cursor_and_the_window_comes_after_it() {
     a_frame(&mut screen);
     assert_eq!(screen.wall.top.get(), bottom, "the last page is the last");
 
-    // gg is the top of it, window and all.
+    // gg goes to the top, window included.
     press(&mut screen, KeyCode::Char('g'));
     press(&mut screen, KeyCode::Char('g'));
     a_frame(&mut screen);
     assert_eq!(screen.list.cursor(), 0);
     assert_eq!(screen.wall.top.get(), 0);
 
-    // How tall the band was, which is what the last page says: `j` walked
-    // one line past the last drawn one moves the window by that one row
-    // and no more, and the rows before it moved it nothing at all.
+    // The band height follows from the last page: `j` one line past the last
+    // drawn row moves the window by one, and earlier moves do not move it.
     let visible = items - bottom;
     while screen.list.cursor() < visible - 1 {
         press(&mut screen, KeyCode::Char('j'));
@@ -7472,9 +7215,8 @@ fn keys_move_the_cursor_and_the_window_comes_after_it() {
     assert_eq!(screen.list.cursor(), visible);
     assert_eq!(screen.wall.top.get(), 1, "one row of cursor, one of window");
 
-    // And `k` back over the first drawn line is the same row the other
-    // way: the rows down to it move nothing, and the one past it moves
-    // the window one.
+    // `k` back over the first drawn line is the same the other way: one row past
+    // it moves the window by one.
     while screen.list.cursor() > 1 {
         press(&mut screen, KeyCode::Char('k'));
     }
@@ -7499,8 +7241,7 @@ fn mouse_wheel_pages_the_card_under_the_pointer_and_scrolls_the_list_beside_it()
         finished_saying("done-a1b", &long),
         finished_saying("done-b2c", "the second answer"),
     ]);
-    // Twenty rows, so the card the space below opens still leaves both
-    // rows on the screen in front of it.
+    // Twenty rows, so the card opened below leaves both rows visible.
     a_frame_of(&mut screen, (60, 20));
     let wheel = |screen: &mut Screen, kind, column, row| {
         screen
@@ -7508,16 +7249,15 @@ fn mouse_wheel_pages_the_card_under_the_pointer_and_scrolls_the_list_beside_it()
             .unwrap();
     };
 
-    // No card up: the wheel is the window, and two rows in twenty of band
-    // are a list with nowhere to scroll to and a cursor that stays put
-    // either way.
+    // No card: the wheel scrolls the window, and two rows in a twenty-row band
+    // have nowhere to scroll, so the cursor stays put.
     wheel(&mut screen, MouseEventKind::ScrollDown, 5, 5);
     a_frame_of(&mut screen, (60, 20));
     assert_eq!(screen.list.selected().unwrap().id(), "done-a1b");
     assert_eq!(screen.wall.top.get(), 0);
 
-    // A card over the bottom of the band: the wheel pages it where the
-    // pointer is over it, and leaves it alone where it is not.
+    // With a card over the bottom of the band, the wheel pages it when the pointer
+    // is over it and leaves it alone otherwise.
     screen
         .act(
             KeyEvent::from(KeyCode::Char(' ')),
@@ -7576,10 +7316,8 @@ fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
         "a line being typed keeps the keys, and the mouse with them"
     );
 
-    // The line at the foot of the card is the one exception: it takes no
-    // pointer, and the wall above it is what somebody with a card open is
-    // reading. So a click lands on the row it was aimed at, and the card
-    // follows the cursor there.
+    // The card's line takes no pointer, so with a card open a click still lands
+    // on its row and the card follows the cursor there.
     let mut screen = watching(vec![
         finished_saying("done-a1b", "the first answer"),
         finished_saying("done-b2c", "the second answer"),
@@ -7607,15 +7345,13 @@ fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
 fn the_keys_are_on_the_screen_for_the_asking() {
     let root = TempDir::new().unwrap();
     let (_, screen) = held(root.path(), &[KeyCode::Char('?'), KeyCode::Char('q')]);
-    // That the key opened the overlay, and that the overlay says how to
-    // leave it again. How many of the keys a terminal this short has room
-    // for at once, and how somebody reaches the rest, is the overlay's own
-    // business and its own tests'.
+    // The key opens the overlay and the overlay says how to leave it. How much it
+    // fits on a short terminal is tested with the overlay.
     assert!(screen.contains("↑ ↓"), "{screen}");
     assert!(screen.contains("any key goes back"), "{screen}");
 }
 
-/// A terminal that answers with this, counting how often it is asked.
+/// A terminal query that answers `answer` and counts how often it is asked.
 fn answering(answer: Option<&str>, asked: &AtomicUsize) -> impl FnOnce() -> Option<String> {
     move || {
         asked.fetch_add(1, Ordering::Relaxed);
@@ -7685,8 +7421,8 @@ fn theme_a_silent_terminal_leaves_the_kept_colours_as_they_were() {
     let root = dir.path().join("agents");
     let kept = dir.path().join("background");
     std::fs::write(&kept, "#010203\n").unwrap();
-    // Nothing at all, the empty wait `asked` hands back, and a foreground
-    // with no background to go with it.
+    // No answer, the empty answer `asked` returns on timeout, and a foreground with
+    // no background.
     for silence in [None, Some(""), Some("\x1b]10;rgb:ffff/ffff/ffff\x07")] {
         let asked = AtomicUsize::new(0);
         let named = Painting::named("default", answering(silence, &asked), &root);
