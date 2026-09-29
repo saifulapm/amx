@@ -6,7 +6,7 @@
 //! the card the view opens over an agent, and `amx logs`. Both read it here,
 //! so neither can disagree with the other about what a line of it means.
 //!
-//! Three vendors keep one, in three shapes, and the shapes are the table's to
+//! Four vendors keep one, in four shapes, and the shapes are the table's to
 //! name — see [`Transcript`]. What this file knows is where in each the words
 //! are, and it keeps three kinds of them: what the person asked, what the
 //! agent said, and which tool it called with what. Everything else in the file
@@ -60,8 +60,7 @@ pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
             Transcript::Claude => claude(entry, &mut said),
             Transcript::Pi => pi(entry, &mut said),
             Transcript::Codex => codex(entry, &mut said),
-            // Its shape is read off captured lists, not written yet.
-            Transcript::Opencode => {}
+            Transcript::Opencode => opencode(entry, &mut said),
         }
     }
     said
@@ -135,8 +134,10 @@ pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
 /// The answer at the end of a walk already read, which is what
 /// [`answer`] and [`context_and_last_words`] both ask of it.
 fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
-    if format == Transcript::Codex {
-        return codex_answer(entries);
+    match format {
+        Transcript::Codex => return codex_answer(entries),
+        Transcript::Opencode => return opencode_answer(entries),
+        _ => {}
     }
     let last = entries
         .iter()
@@ -189,8 +190,10 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
 /// rather than guessed at.
 pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
     let entries = spoken(format, jsonl);
-    if format == Transcript::Codex {
-        return codex_why(&entries);
+    match format {
+        Transcript::Codex => return codex_why(&entries),
+        Transcript::Opencode => return opencode_why(&entries),
+        _ => {}
     }
     let last = entries
         .iter()
@@ -321,7 +324,17 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
         Transcript::Codex => entry["payload"]["info"]["last_token_usage"]["input_tokens"]
             .as_u64()
             .unwrap_or(0),
-        Transcript::Opencode => 0,
+        Transcript::Opencode => {
+            let tokens = &entry["tokens"];
+            [
+                &tokens["input"],
+                &tokens["cache"]["read"],
+                &tokens["cache"]["write"],
+            ]
+            .iter()
+            .map(|count| count.as_u64().unwrap_or(0))
+            .sum()
+        }
     }
 }
 
@@ -430,7 +443,12 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
                 _ => None,
             }
         }
-        Transcript::Codex | Transcript::Opencode => None,
+        Transcript::Opencode => match entry["type"].as_str()? {
+            "user" => Some(Voice::User),
+            "assistant" => Some(Voice::Assistant),
+            _ => None,
+        },
+        Transcript::Codex => None,
     }
 }
 
@@ -637,6 +655,89 @@ fn codex_why(entries: &[Value]) -> Option<String> {
             })
         }
         _ => None,
+    }
+}
+
+/// One opencode message, into what it said.
+///
+/// A prompt is a `user` message's `text`; what the agent said and called is
+/// the `text` and `tool` items of an `assistant` message's `content`, a call's
+/// arguments under `state.input`. The rest -- `reasoning` items, `idle` rows,
+/// the `synthetic`, `system` and `compaction` messages -- is nobody's reading.
+fn opencode(entry: &Value, said: &mut Vec<Said>) {
+    match voice(Transcript::Opencode, entry) {
+        Some(Voice::User) => prompt(entry["text"].as_str(), said),
+        Some(Voice::Assistant) => {
+            for item in entry["content"].as_array().into_iter().flatten() {
+                match item["type"].as_str() {
+                    Some("text") => text(item["text"].as_str(), said),
+                    Some("tool") => tool(item["name"].as_str(), &item["state"]["input"], said),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// How the last turn of an opencode list ended, and the last step it took.
+///
+/// The `idle` row closing a turn carries its outcome: `succeeded`, `failed`
+/// or `interrupted`. A turn ended by a rejected permission or a dismissed
+/// question writes none (docs/opencode-screens.md, "The message lists"): its
+/// last step is an assistant whose `error` is `aborted`, and that is read as
+/// interrupted. A list ending on a prompt, or on a step with no error, is a
+/// turn still running, and has no outcome yet.
+fn opencode_end(entries: &[Value]) -> Option<(&str, Option<&Value>)> {
+    let last = entries
+        .iter()
+        .rposition(|entry| matches!(entry["type"].as_str(), Some("user" | "assistant" | "idle")))?;
+    let step = entries[..=last]
+        .iter()
+        .rev()
+        .take_while(|entry| entry["type"] != "user")
+        .find(|entry| entry["type"] == "assistant");
+    let outcome = match entries[last]["type"].as_str()? {
+        "idle" => entries[last]["outcome"].as_str()?,
+        "assistant" if entries[last]["error"]["type"] == "aborted" => "interrupted",
+        "assistant" if entries[last]["error"].is_object() => "failed",
+        _ => return None,
+    };
+    Some((outcome, step))
+}
+
+/// An opencode turn's answer: the words of its last step, where the turn
+/// succeeded.
+fn opencode_answer(entries: &[Value]) -> Option<String> {
+    match opencode_end(entries)? {
+        ("succeeded", Some(step)) => {
+            let text: Vec<&str> = step["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|item| item["type"] == "text")
+                .filter_map(|item| item["text"].as_str())
+                .collect();
+            let text = text.join("\n").trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+/// Why an opencode turn ended with nothing: interrupted, or failed with the
+/// message its last step's `error` carries.
+fn opencode_why(entries: &[Value]) -> Option<String> {
+    match opencode_end(entries)? {
+        ("succeeded", _) => None,
+        ("interrupted", _) => Some("the turn was aborted".to_string()),
+        ("failed", step) => Some(
+            match step.and_then(|step| step["error"]["message"].as_str()) {
+                Some(said) => format!("the provider failed: {}", one_line(said)),
+                None => "the provider failed".to_string(),
+            },
+        ),
+        (other, _) => Some(format!("the vendor stopped on `{other}`")),
     }
 }
 
@@ -1491,13 +1592,143 @@ mod tests {
         );
     }
 
+    /// Message lists opencode 2.0.16 gave on 2026-09-30, written as the plugin
+    /// writes them at a turn's end -- see docs/opencode-screens.md, "The
+    /// message lists".
+    const OPENCODE_TURN: &str = include_str!("../tests/opencode/messages/turn.jsonl");
+    const OPENCODE_STEER: &str = include_str!("../tests/opencode/messages/steer.jsonl");
+    const OPENCODE_INTERRUPT: &str = include_str!("../tests/opencode/messages/interrupt.jsonl");
+    const OPENCODE_PERMISSION: &str = include_str!("../tests/opencode/messages/permission.jsonl");
+    const OPENCODE_QUESTION: &str = include_str!("../tests/opencode/messages/question.jsonl");
+    const OPENCODE_FAILURE: &str = include_str!("../tests/opencode/messages/failure.jsonl");
+
     #[test]
-    fn an_opencode_list_says_nothing_until_its_reader_is_written() {
-        // The shape is named before it is read: a list of it is walked and
-        // nothing in it is taken for words.
-        let list = r#"{"type":"user","parts":[{"type":"text","text":"hi"}]}"#;
-        assert!(read(Transcript::Opencode, list).is_empty());
-        assert_eq!(answer(Transcript::Opencode, list), None);
-        assert_eq!(session_title(Transcript::Opencode, list), None);
+    fn conversation_reads_an_opencode_list_in_order() {
+        // Reasoning, a tool's output and the `idle` rows are nobody's reading.
+        assert_eq!(
+            read(Transcript::Opencode, OPENCODE_STEER),
+            vec![
+                Said::Prompt(
+                    "Run the shell command `sleep 30` with your shell tool, then reply with the single word done.".to_string()
+                ),
+                tool("shell", Some("sleep 30")),
+                Said::Prompt("After that, also say the word banana.".to_string()),
+                Said::Text("done\n\nbanana".to_string()),
+            ]
+        );
+        assert_eq!(
+            read(Transcript::Opencode, OPENCODE_QUESTION),
+            vec![
+                Said::Prompt(
+                    "Use your question tool to ask me one question: tea or coffee? Offer the two options. Do nothing else.".to_string()
+                ),
+                tool("question", None),
+                Said::Text("Great choice — tea it is! 🍵".to_string()),
+                Said::Prompt("Use your question tool again: milk or no milk? Do nothing else.".to_string()),
+                tool("question", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn conversation_answers_an_opencode_turn_its_idle_row_says_succeeded() {
+        assert_eq!(
+            answer(Transcript::Opencode, OPENCODE_TURN).as_deref(),
+            Some("done")
+        );
+        assert_eq!(
+            answer(Transcript::Opencode, OPENCODE_STEER).as_deref(),
+            Some("done\n\nbanana")
+        );
+        assert_eq!(
+            answer(Transcript::Opencode, &codex_until(OPENCODE_PERMISSION, 4)).as_deref(),
+            Some("done"),
+            "the first turn, as the list stood when it ended"
+        );
+
+        // An interrupted or failed turn answers nothing, and so does one a
+        // rejected permission or a dismissed question ended, which writes no
+        // `idle` row at all. A turn with a prompt or a step after its last
+        // `idle` is still running.
+        assert_eq!(answer(Transcript::Opencode, OPENCODE_INTERRUPT), None);
+        assert_eq!(answer(Transcript::Opencode, OPENCODE_FAILURE), None);
+        assert_eq!(answer(Transcript::Opencode, OPENCODE_PERMISSION), None);
+        assert_eq!(answer(Transcript::Opencode, OPENCODE_QUESTION), None);
+        assert_eq!(
+            answer(Transcript::Opencode, &codex_until(OPENCODE_TURN, 2)),
+            None
+        );
+        assert_eq!(
+            answer(Transcript::Opencode, &codex_until(OPENCODE_PERMISSION, 5)),
+            None
+        );
+        assert_eq!(
+            answer(Transcript::Opencode, &codex_until(OPENCODE_STEER, 3)),
+            None
+        );
+    }
+
+    #[test]
+    fn conversation_says_why_an_opencode_turn_ended_with_nothing() {
+        assert_eq!(
+            why_it_stopped(Transcript::Opencode, OPENCODE_INTERRUPT).as_deref(),
+            Some("the turn was aborted")
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Opencode, OPENCODE_FAILURE).as_deref(),
+            Some("the provider failed: measurement: bad request")
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Opencode, OPENCODE_PERMISSION).as_deref(),
+            Some("the turn was aborted"),
+            "a rejection ends the turn in an aborted step and no `idle` row"
+        );
+        assert_eq!(
+            why_it_stopped(Transcript::Opencode, OPENCODE_QUESTION).as_deref(),
+            Some("the turn was aborted")
+        );
+        assert_eq!(why_it_stopped(Transcript::Opencode, OPENCODE_TURN), None);
+        assert_eq!(
+            why_it_stopped(Transcript::Opencode, &codex_until(OPENCODE_TURN, 2)),
+            None,
+            "a turn still running has not stopped"
+        );
+    }
+
+    #[test]
+    fn conversation_latest_and_context_of_an_opencode_list() {
+        assert_eq!(
+            latest(Transcript::Opencode, OPENCODE_TURN).as_deref(),
+            Some("done")
+        );
+        assert_eq!(
+            latest(Transcript::Opencode, OPENCODE_INTERRUPT).as_deref(),
+            Some("shell sleep 60"),
+            "the call the Esc cut short"
+        );
+        assert_eq!(latest(Transcript::Opencode, OPENCODE_FAILURE), None);
+
+        // The last step's input, its cached part and what it wrote to the
+        // cache: `input` counts none of the cache.
+        assert_eq!(
+            usage_context(Transcript::Opencode, OPENCODE_TURN),
+            Some(7065)
+        );
+        assert_eq!(
+            usage_context(Transcript::Opencode, OPENCODE_PERMISSION),
+            Some(7086)
+        );
+        assert_eq!(
+            usage_context(Transcript::Opencode, OPENCODE_FAILURE),
+            None,
+            "a step that never reached the model counted nothing"
+        );
+        assert_eq!(
+            context_and_last_words(Transcript::Opencode, OPENCODE_STEER),
+            (Some(7051), Some("done\n\nbanana".to_string()))
+        );
+
+        assert_eq!(session_title(Transcript::Opencode, OPENCODE_TURN), None);
+        assert!(synthetic_words(Transcript::Opencode, OPENCODE_TURN).is_empty());
     }
 }
