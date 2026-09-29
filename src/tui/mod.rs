@@ -4115,6 +4115,19 @@ fn card_of(
     // Whether the line at the foot of the card would reach anybody, read
     // through the door that would refuse it.
     let listening = act::listening(root, view);
+    let card = |body: Body, answer: bool, queued: Vec<String>| Card {
+        id: view.id().to_string(),
+        phase: view.phase(),
+        question: view.state.question.clone(),
+        options: view.state.options.clone(),
+        walked: view.state.walked,
+        kind: view.kind(),
+        body,
+        changes: false,
+        answer,
+        listening,
+        queued,
+    };
     // What the command printed, kept beside the record by its own boot. An
     // empty file is an empty card: the command has printed nothing yet, and a
     // capture of the pane in its place would be a screen of somebody else's
@@ -4123,23 +4136,11 @@ fn card_of(
         .as_ref()
         .map(|agent| as_read(agent.dir().join(crate::store::OUTPUT)));
     if let Some(said) = agent.as_ref().and_then(Agent::output_tail) {
+        // A command still printing is read up from its live edge; one that
+        // has ended is read forward, because what it printed is all there and
+        // the start of it is where a reader begins.
         return (
-            Card {
-                id: view.id().to_string(),
-                phase: view.phase(),
-                question: view.state.question.clone(),
-                options: view.state.options.clone(),
-                walked: view.state.walked,
-                kind: view.kind(),
-                body: Body::said(&said),
-                changes: false,
-                // A command still printing is read up from its live edge; one
-                // that has ended is read forward, because what it printed is
-                // all there and the start of it is where a reader begins.
-                answer: view.phase().is_terminal(),
-                listening,
-                queued: Vec::new(),
-            },
+            card(Body::said(&said), view.phase().is_terminal(), Vec::new()),
             Freshness::Files(printed.into_iter().collect()),
         );
     }
@@ -4185,23 +4186,14 @@ fn card_of(
         let live = working
             .then(|| agent.as_ref().and_then(Agent::live))
             .flatten();
+        // A conversation still being added to is read up from its live edge;
+        // one whose turn is over reads forward from its last answer.
         return (
-            Card {
-                id: view.id().to_string(),
-                phase: view.phase(),
-                question: view.state.question.clone(),
-                options: view.state.options.clone(),
-                walked: view.state.walked,
-                kind: view.kind(),
-                body: Body::conversation(&said, live.as_deref(), width, theme),
-                changes: false,
-                // A conversation still being added to is read up from its live
-                // edge; one whose turn is over reads forward from its last
-                // answer.
-                answer: !working,
-                listening,
+            card(
+                Body::conversation(&said, live.as_deref(), width, theme),
+                !working,
                 queued,
-            },
+            ),
             Freshness::Files(recorded.into_iter().chain(streaming).chain(log).collect()),
         );
     }
@@ -4223,41 +4215,29 @@ fn card_of(
         // paint over none of them.
         .filter(|screen| !crate::ansi::strip_ansi(screen).trim().is_empty());
 
+    // No falling back to the answer a finished turn left, either: a card that
+    // is asking shows nothing older than the question.
+    let body = match (asks, answered) {
+        (true, _) => Body::none(),
+        (_, true) => Body::said(view.state.result.as_deref().unwrap_or_default()),
+        _ => {
+            let said = screen
+                .as_deref()
+                .or(view.state.result.as_deref())
+                .unwrap_or_default();
+            // An agent whose command has ended has no pane left to hold the
+            // vendor's furniture, so nothing is cut off what it left. A live
+            // pane is cut with the anchors of the vendor the record says was
+            // started in it: every one of them is that vendor's own, and
+            // claude's find nothing on a pi screen.
+            match view.phase().is_terminal() {
+                true => Body::said(said),
+                false => Body::screen(own_chrome(&view.meta), said),
+            }
+        }
+    };
     (
-        Card {
-            id: view.id().to_string(),
-            phase: view.phase(),
-            question: view.state.question.clone(),
-            options: view.state.options.clone(),
-            walked: view.state.walked,
-            kind: view.kind(),
-            // No falling back to the answer a finished turn left, either: a
-            // card that is asking shows nothing older than the question.
-            body: match (asks, answered) {
-                (true, _) => Body::none(),
-                (_, true) => Body::said(view.state.result.as_deref().unwrap_or_default()),
-                _ => {
-                    let said = screen
-                        .as_deref()
-                        .or(view.state.result.as_deref())
-                        .unwrap_or_default();
-                    // An agent whose command has ended has no pane left to
-                    // hold the vendor's furniture, so nothing is cut off what
-                    // it left. A live pane is cut with the anchors of the
-                    // vendor the record says was started in it: every one of
-                    // them is that vendor's own, and claude's find nothing on
-                    // a pi screen.
-                    match view.phase().is_terminal() {
-                        true => Body::said(said),
-                        false => Body::screen(own_chrome(&view.meta), said),
-                    }
-                }
-            },
-            changes: false,
-            answer: answered,
-            listening,
-            queued,
-        },
+        card(body, answered, queued),
         // Every card that reaches here is a question, a capture, or the words
         // the record itself holds — and the record is read again on the wall's
         // own cadence, which is the cadence these were taken at before there
