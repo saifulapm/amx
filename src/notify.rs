@@ -207,16 +207,39 @@ enum Fork {
 /// * **The pane's session.** Stopping an agent signals the pane's process
 ///   group, and telling somebody about the agent is not part of the agent.
 fn detach() -> Fork {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+
+    // SIGHUP is ignored across the fork. After `_exit` the pane's shell exits
+    // at once, and the kernel hangs up its foreground process group, which the
+    // child is still in until `setsid`. An ignored signal is discarded rather
+    // than left pending, so the child cannot die in that window.
+    let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+    // SAFETY: installing SIG_IGN runs no handler code.
+    let before = unsafe { sigaction(Signal::SIGHUP, &ignore) }.ok();
+    let restore = || {
+        if let Some(before) = &before {
+            // SAFETY: puts back the disposition read above.
+            let _ = unsafe { sigaction(Signal::SIGHUP, before) };
+        }
+    };
+
     // SAFETY: the hook is single threaded, and between this fork and the
     // command it starts the child reads its own environment and nothing else.
     match unsafe { nix::unistd::fork() } {
-        Ok(nix::unistd::ForkResult::Parent { .. }) => Fork::Hook,
+        Ok(nix::unistd::ForkResult::Parent { .. }) => {
+            restore();
+            Fork::Hook
+        }
         Ok(nix::unistd::ForkResult::Child) => {
             hand_back_stdio();
             let _ = nix::unistd::setsid();
+            restore();
             Fork::Notifier
         }
-        Err(_) => Fork::Neither,
+        Err(_) => {
+            restore();
+            Fork::Neither
+        }
     }
 }
 
