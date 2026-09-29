@@ -810,7 +810,7 @@ pub fn in_force(walked: &str) -> Vec<u16> {
 /// name of a terminal colour.
 ///
 /// Read from the file so the tests follow the palette when it changes.
-pub fn default_theme(role: &str) -> &'static str {
+fn default_theme(role: &str) -> &'static str {
     include_str!("../../assets/themes/default.toml")
         .lines()
         .find_map(|line| line.strip_prefix(&format!("{role} = ")))
@@ -836,7 +836,7 @@ pub fn text_in((r, g, b): (u8, u8, u8)) -> String {
 }
 
 /// The SGR parameters tmux writes for text in one of the eight named colours.
-pub fn text_named(said: &str) -> String {
+fn text_named(said: &str) -> String {
     let at = [
         "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
     ]
@@ -856,7 +856,7 @@ pub fn foreground(role: &str) -> String {
 }
 
 /// The SGR parameters for a background in a default-theme role.
-pub fn background(role: &str) -> String {
+fn background(role: &str) -> String {
     let (r, g, b) = rgb(default_theme(role));
     format!("48;2;{r};{g};{b}")
 }
