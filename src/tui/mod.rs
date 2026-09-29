@@ -3724,7 +3724,7 @@ impl Screen {
     /// typed a minute ago. Blank takes back what was kept there, by the rule
     /// [`paint::Scroll::remark`] holds for a line stepped off with nothing on
     /// it: an emptied line is a note somebody has withdrawn.
-    pub(super) fn review(&self, words: &str) -> BTreeMap<Option<usize>, String> {
+    fn review(&self, words: &str) -> BTreeMap<Option<usize>, String> {
         let mut review: BTreeMap<_, _> = self.scroll.remarks().into_iter().collect();
         let at = self.noting();
         match words.trim().is_empty() {
@@ -3737,7 +3737,7 @@ impl Screen {
     /// The hunks that review would carry a note on, in patch order. Its
     /// opening words are on no hunk and are no note, so an opening alone is
     /// nothing to send.
-    pub(super) fn noted(&self, words: &str) -> Vec<usize> {
+    fn noted(&self, words: &str) -> Vec<usize> {
         self.review(words).keys().copied().flatten().collect()
     }
 
@@ -3766,7 +3766,7 @@ impl Screen {
     /// Read against the patch the card is holding now, the way the rule over
     /// the card is — a cursor left on the twelfth hunk of a patch that has
     /// since become a shorter one is standing on nothing.
-    pub(super) fn at_hunk(&self) -> Option<(usize, &Hunk)> {
+    fn at_hunk(&self) -> Option<(usize, &Hunk)> {
         let at = self.scroll.at_hunk()?;
         let hunk = self.card.as_ref()?.body.hunks().get(at)?;
         Some((at, hunk))
@@ -4338,7 +4338,7 @@ fn own_chrome(meta: &crate::store::Meta) -> &'static crate::furniture::Furniture
 ///
 /// Read once, when the view opens: it is the terminal's, and the terminal does
 /// not change hands while somebody is looking at it.
-pub struct Here {
+struct Here {
     /// The tmux server's own pid, which is what says whether an agent is on
     /// *this* server. One server can be addressed by two sockets, so the
     /// sockets themselves cannot be compared.
