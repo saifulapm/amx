@@ -411,6 +411,13 @@ fn a_codex_that_never_took_a_turn_has_no_session_to_resume_or_fork() {
     let amx = Harness::new();
     let id = "untrusted-a1b";
     start(&amx, id, "stops-on-trust", Some(TASK));
+    amx.until_shown(id, "Trust and continue");
+    // Age the fresh record so the reader takes the pane now instead of after
+    // the freshness window.
+    let mut state = amx.state(id);
+    state["since"] = json!(1);
+    state["last_event"] = json!(1);
+    amx.set_state(id, state);
     let agent = until_read(&amx, id, "waiting");
     assert_eq!(agent["rule"], "folder_trust", "{agent}");
     assert_eq!(amx.meta(id)["session"], Value::Null);
