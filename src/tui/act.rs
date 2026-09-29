@@ -2213,6 +2213,11 @@ pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
     let dir = meta.worktree.clone().unwrap_or_else(|| meta.dir.clone());
+    // Otherwise the spawn fails with ENOENT, which reads as the command
+    // missing. A stop removes a clean tree, so this is the common case.
+    if !dir.is_dir() {
+        bail!("{} is gone", dir.display());
+    }
 
     let ended = std::process::Command::new("sh")
         .arg("-c")
@@ -2707,6 +2712,20 @@ mod tests {
             run_bound(root.path(), "never-made-abc", "true").unwrap_err()
         );
         assert!(said.contains("no agent"), "{said}");
+    }
+
+    #[test]
+    fn a_bound_key_on_an_agent_whose_tree_is_gone_says_so() {
+        let root = TempDir::new().unwrap();
+        let here = TempDir::new().unwrap();
+        let tree = here.path().join("removed-tree");
+        record(root.path(), "fix-login-a1b", here.path(), Some(&tree));
+
+        let said = format!(
+            "{:#}",
+            run_bound(root.path(), "fix-login-a1b", "true").unwrap_err()
+        );
+        assert_eq!(said, format!("{} is gone", tree.display()));
     }
 
     /// One question of a call, as the payload records one: `multi` is whether
