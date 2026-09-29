@@ -611,6 +611,34 @@ mod tests {
     }
 
     #[test]
+    fn fork_carries_a_prompt_on_the_prompt_flag_and_drops_the_old_one() {
+        // A vendor that takes a message only on a flag was handed its task as
+        // one `--say=` word, with a popup's space after it. The copy drops
+        // that word and gets its own prompt the same way.
+        let saying = Vendor {
+            prompt_flag: Some("--say"),
+            popups: &['#'],
+            ends_options: None,
+            ..BRANCHING
+        };
+        let started = handoff(&["second", "--alone", "--say=look at #3 "], "look at #3");
+        assert_eq!(
+            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&saying)),
+            ["second", "fork", "abc-123", "--alone"]
+        );
+        assert_eq!(
+            build_copy(
+                &started,
+                "abc-123",
+                "port-it-b2c",
+                Some("-v on #4"),
+                Some(&saying)
+            ),
+            ["second", "fork", "abc-123", "--alone", "--say=-v on #4 "]
+        );
+    }
+
+    #[test]
     fn fork_puts_a_task_of_its_own_where_a_prompt_goes() {
         // The task the original was given is not handed over again — the copy
         // is the conversation that answered it — and a new one goes last,
