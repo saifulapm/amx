@@ -281,15 +281,7 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
     let task = match task_of(args) {
         Ok(task) => task,
         Err(no_task) => {
-            writeln!(
-                problems,
-                "{}",
-                said(
-                    Severity::Warned,
-                    &format!("amx new: {}", no_task.said),
-                    to_terminal
-                )
-            )?;
+            warned(&mut problems, &no_task.said, to_terminal)?;
             return Ok(no_task.code);
         }
     };
@@ -304,6 +296,15 @@ pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
         &mut out,
         &mut problems,
         to_terminal,
+    )
+}
+
+/// Write `what` to `problems` as a warning from `amx new`.
+fn warned(problems: &mut impl Write, what: &str, to_terminal: bool) -> std::io::Result<()> {
+    writeln!(
+        problems,
+        "{}",
+        said(Severity::Warned, &format!("amx new: {what}"), to_terminal)
     )
 }
 
@@ -416,26 +417,14 @@ fn run_aloud(
         let (personal, project) = role_places(dir)?;
         let (found, warnings) = role::for_name(&personal, &project, &name);
         for warning in warnings {
-            writeln!(
-                problems,
-                "{}",
-                said(
-                    Severity::Warned,
-                    &format!("amx new: {warning}"),
-                    to_terminal
-                )
-            )?;
+            warned(problems, &warning, to_terminal)?;
         }
         let Some(role) = found else {
             let known = role::names_under(&personal, &project);
-            writeln!(
+            warned(
                 problems,
-                "{}",
-                said(
-                    Severity::Warned,
-                    &format!("amx new: no role `{name}`: {}", known.join(", ")),
-                    to_terminal
-                )
+                &format!("no role `{name}`: {}", known.join(", ")),
+                to_terminal,
             )?;
             return Ok(exit::USAGE);
         };
@@ -467,15 +456,7 @@ fn run_aloud(
     let launch = match Launch::resolve(config, args) {
         Ok(launch) => launch,
         Err(refusal) => {
-            writeln!(
-                problems,
-                "{}",
-                said(
-                    Severity::Warned,
-                    &format!("amx new: {refusal}"),
-                    to_terminal
-                )
-            )?;
+            warned(problems, &refusal, to_terminal)?;
             return Ok(exit::USAGE);
         }
     };
@@ -486,17 +467,13 @@ fn run_aloud(
     // clean up and nobody has to answer for a pane that should not exist.
     let lineage = Lineage::of(root, args);
     if lineage.depth as usize > config.subagent_depth {
-        writeln!(
+        warned(
             problems,
-            "{}",
-            said(
-                Severity::Warned,
-                &format!(
-                    "amx new: subagent_depth is {} and this spawn would be at depth {}",
-                    config.subagent_depth, lineage.depth
-                ),
-                to_terminal
-            )
+            &format!(
+                "subagent_depth is {} and this spawn would be at depth {}",
+                config.subagent_depth, lineage.depth
+            ),
+            to_terminal,
         )?;
         return Ok(exit::BLOCKED);
     }
@@ -526,11 +503,7 @@ fn run_aloud(
     let ((id, agent_dir), _place) = match taken {
         Ok(taken) => taken,
         Err(full) => {
-            writeln!(
-                problems,
-                "{}",
-                said(Severity::Warned, &format!("amx new: {full}"), to_terminal)
-            )?;
+            warned(problems, &full, to_terminal)?;
             return Ok(exit::BLOCKED);
         }
     };
@@ -750,11 +723,7 @@ fn give_everything_back(
     to_terminal: bool,
 ) {
     let mut say = |what: String| {
-        let _ = writeln!(
-            problems,
-            "{}",
-            said(Severity::Warned, &format!("amx new: {what}"), to_terminal)
-        );
+        let _ = warned(problems, &what, to_terminal);
     };
     if let Some((server, pane)) = &taken.placed
         && let Err(e) = server.kill_pane(pane)
@@ -1137,11 +1106,7 @@ fn furnish_the_tree(
     ) {
         Ok(missing) => {
             for path in missing {
-                writeln!(
-                    problems,
-                    "{}",
-                    said(Severity::Warned, &format!("amx new: {path}"), to_terminal)
-                )?;
+                warned(problems, &path, to_terminal)?;
             }
             Ok(())
         }
@@ -1169,15 +1134,7 @@ fn take_back(
 ) {
     let branch = worktree::named_by_amx(id, &tree.branch).then_some(tree.branch.as_str());
     if let Err(undone) = worktree::discard(repo, &tree.path, branch) {
-        let _ = writeln!(
-            problems,
-            "{}",
-            said(
-                Severity::Warned,
-                &format!("amx new: {undone:#}"),
-                to_terminal
-            )
-        );
+        let _ = warned(problems, &format!("{undone:#}"), to_terminal);
     }
 }
 
@@ -1241,11 +1198,7 @@ fn trust_the_tree(
         Ok(true) => Some(store),
         Ok(false) => None,
         Err(e) => {
-            let _ = writeln!(
-                problems,
-                "{}",
-                said(Severity::Warned, &format!("amx new: {e:#}"), to_terminal)
-            );
+            let _ = warned(problems, &format!("{e:#}"), to_terminal);
             None
         }
     }
