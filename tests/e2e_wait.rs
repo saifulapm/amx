@@ -12,7 +12,6 @@ mod common;
 use common::Harness;
 use serde_json::json;
 use std::process::Output;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The code the caller branches on.
 fn code(out: &Output) -> i32 {
@@ -35,10 +34,7 @@ fn stderr(out: &Output) -> String {
 /// `amx new` writes `since` as it creates the record, and an agent that is only
 /// just starting is what these tests are waiting on.
 fn started(id: &str, amx: &Harness) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock")
-        .as_secs();
+    let now = common::now();
     amx.set_state(
         id,
         json!({ "state": "starting", "since": now, "last_event": now }),

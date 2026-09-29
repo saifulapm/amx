@@ -8,9 +8,9 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, now, something_else_on_the_server, watching};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// The id the vendor's stand-in announces for a session it was asked to
 /// continue, which is what says a resume reached the vendor.
@@ -53,49 +53,6 @@ fn start(amx: &Harness, id: &str, scenario: &str) {
         "amx new: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// Something on the server that is not the agent under test, the way a machine
-/// somebody works on has something else on it.
-///
-/// Losing the last pane takes the server with it, and a park is a test that
-/// means to lose a pane: the server that starts again hands the next pane the
-/// id the dead one had, which is a test measuring tmux rather than amx.
-fn something_else_on_the_server(amx: &Harness) {
-    amx.tmux(&[
-        "new-session",
-        "-d",
-        "--",
-        "sh",
-        "-c",
-        "while :; do sleep 0.05; done",
-    ]);
-}
-
-/// A person looking at the agent's session: a tmux client of their own, on a
-/// terminal of its own, the way somebody who typed `tmux attach` has one.
-///
-/// tmux's two variables are cleared for it, because the pane the client starts
-/// in is itself inside tmux and a client that knows that declines to nest.
-fn watching(amx: &Harness, session: &str) {
-    amx.tmux(&[
-        "new-session",
-        "-d",
-        "--",
-        "env",
-        "-u",
-        "TMUX",
-        "-u",
-        "TMUX_PANE",
-        "tmux",
-        "-L",
-        amx.socket(),
-        "-f",
-        "/dev/null",
-        "attach-session",
-        "-t",
-        session,
-    ]);
 }
 
 /// What a view leaves behind when somebody pins a row with `ctrl+t`.
@@ -155,13 +112,6 @@ fn until_the_second_is_up(amx: &Harness, id: &str) {
         .as_u64()
         .unwrap_or_else(|| panic!("no idle moment recorded for {id}"));
     amx.until("the idle second to pass", || (now() > since).then_some(()));
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_secs()
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, clients_on, something_else_on_the_server, watching};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -115,40 +115,6 @@ fn a_terminal_inside_tmux(amx: &Harness, args: &[&str]) -> String {
         ],
         args,
     )
-}
-
-/// A person looking at a session: a tmux client of their own, on a terminal of
-/// its own, the way somebody who typed `tmux attach` has one.
-///
-/// tmux's two variables are cleared for it, because the pane the client starts
-/// in is itself inside tmux and a client that knows that declines to nest.
-fn watching(amx: &Harness, session: &str) -> String {
-    amx.tmux(&[
-        "new-session",
-        "-d",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "--",
-        "env",
-        "-u",
-        "TMUX",
-        "-u",
-        "TMUX_PANE",
-        "tmux",
-        "-L",
-        amx.socket(),
-        "-f",
-        "/dev/null",
-        "attach-session",
-        "-t",
-        session,
-    ])
-}
-
-/// The terminals of whoever is looking at a session, if anybody is.
-fn clients_on(amx: &Harness, session: &str) -> String {
-    amx.tmux(&["list-clients", "-t", session, "-F", "#{client_tty}"])
 }
 
 /// Wait until a terminal has been handed to this agent's session.
@@ -329,23 +295,6 @@ fn adopt_as(amx: &Harness, id: &str, pane: &str, session: (&str, &str)) {
         "amx adopt: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// Something on the server that is not the agent under test, the way a machine
-/// somebody works on has something else on it.
-///
-/// Losing the last pane takes the server with it, and a server that starts
-/// again hands the next pane the id the dead one had — which is a test
-/// measuring tmux rather than amx.
-fn something_else_on_the_server(amx: &Harness) {
-    amx.tmux(&[
-        "new-session",
-        "-d",
-        "--",
-        "sh",
-        "-c",
-        "while :; do sleep 0.05; done",
-    ]);
 }
 
 /// Wait until the pane is gone, however it went.

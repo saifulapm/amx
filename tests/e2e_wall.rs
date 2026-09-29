@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, pane_field};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -118,11 +118,6 @@ impl Drop for Bare {
     }
 }
 
-/// Ask the harness's server about one of its panes, windows or sessions.
-fn field(amx: &Harness, target: &str, format: &str) -> String {
-    amx.tmux(&["display-message", "-p", "-t", target, format])
-}
-
 /// Start an agent that keeps running, with `env` on top of the harness's own.
 fn start(amx: &Harness, env: &[(&str, &str)], task: &str) -> Output {
     let mut command = amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), task]);
@@ -160,12 +155,12 @@ fn an_agent_lives_in_a_session_named_for_it() {
 
     let pane = amx.pane_of(&id);
     assert_eq!(
-        field(&amx, &pane, "#{session_name}"),
+        pane_field(&amx, &pane, "#{session_name}"),
         format!("amx-{id}"),
         "one session per agent, and the id is what it is called"
     );
 
-    let session = field(&amx, &pane, "#{session_id}");
+    let session = pane_field(&amx, &pane, "#{session_id}");
     assert_eq!(
         amx.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"])
             .lines()
@@ -187,7 +182,7 @@ fn an_agent_started_from_inside_tmux_leaves_the_window_where_it_was() {
     // `amx new` used to take the screen out from under whoever typed it.
     let amx = Harness::new();
     let (env, pane) = inside_tmux(&amx);
-    let session = field(&amx, &pane, "#{session_id}");
+    let session = pane_field(&amx, &pane, "#{session_id}");
 
     // A second window, so the one being looked at is a choice and not the
     // only thing there is to look at.
@@ -202,7 +197,7 @@ fn an_agent_started_from_inside_tmux_leaves_the_window_where_it_was() {
         "while :; do sleep 0.05; done",
     ]);
     let windows = amx.tmux(&["list-windows", "-t", &session, "-F", "#{window_id}"]);
-    let watching = field(&amx, &session, "#{window_id}");
+    let watching = pane_field(&amx, &session, "#{window_id}");
 
     let mut command =
         amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"]);
@@ -211,7 +206,7 @@ fn an_agent_started_from_inside_tmux_leaves_the_window_where_it_was() {
     let id = id_of(&command.output().expect("running amx new"));
 
     assert_eq!(
-        field(&amx, &session, "#{window_id}"),
+        pane_field(&amx, &session, "#{window_id}"),
         watching,
         "the window a person was looking at is the window they are still looking at"
     );
@@ -221,7 +216,7 @@ fn an_agent_started_from_inside_tmux_leaves_the_window_where_it_was() {
         "and nothing was added to the session they were in"
     );
     assert_eq!(
-        field(&amx, &amx.pane_of(&id), "#{session_name}"),
+        pane_field(&amx, &amx.pane_of(&id), "#{session_name}"),
         format!("amx-{id}"),
         "the agent is on the same server, in a session of its own"
     );
@@ -242,7 +237,7 @@ fn agents_never_share_a_window_and_never_wait_on_each_other() {
 
     let sessions: Vec<String> = ids
         .iter()
-        .map(|id| field(&amx, &amx.pane_of(id), "#{session_name}"))
+        .map(|id| pane_field(&amx, &amx.pane_of(id), "#{session_name}"))
         .collect();
     assert_eq!(
         sessions,
@@ -258,7 +253,7 @@ fn amx_puts_no_window_of_its_own_between_a_person_and_their_agents() {
     // per agent and nothing besides.
     let amx = Harness::new();
     let (env, pane) = inside_tmux(&amx);
-    let theirs = field(&amx, &pane, "#{session_name}");
+    let theirs = pane_field(&amx, &pane, "#{session_name}");
 
     let mut command =
         amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), "look busy"]);

@@ -583,6 +583,179 @@ pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     })
 }
 
+/// Epoch seconds, for records a test writes as though they had just happened.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock")
+        .as_secs()
+}
+
+/// An agent whose command ended `ago` seconds ago: no pane, only the record.
+pub fn finished(amx: &Harness, id: &str, state: &str, ago: u64) {
+    let at = now() - ago;
+    amx.record(id, "%404");
+    amx.set_state(
+        id,
+        json!({
+            "state": state,
+            "exit": 0,
+            "since": at,
+            "last_event": at,
+            "result": "did what it was asked",
+        }),
+    );
+}
+
+/// Every agent amx holds a record for, sorted.
+pub fn agents(amx: &Harness) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Wait for the empty view's one line.
+pub fn until_empty(amx: &Harness, view: &str) {
+    amx.until("the empty view", || {
+        amx.capture(view).contains("nobody asking").then_some(())
+    });
+}
+
+/// Send one key, by tmux's name for it.
+pub fn press(amx: &Harness, view: &str, key: &str) {
+    amx.tmux(&["send-keys", "-t", view, key]);
+}
+
+/// Type text literally, as a person types it.
+pub fn types(amx: &Harness, view: &str, text: &str) {
+    amx.tmux(&["send-keys", "-t", view, "-l", text]);
+}
+
+/// A mouse event as the raw SGR bytes a terminal sends: button 0 is the left
+/// button, 64 and 65 the wheel, 35 motion. Column and row count from one.
+pub fn mouse(amx: &Harness, view: &str, code: u16, column: u16, row: u16, press: bool) {
+    let end = if press { 'M' } else { 'm' };
+    types(amx, view, &format!("\u{1b}[<{code};{column};{row}{end}"));
+}
+
+/// A left click: press and release on one cell.
+pub fn click(amx: &Harness, view: &str, column: u16, row: u16) {
+    mouse(amx, view, 0, column, row, true);
+    mouse(amx, view, 0, column, row, false);
+}
+
+/// The screen with the escapes tmux wrote for its colours.
+pub fn coloured(amx: &Harness, pane: &str) -> String {
+    amx.tmux(&["capture-pane", "-p", "-e", "-J", "-t", pane])
+}
+
+/// The last line holding `text`, escapes and all.
+///
+/// The last, because the header repeats the group names and the list is below
+/// it.
+pub fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
+    let drawn = coloured(amx, view);
+    drawn
+        .lines()
+        .rfind(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
+        .to_string()
+}
+
+/// One tmux format variable of a pane, window or session.
+pub fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
+    amx.tmux(&["display-message", "-p", "-t", pane, format])
+}
+
+/// Size the pane's window. A detached window defaults to 80x24.
+pub fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
+    amx.tmux(&["set-option", "-w", "-t", view, "window-size", "manual"]);
+    amx.tmux(&[
+        "resize-window",
+        "-t",
+        view,
+        "-x",
+        &width.to_string(),
+        "-y",
+        &height.to_string(),
+    ]);
+}
+
+/// A 60x24 pane showing exactly `rows`, standing in for an agent's pane.
+pub fn a_pane_showing(amx: &Harness, rows: &[&str]) -> String {
+    let drawn: String = rows.iter().map(|row| format!("{row}\\n")).collect();
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-x",
+        "60",
+        "-y",
+        "24",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "sh",
+        "-c",
+        &format!("printf '{drawn}'; while :; do sleep 0.05; done"),
+    ])
+}
+
+/// A tmux client attached to `session` from a pane of its own, as a person
+/// running `tmux attach` has. Answers with that pane.
+///
+/// `TMUX` and `TMUX_PANE` are cleared, since a client inside tmux refuses to
+/// nest.
+pub fn watching(amx: &Harness, session: &str) -> String {
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+        "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
+        "tmux",
+        "-L",
+        amx.socket(),
+        "-f",
+        "/dev/null",
+        "attach-session",
+        "-t",
+        session,
+    ])
+}
+
+/// The ttys of the clients attached to `session`.
+pub fn clients_on(amx: &Harness, session: &str) -> String {
+    amx.tmux(&["list-clients", "-t", session, "-F", "#{client_tty}"])
+}
+
+/// A session that is not the agent under test.
+///
+/// Losing the last pane takes the server down, and a restarted server reuses
+/// the dead pane's id.
+pub fn something_else_on_the_server(amx: &Harness) {
+    amx.tmux(&[
+        "new-session",
+        "-d",
+        "--",
+        "sh",
+        "-c",
+        "while :; do sleep 0.05; done",
+    ]);
+}
+
 /// Where the vendor's stand-in and its scenarios live.
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_claude")

@@ -9,7 +9,6 @@ mod common;
 use common::Harness;
 use serde_json::json;
 use std::process::{Output, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The code the caller branches on.
 fn code(out: &Output) -> i32 {
@@ -408,10 +407,7 @@ fn parked_on_the_box(amx: &Harness, id: &str) {
 fn parked_on_a_menu(amx: &Harness, id: &str) {
     amx.play(id, "works-without-end");
     amx.until_state(id, "working");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock")
-        .as_secs();
+    let now = common::now();
     amx.set_state(
         id,
         json!({

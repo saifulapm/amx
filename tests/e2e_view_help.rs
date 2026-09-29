@@ -7,49 +7,7 @@
 
 mod common;
 
-use common::Harness;
-
-/// What is on the view's screen now.
-fn screen(amx: &Harness, pane: &str) -> String {
-    amx.capture(pane)
-}
-
-/// Wait for a view with nothing in it, which is the one line amx has for a
-/// wall nobody has put anything on.
-fn until_empty(amx: &Harness, view: &str) {
-    amx.until("the empty view", || {
-        screen(amx, view).contains("nobody asking").then_some(())
-    });
-}
-
-/// Type a line at the view, as a person types one.
-fn types(amx: &Harness, view: &str, text: &str) {
-    amx.tmux(&["send-keys", "-t", view, "-l", text]);
-}
-
-fn press(amx: &Harness, view: &str, key: &str) {
-    amx.tmux(&["send-keys", "-t", view, key]);
-}
-
-fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
-    amx.tmux(&["display-message", "-p", "-t", pane, format])
-}
-
-/// Give the pane a terminal of this shape. A window with nobody attached to it
-/// takes tmux's own default of eighty by twenty-four, and the overlay is drawn
-/// for a screen wider than that.
-fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
-    amx.tmux(&["set-option", "-w", "-t", view, "window-size", "manual"]);
-    amx.tmux(&[
-        "resize-window",
-        "-t",
-        view,
-        "-x",
-        &width.to_string(),
-        "-y",
-        &height.to_string(),
-    ]);
-}
+use common::{Harness, pane_field, press, resize, types, until_empty};
 
 #[test]
 fn acts_the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
@@ -64,7 +22,7 @@ fn acts_the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
             let dead = amx.tmux(&["display-message", "-p", "-t", view, "#{pane_dead}"]);
             (dead == "1").then_some(())
         });
-        screen(&amx, view)
+        amx.capture(view)
     };
 
     let view = amx.in_a_terminal(&[], &[]);
@@ -95,7 +53,7 @@ fn keymap_the_hint_row_says_what_the_line_under_the_cursor_answers_to() {
     // the last thing the row sheds and so the way to find it.
     let hints = |want: &str| {
         amx.until(want, || {
-            screen(&amx, &view)
+            amx.capture(&view)
                 .lines()
                 .rfind(|line| line.contains("? keys"))
                 .filter(|row| row.contains(want))
@@ -137,9 +95,7 @@ fn keymap_a_chord_the_view_never_bound_leaves_it_holding_the_screen() {
     // something only a view still holding the screen could draw.
     press(&amx, &view, "?");
     amx.until("the keys", || {
-        screen(&amx, &view)
-            .contains("walk the agents")
-            .then_some(())
+        amx.capture(&view).contains("walk the agents").then_some(())
     });
     assert_eq!(
         pane_field(&amx, &view, "#{pane_dead}"),
@@ -164,7 +120,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     // Waited for by the last key of the last group, so a screen caught halfway
     // through being written is not read as a key that is missing.
     let keys = amx.until("the keys", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn
             .contains("which vendor runs it, for one spawn")
             .then_some(drawn)
@@ -250,7 +206,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     // row at the foot that says how to reach the rest. A screen caught halfway
     // through being written still carries the list's own foot under the keys.
     let first = amx.until("the keys, the count and the foot", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("walk the agents")
             && drawn.contains(" of 55")
             && drawn.contains("j k scroll"))
@@ -266,7 +222,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     // back.
     press(&amx, &view, "G");
     let last = amx.until("the foot of the keys", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn
             .contains("which vendor runs it, for one spawn")
             .then_some(drawn)
@@ -285,7 +241,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     press(&amx, &view, "/");
     types(&amx, &view, "worktree");
     let found = amx.until("the keys that answer to it", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("find worktree").then_some(drawn)
     });
     assert!(
@@ -301,9 +257,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     // way out.
     press(&amx, &view, "Escape");
     amx.until("every key back", || {
-        screen(&amx, &view)
-            .contains("walk the agents")
-            .then_some(())
+        amx.capture(&view).contains("walk the agents").then_some(())
     });
     press(&amx, &view, "Escape");
     until_empty(&amx, &view);
@@ -328,7 +282,7 @@ fn q_closes_the_view_and_gives_the_screen_back() {
     });
     assert_eq!(status, "0", "closing a view is not a failure");
     assert!(
-        !screen(&amx, &view).contains("nobody asking"),
+        !amx.capture(&view).contains("nobody asking"),
         "the screen the view borrowed is handed back"
     );
 }

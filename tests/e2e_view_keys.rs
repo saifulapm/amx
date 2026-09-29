@@ -8,40 +8,8 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, press, resize, until_empty};
 use serde_json::json;
-
-/// What is on the view's screen now.
-fn screen(amx: &Harness, pane: &str) -> String {
-    amx.capture(pane)
-}
-
-/// Wait for a view with nothing in it, which is the one line amx has for a
-/// wall nobody has put anything on.
-fn until_empty(amx: &Harness, view: &str) {
-    amx.until("the empty view", || {
-        screen(amx, view).contains("nobody asking").then_some(())
-    });
-}
-
-fn press(amx: &Harness, view: &str, key: &str) {
-    amx.tmux(&["send-keys", "-t", view, key]);
-}
-
-/// Give the pane a terminal wide enough for the keys screen's own column and
-/// deep enough that the foot of the document holds a group and its keys.
-fn resize(amx: &Harness, view: &str, width: u16, height: u16) {
-    amx.tmux(&["set-option", "-w", "-t", view, "window-size", "manual"]);
-    amx.tmux(&[
-        "resize-window",
-        "-t",
-        view,
-        "-x",
-        &width.to_string(),
-        "-y",
-        &height.to_string(),
-    ]);
-}
 
 /// The foot of the keys screen, which is where a group somebody bound is
 /// drawn: after the last of amx's own, because the keys the view binds are the
@@ -53,7 +21,7 @@ fn keys_screen(amx: &Harness, view: &str) -> String {
     press(amx, view, "?");
     press(amx, view, "G");
     amx.until("the foot of the keys", || {
-        let drawn = screen(amx, view);
+        let drawn = amx.capture(view);
         drawn
             .contains("which vendor runs it, for one spawn")
             .then_some(drawn)
@@ -78,7 +46,7 @@ fn a_bound_key_runs_its_command_where_the_agent_works_and_the_view_takes_the_scr
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the agent's row", || {
-        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+        amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
     press(&amx, &view, "x");
@@ -103,9 +71,7 @@ fn a_bound_key_runs_its_command_where_the_agent_works_and_the_view_takes_the_scr
     // one still holding the screen could answer.
     press(&amx, &view, "?");
     amx.until("the keys", || {
-        screen(&amx, &view)
-            .contains("walk the agents")
-            .then_some(())
+        amx.capture(&view).contains("walk the agents").then_some(())
     });
     assert!(
         amx.pane_alive(&view),
@@ -144,7 +110,7 @@ fn a_spelling_the_view_cannot_read_is_said_once_and_binds_nothing() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let said = amx.until("the view to say which spelling it could not read", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("shift+z").then_some(drawn)
     });
     assert!(
@@ -171,7 +137,7 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let said = amx.until("the view to say the key is its own", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("ctrl+x").then_some(drawn)
     });
     assert!(

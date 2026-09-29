@@ -28,7 +28,7 @@
 
 mod common;
 
-use common::{AMX, Harness};
+use common::{AMX, Harness, now};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -332,14 +332,6 @@ const PIS_WORDS: [&str; 2] = ["agent_start", "agent_settled"];
 /// What a turn answered, as pi reports it when the turn settles and as the
 /// scenarios that report one write it.
 const ANSWERED: &str = "I moved the timeout into the config, and the tests pass.";
-
-/// The clock every stamp on a record is kept in.
-fn epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("a clock set after 1970")
-        .as_secs()
-}
 
 /// Everything the stand-in has said in this pane, including what has scrolled
 /// off it.
@@ -2042,7 +2034,7 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
         json!({ "state": "working", "since": 1, "last_event": 1 }),
     );
 
-    let looked = epoch();
+    let looked = now();
     let out = amx.amx(&["result", id, "--timeout", "1"]);
     assert_eq!(
         out.status.code(),
@@ -2770,7 +2762,7 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
     amx.until("the turn to be over", || {
         row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
     });
-    let at = epoch();
+    let at = now();
     amx.set_state(
         id,
         json!({

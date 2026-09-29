@@ -7,40 +7,10 @@
 
 mod common;
 
-use common::Harness;
+use common::{
+    Harness, agents, coloured, coloured_line, finished, pane_field, press, types, until_empty,
+};
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Epoch seconds, for the records a test writes as though they had just
-/// happened.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock")
-        .as_secs()
-}
-
-/// An agent whose command has ended: no pane, and the record is the whole
-/// story. `ago` is how long since it ended, which is what orders them.
-fn finished(amx: &Harness, id: &str, state: &str, ago: u64) {
-    let at = now() - ago;
-    amx.record(id, "%404");
-    amx.set_state(
-        id,
-        json!({
-            "state": state,
-            "exit": 0,
-            "since": at,
-            "last_event": at,
-            "result": "did what it was asked",
-        }),
-    );
-}
-
-/// What is on the view's screen now.
-fn screen(amx: &Harness, pane: &str) -> String {
-    amx.capture(pane)
-}
 
 /// Whether this line of the screen is the row of an agent the view is calling
 /// `name`: past the gutter, the mark and the space after it, which is where a
@@ -48,12 +18,6 @@ fn screen(amx: &Harness, pane: &str) -> String {
 /// at the left edge and does not answer to this.
 fn a_row_called(line: &str, name: &str) -> bool {
     line.chars().skip(3).collect::<String>().starts_with(name)
-}
-
-/// The same screen with the colours the view drew it in, as the escapes tmux
-/// wrote them: what a bar is made of cannot be read off the text.
-fn coloured(amx: &Harness, pane: &str) -> String {
-    amx.tmux(&["capture-pane", "-p", "-e", "-J", "-t", pane])
 }
 
 /// The SGR attributes in force where `word` starts on this captured line.
@@ -155,46 +119,6 @@ fn foreground(role: &str) -> String {
 fn bar() -> String {
     let (r, g, b) = default_theme("cursor");
     format!("48;2;{r};{g};{b}")
-}
-
-/// The captured line holding this text, escapes and all.
-fn coloured_line(amx: &Harness, view: &str, text: &str) -> String {
-    let drawn = coloured(amx, view);
-    drawn
-        .lines()
-        .rfind(|line| line.contains(text))
-        .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
-        .to_string()
-}
-
-/// Every agent amx holds a record for.
-fn agents(amx: &Harness) -> Vec<String> {
-    let mut ids: Vec<String> = std::fs::read_dir(amx.state_root())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    ids.sort();
-    ids
-}
-
-/// Wait for a view with nothing in it, which is the one line amx has for a
-/// wall nobody has put anything on.
-fn until_empty(amx: &Harness, view: &str) {
-    amx.until("the empty view", || {
-        screen(amx, view).contains("nobody asking").then_some(())
-    });
-}
-
-/// Type a line at the view, as a person types one.
-fn types(amx: &Harness, view: &str, text: &str) {
-    amx.tmux(&["send-keys", "-t", view, "-l", text]);
-}
-
-fn press(amx: &Harness, view: &str, key: &str) {
-    amx.tmux(&["send-keys", "-t", view, key]);
 }
 
 /// Paste text at the view the way a terminal delivers a paste: in one
@@ -336,10 +260,6 @@ fn command_of(amx: &Harness, id: &str) -> Vec<String> {
         .collect()
 }
 
-fn pane_field(amx: &Harness, pane: &str, format: &str) -> String {
-    amx.tmux(&["display-message", "-p", "-t", pane, format])
-}
-
 /// An `$EDITOR` that says it has the screen and holds it until the test drops
 /// `let-it-go` in the home it is running under.
 ///
@@ -369,7 +289,7 @@ fn header_says_what_the_next_agent_will_be_started_with() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("the header", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("└ next").then_some(drawn)
     });
 
@@ -407,7 +327,7 @@ fn header_counts_the_machine_against_max_total_where_somebody_set_one() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let drawn = amx.until("the header", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("└ next").then_some(drawn)
     });
 
@@ -443,7 +363,7 @@ fn header_opens_a_view_on_a_project_under_that_projects_own_file() {
 
     let view = amx.in_a_terminal(&[], &["--dir", &repo.to_string_lossy()]);
     let drawn = amx.until("the header", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("└ next").then_some(drawn)
     });
 
@@ -512,21 +432,21 @@ fn header_dials_turn_from_the_keys_and_leave_the_agents_alone() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  default")
             .then_some(())
     });
 
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  fable")
             .then_some(())
     });
 
     press(&amx, &view, "M-w");
     let drawn = amx.until("the worktree dial to turn", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("worktree  none").then_some(drawn)
     });
 
@@ -551,7 +471,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both agents", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
@@ -560,7 +480,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
     types(&amx, &view, "/");
     types(&amx, &view, "s:waiting");
     let drawn = amx.until("the narrowed list", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("ask-a1b") && !drawn.contains("fix-login-b2c")).then_some(drawn)
     });
     assert_eq!(
@@ -572,7 +492,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
     // Enter closes the line and leaves the narrowing standing.
     press(&amx, &view, "Enter");
     let kept = amx.until("the line to go", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("space card").then_some(drawn)
     });
     assert!(
@@ -584,7 +504,7 @@ fn a_filter_line_narrows_the_axis_instead_of_starting_an_agent() {
     // has outlived the line it was typed on.
     press(&amx, &view, "Escape");
     amx.until("the whole fleet again", || {
-        screen(&amx, &view).contains("fix-login-b2c").then_some(())
+        amx.capture(&view).contains("fix-login-b2c").then_some(())
     });
 }
 
@@ -600,7 +520,7 @@ fn a_filter_line_of_two_words_keeps_the_groups_both_of_them_name() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("all three agents", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("ask-a1b") && drawn.contains("busy-b2c") && drawn.contains("fix-login-c3d"))
             .then_some(())
     });
@@ -611,7 +531,7 @@ fn a_filter_line_of_two_words_keeps_the_groups_both_of_them_name() {
     types(&amx, &view, "/");
     types(&amx, &view, "s:waiting s:working");
     let drawn = amx.until("the narrowed list", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("ask-a1b")
             && drawn.contains("busy-b2c")
             && !drawn.contains("fix-login-c3d"))
@@ -625,7 +545,7 @@ fn a_filter_line_of_two_words_keeps_the_groups_both_of_them_name() {
     // Enter closes the line, and the header says the whole of what was typed.
     press(&amx, &view, "Enter");
     let kept = amx.until("the line to go", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("space card").then_some(drawn)
     });
     assert!(
@@ -644,7 +564,7 @@ fn the_composer_starts_an_agent_on_a_line_of_state_tokens() {
     types(&amx, &view, "n");
     types(&amx, &view, "s:waiting");
     let drawn = amx.until("the task on the screen", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ s:waiting").then_some(drawn)
     });
     assert!(
@@ -675,7 +595,7 @@ fn header_reads_as_chrome_with_its_one_colour_on_what_wants_a_person() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
-        screen(&amx, &view).contains("└ next").then_some(())
+        amx.capture(&view).contains("└ next").then_some(())
     });
 
     let drawn = coloured(&amx, &view);
@@ -722,7 +642,7 @@ fn the_composer_starts_an_agent_where_the_view_is() {
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     amx.until("the task on the screen", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("port the importer")
             .then_some(())
     });
@@ -750,7 +670,7 @@ fn the_composer_starts_an_agent_where_the_view_is() {
     // opened from.
     amx.until_state(&id, "idle");
     amx.until("the agent's own row", || {
-        screen(&amx, &view).contains(&id).then_some(())
+        amx.capture(&view).contains(&id).then_some(())
     });
 }
 
@@ -765,9 +685,7 @@ fn the_task_line_brings_back_the_tasks_sent_before_on_the_arrows_in_this_view_an
     let id = composed(&amx);
     assert!(id.starts_with("port-the-importer"), "{id}");
     amx.until("the agent's own row", || {
-        screen(&amx, &view)
-            .contains("port-the-import")
-            .then_some(())
+        amx.capture(&view).contains("port-the-import").then_some(())
     });
 
     // A fresh task line, and up on it is the task just sent, whole, where the
@@ -776,14 +694,14 @@ fn the_task_line_brings_back_the_tasks_sent_before_on_the_arrows_in_this_view_an
     types(&amx, &view, "n");
     press(&amx, &view, "Up");
     amx.until("the task sent before, back on the line", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port the importer")
             .then_some(())
     });
     // Down past the newest is the empty line the walk began on, still open.
     press(&amx, &view, "Down");
     amx.until("the empty line again", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("TASK") && !drawn.contains("❯ port the importer")).then_some(())
     });
 
@@ -792,7 +710,7 @@ fn the_task_line_brings_back_the_tasks_sent_before_on_the_arrows_in_this_view_an
     // closed and seen closed before q, or the two bytes arrive as alt+q.
     press(&amx, &view, "Escape");
     amx.until("the line to close", || {
-        (!screen(&amx, &view).contains("TASK")).then_some(())
+        (!amx.capture(&view).contains("TASK")).then_some(())
     });
     // The pane is held open past the command that was in it, so that closing
     // the view is something this test can wait for rather than a pane that
@@ -807,14 +725,12 @@ fn the_task_line_brings_back_the_tasks_sent_before_on_the_arrows_in_this_view_an
     // this narrow elides the name, and the first view matched the id only
     // because the notice under it named the agent it had just started.
     amx.until("the row in the next view", || {
-        screen(&amx, &next)
-            .contains("port-the-import")
-            .then_some(())
+        amx.capture(&next).contains("port-the-import").then_some(())
     });
     types(&amx, &next, "n");
     press(&amx, &next, "Up");
     amx.until("the task sent before, in the next view", || {
-        screen(&amx, &next)
+        amx.capture(&next)
             .contains("❯ port the importer")
             .then_some(())
     });
@@ -838,7 +754,7 @@ fn the_cursor_lands_on_the_agent_the_line_started() {
     types(&amx, &view, "n");
     types(&amx, &view, "port it");
     amx.until("the task on the screen", || {
-        screen(&amx, &view).contains("❯ port it").then_some(())
+        amx.capture(&view).contains("❯ port it").then_some(())
     });
     press(&amx, &view, "Enter");
 
@@ -877,7 +793,7 @@ fn f_starts_a_copy_of_the_agent_under_the_cursor_on_the_task_the_line_says() {
     press(&amx, &view, "f");
     types(&amx, &view, "use sqlite");
     let drawn = amx.until("the fork line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ use sqlite").then_some(drawn)
     });
     assert!(
@@ -900,7 +816,7 @@ fn f_starts_a_copy_of_the_agent_under_the_cursor_on_the_task_the_line_says() {
     // Waited for rather than read once: the record is there before the
     // frame that says so is drawn, and CI reads between the two.
     amx.until("the view saying both agents", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains(&format!("forked {origin} as {copy}"))
             .then_some(())
     });
@@ -962,7 +878,7 @@ fn f_on_a_command_row_says_there_is_no_conversation_to_copy() {
     // line is opened to type a task nobody could be given.
     press(&amx, &view, "f");
     let drawn = amx.until("what the key said about a command row", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn
             .contains(&format!("{id} is a command, not an agent"))
             .then_some(drawn)
@@ -986,7 +902,7 @@ fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
     finished(&amx, "api-b2c", "done", 60);
     amx.set_meta("api-b2c", json!({ "dir": api }));
     amx.until("both agents", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("here-a1b") && drawn.contains("api-b2c")).then_some(())
     });
 
@@ -995,7 +911,7 @@ fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
     // back up from it.
     press(&amx, &view, "C-s");
     amx.until("the project headings", || {
-        screen(&amx, &view).contains("~/api").then_some(())
+        amx.capture(&view).contains("~/api").then_some(())
     });
     press(&amx, &view, "G");
     press(&amx, &view, "k");
@@ -1003,7 +919,7 @@ fn the_composer_starts_an_agent_in_the_project_the_cursor_is_under() {
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     let drawn = amx.until("the task on the screen", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("port the importer").then_some(drawn)
     });
     assert!(
@@ -1048,7 +964,7 @@ fn a_view_opened_about_a_directory_stands_in_it() {
         &["--dir", &repo.to_string_lossy()],
     );
     until_empty(&amx, &view);
-    let drawn = screen(&amx, &view);
+    let drawn = amx.capture(&view);
     assert!(
         drawn.contains("AMX  ~/elsewhere"),
         "the header names the directory the view was opened about:\n{drawn}"
@@ -1077,7 +993,7 @@ fn the_composer_folds_a_long_paste_and_starts_the_task_it_stands_for() {
     pastes(&amx, &view, &pasted);
 
     let drawn = amx.until("the marker the paste folded into", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("[Pasted text #1]").then_some(drawn)
     });
     assert!(
@@ -1120,7 +1036,7 @@ fn the_composer_grows_to_its_cap_as_a_line_is_broken() {
         types(&amx, &view, row);
     }
     let drawn = amx.until("the last row of the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("row-20").then_some(drawn)
     });
 
@@ -1150,7 +1066,7 @@ fn the_composer_takes_a_newline_from_ctrl_j_where_alt_enter_puts_one() {
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     amx.until("the first row of the task", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port the importer")
             .then_some(())
     });
@@ -1161,7 +1077,7 @@ fn the_composer_takes_a_newline_from_ctrl_j_where_alt_enter_puts_one() {
     press(&amx, &view, "C-j");
     types(&amx, &view, "and its tests");
     let drawn = amx.until("the second row of the task", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("and its tests").then_some(drawn)
     });
     assert!(
@@ -1177,7 +1093,7 @@ fn the_composer_takes_a_newline_from_ctrl_j_where_alt_enter_puts_one() {
     press(&amx, &view, "M-Enter");
     types(&amx, &view, "in one go");
     amx.until("the third row of the task", || {
-        screen(&amx, &view).contains("in one go").then_some(())
+        amx.capture(&view).contains("in one go").then_some(())
     });
 
     press(&amx, &view, "Enter");
@@ -1209,7 +1125,7 @@ fn the_composer_takes_a_newline_from_shift_enter_where_the_terminal_sends_one() 
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     amx.until("the first row of the task", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port the importer")
             .then_some(())
     });
@@ -1217,7 +1133,7 @@ fn the_composer_takes_a_newline_from_shift_enter_where_the_terminal_sends_one() 
     press(&amx, &view, "S-Enter");
     types(&amx, &view, "and its tests");
     let drawn = amx.until("the second row of the task", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("and its tests").then_some(drawn)
     });
     assert!(
@@ -1240,7 +1156,7 @@ fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
     types(&amx, &view, "n");
     types(&amx, &view, "port the imprter");
     amx.until("the task on the screen", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port the imprter")
             .then_some(())
     });
@@ -1253,7 +1169,7 @@ fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
     let drawn = amx.until("the block to walk back into the line", || {
         sgr_past(&coloured(&amx, &view), "port the imp")
             .contains(&7)
-            .then(|| screen(&amx, &view))
+            .then(|| amx.capture(&view))
     });
     assert!(
         drawn.contains("❯ port the imprter"),
@@ -1263,7 +1179,7 @@ fn the_composer_types_where_the_cursor_stands_rather_than_at_the_end() {
 
     types(&amx, &view, "o");
     let drawn = amx.until("the letter where the cursor was", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ port the importer").then_some(drawn)
     });
     assert!(
@@ -1292,7 +1208,7 @@ fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
     types(&amx, &view, "n");
     types(&amx, &view, "port thee legacy importer");
     amx.until("the task on the screen", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port thee legacy importer")
             .then_some(())
     });
@@ -1304,7 +1220,7 @@ fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
     amx.tmux(&keys);
     press(&amx, &view, "BSpace");
     let drawn = amx.until("the doubled letter to go", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn
             .contains("❯ port the legacy importer")
             .then_some(drawn)
@@ -1322,7 +1238,7 @@ fn the_composer_takes_back_a_character_and_a_word_where_the_cursor_stands() {
     amx.tmux(&keys);
     press(&amx, &view, "C-w");
     let drawn = amx.until("the word to go", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ port the importer").then_some(drawn)
     });
     assert!(
@@ -1377,12 +1293,12 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
     types(&amx, &view, "n");
     types(&amx, &view, "/rev");
     amx.until("the word on the line", || {
-        screen(&amx, &view).contains("❯ /rev").then_some(())
+        amx.capture(&view).contains("❯ /rev").then_some(())
     });
 
     press(&amx, &view, "Tab");
     let drawn = amx.until("the word completed", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ /review").then_some(drawn)
     });
     assert!(
@@ -1395,7 +1311,7 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
     types(&amx, &view, "@sco");
     press(&amx, &view, "Tab");
     amx.until("the second word completed", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ /review @scout")
             .then_some(())
     });
@@ -1421,14 +1337,14 @@ fn the_composer_offers_the_agents_when_tab_is_pressed_on_nothing() {
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
     types(&amx, &view, "n");
     amx.until("the line", || {
-        screen(&amx, &view).contains("TASK").then_some(())
+        amx.capture(&view).contains("TASK").then_some(())
     });
 
     // Nothing is typed, so there is no word for tab to take: it writes the
     // mark that asks for one, and the band opens on what answers to it.
     press(&amx, &view, "Tab");
     let drawn = amx.until("the agents under the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("❯ @") && drawn.contains("@scout")).then_some(drawn)
     });
     assert!(
@@ -1444,7 +1360,7 @@ fn the_composer_offers_the_agents_when_tab_is_pressed_on_nothing() {
     // word the choice is standing on.
     press(&amx, &view, "Tab");
     amx.until("the agent on the line", || {
-        screen(&amx, &view).contains("❯ @scout").then_some(())
+        amx.capture(&view).contains("❯ @scout").then_some(())
     });
 }
 
@@ -1459,12 +1375,12 @@ fn the_composer_offers_the_projects_files_where_the_vendor_has_no_agents() {
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
     types(&amx, &view, "n");
     amx.until("the line", || {
-        screen(&amx, &view).contains("TASK").then_some(())
+        amx.capture(&view).contains("TASK").then_some(())
     });
 
     press(&amx, &view, "Tab");
     amx.until("the files under the line", || {
-        screen(&amx, &view).contains("@notes/").then_some(())
+        amx.capture(&view).contains("@notes/").then_some(())
     });
 }
 
@@ -1484,13 +1400,13 @@ fn the_composer_completes_a_file_of_the_project_the_agent_will_run_in() {
     // A directory carries the separator that says the path may go on, and
     // nothing after it: the next thing typed is more of the same word.
     amx.until("the directory completed", || {
-        screen(&amx, &view).contains("❯ read @notes/").then_some(())
+        amx.capture(&view).contains("❯ read @notes/").then_some(())
     });
 
     types(&amx, &view, "pl");
     press(&amx, &view, "Tab");
     amx.until("the file completed", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ read @notes/plan.md")
             .then_some(())
     });
@@ -1511,7 +1427,7 @@ fn the_composer_completes_a_file_of_the_project_the_agent_will_run_in() {
     types(&amx, &view, "read @~/notes/pl");
     press(&amx, &view, "Tab");
     amx.until("the file under the home directory", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ read @~/notes/plan.md")
             .then_some(())
     });
@@ -1544,7 +1460,7 @@ fn the_composer_stands_what_the_word_could_be_in_a_band_under_the_line() {
     // suggestions stand under `/r` as well, and they are not what this is
     // reading.
     let drawn = amx.until("the band under the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(drawn)
     });
 
@@ -1598,7 +1514,7 @@ fn the_composer_offers_the_words_the_vendor_answers_out_of_itself() {
     // claude draws out of its own input, and the band holds it beside the
     // files all the same.
     let drawn = amx.until("the vendor's own word under the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("❯ /sec") && drawn.contains("/security-review")).then_some(drawn)
     });
     assert!(
@@ -1614,7 +1530,7 @@ fn the_composer_offers_the_words_the_vendor_answers_out_of_itself() {
     }
     types(&amx, &view, "rev");
     let drawn = amx.until("the band on the word they share", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(drawn)
     });
     let rows: Vec<&str> = drawn
@@ -1644,7 +1560,7 @@ fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
     // The list is what escape takes: wait for it, not only for the word,
     // or escape can land before the list is up.
     amx.until("the band under the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("❯ /rev") && drawn.contains("Read the diff.")).then_some(())
     });
 
@@ -1856,7 +1772,7 @@ fn the_composer_runs_a_line_led_with_a_bang_as_a_command() {
     types(&amx, &view, "n");
     types(&amx, &view, "!echo one two");
     let drawn = amx.until("the command on the screen", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ !echo one two").then_some(drawn)
     });
     assert!(
@@ -1929,7 +1845,7 @@ fn the_composer_refuses_a_dial_beside_the_bang_and_keeps_the_line() {
     press(&amx, &view, "Enter");
 
     let drawn = amx.until("the refusal", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("m:opus:").then_some(drawn)
     });
     assert!(
@@ -1951,14 +1867,14 @@ fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the header", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  default")
             .then_some(())
     });
 
     press(&amx, &view, "n");
     let drawn = amx.until("the rule over the line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("vendor default").then_some(drawn)
     });
     assert!(
@@ -1969,7 +1885,7 @@ fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
 
     press(&amx, &view, "BTab");
     let drawn = amx.until("the permission dial to turn", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("acceptEdits").then_some(drawn)
     });
     let edge = drawn
@@ -1995,13 +1911,13 @@ fn input_mode_hangs_the_line_off_a_labelled_rule_over_a_wall_gone_dim() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the wall", || {
-        screen(&amx, &view).contains("ask-a1b").then_some(())
+        amx.capture(&view).contains("ask-a1b").then_some(())
     });
 
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     let drawn = amx.until("the rule over the line somebody is typing", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("TASK") && drawn.contains("port the importer")).then_some(drawn)
     });
 
@@ -2080,7 +1996,7 @@ fn lending_the_line_to_an_editor_hands_the_terminal_its_cursor_back() {
     types(&amx, &view, "n");
     types(&amx, &view, "port the importer");
     amx.until("the line to be typed", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ port the importer")
             .then_some(())
     });
@@ -2092,7 +2008,7 @@ fn lending_the_line_to_an_editor_hands_the_terminal_its_cursor_back() {
 
     press(&amx, &view, "C-g");
     let drawn = amx.until("the editor to have the screen", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("the editor has the screen").then_some(drawn)
     });
     assert_eq!(
@@ -2104,7 +2020,7 @@ fn lending_the_line_to_an_editor_hands_the_terminal_its_cursor_back() {
 
     std::fs::write(amx.home().join("let-it-go"), "").expect("the editor to be let go");
     let drawn = amx.until("the view to take the screen back", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("❯ port the importer").then_some(drawn)
     });
     assert_eq!(
@@ -2121,7 +2037,7 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
 
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  fable")
             .then_some(())
     });
@@ -2152,7 +2068,7 @@ fn header_dials_are_the_argv_the_next_agent_is_started_with() {
         command_of(&amx, &next)
     );
     amx.until("the header to be as it was", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  fable")
             .then_some(())
     });
@@ -2163,7 +2079,7 @@ fn header_effort_dial_says_how_hard_the_next_agent_thinks() {
     let amx = Harness::new();
     let view = a_view_that_dispatches_as_claude(&amx, "worktrees = false\n");
     amx.until("the header", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  default")
             .then_some(())
     });
@@ -2172,7 +2088,7 @@ fn header_effort_dial_says_how_hard_the_next_agent_thinks() {
     // the row says it by turning: the labels give way and the level is on it.
     press(&amx, &view, "M-e");
     let drawn = amx.until("the effort dial to turn", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("·  low").then_some(drawn)
     });
     assert!(
@@ -2219,7 +2135,7 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
         &format!("agent = \"{}\"\nworktrees = false\n", amx.mock()),
     );
     let drawn = amx.until("the header", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("worktree  none").then_some(drawn)
     });
     // The label and the two spaces before its value, not the bare word: the
@@ -2232,7 +2148,7 @@ fn header_vendor_dial_runs_the_next_agent_under_the_vendor_it_names() {
 
     press(&amx, &view, "M-a");
     amx.until("the vendor dial to turn", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  claude   model  default")
             .then_some(())
     });
@@ -2262,28 +2178,28 @@ fn header_model_dial_keeps_the_harness_the_row_names() {
         "agent = \"pi\"\nworktrees = false\n\n[pi]\nmodels = [\"openai/gpt-5\", \"anthropic/claude-opus-4-1\"]\n",
     );
     amx.until("the header", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  pi   model  default")
             .then_some(())
     });
 
     press(&amx, &view, "M-m");
     amx.until("the model dial to turn", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  pi   model  openai/gpt-5")
             .then_some(())
     });
 
     press(&amx, &view, "M-m");
     amx.until("the next model, and still pi", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  pi   model  anthropic/claude-opus-4-1")
             .then_some(())
     });
 
     press(&amx, &view, "M-m");
     amx.until("the dial back at the sentinel", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("└ next  pi   model  default")
             .then_some(())
     });
@@ -2297,7 +2213,7 @@ fn header_worktree_dial_gives_the_next_agent_a_tree_the_file_would_not() {
 
     press(&amx, &view, "M-w");
     amx.until("the worktree dial to turn", || {
-        screen(&amx, &view).contains("worktree  new").then_some(())
+        amx.capture(&view).contains("worktree  new").then_some(())
     });
 
     types(&amx, &view, "n");
@@ -2322,7 +2238,7 @@ fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
     press(&amx, &view, "Enter");
 
     let drawn = amx.until("the refusal", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("claude takes").then_some(drawn)
     });
     assert!(
@@ -2344,7 +2260,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the row", || {
-        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+        amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
     // The card, and the line at the foot of it: an agent between turns is
@@ -2352,7 +2268,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
     // question would take.
     press(&amx, &view, "Space");
     amx.until("the card and its line", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn
             .lines()
             .any(|line| line.starts_with("✻ fix-login-a1b · claude ┈"))
@@ -2361,7 +2277,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
     });
     types(&amx, &view, "and now the linter");
     amx.until("the words on the line", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("❯ and now the linter")
             .then_some(())
     });
@@ -2385,7 +2301,7 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the row", || {
-        screen(&amx, &view).contains("fix-login-a1b").then_some(())
+        amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
     press(&amx, &view, "C-r");
@@ -2393,7 +2309,7 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
         // Which agent is on the rule; what it is called already is on the
         // line, because a rename is an edit of the name rather than a name
         // typed again from nothing.
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("RENAME · fix-login-a1b") && drawn.contains("❯ fix-login-a1b"))
             .then_some(())
     });
@@ -2407,7 +2323,7 @@ fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
     press(&amx, &view, "Enter");
 
     let wall = amx.until("the wall to call it auth", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn
             .lines()
             .any(|line| a_row_called(line, "auth"))
@@ -2432,14 +2348,14 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both agents", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("port-a1b") && drawn.contains("login-b2c")).then_some(())
     });
 
     // The line opens on the row the keys were on, and says what it takes.
     types(&amx, &view, "/");
     amx.until("the find line", || {
-        screen(&amx, &view)
+        amx.capture(&view)
             .contains("/a name or task, or s:state")
             .then_some(())
     });
@@ -2448,7 +2364,7 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
     // while the word is still being typed.
     types(&amx, &view, "port");
     let narrowed = amx.until("the wall to narrow under it", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         // Both, in one frame: the wall narrows on every keystroke, so a frame
         // caught part way through the word has already dropped the row that
         // does not match.
@@ -2465,7 +2381,7 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
         // The keys are back on the row the line had. Not the absence of
         // `/port`: the header reads the narrowing back in the words it was
         // typed in, so that string is still on the screen and should be.
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         drawn.contains("space card").then_some(drawn)
     });
     assert!(
@@ -2481,7 +2397,7 @@ fn find_narrows_the_wall_as_it_is_typed_and_esc_puts_it_back() {
     // outlives the line it was typed on, so the key that clears it has to.
     press(&amx, &view, "Escape");
     amx.until("the whole fleet back", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("port-a1b") && drawn.contains("login-b2c")).then_some(())
     });
 }
@@ -2509,7 +2425,7 @@ fn find_reaches_the_task_an_agent_was_started_on() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("both agents", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(())
     });
 
@@ -2517,7 +2433,7 @@ fn find_reaches_the_task_an_agent_was_started_on() {
     // and nobody remembers where its capitals were.
     types(&amx, &view, "/importer");
     amx.until("the wall to narrow to the task that says it", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("one-a1b") && !drawn.contains("two-b2c")).then_some(())
     });
 
@@ -2527,7 +2443,7 @@ fn find_reaches_the_task_an_agent_was_started_on() {
     }
     types(&amx, &view, "LOGIN");
     amx.until("the other one, found past its capitals", || {
-        let drawn = screen(&amx, &view);
+        let drawn = amx.capture(&view);
         (drawn.contains("two-b2c") && !drawn.contains("one-a1b")).then_some(())
     });
 }

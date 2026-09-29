@@ -9,10 +9,9 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, finished, now};
 use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
@@ -23,13 +22,6 @@ fn said(out: &Output) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock")
-        .as_secs()
 }
 
 /// git as these tests run it: none of the developer's own configuration.
@@ -55,22 +47,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 fn branches(repo: &Path) -> String {
     git(repo, &["branch", "--list"])
-}
-
-/// A row whose agent is not there any more: no pane, and the record is the
-/// whole story.
-fn a_row(amx: &Harness, id: &str, state: &str) {
-    amx.record(id, "%404");
-    amx.set_state(
-        id,
-        json!({
-            "state": state,
-            "exit": 0,
-            "since": now(),
-            "last_event": now(),
-            "result": "did what it was asked",
-        }),
-    );
 }
 
 /// An agent with a tree of its own in `repo`, played to the end of its turn.
@@ -136,8 +112,8 @@ fn clear_lists_the_finished_rows_and_forgets_the_ones_whose_trees_hold_nothing()
 
     // Two rows somebody stopped. Nothing landed and nothing ever will: there
     // is no branch on either of them for a forge to have an opinion about.
-    a_row(&amx, "fix-login-a1b", "stopped");
-    a_row(&amx, "add-search-b2c", "stopped");
+    finished(&amx, "fix-login-a1b", "stopped", 0);
+    finished(&amx, "add-search-b2c", "stopped", 0);
 
     // A row whose turn ended, holding a tree with work no commit has.
     let tree = an_ended_agent(&amx, "port-import-c3d", &repo);
@@ -245,7 +221,7 @@ fn clear_says_nothing_to_clear_where_no_row_has_finished() {
 #[test]
 fn clear_says_what_it_would_take_and_takes_none_of_it_when_the_answer_is_no() {
     let amx = Harness::new();
-    a_row(&amx, "fix-login-a1b", "stopped");
+    finished(&amx, "fix-login-a1b", "stopped", 0);
 
     let out = said(&amx.amx_with_input(&["clear"], "n\n"));
     assert!(out.contains("fix-login-a1b  stopped"), "{out}");
