@@ -145,9 +145,13 @@ fn card_space_on_its_empty_line_closes_it_and_leaves_the_list_alone() {
     // nothing for a space to stand between and it is still what it was a
     // press ago.
     press(&amx, &view, "Space");
-    let closed = amx.until("the card to go", || {
+    let closed = amx.until("the card to go, with the list's keys back", || {
         let drawn = amx.capture(&view);
-        card_rule(&drawn).is_none().then_some(drawn)
+        let keys = drawn
+            .lines()
+            .next_back()
+            .is_some_and(|keys| keys.contains("space card"));
+        (card_rule(&drawn).is_none() && keys).then_some(drawn)
     });
     assert_eq!(
         line_holding(&closed, "old-job-a1b"),
@@ -275,7 +279,7 @@ fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
         card_lines(&drawn)
             .first()
             .map(|rule| (*rule).to_string())
-            .filter(|rule| rule.contains("Nesting"))
+            .filter(|rule| rule.contains("Nesting") && rule.chars().count() == 80)
     });
 
     // The vendor's own spinner line at the far end of the rule, and never the
@@ -765,7 +769,8 @@ fn card_says_which_question_of_the_call_it_is_showing() {
     showing_the_pending_one(&amx, "pick-a1b", &call);
     let moved = amx.until("the card to move to the tab behind it", || {
         let drawn = amx.capture(&view);
-        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+        (drawn.contains("Rollout · 2 of 3") && drawn.contains("Which rollout steps should run?"))
+            .then_some(drawn)
     });
     assert!(
         moved.contains("Which rollout steps should run?"),
@@ -802,9 +807,10 @@ fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
     // The question in front of it takes one choice, and a box beside those
     // would be a screen offering something the vendor will not take.
     showing_the_pending_one(&amx, "pick-a1b", &a_call_of_three());
+    // The line is below the choices, so it is waited for too.
     let drawn = amx.until("the card on the plain question", || {
         let drawn = amx.capture(&view);
-        drawn.contains("1. Node").then_some(drawn)
+        (drawn.contains("1. Node") && !drawn.contains("for several")).then_some(drawn)
     });
     assert!(!drawn.contains("[ ] Node"), "{drawn}");
     assert!(
@@ -833,7 +839,10 @@ fn card_names_the_rows_the_vendor_adds_that_no_payload_carries() {
     showing_the_pending_one(&amx, "pick-a1b", &a_previewed_question());
     let previewed = amx.until("the card on the previewed question", || {
         let drawn = amx.capture(&view);
-        drawn.contains("1. Stacked").then_some(drawn)
+        let whole = drawn.contains("1. Stacked")
+            && drawn.contains("field for a note")
+            && !drawn.contains("words of your own");
+        whole.then_some(drawn)
     });
     assert!(
         previewed.contains("field for a note"),
@@ -860,7 +869,7 @@ fn card_takes_words_where_the_question_asks_for_them() {
     press(&amx, &view, "Space");
     let carded = amx.until("the card, with the choices numbered", || {
         let drawn = amx.capture(&view);
-        drawn.contains("1. the sqlite one").then_some(drawn)
+        (drawn.contains("1. the sqlite one") && drawn.contains("esc closes it")).then_some(drawn)
     });
     assert!(carded.contains("2. the docker one"), "{carded}");
     assert_eq!(
@@ -920,7 +929,7 @@ fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
     // answer, moves to the tab after it, and the prompt is still up.
     let moved = amx.until("the card to move to the tab behind it", || {
         let drawn = amx.capture(&view);
-        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+        (drawn.contains("Rollout · 2 of 3") && drawn.contains("1. [ ] Canary")).then_some(drawn)
     });
     assert!(
         moved.contains("1. [ ] Canary"),
@@ -965,7 +974,8 @@ fn card_answers_a_question_that_takes_one_choice_on_the_digit_alone() {
     // box being named and the line waits for the rest of them.
     let moved = amx.until("the card to move to the tab behind it", || {
         let drawn = amx.capture(&view);
-        drawn.contains("Rollout · 2 of 3").then_some(drawn)
+        (drawn.contains("Rollout · 2 of 3") && drawn.contains("press 1-3, 1,3 for several"))
+            .then_some(drawn)
     });
     assert_eq!(
         amx.state("pick-a1b")["question"]["asking"][0]["answer"],
@@ -1147,7 +1157,8 @@ fn card_refuses_words_at_a_prompt_that_reads_one_key() {
     // prompt are two callers reading one line against one record.
     let refused = amx.until("the refusal", || {
         let drawn = amx.capture(&view);
-        drawn.contains("is not an answer").then_some(drawn)
+        (drawn.contains("is not an answer") && drawn.contains("use y, n, 1-9, enter or esc"))
+            .then_some(drawn)
     });
     assert!(
         refused.contains("use y, n, 1-9, enter or esc"),
@@ -1209,7 +1220,7 @@ fn d_shows_what_the_agent_has_changed() {
     types(&amx, &view, "d");
     let shown = amx.until("the diff", || {
         let drawn = amx.capture(&view);
-        drawn.contains("+after").then_some(drawn)
+        (drawn.contains("+after") && drawn.contains("❯ reply")).then_some(drawn)
     });
     assert!(shown.contains("-before"), "{shown}");
     assert!(
@@ -1272,7 +1283,8 @@ fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
     types(&amx, &view, "why this row?");
     let asked = amx.until("the words on the line", || {
         let drawn = amx.capture(&view);
-        drawn.contains("❯ why this row?").then_some(drawn)
+        (drawn.contains("❯ why this row?") && drawn.contains("enter sends it with hunk 1"))
+            .then_some(drawn)
     });
     assert!(
         asked.contains("enter sends it with hunk 1"),
@@ -1348,7 +1360,7 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
     press(&amx, &view, "C-n");
     let stepped = amx.until("the first hunk", || {
         let drawn = amx.capture(&view);
-        drawn.contains("hunk 1 of 3").then_some(drawn)
+        (drawn.contains("hunk 1 of 3") && !drawn.contains("looks close")).then_some(drawn)
     });
     assert!(
         !stepped.contains("looks close"),
@@ -1367,7 +1379,10 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
     // the card still has the review to send, and the row says so.
     let kept = amx.until("the third hunk, with the review behind it", || {
         let drawn = amx.capture(&view);
-        drawn.contains("hunk 3 of 3 · 2 notes").then_some(drawn)
+        let whole = drawn.contains("hunk 3 of 3 · 2 notes")
+            && drawn.contains("enter sends 2 notes")
+            && drawn.contains("esc drops 2 notes");
+        whole.then_some(drawn)
     });
     assert!(
         kept.contains("enter sends 2 notes") && kept.contains("esc drops 2 notes"),
@@ -1395,7 +1410,7 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
     // nothing kept and no hunk under the cursor.
     let after = amx.until("the card put back", || {
         let drawn = amx.capture(&view);
-        (!drawn.contains("hunk 3 of 3")).then_some(drawn)
+        (!drawn.contains("note") && !drawn.contains("hunk")).then_some(drawn)
     });
     assert!(
         !after.contains("note") && !after.contains("hunk"),
@@ -1534,7 +1549,7 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     press(&amx, &view, "NPage");
     let paged = amx.until("the paged diff", || {
         let drawn = amx.capture(&view);
-        drawn.contains("more").then_some(drawn)
+        (drawn.contains("more") && !drawn.contains("+line 0")).then_some(drawn)
     });
     assert!(!paged.contains("+line 0"), "the top is behind: {paged}");
     let saying = paged
@@ -1631,7 +1646,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     press(&amx, &view, "NPage");
     let paged = amx.until("the paged card", || {
         let drawn = amx.capture(&view);
-        drawn.contains("more").then_some(drawn)
+        (drawn.contains("more") && drawn.matches("said 0").count() == 1).then_some(drawn)
     });
     assert_eq!(
         paged.matches("said 0").count(),
@@ -1689,7 +1704,7 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
     press(&amx, &view, "C-f");
     let paged = amx.until("the paged card", || {
         let drawn = amx.capture(&view);
-        drawn.contains("more").then_some(drawn)
+        (drawn.contains("more") && drawn.matches("said 0").count() == 1).then_some(drawn)
     });
     assert_eq!(
         paged.matches("said 0").count(),
@@ -1784,7 +1799,7 @@ fn card_is_the_whole_conversation_opened_on_the_end_of_its_last_answer() {
     // nothing, so this walks up until the first question is on the card.
     let top = amx.until("the first turn", || {
         let drawn = amx.capture(&view);
-        if drawn.contains("❯ first ask") {
+        if drawn.contains("❯ first ask") && drawn.contains("first line 1") {
             return Some(drawn);
         }
         press(&amx, &view, "PPage");
