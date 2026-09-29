@@ -21,14 +21,7 @@ use super::{
 pub const SECOND: Vendor = Vendor {
     name: "second",
     // A short flag, a closed set, and values that are nobody else's words.
-    model: Some(DialSpec {
-        cycle: &[DEFAULT, "small", "large"],
-        open: false,
-        flag: "-m",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    model: Some(DialSpec::closed("-m", &[DEFAULT, "small", "large"])),
     // Its two words are the whole of what it offers, so they are found in the
     // cycle and nothing is ever run to ask: the shape a search over the table
     // has to answer out of the entry alone.
@@ -37,14 +30,7 @@ pub const SECOND: Vendor = Vendor {
     // nobody has turned and a dial that does not exist.
     permission: None,
     // Open where claude's is closed, and under a flag of its own.
-    effort: Some(DialSpec {
-        cycle: &[DEFAULT, "quick", "thorough"],
-        open: true,
-        flag: "--care",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    effort: Some(DialSpec::open("--care", &[DEFAULT, "quick", "thorough"])),
     // Unlike claude, it declares a start flag: proof that a vendor is free to
     // ask amx to open a session under an id amx chose. It resumes with a
     // subcommand rather than a flag, the way codex does, and it names no fork
@@ -102,12 +88,8 @@ pub const SECOND: Vendor = Vendor {
 pub const BRANCHING: Vendor = Vendor {
     models: Models::Json(&["list", "models"]),
     effort: Some(DialSpec {
-        cycle: &[DEFAULT, "quick", "thorough"],
-        open: true,
-        flag: "-c",
         key: Some("care"),
-        bare: false,
-        env: None,
+        ..DialSpec::open("-c", &[DEFAULT, "quick", "thorough"])
     }),
     launch: &["--alone"],
     session: Some(SessionSpec {
@@ -134,20 +116,13 @@ pub const BRANCHING: Vendor = Vendor {
 /// Escape and ends one on `SIGUSR1`.
 pub const ELSEWHERE: Vendor = Vendor {
     model: Some(DialSpec {
-        cycle: &[DEFAULT, "small", "large"],
-        open: true,
-        flag: "",
         key: Some("size"),
-        bare: false,
         env: Some("SECOND_CONFIG"),
+        ..DialSpec::open("", &[DEFAULT, "small", "large"])
     }),
     permission: Some(DialSpec {
-        cycle: &[DEFAULT, "loose"],
-        open: false,
-        flag: "--loose",
-        key: None,
         bare: true,
-        env: None,
+        ..DialSpec::closed("--loose", &[DEFAULT, "loose"])
     }),
     prompt_flag: Some("--say"),
     popups: &['#'],
@@ -169,41 +144,13 @@ pub const HOOKS: Hooks = Hooks {
     },
     opt_in: &[],
     events: &[
-        Wiring {
-            moment: Moment::Started,
-            event: "opened",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Prompted,
-            event: "told",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Calling,
-            event: "using",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Asked,
-            event: "may_i",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Refused,
-            event: "refused",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Notified,
-            event: "note",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Ended,
-            event: "finished",
-            matched: false,
-        },
+        Wiring::new(Moment::Started, "opened"),
+        Wiring::new(Moment::Prompted, "told"),
+        Wiring::new(Moment::Calling, "using"),
+        Wiring::new(Moment::Asked, "may_i"),
+        Wiring::new(Moment::Refused, "refused"),
+        Wiring::new(Moment::Notified, "note"),
+        Wiring::new(Moment::Ended, "finished"),
     ],
     matcher: "",
     question_tool: "choose",

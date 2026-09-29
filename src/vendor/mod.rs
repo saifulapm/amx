@@ -55,6 +55,28 @@ pub struct DialSpec {
     pub env: Option<&'static str>,
 }
 
+impl DialSpec {
+    /// A dial written as `flag value` that passes on any value.
+    pub const fn open(flag: &'static str, cycle: &'static [&'static str]) -> DialSpec {
+        DialSpec {
+            cycle,
+            open: true,
+            flag,
+            key: None,
+            bare: false,
+            env: None,
+        }
+    }
+
+    /// A dial written as `flag value` that takes only what `cycle` names.
+    pub const fn closed(flag: &'static str, cycle: &'static [&'static str]) -> DialSpec {
+        DialSpec {
+            open: false,
+            ..DialSpec::open(flag, cycle)
+        }
+    }
+}
+
 /// Where a vendor's models are written down.
 ///
 /// A model somebody names has to be found among the vendors that offer it, and
@@ -132,6 +154,26 @@ pub struct Wiring {
     pub event: &'static str,
     /// Whether this vendor's entry for it takes a tool matcher.
     pub matched: bool,
+}
+
+impl Wiring {
+    /// `moment` under the vendor's name `event`, with no tool matcher.
+    pub const fn new(moment: Moment, event: &'static str) -> Wiring {
+        Wiring {
+            moment,
+            event,
+            matched: false,
+        }
+    }
+
+    /// `moment` under the vendor's name `event`, for an entry that takes a
+    /// tool matcher.
+    pub const fn with_matcher(moment: Moment, event: &'static str) -> Wiring {
+        Wiring {
+            matched: true,
+            ..Wiring::new(moment, event)
+        }
+    }
 }
 
 /// What amx needs in order to wire itself into a vendor's hooks and read back
@@ -1926,12 +1968,9 @@ mod tests {
         // config file, so the model goes there as `{"model":"<value>"}`.
         let opencode = Vendor {
             model: Some(DialSpec {
-                cycle: &[DEFAULT],
-                open: true,
-                flag: "",
                 key: Some("model"),
-                bare: false,
                 env: Some("OPENCODE_CONFIG_CONTENT"),
+                ..DialSpec::open("", &[DEFAULT])
             }),
             ..ELSEWHERE
         };

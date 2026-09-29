@@ -23,12 +23,9 @@ pub const VENDOR: Vendor = Vendor {
     // model is `provider/model` and opencode names no aliases. Measured at
     // 2.0.16 on 2026-09-30 (plan opencode-lands Ruling 8).
     model: Some(DialSpec {
-        cycle: &[DEFAULT],
-        open: true,
-        flag: "",
         key: Some("model"),
-        bare: false,
         env: Some("OPENCODE_CONFIG_CONTENT"),
+        ..DialSpec::open("", &[DEFAULT])
     }),
     // `opencode models` is a subcommand that starts the shared service with
     // the caller's env (Ruling 1), so amx never runs it: the cycle is the
@@ -38,12 +35,8 @@ pub const VENDOR: Vendor = Vendor {
     // (cli/src/commands/commands.ts:27-30), a flag with no value. Measured at
     // 2.0.16 on 2026-09-30.
     permission: Some(DialSpec {
-        cycle: &[DEFAULT, "auto"],
-        open: false,
-        flag: "--auto",
-        key: None,
         bare: true,
-        env: None,
+        ..DialSpec::closed("--auto", &[DEFAULT, "auto"])
     }),
     // A `#variant` on the model loses to opencode's stored per-model variant
     // (tui/src/context/local.tsx:236), so there is no effort to turn (Ruling
@@ -230,46 +223,14 @@ pub const HOOKS: Hooks = Hooks {
     },
     opt_in: &[],
     events: &[
-        Wiring {
-            moment: Moment::Started,
-            event: "session.selected",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Prompted,
-            event: "session.execution.started",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Taken,
-            event: "session.inbox.delivered",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Calling,
-            event: "session.tool.called",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Asked,
-            event: "permission.asked",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Refused,
-            event: "permission.rejected",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Notified,
-            event: "form.created",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Ended,
-            event: "session.execution.ended",
-            matched: false,
-        },
+        Wiring::new(Moment::Started, "session.selected"),
+        Wiring::new(Moment::Prompted, "session.execution.started"),
+        Wiring::new(Moment::Taken, "session.inbox.delivered"),
+        Wiring::new(Moment::Calling, "session.tool.called"),
+        Wiring::new(Moment::Asked, "permission.asked"),
+        Wiring::new(Moment::Refused, "permission.rejected"),
+        Wiring::new(Moment::Notified, "form.created"),
+        Wiring::new(Moment::Ended, "session.execution.ended"),
     ],
     // None of these: a plugin takes no matcher, opencode sends no notice of
     // its own, and a payload carries no sentence off the permission card.

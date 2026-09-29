@@ -18,21 +18,18 @@ pub const VENDOR: Vendor = Vendor {
     // `--help` names fable, opus and sonnet as its examples, and haiku is the
     // fourth family it answers to. The cycle is what a key offers rather than
     // the set of legal values, which is what `open` above says.
-    model: Some(DialSpec {
-        cycle: &[DEFAULT, "fable", "opus", "sonnet", "haiku"],
-        open: true,
-        flag: "--model",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    model: Some(DialSpec::open(
+        "--model",
+        &[DEFAULT, "fable", "opus", "sonnet", "haiku"],
+    )),
     // The aliases above are the whole of what amx offers for claude, and the
     // vendor prints no list of its own, so its models are the cycle.
     models: Models::Cycle,
     // Closed, and the vendor enforces it: `--permission-mode nonsense` is a
     // hard error naming these six.
-    permission: Some(DialSpec {
-        cycle: &[
+    permission: Some(DialSpec::closed(
+        "--permission-mode",
+        &[
             DEFAULT,
             "acceptEdits",
             "auto",
@@ -41,25 +38,16 @@ pub const VENDOR: Vendor = Vendor {
             "dontAsk",
             "plan",
         ],
-        open: false,
-        flag: "--permission-mode",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    )),
     // Closed by judgement rather than by the vendor: `--effort nonsense`
     // warns and falls back to the default rather than refusing. Five levels
     // are the whole documented set, so amx warns at the config it can see
     // instead of leaving the person to find the vendor's warning scrolled off
     // the top of a pane.
-    effort: Some(DialSpec {
-        cycle: &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
-        open: false,
-        flag: "--effort",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    effort: Some(DialSpec::closed(
+        "--effort",
+        &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
+    )),
     // amx never asks claude to open a session under an id amx chose: claude's
     // own SessionStart hook already names the one it opened
     // (src/hook.rs:311), and the id it wants there is a UUID, not the
@@ -229,41 +217,13 @@ pub const HOOKS: Hooks = Hooks {
     // second thing for it to load would be one nobody asked for.
     opt_in: &[],
     events: &[
-        Wiring {
-            moment: Moment::Started,
-            event: "SessionStart",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Prompted,
-            event: "UserPromptSubmit",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Calling,
-            event: "PreToolUse",
-            matched: true,
-        },
-        Wiring {
-            moment: Moment::Asked,
-            event: "PermissionRequest",
-            matched: true,
-        },
-        Wiring {
-            moment: Moment::Refused,
-            event: "PermissionDenied",
-            matched: true,
-        },
-        Wiring {
-            moment: Moment::Notified,
-            event: "Notification",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Ended,
-            event: "Stop",
-            matched: false,
-        },
+        Wiring::new(Moment::Started, "SessionStart"),
+        Wiring::new(Moment::Prompted, "UserPromptSubmit"),
+        Wiring::with_matcher(Moment::Calling, "PreToolUse"),
+        Wiring::with_matcher(Moment::Asked, "PermissionRequest"),
+        Wiring::with_matcher(Moment::Refused, "PermissionDenied"),
+        Wiring::new(Moment::Notified, "Notification"),
+        Wiring::new(Moment::Ended, "Stop"),
     ],
     // The three events above that take one, and amx wants all of them: what a
     // tool call means for the record is decided by reading the payload, not by

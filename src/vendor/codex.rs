@@ -18,14 +18,7 @@ pub const VENDOR: Vendor = Vendor {
     // (utils/cli/src/shared_options.rs:22-23), and codex documents no aliases
     // of its own, so the cycle offers nothing beyond the sentinel. Measured at
     // 0.157.1 on 2026-09-28.
-    model: Some(DialSpec {
-        cycle: &[DEFAULT],
-        open: true,
-        flag: "--model",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    model: Some(DialSpec::open("--model", &[DEFAULT])),
     // `codex debug models` prints the account's catalog as JSON
     // (cli/src/main.rs:258, 2068-2095): `models[]`, each with a `slug` and a
     // `visibility`, and the picker offers the ones whose visibility is
@@ -37,19 +30,15 @@ pub const VENDOR: Vendor = Vendor {
     // permissions and is left to the agent command: amx has one dial, and the
     // sandbox is the half every run is under. Measured at 0.157.1 on
     // 2026-09-28.
-    permission: Some(DialSpec {
-        cycle: &[
+    permission: Some(DialSpec::closed(
+        "--sandbox",
+        &[
             DEFAULT,
             "read-only",
             "workspace-write",
             "danger-full-access",
         ],
-        open: false,
-        flag: "--sandbox",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    )),
     // codex has no effort flag, only the setting
     // `-c model_reasoning_effort=<v>` (config/src/config_toml.rs:392). Closed
     // over the levels the catalog's models support between them
@@ -58,12 +47,8 @@ pub const VENDOR: Vendor = Vendor {
     // and a level the model lacks is the vendor's to refuse. Measured at
     // 0.157.1 on 2026-09-28.
     effort: Some(DialSpec {
-        cycle: &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
-        open: false,
-        flag: "-c",
         key: Some("model_reasoning_effort"),
-        bare: false,
-        env: None,
+        ..DialSpec::closed("-c", &[DEFAULT, "low", "medium", "high", "xhigh", "max"])
     }),
     // codex mints its own ids and takes none (tui/src/cli.rs:11-88 names no
     // session flag), so nothing starts a session under an id amx chose: the
@@ -216,26 +201,10 @@ pub const HOOKS: Hooks = Hooks {
     },
     opt_in: &[],
     events: &[
-        Wiring {
-            moment: Moment::Started,
-            event: "SessionStart",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Prompted,
-            event: "UserPromptSubmit",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Calling,
-            event: "PreToolUse",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Ended,
-            event: "Stop",
-            matched: false,
-        },
+        Wiring::new(Moment::Started, "SessionStart"),
+        Wiring::new(Moment::Prompted, "UserPromptSubmit"),
+        Wiring::new(Moment::Calling, "PreToolUse"),
+        Wiring::new(Moment::Ended, "Stop"),
     ],
     // None of these: a group with no matcher takes every tool
     // (hooks/src/lib.rs:38-53), codex sends no notice hook at all, and it

@@ -17,14 +17,7 @@ pub const VENDOR: Vendor = Vendor {
     // choosing, and documents no aliases of its own the way claude's three
     // are. The cycle offers nothing beyond the sentinel. Measured at 0.84.4
     // on 2026-09-03.
-    model: Some(DialSpec {
-        cycle: &[DEFAULT],
-        open: true,
-        flag: "--model",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    model: Some(DialSpec::open("--model", &[DEFAULT])),
     // The cycle above offers nothing, because pi's models are whatever its
     // providers hold rather than a handful of aliases: `--list-models` prints
     // them, a header line and then one row per model, provider and id first.
@@ -37,16 +30,12 @@ pub const VENDOR: Vendor = Vendor {
     // Closed: `--thinking <level>` documents exactly these seven, and a
     // value off that list is not one the vendor has a meaning for. Measured
     // at 0.84.4 on 2026-09-03.
-    effort: Some(DialSpec {
-        cycle: &[
+    effort: Some(DialSpec::closed(
+        "--thinking",
+        &[
             DEFAULT, "off", "minimal", "low", "medium", "high", "xhigh", "max",
         ],
-        open: false,
-        flag: "--thinking",
-        key: None,
-        bare: false,
-        env: None,
-    }),
+    )),
     // `--session-id <id>` is mint-or-open (dist/main.js:337-344): it opens
     // the project session already under that id, or creates one under it if
     // none exists. One flag does the work claude splits across a start flag
@@ -245,44 +234,16 @@ pub const HOOKS: Hooks = Hooks {
     // `amx sub`, which is a capability rather than the plumbing amx.ts is.
     opt_in: &[SUBAGENT],
     events: &[
-        Wiring {
-            moment: Moment::Started,
-            event: "session_start",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Prompted,
-            event: "agent_start",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Calling,
-            event: "tool_execution_start",
-            matched: false,
-        },
+        Wiring::new(Moment::Started, "session_start"),
+        Wiring::new(Moment::Prompted, "agent_start"),
+        Wiring::new(Moment::Calling, "tool_execution_start"),
         // Reported for a user message only — the extension filters the
         // role — which is the moment a message steered into a running turn
         // is delivered, since pi starts no new agent for it.
-        Wiring {
-            moment: Moment::Taken,
-            event: "message_start",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Notified,
-            event: "ui_prompt_start",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Refused,
-            event: "ui_prompt_end",
-            matched: false,
-        },
-        Wiring {
-            moment: Moment::Ended,
-            event: "agent_settled",
-            matched: false,
-        },
+        Wiring::new(Moment::Taken, "message_start"),
+        Wiring::new(Moment::Notified, "ui_prompt_start"),
+        Wiring::new(Moment::Refused, "ui_prompt_end"),
+        Wiring::new(Moment::Ended, "agent_settled"),
     ],
     // None of these: pi's extension takes every event without a matcher, has
     // no tool that draws a menu and waits on it, sends no typed notices about
