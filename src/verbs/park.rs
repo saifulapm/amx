@@ -28,7 +28,7 @@ use crate::verbs::stop;
 use crate::{config, exit, paths, store};
 
 /// What amx records when it lets a pane go.
-const PARKED: &str = "park";
+pub(crate) const PARKED: &str = "park";
 
 /// Run the verb against the machine.
 pub fn from_env(id: &str) -> Result<i32> {

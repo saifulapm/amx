@@ -29,6 +29,7 @@ use crate::derive::{self, Evidence, View};
 use crate::store::{Agent, Event, Phase};
 use crate::vendor::{Hooks, Moment};
 use crate::verbs::interrupt::INTERRUPT;
+use crate::verbs::park::PARKED;
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
 use crate::{complain, exit, paths, store};
 
@@ -267,10 +268,6 @@ fn pace(evidence: &Evidence) -> Duration {
 /// What `amx resume` records when it brings an agent back, as
 /// `crate::verbs::resume` spells it.
 const RESUMED: &str = "resume";
-
-/// What `amx park` records when it lets a pane go, as `crate::verbs::park`
-/// spells it.
-const PARKED: &str = "park";
 
 /// How the turn a caller is waiting on ended, for a record in this phase: only
 /// an ending needs the log, and while an agent is working there is no turn to
