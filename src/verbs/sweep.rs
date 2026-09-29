@@ -285,8 +285,7 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
     // dirty tree keeps its record too, because the record is where the tree
     // and the branch are named.
     if let Some(tree) = &meta.worktree
-        && tree.exists()
-        && worktree::is_dirty(tree).unwrap_or(true)
+        && stop::holds_work(tree)
     {
         writeln!(
             out,

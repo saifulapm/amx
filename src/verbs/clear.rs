@@ -215,7 +215,7 @@ fn still_over(agent: &Agent) -> Result<Meta> {
 /// the answer to give when git will not say.
 pub fn holding(meta: &Meta) -> Option<PathBuf> {
     let tree = meta.worktree.as_ref()?;
-    (tree.exists() && worktree::is_dirty(tree).unwrap_or(true)).then(|| tree.clone())
+    stop::holds_work(tree).then(|| tree.clone())
 }
 
 /// The one question, asked once for the whole list.

@@ -323,7 +323,7 @@ fn dispositions(
 
     // Work nobody has committed is not amx's to delete, and saying so is part
     // of the answer: somebody has to know it is still there.
-    if tree.exists() && worktree::is_dirty(tree).unwrap_or(true) {
+    if holds_work(tree) {
         writeln!(
             out,
             "keeping {}: it holds work no commit has",
@@ -397,6 +397,12 @@ fn dispositions(
         writeln!(out, "kept {branch}")?;
     }
     Ok(())
+}
+
+/// Whether `tree` is there and holds work no commit has. A tree git cannot
+/// read counts as holding some.
+pub(crate) fn holds_work(tree: &Path) -> bool {
+    tree.exists() && worktree::is_dirty(tree).unwrap_or(true)
 }
 
 /// Take the tree amx has just removed back out of the vendor's own store.
