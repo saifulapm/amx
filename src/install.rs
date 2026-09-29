@@ -55,7 +55,6 @@ pub struct Report {
 
 /// The person's home directory, which every wire is written under.
 pub fn home() -> Result<PathBuf> {
-    #[allow(deprecated)]
     std::env::home_dir().context("no home directory")
 }
 
@@ -279,11 +278,7 @@ pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Re
     let mut writes = Vec::new();
     for (name, body) in manifest_last(files) {
         let path = dir.join(name);
-        let existing = match std::fs::read_to_string(&path) {
-            Ok(text) => Some(text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-        };
+        let existing = read_text(&path)?;
         if existing.as_deref() == Some(*body) {
             continue;
         }
@@ -785,11 +780,7 @@ fn same_config(a: &toml_edit::DocumentMut, b: &toml_edit::DocumentMut) -> bool {
 }
 
 pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
+    let existing = read_text(path)?;
     if existing.as_deref() == Some(body) {
         return Ok(Report {
             path: path.to_path_buf(),
@@ -815,16 +806,12 @@ pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
 /// remove, and stays.
 pub fn uninstall_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     let _ = now;
-    let current = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Report {
-                path: path.to_path_buf(),
-                backup: None,
-                changed: false,
-            });
-        }
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    let Some(current) = read_text(path)? else {
+        return Ok(Report {
+            path: path.to_path_buf(),
+            backup: None,
+            changed: false,
+        });
     };
     if !is_amx_file(&current, body) {
         return Ok(Report {
