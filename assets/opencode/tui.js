@@ -301,6 +301,7 @@ export default {
       on(`session.execution.${how}`, (_data, id) => {
         running = false;
         steered.clear();
+        tools.clear();
         stopBeating();
         endStream();
         const fields = { session_id: id };
