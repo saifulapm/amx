@@ -21,6 +21,7 @@
 //! rather than fatal: a transcript is appended to while it is read.
 
 use serde_json::Value;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use crate::vendor::Transcript;
@@ -56,14 +57,19 @@ pub fn format_of(agent: &str) -> Option<Transcript> {
 pub fn read(format: Transcript, jsonl: &str) -> Vec<Said> {
     let mut said = Vec::new();
     for entry in spoken(format, jsonl) {
-        match format {
-            Transcript::Claude => claude(&entry, &mut said),
-            Transcript::Pi => pi(&entry, &mut said),
-            Transcript::Codex => codex(&entry, &mut said),
-            Transcript::Opencode => opencode(&entry, &mut said),
-        }
+        said_by(format, &entry, &mut said);
     }
     said
+}
+
+/// Push what one entry said onto `said`.
+fn said_by(format: Transcript, entry: &Value, said: &mut Vec<Said>) {
+    match format {
+        Transcript::Claude => claude(entry, said),
+        Transcript::Pi => pi(entry, said),
+        Transcript::Codex => codex(entry, said),
+        Transcript::Opencode => opencode(entry, said),
+    }
 }
 
 /// The entries a reading walks, in order: every line of a claude transcript
@@ -132,21 +138,22 @@ fn branch(entries: Vec<Value>) -> Vec<Value> {
 /// codex writes where each turn ends, and its answer is read off that — see
 /// [`codex_answer`].
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
-    last_answer(format, &spoken(format, jsonl).collect::<Vec<_>>())
+    last_answer(format, spoken(format, jsonl).rev())
 }
 
-/// The answer at the end of a walk already read, which is what
-/// [`answer`] and [`context_and_last_words`] both ask of it.
-fn last_answer(format: Transcript, entries: &[Value]) -> Option<String> {
+/// The answer at the end of a walk, given newest entry first. Stops at the
+/// first entry that settles it, so only the end of a lazy walk is parsed.
+fn last_answer<V: Borrow<Value>>(
+    format: Transcript,
+    mut newest: impl Iterator<Item = V>,
+) -> Option<String> {
     match format {
-        Transcript::Codex => return codex_answer(entries),
-        Transcript::Opencode => return opencode_answer(entries),
+        Transcript::Codex => return codex_answer(newest),
+        Transcript::Opencode => return opencode_answer(newest),
         _ => {}
     }
-    let last = entries
-        .iter()
-        .rev()
-        .find(|entry| voice(format, entry).is_some())?;
+    let last = newest.find(|entry| voice(format, entry.borrow()).is_some())?;
+    let last = last.borrow();
     if voice(format, last) != Some(Voice::Assistant) || synthetic(format, last) || cut_off(last) {
         return None;
     }
@@ -192,16 +199,14 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
 /// reason neither vendor's table names is repeated as the vendor spelled it
 /// rather than guessed at.
 pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
-    let entries: Vec<Value> = spoken(format, jsonl).collect();
+    let mut newest = spoken(format, jsonl).rev();
     match format {
-        Transcript::Codex => return codex_why(&entries),
-        Transcript::Opencode => return opencode_why(&entries),
+        Transcript::Codex => return codex_why(newest),
+        Transcript::Opencode => return opencode_why(newest),
         _ => {}
     }
-    let last = entries
-        .iter()
-        .rev()
-        .find(|entry| voice(format, entry).is_some())?;
+    let last = newest.find(|entry| voice(format, entry).is_some())?;
+    let last = &last;
     if voice(format, last) != Some(Voice::Assistant) {
         return None;
     }
@@ -268,7 +273,12 @@ fn synthetic(format: Transcript, entry: &Value) -> bool {
 /// A prompt answers nothing. It is what the person typed, and whoever is
 /// reading the row typed it.
 pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
-    match read(format, jsonl).pop()? {
+    let newest = spoken(format, jsonl).rev().find_map(|entry| {
+        let mut said = Vec::new();
+        said_by(format, &entry, &mut said);
+        said.pop()
+    })?;
+    match newest {
         Said::Prompt(_) => None,
         Said::Text(words) => words.lines().next().map(str::to_string),
         Said::Tool { name, detail } => Some(match detail {
@@ -301,15 +311,16 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
 /// `input_tokens` of their `last_token_usage` is the last request's whole
 /// input, the cached part of it included. A turn that never reached the model
 /// writes none.
-fn context_of(format: Transcript, entries: &[Value]) -> Option<u64> {
-    entries
-        .iter()
-        .rev()
+fn context_of<V: Borrow<Value>>(
+    format: Transcript,
+    newest: impl Iterator<Item = V>,
+) -> Option<u64> {
+    newest
         .filter(|entry| match format {
-            Transcript::Codex => codex_event(entry) == Some("token_count"),
-            _ => voice(format, entry) == Some(Voice::Assistant),
+            Transcript::Codex => codex_event(entry.borrow()) == Some("token_count"),
+            _ => voice(format, entry.borrow()) == Some(Voice::Assistant),
         })
-        .map(|entry| usage_sum(format, entry))
+        .map(|entry| usage_sum(format, entry.borrow()))
         .find(|total| *total > 0)
 }
 
@@ -342,15 +353,26 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
 }
 
 /// What the next turn would send back to the vendor and the reader's own words
-/// at the end of the last one, answered from one walk of the transcript.
+/// at the end of the last one.
 ///
-/// `View::json()` asks both questions of the same 64 KiB tail, and asking each
-/// of [`context_of`] and [`last_answer`] separately walks that tail twice —
-/// which a program polling a wall of agents pays twice a second. This reads it
-/// once and answers both.
+/// `View::json()` asks both of the same tail on every poll. Each walk parses
+/// from the end only as far as it needs; a pi branch, which needs the whole
+/// tail parsed, is parsed once for both.
 pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, Option<String>) {
-    let entries: Vec<Value> = spoken(format, jsonl).collect();
-    (context_of(format, &entries), last_answer(format, &entries))
+    match format {
+        // A pi branch is found from the whole file, so it is found once.
+        Transcript::Pi => {
+            let entries: Vec<Value> = spoken(format, jsonl).collect();
+            (
+                context_of(format, entries.iter().rev()),
+                last_answer(format, entries.iter().rev()),
+            )
+        }
+        _ => (
+            context_of(format, spoken(format, jsonl).rev()),
+            last_answer(format, spoken(format, jsonl).rev()),
+        ),
+    }
 }
 
 /// The name the session goes under, where something has given it one.
@@ -645,25 +667,22 @@ fn codex_event(entry: &Value) -> Option<&str> {
 /// A turn whose last word is `task_started` is still running, and a pane
 /// killed under it leaves it so for good: codex writes nothing more for that
 /// turn, and a later resume does not either (docs/codex-screens.md).
-fn codex_turn_end(entries: &[Value]) -> Option<&Value> {
-    entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            matches!(
-                codex_event(entry),
-                Some("task_started" | "task_complete" | "turn_aborted")
-            )
-        })
-        .map(|entry| &entry["payload"])
+fn codex_turn_end<V: Borrow<Value>>(mut newest: impl Iterator<Item = V>) -> Option<V> {
+    newest.find(|entry| {
+        matches!(
+            codex_event(entry.borrow()),
+            Some("task_started" | "task_complete" | "turn_aborted")
+        )
+    })
 }
 
 /// A codex turn's answer: the `last_agent_message` its `task_complete`
 /// carries. An Esc'd turn has no `task_complete` — even where it had written
 /// a final answer before the Esc landed — a turn that ended on a question
 /// carries a null one, and an errored one carries an `error` beside it.
-fn codex_answer(entries: &[Value]) -> Option<String> {
-    let end = codex_turn_end(entries)?;
+fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
+    let end = codex_turn_end(newest)?;
+    let end = &end.borrow()["payload"];
     if end["type"] != "task_complete" || !end["error"].is_null() {
         return None;
     }
@@ -677,8 +696,9 @@ fn codex_answer(entries: &[Value]) -> Option<String> {
 /// codex writes the error it got back as the message, and where that is the
 /// provider's JSON — measured with a model the account may not use — its
 /// `error.message` is the sentence, and the rest is wrapping.
-fn codex_why(entries: &[Value]) -> Option<String> {
-    let end = codex_turn_end(entries)?;
+fn codex_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
+    let end = codex_turn_end(newest)?;
+    let end = &end.borrow()["payload"];
     match end["type"].as_str()? {
         "turn_aborted" => Some(match end["reason"].as_str() {
             Some("interrupted") | None => "the turn was aborted".to_string(),
@@ -729,30 +749,36 @@ fn opencode(entry: &Value, said: &mut Vec<Said>) {
 /// last step is an assistant whose `error` is `aborted`, and that is read as
 /// interrupted. A list ending on a prompt, or on a step with no error, is a
 /// turn still running, and has no outcome yet.
-fn opencode_end(entries: &[Value]) -> Option<(&str, Option<&Value>)> {
-    let last = entries
-        .iter()
-        .rposition(|entry| matches!(entry["type"].as_str(), Some("user" | "assistant" | "idle")))?;
-    let step = entries[..=last]
-        .iter()
-        .rev()
-        .take_while(|entry| entry["type"] != "user")
-        .find(|entry| entry["type"] == "assistant");
-    let outcome = match entries[last]["type"].as_str()? {
-        "idle" => entries[last]["outcome"].as_str()?,
-        "assistant" if entries[last]["error"]["type"] == "aborted" => "interrupted",
-        "assistant" if entries[last]["error"].is_object() => "failed",
+fn opencode_end<V: Borrow<Value>>(
+    mut newest: impl Iterator<Item = V>,
+) -> Option<(String, Option<V>)> {
+    let last = newest.find(|entry| {
+        matches!(
+            entry.borrow()["type"].as_str(),
+            Some("user" | "assistant" | "idle")
+        )
+    })?;
+    let ended = last.borrow();
+    let outcome = match ended["type"].as_str()? {
+        "idle" => ended["outcome"].as_str()?,
+        "assistant" if ended["error"]["type"] == "aborted" => "interrupted",
+        "assistant" if ended["error"].is_object() => "failed",
         _ => return None,
-    };
+    }
+    .to_string();
+    let step = std::iter::once(last)
+        .chain(newest)
+        .take_while(|entry| entry.borrow()["type"] != "user")
+        .find(|entry| entry.borrow()["type"] == "assistant");
     Some((outcome, step))
 }
 
 /// An opencode turn's answer: the words of its last step, where the turn
 /// succeeded.
-fn opencode_answer(entries: &[Value]) -> Option<String> {
-    match opencode_end(entries)? {
-        ("succeeded", Some(step)) => {
-            let text: Vec<&str> = step["content"]
+fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
+    match opencode_end(newest)? {
+        (outcome, Some(step)) if outcome == "succeeded" => {
+            let text: Vec<&str> = step.borrow()["content"]
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -768,17 +794,19 @@ fn opencode_answer(entries: &[Value]) -> Option<String> {
 
 /// Why an opencode turn ended with nothing: interrupted, or failed with the
 /// message its last step's `error` carries.
-fn opencode_why(entries: &[Value]) -> Option<String> {
-    match opencode_end(entries)? {
-        ("succeeded", _) => None,
-        ("interrupted", _) => Some("the turn was aborted".to_string()),
-        ("failed", step) => Some(
+fn opencode_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
+    let (outcome, step) = opencode_end(newest)?;
+    let step = step.as_ref().map(Borrow::borrow);
+    match outcome.as_str() {
+        "succeeded" => None,
+        "interrupted" => Some("the turn was aborted".to_string()),
+        "failed" => Some(
             match step.and_then(|step| step["error"]["message"].as_str()) {
                 Some(said) => format!("the provider failed: {}", one_line(said)),
                 None => "the provider failed".to_string(),
             },
         ),
-        (other, _) => Some(format!("the vendor stopped on `{other}`")),
+        other => Some(format!("the vendor stopped on `{other}`")),
     }
 }
 
