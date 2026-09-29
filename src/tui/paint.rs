@@ -45,6 +45,7 @@ mod text;
 mod wall;
 
 use ratatui::Frame;
+use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Modifier;
 use ratatui::widgets::Paragraph;
@@ -86,10 +87,10 @@ pub struct Map {
     offset: Cell<usize>,
     /// The last rows of that band, where a card is covering them.
     card: Cell<Option<Rect>>,
-    /// What the frame says, one string to a row of the screen. The whole
-    /// screen rather than the list alone: a drag is over the terminal, and
-    /// what it covers is whatever was drawn there.
-    drawn: RefCell<Vec<String>>,
+    /// What the frame says, cell by cell. The whole screen rather than the
+    /// list alone: a drag is over the terminal, and what it covers is
+    /// whatever was drawn there.
+    drawn: RefCell<Buffer>,
 }
 
 impl Map {
@@ -143,18 +144,29 @@ impl Map {
 /// and the head of the last one. A row gives up its trailing blanks, because
 /// the cells past the end of what a row says are the screen's rather than the
 /// row's and nobody dragged over them on purpose.
-pub(super) fn selected_text(drawn: &[String], from: (u16, u16), to: (u16, u16)) -> String {
+pub(super) fn selected_text(drawn: &Buffer, from: (u16, u16), to: (u16, u16)) -> String {
     let (from, to) = in_reading_order(from, to);
+    let area = drawn.area;
     (from.1..=to.1)
         .map(|row| {
-            let said = drawn.get(row as usize).map_or("", String::as_str);
             let (first, last) = span(row, from, to);
-            said.chars()
-                .skip(first as usize)
-                .take((last - first) as usize + 1)
-                .collect::<String>()
-                .trim_end()
-                .to_string()
+            let mut said = String::new();
+            // Cells still covered by a wide symbol to their left.
+            let mut hidden = 0;
+            for column in area.left()..area.right().min(last.saturating_add(1)) {
+                let Some(cell) = drawn.cell(Position { x: column, y: row }) else {
+                    break;
+                };
+                if hidden > 0 {
+                    hidden -= 1;
+                    continue;
+                }
+                hidden = cell.cell_width().saturating_sub(1);
+                if column >= first {
+                    said.push_str(cell.symbol());
+                }
+            }
+            said.trim_end().to_string()
         })
         .collect::<Vec<String>>()
         .join("\n")
@@ -354,21 +366,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     if let Some((from, to)) = screen.selection {
         reverse(buffer, from, to);
     }
-    let area = buffer.area;
-    screen.map.drawn.replace(
-        (area.top()..area.bottom())
-            .map(|row| {
-                (area.left()..area.right())
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect()
-            })
-            .collect(),
-    );
+    screen.map.drawn.borrow_mut().clone_from(buffer);
 }
 
 /// Turn the cells a selection covers about, so somebody dragging can see what
 /// they have.
-fn reverse(buffer: &mut ratatui::buffer::Buffer, from: (u16, u16), to: (u16, u16)) {
+fn reverse(buffer: &mut Buffer, from: (u16, u16), to: (u16, u16)) {
     let (from, to) = in_reading_order(from, to);
     let area = buffer.area;
     for row in from.1..=to.1 {
@@ -387,12 +390,12 @@ mod tests {
 
     /// Three rows of a wall, each the width the frame was drawn at: what a
     /// draw leaves behind for the mouse to read a selection out of.
-    fn drawn() -> Vec<String> {
-        vec![
+    fn drawn() -> Buffer {
+        Buffer::with_lines([
             " ● fix-login-a1b   wrote the parser  ".to_string(),
             " ● port-import-b2c did what was asked".to_string(),
             " ".repeat(37),
-        ]
+        ])
     }
 
     #[test]
@@ -435,5 +438,12 @@ mod tests {
             selected_text(&drawn(), (3, 0), (36, 0)),
             "fix-login-a1b   wrote the parser"
         );
+    }
+
+    #[test]
+    fn a_selection_copies_a_wide_character_once() {
+        let drawn = Buffer::with_lines(["日本 ab"]);
+        assert_eq!(selected_text(&drawn, (0, 0), (6, 0)), "日本 ab");
+        assert_eq!(selected_text(&drawn, (2, 0), (4, 0)), "本");
     }
 }
