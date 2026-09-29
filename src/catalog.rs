@@ -79,6 +79,7 @@ pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
                     &found.dir,
                     found.plugin.as_deref(),
                     &mut Vec::new(),
+                    &mut Vec::new(),
                     kind,
                     catalog.sigil,
                     &mut entries,
@@ -186,19 +187,30 @@ fn skills(found: &Found, catalog: &Catalog, into: &mut Vec<Entry>) {
 
 /// Every markdown file under a commands or an agents place, walked into the
 /// directories it keeps them in.
+///
+/// `walking` holds the real path of every directory on the way down, so a
+/// symlink back to one of them is not followed round again.
 fn walk(
     dir: &Path,
     plugin: Option<&str>,
     under: &mut Vec<String>,
+    walking: &mut Vec<PathBuf>,
     kind: Kind,
     sigil: char,
     into: &mut Vec<Entry>,
 ) {
+    let Ok(real) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if walking.contains(&real) {
+        return;
+    }
+    walking.push(real);
     for path in contents(dir) {
         let Some(name) = named(&path) else { continue };
         if path.is_dir() {
             under.push(name.to_string());
-            walk(&path, plugin, under, kind, sigil, into);
+            walk(&path, plugin, under, walking, kind, sigil, into);
             under.pop();
             continue;
         }
@@ -215,6 +227,7 @@ fn walk(
             about,
         });
     }
+    walking.pop();
 }
 
 /// The word a file in one of these places is asked for by.
@@ -559,6 +572,23 @@ mod tests {
         );
         assert_eq!(found(&entries, "/plain").about, "");
         assert_eq!(found(&entries, "/quiet").about, "");
+    }
+
+    #[test]
+    fn a_directory_linked_back_to_one_being_walked_is_walked_once() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let commands = home.path().join(".claude/commands");
+        file(&commands.join("ship.md"), "Ship it.");
+        std::os::unix::fs::symlink(&commands, commands.join("again")).unwrap();
+        std::os::unix::fs::symlink(&commands, commands.join("more")).unwrap();
+
+        let entries = listing(
+            &claude::VENDOR.catalog.unwrap(),
+            home.path(),
+            project.path(),
+        );
+        assert_eq!(on_disk(&entries), ["/ship"]);
     }
 
     #[test]
