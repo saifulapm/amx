@@ -1,30 +1,25 @@
-//! Walking past the paint a terminal writes into a captured screen.
+//! Reading the escape sequences in a captured screen.
 //!
-//! tmux's `-e` capture keeps every SGR sequence the pane drew — an attribute
-//! change wherever a real program set a color or a weight, sometimes in the
-//! middle of a word. A reader wants the words, not the paint, and so does a
-//! rule matching against them. The card wants both: what claude drew, drawn
-//! the way claude drew it.
+//! tmux's `capture-pane -e` keeps every SGR sequence the pane drew, sometimes
+//! mid-word. A rule matching text wants the words alone; the card wants the
+//! words and the paint.
 //!
-//! **One walk, three collectors.** [`strip_ansi`], [`painted`] and
-//! [`laid_out`] are three ways of reading the same private [`walk`], so none
-//! re-implements the grammar and they cannot drift apart. The law between the
-//! first two is stated as a property test at the bottom of this file:
-//! `strip_ansi(s)` is `painted(s)` with the style thrown away and the rows
-//! joined by newlines. The third reads the motion the other two drop, because
-//! a drawing is not a stream of words.
+//! [`strip_ansi`], [`painted`] and [`laid_out`] are three collectors over one
+//! private [`walk`], so the grammar lives in one place:
 //!
-//! **This is not a display sanitiser.** It removes *escapes*;
-//! [`crate::tmux::sanitize`] removes *characters a terminal must not be handed*
-//! and stays where it is. Neither subsumes the other, and a capture taken with
-//! its paint kept wants both, in that order: the escapes are walked into
-//! styling first, and what falls out is made inert before anything draws it.
+//! - `strip_ansi(s)` is `painted(s)` with the style dropped and the rows joined
+//!   by newlines. A property test at the bottom of this file holds them to it.
+//! - `laid_out` also applies cursor motion, for output that draws rather than
+//!   streams.
+//!
+//! This removes escapes. It is not a display sanitiser: characters a terminal
+//! must not be handed are [`crate::tmux::sanitize`]'s job, applied after this.
 
-/// A colour in the three forms SGR carries one.
+/// A colour in the three forms SGR carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Colour {
-    /// SGR 30-37 and 90-97 for the foreground, 40-47 and 100-107 for the
-    /// background, as the ANSI index 0-15.
+    /// SGR 30-37 and 90-97 (foreground) or 40-47 and 100-107 (background), as
+    /// the ANSI index 0-15.
     Ansi(u8),
     /// `38;5;n` and `48;5;n`.
     Indexed(u8),
@@ -32,7 +27,7 @@ pub enum Colour {
     Rgb(u8, u8, u8),
 }
 
-/// One run of text and the paint that was in force where it was written.
+/// A run of text and the style in force where it was written.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Painted {
     pub text: String,
@@ -45,7 +40,7 @@ pub struct Painted {
     pub bg: Option<Colour>,
 }
 
-/// Remove every escape sequence from a captured screen, keeping the rest.
+/// Removes every escape sequence from a captured screen.
 pub fn strip_ansi(screen: &str) -> String {
     let mut out = String::with_capacity(screen.len());
     walk(screen, |event| match event {
@@ -56,13 +51,12 @@ pub fn strip_ansi(screen: &str) -> String {
     out
 }
 
-/// The same walk with the paint kept: one run per stretch of text drawn in one
-/// style, gathered into the row it was drawn on.
+/// The screen as rows of styled runs, one run per stretch of text in one
+/// style.
 ///
-/// A row is what sits between two newlines, so `n` newlines give `n + 1` rows
-/// and a screen ending in one opens a last empty row. That is not a choice of
-/// shape: it is the only reading under which [`strip_ansi`] is these rows
-/// joined by newlines.
+/// `n` newlines give `n + 1` rows, so a screen ending in a newline has an
+/// empty last row. That is what makes [`strip_ansi`] equal these rows joined
+/// by newlines.
 pub fn painted(screen: &str) -> Vec<Vec<Painted>> {
     let mut rows: Vec<Vec<Painted>> = vec![Vec::new()];
     let mut style = Painted::default();
@@ -71,36 +65,30 @@ pub fn painted(screen: &str) -> Vec<Vec<Painted>> {
         Event::Text(text) => run.push_str(text),
         Event::Newline => {
             close(&mut rows, &style, &mut run);
-            // The paint stays in force across a row boundary, because that
-            // is what a terminal does with it and what tmux writes down:
-            // `capture-pane -e` puts an escape where an attribute changes and
-            // nowhere else, so a box drawn three rows tall opens its
-            // background once, on the first row, and the two under it carry
-            // no escape of their own. A walk that reset here painted the
-            // padding of such a box and not the text in it.
+            // The style stays in force across rows, as on a terminal. tmux only
+            // writes an escape where an attribute changes, so a box three rows
+            // tall opens its background once on the first row.
             rows.push(Vec::new());
         }
         Event::Control { params, end: 'm' } => {
             let mut next = style.clone();
             apply(&mut next, params);
-            // A parameter that changed nothing — and a real capture is full of
-            // them — must not split one run into two.
+            // Real captures are full of no-op parameters; they must not split
+            // a run.
             if next != style {
                 close(&mut rows, &style, &mut run);
                 style = next;
             }
         }
-        // Motion moves a cursor, and a collector gathering runs in the order
-        // they were written has none to move.
+        // Motion means nothing to a collector that keeps runs in write order.
         Event::Control { .. } => {}
     });
     close(&mut rows, &style, &mut run);
     rows
 }
 
-/// Put the pending run on the row being built, if it has anything in it. An
-/// empty run is dropped, which is what keeps back-to-back escape sequences
-/// from littering a row with styled nothings.
+/// Pushes the pending run onto the current row. Empty runs are dropped, so
+/// back-to-back escapes do not leave styled empty runs behind.
 fn close(rows: &mut [Vec<Painted>], style: &Painted, run: &mut String) {
     if run.is_empty() {
         return;
@@ -112,21 +100,16 @@ fn close(rows: &mut [Vec<Painted>], style: &Painted, run: &mut String) {
     }
 }
 
-/// A capture read as the screen it drew rather than as the order it was
-/// written in.
+/// The screen as a terminal would show it, with cursor motion applied.
 ///
-/// [`strip_ansi`] keeps the characters in the order they arrived, which is the
-/// right reading of a stream of lines and the wrong one of a drawing: a vendor
-/// that puts its cursor where each word goes has `Accessing` and `workspace:`
-/// gathered into `Accessingworkspace:`, the motion between them dropped along
-/// with the cells it skipped. This lays the same walk out on a [`Grid`] and
-/// hands back what is standing on it at the end — the last draw of every cell,
-/// in the row and the column it was drawn at.
+/// [`strip_ansi`] keeps characters in arrival order, which is wrong for output
+/// that positions its cursor before each word: `Accessing` and `workspace:`
+/// come out as `Accessingworkspace:`. This lays the walk out on a [`Grid`] and
+/// returns the last character drawn in each cell.
 ///
-/// The motion a boot draws with, and no more: CR, LF, BS, CUP (`H`, `f`),
-/// CUU/CUD/CUF/CUB (`A`-`D`), CHA (`G`), VPA (`d`), EL (`K`) and ED (`J`).
-/// Paint, private modes and control strings put nothing in a cell and are let
-/// by, as they are in [`strip_ansi`].
+/// Handles CR, LF, BS, CUP (`H`, `f`), CUU/CUD/CUF/CUB (`A`-`D`), CHA (`G`),
+/// VPA (`d`), EL (`K`) and ED (`J`). Everything else draws no cell and is
+/// skipped, as in [`strip_ansi`].
 pub fn laid_out(raw: &str) -> String {
     let mut grid = Grid::new(raw.len());
     walk(raw, |event| match event {
@@ -137,22 +120,19 @@ pub fn laid_out(raw: &str) -> String {
     grid.read()
 }
 
-// ── the walk ────────────────────────────────────────────────────────────────
+// The walk.
 
-/// `ESC`, the seven-bit introducer everything below is built on.
+/// `ESC`.
 const ESC: char = '\u{1b}';
 
-/// `BS`, which arrives as a character rather than a sequence and still moves
-/// the cursor.
+/// `BS`, a character that moves the cursor.
 const BS: char = '\u{8}';
 
-/// `BEL`, which every terminal worth the name takes as a string terminator
-/// even though ECMA-48 spells that `ST`.
+/// `BEL`, which terminals accept as a string terminator in place of `ST`.
 const BEL: char = '\u{7}';
 
 /// `CSI`, `OSC`, `DCS`, `APC`, `PM`, `SOS` and `ST` in their eight-bit forms.
-/// tmux hands U+009B back through the capture verbatim, so these are not
-/// theoretical.
+/// tmux passes U+009B through a capture verbatim.
 const CSI_8: char = '\u{9b}';
 const OSC_8: char = '\u{9d}';
 const DCS_8: char = '\u{90}';
@@ -161,47 +141,39 @@ const PM_8: char = '\u{9e}';
 const SOS_8: char = '\u{98}';
 const ST_8: char = '\u{9c}';
 
-/// What the walk hands a collector. Text arrives borrowed from the screen, so
-/// no collector pays for a copy it does not keep.
+/// What the walk hands a collector. Text is borrowed from the screen.
 enum Event<'a> {
-    /// A run of text with no escape and no newline in it.
+    /// Text with no escape and no newline in it.
     Text(&'a str),
-    /// A row boundary. Structure rather than text, and the paint in force
-    /// crosses it the way it does on a terminal.
+    /// A row boundary. The style in force carries across it.
     Newline,
-    /// A complete control sequence: its parameters, without the introducer,
-    /// and the final byte that says what it does. `ESC[m` arrives as the empty
-    /// string and `'m'`. A collector that only paints reads the `m` ones; one
-    /// that lays cells out reads the motion as well.
+    /// A complete control sequence: its parameters without the introducer,
+    /// and its final byte. `ESC[m` arrives as `""` and `'m'`.
     Control { params: &'a str, end: char },
 }
 
-/// What the character just read opened, if anything.
+/// What the character just read opened.
 enum Opened {
-    /// Nothing: it is text, and it stays in the run being gathered.
+    /// Nothing: it is text.
     Text,
     /// A row boundary.
     Newline,
     /// A control sequence: parameters, then a final byte in `@`..=`~`.
     Csi,
-    /// A control string — OSC, DCS, APC, PM or SOS — running to its `ST`.
+    /// A control string (OSC, DCS, APC, PM or SOS) running to its `ST`.
     Str,
-    /// An escape with no body: `ESC x` for any other `x`, a lone `ESC` at the
-    /// end of the screen, or a terminator with nothing open. Read and dropped.
+    /// An escape with no body: `ESC x` for any other `x`, a lone trailing
+    /// `ESC`, or a terminator with nothing open. Dropped.
     Nothing,
 }
 
-/// The grammar, walked once.
+/// Walks the escape grammar once, emitting text, newlines and control
+/// sequences.
 ///
-/// **An `ESC` inside a control string or a control sequence aborts it and is
-/// read again** rather than being swallowed with the character after it. That
-/// is what makes a truncated `ESC ] 0 ; title ESC [ 31 m` consume the `CSI`
-/// too instead of printing `31m`, and it costs nothing on a well-formed
-/// screen, where an `ESC \` read again is just two characters of paint. The
-/// one `ESC` is visited twice and the walk then always moves on, so reading a
-/// screen stays linear in its length: a capture cut off mid-sequence is the
-/// ordinary case here, and a long unterminated string must not cost more than
-/// a scan of it.
+/// An `ESC` inside a control string or sequence aborts it and is read again as
+/// the start of the next one, so a truncated `ESC ] 0 ; title ESC [ 31 m`
+/// still consumes the `CSI` instead of printing `31m`. Each `ESC` is visited at
+/// most twice, so the walk stays linear even on long unterminated strings.
 fn walk(screen: &str, mut emit: impl FnMut(Event<'_>)) {
     let mut i = 0;
     let mut text_from = 0;
@@ -211,29 +183,25 @@ fn walk(screen: &str, mut emit: impl FnMut(Event<'_>)) {
         let opened = match c {
             '\n' => Opened::Newline,
             ESC => match screen[i..].chars().next() {
-                // A lone `ESC` at the end has nothing to open.
+                // A lone `ESC` at the end opens nothing.
                 None => Opened::Nothing,
-                // An `ESC` cancels the one before it rather than becoming its
-                // body, which is the rule the two scans below keep as well, so
-                // an `ESC` always begins a sequence and never ends up as
-                // somebody's payload. Left where it is, and read by the next
-                // turn of this loop.
+                // An `ESC` cancels the one before it and is read on the next
+                // turn of the loop, so an `ESC` never ends up inside a payload.
                 Some(after) if after == ESC => Opened::Nothing,
                 Some(next) => {
                     i += next.len_utf8();
                     match next {
                         '[' => Opened::Csi,
                         ']' | 'P' | '_' | '^' | 'X' => Opened::Str,
-                        // Any other `ESC x` is two characters and both paint.
+                        // Any other `ESC x` is two characters, both dropped.
                         _ => Opened::Nothing,
                     }
                 }
             },
             CSI_8 => Opened::Csi,
             OSC_8 | DCS_8 | APC_8 | PM_8 | SOS_8 => Opened::Str,
-            // A terminator with no string open closes nothing and is still not
-            // text. Its seven-bit twin `ESC \` is read by the rule above, and
-            // the point of the eight-bit forms is that both behave alike.
+            // A stray terminator closes nothing and is not text, like its
+            // seven-bit form `ESC \` above.
             ST_8 => Opened::Nothing,
             _ => Opened::Text,
         };
@@ -262,12 +230,10 @@ fn walk(screen: &str, mut emit: impl FnMut(Event<'_>)) {
     }
 }
 
-/// A control sequence from just past its introducer: parameters and
-/// intermediates, then a final byte in `@`..=`~`. Answers with where the walk
-/// goes on and, where the sequence finished, the parameters and that final
-/// byte. One that never ends is read to the end of the screen and reported as
-/// nothing, because half a sequence says nothing about what the whole one
-/// would have done.
+/// Scans a control sequence from just past its introducer to a final byte in
+/// `@`..=`~`. Returns where the walk resumes and, if the sequence finished,
+/// its parameters and final byte. An unfinished sequence runs to the end of
+/// the screen and yields nothing.
 fn scan_csi(screen: &str, from: usize) -> (usize, Option<(&str, char)>) {
     let mut i = from;
     while let Some(c) = screen[i..].chars().next() {
@@ -283,12 +249,10 @@ fn scan_csi(screen: &str, from: usize) -> (usize, Option<(&str, char)>) {
     (screen.len(), None)
 }
 
-/// A control string from just past its introducer — OSC, DCS, APC, PM and SOS
-/// are all one shape — to its `ST`, which is `ESC \`, `BEL` or U+009C. Answers
-/// with where the walk goes on. **One that never ends is read to the end of
-/// the screen** rather than having its body printed as text: a capture cut off
-/// mid-string is ordinary, and half a DCS payload on somebody's screen is what
-/// this exists to prevent.
+/// Scans a control string (OSC, DCS, APC, PM, SOS) from just past its
+/// introducer to its `ST` (`ESC \`, `BEL` or U+009C) and returns where the
+/// walk resumes. An unterminated string runs to the end of the screen, so a
+/// capture cut mid-payload never prints the payload.
 fn scan_string(screen: &str, from: usize) -> usize {
     let mut i = from;
     while let Some(c) = screen[i..].chars().next() {
@@ -301,31 +265,23 @@ fn scan_string(screen: &str, from: usize) -> usize {
     screen.len()
 }
 
-// ── the paint ───────────────────────────────────────────────────────────────
+// The paint.
 
-/// Fold one `CSI … m` parameter list into the paint in force.
+/// Applies one `CSI ... m` parameter list to the style in force.
 ///
-/// **Every attribute's off-parameter is read with its on-parameter** — 22, 23,
-/// 24, 27, 39 and 49 — because a reader that can open bold and cannot close it
-/// draws a capture as something the pane never looked like, which is the whole
-/// of the complaint this module answers. Every parameter outside the set is
-/// dropped and never reaches a renderer as text: blink, conceal, strike,
-/// overline and the rest.
+/// Every attribute's off parameter (22, 23, 24, 27, 39, 49) is handled with
+/// its on parameter, so nothing stays bold that the pane closed. Other
+/// parameters (blink, strike and the rest) are dropped.
 ///
-/// The parameters are the semicolon-separated form, which is what tmux writes.
-/// The colon-separated form of T.416 (`38:2::r:g:b`) reads as one parameter
-/// nothing recognises and is dropped rather than misread, which leaks no text
-/// either way.
+/// Only the semicolon form tmux writes is parsed. The colon form of T.416
+/// (`38:2::r:g:b`) reads as one unknown parameter and is dropped.
 fn apply(style: &mut Painted, params: &str) {
     let mut rest = params.split(';');
     while let Some(param) = rest.next() {
-        // A parameter nothing recognises is skipped rather than a reason to
-        // stop reading: `1;x;31` is still bold and still red.
+        // An unknown parameter is skipped: `1;x;31` is still bold and red.
         let Some(n) = number(param) else { continue };
         match n {
-            // `ESC[0m`, `ESC[m` and an empty parameter all reset: `ESC[m`
-            // arrives as one empty parameter, which reads as the 0 ECMA-48
-            // says it stands for.
+            // `ESC[m` arrives as one empty parameter, which reads as 0.
             0 => *style = Painted::default(),
             1 => style.bold = true,
             2 => style.dim = true,
@@ -360,15 +316,11 @@ fn apply(style: &mut Painted, params: &str) {
     }
 }
 
-/// The parameters `38` and `48` take: `5;n` for one of the 256, `2;r;g;b` for
-/// a colour given outright. A component that will not read leaves the channel
-/// the colour it had.
+/// Reads the colour after `38` or `48`: `5;n` for the 256-colour table,
+/// `2;r;g;b` for RGB. A component that fails leaves the channel as it was.
 ///
-/// **A colour is a fixed number of parameters and stays that many even when
-/// one of them will not read**, so all three components come off the list
-/// before any of them is allowed to fail. Failing on the red would leave the
-/// green and the blue behind to be read as attributes, and `38;2;300;1;4`
-/// would turn on bold and underline out of nothing but a bad red.
+/// All three RGB components are consumed before any may fail, so a bad red in
+/// `38;2;300;1;4` does not leave `1` and `4` to be read as bold and underline.
 fn extended<'a>(rest: &mut impl Iterator<Item = &'a str>) -> Option<Colour> {
     match number(rest.next()?)? {
         5 => Some(Colour::Indexed(component(rest.next()?)?)),
@@ -382,10 +334,9 @@ fn extended<'a>(rest: &mut impl Iterator<Item = &'a str>) -> Option<Colour> {
     }
 }
 
-/// One parameter as a number. Empty is 0, the value ECMA-48 says a parameter
-/// left out stands for, which is what makes `ESC[m` and `ESC[;m` resets.
-/// Anything that is not a run of digits, or is a run too long to be a
-/// parameter, is not a number and its caller drops it rather than guessing.
+/// One parameter as a number. Empty is 0, as ECMA-48 defines an omitted
+/// parameter, which makes `ESC[m` and `ESC[;m` resets. Anything but a short
+/// run of digits is `None`.
 fn number(param: &str) -> Option<u16> {
     if param.is_empty() {
         return Some(0);
@@ -396,35 +347,28 @@ fn number(param: &str) -> Option<u16> {
     param.parse().ok()
 }
 
-/// One colour component, which has to fit a byte.
+/// One colour component, which must fit a byte.
 fn component(param: &str) -> Option<u8> {
     u8::try_from(number(param)?).ok()
 }
 
-// ── the grid ────────────────────────────────────────────────────────────────
+// The grid.
 
-/// Cells a capture may fill beyond one for each byte in it — see [`Grid`].
+/// Cells a capture may fill beyond one per byte; see [`Grid`].
 const SLACK: usize = 64 * 1024;
 
 /// The cells a drawing has filled, and the cursor filling them.
 ///
-/// **Unbounded in shape.** No width and no height is assumed: a capture is
-/// bytes off a pane whose size nobody wrote down, so a cell addressed past the
-/// end of a row, or past the last row, makes the grid bigger rather than being
-/// clipped to a screen this reader cannot know.
-///
-/// **Bounded in what it will hold.** A cell is only ever filled by a character
-/// that was in the capture, so a capture of n bytes needs at most n of them,
-/// and [`SLACK`] over that is room for the blanks a drawing skips past. A jump
-/// further out than that is bytes gone wrong rather than a screen — twelve
-/// bytes of `ESC[999999999;999999999H` would otherwise pad a gigabyte of rows
-/// — and what is drawn out there is dropped. Nothing a pane really printed
-/// reaches the bound, and reading a capture stays a scan of it.
+/// No width or height is assumed: a cell addressed past the end of a row or
+/// the last row grows the grid. What it holds is capped at one cell per
+/// capture byte plus [`SLACK`], since only characters from the capture fill
+/// cells. Draws beyond the cap are dropped, so `ESC[999999999;999999999H`
+/// cannot allocate a gigabyte of rows.
 struct Grid {
     rows: Vec<Vec<char>>,
     row: usize,
     col: usize,
-    /// What the grid holds: every row's cells, and one for each row.
+    /// Cells held: every row's cells, plus one per row.
     held: usize,
     /// The most it may hold.
     cap: usize,
@@ -442,9 +386,8 @@ impl Grid {
         }
     }
 
-    /// Draw a run of text, a character to a cell, with the two motions that
-    /// arrive as characters rather than as sequences: a carriage return to the
-    /// first column, and a backspace one cell to the left of where it was.
+    /// Draws text, one character per cell. CR returns to the first column and
+    /// BS steps one cell left.
     fn write(&mut self, text: &str) {
         for c in text.chars() {
             match c {
@@ -457,19 +400,16 @@ impl Grid {
 
     /// A newline: down a row and back to the first column.
     ///
-    /// **A terminal moves down and no further**, and the captures this reads
-    /// are a pty's, where the line discipline has already put a return in
-    /// front of every newline — so on those bytes the two readings agree.
-    /// Where they part is a file written straight rather than through a pane,
-    /// and there a line feed that kept its column would walk every line of it
-    /// diagonally down the screen. This is a reader of both.
+    /// A terminal's LF keeps the column, but pty captures already have a CR
+    /// before every LF. Files written without a pty do not, and keeping the
+    /// column there would walk each line diagonally.
     fn newline(&mut self) {
         self.row = self.row.saturating_add(1);
         self.col = 0;
     }
 
-    /// One character where the cursor is, with the rows and the cells in front
-    /// of it grown as blanks. The cursor moves on whether or not the cell fit.
+    /// One character at the cursor, growing the row and cells before it as
+    /// blanks. The cursor advances whether or not the cell fit.
     fn put(&mut self, c: char) {
         // A cursor saturated at usize::MAX has no cell to fill.
         if let (Some(tall), Some(wide)) = (self.row.checked_add(1), self.col.checked_add(1)) {
@@ -491,9 +431,8 @@ impl Grid {
         self.col = self.col.saturating_add(1);
     }
 
-    /// What a control sequence moves or erases. A private parameter string is
-    /// a mode however it ends, and a final byte this grid does not know draws
-    /// no cell: both are let by.
+    /// Applies cursor motion and erasure. Private-parameter sequences and
+    /// unknown final bytes are ignored.
     fn moved(&mut self, params: &str, end: char) {
         if params.starts_with(['<', '=', '>', '?']) {
             return;
@@ -515,9 +454,8 @@ impl Grid {
                 2 => self.cut(self.row, 0),
                 _ => {}
             },
-            // Rows are dropped where nothing under the cursor can be seen
-            // again; a row above it stays a row, emptied, because the rows
-            // under it are still where they were drawn.
+            // Rows below the cursor are dropped. Rows above it are emptied but
+            // kept, so the rows under them stay where they were drawn.
             'J' => match mode(params) {
                 0 => {
                     self.cut(self.row, self.col);
@@ -536,7 +474,7 @@ impl Grid {
         }
     }
 
-    /// Drop what a row holds from `from` on.
+    /// Drops a row's cells from `from` on.
     fn cut(&mut self, row: usize, from: usize) {
         if let Some(cells) = self.rows.get_mut(row) {
             self.held -= cells.len().saturating_sub(from);
@@ -544,8 +482,8 @@ impl Grid {
         }
     }
 
-    /// Blank a row up to and including `to`, which costs it no cells: what is
-    /// past there was drawn where it stands and stays there.
+    /// Blanks a row up to and including `to`. The cells past it keep their
+    /// place, so none are released.
     fn blank(&mut self, row: usize, to: usize) {
         if let Some(cells) = self.rows.get_mut(row) {
             for cell in cells.iter_mut().take(to.saturating_add(1)) {
@@ -554,7 +492,7 @@ impl Grid {
         }
     }
 
-    /// Drop every row past `keep`.
+    /// Drops every row from `keep` on.
     fn keep_rows(&mut self, keep: usize) {
         while self.rows.len() > keep {
             if let Some(cells) = self.rows.pop() {
@@ -563,9 +501,8 @@ impl Grid {
         }
     }
 
-    /// The grid as text: a row to a line, with the blanks a drawing left at
-    /// the end of a row and under its last one dropped. Nobody asked to read
-    /// the part of a screen nothing was drawn on.
+    /// The grid as text, one row per line, without trailing blanks on each row
+    /// or trailing empty rows.
     fn read(&self) -> String {
         let mut rows: Vec<String> = self
             .rows
@@ -583,10 +520,8 @@ impl Grid {
     }
 }
 
-/// The `i`th parameter as a count: how far a cursor walks, or which row or
-/// column it is put on. Missing, empty, zero, or not a number at all — a
-/// parameter longer than one will read as, an intermediate byte — is the 1
-/// ECMA-48 gives a parameter left out.
+/// The `i`th parameter as a count or a 1-based position. Missing, empty, zero
+/// or unparsable reads as 1, the ECMA-48 default.
 fn count(params: &str, i: usize) -> usize {
     params
         .split(';')
@@ -596,14 +531,12 @@ fn count(params: &str, i: usize) -> usize {
         .unwrap_or(1)
 }
 
-/// The `i`th parameter as a row or a column: the same count, 1-based on the
-/// wire and 0-based on the grid.
+/// The `i`th parameter as a 0-based row or column.
 fn at(params: &str, i: usize) -> usize {
     count(params, i) - 1
 }
 
-/// Which of an erase's forms a sequence asked for, which is the 0 ECMA-48
-/// gives a parameter left out.
+/// The mode of an erase sequence, 0 when omitted.
 fn mode(params: &str) -> usize {
     params
         .split(';')
@@ -616,7 +549,7 @@ fn mode(params: &str) -> usize {
 mod tests {
     use super::*;
 
-    // ── the walk ────────────────────────────────────────────────────────────
+    // The walk.
 
     #[test]
     fn plain_text_with_no_escapes_survives() {
@@ -680,14 +613,14 @@ mod tests {
 
     #[test]
     fn an_escape_inside_a_sequence_begins_a_new_one() {
-        // The `OSC` is cut off by the `CSI`, and the `CSI` is read rather than
-        // printed: `31m` is paint, not two characters and a letter.
+        // The `OSC` is cut off by the `CSI`, which is read as paint, not
+        // printed as `31m`.
         assert_eq!(strip_ansi("a\u{1b}]0;title\u{1b}[31mb"), "ab");
     }
 
-    // ── the paint ───────────────────────────────────────────────────────────
+    // The paint.
 
-    /// The one row of runs a screen with no newline in it makes.
+    /// The runs of a screen with no newline in it.
     fn row(screen: &str) -> Vec<Painted> {
         let mut rows = painted(screen);
         assert_eq!(rows.len(), 1, "{screen:?}");
@@ -762,8 +695,8 @@ mod tests {
 
     #[test]
     fn a_bad_component_costs_its_colour_and_nothing_else() {
-        // The green and the blue are the colour's, not two attributes to be
-        // read once the red has failed.
+        // The green and blue belong to the colour, not to two attributes read
+        // after the red failed.
         let runs = row("\u{1b}[38;2;300;1;4mtext");
         assert_eq!(runs[0].fg, None);
         assert!(!runs[0].bold && !runs[0].underline, "{runs:?}");
@@ -778,18 +711,16 @@ mod tests {
 
     #[test]
     fn paint_left_open_on_one_row_is_still_in_force_on_the_next() {
-        // tmux writes an attribute where it changes and leaves it in force:
-        // pi's user-message box opens its background on the padding row
-        // above the text and closes it two rows later, and the text row
-        // between carries no escape at all. Measured off pi 0.85.1 with
-        // `capture-pane -e` on 2026-09-11.
+        // pi 0.85.1's user-message box opens its background on the padding
+        // row above the text and closes it two rows later. The text row
+        // between carries no escape at all.
         let rows = painted("\u{1b}[48;2;33;34;47m    \n text\n    \u{1b}[49m\nplain");
         let bg = Some(Colour::Rgb(33, 34, 47));
         assert_eq!(rows[0][0].bg, bg);
         assert_eq!(rows[1][0].bg, bg, "{rows:?}");
         assert_eq!(rows[2][0].bg, bg, "{rows:?}");
         assert_eq!(rows[3][0].bg, None, "{rows:?}");
-        // And an attribute, the same way.
+        // And the same for an attribute.
         let rows = painted("\u{1b}[1mbold\nstill");
         assert!(rows[1][0].bold, "{rows:?}");
     }
@@ -808,24 +739,22 @@ mod tests {
         assert_eq!(rows[1][0].text, "word");
     }
 
-    // ── the grid ────────────────────────────────────────────────────────────
+    // The grid.
 
-    /// Two frames of a boot, drawn the way a vendor draws one: the cursor put
-    /// where each word goes rather than spaces printed up to it, and the second
-    /// frame written over the first. Shaped after the claude boot whose reading
-    /// came back as `Accessingworkspace:` on 2026-09-18.
+    /// Two frames of a boot drawn with cursor positioning: each word placed by
+    /// moving the cursor, and the second frame drawn over the first. Modelled
+    /// on a claude boot that read as `Accessingworkspace:`.
     const BOOT: &str = concat!(
-        // A title, a word placed further along the same row, and a status row
-        // under it.
+        // A title, a word further along the same row, and a status row.
         "\u{1b}[2J\u{1b}[H",
         "\u{1b}[1;1HAccessing",
         "\u{1b}[1;17Hworkspace:",
         "\u{1b}[2;3Hreading the files",
-        // The second frame: the status row rewritten in place, shorter, with
-        // what the longer first draw left standing erased.
+        // The second frame: the status row redrawn shorter, the leftover
+        // erased.
         "\u{1b}[2;3Hready\u{1b}[K",
-        // And the title row finished off with a row address, a column address
-        // and a walk right.
+        // The title row finished with a row address, a column address and a
+        // move right.
         "\u{1b}[1d\u{1b}[1G\u{1b}[27Cin ~/Sites",
     );
 
@@ -846,10 +775,9 @@ mod tests {
     #[test]
     fn a_return_draws_over_the_row_it_returns_to() {
         assert_eq!(laid_out(" 1/3\r 2/3\r 3/3 done\r\nlast"), " 3/3 done\nlast");
-        // A shorter draw over a longer one leaves the tail of the longer one
-        // showing, which is what a terminal does and why a progress bar pads.
+        // A shorter draw leaves the tail of the longer one, as on a terminal.
         assert_eq!(laid_out("loading......\rdone"), "doneing......");
-        // And a backspace steps back over one cell without erasing it.
+        // A backspace steps back one cell without erasing it.
         assert_eq!(laid_out("ab\u{8}c"), "ac");
     }
 
@@ -857,19 +785,19 @@ mod tests {
     fn the_cursor_walks_every_way_the_grid_knows() {
         // Down two, right three, up one, left one, then a word.
         assert_eq!(laid_out("\u{1b}[2B\u{1b}[3C\u{1b}[A\u{1b}[Dxy"), "\n  xy");
-        // A row address and a column address, both 1-based.
+        // Row and column addresses are 1-based.
         assert_eq!(laid_out("\u{1b}[3d\u{1b}[5Gx"), "\n\n    x");
-        // A parameter left out is the 1 ECMA-48 says it stands for.
+        // An omitted parameter is 1.
         assert_eq!(laid_out("a\u{1b}[Bb"), "a\n b");
     }
 
     #[test]
     fn erasing_takes_the_cells_with_it() {
-        // To the end of the row, from the start of it, and all of it.
+        // To the end of the row, from its start, and all of it.
         assert_eq!(laid_out("abcdef\u{1b}[1;4H\u{1b}[K"), "abc");
         assert_eq!(laid_out("abcdef\u{1b}[1;3H\u{1b}[1K"), "   def");
         assert_eq!(laid_out("abcdef\u{1b}[2K"), "");
-        // And the screen, from the cursor down, to the cursor, and whole.
+        // The screen from the cursor down, up to the cursor, and all of it.
         assert_eq!(laid_out("one\ntwo\nthree\u{1b}[2;2H\u{1b}[J"), "one\nt");
         assert_eq!(
             laid_out("one\ntwo\nthree\u{1b}[2;2H\u{1b}[1J"),
@@ -885,7 +813,7 @@ mod tests {
         assert_eq!(laid_out("\u{1b}[?25lhidden\u{1b}[?25h"), "hidden");
         assert_eq!(laid_out("\u{1b}]0;title\u{7}text"), "text");
         assert_eq!(laid_out("a\u{1b}[5Zb"), "ab");
-        // A private parameter string is a mode however it ends.
+        // A private parameter string is a mode, whatever its final byte.
         assert_eq!(laid_out("a\u{1b}[?3;4Hb"), "ab");
     }
 
@@ -904,7 +832,7 @@ mod tests {
         assert_eq!(laid_out(&format!("ab\u{1b}[{far}Cx")), "ab");
         assert_eq!(laid_out(&format!("ab\u{1b}[{far}C\u{1b}[1K")), "");
         assert_eq!(laid_out(&format!("ab\ncd\u{1b}[{far}B\u{1b}[J")), "ab\ncd");
-        // And back from there, onto cells the capture could fill.
+        // Back from there onto cells the capture could fill.
         assert_eq!(
             laid_out(&format!("\u{1b}[{far}C\u{1b}[{far}C\u{1b}[1Gx")),
             "x"
@@ -913,13 +841,12 @@ mod tests {
 
     #[test]
     fn a_jump_further_than_the_capture_could_fill_costs_nothing() {
-        // A row and a column further out than the whole capture could put a
-        // character on: the cell is dropped rather than the rows padded out to
-        // it. 32k of them, so a grid that grew to meet one would not finish.
+        // A position further out than the whole capture could fill: the cell
+        // is dropped instead of the grid growing to reach it. Repeated 32k
+        // times, so growing would not finish.
         let hostile = "\u{1b}[999999999;999999999Hx".repeat(32 * 1024);
         assert_eq!(laid_out(&hostile), "");
-        // What is drawn out there is lost, and the drawing goes on once the
-        // cursor is somewhere the capture could have filled.
+        // Drawing resumes once the cursor is back in range.
         assert_eq!(laid_out("\u{1b}[999999;999999Hgone\u{1b}[1;1Hhere"), "here");
     }
 
@@ -936,50 +863,40 @@ mod tests {
         }
     }
 
-    // ── the pinned divergences ──────────────────────────────────────────────
-    //
-    // Three places the walk reads a real terminal's bytes differently from a
-    // real terminal, carried from the walk this one replaced. Each is pinned
-    // so the next reader finds a decision here and not a surprise: widening
-    // any of them is a contract amendment, not a fix.
+    // Where the walk knowingly differs from a real terminal. These are
+    // decisions, not bugs.
 
-    /// "Any other escape is exactly two characters" is what keeps the walk
-    /// linear, and three-character escapes are the price of it: `ESC ( B`
-    /// designates a charset, and its final `B` is left behind as text. The
-    /// leftover is a printable letter and never an escape, so nothing hostile
-    /// rides through the hole.
+    /// Any other escape is exactly two characters, which keeps the walk
+    /// linear. The cost is three-character escapes: `ESC ( B` leaves its `B`
+    /// behind as text. The leftover is printable, never an escape.
     #[test]
     fn a_three_character_escape_leaves_its_final_byte_behind() {
         assert_eq!(strip_ansi("a\u{1b}(Bb"), "aBb");
         assert_eq!(strip_ansi("a\u{1b})0b"), "a0b");
     }
 
-    /// The same rule seen from its other side: `ESC` immediately before a
-    /// newline takes the newline as its second character, so the two rows
-    /// join. A real terminal would execute the `LF` instead.
+    /// The same rule from the other side: `ESC` right before a newline takes
+    /// the newline as its second character and the rows join. A terminal would
+    /// execute the `LF`.
     #[test]
     fn an_escape_before_a_newline_consumes_the_newline() {
         assert_eq!(strip_ansi("one\u{1b}\ntwo"), "onetwo");
         assert_eq!(painted("one\u{1b}\ntwo"), vec![vec![plain_run("onetwo")]]);
     }
 
-    /// This module removes escapes; it is not a display sanitiser. U+0085 and
-    /// U+0099 are control characters a terminal must not be handed, and they
-    /// are `inert`'s to remove, not this walk's.
+    /// U+0085 and U+0099 are control characters a terminal must not be handed,
+    /// but removing them is the display sanitiser's job, not this walk's.
     #[test]
     fn an_unnamed_c1_character_is_left_for_the_display_law() {
         assert_eq!(strip_ansi("a\u{85}b\u{99}c"), "a\u{85}b\u{99}c");
     }
 
-    // ── hostile input ───────────────────────────────────────────────────────
-    //
-    // These bytes come off another program's pane on their way to this user's
-    // terminal: nothing below may panic, and nothing below may cost more than
-    // a scan of its input.
+    // Hostile input: bytes off another program's pane must not panic and must
+    // cost no more than a scan.
 
-    /// Captures shaped like everything above and everything that has gone
-    /// wrong on a real pane: cancellations, bad colour specs, truncations,
-    /// eight-bit introducers, strays, and the vendor's own footer.
+    /// Captures covering what has gone wrong on real panes: cancellations, bad
+    /// colour specs, truncations, eight-bit introducers, strays, and a vendor
+    /// footer.
     const FIXTURES: [&str; 24] = [
         "a\u{1b}\u{1b}[31mone escape cancelling another",
         "\u{1b}[1m\u{1b}[38;2;300;1;4ma colour spec with a bad red",
@@ -1007,7 +924,7 @@ mod tests {
         "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n",
     ];
 
-    /// Every introducer the walk names, in both widths.
+    /// Every introducer the walk knows, in both widths.
     const INTRODUCERS: [(&str, &str); 15] = [
         ("CSI", "\u{1b}[31;1mtext\u{1b}[0m"),
         ("OSC, BEL-terminated", "\u{1b}]0;window title\u{7}"),
@@ -1026,7 +943,7 @@ mod tests {
         ("a stray ST", "\u{9c}"),
     ];
 
-    /// A run wearing no style at all.
+    /// A run with no style.
     fn plain_run(text: &str) -> Painted {
         Painted {
             text: text.into(),
@@ -1034,14 +951,13 @@ mod tests {
         }
     }
 
-    /// The style in force over the first run of the first line.
+    /// The style of the first run of the first row.
     fn first(screen: &str) -> Painted {
         painted(screen).swap_remove(0).swap_remove(0)
     }
 
-    /// [`painted`] with the style thrown away and the runs joined — the other
-    /// half of the headline law, written out so the tests below assert the
-    /// contract and not an implementation.
+    /// [`painted`] with the style dropped and the runs joined, written out so
+    /// the tests assert the contract rather than the implementation.
     fn flattened(screen: &str) -> String {
         painted(screen)
             .iter()
@@ -1069,8 +985,8 @@ mod tests {
 
     #[test]
     fn a_truncated_sequence_at_every_length_is_survivable() {
-        // Every prefix of every fixture, which covers a capture cut at any
-        // byte — the ordinary case for a tail read off a live pane.
+        // Every prefix of every fixture: a capture cut at any byte, as a tail
+        // read off a live pane is.
         for screen in FIXTURES {
             for end in 0..=screen.len() {
                 if !screen.is_char_boundary(end) {
@@ -1096,15 +1012,14 @@ mod tests {
 
     #[test]
     fn a_long_unterminated_string_costs_one_scan_and_no_more() {
-        // 128 KiB of body with no terminator in it. The walk is linear by
-        // construction; a quadratic one would not finish this test in the time
-        // a suite is willing to wait, which is the point of the size.
+        // 128 KiB of body with no terminator. A quadratic walk would not
+        // finish in time.
         let hostile = format!("keep me\u{1b}]0;{}", "A".repeat(128 * 1024));
         assert_eq!(strip_ansi(&hostile), "keep me");
         assert_eq!(flattened(&hostile), "keep me");
 
-        // The same for a sequence that never finds its final byte, and for a
-        // parameter list far longer than any real one.
+        // A sequence that never finds its final byte, and an absurdly long
+        // parameter list.
         let unfinished = format!("keep me\u{1b}[{}", "1;".repeat(64 * 1024));
         assert_eq!(strip_ansi(&unfinished), "keep me");
         let huge = format!("\u{1b}[{}mtext", "9".repeat(64 * 1024));
@@ -1114,8 +1029,7 @@ mod tests {
 
     #[test]
     fn a_capture_that_is_all_paint_yields_no_runs_at_all() {
-        // The shape that would make a renderer spend a row on nothing: many
-        // style changes, no text. Bounded output, not one empty run.
+        // Many style changes and no text: no runs at all, not empty ones.
         let all_paint = "\u{1b}[1m\u{1b}[0m".repeat(4096);
         assert_eq!(strip_ansi(&all_paint), "");
         assert_eq!(painted(&all_paint), vec![vec![]]);
@@ -1130,8 +1044,7 @@ mod tests {
                 "{name}: an escape reached the output of {sequence:?}: {out:?}"
             );
             // The CSI cases carry `text` between two sequences; the rest carry
-            // nothing a caller should see. Either way the sentinels survive and
-            // no body byte does.
+            // nothing. The sentinels survive and no body byte does.
             let expected = if name.starts_with("CSI") {
                 "<text>"
             } else {
@@ -1141,8 +1054,8 @@ mod tests {
         }
     }
 
-    /// A tiny deterministic generator, so the property test below is
-    /// reproducible without pulling in a crate for it.
+    /// A small deterministic generator, so the property tests are
+    /// reproducible without a crate.
     struct Rng(u64);
 
     impl Rng {
@@ -1159,10 +1072,8 @@ mod tests {
         }
     }
 
-    /// Plain text a real pane could hold: letters, spacing, a little
-    /// punctuation, and enough non-ASCII to prove the walk counts characters,
-    /// not bytes. Never `ESC` itself — that would make the text its own
-    /// escape sequence, which is not what this property is about.
+    /// Plain text a pane could hold, with enough non-ASCII to show the walk
+    /// counts characters, not bytes. Never `ESC`.
     fn plain_text(seed: u64) -> String {
         const ALPHABET: &[char] = &[
             'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', ' ',
@@ -1175,7 +1086,7 @@ mod tests {
             .collect()
     }
 
-    /// A complete, valid escape sequence: one of the shapes the walk knows.
+    /// One complete escape sequence of a shape the walk knows.
     fn paint_one(out: &mut String, rng: &mut Rng) {
         match rng.below(4) {
             0 => {
@@ -1213,9 +1124,8 @@ mod tests {
         }
     }
 
-    /// `plain`, as a real terminal might have painted it: an attribute change
-    /// dropped in front of some of its characters and, sometimes, after the
-    /// last of them.
+    /// `plain` with escape sequences dropped in before some characters and
+    /// sometimes after the last.
     fn painted_over(plain: &str, seed: u64) -> String {
         let mut rng = Rng(seed ^ 0xA5A5_A5A5_A5A5_A5A5);
         let mut out = String::new();
