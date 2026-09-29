@@ -1612,9 +1612,9 @@ pub(super) fn choices(options: &[String], width: usize, boxed: bool) -> Vec<Stri
 
     let mut rows: Vec<String> = Vec::new();
     for choice in numbered(&labels) {
-        let room = width.saturating_sub(choice.chars().count() + BETWEEN.len());
+        let room = width.saturating_sub(width_of(&choice) + BETWEEN.len());
         match rows.last_mut() {
-            Some(row) if row.chars().count() <= room => {
+            Some(row) if width_of(row) <= room => {
                 row.push_str(BETWEEN);
                 row.push_str(&choice);
             }
@@ -3405,6 +3405,12 @@ index e69de29..0000000
             "a choice wider than the card is cut, and says it was"
         );
         assert!(choices(&[], 40, false).is_empty());
+    }
+
+    #[test]
+    fn card_packs_wide_choices_by_the_columns_they_take() {
+        let wide = ["日本語日本語".to_string(), "b".to_string()];
+        assert_eq!(choices(&wide, 20, false), ["1. 日本語日本語", "2. b"]);
     }
 
     #[test]
