@@ -314,14 +314,11 @@ impl Body {
             after_call = call;
         }
 
-        let blank =
-            |row: &Line<'static>| row.spans.iter().all(|span| span.content.trim().is_empty());
+        // `prose::render` never ends on a blank row, so neither does anything
+        // pushed here.
         if let Some(live) = live {
-            let mut tail = prose::render(live, width, theme);
+            let tail = prose::render(live, width, theme);
             // The end of it, where what is landing is — see [`TAIL`].
-            while tail.last().is_some_and(&blank) {
-                tail.pop();
-            }
             let skipped = tail.len().saturating_sub(TAIL);
             // The blank row that stands the tail off the record above it, only
             // where there are rows under it: a stream the vendor has opened
@@ -336,9 +333,6 @@ impl Body {
             }
         }
 
-        while rows.last().is_some_and(&blank) {
-            rows.pop();
-        }
         Body {
             kept: rows.len(),
             anchor: rows.len(),

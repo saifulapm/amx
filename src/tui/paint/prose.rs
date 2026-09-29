@@ -32,7 +32,8 @@ const CODE_INDENT: &str = "  ";
 /// its indentation.
 const TAB: usize = 4;
 
-/// `text` as markdown, drawn into rows no wider than `width`.
+/// `text` as markdown, drawn into rows no wider than `width`, never ending on
+/// a blank row.
 ///
 /// A single newline ends the row it stands on, the way a hard break does,
 /// rather than becoming the space markdown calls it. That is what the pane
