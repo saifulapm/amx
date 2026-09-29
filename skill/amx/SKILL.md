@@ -3,71 +3,65 @@ name: amx
 description: "Run coding agents as shell commands with amx: spawn one per task, answer what it stops on, and read its answer back. Use when a job splits into pieces that can run at once (review these five tracks, port this API across four services), when work should carry on while you do something else, or when the user says 'spawn an agent', 'run these in parallel', or names amx."
 ---
 
-# amx: agents as shell commands
+# amx: coding agents as shell commands
 
-An amx agent is a real coding-agent session in a tmux pane. You start it, it
-works, it may stop to ask you something, and it hands you an answer. Each of
-those is a command with an exit code, so driving agents is shell scripting.
-Nothing here needs a screen scraped or a state file polled.
+An amx agent is a coding-agent session (claude, pi, codex or opencode) in its
+own tmux pane. You start it with a task, it works, it may stop on a question,
+and its turn ends with an answer. Each step is a command with an exit code, so
+driving agents is ordinary shell scripting.
 
 ## The verbs
 
-| Verb | What it does |
+| Command | What it does |
 |---|---|
-| `amx new "<task>"` | Start an agent on the task. Prints its id, and nothing else. |
-| `amx new --exec "<command>"` | Run a shell command as a row of its own, `done` or `failed` by its exit code. |
-| `amx rename <id> "<name>"` | Call it something else on the user's wall. The id is what you keep addressing. |
-| `amx result <id> [--timeout N]` | Block until the turn ends, then print what it said. |
-| `amx sub [--name ID] [--parent ID] [--no-worktree] [--json] [--bg] "<task>"` | Start a child and wait for its answer in one call: `new` plus `result`. Its record names the parent -- your pane, or `--parent`. |
-| `amx wait <id>... [--any] [--for STATE] [--timeout N]` | One clock over several agents: block until each has settled, printing `<id> <state>` as each does. `--any` comes back with the first. |
-| `amx answer <id> <key>` | Answer the question it stopped on. |
-| `amx send <id> "<text>"` | Give a working or idle agent its next turn. |
-| `amx interrupt <id>` | End the turn it is in the middle of. The agent stays, its conversation whole. |
+| `amx new "<task>"` | Start an agent on the task. Prints its id and nothing else. `--agent`, `--model`, `--permission` and `--effort` choose the vendor and its settings; `--file <path>` (or `-` for stdin) reads a long task. |
+| `amx new --exec "<command>"` | Run a shell command as a row of its own. It ends `done` or `failed` by its exit code. |
+| `amx result <id> [--timeout N]` | Block until the turn ends, then print the answer. |
+| `amx result --children <id> [--json]` | Collect the answers of every child of that agent. |
+| `amx sub "<task>" [--bg] [--json] [--timeout N]` | `new` plus `result` in one call. The child's record names your pane's agent as its parent (`--parent <id>` names another). It runs in the parent's directory unless given `--worktree` or `--dir`. Prints the id on stderr and the answer on stdout; `--json` prints one object with both. `--bg` returns once the child exists. |
+| `amx wait <id>... [--any] [--for STATE] [--timeout N]` | Block until each agent has settled, printing `<id> <state>` as each does. `--any` returns at the first; `--children <id>` waits on every child of that agent. |
+| `amx answer <id> <key>` | Answer the question the agent stopped on. See below. |
+| `amx send <id> "<text>"` | Give a working or idle agent its next turn. `--file <path>` (or `-`) for long text. |
+| `amx interrupt <id>` | End the turn in progress. The agent and its conversation stay. |
 | `amx ls [--json]` | Every agent, one line each. |
-| `amx status <id> [--json]` | One agent, and which signal that state came from. |
-| `amx events [<ids>] [--follow] [--json]` | Every agent's log, merged in time order. |
-| `amx diff <id> [--stat] [--from <ref>]` | What it has changed, against the commit its tree was cut from, or the commit its directory was standing on when it started; `--from` names the base instead. |
-| `amx logs <id> [--lines N]` | The last of its transcript, without attaching to it; with no transcript, its pane, and once that is gone its recorded answer. |
-| `amx fork <id> ["<task>"]` | Start a second agent on a copy of its conversation. Prints the new id. |
-| `amx stop <id> [--force]` | End it, and say what happens to its worktree and branch. |
+| `amx status <id> [--json]` | One agent's state and which signal it came from. |
+| `amx events [<ids>] [--follow] [--json]` | The agents' event logs, merged in time order. |
+| `amx diff <id> [--stat] [--from <ref>]` | The agent's changes against the commit it started from, or against `--from`. |
+| `amx logs <id> [--lines N]` | Recent history without attaching: the vendor's transcript, else the pane, else the recorded answer. |
+| `amx fork <id> ["<task>"]` | Start a second agent on a copy of this one's conversation. Prints the new id. |
+| `amx rename <id> "<name>"` | Change the name on the user's wall. The id stays the same. |
+| `amx stop <id> [--force] [--delete]` | End the agent. `--force` takes the defaults for its worktree and branch without asking; `--delete` removes its record too. |
 
-Three more are for a person rather than a script: `amx attach <id>` hands the
-terminal to the agent's pane, `amx resume <id>` starts a stopped agent again on
-the conversation it had, and `amx doctor` says what the machine is missing.
+For a person rather than a script: `amx attach <id>` opens the agent's pane,
+`amx resume <id>` restarts a stopped agent on its conversation, and
+`amx doctor` reports what the machine is missing.
 
-One is about you rather than about an agent. `amx adopt`, run in a tmux pane,
-registers the agent that ran it — you, whether claude, pi or codex — as an
-agent of amx's, so the user sees this session on their wall beside the ones amx
-started. From codex, run it in shell mode (`!amx adopt`) or ask for it through
-the shell tool: either way codex hands it `$CODEX_SESSION_ID`, which is how amx
-knows the session. opencode names its session in nothing the commands it runs
-can see, so an opencode session cannot be adopted. Run it when they ask for
-that and never on your own. It starts nothing and sends nothing.
+`amx adopt`, run inside an agent's tmux pane, puts that running session (you,
+if you run it) on the user's wall as an amx agent. It starts and sends
+nothing. Run it only when the user asks. From codex, use shell mode
+(`!amx adopt`) or the shell tool, which pass `$CODEX_SESSION_ID`. opencode
+sessions cannot be adopted.
 
-## Exit codes are the interface
+## Exit codes
 
 | Code | Means | Do |
 |---|---|---|
 | `0` | The turn ended. The answer is on stdout. | Read it. |
-| `1` | Failed, stopped, or ended with no answer to give. From `interrupt`, there was no turn to cut short. From any verb, an id that names no agent. | Read stderr, which names the remedy. |
-| `2` | Blocked. From `result` that means a question, and the question is on stdout; `interrupt` hands the same question back rather than answer it by accident. | Answer it, then call `result` again. |
-| `3` | `--timeout` expired. The agent is still working. | Call `result` again, or go and do something else. |
-| `64` | The command line was wrong, including an answer the question would not take. | Fix the command line. Nothing reached the agent. |
+| `1` | Failed, stopped, or ended without an answer. Also `interrupt` with no turn to end, and any id that names no agent. | Read stderr; it says what to do. |
+| `2` | Blocked. From `result` and `sub`, the agent is asking and the question is on stdout. | Answer it, then call `result` again. |
+| `3` | `--timeout` expired. The agent is still working. | Call `result` again later. |
+| `64` | Bad command line, including an answer the question does not accept. Nothing reached the agent. | Fix the command. |
 
-`send` exits `2` while the agent is waiting on a question: text typed at a
-permission prompt answers the prompt, so answer it first rather than queueing a
-message behind it. `answer` exits `2` when nothing is pending. `new`, `sub`,
-`fork` and `resume` exit `2` at the agent cap, `new` and `sub` past
-`subagent_depth`, and `sub` past `max_children` or with a `--permission` it may
-not escalate to. `sub` exits `2` when the child asks a question, as `result`
-does, and `resume` when the agent is still running.
+Other exit `2` cases: `send` and `interrupt` while the agent is waiting on a
+question (both hand back the question, since what they type would answer it);
+`answer` with nothing pending; `new`, `sub`, `fork` and `resume` at the agent
+cap; `new` and `sub` past `subagent_depth`; `sub` past `max_children` or with
+a `--permission` it may not escalate to; `resume` on an agent still running.
 
-## Reading the question
+## Answering a question
 
-A wait never goes through a question. The question usually arrives during the
-wait, and a caller that cannot see it cannot answer it, so `result` gives the
-wait up and puts the question where the answer would have gone: stdout, with
-the choices under it, numbered the way `amx answer` takes them.
+`result` never waits through a question. It exits `2` and prints the question
+on stdout, with the choices numbered the way `amx answer` takes them:
 
 ```
 Claude needs your permission to use Bash
@@ -76,58 +70,56 @@ Claude needs your permission to use Bash
 3. No, and tell Claude what to do differently
 ```
 
-What it will take depends on what kind of question it is, which
-`amx status <id> --json` says under `.kind`:
+`amx status <id> --json` gives the kind of question under `.kind`:
 
-| `.kind` | What answers it |
+| `.kind` | Answers |
 |---|---|
-| `permission` | `y`, `n`, `1` to `9`, `enter`, `esc` |
-| `question` | `1` to `9`, `enter`, `esc`, or words of your own: `amx answer <id> "keep the old importer"` |
-| `trust` | `enter`. This is the folder-trust screen, and amx has already answered it for a worktree it cut. |
+| `permission` | A choice's number, `y`, `n`, `enter` or `esc`. |
+| `question` | A choice's number, `enter`, `esc`, or your own words: `amx answer <id> "keep the old importer"`. |
+| `trust` | The vendor's folder-trust screen. A choice's number or `esc`. On claude `1` is `No, exit`, which ends the agent. amx answers this screen itself only when the `trust` config key is on. |
 
-A `question` may take more than one choice, and the screen does not say which
-sort it is. `.multi` in that same JSON does: when it is `true`, name the
-choices you want and amx checks each and submits, `amx answer <id> 1,3`. When
-it is `false` that command line is refused and nothing reaches the agent.
+Where amx numbered a list itself (pi's dialogs, claude's trust screen), only
+the numbers and `esc` are accepted. If a list comes back with no numbers,
+move to the row and take it: `amx answer <id> "down enter"`.
 
-Words that read as a key need `--text`, which says they are words:
-`amx answer <id> --text 2` answers with the character `2`, where a bare `2` is
-the second choice.
-
-Some questions take a note beside the choice, the ones whose options carry a
-`preview` in `.questions`: `amx answer <id> 1 --note "keep the subtitle"`. A
-question without one is refused, and so is a note with no choice to ride
-beside.
-
-Answering clears the question from the record, so the next `result` waits for
-the turn rather than handing you the same question back.
+- When `.multi` is `true`, name several choices and amx checks each and
+  submits: `amx answer <id> 1,3`. When it is `false`, this is refused.
+- `--text` sends words that look like a key: `amx answer <id> --text 2` types
+  the character `2`, where a bare `2` picks the second choice.
+- Where the choices carry a `preview` in `.questions`, add a note beside the
+  choice: `amx answer <id> 1 --note "keep the subtitle"`. Anywhere else a note
+  is refused.
+- Answering clears the question, so the next `result` waits for the turn.
 
 ## The loop
 
-This is the whole pattern: call `result`, and branch on how it came back. Copy
-it, or run it as a script that takes an agent id and, optionally, a follow-up
-turn.
+Call `result` and branch on the exit code. Copy this, or save it as a script
+that takes an agent id and an optional follow-up turn.
 
 ```sh
 #!/bin/sh
-# Drive one agent to an answer, answering whatever it stops on.
+# Drive one agent to an answer, answering what it stops on.
 # Usage: loop.sh <id> [follow-up turn]
 set -u
 
 : "${AMX_TIMEOUT:=300}"      # seconds any one turn may take
-: "${AMX_MAX_ANSWERS:=3}"    # answers one agent may cost before we give up
+: "${AMX_MAX_ANSWERS:=3}"    # answers one agent may cost before giving up
 
 answer_of() {
     answers=0
     while :; do
-        # Keep the code in a variable: after `if cmd; then ...; fi` with no
-        # else, `$?` is the if's status and not the command's.
+        # Capture the code here: after `if cmd; then ...; fi` with no else,
+        # `$?` is the if's status, not the command's.
         out=$(amx result "$1" --timeout "$AMX_TIMEOUT") && rc=0 || rc=$?
         case $rc in
             0)  printf '%s\n' "$out"
                 return 0
                 ;;
-            2)  # It is asking, and the question is what came back.
+            2)  # It is asking, and $out is the question.
+                if amx status "$1" --json | grep -q '"kind": *"trust"'; then
+                    printf 'at the folder-trust screen: %s\n' "$out" >&2
+                    return 1
+                fi
                 if [ "$answers" -ge "$AMX_MAX_ANSWERS" ]; then
                     printf 'still asking after %s answers: %s\n' \
                         "$answers" "$out" >&2
@@ -150,8 +142,8 @@ answer_of() {
 first=$(answer_of "$1") || exit $?
 printf 'first: %s\n' "$first"
 
-# A follow-up turn on the same agent. The `result` after a send can only be
-# that turn's answer, never the one before it.
+# A follow-up turn on the same agent. The `result` after a send always
+# returns that turn's answer, never the previous one.
 if [ $# -gt 1 ]; then
     amx send "$1" "$2" || exit 1
     second=$(answer_of "$1") || exit $?
@@ -159,39 +151,31 @@ if [ $# -gt 1 ]; then
 fi
 ```
 
-The loop answers `1`, the first choice, which is what a permission prompt and
-a menu both read. The folder-trust screen is the one that wants `enter`
-instead, and amx has already answered that for a worktree it cut. If an agent
-seems stuck at its very first turn, `amx doctor` names any that never got past
-the vendor's own setup.
+The loop answers `1`: allow on a permission prompt, the first choice on a
+menu. It stops at a folder-trust screen, where `1` can mean exit; answer that
+one yourself or ask the user. If an agent seems stuck on its first turn,
+`amx doctor` names any that never got past the vendor's own setup.
 
-Where the follow-up is too long to be an argument, write it to a file and send
-that: `amx send <id> --file notes.md`, or `--file -` to pipe it in. The file is
-read whole and its last newline comes off, so what the agent is given is the
-text rather than an instruction to go and read it.
-
-Spawn, drive, end it:
+Spawn, drive, end:
 
 ```sh
-id=$(amx new "review docs/plan/tracks/03-orchestration.md and list every risk")
+id=$(amx new "review src/importer and list every risk")
 loop.sh "$id"
 amx stop "$id" --force
 ```
 
-Several at once. Spawn them all, then put one clock over the fleet: `amx wait`
-blocks on every id you give it, and `--any` comes back with the first that is
-ready. Collect that one, drop it from the list, and wait again — so the answers
-arrive in the order the agents finish rather than the order you spawned them,
-and a slow agent at the front of the list holds nothing up.
+Several at once: spawn them all, then `amx wait --any` returns the first that
+is ready. Handle it, drop it from the list, and wait again, so answers arrive
+in the order agents finish.
 
 ```sh
 ids=""
-for track in docs/plan/tracks/*.md; do
-    ids="${ids:+$ids }$(amx new "review $track and list every risk")" || exit 1
+for dir in services/*/; do
+    ids="${ids:+$ids }$(amx new "review $dir and list every risk")" || exit 1
 done
 
 while [ -n "$ids" ]; do
-    # `<id> <state>` for the first one that is ready. The rest keep working.
+    # `<id> <state>` for the first one ready. The rest keep working.
     ready=$(amx wait $ids --any --timeout 900) || {
         printf 'nobody ready after 900s: %s\n' "$ids" >&2
         exit 3
@@ -201,8 +185,8 @@ while [ -n "$ids" ]; do
 
     printf '== %s (%s)\n' "$id" "$state"
     case $state in
-        waiting) loop.sh "$id" ;;    # stopped on a question: answer it, then read
-        *)       amx result "$id" ;; # its turn is over, so this returns at once
+        waiting) loop.sh "$id" ;;    # stopped on a question: answer, then read
+        *)       amx result "$id" ;; # turn is over, so this returns at once
     esac
 
     rest=""
@@ -213,74 +197,64 @@ while [ -n "$ids" ]; do
 done
 ```
 
-Settled is a turn that is over *or* an agent stopped on a question, which is
-why the state is worth reading: `waiting` is one to answer, and `done`,
-`failed`, `stopped` and `idle` are ones to read. `--for <state>` holds out for
-one named state instead — `amx wait $ids --for working` is how you confirm a
-fleet got off the ground. What the agents said is not here: `wait` says whose
-answer is ready, and `result` is what hands it back.
+Settled means the turn is over or the agent stopped on a question: `waiting`
+needs an answer; `done`, `failed`, `stopped` and `idle` are ready to read.
+`--for <state>` waits for one named state instead; `amx wait $ids --for
+working` confirms a fleet started. `wait` only says who is ready; `result`
+returns the answer.
 
-While they run: `amx ls` for a snapshot, `amx ls --json` when a program is
-reading it, `amx events --follow` for the merged log, and `amx status <id>`
-when one is in a state you did not expect.
+From inside an agent, fan out with `amx sub --bg --json "<task>"` per task,
+then collect with `amx wait --children "$AMX_ID"` and
+`amx result --children "$AMX_ID" --json`.
+
+While they run: `amx ls` for a snapshot (`--json` for programs),
+`amx events --follow` for the merged log, and `amx status <id>` when one is in
+a state you did not expect.
 
 ## Guardrails
 
-- **Respect the cap.** `max_agents` is the project's, not the machine's: set in
-  the project's `.amx/config.toml` or the person's `~/.config/amx/config.toml`,
-  it counts the live agents in the project the new one will run in and defaults
-  to 5. `max_total`, where somebody sets it, is the ceiling over every project
-  on the machine. `amx new` refuses past either with exit `2`. Collect some
-  results and let the finished agents go rather than working around it.
+- **Respect the cap.** `max_agents` (default 5) counts live agents in the
+  project the new one runs in. `max_total`, if set, counts every project on
+  the machine. Both are set in `~/.config/amx/config.toml` or the project's
+  `.amx/config.toml`. `amx new` exits `2` past either; collect results and
+  stop finished agents rather than working around it.
 - **Never allow a project file yourself.** A project's `.amx/config.toml`
-  counts only after the person runs `amx allow` there, and any edit un-allows
-  it. Do not run `amx allow`, and do not write that file: tell the person what
-  you would change and let them allow it.
-- **Only touch agents you spawned.** `amx ls` shows every agent on the machine,
-  the user's own included. Never send to, answer or stop an id you did not
-  create.
-- **Give the task at spawn.** An agent started empty and prompted afterwards
-  has a turn you have to catch first, and nothing in `ls` says what it is for.
-- **Read the answer with `result`.** It hands back what the agent wrote,
-  verbatim. The pane holds a redrawn screen, escape codes and whatever has
-  scrolled past. `amx logs <id>` is for when the history is the question — an
-  agent that is taking longer than it should, or one whose state you did not
-  expect. It reads the vendor's transcript first, then the pane, then the
-  recorded answer, cut to `--lines`; it never blocks for a turn the way
-  `result` does.
-- **Spawning never moves anybody.** Every agent goes in a detached tmux
-  session of its own, `amx-<id>`, so `amx new` from inside tmux leaves whoever
-  typed it looking at what they were looking at.
-- **Worktrees are already the default.** Each agent gets its own at
-  `<repo>/.amx/worktrees/<id>` on branch `amx/<id>`, so two of them cannot
-  collide in one checkout. `amx diff <id>` is how you read that work. Nothing
-  is merged for you.
-- **Two roads out of one conversation.** `amx fork <id> "<task>"` starts a
-  second agent on a copy of everything the first was told, so trying the other
-  approach costs nothing of the one already tried. The copy runs in the same
-  directory as the original, so do not drive both at the same files at once.
-  An agent that never recorded a session cannot be forked, and the refusal says
-  so: that is what `amx new` is for. Nor can an opencode one, which has no way
-  to start on a copy of a session.
+  takes effect only after the person runs `amx allow`, and any edit needs a
+  new allow. Do not run `amx allow` or write that file; tell the person what
+  you would change.
+- **Only touch agents you started.** `amx ls` shows every agent on the
+  machine, the user's own included. Never send to, answer or stop an id you
+  did not create.
+- **Give the task at spawn.** An agent started empty has a turn you must catch
+  first, and its row says nothing about what it is for.
+- **Read answers with `result`.** It returns what the agent wrote, verbatim.
+  The pane holds a redrawn screen and escape codes. `amx logs <id>` is for
+  history, such as an agent taking too long; it never blocks.
+- **Spawning never moves anybody.** Each agent runs in a detached tmux session
+  `amx-<id>`, so `amx new` inside tmux leaves the user where they were.
+- **Each agent gets its own worktree** at `<repo>/.amx/worktrees/<id>` on
+  branch `amx/<id>`. Review the work with `amx diff <id>`. Nothing is merged
+  for you.
+- **Fork to try another approach.** `amx fork <id> "<task>"` starts a second
+  agent on a copy of the conversation, in the same directory as the original,
+  so do not drive both at the same files at once. An agent that never
+  recorded a session cannot be forked, and neither can an opencode agent.
 - **Every vendor takes the same verbs.** `--agent opencode` (or `pi`, `codex`)
-  starts that one instead of the configured agent; `new`, `send`, `result`,
-  `interrupt` and `stop` read the same on each. A typed `--model` picks the
-  harness whose list holds it, and opencode lists nothing of its own: pass
-  `--agent opencode` beside an opencode model, or it is refused unless the
-  config names it under `[opencode] models`.
-- **A long command can have a row too.** `amx new --exec 'cargo test --all'`
-  runs it in a pane and hands back an id, so a build you would otherwise sit
-  through runs beside the agents. Do not wait on it with `result`: a command
-  answers nothing, it exits, so `amx status <id> --json` is where the ending is
-  — `.state` is `done` or `failed` and `.exit` is the code. Its pane goes when
-  it does, so redirect any output you mean to read: `amx new --exec 'make
-  release > build.log 2>&1'`. Each pane amx starts, this one included, is given
-  a directory of its own to write in at `$AMX_AGENT_DIR`, and that directory
-  goes when the agent's record goes.
-- **Never block for ever.** Every `result` and every `wait` in an unattended
-  script takes `--timeout`. A question ends the call on its own with exit `2`, so a deadline
-  cannot bound the answering: bound that yourself, the way the loop above stops
-  after `AMX_MAX_ANSWERS`.
-- **If answers keep coming back empty, run `amx doctor`.** Answers are taken
-  from the agent's own hook events. Without the hooks wired, amx can still say
-  what an agent is doing, but it has nothing to hand you when the turn ends.
+  starts that vendor instead of the configured one. A `--model` selects the
+  vendor whose model list holds it. opencode lists none, so pass
+  `--agent opencode` with an opencode model unless the config lists it under
+  `[opencode] models`.
+- **Long commands can have a row.** `amx new --exec 'cargo test --all'` runs
+  it in a pane and prints an id. Do not wait on it with `result`: a command
+  gives no answer. `amx status <id> --json` has `.state` (`done` or `failed`)
+  and `.exit`. The pane closes when the command ends, so redirect output you
+  need: `amx new --exec 'make release > build.log 2>&1'`. Every pane amx
+  starts gets a scratch directory at `$AMX_AGENT_DIR`, removed with the
+  agent's record.
+- **Never block forever.** Give every `result` and `wait` in an unattended
+  script a `--timeout`. A question ends the call with exit `2`, so the timeout
+  does not bound answering; bound that yourself, as the loop does with
+  `AMX_MAX_ANSWERS`.
+- **If answers come back empty, run `amx doctor`.** Answers come from the
+  agent's hook events. Without hooks amx can still tell what an agent is
+  doing, but has nothing to return when the turn ends.
