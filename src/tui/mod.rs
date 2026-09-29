@@ -1685,11 +1685,7 @@ impl Screen {
     /// press on any other heading arms that one instead. Once it has gone, the
     /// heading standing over the armed rows is the arm's heading from then on.
     fn keep_the_sweep(&mut self) {
-        let Some(arm) = self
-            .arm
-            .as_ref()
-            .filter(|arm| arm.swept && arm.at.elapsed() < ARMED)
-        else {
+        let Some(arm) = self.arming().filter(|arm| arm.swept) else {
             return;
         };
         if arm
@@ -3150,17 +3146,19 @@ impl Screen {
         Ok(Doing::Carry)
     }
 
-    /// The rows a press has armed, while its window is still open.
+    /// The arm, while its window is still open.
     ///
     /// Worked out from the clock every time it is asked for rather than
     /// cleared when it falls due: what closes the window is time passing, and
     /// there is nothing running in this view to do the clearing at the moment
     /// it happens.
+    fn arming(&self) -> Option<&Arm> {
+        self.arm.as_ref().filter(|arm| arm.at.elapsed() < ARMED)
+    }
+
+    /// The rows a press has armed, while its window is still open.
     fn armed(&self) -> &[String] {
-        self.arm
-            .as_ref()
-            .filter(|arm| arm.at.elapsed() < ARMED)
-            .map_or(&[], |arm| arm.ids.as_slice())
+        self.arming().map_or(&[], |arm| arm.ids.as_slice())
     }
 
     /// The rows a `ctrl+x` armed, which is the only arm that key finishes.
@@ -3171,9 +3169,8 @@ impl Screen {
     /// starts its own arm rather than forgetting a wall of agents nobody
     /// pointed at.
     fn forgetting(&self) -> &[String] {
-        self.arm
-            .as_ref()
-            .filter(|arm| !arm.cleared && arm.at.elapsed() < ARMED)
+        self.arming()
+            .filter(|arm| !arm.cleared)
             .map_or(&[], |arm| arm.ids.as_slice())
     }
 
@@ -3184,9 +3181,8 @@ impl Screen {
     /// where its id stands. Empty where `ctrl+x` left the arm: those rows are
     /// the ones somebody pointed at, and the key itself is the whole reason.
     fn why(&self) -> &[String] {
-        self.arm
-            .as_ref()
-            .filter(|arm| arm.cleared && arm.at.elapsed() < ARMED)
+        self.arming()
+            .filter(|arm| arm.cleared)
             .map_or(&[], |arm| arm.why.as_slice())
     }
 
@@ -3196,9 +3192,8 @@ impl Screen {
     /// A handful of ids rather than a parallel array: most of the time it is
     /// empty, and a row asks whether it is in it.
     fn held(&self) -> &[String] {
-        self.arm
-            .as_ref()
-            .filter(|arm| arm.cleared && arm.at.elapsed() < ARMED)
+        self.arming()
+            .filter(|arm| arm.cleared)
             .map_or(&[], |arm| arm.held.as_slice())
     }
 
@@ -3207,10 +3202,7 @@ impl Screen {
     /// second press stops the live ones under it before it forgets them all,
     /// and a row's own second press only forgets.
     fn swept(&self) -> bool {
-        self.arm
-            .as_ref()
-            .filter(|arm| arm.at.elapsed() < ARMED)
-            .is_some_and(|arm| arm.swept)
+        self.arming().is_some_and(|arm| arm.swept)
     }
 
     /// ctrl+x on an agent's row: one rule, whatever the row is doing. The
@@ -3301,9 +3293,8 @@ impl Screen {
     fn sweep_or_arm(&mut self, root: &Path, under: rows::Under) {
         let pressed = self.list.key(under);
         let again = self
-            .arm
-            .as_ref()
-            .filter(|arm| arm.swept && !arm.cleared && arm.at.elapsed() < ARMED)
+            .arming()
+            .filter(|arm| arm.swept && !arm.cleared)
             .is_some_and(|arm| arm.heading.is_some() && arm.heading == pressed);
         if again {
             let arm = self.arm.take().expect("the arm that was just read");
@@ -3387,10 +3378,7 @@ impl Screen {
     /// calls per finished row on a branch — is it merged, has its upstream
     /// gone — and the wall is read again every second.
     fn clear_or_arm(&mut self, root: &Path) {
-        let again = self
-            .arm
-            .as_ref()
-            .is_some_and(|arm| arm.cleared && arm.at.elapsed() < ARMED);
+        let again = self.arming().is_some_and(|arm| arm.cleared);
         if again {
             let arm = self.arm.take().expect("the arm that was just read");
             self.clear(root, &arm.ids, &arm.held);
