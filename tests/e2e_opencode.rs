@@ -1,18 +1,15 @@
-//! Driving the suite against an opencode that is not opencode.
+//! opencode support, driven through mock opencode.
 //!
-//! opencode is the first entry in the table to take its task on a flag, to
-//! carry its model in the pane's env, to cut a turn in two presses, and to
-//! end one on a signal before its pane is taken down. Everything here is
-//! about those: that a task reaches the argv as one `--prompt=` word whatever
-//! it opens or ends with, that a turn moves the record by the plugin's words,
-//! that `stop` ends a turn under a card before it ends the pane, and that
-//! `setup` places the plugin where the TUI loads one.
+//! opencode takes its task in a `--prompt=` flag, its model in the pane's
+//! environment, needs two Escapes to cancel a turn, and ends a turn on a
+//! signal. These tests cover the task arriving as one `--prompt=` argument,
+//! the record moving on the plugin's reports, `stop` ending a turn before the
+//! pane, and `setup` placing the plugin where the TUI loads it.
 //!
-//! The vendor is `tests/mock_opencode/opencode`, reached through the PATH,
-//! replaying scenarios beside it on the screens captured off opencode 2.0.16
-//! in `tests/opencode/screens`. It reports the way amx's plugin does, `amx
-//! _hook` in the pane's own env, so an `amx` of this build is put on the same
-//! PATH.
+//! `tests/mock_opencode/opencode` is found on PATH and replays scenarios over
+//! the screens captured from opencode 2.0.16 in `tests/opencode/screens`. It
+//! reports through `amx _hook` as the plugin does, so this build of amx is
+//! put on PATH too.
 
 mod common;
 
@@ -20,16 +17,15 @@ use common::{AMX, Harness, said_in, status, tree, until_read};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-/// The task every agent here is started on.
 const TASK: &str = "fix the login bug";
 
-/// What `takes-a-turn` answers, as its Ended and its message list carry it.
+/// The answer in `takes-a-turn`'s Ended report and message list.
 const ANSWERED: &str = "done";
 
-/// The plugin amx places, as it ships.
+/// The plugin as amx ships it.
 const PLUGIN: &str = include_str!("../assets/opencode/tui.js");
 
-/// Where the stand-in and its scenarios live.
+/// The mock opencode directory: the stand-in and its scenarios.
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_opencode")
 }
@@ -40,8 +36,8 @@ fn scenario(name: &str) -> PathBuf {
         .join(format!("{name}.scenario"))
 }
 
-/// A PATH with the stand-in in front of it, and this build of amx under the
-/// name the plugin runs it by.
+/// PATH with mock opencode and this build of amx (as `amx`, the name the
+/// plugin runs) in front.
 fn path_to_opencode(amx: &Harness) -> String {
     let bin = amx.home().join("bin");
     if !bin.join("amx").exists() {
@@ -55,8 +51,9 @@ fn path_to_opencode(amx: &Harness) -> String {
     }
 }
 
-/// Run amx with opencode on its PATH and the stand-in ready to play a
-/// scenario. Both ride the environment, which is what a spawn hands its pane.
+/// Run amx with mock opencode on PATH, playing `scenario_name`.
+///
+/// Both go in the environment, which a spawn passes on to its pane.
 fn amx_with_opencode(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::process::Output {
     amx.amx_command(args)
         .env("PATH", path_to_opencode(amx))
@@ -65,9 +62,10 @@ fn amx_with_opencode(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::
         .expect("running amx")
 }
 
-/// Start an agent on opencode on `task`, with `more` of amx's own flags. A
-/// task opening with `-` is one amx's own command line would read as a flag,
-/// so it goes in a brief file instead, the way a person would hand it over.
+/// Start an agent on opencode on `task`, with extra amx flags `more`.
+///
+/// amx's own parser would read a task starting with `-` as a flag, so the
+/// task goes in a brief file instead.
 fn start_with(amx: &Harness, id: &str, scenario_name: &str, more: &[&str], task: &str) {
     let dir = amx.home().to_string_lossy().into_owned();
     let brief = amx.home().join(format!("{id}.md"));
@@ -92,7 +90,8 @@ fn start(amx: &Harness, id: &str, scenario_name: &str, task: &str) {
     start_with(amx, id, scenario_name, &[], task);
 }
 
-/// The rest of the line the stand-in opened with `opening`, once it has.
+/// The rest of the latest pane line that starts with `opening`, once there
+/// is one.
 fn said(amx: &Harness, id: &str, opening: &str) -> String {
     let pane = amx.pane_of(id);
     amx.until(&format!("the vendor to say {opening}"), || {
@@ -104,14 +103,14 @@ fn said(amx: &Harness, id: &str, opening: &str) -> String {
     })
 }
 
-/// The session the stand-in minted, as it said it.
+/// The session id the stand-in printed.
 fn minted(amx: &Harness, id: &str) -> String {
     let session = said(amx, id, "session: started ");
     assert!(session.starts_with("ses_"), "opencode's own id: {session}");
     session
 }
 
-/// Nothing went wrong in the stand-in, and it is still running.
+/// Assert the stand-in reported no error and is still running.
 fn went_right(amx: &Harness, id: &str) {
     let pane = amx.pane_of(id);
     let history = said_in(amx, &pane);
@@ -124,8 +123,8 @@ fn went_right(amx: &Harness, id: &str) {
 
 #[test]
 fn a_task_opening_with_a_dash_rides_on_one_prompt_word() {
-    // The TUI never reads a word opening with `-` as a flag's value, so a
-    // `--prompt` split from its task would be a prompt with nothing in it.
+    // The TUI never takes a word starting with `-` as a flag's value, so the
+    // task must be joined to `--prompt=`.
     let amx = Harness::new();
     let id = "loud-a1b";
     start(&amx, id, "takes-a-turn", "-v is too loud");
@@ -167,8 +166,8 @@ fn an_opencode_turn_moves_the_record_by_its_plugin_and_answers_at_its_end() {
     assert_eq!(agent["evidence"], "hooks", "the plugin's word: {agent}");
     assert_eq!(agent["result"], ANSWERED, "{agent}");
 
-    // The session is the one the first session route named, and the
-    // transcript the message list the plugin wrote beside the record.
+    // The session comes from the first session report, and the transcript is
+    // the message list the plugin writes next to the record.
     let meta = amx.meta(id);
     assert_eq!(meta["session"], session, "{meta}");
     assert_eq!(
@@ -194,7 +193,6 @@ fn an_opencode_turn_moves_the_record_by_its_plugin_and_answers_at_its_end() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ANSWERED);
 
-    // The conversation is read off the message list.
     let out = amx.amx(&["logs", id]);
     let printed = String::from_utf8_lossy(&out.stdout);
     assert!(printed.contains("sleep 40"), "{printed}");
@@ -203,8 +201,7 @@ fn an_opencode_turn_moves_the_record_by_its_plugin_and_answers_at_its_end() {
 
 #[test]
 fn an_interrupt_presses_escape_twice_and_the_plugin_ends_the_turn() {
-    // The first Escape only arms opencode's cancel; the stand-in holds the
-    // turn open until a second one comes.
+    // The first Escape only arms opencode's cancel; the second one cancels.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "is-interrupted", TASK);
@@ -248,7 +245,8 @@ fn stop_under_a_permission_card_ends_the_turn_by_signal_before_the_pane() {
     );
     assert!(!why.contains(&session), "{why}");
 
-    // The plugin's Ended came in answer to the signal, ahead of the stop.
+    // The plugin reported the turn's end, in answer to the signal, before the
+    // stop.
     let kinds = amx.event_kinds(id);
     let ended = kinds
         .iter()
@@ -358,8 +356,8 @@ fn a_model_rides_in_the_env_on_new_and_a_resume_keeps_the_sessions_own() {
     went_right(&amx, id);
 }
 
-/// `amx setup opencode` or `amx uninstall`, with opencode's config dir where
-/// `config_dir` says, or under this harness's home where it says nothing.
+/// Run `amx setup opencode` or `amx uninstall`, with `OPENCODE_CONFIG_DIR`
+/// set to `config_dir` if given.
 fn wire(amx: &Harness, args: &[&str], config_dir: Option<&Path>) -> String {
     let mut command = amx.amx_command(args);
     if let Some(dir) = config_dir {
@@ -390,7 +388,7 @@ fn setup_places_the_plugin_under_the_home_and_uninstall_leaves_it_as_it_was() {
 
     wire(&amx, &["uninstall"], None);
     assert!(!plugin.exists(), "the plugin went");
-    // The directories setup made stay, as codex's home does; no file does.
+    // Directories setup made may stay; files may not.
     let after: Vec<_> = tree(amx.home())
         .into_iter()
         .filter(|(_, bytes)| bytes.is_some())

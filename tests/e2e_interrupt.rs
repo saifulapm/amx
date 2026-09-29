@@ -1,40 +1,32 @@
-//! Cutting a turn short at the pane, and what amx says about it afterwards.
+//! `amx interrupt`: cutting a turn short at the pane.
 //!
-//! `amx interrupt` types one key at a pane and hears nothing back. Everything
-//! that makes it a verb rather than a keystroke happens after that, in three
-//! places at once: the vendor stops, the log says a turn was cut short, and a
-//! caller waiting on the answer is told none is coming. So the stand-in blocks
-//! until the key it is waiting for actually arrives on its stdin — a scenario
-//! that drew its prompt on a timer would prove the pane was there and nothing
-//! about the key reaching it.
+//! The vendor sends nothing back for an interrupted turn. After the key, the
+//! vendor must stop, the log must record the interrupt, and a caller waiting
+//! on `result` must hear that no answer is coming. The `interrupted` scenario
+//! blocks until Escape arrives on its stdin, so its prompt proves the key
+//! reached the vendor.
 
 mod common;
 
 use common::{Harness, status};
 use std::time::{Duration, Instant};
 
-/// How long the row is given to come off `working` once the key has landed.
+/// How long the row may take to leave `working` once the key has landed.
 ///
-/// The vendor says nothing about a turn it was interrupted out of, so the only
-/// account of this one ending is a reader's, off the screen the vendor drew
-/// when it went back to its prompt. Nothing about that screen has to hold
-/// still first: amx ended the turn itself and the record says when, so the
-/// prompt is read on the first look. This is that look, and room around it for
-/// a loaded machine.
+/// Only a reader looking at the pane can see the turn end. Since amx recorded
+/// the interrupt, the prompt counts on the first look, with no settle time.
 const SETTLES: Duration = Duration::from_secs(10);
 
-/// How soon after the prompt is drawn the row has to say so.
+/// How soon after the prompt is drawn the row must read idle.
 ///
-/// The wait a turn nobody cut short is owed is half a minute, because a prompt
-/// and a pause mid-turn are the same bytes. This one is owed none of it, and
-/// five seconds is short enough that sitting any of it out would fail here.
+/// An uninterrupted turn needs the screen to hold still for 30 seconds before
+/// a prompt can end it. An interrupted one needs none of that, and five
+/// seconds is short enough to catch a wait that should not happen.
 const AT_ONCE: Duration = Duration::from_secs(5);
 
-/// Wait for the reader to call the row idle, and answer with what it said.
+/// Poll `amx status` until the agent reads idle, failing after [`SETTLES`].
 ///
-/// The harness's own `until` is not this wait: it is patient in seconds an
-/// agent takes to speak, and this one is measured by how long a reader takes
-/// to go to a pane and take what is on it for the end of a turn.
+/// Shorter than [`Harness::until`], which allows for a vendor's reply time.
 fn until_idle(amx: &Harness, id: &str) -> serde_json::Value {
     let deadline = Instant::now() + SETTLES;
     loop {
@@ -53,10 +45,8 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     let pane = amx.play("port-importer-c3d", "interrupted");
     amx.until_state("port-importer-c3d", "working");
 
-    // The key goes in the second the turn started in, which is where this
-    // suite puts it and where a tool-heavy turn puts it in anybody's
-    // afternoon: what amx writes down about the turn it is ending stands on
-    // its own and is not weighed against the hook that came a moment before.
+    // The key lands within a second of the turn starting. The interrupt amx
+    // records must stand on its own against the hook just before it.
     let out = amx.amx(&["interrupt", "port-importer-c3d"]);
     assert_eq!(
         out.status.code(),
@@ -70,15 +60,13 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
         "the turn amx cut short is on the log: {kinds:?}"
     );
 
-    // The key reached the vendor and not only the record: this scenario sits
-    // on its stdin until byte 27 arrives, and draws its prompt only then.
+    // The scenario draws its prompt only after Escape reaches its stdin.
     amx.until("the vendor to go back to its prompt", || {
         amx.capture(&pane).contains("⏵⏵").then_some(())
     });
 
-    // Which is the whole of what says the turn is over, so it is a reader at
-    // the pane that ends it rather than anything the agent said — and it says
-    // so on the look that finds the prompt, with no screen to sit out.
+    // Only the screen says the turn is over, and the reader must say so on
+    // the first look that finds the prompt.
     let drew = Instant::now();
     let agent = until_idle(&amx, "port-importer-c3d");
     assert!(
@@ -94,8 +82,8 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
         "the hooks are written around turns that run to their end: {kinds:?}"
     );
 
-    // Nor is it only the row that says so. The vendor will never send the
-    // turn's end, so the reader that saw it writes it down, once.
+    // The vendor will never send the turn's end, so the reader records it,
+    // once.
     let record = amx.state("port-importer-c3d");
     assert_eq!(record["state"], "idle", "{record}");
     assert!(record["question"].is_null(), "{record}");
@@ -105,8 +93,8 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
         "{kinds:?}"
     );
 
-    // And a caller that was waiting on the answer is told at once that there
-    // is none, rather than being handed another turn's.
+    // `result` says at once that there is no answer, instead of returning the
+    // previous turn's.
     let asked = Instant::now();
     let waited = amx.amx(&["result", "port-importer-c3d", "--timeout", "10"]);
     assert_eq!(
@@ -127,12 +115,12 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     );
 }
 
-/// Start the harness's tmux server with this harness's config under it.
+/// Start the harness's tmux server with `XDG_CONFIG_HOME` under this
+/// harness's home.
 ///
-/// A timer the server fires runs `_park`, which reads the person's config for
-/// `park_after`, and a server the harness starts keeps whatever
-/// `XDG_CONFIG_HOME` the suite was run under. The session is the something
-/// else a machine has on it, so the park leaves a server behind.
+/// The server's park timer runs `_park`, which reads `park_after` from the
+/// config, and a server otherwise inherits the suite's `XDG_CONFIG_HOME`. The
+/// extra session keeps the server alive after the park.
 fn a_server_reading_this_config(amx: &Harness) {
     let out = std::process::Command::new("tmux")
         .args(["-L", amx.socket(), "-f", "/dev/null", "new-session", "-d"])
@@ -151,9 +139,8 @@ fn a_server_reading_this_config(amx: &Harness) {
 
 #[test]
 fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
-    // The hook that ends a turn is what runs `on_idle` and sets the park
-    // timer. None comes for this one, so the reader that wrote the turn's end
-    // is what does both, and does them once however many looks follow.
+    // A turn's end hook normally runs `on_idle` and sets the park timer. No
+    // hook comes here, so the reader that records the end must do both, once.
     let amx = Harness::new();
     let said = amx.home().join("said-on_idle");
     amx.config(&format!(
@@ -181,7 +168,6 @@ fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
     let event: serde_json::Value = serde_json::from_str(lines[1]).expect("the event");
     assert_eq!(event["kind"], "read.turn-end", "{text}");
 
-    // Nobody is attached, so the timer the reader set takes the pane.
     amx.until("the park timer to take the pane", || {
         (!amx.pane_alive(&pane)).then_some(())
     });
@@ -206,8 +192,8 @@ fn an_agent_sitting_at_its_prompt_has_no_turn_to_interrupt() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("nothing is running to interrupt"), "{said}");
 
-    // Nothing was cut short, so nothing on the log says one was: a `result`
-    // reading this agent must not find an ending that never happened.
+    // A refused interrupt must not leave an interrupt on the log for `result`
+    // to find.
     let kinds = amx.event_kinds("fix-login-a1b");
     assert!(
         !kinds.iter().any(|kind| kind == "interrupt"),

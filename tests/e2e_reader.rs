@@ -1,11 +1,11 @@
-//! What amx says an agent is doing, and what it is going on when it says it.
+//! How amx reads an agent's state from its record and its pane.
 
 mod common;
 
 use common::{Harness, ls, status};
 use serde_json::json;
 
-/// The AskUserQuestion menu, measured off claude v2.1.229 at 80 columns.
+/// claude 2.1.229's AskUserQuestion menu at 80 columns.
 const A_MENU: &str = "\
 ────────────────────────────────────────────────────────────────────────────────
  ☐ Indentation
@@ -24,19 +24,17 @@ Should this project be indented with spaces or tabs?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
-/// A pane with one of the vendor's blocking screens on it and nothing running
-/// but a sleep.
+/// A 100x24 pane that prints `screen` and sleeps.
 ///
-/// claude draws the menu inside a turn it is running, which is not something
-/// the stand-in can be made to reach; the screen itself is what a reader has to
-/// work from, so the screen itself is what is put in front of it.
+/// claude draws this menu mid-turn, which the stand-in cannot reach, so the
+/// screen is printed directly.
 fn a_pane_showing(amx: &Harness, screen: &str) -> String {
     let word = format!("'{}'", screen.replace('\'', r"'\''"));
     amx.tmux(&[
         "new-session",
         "-d",
-        // Wide enough that the pane does not wrap what the vendor already
-        // wrapped, and no taller than the rows a rule may look at.
+        // Wide enough not to rewrap the vendor's lines, and no taller than the
+        // rows a rule may read.
         "-x",
         "100",
         "-y",
@@ -66,8 +64,8 @@ fn a_waiting_agents_question_reaches_the_record_with_the_answers_it_offers() {
             .then_some(())
     });
 
-    // The hooks have gone quiet with the box still on the pane, which is when
-    // a reader looks at the screen.
+    // The hooks go quiet with the box still up, so a reader looks at the
+    // screen.
     amx.set_state(
         "ask-a1b",
         json!({
@@ -104,8 +102,7 @@ fn a_menu_records_the_question_it_is_asking() {
         amx.capture(&pane).contains("❯ 1.").then_some(())
     });
 
-    // Nothing was ever heard from this one, so the screen is all there is and
-    // the question on it is nobody's but the screen's.
+    // No hook ever came, so the question comes from the screen alone.
     let agent = status(&amx, "picks-a1b");
     assert_eq!(agent["state"], "waiting", "{agent}");
     assert_eq!(agent["question"], text);
@@ -120,12 +117,9 @@ fn a_menu_records_the_question_it_is_asking() {
 
 #[test]
 fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
-    // The stand-in paints the gate the way 2.1.259 draws it: choices with no
-    // numbers on them and the cursor opening on the exit. The numbers come off
-    // the cursor glyph instead, so both rows are choices here, in the order the
-    // vendor drew them. `Yes, I trust this folder` is a row that reads like an
-    // answer, and the place the record must not put it is where the question
-    // goes.
+    // claude 2.1.259 draws the gate's choices unnumbered, with the cursor on
+    // "No, exit", so the choices are counted from the cursor glyph. "Yes, I
+    // trust this folder" reads like an answer and must not become the question.
     let amx = Harness::new();
     let pane = amx.play("trusts-b2c", "stops-on-trust");
     amx.until("the gate to be drawn", || {
@@ -148,24 +142,18 @@ fn a_trust_gate_records_the_question_and_not_one_of_its_answers() {
         "the choices a reader hands back are the ones it counted off the mark"
     );
 
-    // Written whole, under the choices rather than in place of them: the words
-    // alone are how the record says a hook carried a question, and nothing was
-    // ever heard from this one.
+    // Recorded with its choices; a bare string would mean a hook carried it.
     assert_eq!(amx.state("trusts-b2c")["question"]["text"], text);
 }
 
 #[test]
 fn a_menu_taller_than_the_floor_is_still_a_menu() {
-    // The box the question tool draws is as tall as the agent's own
-    // descriptions make it, so at 24 columns its first choice — and the marker
-    // on it — is above the rows a rule may look at, while the footer wraps in
-    // three and breaks `esc to cancel` with it. docs/claude-screens.md read
-    // this screen as unknown, which leaves an agent standing at a question
-    // nobody is told about.
+    // At 24 columns the question box is tall enough that its first choice and
+    // the cursor on it are above the rows a rule may read, and the footer
+    // wraps over three lines. This screen must still read as a menu.
     let amx = Harness::new();
     let pane = amx.play("picks-c3d", "asks-on-a-narrow-pane");
-    // The last row the vendor draws, so the box is whole and the rows it
-    // pushed off the top are gone rather than on their way.
+    // The last row the vendor draws, so the box is complete.
     amx.until("the menu to be drawn", || {
         amx.capture(&pane).ends_with("cancel").then_some(())
     });
@@ -183,11 +171,9 @@ fn a_menu_taller_than_the_floor_is_still_a_menu() {
 
 #[test]
 fn a_running_turn_on_a_narrow_pane_is_not_a_finished_one() {
-    // The vendor drops the tail of its spinner row from the right as the pane
-    // narrows, and the mode footer it draws while it works stays where it is.
-    // docs/claude-screens.md read a live turn as idle eight samples out of
-    // eight at each of these two widths, which is worse than reading nothing:
-    // a screen named non-blocking is a turn somebody is told has finished.
+    // On a narrow pane the vendor truncates its spinner row from the right,
+    // while its working footer stays. These widths once read as idle every
+    // time, which reports a running turn as finished.
     for (id, scenario, width) in [
         ("ports-a1b", "works-on-a-narrow-pane", 30),
         ("ports-c3d", "works-on-a-narrower-pane", 24),
@@ -224,10 +210,9 @@ fn a_fresh_record_is_read_from_the_hooks() {
 
 #[test]
 fn the_name_claude_gave_the_session_reaches_the_record() {
-    // The vendor writes the session's name into the transcript and nowhere
-    // else, so a title on the record can only have been read off the file the
-    // hooks announced. The name the stand-in writes is one no id and no task
-    // of amx's own would produce, which is what makes it evidence.
+    // The vendor writes the session name only to the transcript, and the
+    // stand-in's name matches no id or task, so a title on the record proves
+    // the transcript was read.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "titles-itself");
     amx.until_state("fix-login-a1b", "idle");
@@ -258,13 +243,12 @@ fn the_listing_reads_as_a_table_when_nobody_asks_for_json() {
 
 #[test]
 fn a_record_that_has_gone_quiet_falls_back_to_the_screen() {
-    // The pane is sitting at the vendor's idle prompt. The record says the
-    // turn is still running, and nothing has been heard for a while.
+    // The pane is at the idle prompt and the record has heard nothing for a
+    // long time.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
-    // The record says idle before the vendor has drawn the prompt under it,
-    // and this test is about what that prompt reads as.
+    // The record reads idle before the prompt is drawn.
     amx.until_shown("fix-login-a1b", "⏵⏵");
     amx.set_state(
         "fix-login-a1b",
@@ -280,13 +264,12 @@ fn a_record_that_has_gone_quiet_falls_back_to_the_screen() {
 
 #[test]
 fn a_still_screen_does_not_end_a_turn_the_record_says_is_running() {
-    // The same screen, with a turn outstanding: the idle screen and a
-    // mid-turn pause are the same bytes, so one look decides nothing.
+    // The idle prompt and a mid-turn pause look the same, so one look at a
+    // running turn decides nothing.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
-    // The same wait: the record says idle a keystroke before the prompt is on
-    // the pane, and the reading under test is of that prompt.
+    // The record reads idle before the prompt is drawn.
     amx.until_shown("fix-login-a1b", "⏵⏵");
     amx.set_state(
         "fix-login-a1b",
@@ -333,7 +316,7 @@ fn an_agent_whose_pane_is_gone_reads_stopped() {
     let pane = amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // Killed outright: no exit is recorded, because nothing got to record one.
+    // Killed outright, so no exit is recorded.
     amx.tmux(&["kill-pane", "-t", &pane]);
     amx.until("the pane to leave the server", || {
         (!amx.pane_alive(&pane)).then_some(())

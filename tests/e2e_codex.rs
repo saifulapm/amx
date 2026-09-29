@@ -1,20 +1,16 @@
-//! Driving the suite against a codex that is not codex.
+//! codex support, driven through mock codex.
 //!
-//! codex is the first entry in the table to resume and fork by subcommand, to
-//! mint its own session ids and say them only at the first turn, and to run
-//! the hooks amx merges into a file it shares with the person. Everything here
-//! is about those: that a task reaches the argv after the `--` that ends
-//! codex's options, that a turn moves the record by codex's own word, that
-//! the turns codex sends no Stop for are closed off the pane, and that a
-//! record which never heard a session refuses to carry one on.
+//! codex resumes and forks by subcommand, mints its session id at the first
+//! turn, and reads amx's hooks from a hooks.json it shares with the person.
+//! These tests cover the task landing after `--`, the record moving on
+//! codex's hooks, turns with no Stop being closed from the pane, and a record
+//! with no session refusing resume and fork.
 //!
-//! The vendor is `tests/mock_codex/codex`, reached through the PATH, replaying
-//! scenarios beside it on the screens captured off codex 0.157.1 in
-//! `tests/codex/screens`. It runs its hooks the way codex runs the handlers
-//! amx's hooks.json names — `amx _hook`, through a shell, the payload on
-//! stdin — so an `amx` of this build is put on the same PATH, and it ends
-//! itself if a handler prints anything, because codex hands that to the
-//! model.
+//! `tests/mock_codex/codex` is found on PATH and replays scenarios over the
+//! screens captured from codex 0.157.1 in `tests/codex/screens`. It runs
+//! `amx _hook` through a shell with the payload on stdin, as codex does, so
+//! this build of amx is put on PATH too. It exits if a handler prints
+//! anything, because codex would pass that output to the model.
 
 mod common;
 
@@ -22,18 +18,17 @@ use common::{AMX, Harness, said_in, status, tree, until_read};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// The task every agent here is started on.
 const TASK: &str = "fix the login bug";
 
-/// What `takes-a-turn` answers, as its Stop and its rollout carry it.
+/// The answer in `takes-a-turn`'s Stop payload and rollout.
 const ANSWERED: &str = "I moved the timeout into the config, and the tests pass.";
 
-/// How long a screen must hold still before a quiescent rule may end a turn
-/// on the record as running: `rules::SETTLED_LOOKS` seconds. Spelled here, as
-/// tests/e2e_pi.rs spells it, because the clock is aged rather than waited.
+/// `rules::SETTLED_LOOKS`: how long a screen must hold still before a
+/// quiescent rule may end a running turn. Tests age the record by this much
+/// instead of waiting.
 const SETTLED: u64 = 30;
 
-/// Where the stand-in and its scenarios live.
+/// The mock codex directory: the stand-in and its scenarios.
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_codex")
 }
@@ -44,8 +39,8 @@ fn scenario(name: &str) -> PathBuf {
         .join(format!("{name}.scenario"))
 }
 
-/// A PATH with the stand-in in front of it, and this build of amx under the
-/// name codex's hooks.json runs it by.
+/// PATH with mock codex and this build of amx (as `amx`, the name hooks.json
+/// runs) in front.
 fn path_to_codex(amx: &Harness) -> String {
     let bin = amx.home().join("bin");
     if !bin.join("amx").exists() {
@@ -59,8 +54,9 @@ fn path_to_codex(amx: &Harness) -> String {
     }
 }
 
-/// Run amx with codex on its PATH and the stand-in ready to play a scenario.
-/// Both ride the environment, which is what a spawn hands its pane.
+/// Run amx with mock codex on PATH, playing `scenario_name`.
+///
+/// Both go in the environment, which a spawn passes on to its pane.
 fn amx_with_codex(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::process::Output {
     amx.amx_command(args)
         .env("PATH", path_to_codex(amx))
@@ -70,7 +66,7 @@ fn amx_with_codex(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::pro
         .expect("running amx")
 }
 
-/// Start an agent on codex, the way a person starts one, on `task` or on none.
+/// Start an agent on codex with `amx new`, with or without a task.
 fn start(amx: &Harness, id: &str, scenario_name: &str, task: Option<&str>) {
     let dir = amx.home().to_string_lossy().into_owned();
     let mut args = vec!["new", "--name", id, "--dir", &dir, "--agent", "codex"];
@@ -83,7 +79,8 @@ fn start(amx: &Harness, id: &str, scenario_name: &str, task: Option<&str>) {
     );
 }
 
-/// The rest of the line the stand-in opened with `opening`, once it has.
+/// The rest of the latest pane line that starts with `opening`, once there
+/// is one.
 fn said(amx: &Harness, id: &str, opening: &str) -> String {
     let pane = amx.pane_of(id);
     amx.until(&format!("the vendor to say {opening}"), || {
@@ -95,21 +92,21 @@ fn said(amx: &Harness, id: &str, opening: &str) -> String {
     })
 }
 
-/// The session the stand-in minted, as it said it.
+/// The session id the stand-in printed.
 fn minted(amx: &Harness, id: &str) -> String {
     let session = said(amx, id, "session: started ");
     assert_eq!(session.len(), 36, "a uuid: {session}");
     session
 }
 
-/// The rollout codex keeps a session in, under this harness's home.
+/// The rollout file for `session` under this harness's home.
 fn rollout(amx: &Harness, session: &str) -> PathBuf {
     amx.home()
         .join(".codex/sessions")
         .join(format!("rollout-{session}.jsonl"))
 }
 
-/// Nothing a hook printed ended the stand-in, and it is still running.
+/// Assert the stand-in reported no error and is still running.
 fn heard_nothing_back(amx: &Harness, id: &str) {
     let pane = amx.pane_of(id);
     let history = said_in(amx, &pane);
@@ -122,8 +119,8 @@ fn heard_nothing_back(amx: &Harness, id: &str) {
 
 #[test]
 fn new_hands_codex_a_subcommand_word_as_the_prompt_after_its_options_end() {
-    // clap reads a message that is one of codex's subcommands as that
-    // subcommand, until `--`: `codex resume` would open the session picker.
+    // Without `--`, codex's clap parses a task like `resume` as its
+    // subcommand and opens the session picker.
     let amx = Harness::new();
     let id = "resume-a1b";
     start(&amx, id, "takes-a-turn", Some("resume"));
@@ -145,8 +142,7 @@ fn a_codex_turn_moves_the_record_by_its_hooks_and_answers_on_its_stop() {
     assert_eq!(agent["evidence"], "hooks", "codex's own word: {agent}");
     assert_eq!(agent["result"], ANSWERED, "{agent}");
 
-    // The session and the rollout are the ones SessionStart named at the
-    // first turn.
+    // SessionStart names the session and rollout at the first turn.
     let meta = amx.meta(id);
     assert_eq!(meta["session"], session, "{meta}");
     assert_eq!(meta["transcript"], json!(rollout(&amx, &session)), "{meta}");
@@ -168,14 +164,15 @@ fn a_codex_turn_moves_the_record_by_its_hooks_and_answers_on_its_stop() {
     assert!(printed.contains(TASK), "{printed}");
     assert!(printed.contains(ANSWERED), "{printed}");
 
-    // Four handlers ran, and `amx _hook` printed nothing for any of them.
+    // Four handlers ran and `amx _hook` printed nothing.
     heard_nothing_back(&amx, id);
 }
 
-/// Age a record codex's hooks left working until a quiescent rule may end it:
-/// nothing heard for an hour, then the screen on the pane first seen
-/// [`SETTLED`] seconds ago, the way tests/e2e_pi.rs ages one rather than wait
-/// out the clock. Answers with the reading taken after.
+/// Age a working record until a quiescent rule may end it, and answer with
+/// the status read after.
+///
+/// First the record is made an hour stale, then the screen's first-seen time
+/// is moved [`SETTLED`] seconds back.
 fn held_still(amx: &Harness, id: &str) -> Value {
     let mut state = amx.state(id);
     state["since"] = json!(1);
@@ -347,8 +344,7 @@ fn resume_carries_codex_on_with_the_message_after_its_options_end() {
     until_read(&amx, id, "idle");
     amx.amx(&["stop", id, "--force"]);
 
-    // `--last` is a word codex's resume picks a session by, so the message
-    // only reaches the model from behind a `--`.
+    // `--last` is a codex resume flag, so the message must follow `--`.
     let out = amx_with_codex(&amx, "takes-a-turn", &["resume", id, "--", "--last"]);
     assert!(
         out.status.success(),
@@ -395,7 +391,6 @@ fn fork_copies_codex_with_the_prompt_after_its_options_end() {
         .to_string();
     assert_eq!(said(&amx, &copy, "prompt: "), "resume");
 
-    // codex names the copy's own session at its first turn.
     amx.until("the copy's session", || {
         (amx.meta(&copy)["session"] == json!(branched)).then_some(())
     });
@@ -405,14 +400,13 @@ fn fork_copies_codex_with_the_prompt_after_its_options_end() {
 
 #[test]
 fn a_codex_that_never_took_a_turn_has_no_session_to_resume_or_fork() {
-    // SessionStart fires at a session's first turn, never at launch, so a
-    // codex stopped at its folder trust screen, in front of the turn its task
-    // would start, has told amx of no session at all.
+    // SessionStart fires at the first turn, so a codex stopped at its folder
+    // trust screen has reported no session.
     let amx = Harness::new();
     let id = "untrusted-a1b";
     start(&amx, id, "stops-on-trust", Some(TASK));
     amx.until_shown(id, "Trust and continue");
-    // Age the fresh record so the reader takes the pane now instead of after
+    // Age the record so the reader looks at the pane now instead of after
     // the freshness window.
     let mut state = amx.state(id);
     state["since"] = json!(1);
@@ -434,14 +428,13 @@ fn a_codex_that_never_took_a_turn_has_no_session_to_resume_or_fork() {
     assert!(why.contains("no session was ever recorded"), "{why}");
 }
 
-/// A codex somebody started themselves, in a pane amx never opened, answering
-/// with the pane once `up` is on it.
+/// A codex started outside amx, in a pane amx did not open. Answers with the
+/// pane once it shows `up`.
 ///
-/// Started under the name that makes it codex: tmux answers for a pane with
-/// the program its process was started as, so the shell reading the stand-in
-/// is reached through a link called `codex`. The pane carries what a real one
-/// would: amx on the PATH for the hooks, this harness's state and home, and
-/// nothing naming an agent.
+/// tmux reports a pane's command by the name its process was started as, so
+/// the shell running the stand-in is started through a symlink called
+/// `codex`. The pane has amx on PATH and this harness's state and home, but
+/// no agent id.
 fn a_codex_started_by_hand(amx: &Harness, scenario_name: &str, up: &str) -> String {
     let named = amx.home().join("codex");
     std::os::unix::fs::symlink("/bin/sh", &named).expect("a shell called codex");
@@ -488,8 +481,8 @@ fn adopt_takes_over_a_codex_by_the_session_its_tool_shell_names() {
             .map(str::to_string)
     });
 
-    // What `amx adopt` sees when codex's shell tool runs it: the root
-    // session's id in CODEX_SESSION_ID, and the pane it is in.
+    // Run `amx adopt` as codex's shell tool would: CODEX_SESSION_ID holds the
+    // root session id.
     let id = "their-codex-a1b";
     let out = amx
         .amx_command(&["adopt", "--name", id, "--task", TASK])
@@ -507,8 +500,7 @@ fn adopt_takes_over_a_codex_by_the_session_its_tool_shell_names() {
     assert_eq!(amx.meta(id)["agent"], "codex");
     assert_eq!(amx.meta(id)["session"], session);
 
-    // Its hooks carry no AMX_ID, and still reach the record by the session
-    // they name: the message is confirmed, and its turn answered.
+    // The hooks carry no AMX_ID and reach the record by session id.
     let out = amx.amx(&["send", id, "and now the linter"]);
     assert_eq!(
         out.status.code(),
@@ -558,8 +550,8 @@ fn a_model_only_codex_lists_starts_codex_and_a_hidden_one_is_refused() {
     assert!(why.contains("codex debug models"), "{why}");
 }
 
-/// `amx setup codex` or `amx uninstall`, with codex's home where `codex_home`
-/// says, or under this harness's home where it says nothing.
+/// Run `amx setup codex` or `amx uninstall`, with `CODEX_HOME` set to
+/// `codex_home` if given.
 fn wire(amx: &Harness, args: &[&str], codex_home: Option<&Path>) -> String {
     let mut command = amx.amx_command(args);
     if let Some(dir) = codex_home {
@@ -576,7 +568,7 @@ fn wire(amx: &Harness, args: &[&str], codex_home: Option<&Path>) -> String {
 }
 
 /// The trusted hashes of amx's four handlers, as codex 0.157.1's app-server
-/// listed them (docs/codex-screens.md, "Hook trust: the oracle").
+/// lists them (docs/codex-screens.md, "Hook trust: the oracle").
 const TRUSTED: [(&str, &str, &str); 4] = [
     (
         "SessionStart",
@@ -600,8 +592,8 @@ const TRUSTED: [(&str, &str, &str); 4] = [
     ),
 ];
 
-/// Whether codex's files under `dir` hold amx's group for every event, at
-/// the index `at` says, and the trust for each.
+/// Assert codex's files under `dir` hold amx's handler for every event, at
+/// index `at(event)`, and trust each.
 fn wired_in(dir: &Path, at: impl Fn(&str) -> usize) {
     let hooks: Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hooks.json")).expect("the hooks file"),
@@ -679,7 +671,7 @@ fn setup_wires_codex_beside_their_hooks_and_uninstall_puts_both_files_back() {
         std::fs::read_to_string(codex.join("config.toml")).unwrap(),
         config
     );
-    // The copies setup kept before its first edit stay, as every wire's do.
+    // setup's backups stay behind.
     for (path, bytes) in tree(&codex) {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         match name.split_once(".amx-backup-") {

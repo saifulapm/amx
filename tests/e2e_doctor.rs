@@ -1,21 +1,13 @@
-//! `amx doctor` against a real tmux server, and against real panes.
+//! `amx doctor` against a real tmux server and real panes.
 //!
-//! The server check these prove exists because of a machine where every agent
-//! died in under a second and doctor stayed green: a tmux server had outlived
-//! the directory it was started in, and every pane it forked after that landed
-//! somewhere that was not there. Nothing short of a real server proves it —
-//! the deleted directory has to be one a real process is really holding.
+//! The server check catches a tmux server whose working directory was
+//! deleted: every pane it forks then fails at once. Proving it needs a real
+//! server holding a real deleted directory. The gate check reads a pane
+//! against its vendor's screen rules, so it is tested with mock pi stopped at
+//! each of pi's gates.
 //!
-//! The setup check is here for the same kind of reason: what it names is read
-//! off a pane, against the screens document of whichever vendor is drawing on
-//! it. A vendor that reports nothing has no other witness, so the only honest
-//! way to ask whether doctor sees an agent stopped at that vendor's own gate is
-//! to stop one there — which is what `tests/mock_pi` is for.
-//!
-//! Linux only, which is where the server check is: elsewhere there is no way to
-//! read another process's working directory and doctor says nothing about it.
-//! The `cfg` below is that check's, and what it costs is the rest of this file:
-//! the setup tests sit under it rather than each carrying one of their own.
+//! Linux only, because the server check reads another process's working
+//! directory through /proc. The whole file sits under that `cfg`.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -26,18 +18,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A shell that sits there, so the server has a pane and stays up.
+/// A pane command that keeps the server up.
 const IDLE: &[&str] = &["sh", "-c", "while :; do sleep 0.05; done"];
 
-/// The task every agent here is started on.
 const TASK: &str = "fix the login bug";
 
-/// Every screen a fresh pi stops on: what it is, the scenario that puts it on a
-/// pane, and the row the vendor draws on that screen and no other.
+/// Each screen a fresh pi stops on: a description, the scenario that draws
+/// it, and a row unique to that screen.
 ///
-/// Which of pi's screens are gates is `assets/screen-rules-pi.toml`'s to say,
-/// so no name out of that document is written here either: what doctor printed
-/// is weighed against what the same reading told `amx status`.
+/// Rule names are not repeated here: doctor's output is checked against the
+/// rule `amx status` reports, which comes from `assets/screen-rules-pi.toml`.
 const GATES: [(&str, &str, &str); 3] = [
     (
         "the folder-trust question",
@@ -56,11 +46,10 @@ const GATES: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// Start a server on this harness's socket from a client standing in `cwd`.
+/// Start a server on this harness's socket from a client whose cwd is `cwd`.
 ///
-/// A server takes its working directory from whichever client started it and
-/// not from the `-c` a session was asked for, so standing the client somewhere
-/// is the only way to put a server there on purpose.
+/// A server takes its working directory from the client that started it, not
+/// from a session's `-c`.
 fn serve_from(amx: &Harness, cwd: &Path) {
     let out = Command::new("tmux")
         .args(["-L", amx.socket(), "-f", "/dev/null"])
@@ -76,11 +65,10 @@ fn server_line(printed: &str) -> (bool, String) {
     check_line(printed, "server")
 }
 
-/// Doctor's hooks line about one agent: whether it passed, and what it said.
+/// doctor's hooks line for `vendor`: whether it passed, and the line.
 ///
-/// By agent rather than by position. doctor asks a hooks line of every agent
-/// this machine has, so on a developer's machine with claude installed a test
-/// about pi would otherwise read claude's line.
+/// doctor prints one hooks line per installed vendor, so the line is found by
+/// vendor, not position.
 fn hooks_line(printed: &str, vendor: &str) -> (bool, String) {
     printed
         .lines()
@@ -98,13 +86,12 @@ fn doctor(amx: &Harness) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Where pi's stand-in and its scenarios live.
+/// The mock pi directory: the stand-in and its scenarios.
 fn pi_fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_pi")
 }
 
-/// A PATH with the stand-in's directory in front of it, which is what makes
-/// `pi` a program this machine has at all.
+/// PATH with the mock pi directory first.
 fn path_to_pi() -> String {
     let ours = pi_fixtures().to_string_lossy().into_owned();
     match std::env::var("PATH") {
@@ -113,12 +100,10 @@ fn path_to_pi() -> String {
     }
 }
 
-/// Start an agent on the vendor amx knows as pi, with the stand-in ready to
-/// play `scenario`.
+/// Start an agent on pi, with mock pi playing `scenario`.
 ///
-/// Both ride the environment rather than the command line because that is how
-/// they reach the pane: a spawn snapshots the environment it was run with, and
-/// the pane is started from that snapshot.
+/// PATH and the scenario go in the environment, which the spawn passes on to
+/// the pane.
 fn start_pi(amx: &Harness, id: &str, scenario: &str) {
     let scenario = pi_fixtures()
         .join("scenarios")
@@ -145,8 +130,7 @@ fn start_pi(amx: &Harness, id: &str, scenario: &str) {
     );
 }
 
-/// The rule the same reading names on this agent's row, out of its own
-/// vendor's document.
+/// The screen rule `amx status` reports for the agent.
 fn rule_read(amx: &Harness, id: &str) -> String {
     let agent = status(amx, id);
     agent["rule"]
@@ -173,8 +157,7 @@ fn a_server_whose_directory_was_deleted_is_named_with_the_way_out() {
     let gone = dir.path().canonicalize().unwrap();
     serve_from(&amx, &gone);
 
-    // The whole failure, reproduced: the directory the server is standing in
-    // goes, and the server carries on holding it.
+    // Delete the server's working directory while it keeps running.
     std::fs::remove_dir_all(&gone).unwrap();
 
     let printed = doctor(&amx);
@@ -195,25 +178,18 @@ fn a_server_whose_directory_was_deleted_is_named_with_the_way_out() {
 
 #[test]
 fn an_agent_stopped_at_its_own_vendors_setup_gate_is_named() {
-    // Three screens a person has to answer before the agent behind them does
-    // any work at all, and doctor said nothing about any of them: the check
-    // knew one vendor's folder-trust rule by name, so a pi stopped at its own
-    // trust question, at the gate in front of a first run, or waiting for a
-    // provider's key was an agent nobody was told about.
+    // Each of these screens blocks the agent until a person answers it. The
+    // check must use each vendor's own rules, not claude's folder-trust rule.
     for (what, scenario, drawn) in GATES {
         let amx = Harness::new();
         let id = "fix-login-a1b";
         start_pi(&amx, id, scenario);
         let pane = amx.pane_of(id);
 
-        // The row the vendor draws on this screen and on no other, waited for
-        // on its own.
         amx.until(&format!("{what} to be drawn"), || {
             amx.capture(&pane).contains(drawn).then_some(())
         });
-        // Nothing heard for an hour, with nothing outstanding, which is where
-        // the screen is the only witness there is on a vendor that reports
-        // nothing.
+        // Age the record so the reader goes by the screen.
         amx.set_state(
             id,
             json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -237,7 +213,7 @@ fn an_agent_stopped_at_its_own_vendors_setup_gate_is_named() {
     }
 }
 
-/// Doctor run with `dirs`, and only those, on the PATH.
+/// Run doctor with PATH set to exactly `dirs`.
 fn doctor_on(amx: &Harness, dirs: &[&Path]) -> String {
     let out = amx
         .amx_command(&["doctor"])
@@ -249,15 +225,12 @@ fn doctor_on(amx: &Harness, dirs: &[&Path]) -> String {
 
 #[test]
 fn doctor_asks_a_hooks_line_of_every_agent_this_machine_has() {
-    // The gap this closes: doctor read the configured agent and nothing else,
-    // so a machine set to claude with pi installed beside it never heard that
-    // pi was unwired. An agent that is not installed is not a fault and is
-    // not mentioned at all.
+    // doctor checks every installed vendor, not only the configured one. A
+    // vendor that is not installed is not mentioned.
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
     amx.amx(&["setup", "claude"]);
 
-    // claude alone on the PATH: one line, and nothing about pi.
     let claude_only = tempfile::TempDir::new().unwrap();
     let claude = claude_only.path().join("claude");
     std::fs::write(&claude, "#!/bin/sh\n").unwrap();
@@ -270,8 +243,7 @@ fn doctor_asks_a_hooks_line_of_every_agent_this_machine_has() {
         "nothing is missing from a machine that never installed pi:\n{printed}"
     );
 
-    // pi installed beside it: a second line, red, naming the line that wires
-    // it — and claude's own line is unchanged.
+    // With pi on PATH too, pi gets a failing line and claude's is unchanged.
     let printed = doctor_on(&amx, &[Path::new(&pi_fixtures()), claude_only.path()]);
     let (ok, _) = hooks_line(&printed, "claude");
     assert!(ok, "claude is still wired:\n{printed}");
@@ -286,10 +258,8 @@ fn doctor_asks_a_hooks_line_of_every_agent_this_machine_has() {
 
 #[test]
 fn an_agent_spelled_as_a_path_is_asked_about_as_the_vendor_it_names() {
-    // A path to pi used to miss the table and be judged as claude, so a
-    // machine running pi by its full path failed on claude's plugin. And a
-    // command the table does not know is read as claude, which doctor says
-    // on a passing line.
+    // An agent configured as a path to pi is judged as pi. A command the
+    // vendor table does not know is judged as claude.
     let amx = Harness::new();
     let pi = pi_fixtures().join("pi");
     amx.config(&format!("agent = \"{}\"\n", pi.display()));
@@ -324,10 +294,8 @@ fn an_agent_spelled_as_a_path_is_asked_about_as_the_vendor_it_names() {
 
 #[test]
 fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
-    // Two installed amx, and `amx setup pi` run under the stale one wrote
-    // the stale extension, doctor judged it against that amx's own body,
-    // said ok, and the build carrying the fix never ran. What a pi started by hand reports to
-    // is whichever amx the PATH finds, so doctor says which that is.
+    // A pi started by hand reports to whichever amx PATH finds, which may be
+    // an older install than the one running doctor, so doctor names it.
     let amx = Harness::new();
     let ours = tempfile::TempDir::new().unwrap();
     std::os::unix::fs::symlink(common::AMX, ours.path().join("amx")).unwrap();
@@ -336,12 +304,12 @@ fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
     std::fs::write(&other, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&other, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    // The PATH reaches this amx by another name, and nothing else by it.
+    // PATH finds this amx through a symlink.
     let printed = doctor_on(&amx, &[ours.path()]);
     let (ok, line) = check_line(&printed, "amx");
     assert!(ok, "one install, under two names: {line}");
 
-    // The PATH reaches another program of the name first.
+    // PATH finds a different `amx` first.
     let printed = doctor_on(&amx, &[theirs.path(), ours.path()]);
     let (ok, line) = check_line(&printed, "amx");
     assert!(!ok, "{printed}");
@@ -353,13 +321,11 @@ fn doctor_names_the_amx_the_path_finds_when_it_is_not_this_one() {
 
 #[test]
 fn a_machine_with_no_server_yet_has_nothing_to_report() {
-    // Never having started a server is not a fault, and the next one amx
-    // starts will stand somewhere real.
+    // No server yet is not a fault.
     let amx = Harness::new();
 
     let printed = doctor(&amx);
-    // Doctor ran and said its piece, so the absence below is a check that was
-    // not asked rather than output that never arrived.
+    // doctor did print, so the missing server line is meaningful.
     assert!(printed.contains("tmux"), "doctor said nothing at all");
     assert!(
         !printed.lines().any(|line| {
@@ -371,17 +337,15 @@ fn a_machine_with_no_server_yet_has_nothing_to_report() {
     );
 }
 
-/// Where pi loads a global extension from, under this harness's home: the
-/// path pi's own entry names, joined the way `install` joins it.
+/// Where pi loads amx's global extension from, under this harness's home.
 fn pi_extension(amx: &Harness) -> PathBuf {
     amx.home().join(".pi/agent/extensions/amx.ts")
 }
 
 #[test]
 fn doctor_writes_pis_extension_once_somebody_agrees_and_uninstall_takes_it_back() {
-    // pi reports through a file amx writes where pi loads extensions from.
-    // doctor judges that file and repairs none of it; `amx setup pi` is what
-    // writes it, and uninstall removes it.
+    // pi reports through an extension file. doctor only judges it; `amx setup
+    // pi` writes it and uninstall removes it.
     let amx = Harness::new();
     amx.config("agent = \"pi\"\n");
     let extension = pi_extension(&amx);
@@ -492,9 +456,8 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
 
 #[test]
 fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
-    // claude writes a project key for every directory it is ever started in,
-    // and amx cuts a tree per agent: the store grew a key per agent that had
-    // ever run, and nothing took one back out when the tree went.
+    // claude adds a project key for every directory it starts in, and amx
+    // makes a tree per agent, so keys for deleted trees pile up.
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
     let store = amx.home().join(".claude.json");
@@ -522,8 +485,7 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
         "and which file: {line}"
     );
 
-    // Nothing here is asked about: the key goes, and doctor writes no file of
-    // any vendor's either way.
+    // --fix removes the key without asking.
     let out = amx.amx(&["doctor", "--fix"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -553,10 +515,8 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
 
 #[test]
 fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back() {
-    // claude reports through a plugin amx writes under the skills directory,
-    // where claude loads one without a marketplace and without a line in
-    // anybody's settings. doctor judges that directory, --fix writes it after
-    // asking, and uninstall removes it.
+    // claude reports through a plugin under ~/.claude/skills, which claude
+    // loads without a marketplace or a settings entry.
     let amx = Harness::new();
     amx.config("agent = \"claude\"\n");
     let plugin = amx.home().join(".claude/skills/amx");
@@ -599,9 +559,8 @@ fn doctor_writes_claudes_plugin_once_somebody_agrees_and_uninstall_takes_it_back
 
 #[test]
 fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() {
-    // A spawn claims its id with a directory and writes the record into it a
-    // moment later. One that died between the two left a name nothing answers
-    // to and `--name` cannot take.
+    // A spawn claims its id by creating the directory, then writes the
+    // record. A spawn that died in between leaves an id `--name` cannot reuse.
     let amx = Harness::new();
     std::fs::create_dir_all(amx.state_root().join("lost-a1b")).expect("an orphan id");
 
@@ -610,8 +569,8 @@ fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() 
     assert!(said.contains("one id directory has no record"), "{said}");
     assert!(said.contains("amx doctor --fix"), "{said}");
 
-    // Ten minutes is what separates a spawn that died from one still starting,
-    // so a fix run a moment later takes nothing.
+    // A directory younger than ten minutes may be a spawn still starting, so
+    // --fix leaves it.
     let fixed = amx.amx(&["doctor", "--fix"]);
     let said = String::from_utf8_lossy(&fixed.stdout);
     assert!(said.contains("removed 0 id directories"), "{said}");
