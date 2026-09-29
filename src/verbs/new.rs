@@ -792,6 +792,13 @@ fn set_up(
         taken.trusted = trust_the_tree(config, &env, &launch.agent, tree, problems, to_terminal);
     }
 
+    if !args.exec {
+        dial_the_env(
+            &mut env,
+            registry::entry(&launch.agent),
+            &launch.dials.model,
+        );
+    }
     // amx's own id over the top of the harness's pairs laid above: a table
     // that set the id would have this agent reporting under somebody else's
     // name.
@@ -917,6 +924,20 @@ fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) 
             Some(id),
             trust,
         ),
+    }
+}
+
+/// A model dial `vendor` carries in the environment rather than on its argv,
+/// put into the pane's env — see [`crate::vendor::env_dials`]. Only `new`
+/// writes one: a resumed session keeps its own model.
+fn dial_the_env(
+    env: &mut std::collections::BTreeMap<String, String>,
+    vendor: Option<&Vendor>,
+    model: &str,
+) {
+    if let Some(vendor) = vendor {
+        let dials = crate::vendor::env_dials(vendor, model, env);
+        env.extend(dials);
     }
 }
 
@@ -2101,6 +2122,30 @@ mod tests {
             dir.path().join("home").to_string_lossy().into_owned(),
         )]);
         (tree, env)
+    }
+
+    #[test]
+    fn new_writes_a_model_carried_in_the_env_into_the_boot_env() {
+        use crate::vendor::second::ELSEWHERE;
+
+        let mut env = spawn::env_snapshot([]);
+        dial_the_env(&mut env, Some(&ELSEWHERE), "large");
+        assert_eq!(env.get("SECOND_CONFIG").unwrap(), r#"{"size":"large"}"#);
+
+        // A value somebody set wins, and a model nobody turned writes nothing.
+        let mut env = spawn::env_snapshot([("SECOND_CONFIG".to_string(), "{}".to_string())]);
+        dial_the_env(&mut env, Some(&ELSEWHERE), "large");
+        assert_eq!(env.get("SECOND_CONFIG").unwrap(), "{}");
+        let mut env = spawn::env_snapshot([]);
+        dial_the_env(&mut env, Some(&ELSEWHERE), registry::DEFAULT);
+        assert!(env.is_empty());
+
+        // A vendor whose model is a flag, or no vendor at all, writes nothing.
+        for vendor in [registry::entry("claude"), None] {
+            let mut env = spawn::env_snapshot([]);
+            dial_the_env(&mut env, vendor, "opus");
+            assert!(env.is_empty());
+        }
     }
 
     /// A config whose person has said yes to the trust write.
