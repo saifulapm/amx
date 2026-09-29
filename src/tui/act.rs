@@ -2184,14 +2184,17 @@ fn opened(at: &Path, gh: &Path, glab: &Path, number: u64) -> Result<()> {
 
 /// One forge, told to open a request in the browser.
 fn browse(at: &Path, forge: &Path, request: &str, number: u64) -> std::io::Result<()> {
-    std::process::Command::new(forge)
+    let mut child = std::process::Command::new(forge)
         .current_dir(at)
         .args([request, "view", &number.to_string(), "--web"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .spawn()?;
+    // Waited on off the draw loop, or every press leaves a zombie for the
+    // life of the view.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// Run the command somebody bound a key to, on the agent under the cursor.
@@ -4431,5 +4434,50 @@ mod tests {
             why.contains("gh") && why.contains("glab"),
             "it names what is missing: {why}"
         );
+    }
+
+    #[test]
+    fn open_reaps_the_forge_it_spawned() {
+        let home = TempDir::new().unwrap();
+        let wrote = home.path().join("pid");
+        let gh = home.path().join("gh");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\necho $$ > {0}.new\nmv {0}.new {0}\n",
+                wrote.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let pid = told_pid(home.path(), &gh, &wrote);
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        for _ in 0..250 {
+            if !proc.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let stat = std::fs::read_to_string(proc.join("stat")).unwrap_or_default();
+        panic!("the forge was never waited on: {stat}");
+    }
+
+    /// The pid a forge that writes only `$$` ran as, retried the way [`told`]
+    /// retries a spawn refused with `Text file busy`.
+    fn told_pid(at: &Path, gh: &Path, wrote: &Path) -> u32 {
+        for _ in 0..20 {
+            if opened(at, gh, Path::new("/nowhere/glab"), 12).is_err() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            for _ in 0..25 {
+                if let Ok(said) = std::fs::read_to_string(wrote) {
+                    return said.trim().parse().unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        panic!("the forge never ran");
     }
 }
