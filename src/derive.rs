@@ -307,8 +307,8 @@ impl View {
 
     /// The same, over requests already read.
     fn json_beside(&self, prs: &[crate::pr::Pr]) -> serde_json::Value {
-        let transcript = self.transcript();
-        let (context, last_words) = match &transcript {
+        // Read once for both fields.
+        let (context, last_words) = match &transcript(&self.meta) {
             Some((format, tail)) => crate::conversation::context_and_last_words(*format, tail),
             None => (None, None),
         };
@@ -397,21 +397,14 @@ impl View {
             "last_words": last_words,
         })
     }
+}
 
-    /// The vendor's shape for this agent's conversation, and the tail of the
-    /// transcript itself, together — `None` unless both are there to read.
-    ///
-    /// Read once here and handed to both `context` and `last_words` rather
-    /// than read once each: the tail [`crate::store::Agent::transcript_tail`]
-    /// reads is the same 64 KiB a row reads, and its body asks nothing of an
-    /// `Agent` but the record's own `meta` — so a view holding no live
-    /// `Agent` still reads it the row's way rather than the whole file's.
-    fn transcript(&self) -> Option<(crate::vendor::Transcript, String)> {
-        let format =
-            crate::conversation::format_of(self.meta.agent.as_deref().unwrap_or_default())?;
-        let tail = crate::store::Agent::transcript_tail(&self.meta)?;
-        Some((format, tail))
-    }
+/// The vendor's transcript format for this record and the tail of its
+/// transcript, or `None` unless both are there to read.
+fn transcript(meta: &Meta) -> Option<(crate::vendor::Transcript, String)> {
+    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
+    let tail = Agent::transcript_tail(meta)?;
+    Some((format, tail))
 }
 
 /// The screens amx can read on this agent's pane.
@@ -1826,8 +1819,7 @@ fn newest_said(agent: &Agent, meta: &Meta, state: &State) -> Option<String> {
     if a_rewrite_stands(agent, meta, state) {
         return None;
     }
-    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let tail = Agent::transcript_tail(meta)?;
+    let (format, tail) = transcript(meta)?;
     crate::conversation::latest(format, &tail)
 }
 
@@ -2391,8 +2383,7 @@ fn ask_about_the_turn(
 /// nothing readable in it are each nothing to ask about, and asking a command
 /// about nothing is a call somebody pays for and no line to show for it.
 fn the_turn_so_far(meta: &Meta) -> Option<String> {
-    let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default())?;
-    let tail = Agent::transcript_tail(meta)?;
+    let (format, tail) = transcript(meta)?;
     let said = crate::conversation::plain(&crate::conversation::read(format, &tail));
     (!said.trim().is_empty()).then_some(said)
 }
