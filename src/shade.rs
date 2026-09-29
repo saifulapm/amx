@@ -204,7 +204,7 @@ pub fn colours_of(answer: &str) -> (Option<Rgb>, Option<Rgb>) {
 /// Anything else is nothing rather than a guess. An answer amx cannot read is
 /// a terminal amx has not measured, and painting a light palette onto a dark
 /// screen is worse than painting the one everybody had before.
-fn colour_of(reply: &str) -> Option<(u8, u8, u8)> {
+fn colour_of(reply: &str) -> Option<Rgb> {
     let channels: Vec<&str> = reply
         .strip_prefix("rgb:")?
         .split(|c: char| !c.is_ascii_hexdigit() && c != '/')
@@ -240,11 +240,7 @@ fn top(digits: &str) -> Option<u8> {
 ///
 /// Written whole or not at all: a spawn reading it mid-write would paint a
 /// pane with half a colour.
-pub fn remember(
-    state_root: &Path,
-    foreground: Option<(u8, u8, u8)>,
-    background: (u8, u8, u8),
-) -> Result<()> {
+pub fn remember(state_root: &Path, foreground: Option<Rgb>, background: Rgb) -> Result<()> {
     let style = match foreground {
         Some(foreground) => format!("fg={},bg={}", hex(foreground), hex(background)),
         None => format!("bg={}", hex(background)),
@@ -256,7 +252,7 @@ pub fn remember(
 }
 
 /// A colour as `#rrggbb`.
-fn hex((red, green, blue): (u8, u8, u8)) -> String {
+fn hex((red, green, blue): Rgb) -> String {
     format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
