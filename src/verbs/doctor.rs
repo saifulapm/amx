@@ -845,13 +845,17 @@ fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) ->
         .collect()
 }
 
-/// Look at the machine, and at `dir` when doctor was pointed at one.
-pub fn gather(config: &Config, dir: Option<&Path>) -> Result<Findings> {
+/// Look at the machine, and at `dir` when doctor was pointed at one, under
+/// `config` and what reading it said.
+pub fn gather(
+    config: &Config,
+    config_warnings: Vec<String>,
+    dir: Option<&Path>,
+) -> Result<Findings> {
     let home = install::home()?;
     let exe = std::env::current_exe()?;
     let path = std::env::var_os("PATH");
     let wirings = wirings(&config.agent, &home, &install::process_env, path.as_deref());
-    let (_, config_warnings) = crate::config::load();
     let state_root = crate::paths::state_root()?;
     // Only for the vendor whose screen amx answers by writing its store: any
     // other keeps no file amx has ever left a key in. A store amx cannot read
@@ -1193,7 +1197,7 @@ fn usable(root: &Path) -> Option<String> {
 }
 
 /// Run the verb against the machine, and against `dir` when there is one.
-pub fn from_env(config: &Config, fix: bool, dir: Option<&Path>) -> Result<i32> {
+pub fn from_env(fix: bool, dir: Option<&Path>) -> Result<i32> {
     // A directory that is not there is a different fault from a screen, and
     // an agent could not be started in it whatever the store says.
     if let Some(dir) = dir
@@ -1204,9 +1208,23 @@ pub fn from_env(config: &Config, fix: bool, dir: Option<&Path>) -> Result<i32> {
             dir.display()
         );
     }
-    let found = gather(config, dir)?;
+    let cwd = std::env::current_dir().ok();
+    let root = crate::paths::state_root()?;
+    let (config, warnings) = config_in(dir, cwd.as_deref(), &root);
+    let found = gather(&config, warnings, dir)?;
     let mut out = std::io::stdout().lock();
     run(&found, fix, crate::store::now(), &mut out)
+}
+
+/// The config an agent started in `dir` would run under, else one started in
+/// `cwd`: a project's file names the agent its work is written for, and that
+/// is the agent worth asking about. A working directory that has gone is the
+/// person's file alone.
+fn config_in(dir: Option<&Path>, cwd: Option<&Path>, root: &Path) -> (Config, Vec<String>) {
+    match dir.or(cwd) {
+        Some(here) => crate::config::for_dir_in(here, root),
+        None => crate::config::load(),
+    }
 }
 
 /// The program a configured command runs, without its arguments.
@@ -1702,6 +1720,50 @@ mod tests {
                 .map(|w| w.vendor)
                 .collect::<Vec<_>>(),
             ["pi"]
+        );
+    }
+
+    /// A project whose allowed file names `agent`, under `root`'s consent.
+    fn a_project_for(agent: &str, root: &Path) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".amx")).unwrap();
+        std::fs::write(
+            dir.path().join(".amx/config.toml"),
+            format!("agent = \"{agent}\"\n"),
+        )
+        .unwrap();
+        let file = crate::paths::project_config(dir.path()).unwrap();
+        crate::consent::allow_in(root, &file).unwrap();
+        dir
+    }
+
+    #[test]
+    fn doctor_asks_about_the_agent_of_the_project_it_is_pointed_at_else_stands_in() {
+        // The agent row, the hooks lines and the store check all follow the
+        // agent this reads, so a codex project is asked about as codex.
+        let state = TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        let codex = a_project_for("codex", &root);
+        let pi = a_project_for("pi", &root);
+
+        let (pointed, _) = config_in(Some(codex.path()), Some(pi.path()), &root);
+        assert_eq!(
+            pointed.agent, "codex",
+            "--dir over the directory it stands in"
+        );
+        let (standing, _) = config_in(None, Some(pi.path()), &root);
+        assert_eq!(standing.agent, "pi", "else the directory it stands in");
+
+        assert!(
+            wirings(
+                &pointed.agent,
+                Path::new("/home/dev"),
+                &install::no_env,
+                None
+            )
+            .iter()
+            .any(|w| w.vendor == "codex"),
+            "the hooks line is codex's"
         );
     }
 

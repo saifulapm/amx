@@ -181,7 +181,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         Some(cli::Command::Sweep { force }) => finish(verbs::sweep::from_env(*force)),
         Some(cli::Command::Clear { force }) => finish(verbs::clear::from_env(*force)),
         Some(cli::Command::Doctor { fix }) => {
-            finish(verbs::doctor::from_env(config, *fix, cli.dir.as_deref()))
+            finish(verbs::doctor::from_env(*fix, cli.dir.as_deref()))
         }
         Some(cli::Command::Setup { vendor, subagent }) => {
             finish(verbs::setup::from_env(vendor.as_deref(), *subagent))
