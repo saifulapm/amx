@@ -242,13 +242,13 @@ fn one_line(said: &str) -> String {
 /// What one assistant entry said, as the answer it would be: its text blocks
 /// joined, or nothing where it said nothing.
 fn answer_text(entry: &Value) -> Option<String> {
-    let text: Vec<&str> = blocks(entry)
-        .iter()
-        .filter(|block| block["type"] == "text")
-        .filter_map(|block| block["text"].as_str())
-        .collect();
-    let text = text.join("\n").trim().to_string();
-    (!text.is_empty()).then_some(text)
+    trimmed(&text_of(&entry["message"]["content"]))
+}
+
+/// `text` trimmed, or `None` where nothing is left of it.
+fn trimmed(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Whether an assistant entry is the vendor's note that the turn never reached
@@ -564,7 +564,7 @@ fn claude(entry: &Value, said: &mut Vec<Said>) {
         Some(Voice::User) => {
             let typed = match entry["message"]["content"].as_str() {
                 Some(typed) => typed.to_string(),
-                None => typed_text(entry),
+                None => text_of(&entry["message"]["content"]),
             };
             prompt(Some(&command(&typed).unwrap_or(typed)), said);
         }
@@ -589,7 +589,7 @@ fn pi(entry: &Value, said: &mut Vec<Said>) {
             let content = &entry["message"]["content"];
             match content.as_str() {
                 Some(typed) => prompt(Some(typed), said),
-                None => prompt(Some(&typed_text(entry)), said),
+                None => prompt(Some(&text_of(&entry["message"]["content"])), said),
             }
         }
         Some(Voice::Assistant) => {
@@ -626,14 +626,7 @@ fn codex(entry: &Value, said: &mut Vec<Said>) {
     let payload = &entry["payload"];
     match codex_event(entry) {
         Some("item_completed") if payload["item"]["type"] == "UserMessage" => {
-            let typed: Vec<&str> = payload["item"]["content"]
-                .as_array()
-                .map_or(&[][..], Vec::as_slice)
-                .iter()
-                .filter(|block| block["type"] == "text")
-                .filter_map(|block| block["text"].as_str())
-                .collect();
-            prompt(Some(&typed.join("\n")), said);
+            prompt(Some(&text_of(&payload["item"]["content"])), said);
         }
         Some("user_message") => prompt(payload["message"].as_str(), said),
         _ if entry["type"] != "response_item" => {}
@@ -691,8 +684,7 @@ fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Str
     if end["type"] != "task_complete" || !end["error"].is_null() {
         return None;
     }
-    let said = end["last_agent_message"].as_str()?.trim();
-    (!said.is_empty()).then(|| said.to_string())
+    trimmed(end["last_agent_message"].as_str()?)
 }
 
 /// Why a codex turn ended with nothing: aborted, with the reason codex gave
@@ -783,15 +775,7 @@ fn opencode_end<V: Borrow<Value>>(
 fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
     match opencode_end(newest)? {
         (outcome, Some(step)) if outcome == "succeeded" => {
-            let text: Vec<&str> = step.borrow()["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|item| item["type"] == "text")
-                .filter_map(|item| item["text"].as_str())
-                .collect();
-            let text = text.join("\n").trim().to_string();
-            (!text.is_empty()).then_some(text)
+            trimmed(&text_of(&step.borrow()["content"]))
         }
         _ => None,
     }
@@ -815,15 +799,17 @@ fn opencode_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Str
     }
 }
 
-/// The text blocks of a prompt written as blocks, joined: the words typed
-/// beside a pasted image, which is a block of its own.
-fn typed_text(entry: &Value) -> String {
-    let typed: Vec<&str> = blocks(entry)
+/// The `text` blocks of a content array, joined by newlines. Other blocks, a
+/// pasted image or a thinking block, are skipped.
+fn text_of(content: &Value) -> String {
+    let text: Vec<&str> = content
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
         .iter()
         .filter(|block| block["type"] == "text")
         .filter_map(|block| block["text"].as_str())
         .collect();
-    typed.join("\n")
+    text.join("\n")
 }
 
 /// A slash command or a skill as the person typed it, out of the tags claude
