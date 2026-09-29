@@ -1,8 +1,14 @@
 [package]
 name = "amx"
-version = "0.3.0"
+version = "0.1.0"
 edition = "2024"
+description = "Run coding agents as tmux panes"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/saifulapm/amx"
+homepage = "https://saifulapm.github.io/amx"
+readme = "README.md"
+keywords = ["tmux", "agents", "claude", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -22,3 +28,7 @@ toml_edit = "0.25"
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+strip = true
