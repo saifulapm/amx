@@ -4029,7 +4029,6 @@ impl Screen {
         let mut remembered = Remembered::read(&path);
         remembered.sent = self.sent.clone();
         let _ = remembered.write(&path);
-        self.viewed_at = stamped(&path);
     }
 }
 
@@ -6541,6 +6540,43 @@ mod tests {
             "a pin one view makes is on the other by its next reading"
         );
         assert!(right.published.has_pinned("one-a1b"));
+    }
+
+    #[test]
+    fn a_line_sent_before_the_next_reading_does_not_hide_the_other_views_pin() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("view.json");
+        let fleet = || {
+            vec![
+                reading("one-a1b", Phase::Working, State::default()),
+                reading("two-b2c", Phase::Working, State::default()),
+            ]
+        };
+        let mut left = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        let mut right = Screen {
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        right.adopt_the_view();
+
+        left.list.top();
+        while left.list.selected().is_none() {
+            left.list.down();
+        }
+        assert!(left.list.hold_or_let_go());
+        left.keep(true);
+
+        // The right view sends a line before its next reading, which writes
+        // the file the pin is in.
+        right.remember_line(&Asking::Task, "port the importer");
+        right.adopt_the_view();
+        assert!(
+            right.list.arrangement().has_pinned("one-a1b"),
+            "the pin is on the right view after its next reading"
+        );
     }
 
     #[test]
