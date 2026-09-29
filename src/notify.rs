@@ -147,9 +147,10 @@ fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>)
 /// could be read as syntax. What it says goes nowhere — somebody who wants a
 /// log of it redirects in the command they wrote.
 ///
-/// Nothing waits on it. The line is a few hundred bytes against a pipe that
-/// holds pages of them, so writing it cannot block, and the handle goes at the
-/// end of this, which is what tells the command the line is all of it.
+/// The caller does not wait on it; a detached thread reaps it. The line is a
+/// few hundred bytes against a pipe that holds pages of them, so writing it
+/// cannot block, and the handle goes at the end of this, which is what tells
+/// the command the line is all of it.
 ///
 /// `watched` is what the pane was doing when the moment arrived, where
 /// anybody asked. `None` from a caller with no pane to ask about leaves the
@@ -178,6 +179,11 @@ pub fn start(errand: &Errand, watched: Option<bool>) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(&errand.stdin);
     }
+    // The view and `stop` call this from a process that lives on, where an
+    // exited child nobody waits for stays a zombie until the view exits.
+    let _ = std::thread::Builder::new()
+        .name("amx-errand".to_string())
+        .spawn(move || child.wait());
 }
 
 /// Which side of the fork a process is on.
@@ -521,6 +527,26 @@ mod tests {
             "{\"kind\":\"Notification\"}\nfix-login-a1b waiting 1\n",
             "the event arrives whole, and the stdin handle is let go after it"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn notify_an_errand_that_has_exited_is_reaped() {
+        let dir = TempDir::new().unwrap();
+        let errand = Errand {
+            command: "cat > /dev/null; echo $$ > pid.new; mv pid.new pid".to_string(),
+            dir: dir.path().to_path_buf(),
+            env: Vec::new(),
+            stdin: b"{}\n".to_vec(),
+        };
+
+        start(&errand, None);
+
+        let pid = dir.path().join("pid");
+        until("the errand to say its pid", || pid.exists());
+        let pid = std::fs::read_to_string(&pid).unwrap();
+        let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+        until("the errand to be waited for", || !proc.exists());
     }
 
     #[test]
