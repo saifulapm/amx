@@ -1,15 +1,11 @@
-//! The end-to-end harness: a throwaway tmux server, a state directory of its
-//! own, and a stand-in for the vendor.
+//! End-to-end test harness: a private tmux server, state directory and home
+//! per test, and helpers for driving amx and its vendor stand-ins.
 //!
-//! Every test that drives amx end to end runs against real tmux and real
-//! panes. Nothing here fakes the multiplexer: a fake would prove that amx
-//! agrees with a fake.
-//!
-//! Two things are pinned for every process the harness starts: `AMX_STATE_DIR`
-//! and `HOME`. Without both, a test reads the records and the configuration of
-//! whoever is running it.
+//! Tests run against real tmux and real panes. Every process the harness
+//! starts gets this harness's `AMX_STATE_DIR` and `HOME`, so a test never
+//! reads the records or config of the person running it.
 
-// Each test binary uses the part of the harness it needs.
+// Each test binary uses only part of the harness.
 #![allow(dead_code)]
 
 use serde_json::{Value, json};
@@ -19,16 +15,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// The amx this suite drives, built by cargo alongside it.
+/// The amx binary under test.
 pub const AMX: &str = env!("CARGO_BIN_EXE_amx");
 
-/// How long a poll waits before it gives up and says what it wanted.
+/// How long [`Harness::until`] polls before it fails.
 const PATIENCE: Duration = Duration::from_secs(20);
 
 pub struct Harness {
     state: TempDir,
     home: TempDir,
-    /// The tmux socket name this harness owns.
+    /// The tmux socket name (`-L`) this harness owns.
     socket: String,
 }
 
@@ -64,12 +60,12 @@ impl Harness {
 
     // ── amx ──────────────────────────────────────────────────────────────────
 
-    /// Run amx, with the machine it reads pinned to this harness.
+    /// Run amx against this harness's state, home and tmux server.
     pub fn amx(&self, args: &[&str]) -> Output {
         self.amx_command(args).output().expect("running amx")
     }
 
-    /// Run amx with something typed at it.
+    /// Run amx with `typed` on its stdin.
     pub fn amx_with_input(&self, args: &[&str], typed: &str) -> Output {
         use std::io::Write;
         use std::process::Stdio;
@@ -96,17 +92,12 @@ impl Harness {
             .args(args)
             .env("AMX_STATE_DIR", self.state.path())
             .env("HOME", self.home.path())
-            // A machine with XDG_CONFIG_HOME set would otherwise hand the test
-            // the developer's own config, however carefully HOME was pinned.
+            // XDG_CONFIG_HOME would otherwise point at the developer's config.
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
-            // amx's own tmux server, pinned to this harness: a test must not
-            // reach the developer's agents, and must not be reached by them.
+            // Keep the test off the developer's own amx server.
             .env("AMX_TMUX_SOCKET", &self.socket)
-            // Whether the suite itself is being run from inside tmux is not a
-            // test's business; the tests that care say so themselves. Nor is
-            // whether it is being run from inside an agent's pane: parentage
-            // is read off `AMX_ID`, and a suite run from an amx pane must not
-            // turn every spawn in it into a child.
+            // Tests that want a tmux client set these themselves. `AMX_ID`
+            // from an outer agent would make every spawn its child.
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .env_remove("AMX_ID")
@@ -117,21 +108,15 @@ impl Harness {
         command
     }
 
-    /// Run amx in a pane of this harness's server, and answer with the pane.
+    /// Run amx in a new pane of this harness's server, and answer with the
+    /// pane.
     ///
-    /// Some of what amx answers to is not on its command line at all: whether
-    /// anybody is looking at a terminal, and whether that terminal is already
-    /// inside tmux. A pane is a real terminal, so this is the only way to ask
-    /// those questions honestly.
-    ///
-    /// A variable given an empty value is unset rather than set — the pane is
-    /// inside tmux by birth, and a test that wants a terminal outside one says
-    /// so by clearing tmux's own two.
-    ///
-    /// The terminal opens in this harness's own home. Where a terminal is
-    /// matters — anything it starts starts there — and inheriting the
-    /// directory the suite was run from would put a test's agents in the
-    /// developer's own repository.
+    /// A pane is a real terminal, which is the only way to test what amx does
+    /// with a tty and with `TMUX`. An empty value in `env` unsets the variable:
+    /// the pane is inside tmux from the start, so a test that wants a terminal
+    /// outside tmux clears `TMUX` and `TMUX_PANE`. The pane starts in the
+    /// harness's home, so agents it starts never land in the developer's
+    /// checkout.
     pub fn in_a_terminal(&self, env: &[(&str, &str)], args: &[&str]) -> String {
         let config = self.home.path().join(".config");
         let mut pairs = vec![
@@ -142,7 +127,7 @@ impl Harness {
         ];
         pairs.extend(env.iter().map(|(name, value)| (*name, (*value).into())));
 
-        // Every `-u` first: `env` reads its own flags only until the first
+        // All `-u` flags first: env stops reading options at the first
         // assignment.
         let mut line = String::from("exec env");
         for (name, _) in pairs.iter().filter(|(_, value)| value.is_empty()) {
@@ -171,7 +156,7 @@ impl Harness {
         ])
     }
 
-    /// The environment a person who is already inside tmux would have.
+    /// The `TMUX` and `TMUX_PANE` a shell in a pane of this server would have.
     pub fn inside_tmux(&self) -> Vec<(String, String)> {
         let pane = self.tmux(&[
             "new-session",
@@ -194,17 +179,13 @@ impl Harness {
 
     // ── tmux ─────────────────────────────────────────────────────────────────
 
-    /// Run one tmux command against this harness's own server, asking again
-    /// if the server went while it was being asked.
+    /// Run a tmux command against this harness's server, and answer with its
+    /// stdout.
     ///
-    /// A test that waits for its agents to finish empties this server — the
-    /// panes exit, the sessions go with them — and a server on its way out
-    /// still holds its socket for a moment. A command arriving inside that
-    /// moment is told `server exited unexpectedly`, which under parallel
-    /// suites failed the wall's ctrl+x test about six runs in twenty-four.
-    /// Nothing was half-done, and the next client starts a fresh server, so
-    /// the question is worth asking again. Any other failure is still this
-    /// harness's to shout about.
+    /// When a test's last pane exits, the server keeps its socket for a moment
+    /// and a client connecting then gets `server exited unexpectedly`. The
+    /// next client starts a fresh server, so that failure is retried once. Any
+    /// other failure panics.
     pub fn tmux(&self, args: &[&str]) -> String {
         let mut out = self.tmux_once(args);
         if !out.status.success() && the_server_went(&out.stderr) {
@@ -225,13 +206,12 @@ impl Harness {
             .args(args)
             .env("AMX_STATE_DIR", self.state.path())
             .env("HOME", self.home.path());
-        // The server this starts is where every pane of the test gets its
-        // environment from.
+        // Panes inherit their environment from the server this may start.
         leaks_nothing(&mut command);
         command.output().expect("running tmux")
     }
 
-    /// What is on a pane's screen now.
+    /// The pane's visible screen.
     pub fn capture(&self, pane: &str) -> String {
         self.tmux(&["capture-pane", "-p", "-J", "-t", pane])
     }
@@ -250,11 +230,11 @@ impl Harness {
 
     // ── agents ───────────────────────────────────────────────────────────────
 
-    /// Start an agent playing `scenario`, and answer with its pane.
+    /// Start mock-claude playing `scenario` in a new pane, record it as agent
+    /// `id`, and answer with the pane.
     ///
-    /// The pane waits for the record to exist before it starts the vendor, so
-    /// the first hook has somewhere to go. amx's own `new` writes the record
-    /// first for the same reason.
+    /// The pane waits for the record before it starts the stand-in, so the
+    /// first hook has a record to land in, as with `amx new`.
     pub fn play(&self, id: &str, scenario: &str) -> String {
         let pane = self.tmux(&[
             "new-session",
@@ -271,23 +251,16 @@ impl Harness {
         pane
     }
 
-    /// The record amx's own `new` would have written.
+    /// Write the record `amx new` would write for agent `id` in `pane`.
     ///
-    /// The pane is stamped with the id first, the way `amx adopt` stamps a
-    /// pane it took over. amx puts the panes it opens in a session called
-    /// `amx-<id>` and reads that name to tell whose pane a pane is; these
-    /// panes are made by hand, in sessions tmux named after itself, so the
-    /// stamp is what makes this one answer for this agent. Without it the
-    /// reader calls the agent gone, which is true of a pane that answers for
-    /// nobody and is not what these tests are about.
-    ///
-    /// A record naming a pane that is not there — `%404`, `%99` — is left
-    /// naming one, because a record of a gone pane is what those tests came
-    /// for.
+    /// A live pane is stamped with `@amx-id`, as `amx adopt` does. amx
+    /// otherwise knows its panes by an `amx-<id>` session name, and these
+    /// panes sit in sessions tmux named, so without the stamp the reader would
+    /// call the agent gone. A pane that does not exist (`%404`) is recorded
+    /// as is, for tests about gone panes.
     pub fn record(&self, id: &str, pane: &str) {
         if self.pane_alive(pane) {
-            // amx's own pane option, spelled here because a test binary has no
-            // way to read a constant out of the binary it drives.
+            // amx's pane option; a test binary cannot import the constant.
             self.tmux(&["set-option", "-p", "-t", pane, "@amx-id", id]);
         }
         let dir = self.agent_dir(id);
@@ -307,8 +280,7 @@ impl Harness {
         write(&dir.join("state.json"), &json!({ "state": "starting" }));
     }
 
-    /// Rewrite part of how the agent was started: whatever `patch` names, over
-    /// what the record holds.
+    /// Merge the top-level keys of `patch` into the agent's meta.json.
     pub fn set_meta(&self, id: &str, patch: Value) {
         let path = self.agent_dir(id).join("meta.json");
         let mut meta = read(&path).unwrap_or_else(|| json!({}));
@@ -320,13 +292,12 @@ impl Harness {
         write(&path, &meta);
     }
 
-    /// What the record says now.
+    /// The agent's state.json, or `{}`.
     pub fn state(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("state.json")).unwrap_or_else(|| json!({}))
     }
 
-    /// Put the record where the test needs it — an agent that has not been
-    /// heard from for an hour, without an hour of waiting.
+    /// Overwrite the agent's state.json, e.g. to age a record without waiting.
     pub fn set_state(&self, id: &str, state: Value) {
         write(&self.agent_dir(id).join("state.json"), &state);
     }
@@ -343,22 +314,21 @@ impl Harness {
         read(&self.agent_dir(id).join("meta.json")).unwrap_or_else(|| json!({}))
     }
 
-    /// What the pane was handed at birth: its environment, its command, and
-    /// the task.
+    /// The agent's handoff.json: the environment, command and task its pane
+    /// started with.
     pub fn handoff(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("handoff.json"))
             .unwrap_or_else(|| panic!("no handoff for {id}"))
     }
 
-    /// Write this harness's config file.
+    /// Write the global config file under this harness's home.
     pub fn config(&self, text: &str) {
         let path = self.home.path().join(".config/amx/config.toml");
         std::fs::create_dir_all(path.parent().unwrap()).expect("the config directory");
         std::fs::write(&path, text).expect("writing the config");
     }
 
-    /// A git repository with one commit in it, for the agents that want a
-    /// worktree.
+    /// A git repository under home with one commit.
     pub fn a_repo(&self) -> PathBuf {
         let repo = self.home.path().join("repo");
         std::fs::create_dir_all(&repo).expect("the repository");
@@ -366,7 +336,7 @@ impl Harness {
         repo
     }
 
-    /// The vendor's stand-in, as a command line.
+    /// The path of mock-claude.
     pub fn mock(&self) -> String {
         fixtures()
             .join("mock-claude")
@@ -374,7 +344,7 @@ impl Harness {
             .into_owned()
     }
 
-    /// Everything that has happened to the agent, oldest first.
+    /// The agent's events.jsonl, oldest first.
     pub fn events(&self, id: &str) -> Vec<Value> {
         let path = self.agent_dir(id).join("events.jsonl");
         std::fs::read_to_string(path)
@@ -386,7 +356,7 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// The names of the events recorded, in order.
+    /// The `kind` of each recorded event, oldest first.
     pub fn event_kinds(&self, id: &str) -> Vec<String> {
         self.events(id)
             .iter()
@@ -394,7 +364,7 @@ impl Harness {
             .collect()
     }
 
-    /// Wait until the record says this, or say what it said instead.
+    /// Wait until state.json says `want`, and answer with the state.
     pub fn until_state(&self, id: &str, want: &str) -> Value {
         self.until(&format!("{id} to be {want}"), || {
             let state = self.state(id);
@@ -402,11 +372,10 @@ impl Harness {
         })
     }
 
-    /// Wait until the pane itself shows `needle`.
+    /// Wait until the agent's pane shows `needle`.
     ///
-    /// A scenario delivers its hooks before it draws the screen under them, so
-    /// a record that has reached a phase is not yet a pane that looks like it.
-    /// A test that reads the screen rather than the record waits here first.
+    /// A scenario delivers its hooks before it draws the screen, so a record
+    /// in a phase does not mean the pane shows it yet.
     pub fn until_shown(&self, id: &str, needle: &str) {
         let pane = self.pane_of(id);
         self.until(&format!("{id} to show {needle:?}"), || {
@@ -414,8 +383,7 @@ impl Harness {
         });
     }
 
-    /// Poll until `f` has an answer. Polling rather than sleeping: a fixed
-    /// wait is either slower than the machine or shorter than a bad day.
+    /// Poll `f` every 20ms until it answers, and fail after [`PATIENCE`].
     pub fn until<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
         let deadline = Instant::now() + PATIENCE;
         loop {
@@ -439,8 +407,8 @@ impl Harness {
         self.home.path().join(format!("transcript-{id}.jsonl"))
     }
 
-    /// The command a harness pane runs: the vendor's stand-in, and amx
-    /// recording how it ended.
+    /// The shell line a [`play`](Self::play) pane runs: mock-claude, then
+    /// `amx _exit` with its status.
     fn pane_script(&self, id: &str, scenario: &str) -> String {
         let state = self.state.path().display();
         let home = self.home.path().display();
@@ -462,26 +430,23 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        // The server, and every pane on it, go with the test that made them.
+        // Kill the server and every pane on it.
         let _ = Command::new("tmux")
             .args(["-L", &self.socket, "kill-server"])
             .output();
-        // And so does the socket. tmux does not always unlink it -- a server
-        // that was already gone leaves it behind -- and repeated suite runs
-        // piled up thousands of dead sockets until /tmp/tmux-1000 itself made
-        // new servers time out (friction #G40BJA0X).
+        // tmux leaves the socket file behind if the server was already gone,
+        // and enough stale sockets in the directory make new servers time out.
         let _ = std::fs::remove_file(socket_dir().join(&self.socket));
     }
 }
 
-/// Take out what the suite's own environment carries when it is run from
-/// inside an agent's pane, or beside somebody's own codex.
+/// Remove variables that leak in when the suite runs inside an agent's pane
+/// or next to a real codex or opencode.
 ///
-/// `AMX_NESTED` drops every hook a stand-in delivers as nested, and the rest
-/// name that outer agent's record, its scratch directory and the amx it runs
-/// (#KR7ZYJ5Z, #C2G0FZ5E). `CODEX_HOME` names the person's own codex, and the
-/// three `OPENCODE_CONFIG` variables their own opencode's config, which no
-/// test may read or write: a test that wants one sets it itself.
+/// `AMX_NESTED` makes every hook a stand-in delivers count as nested, and the
+/// other `AMX_*` names point at the outer agent. `CODEX_HOME` and the
+/// `OPENCODE_CONFIG*` variables point at the person's own vendor config, which
+/// no test may touch; a test that needs one sets it.
 fn leaks_nothing(command: &mut Command) {
     for name in [
         "AMX_NESTED",
@@ -498,10 +463,8 @@ fn leaks_nothing(command: &mut Command) {
     }
 }
 
-/// Whether tmux is saying nothing was listening, in the three shapes amx's
-/// own `is_no_server` (src/tmux.rs) reads: a socket that was never there, one
-/// with no server behind it any more, and a server that went while it was
-/// being asked.
+/// Whether tmux's stderr says no server was listening, in the three forms
+/// `is_no_server` in src/tmux.rs recognises.
 fn the_server_went(stderr: &[u8]) -> bool {
     let said = String::from_utf8_lossy(stderr);
     said.contains("error connecting to")
@@ -509,17 +472,17 @@ fn the_server_went(stderr: &[u8]) -> bool {
         || said.contains("server exited")
 }
 
-/// Where `tmux -L <name>` keeps its sockets: `tmux-<uid>` under
-/// `$TMUX_TMPDIR`, else under `/tmp`, the same rule tmux applies and the same
-/// one `tmux::socket_dir` reads. The suites set `TMUX_TMPDIR` themselves
-/// (tests/e2e_wall.rs), so reading it as the socket directory itself, rather
-/// than as what that directory sits under, is a cleanup that misses.
+/// Where `tmux -L <name>` puts its socket: `tmux-<uid>` under `$TMUX_TMPDIR`,
+/// or under `/tmp`, as tmux and `tmux::socket_dir` resolve it.
+///
+/// `$TMUX_TMPDIR` is the parent of the socket directory, not the directory
+/// itself. tests/e2e_wall.rs sets it.
 pub fn socket_dir() -> PathBuf {
     sockets_under(std::env::var_os("TMUX_TMPDIR"))
 }
 
-/// The same rule, given the variable, so it can be checked without setting one
-/// on a process that has tests running beside it.
+/// [`socket_dir`] for a given `$TMUX_TMPDIR`, testable without setting the
+/// variable on a process running other tests.
 fn sockets_under(tmpdir: Option<std::ffi::OsString>) -> PathBuf {
     tmpdir
         .filter(|dir| !dir.is_empty())
@@ -527,7 +490,7 @@ fn sockets_under(tmpdir: Option<std::ffi::OsString>) -> PathBuf {
         .join(format!("tmux-{}", uid()))
 }
 
-/// Whose sockets these are, as tmux names the directory.
+/// The current uid, as tmux uses it in the socket directory name.
 fn uid() -> u32 {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
@@ -541,13 +504,11 @@ impl Default for Harness {
     }
 }
 
-/// The card, opened on the agent the view is holding the cursor over.
+/// Open the card on agent `id`, and answer with the screen once the card is
+/// drawn.
 ///
-/// Waited for by its rule, which is the one row the card draws whatever it is
-/// a look at: the agent's own name on it, past the mark its row wears, and the
-/// card's own dashes, which no row of the list carries. What a test that opens
-/// a card is about is what is on the card, and waiting on anything inside it
-/// would pin every one of them to a drawing that is not theirs.
+/// Waits for the card's rule, the one line holding both the id and the card's
+/// dashes, and for the card's key row.
 pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     amx.until("the row", || amx.capture(view).contains(id).then_some(()));
     amx.tmux(&["send-keys", "-t", view, "Space"]);
@@ -556,9 +517,9 @@ pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
         let ruled = drawn
             .lines()
             .any(|line| line.contains(id) && line.contains('┈'));
-        // The view has no synchronized output, so a capture can land mid-frame.
-        // The card's key row is the last row the opening frame writes: once it
-        // is up, every row above it is too.
+        // The view has no synchronized output, so a capture can land
+        // mid-frame. The key row is the last row the opening frame writes, so
+        // once it is up every row above it is too.
         let keyed = drawn.lines().any(|line| line.contains("esc closes it"));
         (ruled && keyed).then_some(drawn)
     })
@@ -1063,12 +1024,12 @@ pub fn merged_by_hand(repo: &Path, id: &str) {
     );
 }
 
-/// Where the vendor's stand-in and its scenarios live.
+/// The mock-claude directory: the stand-in and its scenarios.
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_claude")
 }
 
-/// A word a shell reads as one word, whatever is in it.
+/// Single-quote `word` for sh.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
@@ -1082,10 +1043,8 @@ fn read(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// These run in every binary that takes the harness in. They are cheap, and
-/// what they hold is the rule the harness cleans up by: get the directory
-/// wrong and the sockets pile up in silence, one per server, until new servers
-/// time out.
+// These run in every test binary that includes the harness. A wrong socket
+// directory would leak one socket file per server.
 #[test]
 fn common_a_named_tmpdir_holds_the_socket_directory_under_it() {
     assert_eq!(
