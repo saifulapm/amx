@@ -2966,21 +2966,21 @@ impl Screen {
             }
         };
 
-        match reach(root, config, here, &view)? {
+        let reached = reach(root, config, here, &view)?;
+        Ok(self.arrived(id.to_string(), reached))
+    }
+
+    /// Act on what reaching the agent `id` came to.
+    fn arrived(&mut self, id: String, reached: Reach) -> Doing {
+        match reached {
             // Inside tmux the client has gone to the agent and this view is
             // still drawing behind it, so where somebody went is known now
             // rather than when a lend comes back.
-            Reach::There => self.went_into(id.to_string()),
+            Reach::There => self.went_into(id),
             Reach::Say(notice) => self.notice = Some(notice),
-            Reach::Lend(on, session) => {
-                return Ok(Doing::Lend {
-                    id: id.to_string(),
-                    on,
-                    session,
-                });
-            }
+            Reach::Lend(on, session) => return Doing::Lend { id, on, session },
         }
-        Ok(Doing::Carry)
+        Doing::Carry
     }
 
     /// Bring the agent under the cursor's window forward, which is what enter
@@ -2999,12 +2999,7 @@ impl Screen {
         // An agent that came back is in a pane this reading knows nothing
         // about.
         self.acted();
-        match reached {
-            Reach::There => self.went_into(id),
-            Reach::Say(notice) => self.notice = Some(notice),
-            Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
-        }
-        Ok(Doing::Carry)
+        Ok(self.arrived(id, reached))
     }
 
     /// Bring forward the agent standing at `at` on the wall, counted from the
@@ -3036,12 +3031,7 @@ impl Screen {
         let id = view.id().to_string();
         let reached = reach(root, config, here, view)?;
         self.acted();
-        match reached {
-            Reach::There => self.went_into(id),
-            Reach::Say(notice) => self.notice = Some(notice),
-            Reach::Lend(on, session) => return Ok(Doing::Lend { id, on, session }),
-        }
-        Ok(Doing::Carry)
+        Ok(self.arrived(id, reached))
     }
 
     /// `w` on the list: the cursor onto the first agent with something on it
