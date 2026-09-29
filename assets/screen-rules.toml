@@ -1,230 +1,95 @@
-# What amx can recognise on an agent's screen.
+# Screen rules for claude panes.
 #
-# When the hooks have gone quiet, a reader looks at the bottom of the pane and
-# matches it against these rules. This file is the whole of what amx knows how
-# to see on a claude pane: its four blocking prompts, the line it spins while a
-# turn runs, the furniture it leaves under an idle prompt, and the sentences it
-# sends about a dialog it will not describe. It is deliberately small. A screen
-# no rule claims is reported as `unknown` rather than guessed at — a missing
-# rule costs a row that says "I can't tell", a sloppy one costs a lie.
+# When the hooks go quiet, a reader matches the bottom of the pane against
+# these rules. They cover claude's four blocking prompts, the spinner row, the
+# chrome under an idle prompt, and the notification sentences that stand in
+# for a question. A screen no rule claims reads `unknown`.
 #
-# Rules are ORDERED: the first whose conditions hold decides, so the more
-# specific screens come first. A rule holds when every string in `all` appears
-# and — if `any` is given — at least one of those appears too. A rule does not
-# hold at all when a string in `not` appears anywhere in the rows it may see,
-# whatever else fits: that is how a screen the vendor draws OVER another one
-# says it is not the one underneath. Matching is done against the capture with
-# its control characters replaced and its case folded, so a colour change in
-# the middle of a word cannot hide a rule.
+# Rules are ordered and the first that holds decides, so specific screens come
+# first. A rule holds when every string in `all` appears and, if `any` is
+# given, at least one of those does too, within `within` rows of each other. A
+# string in `not` anywhere in the visible rows vetoes the rule; a string in
+# `not_below` under the match vetoes it too. Matching runs on the capture with
+# control characters replaced and case folded, so a colour change inside a
+# word cannot hide an anchor.
 #
-# ── The anchor law ───────────────────────────────────────────────────────────
-# Every string here was read off a live claude, and where it was measured is
-# recorded beside it. Two things this law has cost, and one it protects:
-#
-# A MULTI-WORD ANCHOR DIES TO WORD WRAP AT SOME WIDTH. The floor keeps the
-# rows separated by newlines, so a phrase the vendor wrapped across two rows
-# can never match as one substring. `you trust` breaks between `you` and
-# `trust` at 61–67 columns — three panes across a 200-column terminal, a shape
-# amx's own tiling produces. `shift+tab to cycle` is gone below 46 columns and
-# absent in manual mode at every width. Anchor on the fragment the vendor
-# cannot break: a single word, or the fragment a row OPENS with.
-#
-# A STRING RECOGNISED FROM A REFERENCE TREE IS NOT A MEASUREMENT. An earlier
-# ruleset anchored `working` on `esc to interrupt` and `idle` on
-# `? for shortcuts`, both taken from source rather than from a running vendor.
-# Measured against claude v2.1.226 on 2026-08-12: zero occurrences across 60
-# mid-turn captures and the idle screen. An agent parked at its prompt read
-# `unknown` for 183 consecutive samples, and turns flapped working → unknown →
-# working.
-#
-# So: any string recognising the vendor's UI is measured across its MODES and
-# WIDTHS, with the capture and the date recorded beside it, or it is wrong.
+# Anchors:
+# - Every string is measured off a live claude across its modes and widths.
+#   Strings read from source are not measurements: `esc to interrupt` and
+#   `? for shortcuts`, taken from source, never appeared on claude 2.1.226.
+# - Wrapping splits phrases across rows, so anchor on a single word or on the
+#   fragment a row opens with. `you trust` breaks at 61 to 67 columns;
+#   `shift+tab to cycle` is gone below 46 columns and absent in manual mode.
+# - src/vendor/claude.rs points at this file. Every string here is claude's.
 
-# ── Whose screens these are ──────────────────────────────────────────────────
-# claude's, and nobody else's: every string below is this vendor's own and
-# means nothing on anybody else's pane. Which document a reader uses is not
-# written here — src/vendor/claude.rs points at this file, and the program an
-# agent command runs is what finds that entry. One document per vendor.
-
-# ── The sentences that stand in for a question ───────────────────────────────
-# What the vendor sends about a dialog it will not describe. A record can end
-# up holding one of these where the question should be, and a row carrying one
-# says an agent is waiting — which is what a row carrying nothing says, and it
-# says it in words that read like an answer, so a caller stops looking and a
-# person reads the pane themselves. A reader drops them and goes to the screen.
-#
-# Measured against claude 2.1.240 on 2026-08-24, read out of the binary's own
-# dialog host: six seconds after a dialog goes up it fires a
-# `permission_prompt` notification whose whole message is that dialog's title,
-# and the title it gives every tool dialog is `Claude needs your permission` —
-# no tool, no command, nothing anybody could weigh. A tool permission box has a
-# notifier of its own on the same six-second timer, and that one sends `Claude
-# needs your permission to use <tool>`. Which of the two lands last is the
-# vendor's business, so these are matched as WHOLE SENTENCES and never as the
-# start of one: the sentence that names the tool is one a caller can act on.
-#
-# The idle nudge is the other, and it is not about a question at all: the
-# vendor sends it about a session with nothing open on it. One that says so in
-# its own payload is turned away where hooks are folded, but an older vendor
-# sends it with no type on it, and records outlive the amx that wrote them.
+# Notification messages that carry no question. A reader drops them and reads
+# the screen instead. claude 2.1.240 fires a `permission_prompt` notification
+# six seconds after any dialog opens, whose message is the dialog's title,
+# `Claude needs your permission`. A tool permission box sends `Claude needs your
+# permission to use <tool>` on the same timer, and either may land last, so
+# these match as whole sentences, never as prefixes. The idle nudge is here
+# because older claudes send it untyped.
 placeholders = [
   "Claude needs your permission",
   "Claude is waiting for your input",
 ]
 
-# ── The furniture ────────────────────────────────────────────────────────────
-# The chrome claude draws under every pane it has the room for, as the anchors
-# that find it: composer box, statusline, mode footer, the panel of running
-# agents under that footer, the effort row over the box, and the line it spins
-# while a turn runs. `src/furniture.rs` walks up from the bottom of a capture
-# over these, so that a card and `amx logs` show the rows an agent earned and
-# not the rows the vendor drew under them.
+# The chrome claude draws around the composer. `src/furniture.rs` walks up from
+# the bottom of a capture over it, so a card and `amx logs` show the agent's
+# rows and not the vendor's.
 #
-# `mode` is the footer's opening glyphs and nothing after them: the words
-# truncate as the pane narrows and are gone by 30 columns, while these two are
-# present in all six permission modes at every width from 24 to 220 — the same
-# measurement the rules below anchor on, and it is written out under
-# `permission_prompt`.
+# - `mode`: the footer's opening glyphs. Present in all six permission modes at
+#   every width from 24 to 220; the words after them are gone by 30 columns.
+# - `rule`: the composer box's border glyph.
+# - `statusline`: how many statusline rows the walk steps over to reach the
+#   box. A statusline command prints as many rows as it likes; claude 2.1.263
+#   drew up to eight and no mode footer at all past that.
+# - `bottom`: rows the bottom border can take. One at 22 columns and wider, two
+#   below that, where the box wraps (claude 2.1.237, widths 20 to 100, heights 8
+#   to 30).
+# - `spinner`: the gerund's ending and ellipsis, the one fragment the spinner
+#   row keeps at every width. claude spins `● Actioning…` alone before the first
+#   token, so the fragments after it cannot be required.
+# - `beneath`, `panel`: the agents panel claude 2.1.270 draws under the footer
+#   (a blank row, `● main`, one `◯ ` row per agent). `panel` caps the rows,
+#   blanks included, the walk steps over before it must meet the footer.
+# - `hint`: the right-aligned effort row on the composer's top border,
+#   `● high · /effort`. Optional, so the walk steps over it but never requires
+#   it. Matched as a fragment because right alignment moves its start.
+# - `tip`: the `⎿  Tip:` row claude 2.1.226 drew between the spinner and the
+#   composer.
 #
-# `rule` is the glyph the composer's box is drawn with. `statusline` is how
-# many rows of it the walk will step over to reach that box's bottom border,
-# and the cap is what keeps the walk off the transcript. Eight is a measured
-# maximum: a statusline command is the person's own and prints as many rows as
-# it likes, and claude 2.1.263 on 2026-09-11 drew four of four and eight of
-# ten — past eight it draws no mode footer at all, so no walk begins and no
-# taller cap would be met. It stood at two until then, a margin over the one
-# row measured, and a four-row statusline left the composer on a
-# transcript-less card. `bottom` is how many rows the bottom
-# border can take — one at 22 columns and wider, which is every pane 2.1.237
-# draws a footer in at all, and two below that, where the box is wider than the
-# pane and wraps.
-#
-# Measured against a live claude 2.1.237 on 2026-08-21 at 100, 30, 24, 23, 22,
-# 21 and 20 columns and at pane heights 30, 12, 10, 9 and 8, with the composer
-# empty and with three and ten rows staged in it.
-#
-# `spinner` is the one fragment the row claude spins while a turn runs carries
-# at every width — the end of the gerund and the ellipsis — for the reasons
-# the `spinner` rule below gives for standing on the same one. The walk stood
-# on the two punctuation fragments after it until 2026-09-06, when it was
-# driven at 80 columns with `--effort low`: claude spun `● Actioning…` with
-# nothing after it for the 65 seconds before the first token, and the walk
-# printed that row at the foot of the view's card as the agent's own output.
-#
-# `beneath` and `panel` are the panel the vendor draws UNDER its footer, and
-# they are why the footer is no longer the last row of every pane. claude
-# 2.1.270 reports the agents a turn started down there — a blank row, `● main`,
-# and one row an agent, the row opening with `◯ ` and ending in that agent's
-# elapsed time and tokens. Measured on 2026-09-14 at 100, 54, 40, 30 and 24
-# columns with one subagent running: three rows at every width, and because the
-# bottom row of the pane was a subagent's rather than the footer, the walk found
-# no anchor and kept all thirty rows of all five captures, chrome and all.
-#
-# `beneath` is what those rows open with after the indent, and `panel` is how
-# many of them, blank rows counted, the walk will step over before it must meet
-# the footer. Eight is the statusline's cap and the same kind of margin: three
-# rows were measured, for two agents. A pane with more of them than that leaves
-# the walk standing on a row that is no footer, which is a screen kept whole.
-#
-# `hint` is the row the vendor right-aligns directly on the composer's top
-# border, with no blank row between the two: `● high · /effort`, the effort the
-# next turn will run at. Measured at the same five widths on 2026-09-14 — on a
-# fresh pane, on an idle one after a turn, and mid-turn, and absent from the
-# idle capture taken before it — so it is a row the walk steps over where it
-# finds one and never a row it requires. `/effort` is the fragment it carries
-# at all five widths, and it is read as a fragment rather than an opening
-# because the row is right-aligned: where it starts is the pane's width.
-#
-# What that row costs is above it rather than on it. The step that looks for
-# the spinner over the composer met this row instead and stopped there, so on
-# the mid-turn capture `● Wibbling… (20s)` sat directly on top of the hint row
-# with no blank between, and both of them came through onto the card.
-#
-# `tip` is the row claude 2.1.226 drew between its spinner and the composer's
-# top border mid-turn, `  ⎿  Tip: Did you know you can drag and drop image
-# files into your terminal?` (2026-08-12, the working capture in the rules'
-# tests). The walk steps over it on its way to the spinner, and the gap in it
-# is folded the way `interrupted`'s is below.
-#
-# `interrupted` is no part of that walk either. It is what the row claude
-# leaves in its transcript when somebody presses esc in front of it OPENS with,
-# and it is the only account of that turn ending there is: the vendor sends
-# nothing at all when a person interrupts it. Without it, esc in a pane and
-# `ctrl+z` back left the row saying `working` for the rest of the freshness
-# window and then for as long again as a quiescent rule waits — see
-# `crate::derive` (Saiful, 2026-09-21).
-#
-# Measured against a live claude 2.1.278 on 2026-09-21, a blocking `sleep`
-# interrupted with esc, at 100, 54, 40, 30 and 24 columns:
+# `interrupted` is not part of the walk. It is the opening of the row claude
+# leaves in the transcript when esc interrupts a turn, and the only sign of
+# that: claude sends no hook for it. claude 2.1.278 truncates the row from the
+# middle, so only its head survives every width:
 #
 #   100  ⎿  Interrupted · What should Claude do instead?
-#    54  ⎿  Interrupted · What should Claude do instead?
 #    40  ⎿  Interrupte· What should Claude do
-#    30  ⎿  Interrup· What should
 #    24  ⎿  Interrup· What
 #
-# It truncates from the middle rather than wrapping, so the head of the row
-# survives every width and the word itself does not: `Interrupted` is gone by
-# 40 columns. What is written here is what the row OPENS with at the narrowest
-# measured, which is the anchor law's own answer to a phrase that shortens.
+# The gap after `⎿` is a space and a U+00A0. The walk folds it before matching
+# (`furniture::spaced`), so the anchor is written with two ordinary spaces. The
+# row stays in the transcript, so it counts only as the last row the agent
+# earned; see `Furniture::cut_by_hand`.
 #
-# THE GAP IN IT IS NOT THE GAP IT LOOKS LIKE. claude pads every tool-result row
-# with a NON-BREAKING space — the row is `⎿`, an ordinary space, then U+00A0 —
-# so that the glyph and the words cannot be split by a wrap. This anchor was
-# first written with two ordinary spaces in it, read off a live pane by eye,
-# and matched nothing at all: Saiful interrupted an agent and watched the row
-# say `working` until a quiescent rule timed the prompt out (2026-09-21). The
-# walk folds that gap before it tries an anchor — see `furniture::spaced` — so
-# what is written here is what a person reads off the screen. A character
-# nobody can see is a character nobody can measure, which is the third thing
-# the anchor law has now cost.
-#
-# The row stays in the transcript for as long as the session does, so the
-# opening alone would claim a screen about a turn interrupted an hour ago. What
-# makes it this turn's news is that it is the LAST row the agent earned: the
-# walk cuts the chrome, and anything under the row — the next prompt somebody
-# typed, the answer to it — is a screen about something else. See
-# `Furniture::cut_by_hand`.
-#
-# `shells` is no part of that walk. It is what the mode footer carries on its
-# TAIL while claude still has a shell of its own running, and it is the one
-# thing on a screen that says the count a Stop hook wrote is still true — see
-# `crate::store::State`'s `background`. Nothing is sent when somebody stops a
-# background shell from inside the pane, so without this the count stood and
-# the row said `working` for as long as the agent lived (Saiful, 2026-09-21).
-#
-# Measured against a live claude 2.1.278 on 2026-09-21, one `sleep` in the
-# background, at 100, 54, 40, 30 and 24 columns, and the same five again with
-# the shell killed:
+# `shells` is not part of the walk either. It matches the mode footer's tail
+# while claude has a background shell running, the only sign that the count a
+# Stop hook wrote (`State::background`) still holds; killing a shell from the
+# pane sends nothing. claude 2.1.278, one `sleep` running, then killed:
 #
 #          running                               idle
 #   100  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab to cycle)
-#    54  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab to cycle)
 #    40  ⏵⏵ bypass permissions on · 1 shell    ⏵⏵ bypass permissions on (shift+tab
 #    30  ⏵⏵ bypass permissions on ·            ⏵⏵ bypass permissions on
 #    24  ⏵⏵ bypass      · 1                    ⏵⏵ bypass
 #
-# The tail REPLACES the cycle hint rather than standing after it, and the word
-# `shell` is truncated away below 40 columns. So both fragments are named: the
-# word, which is what the tail says wherever there is room to say it, and the
-# separator, which is the mark that there is a tail at all and is the only
-# thing left of it at 30 and 24.
-#
-# What the separator costs is a footer whose tail is about something else.
-# claude 2.1.240 put `· ← 2 agents` there, measured on 2026-08-24, and that
-# footer would read here as a shell still running. That is the harmless way
-# round: this is asked only of a record whose Stop hook already counted shells,
-# and the answer it leads to is the count standing, which is what the count did
-# before this was measured at all. The other way round — a screen read as no
-# shells while one runs — ends a turn that has not ended, and is what the word
-# alone would have done at 30 columns.
-#
-# Since then claude ends the footer `· ← for agents` in all six modes, idle or
-# not (2.1.278, docs/claude-screens.md), and a reader now writes a turn's end
-# off a screen that shows no shell. So that tail is named in `footer_hints` and
-# taken off the footer before `shells` is matched. `← 5 agents` is a count and
-# is left on, and still reads as running. A footer cut to a bare `·` at 30
-# columns still reads as running too, which only holds a write back.
+# The tail replaces the cycle hint, and `shell` is cut below 40 columns, so the
+# separator is named too. A tail about something else then reads as a shell
+# running, which only holds the count. The reverse error would end a live turn.
+# claude 2.1.278 ends every footer with `· ← for agents`, so `footer_hints`
+# strips that tail before `shells` is matched. `← 5 agents` is left on and still
+# reads as running.
 [furniture]
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]
@@ -239,29 +104,8 @@ interrupted = ["⎿  Interrup"]
 shells = ["shell", "·"]
 footer_hints = ["· ← for agents"]
 
-# claude asks this before its prompt exists, so nothing else it draws can be
-# underneath — which is why it comes first.
-#
-# Measured against v2.1.226 on 2026-08-12 at 220 and 54 columns, reconfirmed
-# byte for byte against v2.1.237 on 2026-08-21 at the same two widths, and
-# again against v2.1.240 on 2026-08-24 at 220 columns:
-#
-#   Quick safety check: Is this a project you created or one you trust? (Like
-#   your own code, …). If not, take a moment to review what's in this folder
-#   first.
-#   ❯ 1. Yes, I trust this folder
-#     2. No, exit
-#   Enter to confirm · Esc to cancel
-#
-# The wording drifted between 2026-08-11 and 2026-08-12 — a `Quick safety
-# check:` prefix appeared, the guidance merged onto one row — and the single
-# word `trust` survived it. At 54 columns the vendor wraps the sentence between
-# `you` and `trust`, so the two-word anchor this used to carry would have gone
-# silent exactly where amx tiles its own wall.
-#
-# Re-driven against v2.1.259 on 2026-09-05 at 220, 54, 40, 30 and 24 columns,
-# capture by capture in docs/claude-screens.md. The wording is the 2.1.240
-# wording to the letter; what moved is under it:
+# The folder-trust gate, drawn before the prompt exists, so it comes first.
+# Wording as of claude 2.1.259 (220, 54, 40, 30 and 24 columns):
 #
 #   Quick safety check: Is this a project you created or one you trust? (Like
 #   your own code, …). If not, take a moment to review what's in this folder
@@ -271,58 +115,19 @@ footer_hints = ["· ← for agents"]
 #     Yes, I trust this folder
 #   Enter to confirm · Esc to cancel
 #
-# The choices have lost their numbers and swapped places, with the cursor on
-# the exit. `❯ 1.` is off this screen at all five widths, so it is off this
-# rule: an anchor the vendor has stopped drawing holds nothing up, and all it
-# can still match is a numbered list somewhere else on the pane.
+# `trust` is a single word because 54 columns wraps `you` from `trust`. The word
+# alone is common prose, so the confirm footer's opening must be in the same
+# box. `within` is 19, the box's height at 24 columns.
 #
-# The word alone is not a prompt: an agent discussing a registry it trusts
-# writes it every day. What makes it a prompt is the box's own confirm footer,
-# which is the fragment its row OPENS with and whole at all five widths — at 24
-# columns the footer wraps as `Enter to confirm · Esc` / `to cancel`. `within`
-# says the word and the footer have to be in the same box rather than merely on
-# the same screen: 19 rows is the widest one measured, the screen at 24
-# columns, where the guidance takes eleven rows and the choices three. Sized at
-# 16 — the span to the marker at 54 columns, back when the marker was the
-# affordance — this rule walked past its own gate at 24 columns, and a gate no
-# rule claims is one `doctor` reports nothing about.
+# `asks = quick` takes the question from its first row. `trust` would find
+# `Yes, I trust this folder`, an answer, since the choices carry no numbers to
+# stop at since 2.1.259. `marks` reads the choices as the run under the cursor
+# glyph, which amx numbers itself; where the vendor numbers its rows, those
+# numbers are used instead (`Rule::question`). Unchanged at claude 2.1.276.
 #
-# `asks` is where the question itself is, once the rule has claimed the screen.
-# Under this one's question sit a sentence about what claude will be able to do
-# and a link to the security guide, and neither of those is being asked, so the
-# question is the sentence an anchor of its own is on and not the one above the
-# choices. That anchor is `quick` rather than the word the rule stands on: the
-# reading takes the lowest row carrying it above the first numbered choice, and
-# with nothing numbered left to stop at, `trust` is last found on `Yes, I trust
-# this folder` — which is an answer handed back where the question goes, at
-# every width. `quick` is on the question's own first row and nowhere else on
-# the screen, and it is one word, so no width can break it. Should the vendor
-# drop the `Quick safety check:` prefix it drifted in on, the question goes
-# quiet rather than wrong.
-#
-# `marks` is the cursor glyph, and it is what puts the two rows on the record.
-# The choices read back empty while the rule said nothing: they were the
-# numbered ones, and this screen has numbered nothing since 2.1.259, so a
-# waiting row listed a question with no answer under it and the only grammar
-# left was a walk typed blind. With the mark, the run it is in is the list —
-# `No, exit` and then `Yes, I trust this folder`, in the order the vendor draws
-# them — amx numbers it itself, and `amx answer <id> 1` is the walk that reaches
-# the row the caller means. Reconfirmed at 2.1.276 on 2026-09-18, unchanged at
-# 220, 54 and 24 columns.
-#
-# The mark leaves the wording alone: where the vendor numbers its rows, as
-# 2.1.226 did, the numbers are keys the caller can press and the run is read off
-# those instead — see `Rule::question`.
-#
-# `setup` says this screen stands in front of the work rather than inside it:
-# the vendor draws it before there is a session to speak of and will do nothing
-# else until somebody answers, and no amount of waiting ends it. `doctor` reads
-# the flag rather than this rule's name, which is what lets one check speak for
-# every vendor's gates — the screens are theirs, and so are their names. It is
-# the only screen in this document that carries the flag: the three other
-# screens that block are raised inside a turn that is already running, the two
-# after them are states rather than questions, and claude's login prompt has no
-# rule here to carry anything, for the reason `src/verbs/doctor.rs` gives.
+# `setup` marks a gate in front of the work, which `doctor` reports. It is the
+# only screen here with the flag: claude's login prompt has no rule, for the
+# reason `src/verbs/doctor.rs` gives.
 [[rule]]
 name = "folder_trust"
 state = "waiting"
@@ -335,17 +140,9 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 asks = { sentence = "quick" }
 marks = "❯"
 
-# claude's permission box, measured live against v2.1.226 on 2026-08-12 at 220
-# columns. It takes forcing: a machine whose claude runs in auto mode approves
-# every probe without asking, and `--permission-mode manual` with an `ask` rule
-# for `Bash` is what finally produced one.
-#
-# Reconfirmed against v2.1.237 on 2026-08-21 at 220 columns, this time without
-# forcing: cycling to manual mode with shift+tab and asking for an edit drew
-# the same box, unchanged, for a Write, an Edit, and a Bash command in turn —
-# `Do you want to create LICENSE?`, `Do you want to make this edit to
-# README.md?`, `Do you want to proceed?`. The tool differs the wording after
-# `do you want to`, which is exactly the fragment this rule does not anchor on.
+# The permission box, as claude 2.1.226 and 2.1.237 draw it for Bash, Write and
+# Edit. Seen only in manual mode or under an `ask` rule; auto mode approves
+# without asking.
 #
 #   ────────────────────────────────────────────
 #    Bash command
@@ -356,39 +153,19 @@ marks = "❯"
 #      2. No
 #    Esc to cancel · Tab to amend · ctrl+e to explain
 #
-# Two things that capture settles: the box is a full-width rule with the
-# request under it and not a `╭─╮` box, and it draws NO mode footer.
+# The wording after `do you want to` varies by tool, so the anchor stops there.
 #
-# ── Why a bare `❯` is not evidence, and `not_below` is ───────────────────────
-# `❯` used to stand in `any` as the affordance. It is a no-op: `❯` is the
-# composer chevron and it is on every screen this vendor draws, mid-turn and
-# idle alike. With it, each rule collapsed to one generic substring over the
-# agent's own visible output, and an ordinary answer carrying "do you want to"
-# above a markdown numbered list was ruled `waiting` — with a question invented
-# from a sentence that was not one. Worse than `unknown` twice over: `send`
-# then refuses, and a caller branching on the blocked exit code answers by
-# typing a key into a running turn.
+# Blocking prompts and `not_below`:
+# - A bare `❯` is no evidence: it is the composer chevron, on every screen.
+# - No anchor tells a prompt from a quotation of one, such as a pasted capture.
+#   Layout does: claude draws no composer or mode footer under a blocking
+#   prompt, and quoted text always sits in a turn with both below it. So the
+#   mode footer below the match vetoes it.
+# - The footer is named by its opening glyph, not the composer row, because `❯`
+#   also opens every option and `send` can stage `❯ 1. …` in the composer.
 #
-# But no anchor string can tell a widget from a QUOTATION of that widget. An
-# agent that pastes another agent's `capture-pane` as a tool result — which is
-# what amx's own callers do — reproduces the box character for character, and
-# one plain English sentence does it too: "pick the folder you trust, press
-# Enter to confirm" carries both of the trust rule's fragments on one row.
-#
-# What a quotation cannot reproduce is the vendor's LAYOUT. claude draws no
-# input box under a blocking prompt: both blocking screens end at their confirm
-# footer with nothing beneath. Quoted chrome is always sitting in a turn, so
-# the composer and the mode footer are drawn below it. A modal choice and an
-# input box are mutually exclusive states of the same program, so a widget with
-# a composer under it is text ABOUT a widget.
-#
-# `not_below` names the mode footer, not the composer's own row: `❯` is on that
-# row and also in front of every option, and `send` can leave `❯ 1. …` staged
-# in the composer itself, so no content test on that row tells an input box
-# from a widget.
-#
-# The footer is anchored on the glyph it opens with. Measured across six modes
-# and ten widths, 24 to 220 columns, on 2026-08-12:
+# The footer in all six modes (24 to 220 columns, claude 2.1.226, unchanged at
+# 2.1.237):
 #
 #   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 #   ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
@@ -397,31 +174,14 @@ marks = "❯"
 #   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
 #   ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
 #
-# and the vendor truncates from the right as the pane narrows: in auto mode the
-# hint is intact at 46 columns, `(shift+tab to` at 40, `(shift+tab` at 34, gone
-# by 30. Four agents on a 160-column terminal is 40 columns each. `⏵⏵` and `⏸`
-# are present in all six modes at every width, contiguous in the capture, and
-# on neither blocking screen — verified against a live permission box and a
-# live trust screen, neither of which carries the glyph on any of its 49 rows.
-# The hint stays as an alternative: it costs nothing and an older vendor may
-# print it where the glyph is absent.
+# The hint truncates from the right: intact at 46 columns, `(shift+tab to` at
+# 40, gone by 30. The glyphs are on no blocking screen. The hint and the pre-2.1
+# `? for shortcuts` stay as alternatives for older claudes.
 #
-# Reconfirmed against v2.1.237 on 2026-08-21: auto, manual, accept-edits and
-# plan mode all print the same six lines verbatim, and the truncation points
-# hold at the three widths re-checked — intact at 46 columns, `(shift+tab to`
-# at 40, gone by 30. Bypass-permissions and don't-ask were not re-driven this
-# round; nothing about this vendor bump touched the footer's wording.
-#
-# `not` is the menu below. AskUserQuestion puts whatever the agent asks over
-# its choices, and an agent asks `Do you want to …` as readily as the vendor
-# does; the menu's own `❯ 1.` and `Esc to cancel` are this rule's `any` too,
-# so a menu asking whether you want to read as a permission box and was
-# answered as one. `Enter to select` is on the menu's footer and on no
-# permission box measured.
-#
-# `asks` again: what sits above this screen's question is what the request is
-# about — the tool, its arguments, the rule that stopped it — and that is not
-# what is being asked, so the question is the row the anchor is on.
+# `not`: the question menu can ask `Do you want to …` and shares `❯ 1.` and
+# `Esc to cancel`. `Enter to select` is on its footer and on no permission box.
+# `asks`: the question is the anchor's row; the rows above it describe the
+# request.
 [[rule]]
 name = "permission_prompt"
 state = "waiting"
@@ -433,11 +193,9 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 not = ["enter to select"]
 asks = { sentence = "do you want to" }
 
-# The third blocking prompt: the menu claude's AskUserQuestion tool draws.
-# Measured against v2.1.229 on 2026-08-15 in five modes at eight widths from 24
-# to 191 columns — forty captures. The sixth mode is a vendor fact rather than
-# a gap: `dontAsk` blocks the tool outright, so the screen it leaves is an
-# ordinary idle one.
+# The menu drawn by the AskUserQuestion tool. Measured on claude 2.1.229 in
+# five modes at eight widths from 24 to 191 columns, and unchanged at 2.1.237
+# and 2.1.240. `dontAsk` mode blocks the tool, leaving an idle screen.
 #
 #    ☐ Indentation
 #   Should this project be indented with spaces or tabs?
@@ -449,106 +207,36 @@ asks = { sentence = "do you want to" }
 #     4. Chat about this
 #   Enter to select · ↑/↓ to navigate · Esc to cancel
 #
-# Neither rule above can reach it — `trust` and `do you want to` are both
-# absent — and `all` decides, so without this rule the floor matched nothing
-# and an agent parked on a menu read `unknown` with no question on its row.
+# `enter to select` opens the footer row, which wraps rather than truncates, so
+# it survives every width. At 24 columns the footer reads `Enter to select ·
+# ↑/↓ to` / `navigate · Esc to` / `cancel`, which is why `esc to cancel` is
+# only an alternative.
 #
-# `enter to select` is intact at every one of those forty cells, because it is
-# what the row OPENS with: this footer wraps rather than truncating. At 24
-# columns it reads `Enter to select · ↑/↓ to` / `navigate · Esc to` / `cancel`,
-# which is also why `esc to cancel` rides in `any` as an alternative and never
-# as the anchor.
+# `❯ 1.` sits at the top of a box whose height the agent's descriptions set, so
+# it can fall outside the floor (claude 2.1.259, 24 columns). `chat about this`
+# is the vendor's last row before the footer on every shape of this tool, so it
+# is always in range. `within` is 24 because no height bounds the box;
+# `not_below` carries the weight.
 #
-# ── The affordance that survives a box taller than the floor ─────────────────
-# `❯ 1.` is at the TOP of the box, and how far that is from the footer is the
-# agent's own descriptions rather than anything a rule can bound. Driven
-# against v2.1.259 at 24 columns on 2026-09-05, two one-sentence descriptions
-# put it one row above the floor while the wrap took `esc to cancel` on the
-# same screen, so both entries in `any` were gone at once and a menu somebody
-# was standing at read `unknown` — the capture is in docs/claude-screens.md.
+# The tool's other shapes (checkboxes, question tabs, a preview with a note
+# field, a free-text `Other` row) all keep a footer opening with `Enter to
+# select`, so this rule claims them; docs/question-shapes.md has the captures.
+# Reading their contents is `Rule::question`'s job:
+# - a checkbox choice reads `❯ 1. [ ] Logging`, an answered tab adds ` ✔`;
+# - the row under a checkbox list's `Other` reads `Submit` or `Next`;
+# - a preview sits on the choice rows, drops `Other`, and unnumbers `Chat about
+#   this`;
+# - tab headers elide as the pane narrows, so tab names are only in the payload;
+# - on a tall pane the vendor pads below the footer, which can push the
+#   question out of the floor. The rule still holds; the question reads empty.
 #
-# `chat about this` is the row the vendor draws under the second rule at the
-# bottom of the box, between the choices and the footer. It is furniture and
-# not a choice — nothing in the tool's payload accounts for it — and it is on
-# every screen this tool draws: measured at 220, 80, 54, 40 and 24 columns
-# across all five shapes in docs/question-shapes.md, including the previewed
-# one, where it loses its number and the words are the whole of it. Being the
-# vendor's last row before the footer is what makes it the affordance to have
-# here: it is inside the floor whenever the footer this rule stands on is,
-# whatever the agent wrote above it.
+# A menu also fires `PermissionRequest` and a `permission_prompt` notification,
+# so this rule outranks a record that says `permission`.
 #
-# `within` is 24 here rather than 16 because the box's height is the agent's
-# own choice — the tool names its options and writes their descriptions — and
-# at 24 columns eighteen rows already sit between `❯ 1.` and the footer. There
-# is no height a bound can be sized to, so the window is the floor's own and
-# the weight is carried by `not_below`, which does not depend on the box's
-# height. Not one of the forty captures carries a mode-footer glyph anywhere.
-#
-# Reconfirmed against v2.1.237 on 2026-08-21 at 220 columns: a real
-# AskUserQuestion call (`Which license should the LICENSE file contain?`)
-# drew the same shape — checkbox, question, numbered options, separator,
-# `N. Chat about this`, and the footer `Enter to select · ↑/↓ to navigate ·
-# Esc to cancel` unchanged to the letter. The eight-width, five-mode matrix
-# above is a rendering fact about how this vendor wraps text, not wording it
-# could silently change; it was not redriven this round.
-#
-# ── The other four shapes this one tool draws ────────────────────────────────
-# The screen above is the tool's plainest shape. Driven live against v2.1.240
-# on 2026-08-24 at 220, 80, 54, 40 and 24 columns, the same tool also draws a
-# checkbox list, a strip of question tabs, a note field beside a preview, and a
-# free-text `Other` row — captures, payloads and keystrokes in
-# docs/question-shapes.md. This rule came through all four unchanged, and the
-# reason is the anchor: the footer's middle term is `↑/↓ to navigate` on one
-# question, `Tab/Arrow keys to navigate` on several, and gains `n to add notes`
-# and `ctrl+g to edit in <editor>` besides — but every one of them still OPENS
-# with `Enter to select`, at every width measured. `not_below` was never wrong
-# on any of the forty-odd captures.
-#
-# What the rule cannot do on those shapes is read what is on them, and that is
-# a matter for whatever owns the reading rather than for a string here:
-#
-#   * a checkbox choice draws as `❯ 1. [ ] Logging`, so its label comes off the
-#     row with the box glued to it, and an answered tab marks its choice with a
-#     trailing ` ✔`;
-#   * the unnumbered row a checkbox screen draws under its `Other` row reads
-#     `Submit` when no question follows and `Next` when one does, measured at
-#     220 columns on 2026-08-24. It names where the tab leads, so neither word
-#     tells a reader which shape it is on;
-#   * a previewed question puts the preview box on the SAME rows as the
-#     choices, drops the `Other` row, and leaves `Chat about this` with no
-#     number on it at all;
-#   * a tab strip elides its headers as the pane narrows — `☐ St…` at 40
-#     columns, the current tab's own header gone at 24 — so how many tabs there
-#     are and what they are called is in the payload and nowhere else;
-#   * the vendor pads the screen it drew rather than sitting at the bottom of
-#     it. Measured on a 50-row pane: the box occupied rows 17 to 33 and left 17
-#     blank rows under the footer, which put the floor's 24 rows seven rows
-#     below the question. The rule still held, on `esc to cancel`, and the
-#     question read back empty.
-#
-# Seen live again against v2.1.240 on 2026-08-25 at 220 columns, this time
-# through amx rather than by hand: three agents started with `amx new`, one on a
-# checkbox question, one on a plain menu and one on a call of three questions,
-# and every capture while a menu was up read back `ask_menu` and `waiting`. The
-# footer's middle term was `↑/↓ to navigate` on the two single-question calls
-# and `Tab/Arrow keys to navigate` on the three-question one, and all three
-# opened with `Enter to select`. What that round did find is that nothing on
-# this screen distinguishes it from a permission box in the vendor's own
-# EVENTS — a menu fires `PermissionRequest` and a `permission_prompt`
-# notification of its own — which is why the rule claiming the screen now
-# outranks a record that says `permission`. See docs/question-shapes.md § 6.
-#
-# ── The screen with no footer, which nothing here claims ─────────────────────
-# Both shapes that need an explicit submit — a multi-select question, or more
-# than one question — end on a review tab that draws `Review your answers`, the
-# answers so far, `Ready to submit your answers?` and `❯ 1. Submit answers`,
-# and NO footer of any kind. Measured at 220, 54 and 24 columns on 2026-08-24.
-# `enter to select` is not on it, so this rule cannot reach it; `ready` without
-# `execute` misses plan_approval; the mode footer a blocking prompt never draws
-# misses idle_prompt. An agent one keystroke from finishing an answer therefore
-# reads `unknown`. The anchor those captures support is `review your answers`,
-# which is 19 columns, whole at every width measured, and the fragment its row
-# opens with.
+# Not claimed: the review tab that ends a multi-select or multi-question call.
+# It draws `Review your answers`, `Ready to submit your answers?` and `❯ 1.
+# Submit answers` with no footer, and reads `unknown`. `review your answers` is
+# whole at 24, 54 and 220 columns and opens its row.
 [[rule]]
 name = "ask_menu"
 state = "waiting"
@@ -558,9 +246,8 @@ any = ["chat about this", "❯ 1.", "esc to cancel"]
 within = 24
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 
-# The fourth blocking prompt: the approval box claude's ExitPlanMode tool
-# draws once a plan is ready. Measured against v2.1.237 on 2026-08-21 at 220,
-# 54 and 24 columns, seen live by entering plan mode and asking for a plan:
+# The plan approval box drawn by ExitPlanMode (claude 2.1.237 at 220, 54 and 24
+# columns):
 #
 #   Claude has written up a plan and is ready to execute. Would you like to
 #   proceed?
@@ -572,24 +259,9 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 #
 #   ctrl+g to edit in Kak · ~/.claude/plans/write-a-one-paragraph-plan-snug-russell.md
 #
-# Neither rule above reaches it: the sentence carries neither `do you want to`
-# nor `enter to select`, and its own footer names the editor rather than
-# offering `enter to confirm` or `esc to cancel`. Without this rule an agent
-# parked on its own plan approval read `unknown`, with the question — accept,
-# revise, or hand back control of the run — gone from the row.
-#
-# Both halves of the sentence break under this vendor's wrap, and at
-# different widths: at 54 columns it splits between `to` and `execute.`, so
-# `ready to execute` cannot anchor; at 24 columns it splits between `to` and
-# `proceed?` instead, so `would you like to proceed` cannot either. What
-# survives both is the pair of single words neither break touches — `ready`
-# and `execute` land on the same row at every width measured, and `all` does
-# not require its entries to share a row, only to be near enough for `within`
-# to hold, which four rows of options comfortably are.
-#
-# The box ends at its own footer with nothing beneath, the same as the other
-# three blocking screens, so `not_below` carries the same weight here: a
-# quotation of this box would need to reproduce that absence too.
+# The sentence wraps after `to` at 54 columns and before `proceed?` at 24, so
+# neither phrase can anchor. `ready` and `execute` stay on one row at every
+# width measured. Like the other blocking prompts it has nothing below it.
 [[rule]]
 name = "plan_approval"
 state = "waiting"
@@ -599,94 +271,36 @@ any = ["❯ 1."]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 
-# A turn is running. v2.1.226 spins one line just above the input box:
-#
-#   ✽ Nesting… (15s · still thinking with xhigh effort)
-#   · Infusing… (2m 2s · ↓ 6.9k tokens)          (during a 40s Bash call)
-#
-# — a cycling glyph (`✻ ✽ ✢ ✶ · *`), a rotating gerund, and then `…` + ` (` +
-# an elapsed `<n>s` + ` · ` + a detail. This rule stood on the last two of
-# those punctuation fragments until 2.1.259 was driven at five widths.
-#
-# Re-measured against v2.1.237 on 2026-08-21, live across a thinking turn, a
-# Bash call and an AskUserQuestion round: `✢ Forging…`, `✶ Forging… (9s ·
-# thinking with xhigh effort)`, `· Forging… (22s · ↓ 1.3k tokens)`, `*
-# Smooshing… (7s · thinking with xhigh effort)`, `✢ Smooshing… (31s · ↓ 1.8k
-# tokens · thought for 1s)`. New gerunds, same glyph set, same punctuation.
-#
-# ── What the vendor truncates, and what it does not ──────────────────────────
-# Everything after the ellipsis is a tail the vendor drops from the RIGHT as
-# the pane narrows, and both of those fragments were in it. One turn, one pane
-# with nothing else on it, read at each width on 2026-09-05 — the captures are
-# in docs/claude-screens.md:
+# A running turn. claude spins one row over the composer: a cycling glyph (`✻ ✽
+# ✢ ✶ · *`), a gerund, `…`, then a parenthesised tail it drops from the right as
+# the pane narrows (claude 2.1.259):
 #
 #   220  ● Finagling… (6s · thinking with xhigh effort)
-#    54  ● Finagling… (5s · thinking with xhigh effort)
 #    40  ● Finagling… (4s · thinking)
 #    30  ● Finagling… thinking
 #    24  ● Finagling… (2s)
 #
-# `s · ` is gone at 30 and at 24, `… (` is gone at 30, and `all` wanted both,
-# so at those two widths this rule did not hold. The mode footer is under the
-# spinner the whole time a turn runs, which is the trap `idle_prompt` names in
-# capitals below, so that rule claimed the screen instead: eight samples out of
-# eight at 30 columns and eight out of eight at 24, across one live turn. Four
-# agents on a 160-column terminal is 40 columns each and a fifth takes them
-# under it, which is a wall amx tiles by itself.
+# The tail also changes at a fixed width as the gerund changes, so the anchor
+# is the gerund's ending and the ellipsis. `…` alone is claude's elision mark
+# and appears on idle panes (statusline, welcome box). The finished-turn row is
+# past tense with no ellipsis (`✻ Brewed for 1m 22s`), which this must never
+# match. A non-gerund spinner word would make this rule go quiet.
 #
-# Nor is the row steady at a width. The same turn at 30 columns read
-# `● Finagling… thinking` for four samples and `● Finagling… (33s)` for the
-# next three, because what fits depends on how long the gerund is and the
-# gerund changes while the turn runs. So the anchor is the part of the row the
-# truncation cannot reach: the end of the gerund and the ellipsis after it, on
-# the left. One fragment, and not a list of the tails the vendor sometimes
-# keeps — a list goes quiet at whatever width drops the next of them.
-#
-# ── Why the gerund's own ending, and not the ellipsis alone ──────────────────
-# `…` by itself is not this vendor's spinner. It is how claude elides anything
-# too long for the room it has, and what it elides is under every idle pane:
-# the statusline reads `Opus 5 (1M context) (1M context) │ …` at 40 columns,
-# and the welcome box reads `Opus 5 (1M context) with xhig… · Claude` over
-# `/…/repo/.amx/worktrees/agent-ivu`. An agent parked at its prompt on a narrow
-# pane would read `working` for as long as it sat there.
-#
-# The spinner's word is a present participle in every sample this file records
-# across three vendor versions — Nesting, Infusing, Forging, Smooshing,
-# Finagling — and the line the turn leaves behind is a past one: `✻ Brewed for
-# 1m 22s`, `✻ Sautéed for 1m 2s`, `✻ Cogitated for 2m 6s · done 10:09 AM`. That
-# is the vendor's own grammar telling a turn that is running from one that is
-# over, it is inside a word so no wrap or truncation can break it, and it holds
-# at all five widths. Should the vendor start spinning a word that is not a
-# gerund, this rule goes quiet rather than wrong.
-#
-# The finished line is what this must not match: it sits on the idle screen, so
-# a rule that reached it would report a finished agent as working forever. It
-# carries no ellipsis at any width. It does now carry `s · `, which is half of
-# what this rule used to stand on — a margin spent rather than a rule broken,
-# and the reason the `[furniture] spinner` walk above wants driving next.
-#
-# One fragment is weak on its own, and it was matched anywhere on the floor
-# until 2026-09-26: the vendor's own elision after a gerund carries it too.
-# The 2026-09-21 capture of an interrupted turn has `⎿  Initializing…` on a
-# tool result three rows over the interrupt, and a statusline cut short in a
-# branch name ends `reading…` under the composer; both read `working` over an
-# agent at rest. `over_composer` is the fix: the fragment counts only on the
-# row the furniture walk finds directly over the composer, past the effort
-# hint, blank rows and a `tip` row. A screen with no composer the walk can
-# find — the /btw overlay, the transcript viewer, a pane too narrow for the
-# footer — is claimed by nothing here, which reads `unknown` rather than a
-# guess. A wrong match does not only mislabel a row: naming a screen as
-# non-blocking also clears a pending question off it. It is the first rule to
-# re-measure on a vendor bump.
+# `over_composer`: the fragment counts only on the row the furniture walk finds
+# directly over the composer. Elsewhere it matches tool results
+# (`⎿  Initializing…`) and truncated statuslines. A screen with no composer the
+# walk can find (the /btw overlay, the transcript viewer, a pane too narrow for
+# the footer) reads `unknown`. A false match also clears a pending question.
+# Re-measure this rule first on a vendor bump.
 [[rule]]
 name = "spinner"
 state = "working"
 all = ["ing…"]
 over_composer = true
 
-# A turn is over by the hooks and the agent is still working: claude 2.1.270
-# fires Stop when the answer stops streaming and goes on running the subagents
-# that turn started, with this line above the composer while it does.
+# Subagents still running after Stop. claude 2.1.270 fires Stop when the answer
+# ends and shows this line over the composer while the subagents finish
+# (100, 54, 40, 30 and 24 columns):
 #
 #   ✻ Waiting for 1 background agent to finish
 #                                                            ● high · /effort
@@ -699,29 +313,11 @@ over_composer = true
 #     ● main
 #     ◯ general-purpose  Preparing to run `sleep 45`        48s · ↓ 10.2k tokens
 #
-# Measured live on 2026-09-14 at 100, 54, 40, 30 and 24 columns, one subagent
-# sleeping for 45 seconds. The mode row is under the line, so `idle_prompt` had
-# the screen and a busy agent read idle once the record had gone quiet.
-#
-# The glyph alone would claim nothing worth having. `✻` is one of the six the
-# spinner cycles and it is also what the line a finished turn leaves behind
-# opens with, so it is here only to put the words on the row the vendor drew
-# them on: `waiting for` by itself is a sentence an agent writes about a build
-# every day. This line held at `✻` across every capture over ten seconds rather
-# than cycling, which is a fact about this version and nothing this rule leans
-# on; the next vendor bump re-measures it.
-#
-# The words wrap: after `to` at 40 columns, after `background` at 30 and after
-# `1` at 24, so `waiting for` and `background` end up on different rows and no
-# one anchor can want both. One row apart is the widest measured, and `within`
-# is sized at 3 over it.
-#
-# No `not_below`: the composer and the mode footer are drawn under this line on
-# every capture, which is the whole reason the rule is here.
-#
-# A working claim over a record the hooks left idle is a READING and never
-# something written down. claude reports, and what it reported stands on the
-# record — this only puts the right word on the row while the line is up.
+# `✻` ties the words to the vendor's row; `waiting for` alone is common prose.
+# The line wraps after `to`, `background` or `1` depending on width, putting
+# `background` at most one row down, so `within` is 3. No `not_below`: the
+# composer and footer are always under it. This is a reading only; it never
+# overwrites what the hooks recorded.
 [[rule]]
 name = "background_agents"
 state = "working"
@@ -729,75 +325,28 @@ all = ["✻ waiting for"]
 any = ["background"]
 within = 3
 
-# claude is drawn and waiting for a human to type. This is the mode footer
-# under the input box, and the glyph it opens with is what every mode and every
-# width have in common — see the permission rule above for the measurement.
-# Anchoring `idle` on the cycle hint instead made a manual-mode agent, and any
-# agent on a pane under about 40 columns, match no rule at all.
+# At the prompt, waiting for input: the mode footer's glyph, present in every
+# mode and width (see `permission_prompt`). The cycle hint alone missed manual
+# mode and panes under about 40 columns. `? for shortcuts` covers pre-2.1
+# claude. The tail after the mode changes between versions (`← 2 agents` in
+# 2.1.240) and is not read.
 #
-# `? for shortcuts` is claude's pre-2.1 hint, kept as an alternative so amx is
-# not blind against an older vendor.
+# `quiescent`: the footer is also on screen while claude works, and a streaming
+# answer drops the spinner row (203 of 203 samples over one 207-second turn),
+# so only time separates idle from a pause in output. A quiescent rule cannot
+# end a turn the record shows running until the screen holds still over
+# several looks; from `starting` or `unknown` it decides at once. Two looks
+# once ended a live turn 51 seconds early. The longest mid-turn stillness
+# measured is ten seconds.
 #
-# `quiescent` is the whole point of this entry, and names the trap it exists
-# for: THIS FOOTER IS ON THE SCREEN WHILE CLAUDE WORKS, TOO. Not similarly —
-# identically. With the control characters stripped, a capture taken mid-turn
-# and one taken after the same turn's Stop hook differ only in the transcript
-# above them. While a long answer streams the vendor drops its spinner line
-# entirely (203 of 203 samples across one 207-second turn), so there is no
-# positive mark to anchor on and nothing but TIME separates an idle screen from
-# a pause between two chunks of output.
-#
-# So a quiescent rule may not end a turn that is on the record as running until
-# the screen has held still across a run of consecutive looks. From a state
-# with nothing outstanding — starting, or unknown — it decides at once, which
-# is what gets a parked agent named inside ten seconds.
-#
-# Without that gate the rule calls a working agent idle, which is strictly
-# worse than `unknown`: measured at two consecutive looks, it reported a live
-# turn as finished 51 seconds before its Stop hook arrived. The longest
-# mid-turn stillness measured at the floor's own rate is ten seconds, at the
-# tail of a turn after the answer had finished streaming.
-#
-# The glyph itself was seen live against v2.1.237 on 2026-08-21 — the welcome
-# box now reads `Claude Code v2.1.237` — in all four modes reachable by
-# shift+tab (auto, manual, accept edits, plan) at 220, 46, 40 and 30 columns,
-# unchanged from the table above. The stillness timings were not re-measured
-# this round; nothing about a version bump changes how long a model takes to
-# pause between tokens.
-#
-# Seen live again in auto mode against v2.1.240 on 2026-08-24 at 220 columns,
-# where the footer's tail has changed on its own:
-#
-#   ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
-#
-# `← for agents` now counts them. This rule did not notice, because the tail is
-# not what it reads — which is the anchor law paying for itself twice in three
-# vendor bumps.
-#
-# ── The screens this vendor draws OVER the prompt ────────────────────────────
-# `not` is what keeps them off this rule, and both strings were read off claude
-# 2.1.270 on 2026-09-14 at 100, 54, 40, 30 and 24 columns.
-#
-# The transcript viewer, opened with ctrl+o, ends in a footer of its own —
-# `Showing detailed transcript · ctrl+o to toggle · ? for shortcuts` at 100
-# columns — and draws no mode row at all. So the only anchor above it can find
-# on that screen is the pre-2.1 hint, and a person reading the transcript
-# through a long tool call got a row saying the turn was over as soon as the
-# hooks went stale and the screen held still. The footer truncates from the
-# middle rather than the right, `verbose` pinned to the far side of the row:
-# `ctrl+o to togg…verbose` at 54, `· …verbose` at 40, `tran…verbos` at 30 and
-# `Showing detaile…verbos` at 24, the last letter wrapping onto a row of its
-# own at the two narrowest. What no width touches is the fragment the row opens
-# with, so that is what is written here.
-#
-# `↑/↓ to scroll` is the row the /btw overlay opens its footer with once it has
-# answered — `↑/↓ to scroll · c to copy · f to fork · Esc to close`, whole at
-# all five widths. The vendor draws that overlay in the slot the composer had
-# and puts no mode row under it either, so nothing in this document claims it
-# as things stand; it is named here because a screen in the composer's slot is
-# not the composer, and the rows this rule stands on are the composer's. The
-# overlay while it is still working carries `· Answering…` on no row over a
-# composer, so the spinner rule does not have it either and it reads unknown.
+# `not` covers screens drawn over the prompt without a mode row (claude 2.1.270,
+# 24 to 100 columns):
+# - the ctrl+o transcript viewer, whose footer ends in `? for shortcuts`. It
+#   truncates from the middle, so only its opening `showing detaile` survives
+#   every width.
+# - the /btw overlay's answered footer, `↑/↓ to scroll · c to copy · …`. While
+#   it is still answering its `Answering…` is not over a composer, so it reads
+#   `unknown`.
 [[rule]]
 name = "idle_prompt"
 state = "idle"
