@@ -2,28 +2,8 @@
 
 mod common;
 
-use common::Harness;
-use serde_json::{Value, json};
-
-fn ls(amx: &Harness) -> Vec<Value> {
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the listing is json")
-}
-
-fn status(amx: &Harness, id: &str) -> Value {
-    let out = amx.amx(&["status", id, "--json"]);
-    assert!(
-        out.status.success(),
-        "amx status: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the status is json")
-}
+use common::{Harness, ls, status};
+use serde_json::json;
 
 /// The AskUserQuestion menu, measured off claude v2.1.229 at 80 columns.
 const A_MENU: &str = "\

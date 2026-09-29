@@ -6,22 +6,9 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, code, stderr, stdout};
 use serde_json::json;
 use std::process::{Output, Stdio};
-
-/// The code the caller branches on.
-fn code(out: &Output) -> i32 {
-    out.status.code().expect("amx exited with a code")
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 /// Every wait in this file is bounded, so a verb that never returns fails the
 /// test it is in rather than the whole suite.

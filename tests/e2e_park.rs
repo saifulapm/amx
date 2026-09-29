@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{Harness, now, something_else_on_the_server, watching};
+use common::{Harness, ls, now, something_else_on_the_server, watching};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -68,17 +68,6 @@ fn pinned_over_the_wall(amx: &Harness, id: &str) {
     let held = json!({ "arrangement": { "held": [id] } });
     std::fs::write(&path, serde_json::to_string_pretty(&held).expect("json"))
         .expect("writing what a view remembers");
-}
-
-/// Every agent `ls --json` knows about.
-fn ls(amx: &Harness) -> Vec<Value> {
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the listing is json")
 }
 
 /// The one row this agent has in that listing.

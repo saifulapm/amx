@@ -20,7 +20,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, check_line, status};
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -70,21 +70,6 @@ fn serve_from(amx: &Harness, cwd: &Path) {
         .output()
         .expect("starting a server");
     assert!(out.status.success(), "{out:?}");
-}
-
-/// Doctor's line about one check: whether it passed, and what it said.
-///
-/// Read by the check's name rather than by position, and the whole output is
-/// carried along so a failure says what doctor actually printed.
-fn check_line(printed: &str, name: &str) -> (bool, String) {
-    printed
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            let verdict = fields.next()?;
-            (fields.next()? == name).then(|| (verdict == "ok", line.to_string()))
-        })
-        .unwrap_or_else(|| panic!("doctor said nothing about the {name}:\n{printed}"))
 }
 
 fn server_line(printed: &str) -> (bool, String) {
@@ -163,13 +148,7 @@ fn start_pi(amx: &Harness, id: &str, scenario: &str) {
 /// The rule the same reading names on this agent's row, out of its own
 /// vendor's document.
 fn rule_read(amx: &Harness, id: &str) -> String {
-    let out = amx.amx(&["status", id, "--json"]);
-    assert!(
-        out.status.success(),
-        "amx status: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let agent: Value = serde_json::from_slice(&out.stdout).expect("the status is json");
+    let agent = status(amx, id);
     agent["rule"]
         .as_str()
         .unwrap_or_else(|| panic!("no rule claimed this screen: {agent}"))

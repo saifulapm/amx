@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Harness, git, with_a_worktree};
+use common::{Harness, git, ls, with_a_worktree};
 use serde_json::json;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -426,14 +426,7 @@ fn clibatch_rename_puts_the_word_where_a_program_reads_it() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let listed: Vec<serde_json::Value> =
-        serde_json::from_slice(&out.stdout).expect("the listing is json");
+    let listed = ls(&amx);
     let agent = listed
         .iter()
         .find(|agent| agent["id"] == "fix-login-a1b")

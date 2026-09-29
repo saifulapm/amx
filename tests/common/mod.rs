@@ -560,6 +560,118 @@ pub fn card_on(amx: &Harness, view: &str, id: &str) -> String {
     })
 }
 
+/// The exit code of a finished process.
+pub fn code(out: &Output) -> i32 {
+    out.status.code().expect("amx exited with a code")
+}
+
+pub fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+pub fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// `amx status <id> --json`, parsed.
+pub fn status(amx: &Harness, id: &str) -> Value {
+    let out = amx.amx(&["status", id, "--json"]);
+    assert!(
+        out.status.success(),
+        "amx status: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("the status is json")
+}
+
+/// `amx ls --json`, parsed.
+pub fn ls(amx: &Harness) -> Vec<Value> {
+    let out = amx.amx(&["ls", "--json"]);
+    assert!(
+        out.status.success(),
+        "amx ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("the listing is json")
+}
+
+/// Wait until `amx status` reads the agent as `want`.
+pub fn until_read(amx: &Harness, id: &str, want: &str) -> Value {
+    amx.until(&format!("{id} to read {want}"), || {
+        let agent = status(amx, id);
+        (agent["state"] == want).then_some(agent)
+    })
+}
+
+/// A pane's whole text, scrollback included.
+pub fn said_in(amx: &Harness, pane: &str) -> String {
+    amx.tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane])
+}
+
+/// The `argv:` line the stand-in prints on its screen, once it has.
+pub fn argv_of(amx: &Harness, id: &str) -> String {
+    let pane = amx.pane_of(id);
+    amx.until("the vendor to say how it was called", || {
+        amx.capture(&pane)
+            .lines()
+            .find(|line| line.starts_with("argv:"))
+            .map(str::to_string)
+    })
+}
+
+/// The vendor argv amx wrote into the handoff.
+pub fn command_of(amx: &Harness, id: &str) -> Vec<String> {
+    amx.handoff(id)["command"]
+        .as_array()
+        .expect("the handoff names a command")
+        .iter()
+        .map(|arg| arg.as_str().expect("an argument").to_string())
+        .collect()
+}
+
+/// A directory under home with its own allowed `.amx/config.toml`.
+pub fn a_project(amx: &Harness, name: &str, config: &str) -> PathBuf {
+    let dir = amx.home().join(name);
+    std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
+    std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
+    let allowed = amx.amx(&["allow", "--dir", &dir.to_string_lossy()]);
+    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
+    dir
+}
+
+/// `amx doctor`'s line for the check called `name`: whether it passed, and the
+/// line itself.
+pub fn check_line(printed: &str, name: &str) -> (bool, String) {
+    printed
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let verdict = fields.next()?;
+            (fields.next()? == name).then(|| (verdict == "ok", line.to_string()))
+        })
+        .unwrap_or_else(|| panic!("doctor said nothing about the {name}:\n{printed}"))
+}
+
+/// Every path under `dir` with each file's bytes, sorted.
+pub fn tree(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    let (mut found, mut left) = (Vec::new(), vec![dir.to_path_buf()]);
+    while let Some(here) = left.pop() {
+        for entry in std::fs::read_dir(&here).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let bytes = match path.is_dir() && !path.is_symlink() {
+                true => {
+                    left.push(path.clone());
+                    None
+                }
+                false => std::fs::read(&path).ok(),
+            };
+            found.push((path, bytes));
+        }
+    }
+    found.sort();
+    found
+}
+
 /// Epoch seconds, for records a test writes as though they had just happened.
 pub fn now() -> u64 {
     std::time::SystemTime::now()

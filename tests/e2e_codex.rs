@@ -18,7 +18,7 @@
 
 mod common;
 
-use common::{AMX, Harness};
+use common::{AMX, Harness, said_in, status, tree, until_read};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -81,30 +81,6 @@ fn start(amx: &Harness, id: &str, scenario_name: &str, task: Option<&str>) {
         "amx new: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// What amx makes of one agent, as a caller reads it.
-fn status(amx: &Harness, id: &str) -> Value {
-    let out = amx.amx(&["status", id, "--json"]);
-    assert!(
-        out.status.success(),
-        "amx status: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the status is json")
-}
-
-/// Wait until `amx status` reads the agent as `want`.
-fn until_read(amx: &Harness, id: &str, want: &str) -> Value {
-    amx.until(&format!("{id} to read {want}"), || {
-        let agent = status(amx, id);
-        (agent["state"] == want).then_some(agent)
-    })
-}
-
-/// Everything the stand-in has said in this pane, history included.
-fn said_in(amx: &Harness, pane: &str) -> String {
-    amx.tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane])
 }
 
 /// The rest of the line the stand-in opened with `opening`, once it has.
@@ -573,26 +549,6 @@ fn a_model_only_codex_lists_starts_codex_and_a_hidden_one_is_refused() {
     assert!(!out.status.success(), "a model codex does not list");
     let why = String::from_utf8_lossy(&out.stderr);
     assert!(why.contains("codex debug models"), "{why}");
-}
-
-/// Every path under `dir` with what each file holds, sorted.
-fn tree(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
-    let (mut found, mut left) = (Vec::new(), vec![dir.to_path_buf()]);
-    while let Some(here) = left.pop() {
-        for entry in std::fs::read_dir(&here).into_iter().flatten().flatten() {
-            let path = entry.path();
-            let bytes = match path.is_dir() && !path.is_symlink() {
-                true => {
-                    left.push(path.clone());
-                    None
-                }
-                false => std::fs::read(&path).ok(),
-            };
-            found.push((path, bytes));
-        }
-    }
-    found.sort();
-    found
 }
 
 /// `amx setup codex` or `amx uninstall`, with codex's home where `codex_home`

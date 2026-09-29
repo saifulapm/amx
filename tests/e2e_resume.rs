@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Harness, clients_on, something_else_on_the_server, watching};
+use common::{Harness, a_project, argv_of, clients_on, something_else_on_the_server, watching};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -44,17 +44,6 @@ fn start_with(amx: &Harness, id: &str, dir: &Path, scenario: &str, vendor: &[&st
         "amx new: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// How the vendor's stand-in says it was called, once it has said it.
-fn argv_of(amx: &Harness, id: &str) -> String {
-    let pane = amx.pane_of(id);
-    amx.until("the vendor to say how it was called", || {
-        amx.capture(&pane)
-            .lines()
-            .find(|line| line.starts_with("argv:"))
-            .map(str::to_string)
-    })
 }
 
 /// `amx resume`, with the stand-in ready to play a continued session.
@@ -1077,18 +1066,6 @@ fn resume_will_not_take_the_machine_past_max_agents() {
     let out = resume(&amx, &[id]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("max_agents"));
-}
-
-/// A directory with a config file of its own, which outside a repository is
-/// the whole of a project.
-fn a_project(amx: &Harness, name: &str, config: &str) -> PathBuf {
-    let dir = amx.home().join(name);
-    std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
-    std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
-    // Allowed, as a person keeping a file of their own would have.
-    let allowed = amx.amx(&["allow", "--dir", &dir.to_string_lossy()]);
-    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
-    dir
 }
 
 /// An agent of `project` that ran and stopped, with its place given up.

@@ -8,8 +8,8 @@
 mod common;
 
 use common::{
-    Harness, a_repo_at, agents, bar, coloured, coloured_line, finished, foreground, git, in_force,
-    pane_field, press, sgr_at, starts_at, types, until_empty,
+    Harness, a_repo_at, agents, bar, coloured, coloured_line, command_of, finished, foreground,
+    git, in_force, pane_field, press, sgr_at, starts_at, types, until_empty,
 };
 use serde_json::{Value, json};
 
@@ -127,16 +127,6 @@ fn composed_after(amx: &Harness, first: &str) -> String {
         let id = agents(amx).into_iter().find(|id| id != first)?;
         amx.meta(&id)["pane"].as_str().map(|_| id)
     })
-}
-
-/// The argv amx wrote for the vendor, as the pane will be handed it.
-fn command_of(amx: &Harness, id: &str) -> Vec<String> {
-    amx.handoff(id)["command"]
-        .as_array()
-        .expect("the handoff names a command")
-        .iter()
-        .map(|arg| arg.as_str().expect("an argument").to_string())
-        .collect()
 }
 
 /// An `$EDITOR` that says it has the screen and holds it until the test drops

@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, code, stderr, stdout};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Output;
@@ -371,17 +371,4 @@ fn handle(out: &Output) -> String {
         "a dispatch prints the handle alone: {printed:?}"
     );
     printed.trim().to_string()
-}
-
-/// The code the caller branches on.
-fn code(out: &Output) -> i32 {
-    out.status.code().expect("amx exited with a code")
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }

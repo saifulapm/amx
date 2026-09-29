@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{AMX, Harness, git};
+use common::{AMX, Harness, a_project, argv_of, command_of, git, ls};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -70,27 +70,6 @@ fn path_with_the_stand_in(amx: &Harness) -> String {
     )
 }
 
-/// The argv amx wrote for the vendor, as the pane will be handed it.
-fn command_of(amx: &Harness, id: &str) -> Vec<String> {
-    amx.handoff(id)["command"]
-        .as_array()
-        .expect("the handoff names a command")
-        .iter()
-        .map(|arg| arg.as_str().expect("an argument").to_string())
-        .collect()
-}
-
-/// What the vendor's own process says it was called with.
-fn argv_of(amx: &Harness, id: &str) -> String {
-    let pane = amx.pane_of(id);
-    amx.until("the vendor to say how it was called", || {
-        amx.capture(&pane)
-            .lines()
-            .find(|line| line.starts_with("argv:"))
-            .map(str::to_string)
-    })
-}
-
 /// A process's real environment, read from the kernel rather than from
 /// anything amx wrote down -- the only way to see what a pane started with
 /// underneath whatever amx laid over it.
@@ -138,14 +117,7 @@ fn printed<'a>(row: &'a Value, key: &str) -> &'a Value {
 
 /// The row `amx ls --json` prints for this agent, where it has one.
 fn listed(amx: &Harness, id: &str) -> Option<Value> {
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let rows: Vec<Value> = serde_json::from_slice(&out.stdout).expect("the listing is json");
-    rows.into_iter().find(|row| row["id"] == id)
+    ls(amx).into_iter().find(|row| row["id"] == id)
 }
 
 fn id_of(out: &Output) -> String {
@@ -362,17 +334,6 @@ fn new_edited_by(amx: &Harness, scenario: &str, args: &[&str], script: &str) -> 
         .expect("running amx new")
 }
 
-/// Every agent amx has a record of, which after a refusal is none.
-fn every_row(amx: &Harness) -> Vec<Value> {
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the listing is json")
-}
-
 #[test]
 fn new_takes_the_task_from_the_editor() {
     // The brief nobody has written yet: `--file` for the file that does not
@@ -418,7 +379,7 @@ fn new_starts_nothing_where_the_editor_would_have_none_of_it() {
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.starts_with("amx new: "), "{said}");
     assert!(said.contains("left the line as it was"), "{said}");
-    assert!(every_row(&amx).is_empty(), "and nothing was minted for it");
+    assert!(ls(&amx).is_empty(), "and nothing was minted for it");
 }
 
 #[test]
@@ -439,7 +400,7 @@ fn new_refuses_an_editor_closed_on_nothing_the_way_it_refuses_an_empty_task() {
     assert_eq!(refused.status.code(), Some(64));
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("something to do"), "{said}");
-    assert!(every_row(&amx).is_empty(), "and nothing was minted for it");
+    assert!(ls(&amx).is_empty(), "and nothing was minted for it");
 }
 
 #[test]
@@ -1973,18 +1934,6 @@ fn new_refuses_once_the_cap_is_reached() {
     assert_eq!(refused.status.code(), Some(2), "blocked, not failed");
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("max_agents") || said.contains('1'), "{said}");
-}
-
-/// A directory with a config file of its own, which outside a repository is
-/// the whole of a project.
-fn a_project(amx: &Harness, name: &str, config: &str) -> std::path::PathBuf {
-    let dir = amx.home().join(name);
-    std::fs::create_dir_all(dir.join(".amx")).expect("the project's own directory");
-    std::fs::write(dir.join(".amx/config.toml"), config).expect("the project's config");
-    // Allowed, as a person keeping a file of their own would have.
-    let allowed = amx.amx(&["allow", "--dir", &dir.to_string_lossy()]);
-    assert!(allowed.status.success(), "amx allow: {:?}", allowed);
-    dir
 }
 
 #[test]

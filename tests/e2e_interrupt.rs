@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::Harness;
+use common::{Harness, status};
 use std::time::{Duration, Instant};
 
 /// How long the row is given to come off `working` once the key has landed.
@@ -38,14 +38,7 @@ const AT_ONCE: Duration = Duration::from_secs(5);
 fn until_idle(amx: &Harness, id: &str) -> serde_json::Value {
     let deadline = Instant::now() + SETTLES;
     loop {
-        let out = amx.amx(&["status", id, "--json"]);
-        assert!(
-            out.status.success(),
-            "amx status: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let agent: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("the status is json");
+        let agent = status(amx, id);
         if agent["state"] == "idle" {
             return agent;
         }

@@ -16,8 +16,8 @@
 
 mod common;
 
-use common::{AMX, Harness};
-use serde_json::{Value, json};
+use common::{AMX, Harness, said_in, status, tree, until_read};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// The task every agent here is started on.
@@ -90,30 +90,6 @@ fn start_with(amx: &Harness, id: &str, scenario_name: &str, more: &[&str], task:
 
 fn start(amx: &Harness, id: &str, scenario_name: &str, task: &str) {
     start_with(amx, id, scenario_name, &[], task);
-}
-
-/// What amx makes of one agent, as a caller reads it.
-fn status(amx: &Harness, id: &str) -> Value {
-    let out = amx.amx(&["status", id, "--json"]);
-    assert!(
-        out.status.success(),
-        "amx status: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the status is json")
-}
-
-/// Wait until `amx status` reads the agent as `want`.
-fn until_read(amx: &Harness, id: &str, want: &str) -> Value {
-    amx.until(&format!("{id} to read {want}"), || {
-        let agent = status(amx, id);
-        (agent["state"] == want).then_some(agent)
-    })
-}
-
-/// Everything the stand-in has said in this pane, history included.
-fn said_in(amx: &Harness, pane: &str) -> String {
-    amx.tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane])
 }
 
 /// The rest of the line the stand-in opened with `opening`, once it has.
@@ -380,26 +356,6 @@ fn a_model_rides_in_the_env_on_new_and_a_resume_keeps_the_sessions_own() {
     assert_eq!(agent["result"], ANSWERED, "{agent}");
     assert_eq!(amx.meta(id)["session"], session, "the same conversation");
     went_right(&amx, id);
-}
-
-/// Every path under `dir` with what each file holds, sorted.
-fn tree(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
-    let (mut found, mut left) = (Vec::new(), vec![dir.to_path_buf()]);
-    while let Some(here) = left.pop() {
-        for entry in std::fs::read_dir(&here).into_iter().flatten().flatten() {
-            let path = entry.path();
-            let bytes = match path.is_dir() && !path.is_symlink() {
-                true => {
-                    left.push(path.clone());
-                    None
-                }
-                false => std::fs::read(&path).ok(),
-            };
-            found.push((path, bytes));
-        }
-    }
-    found.sort();
-    found
 }
 
 /// `amx setup opencode` or `amx uninstall`, with opencode's config dir where

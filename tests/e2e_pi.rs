@@ -28,7 +28,7 @@
 
 mod common;
 
-use common::{AMX, Harness, now};
+use common::{AMX, Harness, check_line, ls, now, said_in, status};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -269,28 +269,11 @@ fn listing(amx: &Harness) -> std::process::Output {
         .expect("running the stand-in")
 }
 
-/// What amx makes of one agent, as a caller reads it.
-fn status(amx: &Harness, id: &str) -> Value {
-    let out = amx.amx(&["status", id, "--json"]);
-    assert!(
-        out.status.success(),
-        "amx status: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("the status is json")
-}
-
 /// The same agent as a listing has it, which is one look taken by a process
 /// that prints its table and exits.
 fn listed(amx: &Harness, id: &str) -> Value {
-    let out = amx.amx(&["ls", "--json"]);
-    assert!(
-        out.status.success(),
-        "amx ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let rows: Vec<Value> = serde_json::from_slice(&out.stdout).expect("the listing is json");
-    rows.into_iter()
+    ls(amx)
+        .into_iter()
         .find(|row| row["id"] == id)
         .unwrap_or_else(|| panic!("a row for {id}"))
 }
@@ -332,16 +315,6 @@ const PIS_WORDS: [&str; 2] = ["agent_start", "agent_settled"];
 /// What a turn answered, as pi reports it when the turn settles and as the
 /// scenarios that report one write it.
 const ANSWERED: &str = "I moved the timeout into the config, and the tests pass.";
-
-/// Everything the stand-in has said in this pane, including what has scrolled
-/// off it.
-///
-/// pi repaints its pane rather than appending to it, and so does the stand-in,
-/// so how it was called is in the history rather than on the screen. This is
-/// the harness's own capture with the history asked for as well.
-fn said_in(amx: &Harness, pane: &str) -> String {
-    amx.tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane])
-}
 
 /// Wait for the line the stand-in opens with, whichever of the two it is.
 fn until_said(amx: &Harness, id: &str, opening: &str) -> String {
@@ -461,18 +434,6 @@ const SELECTORS: [(&str, &str, usize); 2] = [
         7,
     ),
 ];
-
-/// Doctor's line about one check: whether it passed, and what it said.
-fn check_line(printed: &str, name: &str) -> (bool, String) {
-    printed
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            let verdict = fields.next()?;
-            (fields.next()? == name).then(|| (verdict == "ok", line.to_string()))
-        })
-        .unwrap_or_else(|| panic!("doctor said nothing about the {name}:\n{printed}"))
-}
 
 /// `amx doctor --fix`, with a yes ready for the repair it asks about.
 ///
