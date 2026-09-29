@@ -361,12 +361,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     // Last of all, because a selection is over the screen rather than over
     // any one band of it: the cells a hand is holding are turned about where
     // every widget has already had its say, and what the frame ended up
-    // saying is kept for the release to read the text back off.
+    // saying is kept for the release to read the text back off. Only while a
+    // drag is up: every drag event is drawn before the release is read.
     let buffer = frame.buffer_mut();
     if let Some((from, to)) = screen.selection {
         reverse(buffer, from, to);
+        screen.map.drawn.borrow_mut().clone_from(buffer);
     }
-    screen.map.drawn.borrow_mut().clone_from(buffer);
 }
 
 /// Turn the cells a selection covers about, so somebody dragging can see what
