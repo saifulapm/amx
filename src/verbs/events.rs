@@ -199,7 +199,7 @@ fn line(id: &str, hooks: Option<&Hooks>, event: &Event, widest: usize) -> String
     format!(
         "{}  {id:<widest$}  {:<KIND$}  {}",
         clock(event.at),
-        inert(&event.kind),
+        super::inert_line(&event.kind),
         detail(hooks, event)
     )
     .trim_end()
@@ -251,19 +251,7 @@ fn detail(hooks: Option<&Hooks>, event: &Event) -> String {
 
 /// One field of a payload, as a line of a stream can hold it.
 fn text(value: &Value) -> String {
-    value.as_str().map(inert).unwrap_or_default()
-}
-
-/// A string amx did not author, made safe to print: its first line, with
-/// nothing in it that can drive the terminal it prints into.
-///
-/// Both halves matter. The log is a document anything running as this user can
-/// write, and an answer with a newline in it would otherwise put a second,
-/// unlabelled line into a stream whose whole shape is one line per event.
-fn inert(text: &str) -> String {
-    crate::tmux::sanitize(text.lines().next().unwrap_or(""))
-        .trim()
-        .to_string()
+    value.as_str().map(super::inert_line).unwrap_or_default()
 }
 
 #[cfg(test)]

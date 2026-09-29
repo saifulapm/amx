@@ -155,19 +155,12 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
 /// that is blocked can answer it without opening anything. There are none to
 /// carry unless a question is outstanding: they are cleared with it.
 fn doing(view: &View) -> String {
-    let mut said = inert(first_line(view.line().unwrap_or("")));
+    let mut said = super::inert_line(view.line().unwrap_or(""));
     for choice in send::numbered(&view.state.options) {
         said.push_str("  ");
-        said.push_str(&inert(&choice));
+        said.push_str(&super::inert_line(&choice));
     }
     said
-}
-
-/// A string amx did not author, on one line and unable to drive the terminal
-/// it prints into. Both halves are the table's: a row is a row, and the bytes
-/// in it came from a program amx does not control.
-fn inert(text: &str) -> String {
-    crate::tmux::sanitize(first_line(text)).trim().to_string()
 }
 
 /// The reading's own number, in the shortest form that says it: the seconds
@@ -179,11 +172,6 @@ fn inert(text: &str) -> String {
 /// both open is never told two things about one agent.
 fn worked(view: &View) -> String {
     derive::in_words(view.verdict.worked)
-}
-
-/// One line of it, so a paragraph of an answer cannot take over the table.
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("").trim()
 }
 
 #[cfg(test)]

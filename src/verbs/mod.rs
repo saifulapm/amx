@@ -40,3 +40,11 @@ pub(crate) fn print_question(
     }
     Ok(())
 }
+
+/// The first line of text amx did not author, trimmed, with nothing left in it
+/// that can drive a terminal.
+pub(crate) fn inert_line(text: &str) -> String {
+    crate::tmux::sanitize(text.lines().next().unwrap_or(""))
+        .trim()
+        .to_string()
+}
