@@ -1,4 +1,4 @@
-//! What a wall with nothing on it says for itself.
+//! The list band when there are no rows to draw.
 
 use ratatui::text::{Line, Span};
 
@@ -7,36 +7,22 @@ use super::style::{bold, dim};
 use crate::tui::grid;
 use crate::tui::rows::List;
 
-/// What a wall nobody has put anything on says for itself.
-///
-/// One line of amx's own, where four headings with a sentence each used to
-/// stand: there is nothing to read off the rows, and a view that explains the
-/// list before there is a list is doing the manual's job on the screen a
-/// person came to work at. What is worth knowing about this wall is that it is
-/// the good one.
+/// The line shown when no agent has been started yet.
 pub(super) const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
 
-/// What stands before an agent's name on a row: the cell it is indented by,
-/// the state glyph and the space after it. The offers stand where a name
-/// would, so the empty wall is the wall with its rows taken out rather than a
-/// screen of its own.
+/// Columns before an agent's name on a row: indent, glyph and a space. The
+/// offered keys start there.
 const NAME: usize = 3;
 
-/// The key column those offers stand in, which is one key and the air that
-/// holds what it does off it.
+/// Width of the key column, key and padding.
 const KEY: usize = 4;
 
-/// The rows a list holding nothing is drawn as.
+/// The rows drawn for an empty list.
 ///
-/// Nothing to show is one thing while a narrowing is holding every agent back,
-/// another while nobody has started one. The first is answered in the words
-/// somebody typed and nothing else: they narrowed the wall themselves, and
-/// they have agents the narrowing is holding back. The second is the sentence,
-/// and under it the two keys that do something about it.
-///
-/// The sentence is said whole or not at all — a screen too narrow for it gets
-/// the label instead of two thirds of a joke — but the two keys stand either
-/// way, because they are the only thing on the screen that leads anywhere.
+/// A narrowing that matched nothing says so in the words it was typed with.
+/// Otherwise the list shows [`WELCOME`] and the two keys that lead somewhere.
+/// [`WELCOME`] is only for a fleet nobody has started, on the state axis, and
+/// only when it fits whole; else the line is a plain "no agents".
 pub(super) fn nothing(list: &List, width: usize) -> Vec<Line<'static>> {
     if let Some(narrowing) = list.narrowing() {
         return vec![Line::styled(format!("nothing matches {narrowing}"), dim())];
@@ -50,16 +36,12 @@ pub(super) fn nothing(list: &List, width: usize) -> Vec<Line<'static>> {
         Line::styled(said, dim()),
         Line::raw(""),
         offer("n", "start an agent".to_string()),
-        // Every key but the one already offered above it.
+        // Every key but `n`, which is offered above.
         offer("?", format!("the other {} keys", HELP.len() - 1)),
     ]
 }
 
-/// A key and what pressing it would do, in the column a row's name stands in.
-///
-/// Two rather than the whole table, because a person looking at an empty wall
-/// has one thing to decide, and the keys that arrange, page and stop things
-/// have nothing to work on yet.
+/// A key and what it does, starting in the name column.
 fn offer(key: &str, does: String) -> Line<'static> {
     Line::from(vec![
         Span::raw(" ".repeat(NAME)),
@@ -76,8 +58,7 @@ mod tests {
     use crate::tui::rows::{Group, Narrow};
     use ratatui::style::Modifier;
 
-    /// A screen with room for the bands above and below the list, the space
-    /// between the header and it, and a group or two under that.
+    /// Room for the header, the spacing rows and a group or two.
     const WALL: (u16, u16) = (80, 12);
 
     #[test]
@@ -106,9 +87,7 @@ mod tests {
     fn a_wall_nobody_has_put_anything_on_says_so_and_offers_the_two_keys_that_answer_it() {
         let screen = drawn(Vec::new(), None, WALL);
 
-        // One line where the four groups used to have a sentence each, a row
-        // of air, and the two keys that lead anywhere from here, standing
-        // where a row's name would stand.
+        // The welcome line, a blank row, and the two keys in the name column.
         assert_eq!(screen[3], WELCOME, "{screen:?}");
         assert_eq!(screen[4], "", "{screen:?}");
         assert_eq!(screen[5], "   n   start an agent", "{screen:?}");
@@ -151,9 +130,7 @@ mod tests {
 
     #[test]
     fn the_wall_says_it_plainly_where_the_line_of_its_own_will_not_fit() {
-        // Said whole or not at all: a sentence cut by the terminal reads as a
-        // sentence that ends where the screen does, and this one is a joke as
-        // well, which is worse to be handed two thirds of.
+        // The welcome line is shown whole or not at all.
         let narrow = drawn(
             Vec::new(),
             None,
@@ -177,8 +154,7 @@ mod tests {
             "one agent and there is something to read off the rows: {one:?}"
         );
 
-        // A fleet somebody narrowed to nothing is not a fleet nobody started,
-        // and the view owes them the words they typed rather than a joke.
+        // A narrowing that matched nothing is not an empty fleet.
         let mut screen = showing(Vec::new(), None);
         screen
             .list
@@ -190,8 +166,7 @@ mod tests {
             "somebody who narrowed the wall themselves has agents already: {narrowed:?}"
         );
 
-        // And the project axis is a list of places, which nobody arrives at
-        // with nothing to arrange.
+        // The project axis says the plain line.
         let mut screen = showing(Vec::new(), None);
         screen.list.turn();
         assert_eq!(painted(&screen, WALL)[3], "no agents");
