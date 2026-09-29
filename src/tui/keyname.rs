@@ -1,19 +1,11 @@
-//! A key as somebody writes it in a file, read into the key a terminal sends.
+//! Parses the key spellings in the config's `keys` table (`alt+g`) into the
+//! [`KeyEvent`]s a terminal sends.
 //!
-//! The config file binds commands to keys, and a key in a file is a word:
-//! `alt+g`. What arrives at the view is a [`KeyEvent`]. This is the one place
-//! the word is turned into the event, so every reader of the table agrees on
-//! what `alt+g` means and nobody spells a key twice.
-//!
-//! The grammar is the smallest one that covers the keys a person would bind:
-//! the two chords the view itself reads, in either order, and then one key.
-//! Shift is not one of them — a terminal says shift by sending the character
-//! it typed, so `A` is the spelling of shift and `shift+a` is not a spelling
-//! at all.
-//!
-//! A spelling this cannot read is refused rather than guessed at. A key nobody
-//! can press would sit in the file looking bound, so the view says which one
-//! it was and goes on without it.
+//! The grammar: `ctrl+` and `alt+`, each at most once and in either order,
+//! then one printable character or `f1` to `f12`. Shift is written as the
+//! uppercase character, because that is what a terminal sends; `shift+a` is
+//! refused. A spelling outside the grammar, or a key amx already binds, is
+//! refused with a message rather than guessed at.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
@@ -21,28 +13,23 @@ use std::collections::BTreeMap;
 use super::chord;
 use super::paint::HELP;
 
-/// A key somebody bound, and the command they bound to it.
+/// A key from the config and the command bound to it.
 pub(in crate::tui) struct Bound {
-    /// The spelling as the file has it, which is what the keys screen shows:
-    /// somebody looking for a key of their own is looking for the word they
-    /// wrote.
+    /// The spelling as written in the config, which the keys screen shows.
     pub(in crate::tui) spelling: String,
-    /// The key that spelling is, which is what a press is matched against.
+    /// The parsed key a press is matched against.
     pub(in crate::tui) key: KeyEvent,
     pub(in crate::tui) command: String,
 }
 
-/// The key this spelling names, where it names one.
+/// Parses a key spelling, or `None` for anything outside the grammar.
 ///
-/// `ctrl+` and `alt+` in either order, each at most once, and then the key
-/// they are held with: one printable character, or one of the function keys.
-/// Everything else is nothing — whitespace, a chord with no key under it, a
-/// word, and `shift+`, which is not how a terminal sends a shifted key.
+/// Refused: whitespace, a chord with no key, a word, a repeated chord, and
+/// `shift+`, since a terminal sends a shifted key as its uppercase character.
 pub(in crate::tui) fn spelt(spelling: &str) -> Option<KeyEvent> {
     let mut held = KeyModifiers::NONE;
     let mut rest = spelling;
     while let Some((chord, after)) = chord_of(rest) {
-        // The same chord twice is somebody writing rather than binding.
         if held.contains(chord) {
             return None;
         }
@@ -53,7 +40,7 @@ pub(in crate::tui) fn spelt(spelling: &str) -> Option<KeyEvent> {
     Some(KeyEvent::new(key.code, key.modifiers | held))
 }
 
-/// The chord this spelling opens with, and what is left after it.
+/// Splits a leading `ctrl+` or `alt+` off the spelling.
 fn chord_of(spelling: &str) -> Option<(KeyModifiers, &str)> {
     spelling
         .strip_prefix("ctrl+")
@@ -65,16 +52,14 @@ fn chord_of(spelling: &str) -> Option<(KeyModifiers, &str)> {
         })
 }
 
-/// The key under the chords: a function key, or the one character somebody
-/// typed to get it.
+/// Parses the key after the chords: a function key or one character.
 fn key_of(spelling: &str) -> Option<KeyEvent> {
     if let Some(number) = function_key(spelling) {
         return Some(KeyEvent::new(KeyCode::F(number), KeyModifiers::NONE));
     }
     let one = one_character(spelling)?;
-    // An uppercase letter arrives as that letter with shift held, because that
-    // is the key somebody pressed to send it. So the spelling of it carries
-    // the shift the terminal will.
+    // A terminal sends an uppercase letter with SHIFT set, so the parsed key
+    // carries it too.
     let shift = match one.is_uppercase() {
         true => KeyModifiers::SHIFT,
         false => KeyModifiers::NONE,
@@ -82,16 +67,13 @@ fn key_of(spelling: &str) -> Option<KeyEvent> {
     Some(KeyEvent::new(KeyCode::Char(one), shift))
 }
 
-/// `f1` through `f12`, which are the function keys a keyboard has a row of.
+/// `f1` through `f12`.
 fn function_key(spelling: &str) -> Option<u8> {
     let number: u8 = spelling.strip_prefix('f')?.parse().ok()?;
     (1..=12).contains(&number).then_some(number)
 }
 
-/// The one printable character a spelling is, where it is one.
-///
-/// One: `gg` is two presses rather than a key. Printable: a spelling made of a
-/// space or a tab is a line somebody left something out of.
+/// The spelling as a single printable, non-whitespace character.
 fn one_character(spelling: &str) -> Option<char> {
     let mut chars = spelling.chars();
     let one = chars.next()?;
@@ -99,16 +81,11 @@ fn one_character(spelling: &str) -> Option<char> {
     (alone && !one.is_whitespace() && !one.is_control()).then_some(one)
 }
 
-/// What amx does on this key, where this is a key amx binds.
+/// What amx itself does on `key`, if it binds it.
 ///
-/// The keys screen is the list of them, so it is the list this reads: every
-/// token of a [`HELP`] row's key column that is also a spelling is a key
-/// somebody cannot have, and what they would have taken it from is the row's
-/// own words.
-///
-/// The code and the chord, and nothing else. Shift is the case of the
-/// character the terminal sent, so `G` and `g` are two keys here rather than
-/// one key held two ways.
+/// Reads the key column of [`HELP`], so the keys screen and this check cannot
+/// disagree. Only the code and the ctrl/alt chord are compared: shift is the
+/// case of the character, so `G` and `g` are different keys.
 pub(in crate::tui) fn amx_binds(key: KeyEvent) -> Option<&'static str> {
     let pressed = |bound: KeyEvent| bound.code == key.code && chord(bound) == chord(key);
     for (keys, does) in HELP {
@@ -119,12 +96,10 @@ pub(in crate::tui) fn amx_binds(key: KeyEvent) -> Option<&'static str> {
     besides(key)
 }
 
-/// The keys amx binds that the key column does not spell.
+/// Keys amx binds that the [`HELP`] key column does not spell as one token.
 ///
-/// The column is written for somebody reading down it rather than as a list to
-/// look a key up in: it says `gg` for two presses of the one key, `alt+1..9`
-/// for the nine of them, and says nothing at all about what answers a question
-/// card, because those keys are on the card.
+/// The column says `gg` for two presses of `g` and `alt+1..9` for a range, and
+/// leaves the keys that answer a question card to the card.
 fn besides(key: KeyEvent) -> Option<&'static str> {
     let held = chord(key);
     match key.code {
@@ -135,20 +110,18 @@ fn besides(key: KeyEvent) -> Option<&'static str> {
     }
 }
 
-/// What the row with this key column says, so a key named above carries the
-/// words the screen shows rather than a second copy of them.
+/// The [`HELP`] description for the row whose key column is exactly `keys`.
 fn does(keys: &str) -> Option<&'static str> {
     HELP.iter()
         .find(|(column, _)| *column == keys)
         .map(|(_, does)| *does)
 }
 
-/// The table read into the keys it binds, and a sentence for every spelling it
-/// did not bind.
+/// Parses the config's key table into bindings, plus a message for each
+/// spelling it refused.
 ///
-/// In the table's own order, under the spelling as it was written: the keys
-/// screen shows both back, and a person looking for what they bound should
-/// find the line they wrote.
+/// Keeps the table's order and each spelling as written, so the keys screen
+/// shows the user's own lines back.
 pub(in crate::tui) fn bound_by(keys: &BTreeMap<String, String>) -> (Vec<Bound>, Vec<String>) {
     let mut bound = Vec::new();
     let mut refused = Vec::new();
@@ -157,8 +130,8 @@ pub(in crate::tui) fn bound_by(keys: &BTreeMap<String, String>) -> (Vec<Bound>, 
             refused.push(format!("keys: `{spelling}` is no key the view can read"));
             continue;
         };
-        // A key amx binds is read before this table ever is, so a command
-        // bound to one would sit in the file looking bound and never run.
+        // amx's own keys are matched first, so a binding on one would never
+        // run.
         if let Some(does) = amx_binds(key) {
             refused.push(format!("keys: `{spelling}` is amx's own: {does}"));
             continue;
@@ -176,7 +149,7 @@ pub(in crate::tui) fn bound_by(keys: &BTreeMap<String, String>) -> (Vec<Bound>, 
 mod tests {
     use super::*;
 
-    /// The key that spelling is, for a test that names one.
+    /// An expected parse result.
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<KeyEvent> {
         Some(KeyEvent::new(code, modifiers))
     }
@@ -209,10 +182,9 @@ mod tests {
 
     #[test]
     fn an_uppercase_letter_is_that_letter_with_the_shift_a_terminal_sends() {
-        // The modifiers themselves rather than the event: crossterm compares
-        // two key events with the case of a letter and the shift on it made
-        // to agree, so an event that had lost the shift would still stand
-        // equal to one that has it.
+        // Compare the modifiers directly: crossterm's `KeyEvent` equality
+        // normalises a letter's case against SHIFT, so an event missing SHIFT
+        // would still compare equal.
         let shifted = spelt("alt+G").expect("a letter with alt held");
         assert_eq!(shifted.code, KeyCode::Char('G'));
         assert_eq!(
@@ -249,10 +221,8 @@ mod tests {
 
     #[test]
     fn the_keys_amx_binds_are_the_ones_the_keys_screen_names() {
-        // Every key the table spells, answering with the row it stands in. A
-        // key two rows name — `→` brings a window forward on the list and
-        // moves the cursor on the line — answers for the first of them, which
-        // is the row somebody reading down finds first.
+        // Every key the table spells answers with its row. A key named on two
+        // rows (`→`) answers with the first.
         let mut seen: Vec<KeyEvent> = Vec::new();
         for (keys, does) in HELP {
             for token in keys.split_whitespace() {
@@ -265,8 +235,8 @@ mod tests {
             }
         }
 
-        // And the keys nothing in the column spells: two presses of the one
-        // key, a row written as a range, and what a question card takes.
+        // Keys the column does not spell as a token: `gg`, a range, and the
+        // question card's answers.
         let named = |spelling: &str| amx_binds(spelt(spelling).expect("a spelling"));
         assert_eq!(
             named("g"),

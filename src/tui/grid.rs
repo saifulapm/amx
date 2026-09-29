@@ -1,86 +1,64 @@
-//! The character grid the view is drawn on.
+//! Column widths for the wall, and fitting text into a column.
 //!
-//! Every screen in the design is an integer number of cells wide, and the
-//! columns a row is cut into are the same columns the heading over it ends in.
-//! That arithmetic lives here rather than beside the paint, so a row and a
-//! heading cannot drift apart and a test of the geometry does not have to
-//! stand up a terminal to read it.
-//!
-//! Nothing here draws. It answers how wide each column is, fills text to a
-//! column, and takes the middle out of a path that will not fit.
+//! Rows and the headings over them take their columns from here, so the two
+//! cannot drift apart and the geometry is testable without a terminal.
+//! Nothing here draws. All widths are in terminal cells, not chars.
 
 use ratatui::text::Span;
 
 use super::rows::Axis;
 
-/// The width from which a screen is a wide one.
+/// Screens at least this wide get the wide name column.
 const WIDE: usize = 100;
 
-/// The name column: 22 cells on a wide screen and 16 below it. Twenty-two
-/// rather than the twenty-six a long name can want, so that both axes can
-/// share the column and switching axis moves one boundary rather than the
-/// whole table.
+/// The name column: 22 cells on a wide screen, 16 below it. The same on every
+/// axis, so turning the axis never moves it.
 const WIDE_NAME: usize = 22;
 const NARROW_NAME: usize = 16;
 
-/// The state word's column on the dir axis, sized for `starting`, which is the
-/// longest of them. It does not shrink with the screen: a state word cut short
-/// would be a lie.
+/// The state word's column on the path axes, sized for `starting`, the
+/// longest. It never shrinks, because a truncated state word misleads.
 const STATE: usize = 8;
 
-/// The vendor column, sized for `claude sonnet high` — the program, the model
-/// and the effort with a space between each, which is the longest of them the
-/// registry can hand out. It does not shrink with the screen either: the
-/// column is only there because somebody pressed for it, and what they pressed
-/// for is the words.
+/// The vendor column, sized for `claude sonnet high` (program, model, effort),
+/// the longest the registry produces. It never shrinks: it is only shown on
+/// request.
 const VENDOR: usize = 18;
 
-/// The age column, which fits everything up to `365d`.
+/// The age column, which fits up to `365d`.
 const AGE: usize = 4;
 
-/// What stands before the name: a cell of indent, the state glyph, and a
-/// space.
+/// Before the name: one cell of indent, the state glyph and a space.
 const PREFIX: usize = 3;
 
-/// What stands between two columns.
+/// Space between two columns.
 const GAP: usize = 2;
 
-/// The fewest cells a heading's rule is allowed, which is what stops a long
-/// path from leaving a heading with no rule to read it as one.
+/// The fewest cells a path heading leaves free after its path.
 const SHORTEST_RULE: usize = 8;
 
-/// How wide each column of an agent's row is, on a screen this wide and an
-/// axis gathered this way.
+/// The column widths of an agent's row for one screen width and axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Widths {
-    /// What the agent is called, at a root. A child gives up two cells of it
-    /// per level of its own depth, so the columns after the name stay under its
-    /// parent's; the row cuts its name to fit.
+    /// The name, at a root. A child's name gives up [`NEST`] cells per level
+    /// so the columns after it stay aligned with its parent's.
     pub name: usize,
-    /// What runs it — the vendor, the model and the effort. Nothing until
-    /// somebody asks for it: most walls run one vendor on one model, and a
-    /// column saying so on every row would be twenty cells of the same word.
+    /// Vendor, model and effort. Zero unless the vendor column is toggled on,
+    /// since most walls run one vendor and model.
     pub vendor: usize,
-    /// What state it is in, in a word. Nothing on the state axis, where the
-    /// heading over the row already says it and saying it twice would be a
-    /// column of noise.
+    /// The state word. Zero on the state axis, where the heading says it.
     pub state: usize,
-    /// What it is up to. The column that gives way: it absorbs the whole cost
-    /// of the state word, so the name, the age and the group's count sit where
-    /// they sit on the other axis.
+    /// What the agent is doing. The only column that gives way: it absorbs
+    /// the vendor and state columns, so name and age never move.
     pub summary: usize,
-    /// How long it has worked.
+    /// How long the agent has worked.
     pub age: usize,
-    /// How deep the deepest drawn row stands: the column every root's glyph is
-    /// padded to, and what the summary gives up room for. Read by the rows so
-    /// one knows how far its own levels may indent.
+    /// Levels of nesting every root is padded by; the summary pays for them.
     pub depth: usize,
 }
 
-/// The columns a row is cut into at this width, on this axis, with the vendor
-/// column where somebody has asked for one and `depth` the deepest a drawn row
-/// nests — a root is padded to that depth and then each of its own levels
-/// indents it by [`NEST`] cells.
+/// The columns of a row at this width and axis, with or without the vendor
+/// column, and every root padded by `depth` levels of [`NEST`] cells.
 pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Widths {
     let name = match width >= WIDE {
         true => WIDE_NAME,
@@ -94,9 +72,8 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Wi
         true => VENDOR,
         false => 0,
     };
-    // What stands between the name and the summary: the vendor column, the
-    // state word the dir axis adds, each with the gap in front of it, and
-    // nothing at all for whichever of them is not there.
+    // The vendor and state columns sit between name and summary, each with
+    // its own gap, and cost nothing when absent.
     let inserted = [vendor, state]
         .into_iter()
         .filter(|column| *column > 0)
@@ -113,26 +90,19 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Wi
     }
 }
 
-/// What one level of nesting adds before the glyph: the two cells of a
-/// connector, `├─`, `└─` or the `│ ` of a rail passing through.
+/// Cells one level of nesting adds before the glyph: `├─`, `└─` or `│ `.
 pub(super) const NEST: usize = 2;
 
-/// The cells every root spends on nesting, which is what the summary gives up
-/// for a family.
-///
-/// A root is padded to the family's deepest, one [`NEST`] per level; a child's
-/// own levels are paid for by its name, which gives up the same two cells per
-/// level, so a name and every column after it stay under the row's parent.
+/// Cells a root spends on `depth` levels of padding.
 pub(super) fn nest(depth: usize) -> usize {
     NEST * depth
 }
 
-/// How many cells a path heading can spend on its path, with `suffix` being
-/// whatever the heading says after the path and before its rule.
+/// Cells a path heading can spend on the path itself, given the `suffix`
+/// that follows it.
 ///
-/// What is left of the screen once the path, the space after it, the suffix
-/// and its own space, the shortest rule a heading is allowed and the count in
-/// the age column have been taken out of it.
+/// The width less a space, the suffix and its space, [`SHORTEST_RULE`], and
+/// the count in the age column.
 pub(super) fn path_room(width: usize, suffix: &str) -> usize {
     let said = match suffix.is_empty() {
         true => 0,
@@ -141,8 +111,8 @@ pub(super) fn path_room(width: usize, suffix: &str) -> usize {
     width.saturating_sub(1 + said + SHORTEST_RULE + GAP + AGE)
 }
 
-/// `text` in a column `width` cells wide, filled with spaces, and cut with an
-/// ellipsis where it is too long for the column.
+/// Left-aligns `text` in `width` cells, padding with spaces or cutting with
+/// an ellipsis.
 pub(super) fn pad(text: &str, width: usize) -> String {
     let shown = match width_of(text) > width {
         true => cut(text, width),
@@ -152,8 +122,8 @@ pub(super) fn pad(text: &str, width: usize) -> String {
     format!("{shown}{short}")
 }
 
-/// The same column with `text` at its right end, which is where a number that
-/// has to line up with the numbers above it goes.
+/// Right-aligns `text` in `width` cells, for numbers that line up. Too long a
+/// text is cut without an ellipsis.
 pub(super) fn padl(text: &str, width: usize) -> String {
     let shown = match width_of(text) > width {
         true => head(text, width),
@@ -163,20 +133,18 @@ pub(super) fn padl(text: &str, width: usize) -> String {
     format!("{short}{shown}")
 }
 
-/// `path` in `room` cells, with the middle taken out of it where it does not
-/// fit: the first segment, an ellipsis, and as much of the tail as there is
-/// room for, down to the last two segments.
+/// Fits `path` into `room` cells by dropping middle segments: the first
+/// segment, `…`, then as much of the tail as fits, down to the last two.
 ///
-/// The end is never what goes. A worktree is identified by its last segment
-/// and its parent, and a path cut at the right would leave every worktree of
-/// one project reading the same.
+/// The end is always kept: a worktree is named by its last segments, and
+/// cutting them would make every worktree of a project read the same. If even
+/// that does not fit, the result is `…` and the last cells of the path.
 pub(super) fn elide(path: &str, room: usize) -> String {
     if width_of(path) <= room {
         return path.to_string();
     }
-    // The leading slash of an absolute path is not a segment and is not the
-    // segment that gets eaten, and a path already shortened to `~` keeps the
-    // `~` it was shortened to.
+    // The leading `/` is not a segment. A `~` is the first segment, so it is
+    // kept.
     let (root, rest) = match path.strip_prefix('/') {
         Some(rest) => ("/", rest),
         None => ("", path),
@@ -189,23 +157,19 @@ pub(super) fn elide(path: &str, room: usize) -> String {
             return shown;
         }
     }
-    // A path whose first segment and last two are already too long for the
-    // heading. What is left to keep is the end of it.
     match room {
         0 => String::new(),
         room => format!("…{}", tail(path, room - 1)),
     }
 }
 
-/// The columns `text` takes on a screen, which is not its characters: an emoji
-/// is one char and two columns, and a row measured in characters pushes its
-/// last column off the terminal's edge. ratatui's own measure, so a row is cut
-/// by the same arithmetic it is drawn with.
+/// Display width of `text` in cells, which differs from its char count for
+/// wide characters. Uses ratatui's measure so fitting and drawing agree.
 fn width_of(text: &str) -> usize {
     Span::raw(text).width()
 }
 
-/// As much of the front of `text` as fits in `width` columns.
+/// The longest prefix of `text` that fits in `width` cells.
 fn head(text: &str, width: usize) -> String {
     let mut kept = String::new();
     let mut used = 0;
@@ -220,7 +184,7 @@ fn head(text: &str, width: usize) -> String {
     kept
 }
 
-/// And as much of the back of it.
+/// The longest suffix of `text` that fits in `width` cells.
 fn tail(text: &str, width: usize) -> String {
     let mut kept = String::new();
     let mut used = 0;
@@ -235,7 +199,7 @@ fn tail(text: &str, width: usize) -> String {
     kept
 }
 
-/// `text` in `width` columns with an ellipsis standing for what did not fit.
+/// `text` cut to `width` cells, ending in `…`.
 fn cut(text: &str, width: usize) -> String {
     match width {
         0 => String::new(),
@@ -247,8 +211,7 @@ fn cut(text: &str, width: usize) -> String {
 mod tests {
     use super::*;
 
-    /// What a row spends on everything except the summary, which is what the
-    /// summary is left over from.
+    /// Cells a row spends on everything but the summary.
     fn spent(widths: Widths) -> usize {
         let inserted: usize = [widths.vendor, widths.state]
             .into_iter()

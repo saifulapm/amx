@@ -1,25 +1,17 @@
-//! Putting text on the clipboard of the terminal the view is drawn on.
+//! Base64 for OSC 52, the escape sequence that sets the clipboard of the
+//! terminal the view is drawn on.
 //!
-//! The terminal is the only thing here that can reach a clipboard: amx draws
-//! on it over whatever the connection is, and a selection made inside a pane
-//! on the far side of an ssh is not a selection the machine amx runs on can
-//! paste. So the text goes back the way every other thing the view says goes
-//! back — as an escape sequence, OSC 52 — and whoever is looking at the
-//! screen has it. A terminal that ignores the sequence copies nothing, which
-//! is the cost of asking rather than reaching.
-//!
-//! Base64 is written out here because it is the one thing OSC 52 needs and
-//! twenty lines is less than a dependency: the encoder is RFC 4648's own
-//! alphabet with the padding, and its whole job is bytes a terminal will take.
+//! OSC 52 reaches the user's own terminal even over ssh, where a clipboard on
+//! the machine amx runs on would be no use. A terminal that ignores the
+//! sequence copies nothing. The encoder is hand-written to avoid a dependency
+//! for twenty lines.
 
-/// `bytes` as base64, RFC 4648 with the padding.
+/// Encodes `bytes` as padded base64 (RFC 4648).
 pub(super) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut said = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for group in bytes.chunks(3) {
-        // The group as one 24-bit number, a short group zero-filled. What the
-        // padding then says is how many of the four characters stood for a
-        // byte somebody sent.
+        // The group as one 24-bit number, a short group zero-filled.
         let word = group
             .iter()
             .chain(std::iter::repeat(&0))
@@ -41,9 +33,7 @@ mod tests {
 
     #[test]
     fn base64_is_rfc_4648_with_its_padding() {
-        // The RFC's own test vectors, which between them cover every length a
-        // last group can be: three bytes and no padding, two and one `=`, one
-        // and two.
+        // The RFC 4648 test vectors: a last group of three, two and one bytes.
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
         assert_eq!(base64(b"fo"), "Zm8=");
@@ -55,9 +45,7 @@ mod tests {
 
     #[test]
     fn base64_carries_every_byte_a_selection_can_hold() {
-        // The high bytes of anything but ASCII, which a wall of agent names
-        // holds as readily as a card of prose does, and the two characters at
-        // the top of the alphabet that only a high byte reaches.
+        // Non-ASCII bytes, and the `+` and `/` only high bytes reach.
         assert_eq!(base64("│".as_bytes()), "4pSC");
         assert_eq!(base64(&[0xff, 0xff, 0xff]), "////");
         assert_eq!(base64(&[0xfb, 0xff, 0xbf]), "+/+/");
