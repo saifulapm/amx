@@ -1,11 +1,9 @@
-//! Forgetting the rows that are over, whether or not the work landed.
+//! `amx clear`: forgetting finished rows, whether or not their work landed.
 //!
-//! `sweep` takes the agents a forge or git says are done with; `clear` takes
-//! the rest of what a wall fills up with — a stopped row, a command that
-//! failed, an agent whose branch nobody ever cut. It is the ctrl+x on the wall
-//! said once for the whole list, so these drive the same things that key is
-//! held to: the list and its reasons, the one question, and the tree holding
-//! work no commit has that keeps its record.
+//! `sweep` takes only agents whose work a forge or git says has landed;
+//! `clear` also takes stopped rows and failed commands. It is the wall's
+//! ctrl+x for the whole list: one question, a reason per row, and a tree with
+//! uncommitted work keeps its record.
 
 mod common;
 
@@ -29,18 +27,16 @@ fn clear_lists_the_finished_rows_and_forgets_the_ones_whose_trees_hold_nothing()
     let amx = Harness::new();
     let repo = amx.a_repo();
 
-    // Two rows somebody stopped. Nothing landed and nothing ever will: there
-    // is no branch on either of them for a forge to have an opinion about.
+    // Two stopped rows with no branch for a forge to know about.
     finished(&amx, "fix-login-a1b", "stopped", 0);
     finished(&amx, "add-search-b2c", "stopped", 0);
 
-    // A row whose turn ended, holding a tree with work no commit has.
+    // A finished row whose tree holds uncommitted work.
     let tree = an_ended_agent(&amx, "port-import-c3d", &repo);
     work_on_the_branch(&tree, "import.rs");
     std::fs::write(Path::new(&tree).join("notes.md"), "not committed\n").expect("a loose file");
 
-    // And one sitting at its prompt, in a pane somebody can still type into,
-    // which is not finished.
+    // An agent idle at its prompt is not finished.
     amx.play("watch-log-d4e", "happy-turn");
     amx.until_state("watch-log-d4e", "idle");
 
@@ -87,8 +83,8 @@ fn clear_takes_a_landed_row_the_way_the_sweep_takes_it_branch_and_all() {
     let amx = Harness::new();
     let repo = amx.a_repo();
 
-    // Its own commit is not in main, so the only thing saying this work has
-    // landed is what the last look at the forge wrote down.
+    // The commit is not in main, so only the recorded forge lookup says the
+    // work landed.
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
     work_on_the_branch(&tree, "login.rs");
     a_merged_request(&amx, "fix-login-a1b", 12, &tree);
@@ -151,9 +147,8 @@ fn clear_says_what_it_would_take_and_takes_none_of_it_when_the_answer_is_no() {
 
 #[test]
 fn clear_goes_past_a_row_whose_tree_git_will_not_remove() {
-    // git refuses to remove a locked tree. That row keeps its tree and the
-    // record naming it, the row after it is still cleared, and the run says
-    // which one it kept.
+    // git refuses to remove a locked tree. That row keeps its tree and record,
+    // and the next row is still cleared.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let locked = an_ended_agent(&amx, "fix-login-a1b", &repo);
@@ -177,8 +172,8 @@ fn clear_goes_past_a_row_whose_tree_git_will_not_remove() {
 
 #[test]
 fn a_kept_tree_keeps_its_record_under_stop_delete() {
-    // `stop --delete` on a tree holding work no commit has keeps the tree, and
-    // so the record that is the only thing naming it.
+    // A tree with uncommitted work is kept, so the record naming it is kept
+    // too.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);

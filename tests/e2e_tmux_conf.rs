@@ -1,31 +1,23 @@
-//! The tmux config amx ships to be copied, against a real tmux.
+//! The example `assets/tmux.conf`, sourced into a real tmux.
 //!
-//! `assets/tmux.conf` is read by people, not by amx: nothing includes it and
-//! no verb writes it anywhere. That is exactly why it is checked here. A conf
-//! is sourced top to bottom and tmux stops at the first line it cannot parse,
-//! so one stale option name in a file we hand somebody costs them every line
-//! under it — and a shipped file nobody runs is a file that rots quietly.
-//!
-//! What each test asserts is the claim the file's own comments make, so a
-//! line that changes its mind here fails until the prose agrees.
+//! amx never reads this file, so nothing else would notice it breaking. tmux
+//! stops sourcing at the first line it cannot parse, so one stale option
+//! costs every line after it. Each test checks a claim the file's own
+//! comments make.
 
 mod common;
 
 use common::Harness;
 use std::path::{Path, PathBuf};
 
-/// The file as shipped.
 fn shipped() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tmux.conf")
 }
 
-/// A server with the shipped file sourced into it.
+/// A server with only the shipped file sourced into it.
 ///
-/// The harness starts every server with `-f /dev/null`, so nothing but this
-/// file has said anything to the tmux being asked. `source-file` connects to
-/// a server rather than starting one, and a server with no session in it does
-/// not stay, so there is a session here for the same reason a person's server
-/// has one.
+/// `source-file` needs a running server, and a server with no session exits,
+/// so a session is created first.
 fn with_the_conf() -> Harness {
     let amx = Harness::new();
     amx.tmux(&["new-session", "-d", "-s", "somewhere"]);
@@ -35,8 +27,8 @@ fn with_the_conf() -> Harness {
 
 #[test]
 fn the_shipped_conf_is_a_file_this_tmux_can_read() {
-    // `source-file` exits non-zero on the first line it cannot parse, and the
-    // harness asserts on that, so arriving here at all is the check.
+    // `source-file` fails on the first line it cannot parse, and the harness
+    // asserts that tmux succeeded.
     let amx = with_the_conf();
     assert_eq!(amx.tmux(&["display-message", "-p", "ok"]), "ok");
 }
@@ -85,9 +77,8 @@ fn the_attach_keys_are_bound_under_the_prefix_and_not_at_the_root() {
         assert!(bound, "{key} should run `{command}`:\n{prefix}");
     }
 
-    // The file argues for the prefix table over `bind -n`, because a root
-    // binding takes that key from every agent's pane. It should not quietly
-    // do the thing it argues against.
+    // A root-table binding would take the key from every agent's pane, which
+    // the file advises against.
     let root = amx.tmux(&["list-keys", "-T", "root"]);
     assert!(
         !root.contains("amx attach"),

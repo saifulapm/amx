@@ -1,4 +1,5 @@
-//! Ending an agent, and what it leaves behind.
+//! `amx stop`: ending an agent, and what happens to its worktree, branch,
+//! record and claude's trust entry.
 
 mod common;
 
@@ -20,13 +21,11 @@ fn said(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The same, with the vendor's stand-in installed under the name the trust
-/// table knows.
+/// Spawn an agent with a worktree, running mock-claude copied to `claude` on
+/// PATH, and answer with the worktree.
 ///
-/// That table is keyed by the program an agent command runs, and claude is the
-/// one vendor whose store amx writes. A stop that is to prune that store has to
-/// have started something by that name, so the stand-in is copied under it and
-/// put in front of PATH, the way `new_as_claude` does in tests/e2e_spawn.rs.
+/// amx only prunes claude's trust store for agents whose command is `claude`,
+/// as in `new_as_claude` in tests/e2e_spawn.rs.
 fn as_claude(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
@@ -63,8 +62,7 @@ fn as_claude(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
         .to_string()
 }
 
-/// The key the vendor files a directory under: the path with every symlink
-/// resolved, which is what it asks the operating system for.
+/// claude's key for a directory: the canonical path.
 fn key_for(dir: &str) -> String {
     std::fs::canonicalize(dir)
         .expect("a directory that is there")
@@ -72,8 +70,8 @@ fn key_for(dir: &str) -> String {
         .into_owned()
 }
 
-/// claude's own config file, as the vendor leaves it: an entry per directory it
-/// has ever been started in, and the person's own keys around them.
+/// Write a `~/.claude.json` with trusted entries for `tree`, `repo` and an
+/// unrelated project, plus an unrelated top-level key.
 fn a_store(amx: &Harness, tree: &str, repo: &Path) -> PathBuf {
     let mut before = serde_json::json!({
         "numStartups": 412,
@@ -95,7 +93,7 @@ fn read_store(store: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(store).expect("the store")).expect("json")
 }
 
-/// The copies amx left beside the store.
+/// The backups amx left beside the store.
 fn copies_beside(store: &Path) -> Vec<String> {
     std::fs::read_dir(store.parent().unwrap())
         .expect("the home")
@@ -155,7 +153,8 @@ fn stop_ends_the_agent_and_records_that_it_was_stopped() {
     );
 }
 
-/// A record that names `parent` at `depth`, over the pane `amx.play` made.
+/// Play an agent whose record names `parent` at `depth`, and answer with its
+/// pane.
 fn a_child(amx: &Harness, id: &str, parent: &str, depth: u64) -> String {
     let pane = amx.play(id, "happy-turn");
     amx.set_meta(id, serde_json::json!({ "parent": parent, "depth": depth }));
@@ -205,9 +204,8 @@ fn stopping_a_child_never_touches_its_parent() {
 
 #[test]
 fn a_child_of_a_removed_parent_is_still_an_agent() {
-    // `stop --delete` takes the parent's record away. The child's record
-    // still names it, and what is left is an ordinary row rather than a
-    // record the reader drops.
+    // The child's record still names the deleted parent, and must still read
+    // as an ordinary agent.
     let amx = Harness::new();
     amx.play("parent-a1b", "happy-turn");
     amx.until_state("parent-a1b", "idle");
@@ -241,10 +239,9 @@ fn an_agent_that_will_not_stop_when_asked_is_stopped_anyway() {
 
 #[test]
 fn a_pane_that_answers_for_another_agent_is_left_standing() {
-    // tmux hands pane numbers out again after a server restart, so a record
-    // that outlived its server names whichever pane took its number. Recording
-    // a second agent on the pane is that, without the reboot: the pane answers
-    // for the agent recorded last, and the first record has lost it.
+    // tmux reuses pane ids after a server restart, so an old record can name a
+    // pane that now belongs to another agent. Recording a second agent on the
+    // pane reproduces that: the pane belongs to the agent recorded last.
     let amx = Harness::new();
     let pane = amx.play("yesterday-a1b", "happy-turn");
     amx.until_state("yesterday-a1b", "idle");
@@ -290,7 +287,7 @@ fn a_worktree_with_work_in_it_is_always_kept_and_always_said() {
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // What an agent's first act usually is: a file git has never heard of.
+    // An untracked file.
     std::fs::write(Path::new(&worktree).join("login.rs"), "fn login() {}\n").unwrap();
 
     let out = said(&stop(
@@ -306,9 +303,8 @@ fn a_worktree_with_work_in_it_is_always_kept_and_always_said() {
 
 #[test]
 fn stopping_an_agent_takes_its_tree_back_out_of_claudes_store() {
-    // claude writes a project entry for every directory it is started in, and
-    // amx cuts a directory per agent: a store nobody prunes grows a key for
-    // each of them and keeps it long after the tree it names has gone.
+    // claude adds a project entry for every directory it starts in, and amx
+    // makes a worktree per agent, so without pruning the store grows forever.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = as_claude(&amx, "fix-login-a1b", &repo, "happy-turn");
@@ -339,8 +335,8 @@ fn stopping_an_agent_takes_its_tree_back_out_of_claudes_store() {
 
 #[test]
 fn a_worktree_that_is_kept_keeps_its_key_in_claudes_store() {
-    // The key says the vendor may work in that directory without asking. A
-    // directory that is still there is one somebody may still work in.
+    // The key lets claude work there without asking, and the directory is
+    // still in use.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = as_claude(&amx, "fix-login-a1b", &repo, "happy-turn");
@@ -394,8 +390,8 @@ fn the_dispositions_can_be_answered_on_the_command_line() {
 
 #[test]
 fn a_branch_a_kept_worktree_has_checked_out_stays_and_says_why() {
-    // git will not delete a branch a worktree holds, and the agent is stopped
-    // by the time anybody finds out: saying so beats failing the command.
+    // git refuses to delete a branch a worktree has checked out. The agent is
+    // already stopped by then, so stop reports it instead of failing.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
@@ -420,7 +416,7 @@ fn stopping_asks_when_nobody_has_answered() {
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // No to the worktree, and nothing to the branch, which keeps it.
+    // "n" keeps the worktree; an empty answer keeps the branch.
     let out = amx.amx_with_input(&["stop", "fix-login-a1b"], "n\n\n");
     let printed = said(&out);
 
@@ -472,8 +468,8 @@ fn clibatch_delete_takes_the_record_away_with_the_agent() {
 
 #[test]
 fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
-    // `--delete` says what becomes of the record. It is not `--force`, and it
-    // is not an answer to a question about somebody's work.
+    // `--delete` is about the record only; it does not answer the worktree
+    // question.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
@@ -489,17 +485,16 @@ fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
         printed.contains(&worktree),
         "the line says where it is: {printed}"
     );
-    // The tree stayed, and the record is the only thing naming it: it stays
-    // too, whatever `--delete` asked for.
+    // The record is the only thing naming the kept tree, so it stays despite
+    // `--delete`.
     assert!(printed.contains("kept fix-login-a1b's record"), "{printed}");
     assert!(amx.agent_dir("fix-login-a1b").exists(), "{printed}");
 }
 
 #[test]
 fn clibatch_delete_takes_the_record_off_when_the_worktree_is_gone() {
-    // Somebody has already deleted the directory. Everything that names the
-    // repository is asked from inside that directory, so the whole of `stop`
-    // used to abort on it and the record had to come off by hand.
+    // The worktree directory is already gone, so git cannot be asked from
+    // inside it which repository it belongs to.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");

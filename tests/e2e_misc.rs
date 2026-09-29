@@ -1,4 +1,4 @@
-//! What an agent has changed, and everything that has happened to it.
+//! `amx diff`, `amx events` and the harness's own socket cleanup.
 
 mod common;
 
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
-/// An agent playing a scenario, started the way a person starts one.
+/// Start an agent with `amx new` and extra `args`, playing `scenario`.
 fn started(amx: &Harness, id: &str, scenario: &str, args: &[&str]) {
     let out = amx
         .amx_command(
@@ -30,10 +30,8 @@ fn started(amx: &Harness, id: &str, scenario: &str, args: &[&str]) {
     );
 }
 
-/// The kinds one agent's lines carry, in the order the stream printed them.
-///
-/// Reading them out of the columns is the point: a merged stream that does not
-/// say whose each line is cannot be read at all.
+/// The event kinds printed for agent `id`, in order, read from the id and
+/// kind columns.
 fn kinds_of(printed: &str, id: &str) -> Vec<String> {
     printed
         .lines()
@@ -82,9 +80,7 @@ fn diff_measures_a_record_with_no_base_from_the_branch_it_is_on() {
     let repo = amx.a_repo();
     std::fs::write(repo.join("README.md"), "after\n").expect("the changed file");
 
-    // A record with no worktree, no branch and no base: what an adopted agent
-    // carries, and what every record written before amx recorded a base for a
-    // tree it did not cut carries.
+    // No worktree, branch or base, as an adopted agent's record has.
     amx.record("adopted-b2c", "%404");
     amx.set_meta("adopted-b2c", json!({ "dir": repo }));
 
@@ -114,13 +110,12 @@ fn diff_from_names_the_commit_to_measure_from() {
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     git(&tree, &["commit", "-am", "the work"]);
 
-    // Measured from the commit the tree was cut from, the commit is the work.
+    // From the commit the tree was cut from, the new commit is the work.
     let out = amx.amx(&["diff", "fix-login-a1b"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("+after"));
 
-    // Named instead, from HEAD, there is nothing left to show: the work is
-    // already in the commit the base points at.
+    // From HEAD, the work is already committed.
     let out = amx.amx(&["diff", "fix-login-a1b", "--from", "HEAD"]);
     assert!(
         out.status.success(),
@@ -145,7 +140,6 @@ fn diff_shows_the_work_including_a_file_git_has_never_heard_of() {
         "works-without-end",
     ));
 
-    // The agent's own work, while it is still working.
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
     std::fs::write(tree.join("login.rs"), "fn login() {}\n").expect("the new file");
 
@@ -177,8 +171,8 @@ fn diff_has_nothing_to_show_for_an_agent_that_has_changed_nothing() {
     );
 }
 
-/// A viewer that marks every row it was handed, keeps a copy of them, and then
-/// holds the terminal the way a pager does.
+/// A `diff` viewer that prefixes each line, keeps a copy in
+/// `$HOME/viewed.patch`, and then holds the terminal like a pager.
 const VIEWER: &str =
     "diff = \"sed 's/^/VIEWED /' | tee $HOME/viewed.patch; while :; do sleep 0.05; done\"\n";
 
@@ -197,8 +191,6 @@ fn diff_at_a_terminal_goes_through_the_viewer_the_config_names() {
 
     let pane = amx.in_a_terminal(&[], &["diff", "fix-login-a1b"]);
 
-    // On the terminal amx was asked from, which is what a viewer is for: the
-    // patch is drawn where a person is looking rather than piped anywhere.
     amx.until("the viewer to draw the patch", || {
         amx.capture(&pane).contains("VIEWED +after").then_some(())
     });
@@ -218,8 +210,7 @@ fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
     amx.config(VIEWER);
     let copy = amx.home().join("viewed.patch");
 
-    // A caller reading the patch is a caller reading git's own patch, whatever
-    // somebody set the key to for their own screen.
+    // Down a pipe the caller gets git's own patch.
     let out = amx.amx(&["diff", "fix-login-a1b"]);
     assert!(out.status.success());
     let patch = String::from_utf8_lossy(&out.stdout);
@@ -229,8 +220,7 @@ fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
     );
     assert!(!copy.exists(), "and nothing was run to read it");
 
-    // And --stat is the shape of the work, which is not what a patch viewer is
-    // handed: the terminal comes back rather than being held by one.
+    // --stat prints a summary and never runs the viewer.
     let pane = amx.in_a_terminal(&[], &["diff", "fix-login-a1b", "--stat"]);
     amx.until(
         "the summary to be printed and the terminal given back",
@@ -241,8 +231,6 @@ fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
 
 #[test]
 fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
-    // The question `--stat` answers is how far along an agent is, which a
-    // hundred-file patch scrolling past does not.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = PathBuf::from(with_a_worktree(
@@ -277,10 +265,9 @@ fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
 
 #[test]
 fn diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
-    // The agent rebased its commit onto the release line, which the commit its
-    // tree was cut from is not on. Measured from that commit the answer would
-    // carry its work backwards -- the file it added deleted, the line it
-    // changed changed back -- and read as the agent's.
+    // The agent rebased onto `release`, which does not contain the commit its
+    // tree was cut from. Diffing from that commit would show main's later
+    // changes reverted as if the agent had made them.
     let amx = Harness::new();
     let repo = amx.a_repo();
     git(&repo, &["branch", "release"]);
@@ -336,8 +323,7 @@ fn diff_measures_the_agent_that_works_in_the_directory_as_it_is() {
         &["--dir", &repo.to_string_lossy(), "--no-worktree"],
     );
 
-    // Nothing has changed yet, and an empty patch is an answer rather than the
-    // refusal it used to be.
+    // Nothing has changed yet: an empty patch, not an error.
     let out = amx.amx(&["diff", "no-tree-b2c"]);
     assert!(
         out.status.success(),
@@ -350,8 +336,7 @@ fn diff_measures_the_agent_that_works_in_the_directory_as_it_is() {
         "nothing changed yet"
     );
 
-    // What the directory changes is the agent's work, measured from the commit
-    // it was standing on when the session started.
+    // Changes in the directory count from the commit HEAD was on at spawn.
     std::fs::write(repo.join("README.md"), "after\n").expect("the changed file");
     let out = amx.amx(&["diff", "no-tree-b2c"]);
     assert!(out.status.success());
@@ -393,9 +378,8 @@ fn diff_says_so_when_there_is_no_such_agent() {
 
 #[test]
 fn clibatch_new_refuses_a_task_with_nothing_in_it() {
-    // `amx new "$TASK"` with `TASK` unset is a command line somebody means, so
-    // what it must not do is start an agent that sits there with nothing to
-    // do, holding a pane and a worktree.
+    // `amx new "$TASK"` with `TASK` unset must not start an idle agent that
+    // holds a pane and a worktree.
     let amx = Harness::new();
     let out = amx.amx(&["new", "", "--agent", &amx.mock()]);
 
@@ -411,10 +395,8 @@ fn clibatch_new_refuses_a_task_with_nothing_in_it() {
 
 #[test]
 fn clibatch_rename_puts_the_word_where_a_program_reads_it() {
-    // A rename is for the eye, but the wall is not the only thing with rows to
-    // draw. What somebody calls an agent is on `--json` beside the id every
-    // surface still addresses it by, so a program listing agents can label
-    // them the way the person who renamed them does.
+    // The name is in `ls --json` next to the id, so programs can label agents
+    // the way the person did.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
@@ -535,8 +517,7 @@ fn clibatch_events_json_is_the_same_merge_for_a_program_to_read() {
         "one object per event, and nothing else: {printed}"
     );
 
-    // Every line says whose it is, which is the whole of what a merged stream
-    // adds to the logs it merged.
+    // Every line names its agent.
     let whose: Vec<&str> = read
         .iter()
         .filter_map(|event| event["id"].as_str())
@@ -544,7 +525,7 @@ fn clibatch_events_json_is_the_same_merge_for_a_program_to_read() {
     assert_eq!(whose.len(), read.len(), "{printed}");
     assert!(whose.contains(&"fix-login-a1b") && whose.contains(&"port-importer-c3d"));
 
-    // And the payload is the vendor's own, not a phrase amx made of it.
+    // The payload is the vendor's, unchanged.
     let stop = read
         .iter()
         .find(|event| event["id"] == "fix-login-a1b" && event["kind"] == "Stop")
@@ -580,7 +561,7 @@ fn following_prints_events_as_they_arrive() {
         })
     };
 
-    // An agent that starts while the stream is running joins it.
+    // An agent started after the follow began still shows up.
     amx.play("fix-login-a1b", "happy-turn");
     amx.until("the turn to end on the stream", || {
         let seen = seen.lock().expect("the lines read so far");
@@ -596,7 +577,6 @@ fn following_prints_events_as_they_arrive() {
         "the whole turn arrived, in order: {followed}"
     );
 
-    // A follow ends when the person watching it does.
     child.kill().expect("ending the stream");
     child.wait().expect("waiting for the stream");
     reading.join().expect("the reader");
@@ -606,13 +586,13 @@ fn following_prints_events_as_they_arrive() {
 fn a_dropped_harness_takes_its_tmux_socket_with_it() {
     let path = {
         let amx = Harness::new();
-        // A session keeps the server alive, and the server makes the socket.
+        // A session keeps the server, and so its socket, alive.
         amx.tmux(&["new-session", "-d", "-s", "keep", "sleep", "60"]);
         let path = PathBuf::from(amx.tmux(&["display-message", "-p", "#{socket_path}"]));
         assert!(path.exists(), "no socket at {}", path.display());
         path
     };
-    // Dead sockets piled up in /tmp/tmux-1000 by the thousand until tmux
-    // itself timed out opening the directory (friction #G40BJA0X).
+    // Stale sockets pile up in the socket directory until tmux times out
+    // opening it.
     assert!(!path.exists(), "{} outlived its harness", path.display());
 }

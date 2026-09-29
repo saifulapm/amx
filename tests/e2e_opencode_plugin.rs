@@ -1,10 +1,8 @@
-//! opencode's plugin, run by node against what opencode 2.0.16 sent.
+//! Runs the JavaScript tests for amx's opencode plugin under `node --test`.
 //!
-//! The plugin is JavaScript loaded into opencode's own TUI, so the suite that
-//! holds it to Rulings 2 to 6 is JavaScript too:
-//! `tests/opencode_plugin/plugin.test.mjs` replays the events captured in
-//! `tests/opencode/events/` into `assets/opencode/tui.js` with a fake ctx and
-//! an amx that writes down what it is told. This runs it under `node --test`.
+//! `tests/opencode_plugin/plugin.test.mjs` replays the events captured from
+//! opencode 2.0.16 in `tests/opencode/events/` into `assets/opencode/tui.js`,
+//! with a fake context and a fake amx that records what it is told.
 
 use std::path::Path;
 use std::process::Command;

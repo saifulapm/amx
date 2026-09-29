@@ -1,11 +1,8 @@
-//! The command a moment runs.
+//! The `on_waiting`, `on_idle`, `on_done` and `on_stopped` commands.
 //!
-//! `on_waiting`, `on_idle`, `on_done` and `on_stopped` name a command apiece,
-//! and which amx runs one is which amx wrote the phase: the hook that recorded
-//! the vendor's event, or the `stop` that ended the agent. Only here is the
-//! whole of that true — the config is read by a hook in a real pane, the phase
-//! reaches the command in its environment, and the event that moved the agent
-//! arrives on its stdin.
+//! Whichever amx process writes the phase runs the command: the hook that
+//! recorded the vendor's event, or the `stop` that ended the agent. The
+//! command gets the phase in its environment and the event on stdin.
 
 mod common;
 
@@ -13,9 +10,8 @@ use common::Harness;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// A machine where one moment runs a command that writes down what it was
-/// handed: the phase and whether anybody was looking on one line, and the event
-/// it was given on stdin under that.
+/// Configure `key` to append `$AMX_STATE $AMX_WATCHED` and then its stdin to a
+/// file, and answer with the file.
 fn writes_down(amx: &Harness, key: &str) -> PathBuf {
     let said = amx.home().join(format!("said-{key}"));
     amx.config(&format!(
@@ -25,11 +21,10 @@ fn writes_down(amx: &Harness, key: &str) -> PathBuf {
     said
 }
 
-/// An agent started the way a person starts one, playing `scenario`.
+/// Start an agent with `amx new`, playing `scenario`.
 ///
-/// `new` rather than a pane of the harness's own: the hook that runs the
-/// command reads the person's config file, and it is `new` that hands the pane
-/// the home that file is kept under.
+/// Uses `new` rather than [`Harness::play`] because the hook reads the config
+/// under the home `new` hands the pane.
 fn start(amx: &Harness, id: &str, scenario: &str) {
     let out = amx
         .amx_command(&[
@@ -52,8 +47,7 @@ fn start(amx: &Harness, id: &str, scenario: &str) {
     );
 }
 
-/// One more hook, delivered the way the vendor delivers one: the payload on
-/// stdin, and the environment saying whose it is.
+/// Run `amx _hook` for agent `id` with `payload` on stdin, as a vendor does.
 fn deliver(amx: &Harness, id: &str, payload: &str) {
     use std::io::Write;
     use std::process::Stdio;
@@ -77,8 +71,8 @@ fn deliver(amx: &Harness, id: &str, payload: &str) {
     );
 }
 
-/// What the command has written, once there is a run's worth of it: the line
-/// about its environment and the event it was handed, a pair per run.
+/// Wait for `runs` runs of the command, and answer with each run's
+/// environment line and event.
 fn wrote(amx: &Harness, said: &Path, runs: usize) -> Vec<(String, Value)> {
     let text = amx.until(&format!("the command to have run {runs} times"), || {
         let text = std::fs::read_to_string(said).ok()?;
@@ -104,15 +98,13 @@ fn a_stop_on_a_question_runs_the_waiting_command_once() {
     start(&amx, "ask-a1b", "asks-a-question");
     amx.until_state("ask-a1b", "waiting");
 
-    // The notification repeating a box is the same screen said a second time,
-    // to somebody who has already been told.
+    // A notification repeating the same prompt is not a new stop.
     deliver(
         &amx,
         "ask-a1b",
         r#"{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#,
     );
-    // A turn back at work, and then a screen nobody has heard of: a stop of its
-    // own, and so a moment of its own.
+    // A new turn and then a different prompt is a second stop.
     deliver(
         &amx,
         "ask-a1b",
@@ -152,14 +144,12 @@ fn a_turn_that_ends_runs_the_idle_command_and_the_nudge_behind_it_runs_nothing()
     start(&amx, "fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // The vendor nudges about an idle session a minute after the turn ended.
-    // It is the same turn still over.
+    // The vendor's idle nudge a minute after the turn is not a new stop.
     deliver(
         &amx,
         "fix-login-a1b",
         r#"{"hook_event_name":"Notification","message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#,
     );
-    // A turn of its own, which ends in a moment of its own.
     deliver(
         &amx,
         "fix-login-a1b",
@@ -191,8 +181,7 @@ fn a_command_that_finishes_runs_the_done_command() {
     start(&amx, "say-hello-b2c", "finishes");
     assert_eq!(amx.until_state("say-hello-b2c", "done")["exit"], 0);
 
-    // The turn ended before the command did, and nobody wrote a command for
-    // that moment: one key, one moment.
+    // The turn ended before the command did, but only `on_done` is configured.
     let runs = wrote(&amx, &said, 1);
     assert_eq!(runs[0].0, "done 0");
     assert_eq!(runs[0].1["kind"], "exit");

@@ -1,10 +1,7 @@
-//! The vendor's stand-in, driven through a real pane.
+//! Smoke tests for mock-claude, the stand-in the other suites rely on.
 //!
-//! Everything else in this suite rests on this fixture, so it is checked here:
-//! a fixture nobody checks is a fixture that quietly stops proving anything.
-//! What these tests prove is that a scenario runs in a tmux pane, that its
-//! hooks travel amx's real path, and that the agent's record moves as they
-//! arrive.
+//! A scenario runs in a real tmux pane, its hooks go through amx's real hook
+//! path, and the agent's record moves as they arrive.
 
 mod common;
 
@@ -25,7 +22,6 @@ fn a_scenario_moves_the_record_through_a_turn() {
     assert_eq!(state["question"], serde_json::Value::Null);
     assert!(state["last_event"].as_u64().unwrap() > 0);
 
-    // The whole turn is on the record, in the order it happened.
     let kinds = amx.event_kinds("fix-login-a1b");
     assert_eq!(
         kinds,
@@ -33,7 +29,6 @@ fn a_scenario_moves_the_record_through_a_turn() {
         "every hook the scenario delivered arrived"
     );
 
-    // And the session the vendor announced is on the record too.
     let meta = amx.meta("fix-login-a1b");
     assert!(meta["session"].is_string(), "{meta}");
     assert_eq!(
@@ -53,9 +48,8 @@ fn a_scenario_prints_to_a_real_pane() {
     let pane = amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // The footer is the last thing the scenario prints, and it prints it after
-    // the Stop hook has run: waiting on anything earlier is a race against
-    // however long that hook takes.
+    // The footer is printed last, after the Stop hook has run, so waiting on
+    // anything earlier races that hook.
     let screen = amx.until("the vendor's screen", || {
         let screen = amx.capture(&pane);
         screen.contains("⏵⏵ auto mode on").then_some(screen)
@@ -124,11 +118,8 @@ fn an_answer_the_payload_did_not_carry_comes_from_the_transcript() {
 
 #[test]
 fn a_turn_that_captured_no_answer_says_why_the_vendor_stopped() {
-    // "captured no answer" tells a caller that something went wrong and
-    // nothing about what to do next. The vendor wrote the reason in the
-    // transcript and nowhere else, so `result` reads it out of there: a reply
-    // cut off at the token limit is asked again shorter, where a provider
-    // that failed is asked again at all.
+    // The vendor writes the stop reason only to the transcript, and a caller
+    // needs it to decide whether to retry, so `result` reads it from there.
     let amx = Harness::new();
     amx.play("summarise-d4e", "stops-at-the-token-limit");
     amx.until_state("summarise-d4e", "idle");
@@ -142,8 +133,7 @@ fn a_turn_that_captured_no_answer_says_why_the_vendor_stopped() {
 
 #[test]
 fn hooks_from_a_pane_amx_knows_nothing_about_are_ignored() {
-    // A claude somebody started themselves fires the same hooks. They must
-    // cost nothing and change nothing.
+    // A claude started outside amx fires the same hooks, which must be no-ops.
     let amx = Harness::new();
     let out = amx.amx(&["_hook"]);
     assert!(out.status.success(), "a hook always exits 0");
@@ -170,7 +160,6 @@ fn the_fixture_says_so_when_it_has_no_scenario_to_play() {
 
 #[test]
 fn the_fixture_refuses_a_step_it_does_not_know() {
-    // A scenario with a typo in it must fail loudly, not quietly do nothing.
     let dir = tempfile::TempDir::new().unwrap();
     let scenario = dir.path().join("typo.scenario");
     std::fs::write(&scenario, "prnit hello\n").unwrap();

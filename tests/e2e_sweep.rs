@@ -1,10 +1,8 @@
-//! Clearing away the agents whose work has landed.
+//! `amx sweep`: removing the record, worktree and branch of agents whose
+//! work has landed.
 //!
-//! `sweep` is the one verb that takes a record, a tree and a branch in a
-//! breath, and it decides to on evidence it reads off the disk: what the last
-//! look wrote down about the request, and what git says about the branch. So
-//! these drive the whole of it — a real repository, real branches, real panes
-//! — and check both reasons, the law that stops it, and the question.
+//! The evidence is the recorded forge lookup (`pr.json`) and what git says
+//! about the branch, so these tests use real repositories, branches and panes.
 
 mod common;
 
@@ -21,7 +19,7 @@ fn sweep(amx: &Harness, args: &[&str]) -> Output {
     amx.amx(&[&["sweep"], args].concat())
 }
 
-/// The same, with a forge of the test's own first on the path.
+/// Run `amx sweep` with `bin` first on PATH.
 fn sweep_with(amx: &Harness, bin: &Path, args: &[&str]) -> Output {
     let path = match std::env::var("PATH") {
         Ok(rest) => format!("{}:{rest}", bin.display()),
@@ -42,11 +40,10 @@ fn said(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// A `gh` of the test's own, answering every question with `said`, in a
-/// directory to put first on the path.
+/// A fake `gh` that prints `said` for every call, and answer with its
+/// directory.
 ///
-/// Never the gh the machine running the suite has installed: what a suite must
-/// not do is ask somebody's forge about a repository in a temporary directory.
+/// The machine's real gh must never be asked about a temporary repository.
 fn a_forge_saying(amx: &Harness, said: &str) -> PathBuf {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the forge");
@@ -56,7 +53,7 @@ fn a_forge_saying(amx: &Harness, said: &str) -> PathBuf {
     bin
 }
 
-/// An origin for the repository to push to, bare and beside it.
+/// A bare origin next to `repo`, with `main` pushed to it.
 fn an_origin(repo: &Path) -> PathBuf {
     let bare = repo.with_file_name("origin.git");
     git(
@@ -73,13 +70,13 @@ fn sweep_takes_the_agent_the_forge_finished_with_and_the_one_git_did() {
     let amx = Harness::new();
     let repo = amx.a_repo();
 
-    // One whose request went in. Its own commit is not in main, so the only
-    // thing saying this work has landed is what the last look wrote down.
+    // Merged by request: the commit is not in main, so only the recorded
+    // forge lookup says it landed.
     let landed = an_ended_agent(&amx, "fix-login-a1b", &repo);
     work_on_the_branch(&landed, "login.rs");
     a_merged_request(&amx, "fix-login-a1b", 12, &landed);
 
-    // And one with no request at all, whose branch somebody merged.
+    // Merged by hand, with no request.
     let merged = an_ended_agent(&amx, "add-search-b2c", &repo);
     work_on_the_branch(&merged, "search.rs");
     merged_by_hand(&repo, "add-search-b2c");
@@ -109,9 +106,8 @@ fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
-    // The agent's own commit is not in main, so git has nothing to say about
-    // this branch and the forge is the only thing that knows — and it merged
-    // the branch exactly where it stands.
+    // The commit is not in main, so only the forge knows the branch was
+    // merged at its current head.
     work_on_the_branch(&tree, "login.rs");
     let head = git(Path::new(&tree), &["rev-parse", "HEAD"]);
     let bin = a_forge_saying(
@@ -142,8 +138,8 @@ fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
 
 #[test]
 fn sweep_keeps_a_merged_branch_the_agent_went_on_committing_on() {
-    // The request went in, and then a follow-up made two more commits on the
-    // same branch that nobody pushed. They are on no other branch anywhere.
+    // The request merged, then two more unpushed commits landed on the same
+    // branch. They are on no other branch.
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
@@ -169,8 +165,8 @@ fn sweep_keeps_a_merged_branch_the_agent_went_on_committing_on() {
 
 #[test]
 fn sweep_never_deletes_a_branch_a_person_named() {
-    // `--branch develop` onto a branch main has already caught up with reads
-    // as landed, and develop is still the person's own.
+    // An agent started with `--branch develop` reads as landed once main has
+    // caught up, but develop belongs to the person.
     let amx = Harness::new();
     let repo = amx.a_repo();
     git(&repo, &["branch", "develop"]);
@@ -217,10 +213,9 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
         Path::new(&tree),
         &["push", "-q", "-u", "origin", "amx/fix-login-a1b"],
     );
-    // A squash merge, as it looks from here: the work went in under a commit
-    // this branch does not hold, and then the forge deleted the branch. This
-    // checkout has not heard of it, so the sweep's own fetch is what makes it
-    // a fact.
+    // A squash merge: the work landed under a commit this branch does not
+    // hold, and the forge deleted the branch. Only the sweep's own fetch
+    // learns that.
     git(&origin, &["branch", "-D", "amx/fix-login-a1b"]);
 
     let out = said(&sweep(&amx, &["--force"]));
@@ -229,9 +224,8 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
         "{out}"
     );
     assert!(!Path::new(&tree).exists(), "the tree is gone: {out}");
-    // Nothing but the origin's word says the commit went anywhere, and no
-    // forge says it merged this head: the one commit on the branch is on no
-    // other branch, so the branch stays for somebody to look at.
+    // Nothing says this head merged, and its commit is on no other branch, so
+    // the branch is kept.
     assert!(
         out.contains("kept amx/fix-login-a1b: 1 commit is on no other branch"),
         "{out}"
@@ -247,10 +241,9 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
 fn sweep_keeps_a_tree_that_holds_work_no_commit_has_and_the_record_with_it() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    // A tree left where `new` cut it holds exactly what main holds, so git
-    // reads the branch as merged and the agent is on the list.
+    // An untouched tree matches main, so git reads the branch as merged.
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
-    // And then the thing an agent does first: a file git has never heard of.
+    // Then an untracked file.
     std::fs::write(Path::new(&tree).join("login.rs"), "fn login() {}\n").unwrap();
 
     let out = said(&sweep(&amx, &["--force"]));
@@ -275,10 +268,8 @@ fn sweep_keeps_a_tree_that_holds_work_no_commit_has_and_the_record_with_it() {
 fn sweep_ends_an_agent_that_is_somehow_still_running_before_it_takes_the_tree() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    // A turn that never ends, so the pane is certainly still there when the
-    // sweep arrives. What puts the agent on the list is the record saying the
-    // work is over — somebody stopped watching this one a while ago — while
-    // the vendor sits in its pane holding the tree open.
+    // A turn that never ends keeps the pane alive, while the record says the
+    // agent is done, which puts it on the sweep's list.
     let tree = with_a_worktree(&amx, "watch-log-c3d", &repo, "works-without-end");
     amx.until_state("watch-log-c3d", "working");
     let pane = amx.pane_of("watch-log-c3d");
