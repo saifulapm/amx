@@ -1,22 +1,16 @@
 //! Reading an agent's screen when its hooks have gone quiet.
 //!
-//! Hooks are precise and win while they flow. When they stop — the vendor was
-//! interrupted with Escape, or nothing has happened for a while — the pane
-//! itself is the only witness left, and this is what amx knows how to see in
-//! it: the rules in the vendor's own screens document — claude's is
-//! `assets/screen-rules.toml` — matched against the bottom of the capture.
+//! Hooks win while they flow. When they stop (the vendor was interrupted, or
+//! nothing has happened for a while) the pane is the only evidence left, and
+//! this matches it against the rules in the vendor's screens document, e.g.
+//! `assets/screen-rules.toml`, reading only the bottom of the capture.
 //!
-//! The ruleset is small on purpose. A screen no rule claims is `unknown`, and
-//! `unknown` with its age shown is a better answer than a confident wrong one:
-//! naming a screen also clears any question off the row, so a wrong match can
-//! delete a question a person is being asked.
-//!
-//! One document per vendor, and the vendor's own entry in the table is what
-//! points at it. Every string in a document is that vendor's own — the words
-//! in its widgets, the glyphs it draws its chrome with, the sentences it sends
-//! about a dialog it will not describe — so which document is read follows
-//! from the program an agent command runs, and no vendor's screen is spelled
-//! out in Rust here.
+//! - The ruleset is small on purpose. A screen no rule claims is `unknown`,
+//!   which beats a confident wrong answer: naming a screen also clears any
+//!   question off the row.
+//! - Every string in a document is that vendor's own, and the document is
+//!   picked by the program the agent command runs. No vendor's screen is
+//!   spelled out in Rust.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -26,28 +20,23 @@ use crate::furniture::Furniture;
 use crate::registry;
 use crate::store::{Phase, Question};
 
-/// How many rows up from the bottom of the capture a rule may see. The
-/// vendor's chrome sits at the bottom; the rest is the agent's own output,
-/// which is not evidence about the vendor's state.
+/// How many rows up from the bottom of the capture a rule may see. The chrome
+/// is at the bottom; the rest is the agent's output and says nothing about the
+/// vendor's state.
 pub const FLOOR_LINES: usize = 24;
 
-/// How long a screen must have held still, in seconds, before a quiescent rule
-/// may end a turn that is on the record as running.
+/// Seconds a screen must hold still before a quiescent rule may end a turn
+/// the record says is running.
 ///
-/// The idle screen and a mid-turn pause are the same bytes, so only time tells
-/// them apart. The longest mid-turn stillness measured at one look a second is
-/// ten seconds, at the tail of a turn after the answer stopped streaming and
-/// before the Stop hook arrived; this is three times that.
-///
-/// Named for the looks it was counted in, and worth the same patience it
-/// always was: a reader looks once a second while a pane is the only witness,
-/// so this many looks and this many seconds are the same wait. Seconds are
-/// what a reader that prints a line and exits can measure at all — see
+/// The idle screen and a mid-turn pause are the same bytes, so only time
+/// tells them apart. The longest mid-turn stillness seen was ten seconds,
+/// between the answer finishing and the Stop hook; this is three times that.
+/// Readers look once a second, so looks and seconds are the same wait. See
 /// [`crate::store::Still`].
 pub const SETTLED_LOOKS: u64 = 30;
 
-/// Everything amx knows how to read on one vendor's screens: the rules, in
-/// the order they are asked, and the chrome underneath them.
+/// Everything amx can read on one vendor's screens: the rules, in the order
+/// they are tried, and the chrome under them.
 #[derive(Debug, Deserialize)]
 pub struct Ruleset {
     #[serde(default)]
@@ -58,108 +47,96 @@ pub struct Ruleset {
     rules: Vec<Rule>,
 }
 
-/// One screen amx can recognise.
+/// One screen amx can recognise. The fields are the keys of a `[[rule]]` table.
 #[derive(Debug, PartialEq, Eq, Deserialize)]
 pub struct Rule {
-    /// What this screen is called, for `status` to name its evidence.
+    /// The screen's name, which `status` reports as its evidence.
     pub name: String,
-    /// What the screen means.
+    /// The phase the screen means.
     pub state: Phase,
     /// Every one of these must appear.
     #[serde(default)]
     pub all: Vec<String>,
-    /// At least one of these must appear — the widget that makes prose a
+    /// At least one of these must appear: the widget that makes prose a
     /// prompt.
     #[serde(default)]
     pub any: Vec<String>,
-    /// How many rows the matched strings may span. A blocking prompt is a box,
-    /// not two things that happen to share a screen.
+    /// Most rows the matched anchors may span. A blocking prompt is one box,
+    /// not two strings that happen to share a screen.
     #[serde(default)]
     pub within: Option<usize>,
-    /// How few rows they may span: the floor that `within` is the ceiling of.
+    /// Fewest rows the matched anchors may span.
     ///
-    /// A vendor's chrome is as tall as it is, and anchors that come out nearer
-    /// than that have not found the whole of it. A box too tall for the rows a
-    /// rule may see has its own top out of reach, and the only border left to
-    /// find is its bottom one — which is a widget with the vendor's footer
-    /// under it wearing the chrome's own numbers. No choice of rows on that
-    /// screen spans enough, so the floor refuses it whichever border is tried.
+    /// Anchors closer than the vendor's chrome is tall have not found all of
+    /// it. A box taller than the floor leaves only its bottom border in view,
+    /// and no choice of rows spans enough, so the rule refuses it.
     #[serde(default)]
     pub apart: Option<usize>,
     /// None of these may appear below the match. claude draws no composer
-    /// under a blocking prompt, so a widget with the mode footer beneath it is
-    /// a quotation of a widget rather than one.
+    /// under a blocking prompt, so a widget with the mode footer under it is a
+    /// quotation of one.
     #[serde(default)]
     pub not_below: Vec<String>,
-    /// None of these may appear anywhere a rule can see. `not_below` refuses a
-    /// widget with the vendor's own chrome under it; this refuses the screen
-    /// outright, wherever the string is, for the rows a vendor draws that say
-    /// what a person is looking at — a viewer over the transcript, an overlay
-    /// in the slot the composer had. Those screens carry the chrome of the one
-    /// underneath them, so no window a rule's anchors fit tells them apart.
+    /// None of these may appear anywhere in the floor. For screens that say
+    /// what they are (a transcript viewer, an overlay in the composer's slot)
+    /// but carry the chrome of the screen underneath, which no anchor window
+    /// tells apart.
     #[serde(default)]
     pub not: Vec<String>,
-    /// Whether every anchor must be on the row the furniture walk finds
-    /// directly over the composer, which is where a vendor that spins a line
-    /// above its box spins it. The same words anywhere else on the screen are
-    /// the vendor's elision or the agent's own output.
+    /// Whether every anchor must be on the row directly above the composer,
+    /// as found by the furniture walk. That is where a vendor that spins a
+    /// line above its box spins it; the same words elsewhere are elision or
+    /// agent output.
     #[serde(default)]
     pub over_composer: bool,
-    /// Whether the `any` anchors count only where they open a row: past its
-    /// indent, or past the vendor's rule on a border row the vendor draws a
-    /// status into. The same glyph in the middle of a row is somebody's text.
+    /// Whether `any` anchors count only where they open a row, past indent or
+    /// past the rule on a border row with a status drawn into it. The same
+    /// glyph mid-row is somebody's text.
     #[serde(default)]
     pub any_opens: bool,
-    /// Whether this rule needs the screen to have held still before it may end
-    /// a running turn.
+    /// Whether the screen must hold still before this rule may end a running
+    /// turn.
     #[serde(default)]
     pub quiescent: bool,
-    /// Where this screen keeps the question it is asking, for the screens that
-    /// do not keep it where a screen usually does.
+    /// Where this screen keeps its question, when not in the usual place.
     #[serde(default)]
     pub asks: Asks,
-    /// The glyph this screen draws in front of the row its cursor is on, for a
-    /// vendor that marks a choice instead of numbering one.
+    /// The glyph drawn in front of the cursor row, for a vendor that marks a
+    /// choice instead of numbering it.
     ///
-    /// A rule saying nothing reads numbered choices and nothing else, which is
-    /// how every choice amx has ever read was read. A rule saying this takes
-    /// the run of rows the mark is in as the list and numbers it itself — see
-    /// [`Screen::marked_below`] — so a person has a key to press on a screen
-    /// whose only other grammar is a walk typed blind.
+    /// Without it only numbered choices are read. With it the run of rows
+    /// around the mark is the list, and amx numbers it itself (see
+    /// [`Screen::marked_below`]) so a person has a key to press.
     #[serde(default)]
     pub marks: Option<String>,
-    /// What this screen wants back, which is what decides what may be sent to
-    /// it. Every screen that blocks has one; a screen that is a state rather
-    /// than a question wants nothing and says so by leaving this out.
+    /// What this screen wants back, which decides what may be sent to it.
+    /// Every blocking screen has one; a screen that is a state leaves it out.
     #[serde(default)]
     pub kind: Option<crate::store::Kind>,
-    /// Whether this is a screen the vendor puts in front of the work rather
-    /// than one it draws in the middle of it: a gate nobody but the person at
-    /// the keyboard can get an agent past, and which no amount of waiting ends.
+    /// Whether the vendor puts this screen in front of the work: a gate only
+    /// the person at the keyboard can get past, which no waiting ends.
     ///
-    /// `doctor` is what reads it, and reading it here is the point: which
-    /// screens gate a run is a fact about the vendor, so it is written in the
-    /// vendor's own document beside the rule that recognises one, and no verb
-    /// carries a list of screen names of its own.
+    /// Read by `doctor`, so which screens gate a run lives in the vendor's own
+    /// document and no verb keeps a list of screen names.
     #[serde(default)]
     pub setup: bool,
 }
 
-/// What the screen had to say.
+/// What a ruleset made of a screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Claim<'a> {
-    /// This rule claims the screen, and may say so.
+    /// This rule claims the screen and may decide.
     Ruled(&'a Rule),
     /// This rule claims the screen, but a turn is on the record as running and
     /// the screen has not held still long enough to end it.
     Unsettled(&'a Rule),
-    /// Nothing amx knows accounts for this screen.
+    /// No rule accounts for this screen.
     Unclaimed,
 }
 
 #[cfg(test)]
 impl Claim<'_> {
-    /// The state to report, when there is one.
+    /// The phase to report, if the rule may decide.
     pub fn phase(&self) -> Option<Phase> {
         match self {
             Claim::Ruled(rule) => Some(rule.state),
@@ -167,7 +144,7 @@ impl Claim<'_> {
         }
     }
 
-    /// Which rule spoke, for `status` to name.
+    /// The name of the rule that claimed the screen.
     pub fn rule_name(&self) -> Option<&str> {
         match self {
             Claim::Ruled(rule) | Claim::Unsettled(rule) => Some(rule.name.as_str()),
@@ -176,11 +153,8 @@ impl Claim<'_> {
     }
 }
 
-/// Every registered vendor's screens, parsed once and kept by the name of the
-/// vendor that draws them.
-///
-/// A vendor that declares none is not in here at all, which is the difference
-/// between screens amx has measured and screens it has not.
+/// Every registered vendor's screens, parsed once, keyed by vendor name. A
+/// vendor that declares none is absent.
 fn parsed() -> &'static [(&'static str, Ruleset)] {
     static PARSED: OnceLock<Vec<(&'static str, Ruleset)>> = OnceLock::new();
     PARSED.get_or_init(|| {
@@ -195,24 +169,19 @@ fn parsed() -> &'static [(&'static str, Ruleset)] {
     })
 }
 
-/// The screens amx reads on the pane of an agent running `agent`.
+/// The screens read on the pane of an agent running `agent`.
 ///
-/// The vendor that command runs, and for a command amx has no entry for the
-/// vendor it runs by default. An unregistered command is not another vendor:
-/// it is a command line somebody wrote, routinely a wrapper around the vendor
-/// amx was written against. Every anchor in that vendor's document is its own,
-/// so a pane it was not drawn for is claimed by nothing rather than claimed
-/// wrongly, and a wrapper keeps the reading it has always had.
-///
-/// A vendor whose screens nobody has measured reads nothing whatsoever, which
-/// is the floor an entry stands on before anybody has sat in front of it: a
-/// pane to watch, and no claim about what is in it.
+/// An unregistered command reads the default vendor's screens: it is usually
+/// a wrapper around that vendor, and every anchor is the vendor's own, so a
+/// pane it was not drawn for is claimed by nothing rather than claimed
+/// wrongly. A vendor whose screens are unmeasured gets an empty ruleset that
+/// claims nothing.
 pub fn of(agent: &str) -> &'static Ruleset {
     let vendor = registry::entry(agent).or_else(|| registry::entries().first());
     select(parsed(), vendor.map_or("", |vendor| vendor.name)).unwrap_or_else(unmeasured)
 }
 
-/// The screens `vendor` draws, out of the ones amx has parsed.
+/// The parsed screens of `vendor`.
 fn select<'a>(parsed: &'a [(&'static str, Ruleset)], vendor: &str) -> Option<&'a Ruleset> {
     parsed
         .iter()
@@ -220,7 +189,7 @@ fn select<'a>(parsed: &'a [(&'static str, Ruleset)], vendor: &str) -> Option<&'a
         .map(|(_, screens)| screens)
 }
 
-/// The screens of a vendor amx has measured none of: no rule, so no claim.
+/// An empty ruleset, for a vendor with no measured screens.
 fn unmeasured() -> &'static Ruleset {
     static NOTHING: OnceLock<Ruleset> = OnceLock::new();
     NOTHING.get_or_init(|| Ruleset::parse("").expect("no rules at all is a ruleset"))
@@ -235,29 +204,25 @@ impl Ruleset {
         &self.rules
     }
 
-    /// The chrome this vendor draws under every pane it has the room for, as
-    /// the anchors that find it. The rules read a screen; this is what a
-    /// surface printing one cuts off it — see [`crate::furniture`].
+    /// The chrome this vendor draws under its panes. See [`crate::furniture`].
     pub fn furniture(&self) -> &Furniture {
         &self.furniture
     }
 
-    /// Whether this is one of the sentences the vendor sends in place of a
-    /// question — a message about a dialog that says nothing about what the
-    /// dialog is asking.
+    /// Whether `sentence` is one the vendor sends in place of a question,
+    /// saying a dialog is up without saying what it asks.
     ///
-    /// A whole sentence and never the start of one. The vendor sends a longer
-    /// one naming the tool it is about, and that one is something a caller can
-    /// act on; which of the two lands last is the vendor's business.
+    /// Matched whole. The vendor also sends a longer sentence naming the tool,
+    /// which a caller can act on.
     pub fn placeholder(&self, sentence: &str) -> bool {
         self.placeholders.iter().any(|said| said == sentence)
     }
 
-    /// Ask the screen what it is.
+    /// Which rule claims the capture, and whether it may decide.
     ///
-    /// `recorded` is the state amx has on file and `held` is how many seconds
-    /// this same screen has been on the pane — together they decide whether a
-    /// quiescent rule is allowed to end a turn.
+    /// `recorded` is the phase on file and `held` is how many seconds the
+    /// screen has held still; together they decide whether a quiescent rule
+    /// may end a turn.
     pub fn claim(&self, capture: &str, recorded: Phase, held: u64) -> Claim<'_> {
         let Some(rule) = self.ruling(capture) else {
             return Claim::Unclaimed;
@@ -269,22 +234,18 @@ impl Ruleset {
         }
     }
 
-    /// What the screen is asking, without asking it what the agent is doing.
+    /// What the screen is asking, whatever the record says.
     ///
-    /// [`claim`](Ruleset::claim) weighs a screen against what amx already
-    /// believes, because naming a screen can end a turn and that is a decision
-    /// about the record. Reading the question off one is not: the caller here
-    /// has a record that says the agent is waiting and cannot say what for.
-    /// The same rule order decides, and the quiescence gate has nothing to say
-    /// — it governs which rule may end a turn, and no rule that asks a
-    /// question is quiescent.
+    /// For a record that says waiting without saying what for. Same rule
+    /// order as [`claim`](Ruleset::claim); the quiescence gate does not apply,
+    /// since no rule that asks a question is quiescent.
     pub fn asking(&self, capture: &str) -> Option<Question> {
         self.ruling(capture)?.question(capture)
     }
 
     /// The first rule in document order that holds on the capture. Order
-    /// matters: a screen a specific rule names is not also the furniture
-    /// under it.
+    /// matters: a screen a specific rule names is not also the chrome under
+    /// it.
     fn ruling(&self, capture: &str) -> Option<&Rule> {
         let screen = Screen::new(capture);
         self.rules
@@ -294,28 +255,20 @@ impl Ruleset {
 }
 
 impl Rule {
-    /// Whether this rule's conditions hold on the screen.
     /// Whether this rule's box is on the screen.
     ///
-    /// Every row each anchor is on is a candidate, and the rule holds when
-    /// some choice of one row per anchor fits its window. Not the topmost row
-    /// carrying each string, which is what this read until 2026-09-06: pi
-    /// draws an Update Available box above its composer whenever a newer pi
-    /// exists, its borders are the composer's own, and every rule that says
-    /// how far its anchor may sit from the border anchored on the notice and
-    /// lost its window — a fresh pi read `unknown` idle and mid-turn until
-    /// the transcript pushed the box off. Trying every row can only make a
-    /// rule hold where it failed; the floor `apart` still refuses a lone
-    /// bottom border, because no choice of rows on that screen spans enough.
+    /// Every row an anchor is on is a candidate, and the rule holds when some
+    /// choice of one row per anchor fits its window. The topmost row alone is
+    /// not enough: pi draws an Update Available box above its composer with
+    /// the composer's own borders, and anchors that found the notice lost
+    /// their window. `apart` still refuses a lone bottom border.
     fn holds(&self, screen: &Screen, furniture: &Furniture) -> bool {
-        // A string the screen names itself with settles it before any of this:
-        // no choice of rows can make a screen that says it is something else
-        // into the one this rule is about.
+        // A screen that names itself as something else is refused outright.
         if screen.carries_any(&self.not) {
             return false;
         }
 
-        // The one row every anchor has to be on, for a rule that says so.
+        // The one row every anchor must be on, for an `over_composer` rule.
         let over = match self.over_composer {
             true => match furniture.spinner_row(&screen.rows()) {
                 Some(row) => Some(row),
@@ -339,10 +292,9 @@ impl Rule {
         }
 
         if !self.any.is_empty() {
-            // The affordance, wherever any of them is. Everything below the
-            // one chosen is the rest of the box — or, on a quotation, the
-            // vendor's own chrome, which is what gives the guard something to
-            // find.
+            // The widget, wherever any of them is. Below it is the rest of
+            // the box or, on a quotation, the vendor's chrome that `not_below`
+            // looks for.
             let rows: Vec<usize> = self
                 .any
                 .iter()
@@ -358,16 +310,15 @@ impl Rule {
             anchors.push(rows);
         }
 
-        // A rule with no conditions at all claims nothing.
+        // A rule with no conditions claims nothing.
         !anchors.is_empty()
             && one_from_each(&anchors)
                 .iter()
                 .any(|rows| self.fits(rows, screen))
     }
 
-    /// Whether these rows, one per anchor, are the box this rule describes:
-    /// spanning no more than `within`, no less than `apart`, with nothing of
-    /// `not_below` under the lowest of them.
+    /// Whether these rows, one per anchor, span no more than `within`, no less
+    /// than `apart`, and have nothing from `not_below` under the lowest.
     fn fits(&self, rows: &[usize], screen: &Screen) -> bool {
         let (Some(&first), Some(&last)) = (rows.iter().min(), rows.iter().max()) else {
             return false;
@@ -385,18 +336,14 @@ impl Rule {
         !screen.any_below(last, &self.not_below)
     }
 
-    /// What this screen is asking, read off the capture this rule claimed.
+    /// The question this screen asks, read off a capture this rule claimed.
     ///
-    /// Only a blocking screen is asking anything: a spinner and an idle prompt
-    /// are states, not questions. The rest is where each screen keeps its
-    /// question, which is not the same place on any two of them — see
-    /// [`Asks`].
+    /// Only a `waiting` rule asks anything. Where the question sits is the
+    /// rule's [`Asks`].
     ///
-    /// On a rule with [`marks`](Rule::marks) the list is the run of rows the
-    /// mark is in, and the question is the sentence above that run rather than
-    /// above the mark: the mark says where the vendor's cursor is, a person can
-    /// move it before amx looks, and a choice above the cursor is not what the
-    /// screen is asking.
+    /// With [`marks`](Rule::marks), the list is the run of rows around the
+    /// mark and the question is the sentence above the run, not above the
+    /// mark: a person can move the cursor before amx looks.
     pub fn question(&self, capture: &str) -> Option<Question> {
         if self.state != Phase::Waiting {
             return None;
@@ -407,24 +354,21 @@ impl Rule {
             .marks
             .as_deref()
             .and_then(|mark| Some((screen.run_of(mark)?, mark)))
-            // A run the vendor numbered is read off its numbers, mark or no
-            // mark. The numbers are keys a caller can press, and numbering the
-            // same rows again would offer a walk in their place — which is what
-            // a vendor drawing a cursor over a numbered list, as claude did
-            // until 2.1.259, would otherwise get.
+            // A run the vendor numbered is read by its numbers even under a
+            // mark: they are keys a caller can press. claude drew a cursor over
+            // a numbered list until 2.1.259.
             .filter(|&(run, _)| !screen.numbered(run));
         let choices = marked
             .map(|(run, _)| run.0)
             .or_else(|| screen.first_option());
         let (from, to) = match (&self.asks, marked) {
             (Asks::Sentence(anchor), _) => screen.sentence_at(screen.row_above(choices, anchor)?),
-            // A screen asking above its own anchor numbers no choices, so a
-            // numbered row higher up is the agent's output and no ceiling.
+            // A screen asking above its anchor numbers no choices, so a
+            // numbered row higher up is agent output, not a ceiling.
             (Asks::Above(anchor), None) => {
                 screen.sentence_above(screen.row_above(None, anchor)?)?
             }
-            // The run's first row is the anchor row on a marked screen,
-            // whichever of the two the document asked for.
+            // On a marked screen the run's first row is the anchor row.
             (Asks::Above(_) | Asks::AboveOptions, _) => screen.sentence_above(choices?)?,
         };
 
@@ -434,8 +378,7 @@ impl Rule {
             None => (screen.options_below(to), None),
         };
         (!text.is_empty()).then(|| Question {
-            // Nothing was read off a mark where nothing was read, and a list
-            // amx did not number is not one to offer numbers for.
+            // Only a list amx numbered itself is walked.
             walked: marked.is_some() && !options.is_empty(),
             marked: at,
             options,
@@ -443,58 +386,49 @@ impl Rule {
         })
     }
 
-    /// Whether this rule may speak, given what amx already believes.
+    /// Whether this rule may decide, given the recorded phase.
     ///
-    /// A rule that is not quiescent always may. A quiescent one may end a turn
-    /// only once the screen has held still for [`SETTLED_LOOKS`] seconds; from
-    /// a state with nothing outstanding it decides at once, which is what gets
-    /// a parked agent named rather than left at `starting`.
+    /// A quiescent rule may end a turn only after [`SETTLED_LOOKS`] seconds of
+    /// stillness. From `starting` or `unknown` there is no turn to end, so it
+    /// decides at once; that is what names a parked agent.
     fn may_decide(&self, recorded: Phase, held: u64) -> bool {
         if !self.quiescent {
             return true;
         }
         match recorded {
-            // Nothing is outstanding, so there is no turn to end.
+            // Nothing outstanding, so no turn to end.
             Phase::Starting | Phase::Unknown => true,
             _ => held >= SETTLED_LOOKS,
         }
     }
 }
 
-/// Where on a claimed screen its question is written.
+/// Where a claimed screen keeps its question.
 ///
-/// The blocking screens do not all keep it in the same place and no one
-/// reading finds it on every one of them, so each rule says which of these its
-/// own screen wants. `asks = { sentence = "do you want to" }` or `asks =
-/// { above = "→" }` in the document, or nothing at all for the usual place.
+/// Blocking screens differ, so each rule says which reading its screen needs:
+/// `asks = { sentence = "do you want to" }` or `asks = { above = "→" }`, or
+/// nothing for the default.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Asks {
-    /// The sentence that ends just above the first choice, which is where a
-    /// screen amx has not met yet is likeliest to keep it — so it is what a
-    /// rule saying nothing gets.
+    /// The sentence ending just above the first numbered choice. The default,
+    /// and the likeliest place on a screen not met yet.
     #[default]
     AboveOptions,
-    /// The sentence the lowest row carrying this string belongs to, wrap and
-    /// all. For the screens that draw something under their question that is
-    /// not part of it: the tool a request is about, a sentence about what the
-    /// vendor will be able to do, a link to a guide.
+    /// The whole sentence, wrap included, that the lowest row carrying this
+    /// string belongs to. For screens that draw something under the question:
+    /// the tool a request is about, a note on what the vendor may do, a link.
     Sentence(String),
-    /// The sentence that ends just above the lowest row carrying this string.
-    /// The same reading as [`Asks::AboveOptions`] on a screen whose choices
-    /// are not numbered, so the rule has to say for itself what the question
-    /// sits above: the glyph a vendor marks its selected choice with, or the
-    /// row it draws for the words it is waiting to be given.
+    /// The sentence ending just above the lowest row carrying this string.
+    /// [`Asks::AboveOptions`] for a screen whose choices are not numbered: the
+    /// string is the selection glyph or the input row.
     Above(String),
 }
 
-/// The part of a capture a rule is allowed to look at: the bottom rows, twice
-/// over — case folded for the anchors to match against, and as the pane drew
-/// it for a question to be read out of.
 /// Every way of taking one row from each list, in order.
 ///
-/// Small by construction: a rule has at most three anchors, and a screen has
-/// at most [`FLOOR_LINES`] rows for any of them to be on.
+/// Small in practice: a rule has at most three anchors, and each has at most
+/// [`FLOOR_LINES`] rows to be on.
 fn one_from_each(lists: &[Vec<usize>]) -> Vec<Vec<usize>> {
     lists.iter().fold(vec![Vec::new()], |chosen, rows| {
         chosen
@@ -510,6 +444,8 @@ fn one_from_each(lists: &[Vec<usize>]) -> Vec<Vec<usize>> {
     })
 }
 
+/// The rows a rule may see: the bottom [`FLOOR_LINES`] of the capture,
+/// case-folded for matching and as drawn for reading questions.
 struct Screen {
     folded: Vec<String>,
     shown: Vec<String>,
@@ -535,8 +471,8 @@ impl Screen {
             .collect()
     }
 
-    /// Every row `needle` opens, past its indent and past the vendor's rule
-    /// on a row drawn into a border, top to bottom.
+    /// Every row `needle` opens, past indent and past the rule on a border
+    /// row, top to bottom.
     fn rows_opening(&self, needle: &str, furniture: &Furniture) -> Vec<usize> {
         self.folded
             .iter()
@@ -546,19 +482,19 @@ impl Screen {
             .collect()
     }
 
-    /// The rows as the pane drew them, for the furniture walk.
+    /// The rows as drawn, for the furniture walk.
     fn rows(&self) -> Vec<&str> {
         self.shown.iter().map(String::as_str).collect()
     }
 
-    /// Whether any of `needles` is anywhere in the rows a rule may see.
+    /// Whether any of `needles` is on any row.
     fn carries_any(&self, needles: &[String]) -> bool {
         self.folded
             .iter()
             .any(|row| needles.iter().any(|needle| row.contains(needle)))
     }
 
-    /// Whether any of `needles` appears below `row`.
+    /// Whether any of `needles` is on a row below `row`.
     fn any_below(&self, row: usize, needles: &[String]) -> bool {
         self.folded
             .iter()
@@ -566,11 +502,8 @@ impl Screen {
             .any(|line| needles.iter().any(|needle| line.contains(needle)))
     }
 
-    /// The row the choices start on.
-    ///
-    /// The lowest one that reads as the first choice, not the topmost: a
-    /// blocking screen is the last thing the vendor draws, and an agent's own
-    /// output above it writes numbered lists every day.
+    /// The row the choices start on: the lowest first choice, since agent
+    /// output above a blocking screen often has numbered lists of its own.
     fn first_option(&self) -> Option<usize> {
         self.shown
             .iter()
@@ -585,7 +518,7 @@ impl Screen {
             .rposition(|row| row.contains(needle))
     }
 
-    /// The rows this one is a sentence with.
+    /// The rows of the sentence that `row` belongs to.
     fn sentence_at(&self, row: usize) -> (usize, usize) {
         let mut from = row;
         while from > 0 && wrapped(&self.shown[from]) && content(&self.shown[from - 1]) {
@@ -602,7 +535,7 @@ impl Screen {
         (from, to)
     }
 
-    /// The rows of the sentence that ends above the choices.
+    /// The rows of the sentence ending above the choices.
     fn sentence_above(&self, choices: usize) -> Option<(usize, usize)> {
         let mut to = choices.checked_sub(1)?;
         while !content(&self.shown[to]) {
@@ -616,7 +549,7 @@ impl Screen {
         Some((from, to))
     }
 
-    /// Rows `from` to `to` as the one sentence the vendor wrapped them out of.
+    /// Rows `from` to `to` joined back into one sentence.
     fn joined(&self, from: usize, to: usize) -> String {
         self.shown[from..=to]
             .iter()
@@ -627,11 +560,11 @@ impl Screen {
             .to_string()
     }
 
-    /// The choices under `row`, in the order they are drawn.
+    /// The choices under `row`, in order.
     ///
-    /// Numbered from one and counting up, which is what makes a description
-    /// under a label, a rule drawn through the list, or a stray line of the
-    /// agent's own prose unable to join in.
+    /// Only rows numbered one, two, three and on in sequence count, so a
+    /// description under a label, a rule through the list or stray prose
+    /// cannot join in.
     fn options_below(&self, row: usize) -> Vec<String> {
         let mut options: Vec<String> = Vec::new();
         for line in self.shown.iter().skip(row + 1) {
@@ -644,15 +577,10 @@ impl Screen {
         options
     }
 
-    /// The rows the list a mark names is drawn on: the run of rows with
-    /// something on them around the LOWEST row carrying `mark`.
+    /// The run of non-blank rows around the lowest row carrying `mark`.
     ///
-    /// The lowest for the reason [`first_option`](Screen::first_option) takes
-    /// the lowest first choice — a blocking screen is the last thing the vendor
-    /// draws, and a glyph is a glyph wherever an agent's own output put one
-    /// earlier. A blank row ends the run at each end, and so does the rule the
-    /// vendor draws its box with, which is what stops a list at the border
-    /// under it.
+    /// The lowest, for the same reason as [`first_option`](Screen::first_option).
+    /// Blank rows and the box's rule end the run.
     fn run_of(&self, mark: &str) -> Option<(usize, usize)> {
         let at = self.shown.iter().rposition(|row| row.contains(mark))?;
 
@@ -668,32 +596,20 @@ impl Screen {
         Some((from, to))
     }
 
-    /// Whether the run at `run` is a list the vendor numbered itself.
+    /// Whether the rows in `run` carry the vendor's own numbers.
     fn numbered(&self, (from, to): (usize, usize)) -> bool {
         self.shown[from..=to]
             .iter()
             .any(|row| matches!(option_on(row), Some((1, _))))
     }
 
-    /// The choices of the run at `run`, in the order they are drawn.
+    /// The choices in `run`, and which of them (from one) carries the mark.
     ///
-    /// The mark and the space after it are what the list is measured by: a row
-    /// whose own words start where the marked row's words start is a choice,
-    /// and a row starting to the left of that is the rest of the choice above
-    /// it, joined with one space. That is how the vendor wraps a label too long
-    /// for the pane, and it is the only thing that tells a wrap from a choice
-    /// on a screen with no numbers on it.
-    ///
-    /// Except where a vendor hangs its wrap under the label instead, as claude
-    /// does on the trust gate at 24 columns — `Yes, I trust this` over
-    /// `folder`, both at the label's own column. There the indent says nothing
-    /// and the wrap is read the way prose is: a row opening in lower case is
-    /// the rest of the row above it, since a choice is a label and a label
-    /// starts with a capital.
-    ///
-    /// Beside the choices, which of them the mark is on, counting from one:
-    /// that is where the vendor's cursor stands, and where a walk to another
-    /// row starts from.
+    /// A row whose words start at the marked row's label column is a choice;
+    /// one starting further left is the wrapped rest of the choice above. A
+    /// row opening in lower case is also a wrap: claude hangs the wrap at the
+    /// label's column on the 24-column trust gate (`Yes, I trust this` over
+    /// `folder`), and labels start with a capital.
     fn marked_below(&self, run: (usize, usize), mark: &str) -> (Vec<String>, Option<usize>) {
         let (from, to) = run;
         let rows = &self.shown[from..=to];
@@ -726,13 +642,13 @@ impl Screen {
     }
 }
 
-/// Which column `mark` is drawn in, counting from the left of the row.
+/// The character column `mark` is drawn at.
 fn column_of(row: &str, mark: &str) -> Option<usize> {
     row.find(mark).map(|at| row[..at].chars().count())
 }
 
-/// Where a row's own words start, and what they say: the row trimmed, with a
-/// leading mark and the space after it taken off with the indent.
+/// Where a row's words start, in characters, and the words: the row trimmed,
+/// with a leading mark and the space after it counted as indent.
 fn labelled<'a>(row: &'a str, mark: &str) -> (usize, &'a str) {
     let words = row.trim_start();
     let mut at = row.chars().count() - words.chars().count();
@@ -748,13 +664,11 @@ fn labelled<'a>(row: &'a str, mark: &str) -> (usize, &'a str) {
     (at, words.trim_end())
 }
 
-/// One numbered choice, as the vendor draws it: `❯ 1. Yes` for the one under
-/// the cursor and `  2. No` for the rest.
+/// One numbered choice as drawn: `❯ 1. Yes` under the cursor, `  2. No`
+/// otherwise.
 ///
-/// A label the vendor wrapped is read as far as its own row goes. The rows
-/// under it cannot be joined on, because that is exactly where the menu keeps
-/// the descriptions of its choices, at the same indent and telling nothing
-/// apart.
+/// A wrapped label is read to the end of its own row only. The rows under it
+/// are where menus put descriptions, at the same indent.
 fn option_on(row: &str) -> Option<(usize, &str)> {
     let row = row.trim_start();
     let row = row.strip_prefix('❯').map_or(row, str::trim_start);
@@ -764,14 +678,14 @@ fn option_on(row: &str) -> Option<(usize, &str)> {
     (!label.is_empty()).then_some((number, label))
 }
 
-/// Whether a row has anything on it but the vendor's furniture.
+/// Whether a row has anything on it but a rule.
 fn content(row: &str) -> bool {
     let row = row.trim();
     !row.is_empty() && !row.chars().all(|glyph| glyph == '─' || glyph == '-')
 }
 
-/// Whether a row is the rest of the row above it. Word wrap breaks a sentence
-/// mid-way, and the vendor's prose starts its sentences with a capital.
+/// Whether a row continues the one above: wrapped prose, since the vendor's
+/// sentences start with a capital.
 fn wrapped(row: &str) -> bool {
     row.trim_start()
         .chars()
@@ -785,14 +699,11 @@ mod tests {
     use crate::vendor::second::SECOND;
     use crate::vendor::{claude, pi};
 
-    // ── Screens measured off a live claude ───────────────────────────────────
-    // Every capture below came off a running vendor, at the version, date and
-    // width named with it. They are the evidence these rules are answerable
-    // to: a rule that only matches a screen amx made up is a transcription,
-    // not a measurement.
+    // claude screens, captured off a live vendor at the version and width
+    // named with each.
 
-    /// The turn is over, claude's own summary line is still on the transcript,
-    /// and the prompt is waiting for a person. v2.1.226, auto mode.
+    /// A finished turn at the prompt: claude's summary line is still on the
+    /// transcript. v2.1.226, auto mode.
     const IDLE_SCREEN: &str = "\
   It ran for the full 40 seconds and exited cleanly.
 
@@ -805,9 +716,8 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The same screen in manual mode, captured 2026-08-12 at 220 columns —
-    /// identical but for the footer, which carries no cycle hint in this mode
-    /// at any width.
+    /// The same screen in manual mode at 220 columns. The footer carries no
+    /// cycle hint in this mode at any width.
     const IDLE_SCREEN_MANUAL: &str = "\
 ● I'll run that command.
   Ran 1 shell command
@@ -821,10 +731,9 @@ mod tests {
   ⏸ manual mode on · ← for agents
 ";
 
-    /// claude mid-turn while an answer streams. The vendor drops its spinner
-    /// line entirely while output flows, so with the control characters
-    /// stripped this differs from the idle screen only in the transcript above
-    /// it. Nothing here says whether a turn is running.
+    /// Mid-turn while an answer streams. claude drops its spinner line while
+    /// output flows, so with control characters stripped this differs from
+    /// the idle screen only in the transcript.
     const STREAMING_SCREEN: &str = "\
   5. BBR (2016): Loss Is the Wrong Signal
 
@@ -839,9 +748,8 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// A promptless boot left alone: the welcome box, an empty prompt, and
-    /// rows of nothing between them. An earlier ruleset read this as `unknown`
-    /// for 183 consecutive samples.
+    /// A boot left alone: the welcome box, an empty prompt and blank rows
+    /// between them.
     const PARKED_SCREEN: &str = "\
 ╭─── Claude Code v2.1.226 ─────────────────────╮
 │             Welcome back Saiful Islam!       │
@@ -859,9 +767,8 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// Mid-turn with the spinner up, 1m 54s into a turn whose Bash call has
-    /// been sleeping for ten seconds. The mode footer is on this screen too,
-    /// which is why rule order and not the footer decides.
+    /// Mid-turn with the spinner up, during a Bash call. The mode footer is on
+    /// this screen too, so rule order decides, not the footer.
     const WORKING_SCREEN: &str = "\
   Now running the command you asked for:
 ● Running 1 shell command · 12s…
@@ -876,7 +783,7 @@ mod tests {
 ";
 
     /// The same turn thinking rather than running a tool: the other spinner
-    /// wording the rule has to survive.
+    /// wording.
     const THINKING_SCREEN: &str = "\
 ✽ Nesting… (15s · still thinking with xhigh effort)
 ──────────────────────────────────────── amx ──
@@ -885,11 +792,9 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// A turn running at 30 columns, v2.1.259 on 2026-09-05. The vendor
-    /// truncates its spinner row from the right, and at this width the whole
-    /// parenthesis — the elapsed time and the detail after it — is gone. The
-    /// mode footer is under it, as it is under every running turn, which is
-    /// what read this screen as idle eight samples out of eight.
+    /// A running turn at 30 columns, v2.1.259. claude truncates the spinner
+    /// row from the right, and the whole parenthesis is gone. The mode footer
+    /// is under it, as under every running turn.
     const NARROW_TURN_30: &str = "\
 ● Finagling… thinking
 ──────────────────────────────
@@ -898,9 +803,8 @@ mod tests {
   ⏵⏵ auto mode on
 ";
 
-    /// The same turn at 24 columns, where the parenthesis is back and what was
-    /// inside it after the elapsed time is gone. Half of the old anchor
-    /// survives at each of these two widths, and never the same half.
+    /// The same turn at 24 columns: the parenthesis is back and its tail after
+    /// the elapsed time is gone.
     const NARROW_TURN_24: &str = "\
 ● Finagling… (2s)
 ────────────────────────
@@ -909,11 +813,9 @@ mod tests {
   ⏵⏵ auto mode on
 ";
 
-    /// The idle screen at 40 columns, v2.1.259 on 2026-09-05: the line the
-    /// finished turn left behind, the composer box, the statusline elided from
-    /// the right, and the footer. This is the screen that says why the spinner
-    /// is not recognised by an ellipsis on its own or by a `s · ` on its own —
-    /// this one carries both, and nothing is running on it.
+    /// The idle screen at 40 columns, v2.1.259: the line the finished turn
+    /// left, the composer, the elided statusline and the footer. It carries
+    /// both an ellipsis and `s · `, so neither alone identifies the spinner.
     const IDLE_SCREEN_259_40: &str = "\
 ✻ Cogitated for 2m 6s · done 10:09 AM
 
@@ -924,70 +826,53 @@ mod tests {
   ⏵⏵ auto mode on (shift+tab to cycle)
 ";
 
-    // ── Screens measured off a live claude 2.1.270 ──────────────────────────
-    // Driven live on 2026-09-14 the way docs/claude-screens.md records: a
-    // private tmux server, one pane, the same live screen read at 100, 54, 40,
-    // 30 and 24 columns and captured the way `src/tmux.rs` captures one.
-    //
-    // Each is held the way the 2.1.259 ones are: from the top of the screen it
-    // is about — the widget's own border, or the row the rule stands on — down
-    // to the bottom of the pane, with the transcript above that left off.
-    // Trailing spaces are off the rows and nothing else is.
+    // claude 2.1.270 screens at 100, 54, 40, 30 and 24 columns, each from the
+    // top of the screen it is about down to the bottom of the pane. Trailing
+    // spaces are trimmed.
 
-    /// The transcript viewer at 100 columns, claude 2.1.270 on 2026-09-14:
-    /// ctrl+o on a fresh session, with the pane empty above the rule. It ends
-    /// in a footer of its own and draws NO mode row, so the one anchor this
-    /// document has on the screen is `? for shortcuts` — the hint kept for an
-    /// older vendor. A person reading the transcript through a long tool call
-    /// got a row saying the turn was over as soon as the hooks went stale.
+    /// The transcript viewer (ctrl+o) at 100 columns, claude 2.1.270. It has
+    /// its own footer and no mode row, so the only anchor a document had on it
+    /// was the older `? for shortcuts` hint, and it read as idle mid-turn.
     const TRANSCRIPT_270_100: &str = "\
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   Showing detailed transcript · ctrl+o to toggle · ? for shortcuts                          verbose
 ";
 
-    /// The same viewer at 54 columns. The footer truncates from the middle —
-    /// `verbose` is pinned to the right — so the hint is off the screen below
-    /// 100 columns and what survives every width is the fragment the row opens
-    /// with.
+    /// The same viewer at 54 columns. The footer truncates from the middle, so
+    /// only the fragment the row opens with survives every width.
     const TRANSCRIPT_270_54: &str = "\
 ──────────────────────────────────────────────────────
   Showing detailed transcript · ctrl+o to togg…verbose
 ";
 
-    /// At 40 columns, where the middle of the footer is gone entirely.
+    /// At 40 columns: the middle of the footer is gone.
     const TRANSCRIPT_270_40: &str = "\
 ────────────────────────────────────────
   Showing detailed transcript · …verbose
 ";
 
-    /// At 30 columns, where the truncation eats into the first fragment too and
-    /// the last letter of `verbose` wraps onto a row of its own.
+    /// At 30 columns: the first fragment is truncated too, and the last letter
+    /// of `verbose` wraps onto its own row.
     const TRANSCRIPT_270_30: &str = "\
 ──────────────────────────────
   Showing detailed tran…verbos
                         e
 ";
 
-    /// And at 24 columns, the narrowest driven, where `Showing detaile` is the
-    /// whole of what is left to read the screen by.
+    /// At 24 columns: only `Showing detaile` is left.
     const TRANSCRIPT_270_24: &str = "\
 ────────────────────────
   Showing detaile…verbos
                   e
 ";
 
-    /// The /btw overlay once it has answered, at 100 columns on the same day.
-    /// The vendor draws it in the slot the composer had, from its own top
-    /// border down, and puts no mode row under it either.
+    /// The /btw overlay after it answered, at 100 columns. claude draws it in
+    /// the composer's slot with no mode row under it.
     ///
-    /// Eleven rows above this border, on the pane it came off, the turn's own
-    /// `✻ Waiting for 1 background agent to finish` was still drawn — inside
-    /// the rows a rule may see at 100, 54 and 40 columns, and scrolled past
-    /// them at 30 and 24. So the whole pane reads `background_agents` at the
-    /// three wider ones and nothing at the two narrow ones, on the strength of
-    /// a row the overlay is drawn over. Held here is the overlay, which is the
-    /// screen these two rules are about; whether an overlay should outrank the
-    /// turn behind it is nobody's decision yet.
+    /// On the pane it came from, the turn's `✻ Waiting for 1 background agent
+    /// to finish` sat eleven rows above, inside the floor at 100, 54 and 40
+    /// columns. Only the overlay is kept here; whether an overlay should
+    /// outrank the turn behind it is undecided.
     const BTW_ANSWERED_270_100: &str = "\
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
@@ -1002,9 +887,8 @@ mod tests {
     ↑/↓ to scroll · c to copy · f to fork · Esc to close
 ";
 
-    /// The same overlay while it works, off the same pane a moment earlier.
-    /// `· Answering…` is this vendor's own gerund and ellipsis, on no row over
-    /// a composer, so the spinner rule does not have the screen.
+    /// The same overlay while it works. `· Answering…` is not on the row over
+    /// a composer, so the spinner rule does not claim it.
     const BTW_ANSWERING_270_100: &str = "\
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
@@ -1015,15 +899,12 @@ mod tests {
     Esc to close
 ";
 
-    /// A turn that has answered and is waiting on a background subagent, at 100
-    /// columns, 2026-09-14. The Stop hook has fired and the record says the
-    /// turn is over; the line above the composer says it is not. The mode row
-    /// is under it and an agents panel under that, which is why this screen
-    /// read idle before there was a rule for it.
+    /// A turn that answered and waits on a background subagent, at 100
+    /// columns. The Stop hook has fired, but the line above the composer says
+    /// the turn goes on. The mode row and an agents panel are under it.
     ///
-    /// The glyph held at `✻` in every capture over ten seconds, and the line a
-    /// finished turn leaves behind wears it too, so the glyph alone says
-    /// nothing — the words after it are the rule.
+    /// A finished turn's line also opens with `✻`, so the words after the
+    /// glyph are the anchor.
     const BACKGROUND_270_100: &str = "\
 ✻ Waiting for 1 background agent to finish
                                                                                   ● high · /effort
@@ -1037,10 +918,9 @@ mod tests {
   ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens
 ";
 
-    /// The same at 54 columns, where the agents panel elides its subagent's
-    /// label to `Preparing…`. That is the spinner rule's whole anchor, drawn on
-    /// a row under the mode footer rather than over the composer, so the
-    /// background line is what names this screen.
+    /// At 54 columns. The agents panel elides its subagent's label to
+    /// `Preparing…`, the spinner rule's anchor, but under the footer rather
+    /// than over the composer, so the background rule names the screen.
     const BACKGROUND_270_54: &str = "\
 ✻ Waiting for 1 background agent to finish
                                     ● high · /effort
@@ -1054,7 +934,7 @@ mod tests {
   ◯ general-purpose  Preparing… 49s · ↓ 10.2k tokens
 ";
 
-    /// At 40 columns, where the line wraps after `to`.
+    /// At 40 columns: the line wraps after `to`.
     const BACKGROUND_270_40: &str = "\
 ✻ Waiting for 1 background agent to
   finish
@@ -1069,7 +949,7 @@ mod tests {
   ◯ general-purpose 50s · ↓ 10.2k tokens
 ";
 
-    /// At 30 columns, where it wraps after `background` instead.
+    /// At 30 columns: it wraps after `background`.
     const BACKGROUND_270_30: &str = "\
 ✻ Waiting for 1 background
   agent to finish
@@ -1084,8 +964,8 @@ mod tests {
   ◯ general-purpose 51s · ↓
 ";
 
-    /// And at 24 columns, where it wraps after `1` and takes three rows. One
-    /// row is the widest the two anchors were measured apart.
+    /// At 24 columns: it wraps after `1` and takes three rows. One row is the
+    /// widest the two anchors were measured apart.
     const BACKGROUND_270_24: &str = "\
 ✻ Waiting for 1
   background agent to
@@ -1101,8 +981,7 @@ mod tests {
   ◯ general-purpose 51s
 ";
 
-    /// The folder-trust screen as v2.1.226 renders it on a 220-column pane,
-    /// captured 2026-08-12.
+    /// The folder-trust screen, v2.1.226, 220 columns.
     const TRUST_SCREEN_220: &str = "\
 ────────────────────────────────────────────────
  Accessing workspace:
@@ -1121,9 +1000,8 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
-    /// The same screen on a 54-column pane — five agents tiled on one wall,
-    /// which is a shape amx creates by itself. The vendor wraps the sentence
-    /// across four rows, and the break falls between `you` and `trust`.
+    /// The same screen at 54 columns, as on a wall of five tiled agents. The
+    /// sentence wraps across four rows, breaking between `you` and `trust`.
     const TRUST_SCREEN_54: &str = "\
 ──────────────────────────────────────────────────────
  Accessing workspace:
@@ -1147,11 +1025,10 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
-    /// The same screen as v2.1.259 draws it, at 54 columns on 2026-09-05. The
-    /// wording is the 2.1.240 wording to the letter; the choices are what
-    /// moved. They have lost their numbers and swapped places, so the only `❯`
-    /// left is the cursor on the exit and the confirm footer is the whole of
-    /// the affordance.
+    /// The same screen, v2.1.259 at 54 columns. The wording is unchanged from
+    /// 2.1.240, but the choices lost their numbers and swapped places: the
+    /// only `❯` is the cursor on the exit, and the confirm footer is the only
+    /// widget.
     const TRUST_SCREEN_259_54: &str = "\
 ──────────────────────────────────────────────────────
  Accessing workspace:
@@ -1175,12 +1052,10 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
-    /// The same screen at 24 columns, the narrowest driven, on a pane of 30
-    /// rows. The box is taller than the pane, so the top border has scrolled
-    /// off and the floor begins on the question's own first row. Nineteen rows
-    /// separate the topmost `trust` from the confirm footer, which is what
-    /// `within` on this rule is counted off. A raw string because the capture
-    /// opens with a blank row.
+    /// The same screen at 24 columns on a 30-row pane. The box is taller than
+    /// the pane, so the floor starts on the question's first row. Nineteen
+    /// rows separate the topmost `trust` from the confirm footer, which sets
+    /// this rule's `within`. A raw string because it opens with a blank row.
     const TRUST_SCREEN_259_24: &str = r"
  /home/saiful/.claude/j
  obs/dfc82656/tmp/scrat
@@ -1212,12 +1087,9 @@ mod tests {
  to cancel
 ";
 
-    /// The same screen as v2.1.276 draws it, at 220 columns on 2026-09-18, on a
-    /// folder the vendor's store has no decision for. Nothing under the
-    /// question has moved since 2.1.259: the rows are still unnumbered, the
-    /// cursor still opens on the exit, and the sentence is the 2.1.240 one. The
-    /// same version at 54 and 24 columns came back row for row the same as the
-    /// two captures above.
+    /// The same screen, v2.1.276 at 220 columns, on a folder with no saved
+    /// decision. Unchanged since 2.1.259; the same version at 54 and 24
+    /// columns matched the two captures above row for row.
     const TRUST_SCREEN_276_220: &str = "\
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Accessing workspace:
@@ -1236,9 +1108,7 @@ mod tests {
  Enter to confirm · Esc to cancel
 ";
 
-    /// The plan-mode approval screen claude's ExitPlanMode tool draws once a
-    /// plan is ready, at 220 columns. v2.1.237, 2026-08-21, seen live by
-    /// entering plan mode and asking for a plan.
+    /// The plan approval screen ExitPlanMode draws, v2.1.237 at 220 columns.
     const PLAN_APPROVAL_220: &str = "\
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Claude has written up a plan and is ready to execute. Would you like to proceed?
@@ -1252,8 +1122,7 @@ mod tests {
 ";
 
     /// The same screen at 54 columns. The message wraps between `to` and
-    /// `execute.` — the fragment `ready to execute` cannot be the anchor, it
-    /// breaks right here.
+    /// `execute.`, so `ready to execute` cannot be an anchor.
     const PLAN_APPROVAL_54: &str = "\
 ──────────────────────────────────────────────────
  Claude has written up a plan and is ready to
@@ -1268,9 +1137,9 @@ mod tests {
  one-paragraph-plan-snug-russell.md
 ";
 
-    /// The same screen at 24 columns. Here the vendor wraps the other way —
-    /// between `to` and `proceed?` — so `would you like to proceed` cannot be
-    /// the anchor either. Only single words survive both widths.
+    /// The same screen at 24 columns, wrapping between `to` and `proceed?`, so
+    /// `would you like to proceed` cannot be one either. Only single words
+    /// survive both widths.
     const PLAN_APPROVAL_24: &str = "\
 ────────────────────
  Claude has written
@@ -1296,9 +1165,9 @@ mod tests {
  russell.md
 ";
 
-    /// A live permission box: v2.1.226, 2026-08-12, 220 columns, forced out of
-    /// the vendor with manual permissions and an ask rule for Bash. A full
-    /// width rule with the request under it, and no mode footer anywhere.
+    /// A permission box, v2.1.226 at 220 columns, with manual permissions and
+    /// an ask rule for Bash. A full-width rule with the request under it and
+    /// no mode footer.
     const PERMISSION_BOX: &str = "\
 ────────────────────────────────────────────────
  Bash command
@@ -1312,7 +1181,7 @@ mod tests {
  Esc to cancel · Tab to amend · ctrl+e to explain
 ";
 
-    /// The AskUserQuestion menu at 80 columns. v2.1.229, 2026-08-15.
+    /// The AskUserQuestion menu at 80 columns, v2.1.229.
     const ASK_MENU_80: &str = "\
 ────────────────────────────────────────────────────────────────────────────────
  ☐ Indentation
@@ -1332,9 +1201,8 @@ Should this project be indented with spaces or tabs?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
-    /// The same menu at 24 columns, where the footer wraps: `esc to cancel` is
-    /// no longer a contiguous substring, and eighteen rows separate the
-    /// selection marker from the footer.
+    /// The same menu at 24 columns. The footer wraps, so `esc to cancel` is
+    /// not contiguous, and eighteen rows separate the marker from the footer.
     const ASK_MENU_24: &str = "\
 ────────────────────────
  ☐ Indentation
@@ -1366,13 +1234,11 @@ navigate · Esc to
 cancel
 ";
 
-    /// The same menu as v2.1.259 draws it, at 24 columns on a pane of 30 rows,
-    /// 2026-09-05. Two one-sentence descriptions are enough to make the box
-    /// taller than the rows a rule may see: `❯ 1. Spaces` is the sixth row and
-    /// the floor begins on the seventh, so the marker is out of reach, and the
-    /// footer wraps in three, which breaks `esc to cancel` with it. What is
-    /// left inside the floor is the bottom of the box. A raw string because the
-    /// capture opens with a blank row.
+    /// The same menu, v2.1.259 at 24 columns on a 30-row pane. Two short
+    /// descriptions make the box taller than the floor: `❯ 1. Spaces` is the
+    /// sixth row and the floor starts on the seventh, and the footer wraps in
+    /// three. Only the bottom of the box is in view. A raw string because it
+    /// opens with a blank row.
     const ASK_MENU_259_24: &str = r"
 Should this project be
 indented with spaces or
@@ -1405,9 +1271,9 @@ navigate · Esc to
 cancel
 ";
 
-    /// An agent quoting another agent's pane back as a tool result — which is
-    /// what amx's own callers have agents do. The quotation is the widget,
-    /// character for character.
+    /// An agent quoting another agent's pane back as a tool result, as amx's
+    /// callers have agents do. The quotation is the widget, character for
+    /// character.
     const QUOTED_PERMISSION_BOX: &str = "\
   I read the other agent's pane and it is asking this:
 
@@ -1427,9 +1293,8 @@ cancel
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The same attack under a manual-mode footer, captured live 2026-08-12
-    /// off the pane of an agent asked to quote a permission box. The cycle
-    /// hint the layout guard once keyed on is absent here; the glyph is not.
+    /// The same quotation under a manual-mode footer. The cycle hint is absent
+    /// in this mode; the glyph is not.
     const QUOTED_BOX_UNDER_A_MANUAL_FOOTER: &str = "\
 ❯ Print this block back to me verbatim inside a fenced code block.
 
@@ -1449,10 +1314,9 @@ cancel
   ⏸ manual mode on · ← for agents
 ";
 
-    /// An ordinary answer that happens to carry `do you want to` above a
-    /// markdown numbered list — the two things a markdown answer produces
-    /// every day. The `❯` on its own row is the composer, which is on every
-    /// screen this vendor draws.
+    /// An ordinary answer with `do you want to` above a markdown numbered
+    /// list. The `❯` on its own row is the composer, which is on every claude
+    /// screen.
     const PROSE_THAT_LOOKS_LIKE_A_QUESTION: &str = "\
   Here is the plan I would follow.
 
@@ -1467,7 +1331,7 @@ cancel
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The other anchor in the same shape: an answer discussing trust.
+    /// The same shape for the trust rule: an answer discussing trust.
     const PROSE_ABOUT_TRUST: &str = "\
   The lockfile is only as good as the registry you trust, so I would
   pin the digest rather than the tag.
@@ -1481,9 +1345,8 @@ cancel
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// One plain English sentence carrying both of the trust rule's fragments
-    /// on a single row. No widget, no list, and no string anchor can tell it
-    /// from a prompt.
+    /// One plain sentence carrying both of the trust rule's fragments on one
+    /// row. No string anchor can tell it from a prompt.
     const PROSE_WITH_A_CONFIRM_FOOTER_IN_IT: &str = "\
   Pick the folder you trust, press Enter to confirm, and it takes care of
   the rest.
@@ -1494,9 +1357,9 @@ cancel
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// A numbered plan staged in the composer — what `send` leaves when the
-    /// paste lands and the submit does not. The composer row then IS
-    /// `❯ 1. …`, the widget's own option shape, carrying the anchor word too.
+    /// A numbered plan staged in the composer, as `send` leaves it when the
+    /// paste lands and the submit does not. The composer row is `❯ 1. …`, the
+    /// widget's own option shape, and carries the anchor word.
     const A_PLAN_STAGED_IN_THE_COMPOSER: &str = "\
   Working through the migration now.
 
@@ -1506,8 +1369,8 @@ cancel
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 ";
 
-    /// The auto-mode footer on a 40-column pane — four agents on a 160-column
-    /// terminal. The vendor truncates its own hint from the right.
+    /// The auto-mode footer on a 40-column pane. claude truncates its own
+    /// hint from the right.
     const FOOTER_AUTO_40: &str = "\
   Ran the migration.
 
@@ -1517,9 +1380,8 @@ cancel
   ⏵⏵ auto mode on (shift+tab to      ·
 ";
 
-    /// The second vendor stopped on a question, drawn the way its own
-    /// document describes: its anchor on the row the question opens with, and
-    /// choices numbered with no cursor glyph in front of them.
+    /// The second vendor stopped on a question, as its document describes: the
+    /// anchor on the question's row and choices numbered with no cursor glyph.
     const A_SECOND_VENDOR_ASKING: &str = "\
  pick one and I will carry on
  about the file you named
@@ -1528,34 +1390,22 @@ cancel
  answer with a number
 ";
 
-    /// Nothing this ruleset knows: an ordinary shell, which is what a pane
-    /// shows when the vendor has exited.
+    /// An ordinary shell, as a pane shows once the vendor has exited.
     const A_SHELL: &str = "\
 $ ls
 Cargo.toml  README.md  src  tests
 $
 ";
 
-    // ── Screens measured off a live pi ───────────────────────────────────────
-    // pi 0.84.4, driven on 2026-09-04 in a tmux pane captured the way
-    // `src/tmux.rs` captures one, at the width named with each. The dialogs
-    // were raised by an extension gating the bash tool with `ctx.ui.select`,
-    // which is how a caller asks pi a question. Trailing spaces are off the
-    // rows and nothing else is: every reading here trims or asks whether a row
-    // contains something, so the pane's own padding changes no answer. They
-    // are raw strings rather than continued ones because a leading space and a
-    // leading blank row are both things `\` at the end of a line eats, and
-    // both are on these captures.
-    //
-    // These are checked in so the suite runs on a machine with no pi on it.
-    // Re-measure at every vendor bump — see `assets/screen-rules-pi.toml`.
-    // The captures marked 0.85.1 are that document's re-measurement of
-    // 2026-09-06; the rest are 0.84.4's and still read as they did.
+    // pi screens, 0.84.4 unless marked 0.85.1, at the width named with each.
+    // Dialogs are raised by an extension gating the bash tool with
+    // `ctx.ui.select`, which is how a caller asks pi a question. Trailing
+    // spaces are trimmed. Raw strings, because a trailing `\` would eat the
+    // leading spaces and blank rows these captures carry. Re-measure on every
+    // vendor bump; see `assets/screen-rules-pi.toml`.
 
-    /// A pi nobody has typed into yet: the banner, the box, and a footer whose
-    /// stats line has nothing but the context window to say. 100 columns, and
-    /// the vendor pads the rest of the pane out rather than sitting at the
-    /// bottom of it.
+    /// A fresh pi at 100 columns: the banner, the box, and a stats line with
+    /// only the context window on it. pi pads the rest of the pane.
     const A_PI_BOOT: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1588,8 +1438,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// The same pane with a turn running on it. pi spins its line above the
-    /// box and keeps it there for the whole turn, streaming answer and all.
+    /// The same pane mid-turn. pi spins its line above the box for the whole
+    /// turn.
     const A_PI_WORKING: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1622,11 +1472,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// A turn running on pi 0.85.1, driven 2026-09-06 at 100 columns. The
-    /// working indicator is in the composer's top border now — `── `, the
-    /// frame, the message with no ellipsis, and the rule out to the edge —
-    /// and no status row sits above the box. The bottom border is a full row
-    /// of rule as it always was.
+    /// A running turn on pi 0.85.1 at 100 columns. The working indicator is in
+    /// the composer's top border (`── `, the frame, the message, the rule) and
+    /// no status row sits above the box.
     const A_PI_WORKING_0851: &str = r"
  $ uname -a 2>&1 | head -n 5; echo ---; echo $XDG_SESSION_TYPE $WAYLAND_DISPLAY $DISPLAY; echo ---;
  ls /sys/class/drm 2>&1 | head -n 20; echo ---; cat /sys/class/drm/*/modes 2>&1 | head -n 20
@@ -1652,9 +1500,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑20k ↓682 R3.8k CH9.6% 1.9%/1.0M (auto)            (opencode) muse-spark-1.3-contributor-free • high
 ";
 
-    /// The same turn at 20 columns, where the top border has room for seven
-    /// rules after the message and the twenty the rule asks for are on the
-    /// bottom border alone. The frame is two rows above it.
+    /// The same turn at 20 columns. The top border has room for only seven
+    /// rule characters after the message, so the twenty the rule asks for are
+    /// on the bottom border alone. The frame is two rows above it.
     const A_PI_WORKING_0851_20: &str = r"
  Run sleep 75 with
  the bash tool,
@@ -1677,15 +1525,11 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑20k ↓823 R23k CH...
 ";
 
-    /// pi compacting the context at 100 columns, raised with `/compact`.
-    /// `Working...` is off the pane while this is up: the vendor takes the
-    /// working indicator down and puts this one where it was, on the same row
-    /// with the same frame in front of it.
+    /// pi compacting the context at 100 columns (`/compact`). The compaction
+    /// message replaces `Working...` on the same row with the same frame.
     ///
-    /// Measured 2026-09-05 against a provider that takes the summarisation
-    /// request and never answers it, which is what holds the screen still long
-    /// enough to read. The footer's first row is `~` because the run was made
-    /// from a home of its own.
+    /// Held still by a provider that never answers the summarisation request.
+    /// The footer's first row is `~` because the run used its own home.
     const A_PI_COMPACTING: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1717,10 +1561,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/264k (auto)                                                                         (bench) rig
 ";
 
-    /// The same screen at 20 columns, where the message wraps across three
-    /// rows and the frame stays on the first of them. This is the widest span
-    /// measured between a frame and the box below it, and it is what the
-    /// spinner rule's `within` is counted off.
+    /// The same screen at 20 columns. The message wraps across three rows with
+    /// the frame on the first. This is the widest span measured between a
+    /// frame and the box, and it sets the spinner rule's `within`.
     const A_PI_COMPACTING_20: &str = r" Pi can explain its
  own features and
  look up its docs.
@@ -1753,9 +1596,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/264k (auto)  ri
 ";
 
-    /// A turn that lost its provider and is waiting to try again, at 100
-    /// columns. Measured 2026-09-05 against a provider answering 503 to every
-    /// call, which is the error pi retries.
+    /// A turn waiting to retry after its provider answered 503, at 100
+    /// columns.
     const A_PI_RETRYING: &str = r#"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1781,10 +1623,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/264k (auto)                                                                         (bench) rig
 "#;
 
-    /// A turn running under a working message an extension wrote, at 100
-    /// columns. `ctx.ui.setWorkingMessage` takes `Working...` off the row and
-    /// leaves everything else about it alone; what the extension puts there is
-    /// its own, and this one says `Reviewing the diff`.
+    /// A turn under an extension's working message, at 100 columns.
+    /// `ctx.ui.setWorkingMessage` replaces `Working...` and leaves the rest of
+    /// the row alone.
     const A_PI_RENAMED: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1808,10 +1649,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/264k (auto)                                                                         (bench) rig
 ";
 
-    /// A shell command somebody ran in the pane with `!cmd`, at 100 columns.
-    /// pi draws a box of its own for it in the transcript with the composer
-    /// still under that, and spins the same frame on the row inside it.
-    /// Measured 2026-09-05 with `!sleep 20`.
+    /// A `!cmd` shell command (`!sleep 20`) at 100 columns. pi draws its own
+    /// box for it in the transcript, with the composer still under it, and
+    /// spins the same frame inside it.
     const A_PI_RUNNING_A_COMMAND: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1836,9 +1676,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/264k (auto)                                                                         (bench) rig
 ";
 
-    /// pi blocked on a dialog at 100 columns. The dialog is drawn inside the
-    /// composer box, the working directory and the stats line are under it as
-    /// on any other screen, and the spinner is still up above it.
+    /// pi blocked on a dialog at 100 columns. The dialog is inside the
+    /// composer box, the directory and stats line are under it, and the
+    /// spinner is still up above it.
     const A_PI_DIALOG: &str = r"
  Run this exact bash command and nothing else: echo hi
 
@@ -1871,10 +1711,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.3k ↓64 $0.000 (sub) 0.5%/264k (auto)                        (github-copilot) gpt-5-mini • minimal
 ";
 
-    /// The same dialog at 20 columns, the narrowest pane pi draws its box wide
-    /// enough for. The hint row wraps across four rows and `enter select`
-    /// breaks between its two words; `↑↓ navigate` is what the row still opens
-    /// with.
+    /// The same dialog at 20 columns, the narrowest pane pi draws its box in.
+    /// The hint row wraps across four rows and `enter select` breaks between
+    /// its words; the row still opens with `↑↓ navigate`.
     const A_PI_DIALOG_20: &str = r" it's executed,
  I’ll return the
  output. I just
@@ -1907,10 +1746,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.3k ↓64 $0.000 ...
 ";
 
-    /// pi stopped on `ctx.ui.input` at 100 columns: the caller's title, the row
-    /// pi draws for the line it is waiting for, and a hint row of its own.
-    /// Measured 2026-09-05 on a fresh `--offline` boot with an extension that
-    /// does nothing but raise the dialog.
+    /// `ctx.ui.input` at 100 columns: the caller's title, the input row and
+    /// pi's hint row.
     const A_PI_INPUT: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -1944,7 +1781,7 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ";
 
     /// The same screen at 20 columns. The title wraps across two rows and the
-    /// hint row across three; `enter submit` is what the row still opens with.
+    /// hint row across three; the hint still opens with `enter submit`.
     const A_PI_INPUT_20: &str = r" · ctrl+o more
  Press ctrl+o to
  show full startup
@@ -1977,9 +1814,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)  mu
 ";
 
-    /// pi stopped on `ctx.ui.editor` at 100 columns. The same box, with a
-    /// second one inside it for the block of text being asked for, and a hint
-    /// row that says how to end a line as well as how to submit.
+    /// `ctx.ui.editor` at 100 columns: the same box with a second box inside
+    /// for the text, and a hint row covering newlines as well as submit.
     const A_PI_EDITOR: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -2012,8 +1848,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// The same screen at 20 columns, where the hint row wraps across six rows
-    /// and `shift+enter/ctrl+j` is still whole on one of them.
+    /// The same screen at 20 columns. The hint row wraps across six rows and
+    /// `shift+enter/ctrl+j` stays whole.
     const A_PI_EDITOR_20: &str = r"
  Pi can explain its
  own features and
@@ -2046,9 +1882,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)  mu
 ";
 
-    /// `ctx.ui.confirm` at 100 columns, which draws the same box with two
-    /// choices and the caller's message on the row under its title. Measured
-    /// 2026-09-05 with an extension that does nothing but raise the dialog.
+    /// `ctx.ui.confirm` at 100 columns: the same box with two choices and the
+    /// caller's message under the title.
     const A_PI_CONFIRM: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -2081,11 +1916,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// pi asking whether this folder is one to trust, at 100 columns, raised
-    /// with `/trust` on a worktree the vendor has nothing saved about. The
-    /// same box the dialog above is drawn in, ending in the same hint row,
-    /// with nothing running over it: a person raises this screen before a turn
-    /// rather than a tool call raising it inside one.
+    /// `/trust` at 100 columns, on a worktree with nothing saved. The same box
+    /// and hint row as the dialog above, with nothing running over it: a
+    /// person raises this before a turn.
     const A_PI_TRUST: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -2113,11 +1946,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
 ";
 
-    /// The same question at 20 columns. This is the tallest box pi draws, and
-    /// on a tree the depth amx cuts its own it is taller than the rows a rule
-    /// may see: the title and the top border are both above the floor, and
-    /// what is left to read the screen by is the hint row and the one border
-    /// under it.
+    /// The same question at 20 columns. The tallest box pi draws: at amx's
+    /// worktree depth the title and top border are above the floor, leaving
+    /// the hint row and the border under it.
     const A_PI_TRUST_20: &str = r"
 ────────────────────
 
@@ -2150,12 +1981,10 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)  mu
 ";
 
-    /// pi 0.85.1 asking about the folder of its own accord, at 100 columns on
-    /// a pane of 30 rows, started with `--offline --no-session` in a checkout
-    /// carrying a `.pi/` and no saved decision. Measured 2026-09-14. Not the
-    /// `/trust` selector above: a different title, a sentence about what
-    /// trusting allows where the saved decision was, five choices rather than
-    /// three, and the dialog's own `enter select` in the hint row.
+    /// pi 0.85.1 asking about the folder unprompted, at 100 columns on a
+    /// 30-row pane, in a checkout with a `.pi/` and no saved decision. Unlike
+    /// `/trust`: a different title, a sentence about what trusting allows,
+    /// five choices instead of three, and `enter select` in the hint row.
     const A_PI_FOLDER_TRUST: &str = r"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -2176,9 +2005,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ";
 
-    /// The same at 20 columns. The title is above the rows a rule may see and
-    /// the folder is the first row left, so the screen falls to the dialog
-    /// rule the way the `/trust` selector does at this width.
+    /// The same at 20 columns. The title is above the floor and the folder is
+    /// the first row left, so the dialog rule claims it as it does `/trust`.
     const A_PI_FOLDER_TRUST_20: &str = r" /home/saiful/Sites
  /tries/pi-src
 
@@ -2211,13 +2039,10 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ────────────────────
 ";
 
-    /// The gate pi puts in front of a first run, at 100 columns on a pane of
-    /// 30 rows, with `PI_EXPERIMENTAL=1` and an agent directory with no
-    /// `settings.json` in it. Its own startup screen rather than the pane a
-    /// session runs in: the box is the whole of it, and the rows under it are
-    /// the empty pane. Six of those rows are why there is no `within` on this
-    /// rule — they push the box's top border above the floor, and the only
-    /// border left to find is the box's own bottom.
+    /// pi's first-run gate at 100 columns on a 30-row pane
+    /// (`PI_EXPERIMENTAL=1`, no `settings.json`). The box is the whole screen
+    /// and the rows under it are the empty pane. Those rows push the box's top
+    /// border above the floor, which is why this rule has no `within`.
     const A_PI_SETUP: &str = r"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -2251,10 +2076,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// The second step of the same gate at 20 columns. Four rows of prose about
-    /// what sharing usage data means, wrapped until the box is taller than the
-    /// pane: the banner has scrolled off with the top border, and what is left
-    /// is the hint row and the border under it.
+    /// The gate's second step at 20 columns. The usage-data prose wraps until
+    /// the box is taller than the pane, leaving the hint row and the border
+    /// under it.
     const A_PI_SETUP_ANALYTICS_20: &str = r" anonymous usage
  data sharing?
  Opting in stores a
@@ -2287,12 +2111,10 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ────────────────────
 ";
 
-    /// pi waiting for the key a provider wants, at 100 columns, driven with
-    /// `/login` through the two selectors in front of it. The box is in the
-    /// composer's slot with the footer under it, and the rows above it are the
-    /// vendor's own warning that it has no models to run a turn with — the row
-    /// that spells `/login to log into`, which is why this rule cannot anchor
-    /// on the title.
+    /// pi waiting for a provider key at 100 columns, reached with `/login`
+    /// through two selectors. The box is in the composer's slot with the
+    /// footer under it. The warning above it spells `/login to log into`,
+    /// which is why the rule cannot anchor on the title.
     const A_PI_LOGIN: &str = r"
  Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
 
@@ -2316,9 +2138,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/0 (auto)                                                                                unknown
 ";
 
-    /// The same screen at 20 columns, where the hint row takes a second row and
-    /// the span from the box's top border to it is 6 — the widest measured, and
-    /// what `within` on that rule is.
+    /// The same screen at 20 columns. The hint row takes a second row and the
+    /// span from the top border is 6, the widest measured and the rule's
+    /// `within`.
     const A_PI_LOGIN_20: &str = r" oding-agent/docs/p
  roviders.md
 
@@ -2344,10 +2166,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/0 (auto)  unkno
 ";
 
-    /// The login dialog on pi 0.85.1, driven 2026-09-06 at 100 columns on a
-    /// pi that has models, so the warning is not above the box. The dialog
-    /// itself did not move: the same title, the same question, and the same
-    /// hint row in its parentheses, 5 rows under the box's top border.
+    /// The login dialog on pi 0.85.1 at 100 columns, with models configured so
+    /// no warning is above it. The hint row is still 5 rows under the top
+    /// border.
     const A_PI_LOGIN_0851: &str = r"
  (no output)
 
@@ -2369,8 +2190,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑41k ↓847 R24k CH0.6% 1.9%/1.0M (auto)             (opencode) muse-spark-1.3-contributor-free • high
 ";
 
-    /// The same screen at 20 columns: the hint row breaks after each `to` and
-    /// the span is 6 again, and `(escape/ctrl+c to` is whole on its first row.
+    /// The same at 20 columns: the hint row breaks after each `to`, the span
+    /// is 6, and `(escape/ctrl+c to` is whole on its first row.
     const A_PI_LOGIN_0851_20: &str = r"
  catalogs…
 
@@ -2388,9 +2209,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑41k ↓847 R24k CH...
 ";
 
-    /// The turn is over and the prompt is waiting for a person. The line pi
-    /// spins is off the screen; the box, the working directory and the stats
-    /// line are where they were.
+    /// A finished turn at the prompt. The spinner line is gone; the box, the
+    /// directory and the stats line are where they were.
     const A_PI_IDLE: &str = r"
 [Themes]
   qshell
@@ -2423,9 +2243,8 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)          (github-copilot) gpt-5-mini • minimal
 ";
 
-    /// The same idle screen at 24 columns. The stats line is truncated from
-    /// the right and the context indicator the wide screens carry is gone,
-    /// which is why the tokens count has to be an anchor of its own.
+    /// The idle screen at 24 columns. The stats line is truncated and the
+    /// context indicator is gone, so the token count needs its own anchor.
     const A_PI_IDLE_24: &str = r" need to incorporate a
  timeout, just in case
  the command takes too
@@ -2458,18 +2277,12 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 ↑1.5k ↓69 R1.3k CH90....
 ";
 
-    /// One of the widgets a person opens on pi, in the slot the composer had:
-    /// the show-images selector, which is the shortest box the vendor puts
-    /// there. 100 columns and a pane of 30 rows, 2026-09-05, on an opencode
-    /// run of the same version, raised through `ctx.ui.custom` by an extension
-    /// that does nothing else — which is the only way to reach this one, and
-    /// the component drawing it is pi's own.
+    /// The show-images selector, the shortest widget pi draws in the
+    /// composer's slot, at 100 columns on a 30-row pane. Raised through
+    /// `ctx.ui.custom`, the only way to reach it; the component is pi's own.
     ///
-    /// Five rows from the box's top border to the stats line, and that is the
-    /// whole of what makes this screen interesting: a box with the vendor's
-    /// footer under it and a span the last rule in the document used to allow,
-    /// so a pi that would take the next keystroke as a menu choice was
-    /// reported as one waiting to be typed at.
+    /// Five rows from the box's top border to the stats line, a span the idle
+    /// rule once allowed, so a pi waiting on a menu choice read as idle.
     const A_PI_SELECTOR: &str = r"
  pi v0.84.4
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
@@ -2501,16 +2314,11 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 
 ";
 
-    /// The same selector on a pane with a transcript above it, raised the same
-    /// way after `!seq 1 60`. The widget did not move and its box is the same
-    /// three rows; what changed is that `!cmd` leaves the bottom border of its
-    /// own box on the pane, two rows above the widget's. From that border the
-    /// stats line is 7 rows off, from the widget's own it is 5, and neither
-    /// is the composer's 4.
-    ///
-    /// Which is what this pair is here for: a rule once read the topmost
-    /// border it could see, so the verdict was turning on what had scrolled
-    /// by rather than on the screen.
+    /// The same selector under a transcript, after `!seq 1 60`. The widget is
+    /// unchanged, but `!cmd` leaves its own box's bottom border two rows above
+    /// the widget's. The stats line is 7 rows from that border, 5 from the
+    /// widget's, and neither is the composer's 4. A rule that read only the
+    /// topmost border turned on what had scrolled by.
     const A_PI_SELECTOR_UNDER_A_TRANSCRIPT: &str = r" 42
  43
  44
@@ -2543,11 +2351,9 @@ $0.000 (sub) 0.0%/264k (auto)                                  (github-copilot) 
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
 ";
 
-    /// pi's model selector, raised with `/model` on the same pane the same day.
-    /// The other end of the same reading: this box is taller than the rows a
-    /// rule may see, so its own top border is above the floor and the only
-    /// border left to find is the bottom one. Three rows of screen, a span of
-    /// 2, and it read as a prompt on that alone.
+    /// pi's model selector (`/model`). The box is taller than the floor, so
+    /// only its bottom border is in view: three rows of screen, a span of 2,
+    /// and it once read as a prompt.
     const A_PI_MODEL_SELECTOR: &str = r"
  Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
 
@@ -2580,12 +2386,10 @@ Only showing models from configured providers. Use /login to add providers.
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
 ";
 
-    /// The same selector on pi 0.85.1, driven 2026-09-06 at 100 columns. The
-    /// hint row is built from the person's keybindings now and spells the
-    /// cancel key out in full — `Escape/Ctrl+C to cancel` where 0.84.4 wrote
-    /// `Esc to cancel` — which is the login rule's anchor, on a screen that is
-    /// not the login dialog. The current model wears its mark in front of its
-    /// name rather than after it.
+    /// The model selector on pi 0.85.1 at 100 columns. The hint row now spells
+    /// the cancel key in full, `Escape/Ctrl+C to cancel` where 0.84.4 wrote
+    /// `Esc to cancel`, which is the login rule's anchor on a screen that is
+    /// not the login dialog. The current model's mark moved before its name.
     const A_PI_MODEL_SELECTOR_0851: &str = r"
  Error: Failed to save API key for Cerebras: This operation was aborted
 
@@ -2621,15 +2425,14 @@ Only showing models from configured providers. Use /login to add providers.
         rules.claim(screen, recorded, SETTLED_LOOKS)
     }
 
-    /// claude's screens, read the way a reader reaches them: by naming the
-    /// vendor whose pane the capture came off.
+    /// claude's screens, looked up by vendor name as a reader does.
     fn claude() -> &'static Ruleset {
         of("claude")
     }
 
-    /// The documents these tests weigh against each other: the two amx ships
-    /// and the second vendor's, which shares no string with either. A law that
-    /// holds for all three is a law about the machinery.
+    /// Every document amx ships plus the second vendor's, which shares no
+    /// string with any of them. A property that holds for all of them is about
+    /// the machinery.
     fn documents() -> Vec<(&'static str, Ruleset)> {
         [claude::VENDOR, pi::VENDOR, SECOND]
             .iter()
@@ -2640,8 +2443,7 @@ Only showing models from configured providers. Use /login to add providers.
             .collect()
     }
 
-    /// The names of the rules in a document, which is what says which document
-    /// it is.
+    /// The rule names in a document.
     fn named(screens: &Ruleset) -> Vec<&str> {
         screens
             .rules()
@@ -2667,7 +2469,7 @@ Only showing models from configured providers. Use /login to add providers.
         );
     }
 
-    /// The screens a document marks as gates in front of the work.
+    /// The rules a document marks as gates in front of the work.
     fn gates(screens: &Ruleset) -> Vec<&str> {
         screens
             .rules()
@@ -2679,9 +2481,8 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_each_document_names_the_screens_its_vendor_gates_a_run_with() {
-        // The list `doctor` reads, which is why it is here and not there: a
-        // screen only the person at the keyboard can get an agent past is a
-        // fact about the vendor, so each document answers for its own.
+        // Each document names its own gates, since which screens gate a run
+        // is a fact about the vendor.
         assert_eq!(gates(claude()), ["folder_trust"]);
         assert_eq!(
             gates(pi()),
@@ -2746,9 +2547,7 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_vendor_nobody_has_measured_claims_nothing() {
-        // The floor an entry stands on before anybody has sat in front of it.
-        // Claiming nothing is what `unknown` is made of, and it is the right
-        // answer about a screen amx has never seen.
+        // An unmeasured vendor claims nothing, which reads as `unknown`.
         let none = unmeasured();
         assert!(none.rules().is_empty());
         assert_eq!(
@@ -2779,9 +2578,8 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_every_anchor_is_folded_the_way_the_screen_is() {
-        // Matching folds the capture's case; an anchor with a capital in it
-        // could never match, and would fail silently. True of every document,
-        // because it is the matching that folds and not the vendor.
+        // Matching folds the capture's case, so an anchor with a capital in it
+        // could never match and would fail silently.
         for (vendor, screens) in documents() {
             for rule in screens.rules() {
                 let asks = match &rule.asks {
@@ -2809,13 +2607,11 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_no_screen_is_named_in_rust_to_decide_anything() {
-        // A match arm on a rule name reads one vendor's document with
-        // another's names in hand, and the second vendor's screens are called
-        // something else entirely: every arm would miss them without a word.
-        // What a screen wants — where its question is, what it asks for,
-        // whether it stands in front of the work — is written beside the rule,
-        // and the name a verdict carries is only ever looked up in the document
-        // it came out of.
+        // A match on a rule name would read one vendor's document with another
+        // vendor's names, and the second vendor's screens are named
+        // differently, so every arm would silently miss. What a screen wants is
+        // written beside its rule, and a verdict's rule name is only looked up
+        // in the document it came from.
         let ships = |source: &str| {
             source
                 .split("#[cfg(test)]")
@@ -2826,10 +2622,8 @@ Only showing models from configured providers. Use /login to add providers.
         let reading = [
             ships(include_str!("rules.rs")),
             ships(include_str!("derive.rs")),
-            // Whole, tests and all. `doctor` names an agent stopped at one of
-            // these screens and has to name the screen with it, so a fixture
-            // spelling one out would be the same list of vendors' names in a
-            // second place — which is the thing this law is about.
+            // Tests included: a fixture spelling out a screen name would be
+            // the same list of names in a second place.
             include_str!("verbs/doctor.rs").to_string(),
         ];
 
@@ -2873,9 +2667,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_quotation_of_a_widget_is_not_a_widget() {
-        // No anchor string can tell these from the real thing; the layout can.
-        // claude draws no composer under a blocking prompt, so a widget with
-        // the mode footer beneath it is text about a widget.
+        // No anchor tells these from the real thing; the layout does. claude
+        // draws no composer under a blocking prompt, so a widget with the mode
+        // footer under it is text about a widget.
         let rules = claude();
         for (what, screen) in [
             ("a quoted permission box", QUOTED_PERMISSION_BOX),
@@ -2906,7 +2700,7 @@ Only showing models from configured providers. Use /login to add providers.
         }
     }
 
-    /// What the screen says it is asking, once a rule has claimed it.
+    /// The question a claimed screen is asking.
     fn asked(rules: &Ruleset, screen: &str) -> Question {
         let Claim::Ruled(rule) = claim(rules, screen, Phase::Working) else {
             panic!("no rule claims this screen");
@@ -2917,12 +2711,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_where_a_screen_keeps_its_question_is_the_documents_to_say() {
-        // Two of claude's blocking screens draw something under their question
-        // that is not part of it, so on those the question is the sentence the
-        // rule's own anchor is on rather than the one above the choices. Which
-        // of the two a screen wants is a fact about that screen: written in
-        // Rust it would be one vendor's rule names deciding what is read off
-        // another's pane.
+        // Two of claude's blocking screens draw something under the question,
+        // so there the question is the sentence the anchor is on rather than
+        // the one above the choices. The document says which, per rule.
         let asks = |name: &str| {
             let rule = claude().rules().iter().find(|rule| rule.name == name);
             rule.map(|rule| rule.asks.clone())
@@ -2946,9 +2737,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_second_vendors_question_is_read_where_its_own_document_says() {
-        // The same machinery over a document that shares no string with
-        // claude's: an anchor of its own, choices with no cursor glyph in
-        // front of them, and a sentence the vendor wrapped across two rows.
+        // The same machinery over a document sharing no string with claude's:
+        // its own anchor, choices with no cursor glyph, and a sentence wrapped
+        // across two rows.
         let screens = Ruleset::parse(SECOND.screens.unwrap()).unwrap();
         let Claim::Ruled(rule) = screens.claim(A_SECOND_VENDOR_ASKING, Phase::Working, 1) else {
             panic!("the second vendor's own rule claims its own screen");
@@ -2978,22 +2769,18 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_the_trust_screen_asks_one_question_at_every_width() {
-        // The vendor wraps this sentence across five rows at 54 columns and
-        // breaks it between `you` and `trust`; at 24 columns it takes eleven
-        // rows and the floor opens on the first of them. Every width is the
-        // same question, and the record must not be able to tell which one was
-        // read — least of all the two versions, where the later one has no
-        // numbered choice for the reading to stop above.
+        // At 54 columns the sentence wraps across five rows, breaking between
+        // `you` and `trust`; at 24 it takes eleven and the floor opens on the
+        // first. Every width and both versions must read the same question,
+        // though the later version has no numbered choice to stop above.
         let whole = "Quick safety check: Is this a project you created or one you \
              trust? (Like your own code, a well-known open source project, or work \
              from your team). If not, take a moment to review what's in this folder \
              first.";
         let numbered: &[&str] = &["Yes, I trust this folder", "No, exit"];
-        // 2.1.259 and 2.1.276 number nothing on this screen, so the rows are
-        // read off the cursor glyph and amx numbers them itself, in the order
-        // the vendor draws them. The exit is first there, which is a fact a
-        // caller pressing a digit needs and the reason the numbers are the
-        // drawn order rather than the older screen's.
+        // 2.1.259 and 2.1.276 number nothing here, so the rows are read off the
+        // cursor glyph and amx numbers them in drawn order. The exit comes
+        // first, which a caller pressing a digit needs to know.
         let marked: &[&str] = &["No, exit", "Yes, I trust this folder"];
         for (what, screen, options, walked) in [
             ("2.1.226 at 220 columns", TRUST_SCREEN_220, numbered, false),
@@ -3027,9 +2814,8 @@ Only showing models from configured providers. Use /login to add providers.
              between the third and the fourth does not end the list"
         );
 
-        // The same menu at 24 columns. The choices survive the wrap; the first
-        // row of the question does not survive the floor, which only reads the
-        // bottom of the pane, so what is recorded is what could be seen.
+        // At 24 columns the choices survive the wrap, but the question's first
+        // row is above the floor, so only what could be seen is recorded.
         let narrow = asked(claude(), ASK_MENU_24);
         assert_eq!(narrow.options, wide.options);
         assert_eq!(narrow.text, "indented with spaces or tabs?");
@@ -3037,12 +2823,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_menu_taller_than_the_floor_is_claimed_by_its_own_bottom() {
-        // Everything the vendor draws at the top of this box — the header
-        // strip, the question, the first choice and the marker on it — is as
-        // far from the footer as the agent's own descriptions make it, so at 24
-        // columns it is off the rows a rule may look at. The two anchors this
-        // rule used to have both went with it, one out of the floor and one to
-        // the wrap.
+        // At 24 columns the top of this box (header, question, first choice
+        // and its marker) is above the floor, and both of the rule's old
+        // anchors went with it, one out of the floor and one to the wrap.
         let screen = Screen::new(ASK_MENU_259_24);
         assert!(
             screen.rows_of("❯ 1.").is_empty(),
@@ -3053,8 +2836,7 @@ Only showing models from configured providers. Use /login to add providers.
             "the footer wrapped"
         );
 
-        // What is left is the bottom of the box, which is where the rule that
-        // claims the screen now stands.
+        // The bottom of the box is what the rule now stands on.
         assert_eq!(
             claim(claude(), ASK_MENU_259_24, Phase::Working).rule_name(),
             Some("ask_menu")
@@ -3091,10 +2873,8 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_screen_says_what_it_is_asking_whatever_amx_believes() {
-        // A reader that wants a question already has a record saying the agent
-        // is waiting; what it has not got is what for. So this door takes
-        // neither a state nor a count of looks, and it answers with what the
-        // claimed screens above said.
+        // The caller already has a record saying waiting and lacks only the
+        // question, so this takes no phase and no stillness.
         let rules = claude();
         let permission = rules
             .asking(PERMISSION_BOX)
@@ -3147,8 +2927,8 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // The line claude leaves behind when the turn is over is the same
-        // glyph and the gerund in the past tense, with no ellipsis on it.
+        // The line claude leaves after a turn has the same glyph and a past
+        // tense gerund, with no ellipsis.
         for (what, screen) in [
             ("`✻ Worked for 2m 26s`", IDLE_SCREEN),
             (
@@ -3166,22 +2946,19 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_turn_waiting_on_a_background_agent_is_still_a_turn() {
-        // claude 2.1.270 ends its turn when the answer stops and goes on
-        // working at the subagents it started, drawing this line above the
-        // composer while it does. The hooks have said the turn is over, the
-        // mode row is under the line as it is under everything this vendor
-        // draws, and the screen read idle over an agent that was busy.
+        // claude 2.1.270 ends the turn when the answer stops and keeps working
+        // on the subagents it started, drawing this line above the composer.
+        // The hooks said the turn is over and the mode row is under the line,
+        // so the screen read idle over a busy agent.
         //
-        // A claim of `working` over a record the hooks left idle is a reading
-        // and never something written down: claude reports, and what it
-        // reported stands on the record.
+        // A `working` claim over a record the hooks left idle is only a
+        // reading; claude reports, and what it reported stays on the record.
         let rules = claude();
         for (what, screen, named) in [
             ("at 100 columns", BACKGROUND_270_100, "background_agents"),
-            // At 54 the agents panel elides its subagent's label to
-            // `Preparing…`, which is the whole of the spinner rule's anchor,
-            // on a row under the mode footer. That row is not the one over
-            // the composer, so the spinner does not hold on it.
+            // At 54 columns the agents panel shows `Preparing…`, the spinner
+            // rule's anchor, on a row under the footer rather than over the
+            // composer, so the spinner rule does not hold.
             (
                 "at 54, under an elided panel",
                 BACKGROUND_270_54,
@@ -3232,16 +3009,13 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_screen_drawn_over_the_prompt_is_not_the_prompt() {
-        // Two screens claude 2.1.270 draws in front of a session, neither of
-        // them with a mode row on it. The transcript viewer ends in `? for
-        // shortcuts`, which this document carries for an older vendor, so a
-        // person reading the transcript through a long tool call was told the
-        // turn had ended. The /btw overlay sits in the slot the composer had.
+        // Two claude 2.1.270 screens with no mode row. The transcript viewer
+        // ends in `? for shortcuts`, kept for an older vendor, so reading the
+        // transcript during a long tool call said the turn had ended. The /btw
+        // overlay sits in the composer's slot.
         //
-        // Unclaimed is the answer both want: a reader keeps an idle or waiting
-        // record's own word on a screen nobody claims, and a record mid-turn
-        // reads unknown rather than being ended by a screen amx cannot see
-        // behind.
+        // Unclaimed is right for both: an idle or waiting record keeps its
+        // word, and a record mid-turn reads unknown rather than being ended.
         let rules = claude();
         assert!(
             TRANSCRIPT_270_100.contains("? for shortcuts"),
@@ -3263,10 +3037,9 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // The same overlay while it answers carries the vendor's own gerund
-        // and ellipsis, in the slot the composer had and with no composer
-        // under it. The spinner is the row over the composer, so there is no
-        // spinner here either.
+        // The overlay while it answers has claude's own gerund and ellipsis,
+        // but in the composer's slot with no composer under it, so it is not
+        // the spinner row.
         assert_eq!(
             claim(rules, BTW_ANSWERING_270_100, Phase::Idle),
             Claim::Unclaimed,
@@ -3297,8 +3070,8 @@ Only showing models from configured providers. Use /login to add providers.
     fn rules_a_still_screen_is_what_ends_a_running_turn() {
         let rules = claude();
 
-        // Mid-turn and idle are the same bytes, so a turn on the record is not
-        // ended by the screen until it has held still.
+        // Mid-turn and idle are the same bytes, so a running turn is not ended
+        // until the screen holds still.
         assert_eq!(
             rules.claim(STREAMING_SCREEN, Phase::Working, 0).rule_name(),
             Some("idle_prompt")
@@ -3323,8 +3096,8 @@ Only showing models from configured providers. Use /login to add providers.
             Some(Phase::Idle)
         );
 
-        // With nothing outstanding there is no turn to end, so it decides at
-        // once — which is what gets a parked agent out of `starting`.
+        // With nothing outstanding it decides at once, which gets a parked
+        // agent out of `starting`.
         for recorded in [Phase::Starting, Phase::Unknown] {
             assert_eq!(
                 rules.claim(PARKED_SCREEN, recorded, 0).phase(),
@@ -3342,8 +3115,7 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_only_the_bottom_of_the_capture_is_evidence() {
-        // The agent's own output scrolls; the vendor's chrome does not. A
-        // spinner line far above the floor is transcript, not state.
+        // A spinner line far above the floor is transcript, not state.
         let rules = claude();
         let old_news = format!(
             "✢ Infusing… (1m 54s · ↓ 6.9k)\n{}{}",
@@ -3365,8 +3137,8 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_box_and_a_widget_have_to_share_a_screen() {
-        // `within` is what keeps two unrelated things on one screen from
-        // adding up to a prompt.
+        // `within` stops two unrelated strings on one screen adding up to a
+        // prompt.
         let ruleset = Ruleset::parse(
             r#"
             [[rule]]
@@ -3394,10 +3166,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_screen_that_says_what_it_is_refuses_the_rule() {
-        // `not` is the other end of `not_below`. That one asks where a string
-        // is; this one only asks whether it is there at all, because the
-        // screens it is for — a viewer, an overlay — draw the chrome of the
-        // screen underneath them wherever they please.
+        // `not` asks only whether a string is on the screen, not where: the
+        // screens it is for (a viewer, an overlay) draw the chrome of the
+        // screen under them anywhere.
         let ruleset = Ruleset::parse(
             r#"
             [[rule]]
@@ -3430,11 +3201,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_lone_border_is_the_bottom_of_a_box_and_not_a_box() {
-        // `apart` is the floor `within` is the ceiling of, and what it is for
-        // is a box too tall for the rows a rule may see: its own top is out of
-        // reach, so what is left to find is its bottom border and the chrome
-        // under it — which is the same handful of rows every screen this
-        // vendor draws ends in. No choice of rows there spans enough.
+        // `apart` is for a box taller than the floor: its top is out of view,
+        // leaving its bottom border and the chrome under it, the same rows
+        // every screen ends in. No choice of rows spans enough.
         let ruleset = Ruleset::parse(
             r#"
             [[rule]]
@@ -3463,12 +3232,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_box_under_another_box_is_still_the_box() {
-        // pi draws an Update Available box above its composer whenever a newer
-        // pi exists — measured 2026-09-06 on 0.84.4 with 0.85.1 out: five rows,
-        // a blank one, then the composer. Its borders are the composer's own.
-        // A walk that read its rows from the topmost border anchored on the
-        // notice and lost every window; the rows that fit are the rows a rule
-        // stands on.
+        // pi draws an Update Available box above its composer when a newer pi
+        // exists: five rows, a blank one, then the composer, with the
+        // composer's own borders. Anchoring on the topmost border found the
+        // notice and lost every window.
         let ruleset = Ruleset::parse(
             r#"
             [[rule]]
@@ -3490,17 +3257,15 @@ Only showing models from configured providers. Use /login to add providers.
             "the composer's own border is four rows from the footer"
         );
 
-        // A lone bottom border is still not a box: no choice of rows on that
-        // screen spans enough.
+        // A lone bottom border is still not a box.
         assert_eq!(
             ruleset.claim("---\nhere\nmode: careful\n", Phase::Starting, 1),
             Claim::Unclaimed
         );
     }
 
-    /// pi's screens, read the way a reader reaches them: through the entry in
-    /// the table, which is what proves the document is in the binary and
-    /// parses.
+    /// pi's screens, reached through the vendor table, which also shows the
+    /// document is in the binary and parses.
     fn pi() -> &'static Ruleset {
         of("pi")
     }
@@ -3526,9 +3291,7 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_pi_names_a_dialog_a_running_turn_and_a_prompt() {
-        // Every screen here came off a live pi. What each one means is the
-        // whole of what amx knows about this vendor: it reports through no
-        // hooks, so the pane is not the last witness but the only one.
+        // pi reports no turns through hooks, so the pane is its only witness.
         for (what, screen, recorded, means) in [
             (
                 "a dialog gating a tool call",
@@ -3578,9 +3341,8 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_pi_dialog_outranks_the_turn_it_went_up_in() {
-        // pi raises a dialog from a tool call without taking its spinner down,
-        // so both rules hold on that screen and only the order decides. A
-        // screen that blocks is what the row has to say.
+        // pi raises a dialog from a tool call with the spinner still up, so
+        // both rules hold and order decides. The blocking screen wins.
         assert!(
             A_PI_DIALOG.contains("Working..."),
             "the line pi spins is on this screen too"
@@ -3593,12 +3355,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_turn_pi_has_stopped_calling_working_is_still_a_turn() {
-        // pi has four status lines and only one of them says `Working...`.
-        // Compaction and a retry each take the working indicator down and put
-        // their own where it was, and an extension rewrites the message on the
-        // one that is up — so the word the spinner rule used to stand on is
-        // off the pane on three screens where a turn is running. The frame pi
-        // spins in front of the message is on all four.
+        // pi has four status lines and only one says `Working...`: compaction
+        // and retry replace it, and an extension can rewrite it. The frame in
+        // front of the message is on all four.
         for (what, screen) in [
             ("a turn under the vendor's own word", A_PI_WORKING),
             (
@@ -3636,21 +3395,17 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // What anchoring on the frame costs, measured rather than argued
-        // about: `!cmd` spins the same frame in a box of its own three rows
-        // above pi's, and this rule takes it. A command somebody ran in the
-        // pane is not a turn the agent is taking, and `working` is still the
-        // better of the two answers on offer — the pane is busy, and what it
-        // read before was `unknown`.
+        // The cost of anchoring on the frame: `!cmd` spins the same frame in
+        // its own box three rows above pi's, and this rule claims it. A shell
+        // command is not the agent's turn, but `working` beats the `unknown`
+        // it read before: the pane is busy.
         assert_eq!(
             claim(pi(), A_PI_RUNNING_A_COMMAND, Phase::Idle).rule_name(),
             Some("spinner"),
             "a shell command running in the pane"
         );
 
-        // And the screens with no turn running under them still have none: the
-        // frame is the anchor, and a pane pi is not spinning anything on
-        // carries no frame to find.
+        // Screens with no turn running carry no frame.
         for (what, screen) in [
             ("a finished turn", A_PI_IDLE),
             ("a pi nobody has typed into yet", A_PI_BOOT),
@@ -3666,11 +3421,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_pi_asking_about_the_folder_is_not_pi_asking_about_a_tool_call() {
-        // pi draws its folder-trust question in the same box a gated tool call
-        // is drawn in and ends it in the same `↑↓ navigate` hint row, so the
-        // dialog rule holds on this screen too and only the order decides.
-        // Both say a person is needed. What a person is being asked for is not
-        // the same thing, and the kind is where that is written down.
+        // pi draws its folder-trust question in the same box and hint row as a
+        // gated tool call, so the dialog rule holds too and order decides.
+        // Both need a person; the kind says what for.
         let Claim::Ruled(rule) = claim(pi(), A_PI_TRUST, Phase::Starting) else {
             panic!("pi's own rule claims pi's own screen");
         };
@@ -3678,11 +3431,9 @@ Only showing models from configured providers. Use /login to add providers.
         assert_eq!(rule.state, Phase::Waiting);
         assert_eq!(rule.kind, Some(crate::store::Kind::Trust));
 
-        // The title and the folder under it, which is what this screen is
-        // deciding about. The two rows directly above the choices are the
-        // decision pi already has, so reading above the run would take those
-        // instead; `asks` names the title and the sentence runs on to the
-        // folder, the way the rule below reads its own.
+        // The question is the title and the folder under it. The two rows
+        // right above the choices are pi's saved decision, so `asks` names
+        // the title and the sentence runs on to the folder.
         let asked = pi()
             .asking(A_PI_TRUST)
             .expect("the screen says what it is blocking on");
@@ -3702,11 +3453,8 @@ Only showing models from configured providers. Use /login to add providers.
         );
         assert!(asked.walked, "read off the marks, and numbered here");
 
-        // And at 20 columns the box is taller than the rows a rule may see, so
-        // the title is out of reach and the screen falls to the rule below.
-        // Still waiting, and asked about the way a tool call would be: quiet
-        // in the direction of the weaker claim, which is what the fall-through
-        // is for and what this screen read before the rule above existed.
+        // At 20 columns the title is above the floor and the screen falls to
+        // the dialog rule: still waiting, asked about like a tool call.
         let Claim::Ruled(narrow) = claim(pi(), A_PI_TRUST_20, Phase::Starting) else {
             panic!("something still claims the screen at 20 columns");
         };
@@ -3717,12 +3465,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_pi_asking_about_the_folder_on_its_way_in_is_the_same_kind_of_question() {
-        // A pi started in a folder carrying a `.pi/` asks about it before the
-        // turn, in the dialog's own box and with none of the `/trust`
-        // selector's anchors on it, so the dialog rule read it as a tool call
-        // and the row quoted the sentence about consequences. It is the same
-        // decision about the same tree: `trust`, a gate, and the title with
-        // the folder under it for the question.
+        // Started in a folder with a `.pi/`, pi asks before the turn in the
+        // dialog's box and without the `/trust` selector's anchors, so the
+        // dialog rule read it as a tool call. It is the same decision: `trust`,
+        // a gate, and the title with the folder under it.
         let Claim::Ruled(rule) = claim(pi(), A_PI_FOLDER_TRUST, Phase::Starting) else {
             panic!("pi's own rule claims pi's own screen");
         };
@@ -3751,15 +3497,15 @@ Only showing models from configured providers. Use /login to add providers.
         );
         assert!(asked.walked, "read off the marks, and numbered here");
 
-        // The `/trust` selector is still its own rule: neither takes the
-        // other's screen.
+        // The `/trust` selector keeps its own rule; neither takes the other's
+        // screen.
         assert_eq!(
             claim(pi(), A_PI_TRUST, Phase::Starting).rule_name(),
             Some("project_trust")
         );
 
-        // And at 20 columns the title is above the floor, so the screen falls
-        // to the dialog rule the way the selector does at that width.
+        // At 20 columns the title is above the floor, so the dialog rule takes
+        // it, as it does the selector.
         let Claim::Ruled(narrow) = claim(pi(), A_PI_FOLDER_TRUST_20, Phase::Starting) else {
             panic!("something still claims the screen at 20 columns");
         };
@@ -3769,13 +3515,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_the_screens_a_fresh_pi_stops_on_are_screens_that_say_so() {
-        // Two ways a pi nobody has set up stops before it can do anything, and
-        // both were read as something else. The first-run gate ends in the
-        // dialog rule's own hint row, so it was reported as a tool call
-        // waiting on an answer; the login dialog is short enough that the box
-        // and the stats line under it added up to `prompt`, and a card said
-        // idle over a pi that cannot take a turn until somebody types a key
-        // into it.
+        // Two ways an unconfigured pi stops before it can work, both once read
+        // as something else. The first-run gate ends in the dialog rule's hint
+        // row and read as a tool call; the login dialog is short enough that
+        // the box and stats line under it read as `prompt`.
         for (what, screen, named, sentence) in [
             (
                 "the gate a first run stops at",
@@ -3821,11 +3564,8 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // The gate's second step wraps four rows of prose about usage data
-        // until the box is taller than the pane, and at 20 columns the banner
-        // has scrolled off with the top border. The screen falls to the dialog
-        // rule: still waiting, and asked about the way a tool call would be,
-        // which is what it read before this rule existed.
+        // The gate's second step at 20 columns has lost its banner and top
+        // border off the pane, so it falls to the dialog rule: still waiting.
         let Claim::Ruled(narrow) = claim(pi(), A_PI_SETUP_ANALYTICS_20, Phase::Starting) else {
             panic!("something still claims the screen at 20 columns");
         };
@@ -3835,12 +3575,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_setup_gate_with_pis_own_footer_under_it_is_a_quotation() {
-        // The one screen on this vendor where the layout tells a widget from a
-        // quotation of one: pi draws no composer and no footer under its
-        // first-run gate, so a stats line below that banner says the box is
-        // text on somebody else's pane. This is not a capture — it is the
-        // measured gate with a measured footer written under it, which is the
-        // shape a quotation of it has on a pane that is running a session.
+        // pi draws no composer or footer under its first-run gate, so a stats
+        // line below the banner means the box is quoted text. Not a capture:
+        // the measured gate with a measured footer under it, the shape a
+        // quotation has on a pane running a session.
         let quoted = format!(
             "{}\n~/.claude/jobs/eef72778/tmp/pipane\n\
              ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)\n",
@@ -3858,13 +3596,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_every_way_a_caller_stops_pi_is_a_screen_that_says_so() {
-        // An extension stops pi for a person three ways, and until now one of
-        // them was the only one amx could see. A permission gate is as easily
-        // written with `ctx.ui.input` as with `ctx.ui.select` — same caller,
-        // same stop, and the row said idle or unknown while somebody waited to
-        // be typed at. Each of the three draws a hint row of its own and all
-        // three keep the caller's title in the same place, at the top of the
-        // box.
+        // An extension can stop pi for a person three ways: `select`, `input`
+        // and `editor`. Each draws its own hint row, and all three keep the
+        // caller's title at the top of the box.
         for (what, screen, named, sentence) in [
             (
                 "a caller asking for a choice",
@@ -3913,12 +3647,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_pi_dialog_carries_the_callers_question_and_the_choices_it_marks() {
-        // The sentence a gated tool call asks is whatever its caller passed,
-        // and pi draws it at the top of the box with the choices under it. The
-        // choices are marked rather than numbered — an arrow in front of the
-        // row the cursor is on, two spaces in front of the rest — so the
-        // reading takes the run of rows the arrow is in, numbers them itself in
-        // the order they are drawn, and says on the record that it did.
+        // A gated tool call's question is whatever its caller passed, drawn
+        // at the top of the box with the choices under it. The choices are
+        // marked, not numbered (an arrow on the cursor row, two spaces on the
+        // rest), so amx numbers the run in drawn order and records that it did.
         let Claim::Ruled(rule) = claim(pi(), A_PI_DIALOG, Phase::Working) else {
             panic!("pi's own rule claims pi's own screen");
         };
@@ -3954,16 +3686,12 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_cursor_somebody_moved_leaves_the_question_where_it_is() {
-        // The mark says which row the vendor's cursor is on, and a person can
-        // move it with an arrow key before amx ever looks. So the question is
-        // the sentence above the RUN the mark is in rather than above the mark
-        // itself: anchored on the mark, a cursor one row down would make the
-        // choice above it the sentence a row quotes.
+        // A person can move the cursor before amx looks, so the question is
+        // the sentence above the run, not above the mark. Anchored on the
+        // mark, a cursor one row down would quote the choice above it.
         //
-        // Not a capture. It is the measured dialog with its arrow moved one row
-        // down, which is what `Down` does to that screen — measured on pi
-        // 0.85.1 on 2026-09-14, where the list clamps at both ends and `Enter`
-        // takes the arrowed row.
+        // Not a capture: the measured dialog with its arrow moved down one row,
+        // which is what `Down` does on pi 0.85.1.
         let moved = A_PI_DIALOG
             .replace(" → Allow once", "   Allow once")
             .replace("   Allow always", " → Allow always");
@@ -3979,11 +3707,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_which_screens_mark_a_choice_is_the_documents_to_say() {
-        // Which screens draw a marked list rather than a numbered one is a
-        // fact about the vendor, so it is written in that vendor's own
-        // document. claude numbers what it asks but for its trust gate, which
-        // has drawn a cursor and no digits since 2.1.259, and a rule that says
-        // nothing reads numbers the way it always has.
+        // Which screens draw a marked list is the vendor's document to say.
+        // claude numbers everything but its trust gate, which has drawn a
+        // cursor and no digits since 2.1.259.
         let marks = |screens: &'static Ruleset| -> Vec<&'static str> {
             screens
                 .rules()
@@ -4011,12 +3737,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
-        // pi draws every widget a person opens between the composer's own two
-        // borders and keeps the same footer under it, so the last rule in the
-        // document — a box, a footer, and the rows between them — held on all
-        // of them. That window was counted off an empty composer and nothing
-        // else, and `docs/pi-screens.md` measured seven screens that need a
-        // person going out as `idle` because of it.
+        // pi draws every widget a person opens between the composer's two
+        // borders with the same footer under it, so the idle rule (a box, a
+        // footer and the rows between) held on all of them. Its window was
+        // counted off an empty composer.
         for (what, screen) in [
             ("a selector with nothing above it", A_PI_SELECTOR),
             (
@@ -4027,10 +3751,9 @@ Only showing models from configured providers. Use /login to add providers.
                 "a selector taller than the rows a rule may see",
                 A_PI_MODEL_SELECTOR,
             ),
-            // 0.85.1 spells this selector's cancel key out in full, and the
-            // login rule read `escape/ctrl+c to` on it: a false gate that
-            // doctor names and `send` refuses. The dialog's own parentheses
-            // are what the selector's row does not have.
+            // 0.85.1 spells this selector's cancel key in full, and the login
+            // rule read `escape/ctrl+c to` on it. The dialog's parentheses are
+            // what the selector's row lacks.
             (
                 "the same selector on 0.85.1, its hint row naming both keys",
                 A_PI_MODEL_SELECTOR_0851,
@@ -4043,18 +3766,16 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // And what is above the box is not a fact about the box: the two
-        // captures of the one widget differ by a transcript and by nothing
-        // else, and a reading that told them apart was reading the transcript.
+        // The two captures of one widget differ only by the transcript above,
+        // so they must read the same.
         assert_eq!(
             claim(pi(), A_PI_SELECTOR, Phase::Starting),
             claim(pi(), A_PI_SELECTOR_UNDER_A_TRANSCRIPT, Phase::Starting),
             "the same widget, read the same way"
         );
 
-        // The screen the rule was measured on is still the screen it claims,
-        // at both the widths it was measured at and on a pi nobody has typed
-        // into yet.
+        // The screen the rule was measured on is still claimed, at both widths
+        // and on a fresh pi.
         for (what, screen) in [
             ("a finished turn", A_PI_IDLE),
             ("the same at 24 columns", A_PI_IDLE_24),
@@ -4070,10 +3791,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_pi_and_claude_claim_nothing_on_each_others_panes() {
-        // Every anchor in a document is its own vendor's. On somebody else's
-        // chrome they are not nearly right, they are absent — which is what
-        // keeps a wrapper around one vendor from being read with the other's
-        // document and told a confident wrong thing.
+        // Each vendor's anchors are absent from the other's chrome, so a
+        // wrapper around one vendor is never read confidently wrong with the
+        // other's document.
         for (what, screen) in [
             ("a claude idle prompt", IDLE_SCREEN),
             ("a claude turn running", WORKING_SCREEN),
@@ -4105,11 +3825,10 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_pi_cuts_its_own_chrome_and_leaves_the_work() {
-        // The anchors that find pi's furniture are in the same document as the
-        // rules and measured off the same panes. What the walk takes is the
-        // box, the working directory, the stats line, and the line pi spins
-        // above them — and on this vendor the dialog too, because pi draws it
-        // between the box's own borders.
+        // pi's furniture anchors are in the same document as its rules. The
+        // walk takes the box, the directory, the stats line and the spinner
+        // line above them, and the dialog too, since pi draws it inside the
+        // box's borders.
         let cut = |screen: &'static str| -> Vec<&'static str> {
             let rows: Vec<&str> = screen.lines().collect();
             pi().furniture().cut(&rows).to_vec()
@@ -4130,8 +3849,8 @@ Only showing models from configured providers. Use /login to add providers.
             "the rows the agent earned are not"
         );
 
-        // 0.85.1 puts the word in the top border, and the border step takes
-        // that row the way it takes any top border: it ends in the rule.
+        // 0.85.1 puts the word in the top border, which ends in the rule like
+        // any top border.
         let working = cut(A_PI_WORKING_0851);
         assert!(
             !working.iter().any(|row| row.contains("Working")),
@@ -4157,11 +3876,9 @@ Only showing models from configured providers. Use /login to add providers.
 
     #[test]
     fn rules_the_walk_cuts_pis_status_line_whatever_it_is_saying() {
-        // The rule above reads all four of pi's status lines off the frame,
-        // and the walk under it has to cut the same four rows. Anchored on the
-        // one message, it cut the row while `Working...` was on it and left it
-        // for the other three: a compacting turn's own status line went onto
-        // the card and into `amx logs` as work the agent had done.
+        // The walk must cut all four of pi's status lines, as the rule reads
+        // them all off the frame. Anchored on one message, a compacting turn's
+        // status line went onto the card and into `amx logs` as work.
         let cut = |screen: &'static str| -> Vec<&'static str> {
             let rows: Vec<&str> = screen.lines().collect();
             pi().furniture().cut(&rows).to_vec()
@@ -4193,12 +3910,10 @@ Only showing models from configured providers. Use /login to add providers.
             );
         }
 
-        // What the walk still cannot do, and it is the narrow panes. The frame
-        // is on the FIRST row of a message that wraps and the walk reads the
-        // LAST row above the box, so at 20 columns a compacting turn keeps its
-        // whole status line. Cutting the rest of a wrap means taking rows by
-        // position with nothing under them to stop on, and furniture left on
-        // the screen is the direction this walk is built to be wrong in.
+        // Known limit at narrow widths: the frame is on the first row of a
+        // wrapped message and the walk reads the last row above the box, so
+        // at 20 columns a compacting turn keeps its status line. Leaving
+        // chrome on screen is the direction the walk is built to err in.
         assert!(
             cut(A_PI_COMPACTING_20)
                 .iter()
@@ -4207,10 +3922,9 @@ Only showing models from configured providers. Use /login to add providers.
         );
     }
 
-    /// Saiful's `tell-me-about-this-f1n`, captured off a live claude 2.1.278
-    /// on 2026-09-21 after an esc: the turn's last tool result carries
-    /// `Initializing…`, which is the spinner's own `ing…` on a row of the
-    /// transcript. The gap after each `⎿` is a non-breaking space, as drawn.
+    /// claude 2.1.278 after an esc. The last tool result reads
+    /// `Initializing…`, the spinner's own `ing…` on a transcript row. The gap
+    /// after each `⎿` is a non-breaking space, as drawn.
     const INTERRUPTED_278: &str = "\
 ❯ Tell me about this project
 
@@ -4226,9 +3940,8 @@ Only showing models from configured providers. Use /login to add providers.
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 ";
 
-    /// The same pane at rest with its statusline elided from the right in the
-    /// middle of a branch name, which leaves the ending of a gerund and the
-    /// vendor's ellipsis under the composer.
+    /// The same pane at rest, with its statusline elided mid branch name,
+    /// leaving a gerund ending and an ellipsis under the composer.
     const AN_ELIDED_STATUSLINE: &str = "\
 ● done
 
@@ -4241,9 +3954,8 @@ Only showing models from configured providers. Use /login to add providers.
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 ";
 
-    /// claude's AskUserQuestion menu asking a question that opens the way a
-    /// permission box's does. The menu is the widget: `Enter to select` is on
-    /// no permission box.
+    /// claude's AskUserQuestion menu with a question that opens like a
+    /// permission box's. `Enter to select` makes it the menu.
     const ASK_MENU_DO_YOU_WANT_TO: &str = "\
 ────────────────────────────────────────────────────────────────────────────────
  ☐ Indentation
@@ -4259,8 +3971,8 @@ Do you want to indent this project with spaces or tabs?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ";
 
-    /// pi at rest after a tool call whose output drew one of the vendor's own
-    /// braille frames in the middle of a row, two rows over the composer.
+    /// pi at rest after a tool call whose output drew a braille frame mid-row,
+    /// two rows over the composer.
     const A_PI_FRAME_IN_TOOL_OUTPUT: &str = r"
  $ pnpm install
 
@@ -4273,8 +3985,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 ↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)          (github-copilot) gpt-5-mini • minimal
 ";
 
-    /// pi's one-line input raised under a transcript that ends in a numbered
-    /// list of the agent's own.
+    /// pi's one-line input under a transcript ending in a numbered list of the
+    /// agent's own.
     const A_PI_INPUT_UNDER_A_LIST: &str = r"
  Two branches are ahead of main:
 
@@ -4297,9 +4009,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn rules_claudes_spinner_is_the_row_over_its_composer_and_no_other() {
-        // `ing…` is the vendor's elision after a gerund as readily as it is
-        // the spinner: on a tool result in the transcript, and on a statusline
-        // cut short under the composer. Neither is the row the vendor spins.
+        // `ing…` is also the vendor's elision after a gerund: on a tool result
+        // in the transcript, and on a truncated statusline under the composer.
+        // Neither is the spinner row.
         for (what, screen) in [
             ("an interrupted turn", INTERRUPTED_278),
             ("an elided statusline", AN_ELIDED_STATUSLINE),
@@ -4335,9 +4047,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn rules_pis_input_under_a_numbered_list_keeps_its_question() {
-        // The list is the agent's own output above the box, and no choice
-        // this screen offers: the question is read above the row pi waits to
-        // be typed into, however many numbered rows sit higher.
+        // The list is agent output above the box, not choices: the question is
+        // read above the input row, however many numbered rows sit higher.
         let asked = asked(pi(), A_PI_INPUT_UNDER_A_LIST);
         assert_eq!(asked.text, "Which branch should I push to?");
         assert!(asked.options.is_empty(), "{:?}", asked.options);
@@ -4356,10 +4067,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert!(Ruleset::parse("rule = ").is_err(), "not TOML");
     }
 
-    // ── codex 0.157.1, measured 2026-09-28 ───────────────────────────────────
-    // Every capture under tests/codex/screens came off a live `codex
-    // --no-daemon` in a private tmux server, `capture-pane -p -J`, at the width
-    // in its name and forty rows — see docs/codex-screens.md.
+    // codex 0.157.1. The captures under tests/codex/screens are from `codex
+    // --no-daemon` with `capture-pane -p -J` at the width in each name and
+    // forty rows; see docs/codex-screens.md.
 
     fn codex() -> Ruleset {
         Ruleset::parse(include_str!("../assets/screen-rules-codex.toml"))
@@ -4368,8 +4078,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
     #[test]
     fn rules_codex_is_the_document_a_codex_pane_is_read_by() {
-        // The command a record carries is what picks the document, and amx
-        // starts codex with its launch word in front of everything else.
+        // amx starts codex with its launch word first.
         let read = of("codex --no-daemon --model gpt-6-luna -- fix the login bug");
         assert!(std::ptr::eq(read, of("codex")));
         assert!(std::ptr::eq(read, of("/usr/local/bin/codex --no-daemon")));
@@ -4377,8 +4086,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert!(!std::ptr::eq(read, of("claude")));
     }
 
-    /// A capture file as amx reads the pane it came off: tmux's output with
-    /// its trailing blank rows gone (`Server::run`), then sanitized.
+    /// A capture file as amx reads a pane: trailing blank rows dropped (as
+    /// `Server::run` does), then sanitized.
     fn as_read(capture: &str) -> String {
         crate::tmux::sanitize(capture.trim_end())
     }
@@ -4551,10 +4260,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         }
     }
 
-    // ── opencode 2.0.16, measured 2026-09-30 ─────────────────────────────────
-    // Every capture under tests/opencode/screens came off a live `opencode
-    // --standalone` in a private tmux server, `capture-pane -p -J`, at the
-    // width in its name and forty rows — see docs/opencode-screens.md.
+    // opencode 2.0.16. The captures under tests/opencode/screens are from
+    // `opencode --standalone` with `capture-pane -p -J` at the width in each
+    // name and forty rows; see docs/opencode-screens.md.
 
     fn opencode() -> Ruleset {
         Ruleset::parse(include_str!("../assets/screen-rules-opencode.toml"))
