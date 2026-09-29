@@ -1,39 +1,38 @@
 // installed by amx
 //
-// amx writes this file and `amx uninstall` removes it; `amx doctor --fix` puts
-// it back the way it ships, so an edit here is an edit that goes. It does for
-// opencode what `assets/pi/amx.ts` does for pi: report what the agent is doing
-// to the amx that started this pane, one `amx _hook` per moment with the
-// payload on stdin, stream what opencode is saying to the pane's record while
-// a turn runs, and beat on that record for as long as the turn lasts.
+// amx's opencode TUI plugin. amx writes this file, `amx uninstall` removes it
+// and `amx doctor --fix` restores it, so local edits do not last.
 //
-// opencode loads it into the TUI, the pane itself, so the environment is the
-// pane's. The event feed is the service's and carries every pane's sessions,
-// so a report is only ever about the session this pane shows.
+// Reports what the session in this pane is doing to amx, one `amx _hook` call
+// per event with the JSON payload on stdin. While a turn runs it also streams
+// the text being written to `live` in the agent's record and touches
+// `heartbeat` there.
 //
-// It stays out of the way. Every report is fire-and-forget, nothing here
-// throws, and an opencode that no amx started runs it as nothing.
+// opencode loads it into the TUI, so the environment is the pane's. The event
+// feed carries every session the service holds, so only events for the
+// session this pane shows are reported. Nothing here throws, and it does
+// nothing in a pane amx did not start.
 import { spawn } from "node:child_process";
 import { existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
-// How often the stream is written, at most.
+// Minimum interval between writes of `live`.
 const STREAM_EVERY_MS = 100;
-// How often a running turn says on the record that it is still running.
+// Interval between heartbeat touches while a turn runs.
 const BEAT_EVERY_MS = 3000;
-// How much of a tool's arguments a report carries.
+// Longest string argument a tool report carries.
 const ARGUMENT_CHARS = 200;
-// `--prompt` fills the home route's composer and never sends it, so the
-// plugin presses submit this often until a session opens, for this long.
+// `--prompt` fills the home route's composer without sending it, so the
+// plugin presses submit at this interval until a session opens, for at most
+// SUBMIT_FOR_MS.
 const SUBMIT_EVERY_MS = 500;
 const SUBMIT_FOR_MS = 30000;
-// The tool that draws a question form, whose input is the questions whole.
+// The tool that draws a question form. Its input is reported untrimmed.
 const QUESTION_TOOL = "question";
-// The conversation's file beside the record.
+// The conversation, written to the agent's record directory.
 const TRANSCRIPT = "opencode-messages.jsonl";
 
-// The amx to report to: the one that started this pane says where it is, else
-// whichever amx is on the PATH.
+// The amx to report to: $AMX_BIN, else the first amx on the PATH.
 function amxBinary() {
   const named = process.env.AMX_BIN;
   if (named) return named;
@@ -45,7 +44,7 @@ function amxBinary() {
   return undefined;
 }
 
-// A tool's arguments cut down to what a row can say about them.
+// A tool's string arguments, each cut to ARGUMENT_CHARS.
 function trimmed(args) {
   const kept = {};
   if (!args || typeof args !== "object") return kept;
@@ -63,8 +62,8 @@ export default {
     if (!amx) return;
     const record = process.env.AMX_DIR;
 
-    // Reports go one at a time, in the order the moments happened. `fields`
-    // may be a promise, which holds every report behind it until it settles.
+    // Reports are sent one at a time, in event order. `fields` may be a
+    // promise; later reports wait for it.
     let queue = Promise.resolve();
     function report(event, fields) {
       queue = queue
@@ -88,8 +87,8 @@ export default {
       });
     }
 
-    // The session this pane shows, walked to its root: a subagent's session
-    // routed in the pane is still its parent's conversation.
+    // The session this pane shows, walked up to its root, since a subagent's
+    // session belongs to its parent's conversation.
     function mine() {
       try {
         const route = ctx.ui.router.current();
@@ -100,8 +99,8 @@ export default {
       }
     }
 
-    // Started is the first session route: opencode names no moment for a
-    // pane opening onto its session.
+    // opencode has no event for a pane opening a session, so the first
+    // session route counts as the session starting.
     const resumed = process.argv.some((word) => word === "--session" || word.startsWith("--session="));
     let selected = false;
     function select() {
@@ -110,15 +109,14 @@ export default {
       if (!id) return;
       selected = true;
       const fields = { session_id: id, source: resumed ? "resume" : "startup" };
-      // Named from the start, so a card opened in the first turn reads the
-      // conversation (the task, until the first write) rather than the screen,
-      // whose last rows are opencode's composer.
+      // Named from the start, so a card opened during the first turn reads
+      // the conversation file instead of the screen.
       if (record) fields.transcript_path = join(record, TRANSCRIPT);
       report("session.selected", fields);
     }
 
-    // The stream: what opencode is saying at this moment, written whole beside
-    // the record and taken away when the text ends.
+    // The text being written, saved whole to `live` (write then rename) and
+    // removed when the text part ends.
     let pending;
     let streamed;
     let timer;
@@ -140,7 +138,7 @@ export default {
         renameSync(`${path}.tmp`, path);
         streamed = pending;
       } catch {
-        // A record that cannot be written to streams nothing.
+        // Best effort: the record may be gone.
       }
       pending = undefined;
     }
@@ -155,18 +153,18 @@ export default {
       try {
         unlinkSync(join(record, "live"));
       } catch {
-        // Nothing streamed is nothing to take away.
+        // Nothing was streamed.
       }
     }
 
-    // The beat, as pi's: the heartbeat file's mtime says the turn goes on.
+    // The heartbeat, as in the pi extension: amx reads only its mtime.
     let beating;
     function beat() {
       if (!record) return;
       try {
         writeFileSync(join(record, "heartbeat"), "");
       } catch {
-        // A record that cannot be written to is a turn nothing hears about.
+        // Best effort: the record may be gone.
       }
     }
     function startBeating() {
@@ -184,13 +182,13 @@ export default {
       try {
         unlinkSync(join(record, "heartbeat"));
       } catch {
-        // Nothing beaten is nothing to take away.
+        // No heartbeat to remove.
       }
     }
 
-    // The conversation, written whole beside the record after each tool call,
-    // each text and each turn's end, one message a line. amx reads it there
-    // and never opens opencode's db. Writes go one at a time.
+    // The whole conversation, one message per line, rewritten after each tool
+    // call, each text part and each turn's end. amx reads this file and never
+    // opens opencode's database. Writes are serialised.
     let writing = Promise.resolve();
     function transcript(id) {
       writing = writing.then(() => write(id));
@@ -210,7 +208,7 @@ export default {
       }
     }
 
-    // What the turn has said and done so far.
+    // State of the current turn.
     let running = false;
     let prompt;
     const steered = new Set();
@@ -230,7 +228,7 @@ export default {
           try {
             handle(data, id);
           } catch {
-            // An event of a shape this was not written for reports nothing.
+            // An event of an unexpected shape reports nothing.
           }
         }),
       );
@@ -319,9 +317,9 @@ export default {
       });
     }
 
-    // A `--prompt=` task on the home route waits in the composer until it is
-    // sent. The route is watched besides for Started, which a pane resumed
-    // onto a quiet session hears no event for.
+    // Submit a `--prompt=` task left in the home route's composer. The route
+    // is also polled for the session start, since a pane resumed onto an idle
+    // session gets no event.
     let submitting = process.argv.some((word) => word.startsWith("--prompt="));
     const giveUp = setTimeout(() => {
       submitting = false;
@@ -339,22 +337,22 @@ export default {
         try {
           if (ctx.ui.router.current()?.type === "home") ctx.keymap.dispatch("prompt.submit");
         } catch {
-          // A keymap that will not take it leaves the task in the composer.
+          // The task stays in the composer.
         }
       }
       if (selected && !submitting) clearInterval(watching);
     }, SUBMIT_EVERY_MS);
     watching.unref?.();
 
-    // `amx stop` sends SIGUSR2 to end the turn before it ends the pane. The
-    // session is kept, not resumed.
+    // `amx stop` sends SIGUSR2 to end the turn before it closes the pane.
+    // `resume: false` keeps the session without continuing it.
     function interrupt() {
       const id = mine();
       if (!id) return;
       try {
         Promise.resolve(ctx.client.session.interrupt({ sessionID: id, resume: false })).catch(() => {});
       } catch {
-        // A client that will not interrupt leaves the turn to the pane's end.
+        // The turn then ends with the pane.
       }
     }
     process.on("SIGUSR2", interrupt);

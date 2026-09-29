@@ -1,39 +1,32 @@
 // installed by amx
 //
-// amx writes this file and `amx uninstall` removes it; `amx doctor --fix` puts
-// it back the way it ships, so an edit here is an edit that goes.
+// amx's opt-in `subagent` tool for pi. amx writes this file, `amx uninstall`
+// removes it and `amx doctor --fix` restores it, so local edits do not last.
 //
-// It is a second extension beside amx.ts, and a person opts into it: amx.ts
-// reports what the agent does, and this gives the agent something to do — a
-// `subagent` tool that hands a task to `amx sub` and waits for the child's
-// answer. The two are kept apart on purpose. Reporting is plumbing every amx
-// pane wants; a tool is a capability, it spends a turn and writes a record,
-// and a person who runs an extension of their own with a tool of that name
-// should not have amx putting a second one in the agent's hands.
+// The tool hands a task to `amx sub` and returns the child's answer. It is
+// separate from amx.ts because a tool is a capability a person opts into,
+// and someone with their own `subagent` tool should not get a second one.
 //
-// Only a pane amx started carries `AMX_ID`, and that is the whole of where the
-// tool registers. `AMX_BIN` rides beside it on the same pane, so the child is
-// raised by the amx that raised this one. Nothing here throws: a child that
-// could not be started is an answer the tool gives back, not a broken pane.
+// It registers only in a pane amx started ($AMX_ID set) and runs the child
+// through $AMX_BIN, the amx that started this pane. Nothing here throws: a
+// child that could not start comes back as the tool's answer.
 // @ts-nocheck
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-// How much of a child's own words a failure carries. A refusal is a line or
-// two; a wall of it is not worth reading in a tool result.
+// Longest stderr or stdout a failure result carries.
 const SAID_CHARS = 2000;
 
-// What one run of the child answered, before any of it is read.
+// Exit code and output of one amx run.
 interface Ran {
   code: number;
   out: string;
   err: string;
 }
 
-// Run `amx` and give back what it said. `--json` is what this tool asks for,
-// since a child's id and phase are what a caller needs and a person reading a
-// screen is not here to parse them out of a sentence.
+// Run amx with `args` and collect its exit code and output. Aborting the tool
+// call kills the child.
 function runAmx(amx: string, args: string[], signal?: AbortSignal): Promise<Ran> {
   return new Promise((resolve) => {
     let child;
@@ -49,7 +42,7 @@ function runAmx(amx: string, args: string[], signal?: AbortSignal): Promise<Ran>
       try {
         child.kill();
       } catch {
-        // A child that is already gone is nothing to kill.
+        // Already gone.
       }
     };
     signal?.addEventListener?.("abort", kill, { once: true });
@@ -67,8 +60,8 @@ function runAmx(amx: string, args: string[], signal?: AbortSignal): Promise<Ran>
   });
 }
 
-// The one object `amx sub --json` writes, or nothing when there was no child
-// to write one about — a refusal happens before amx has an id to report.
+// The object `amx sub --json` prints, or undefined when there is none, as
+// when amx refused before creating a child.
 function reported(out: string): Record<string, unknown> | undefined {
   const line = out.trim();
   if (!line) return undefined;
@@ -132,8 +125,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
       if (ran.code === 2 && view) {
-        // The child stopped on a question and is still standing. Whoever reads
-        // this can read the question off `amx result` and put an answer to it.
+        // The child stopped on a question and is still running.
         return {
           ...text(
             `The child stopped on a question (${id}). Read it with \`amx result ${id}\` and answer it with \`amx answer ${id}\`.`,
@@ -147,8 +139,7 @@ export default function (pi: ExtensionAPI) {
           details: { id, phase: view.phase },
         };
       }
-      // No child to report on, or one that ended without answering: what amx
-      // said on stderr is the whole of the reason.
+      // No child, or one that ended without an answer: amx's stderr says why.
       const said = (ran.err || ran.out).trim().slice(0, SAID_CHARS);
       return {
         ...text(said || `the child did not finish (exit ${ran.code})`),
