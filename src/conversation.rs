@@ -1583,7 +1583,7 @@ mod tests {
         assert_eq!(format_of("claude"), Some(Transcript::Claude));
         assert_eq!(format_of("pi --offline"), Some(Transcript::Pi));
         assert_eq!(
-            format_of("opencode"),
+            format_of("aider"),
             crate::registry::entries()
                 .first()
                 .and_then(|v| v.transcript),

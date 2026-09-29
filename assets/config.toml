@@ -205,3 +205,13 @@ park_after = 3600
 # args = ["--search"]
 # [codex.env]
 # CODEX_HOME = "~/.codex-work"
+
+[opencode]
+# models = ["opencode/longcat-2.5-preview-free", "anthropic/claude-opus-4-1"]
+# args = ["--auto"]
+# [opencode.env]
+# OPENCODE_DISABLE_AUTOUPDATE = "1"
+#
+# A project's [opencode.env] may not set OPENCODE_CONFIG_DIR, OPENCODE_CONFIG
+# or OPENCODE_CONFIG_CONTENT: each picks which config opencode reads. Set here,
+# OPENCODE_CONFIG_CONTENT stands in for the model amx would have carried.
