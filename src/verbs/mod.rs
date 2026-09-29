@@ -26,3 +26,17 @@ pub mod sub;
 pub mod sweep;
 pub mod uninstall;
 pub mod wait;
+
+/// Print a question and its numbered choices where an answer would have gone.
+pub(crate) fn print_question(
+    question: &str,
+    options: &[String],
+    to_terminal: bool,
+    out: &mut impl std::io::Write,
+) -> anyhow::Result<()> {
+    send::line(&send::rendered(question, to_terminal), out)?;
+    for choice in send::numbered(options) {
+        send::line(&send::rendered(&choice, to_terminal), out)?;
+    }
+    Ok(())
+}

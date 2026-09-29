@@ -218,10 +218,7 @@ fn recorded(agent: &Agent, vendor: Option<&str>) -> Result<()> {
 /// answer but the one key that takes the question away.
 fn a_question_is_answered(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     if let Some(question) = &view.state.question {
-        send::line(&send::rendered(question, to_terminal), out)?;
-        for choice in send::numbered(&view.state.options) {
-            send::line(&send::rendered(&choice, to_terminal), out)?;
-        }
+        super::print_question(question, &view.state.options, to_terminal, out)?;
     }
     warn!("amx: {}", answer_it_instead(view.id()));
     Ok(exit::BLOCKED)

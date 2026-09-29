@@ -177,10 +177,7 @@ pub fn run_family(
         } else {
             writeln!(out, "{id} {phase}")?;
             if let Some(question) = &view.state.question {
-                send::line(&send::rendered(question, to_terminal), out)?;
-                for choice in send::numbered(&view.state.options) {
-                    send::line(&send::rendered(&choice, to_terminal), out)?;
-                }
+                super::print_question(question, &view.state.options, to_terminal, out)?;
             } else if let Some(answer) = &answer {
                 send::line(&send::rendered(answer, to_terminal), out)?;
             }
