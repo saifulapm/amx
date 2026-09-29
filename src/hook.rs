@@ -26,6 +26,7 @@
 
 use anyhow::Result;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -108,7 +109,7 @@ pub fn run(
         return exit::OK;
     };
 
-    let _ = record(root, &agent, &payload, config, env_file);
+    let _ = record(root, &agent, payload, config, env_file);
     if hears_the_answer(&agent) {
         let _ = writeln!(out, "{}", agent.dir().display());
     }
@@ -243,30 +244,32 @@ fn anothers(meta: &Meta, payload: &Value) -> bool {
 /// in the file the vendor handed the hook for that, so a claude started from
 /// one of them never reports as the agent. [`anothers`] cannot catch a
 /// `claude -c` there: it continues the agent's own session, under its id.
-pub fn record(
+fn record(
     root: &Path,
     agent: &Agent,
-    payload: &Value,
+    payload: Value,
     config: &Config,
     env_file: Option<&Path>,
 ) -> Result<()> {
     let writer = agent.writer()?;
     let mut meta = agent.meta()?;
-    if anothers(&meta, payload) {
+    if anothers(&meta, &payload) {
         return Ok(());
     }
     // Kept rather than appended and forgotten: the line the event log gets is
     // the line an errand is handed, and they are the same line because they are
     // the same event.
-    let event = crate::store::Event::new(kind(payload).unwrap_or("unknown"), payload.clone());
+    let kind = kind(&payload).unwrap_or("unknown").to_string();
+    let event = crate::store::Event::new(kind, payload);
     writer.append(&event)?;
+    let payload = &event.payload;
 
     let mut state = writer.state()?;
     let was = state.state;
     let cut = state.interrupted_at;
     let before = meta.clone();
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
-    let payload = &without_a_synthetic_answer(payload, &meta, format);
+    let payload: &Value = &without_a_synthetic_answer(payload, &meta, format);
     let notice = apply(payload, &mut state, &mut meta);
 
     // A turn amx cut short ended at the stamp, and claude said nothing then,
@@ -349,24 +352,26 @@ pub fn record(
 /// limit — with a synthetic entry, and hands its words to the hook that ends
 /// the turn as the answer. Only the transcript says whose words they are, so
 /// it is read for a payload that carries an answer, and for no other.
-fn without_a_synthetic_answer(
-    payload: &Value,
+fn without_a_synthetic_answer<'a>(
+    payload: &'a Value,
     meta: &Meta,
     format: Option<crate::vendor::Transcript>,
-) -> Value {
-    let mut payload = payload.clone();
-    if hooks(meta).is_some_and(|hooks| moment(&hooks, &payload) == Some(Moment::Ended))
+) -> Cow<'a, Value> {
+    if hooks(meta).is_some_and(|hooks| moment(&hooks, payload) == Some(Moment::Ended))
         && let Some(answer) = payload["last_assistant_message"].as_str()
         && let Some(format) = format
         && let Some(tail) = Agent::transcript_tail(meta)
         && crate::conversation::synthetic_words(format, &tail)
             .iter()
             .any(|words| words == answer)
-        && let Some(fields) = payload.as_object_mut()
     {
-        fields.remove("last_assistant_message");
+        let mut payload = payload.clone();
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("last_assistant_message");
+        }
+        return Cow::Owned(payload);
     }
-    payload
+    Cow::Borrowed(payload)
 }
 
 /// What a write that moved an agent to idle sets off: the `on_idle` errand,
