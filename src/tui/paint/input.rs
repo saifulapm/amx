@@ -240,13 +240,13 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
         .take()
         .map_or_else(String::new, |said| format!(" {said} "));
     let taken = |gloss: &str, dial: &str| {
-        label.chars().count()
-            + gloss.chars().count()
+        width_of(&label)
+            + width_of(gloss)
             + match dial.is_empty() {
                 // The tail is what closes the dial into the edge, so it costs
                 // nothing on a rule that is not carrying one.
                 true => 0,
-                false => dial.chars().count() + TAIL,
+                false => width_of(dial) + TAIL,
             }
     };
     let (gloss, dial) = if taken(GLOSS, &dial) < width {
@@ -1033,6 +1033,16 @@ mod tests {
         let narrow = edge(&typing("port it"), (20, 30));
         assert!(narrow.starts_with("TASK ┈"), "{narrow:?}");
         assert!(!narrow.contains("vendor"), "{narrow:?}");
+    }
+
+    #[test]
+    fn input_mode_measures_a_wide_directory_on_the_rule_in_columns() {
+        let mut screen = typing("port it");
+        if let Mode::Typing(composer) = &mut screen.mode {
+            composer.under = Some(std::path::PathBuf::from("/srv/日本語"));
+        }
+        let drawn = edge(&screen, (80, 30));
+        assert!(drawn.ends_with(" vendor default ┈┈"), "{drawn:?}");
     }
 
     #[test]
