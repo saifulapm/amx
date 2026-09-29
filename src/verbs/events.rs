@@ -152,7 +152,7 @@ fn watching(root: &Path, named: &[String]) -> Vec<String> {
 ///
 /// The tail stops at the last newline: a line without one is a write still in
 /// progress, and the next look finds it whole.
-fn grown(path: &Path, read: u64) -> Option<(String, u64)> {
+pub(crate) fn grown(path: &Path, read: u64) -> Option<(String, u64)> {
     let mut file = std::fs::File::open(path).ok()?;
 
     // A log with less in it than has already been read is not the log that was

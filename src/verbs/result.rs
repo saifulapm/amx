@@ -22,7 +22,7 @@
 
 use anyhow::Result;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, Evidence, View};
@@ -76,11 +76,12 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     let deadline = timeout.map(|patience| Instant::now() + patience);
+    let mut turns = Turns::of(root, id)?;
 
     loop {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        match settled(phase, ended(root, id, phase)?) {
+        match settled(phase, turns.ended(phase)) {
             Settled::Answer => return answer(&view, to_terminal, out),
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
             // The command ended, and the message it was sent went with it.
@@ -160,7 +161,7 @@ pub fn run_family(
     for id in &children {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        let settled = settled(phase, ended(root, id, phase)?);
+        let settled = settled(phase, Turns::of(root, id)?.ended(phase));
         // What is on the record of a turn cut short, or of a command that
         // ended on a message, answers the turn before: not this child's.
         let answer = match settled {
@@ -269,22 +270,53 @@ fn pace(evidence: &Evidence) -> Duration {
 /// `crate::verbs::resume` spells it.
 const RESUMED: &str = "resume";
 
-/// How the turn a caller is waiting on ended, for a record in this phase: only
-/// an ending needs the log, and while an agent is working there is no turn to
-/// place against the last message.
-pub(crate) fn ended(root: &Path, id: &str, phase: Phase) -> Result<Ended> {
-    Ok(match phase {
-        Phase::Idle | Phase::Done => {
-            let agent = Agent::open(root, id)?;
-            let hooks =
-                crate::vendor::hooks_for(agent.meta()?.agent.as_deref().unwrap_or_default());
-            turn_ended(hooks.as_ref(), &agent.events()?)
-        }
-        _ => Ended::NotYet,
-    })
+/// A [`Fold`] over one agent's log, kept current across polls: each look
+/// folds in only what the log grew since the last one.
+pub(crate) struct Turns {
+    log: PathBuf,
+    hooks: Option<Hooks>,
+    read: u64,
+    fold: Fold,
 }
 
-/// Whether the last turn has ended, and what ended it, asked of the log.
+impl Turns {
+    pub(crate) fn of(root: &Path, id: &str) -> Result<Turns> {
+        let agent = Agent::open(root, id)?;
+        let hooks = crate::vendor::hooks_for(agent.meta()?.agent.as_deref().unwrap_or_default());
+        Ok(Turns {
+            log: agent.events_path(),
+            hooks,
+            read: 0,
+            fold: Fold::START,
+        })
+    }
+
+    /// How the turn a caller is waiting on ended, for a record in this phase: only
+    /// an ending needs the log, and while an agent is working there is no turn to
+    /// place against the last message.
+    pub(crate) fn ended(&mut self, phase: Phase) -> Ended {
+        if !matches!(phase, Phase::Idle | Phase::Done) {
+            return Ended::NotYet;
+        }
+        if let Some((fresh, next)) = crate::verbs::events::grown(&self.log, self.read) {
+            // A log shorter than what was read is a new record under the same
+            // id, and is read from its start.
+            if next < self.read {
+                self.fold = Fold::START;
+            }
+            self.read = next;
+            for event in fresh
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+            {
+                self.fold.step(self.hooks.as_ref(), &event);
+            }
+        }
+        self.fold.ended
+    }
+}
+
+/// Whether the last turn has ended, and what ended it, folded over the log an event at a time.
 ///
 /// Order, not a clock: the log is appended to under one lock, so "a turn ended
 /// after the last message" is a position in it. A turn opens at a message amx
@@ -299,26 +331,34 @@ pub(crate) fn ended(root: &Path, id: &str, phase: Phase) -> Result<Ended> {
 /// alone that is still open leaves the last ending standing.
 ///
 /// Whose word said the turn ended is not this question — see [`a_turn_ended`].
-pub(crate) fn turn_ended(hooks: Option<&Hooks>, events: &[Event]) -> Ended {
-    let mut ended = Ended::Turn;
-    let mut open = true;
-    for event in events {
+#[derive(Debug, Clone, Copy)]
+struct Fold {
+    ended: Ended,
+    open: bool,
+}
+
+impl Fold {
+    const START: Fold = Fold {
+        ended: Ended::Turn,
+        open: true,
+    };
+
+    fn step(&mut self, hooks: Option<&Hooks>, event: &Event) {
         if event.kind == send::SEND {
-            ended = Ended::NotYet;
-            open = true;
+            self.ended = Ended::NotYet;
+            self.open = true;
         } else if a_turn_ended(hooks, event) {
-            if open {
-                ended = match cut_short(event) {
+            if self.open {
+                self.ended = match cut_short(event) {
                     true => Ended::Interrupted,
                     false => Ended::Turn,
                 };
             }
-            open = false;
+            self.open = false;
         } else if a_turn_began(hooks, event) {
-            open = true;
+            self.open = true;
         }
     }
-    ended
 }
 
 /// Whether this event says a turn of the agent's own began: the vendor, or a
@@ -432,6 +472,14 @@ mod tests {
             .iter()
             .map(|kind| Event::new(*kind, json!({})))
             .collect()
+    }
+
+    fn turn_ended(hooks: Option<&Hooks>, events: &[Event]) -> Ended {
+        let mut fold = Fold::START;
+        for event in events {
+            fold.step(hooks, event);
+        }
+        fold.ended
     }
 
     /// How the last turn ended, read in claude's words.
@@ -821,6 +869,44 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn turns_fold_in_what_the_log_grew_since_the_last_look() {
+        let root = tempfile::TempDir::new().unwrap();
+        a_family_with_a_question(root.path());
+        let agent = Agent::open(root.path(), "scout-c3d").unwrap();
+        let said = |kind: &str| {
+            agent
+                .writer()
+                .unwrap()
+                .append(&Event::new(kind, json!({})))
+                .unwrap();
+        };
+
+        let mut turns = Turns::of(root.path(), "scout-c3d").unwrap();
+        assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
+        said(send::SEND);
+        assert_eq!(turns.ended(Phase::Idle), Ended::NotYet);
+        assert_eq!(turns.ended(Phase::Working), Ended::NotYet);
+        said("UserPromptSubmit");
+        said(TURN_END);
+        assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
+
+        // A line still being written is read once it is whole.
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(agent.events_path())
+            .unwrap();
+        write!(log, "{{\"at\":1,\"kind\":\"{}\"", send::SEND).unwrap();
+        assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
+        writeln!(log, ",\"payload\":{{}}}}").unwrap();
+        assert_eq!(turns.ended(Phase::Idle), Ended::NotYet);
+
+        // A log shorter than what was read is a new one, read from its start.
+        std::fs::write(agent.events_path(), "").unwrap();
+        said(TURN_END);
+        assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
     }
 
     /// claude's word for a turn ending, as its entry spells it.

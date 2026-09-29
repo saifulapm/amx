@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::derive::{self, Evidence, Record, View};
 use crate::store::{Agent, Phase};
-use crate::verbs::result::{self, Ended, Settled};
+use crate::verbs::result::{self, Ended, Settled, Turns};
 use crate::{complain, exit, paths, store};
 
 /// How often the records are read while waiting — `result`'s own poll, for the
@@ -83,7 +83,10 @@ pub fn run(
         complain!("amx wait: {parent} has no children");
         return Ok(exit::FAILURE);
     }
-    let mut pending = named;
+    let mut pending = named
+        .into_iter()
+        .map(|id| Ok((Turns::of(root, &id)?, id)))
+        .collect::<Result<Vec<_>>>()?;
 
     let deadline = timeout.map(|patience| Instant::now() + patience);
     loop {
@@ -91,12 +94,13 @@ pub fn run(
         // covers the whole sweep, and an agent whose reading costs a screen
         // must not have every other agent's record poll it.
         let mut slowest = POLL;
+        let ids: Vec<&str> = pending.iter().map(|(_, id)| id.as_str()).collect();
+        let views = readings(root, &ids)?;
         let mut still = Vec::with_capacity(pending.len());
-        let views = readings(root, &pending)?;
-        for (id, view) in pending.into_iter().zip(views) {
-            if !ready(root, &id, view.phase(), state)? {
+        for ((mut turns, id), view) in pending.into_iter().zip(views) {
+            if !ready(&mut turns, view.phase(), state) {
                 slowest = slowest.max(pace(&view.verdict.evidence));
-                still.push(id);
+                still.push((turns, id));
                 continue;
             }
             // Flushed a line at a time: a caller reading this as it comes is
@@ -127,7 +131,7 @@ pub fn run(
 ///
 /// Through [`derive::views_of`], so tmux is asked once per server per sweep
 /// rather than once per agent.
-fn readings(root: &Path, ids: &[String]) -> Result<Vec<View>> {
+fn readings(root: &Path, ids: &[&str]) -> Result<Vec<View>> {
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         let agent = Agent::open(root, id)?;
@@ -140,7 +144,7 @@ fn readings(root: &Path, ids: &[String]) -> Result<Vec<View>> {
         .map(|id| {
             let at = views
                 .iter()
-                .position(|view| view.id() == id)
+                .position(|view| view.id() == *id)
                 .with_context(|| format!("the record of {id} names another agent"))?;
             Ok(views.swap_remove(at))
         })
@@ -186,12 +190,12 @@ pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
 
 /// Whether this agent's reading is what the wait was for, reading its log
 /// only where the answer turns on it.
-fn ready(root: &Path, id: &str, phase: Phase, wanted: Option<Phase>) -> Result<bool> {
+fn ready(turns: &mut Turns, phase: Phase, wanted: Option<Phase>) -> bool {
     let ended = match wanted {
         Some(_) => Ended::NotYet,
-        None => result::ended(root, id, phase)?,
+        None => turns.ended(phase),
     };
-    Ok(settled(phase, wanted, ended))
+    settled(phase, wanted, ended)
 }
 
 /// Whether this reading is what the wait was for.
