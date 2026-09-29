@@ -27,7 +27,7 @@ use ratatui::widgets::Paragraph;
 
 use super::card::{notes, pages};
 use super::style::{bold, dim, prospective};
-use super::text::{RULE, SEPARATOR, fit, width_of};
+use super::text::{RULE, SEPARATOR, char_width, fit, width_of};
 use crate::registry::DEFAULT;
 use crate::theme::Theme;
 use crate::tui::act::{Asking, Composer};
@@ -136,7 +136,7 @@ fn cut(paragraph: &str, room: usize) -> Vec<String> {
     // Byte offset in the current row just past its last space.
     let mut after_space = None;
     for one in paragraph.chars() {
-        let wide = width_of(one.encode_utf8(&mut [0; 4]));
+        let wide = char_width(one);
         let row = rows.last_mut().expect("there is always a row");
         if used > 0 && used + wide > room && one != ' ' {
             let carried = after_space.map(|at| row.split_off(at)).unwrap_or_default();
@@ -403,7 +403,7 @@ fn last_cell(text: &str, column: usize, room: usize) -> usize {
         if start < room {
             last = at;
         }
-        start += width_of(one.encode_utf8(&mut [0; 4]));
+        start += char_width(one);
     }
     match start >= room {
         true => last,

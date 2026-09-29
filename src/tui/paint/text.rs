@@ -47,6 +47,11 @@ pub(super) fn width_of(text: &str) -> usize {
     Span::raw(text).width()
 }
 
+/// The columns one character takes.
+pub(super) fn char_width(c: char) -> usize {
+    width_of(c.encode_utf8(&mut [0; 4]))
+}
+
 /// `text`, cut to `width` with an ellipsis for what was cut.
 pub(super) fn fit(text: &str, width: usize) -> String {
     if width_of(text) <= width {
@@ -59,7 +64,7 @@ pub(super) fn fit(text: &str, width: usize) -> String {
             let mut kept = String::new();
             let mut used = 0;
             for one in text.chars() {
-                let wide = width_of(one.encode_utf8(&mut [0; 4]));
+                let wide = char_width(one);
                 if used + wide > width - 1 {
                     break;
                 }

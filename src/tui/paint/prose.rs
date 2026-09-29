@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::style::{bold, dim};
-use super::text::{RULE, inert, width_of};
+use super::text::{RULE, char_width, inert, width_of};
 use crate::theme::Theme;
 
 /// The marker a list item wears in the gutter, and the bar a quote stands
@@ -466,7 +466,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
             .position(|(c, _)| c.is_whitespace())
             .map_or(chars.len(), |found| at + found);
         let word = &chars[at..end.max(at + 1)];
-        let wide: usize = word.iter().map(|(c, _)| glyph_width(*c)).sum();
+        let wide: usize = word.iter().map(|(c, _)| char_width(*c)).sum();
 
         if c.is_whitespace() {
             // A space at the head of a row is the wrap's own and is dropped.
@@ -490,7 +490,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
         if wide > width {
             // Wider than a whole row: broken where the row ends.
             for (c, style) in word {
-                let w = glyph_width(*c);
+                let w = char_width(*c);
                 if used + w > width && used > 0 {
                     rows.push(Vec::new());
                     used = 0;
@@ -529,11 +529,6 @@ fn spans_of(row: &[(char, Style)]) -> Vec<Span<'static>> {
     spans
 }
 
-/// The columns one character takes.
-fn glyph_width(c: char) -> usize {
-    width_of(c.encode_utf8(&mut [0; 4]))
-}
-
 /// `line` with every tab spelled out as the spaces to the next [`TAB`] stop.
 fn untabbed(line: &str) -> String {
     let mut out = String::new();
@@ -545,7 +540,7 @@ fn untabbed(line: &str) -> String {
             column += stop;
         } else {
             out.push(c);
-            column += glyph_width(c);
+            column += char_width(c);
         }
     }
     out
