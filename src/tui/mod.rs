@@ -4163,6 +4163,19 @@ fn card_of(
     let asks = view.phase() == Phase::Waiting && view.state.question.is_some();
 
     let working = view.phase() == Phase::Working;
+    // The log the queued band is read from, so a send or a submission moves
+    // the card.
+    let log = agent
+        .as_ref()
+        .filter(|_| working)
+        .map(|agent| as_read(agent.events_path()));
+    let recorded = view.meta.transcript.clone().map(as_read);
+    // The stream is read for as long as a turn runs, and for no other agent.
+    let streaming = agent
+        .as_ref()
+        .filter(|_| working)
+        .map(|agent| as_read(agent.dir().join(crate::store::LIVE)));
+
     // What was sent to it and not yet taken, which only a turn under way
     // holds: the vendor keeps it behind the turn and draws it in the band the
     // card cuts off, so the record is where the card reads it from.
@@ -4173,18 +4186,6 @@ fn card_of(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    // And the log it was read from, so a send or a submission moves the card.
-    let log = agent
-        .as_ref()
-        .filter(|_| working)
-        .map(|agent| as_read(agent.events_path()));
-
-    let recorded = view.meta.transcript.clone().map(as_read);
-    // The stream is read for as long as a turn runs, and for no other agent.
-    let streaming = agent
-        .as_ref()
-        .filter(|_| working)
-        .map(|agent| as_read(agent.dir().join(crate::store::LIVE)));
     if !asks && let Some(said) = conversation_of(&view.meta, working, heard) {
         // What it is saying now, under the record: the vendor's own stream
         // where there is one, and only while a turn runs — a finished turn's
