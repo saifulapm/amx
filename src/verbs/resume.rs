@@ -442,6 +442,21 @@ fn continuing(handoff: &Handoff, session: &str) -> Vec<String> {
 /// vendor the table has never seen can be proved out here too.
 fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>) -> Vec<String> {
     let spec = spelling(vendor);
+    let mut command = without_session(handoff, vendor, &spec);
+    let resume = spec.resume_args(session);
+    match spec.resume {
+        Resume::Subcommand(_) => drop(command.splice(1..1, resume)),
+        Resume::Flag { .. } => command.extend(resume),
+    }
+    command
+}
+
+/// The recorded argv without its task and without any word naming a session.
+pub(crate) fn without_session(
+    handoff: &Handoff,
+    vendor: Option<&Vendor>,
+    spec: &SessionSpec,
+) -> Vec<String> {
     let task = spawn::as_typed(vendor, &handoff.task);
     let mut words = handoff.command.clone().into_iter().peekable();
     let mut command: Vec<String> = Vec::new();
@@ -477,12 +492,6 @@ fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>)
             words.next();
         }
     }
-
-    let resume = spec.resume_args(session);
-    match spec.resume {
-        Resume::Subcommand(_) => drop(command.splice(1..1, resume)),
-        Resume::Flag { .. } => command.extend(resume),
-    }
     command
 }
 
@@ -491,7 +500,7 @@ fn build_continuation(handoff: &Handoff, session: &str, vendor: Option<&Vendor>)
 /// a command amx has measured nothing about: unmeasured is not refused
 /// ([`cannot_continue`] already says so), and claude's is the only spelling
 /// amx has ever assumed for one.
-fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
+pub(crate) fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
     vendor
         .and_then(|vendor| vendor.session)
         .unwrap_or_else(unmeasured)
@@ -631,7 +640,7 @@ fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
 /// A word amx is about to hand the vendor as an argument, checked for being a
 /// word and nothing else: an id that could read as a flag, or that carries
 /// anything but the characters an id is made of, is not passed on.
-fn is_session_id(value: &str) -> bool {
+pub(crate) fn is_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && !value.starts_with('-')

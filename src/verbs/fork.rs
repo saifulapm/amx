@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
-use crate::vendor::{self, Capability, ForkSpec, Resume, SessionSpec, Vendor};
+use crate::vendor::{Capability, ForkSpec, Resume, Vendor};
+use crate::verbs::resume;
 use crate::{Severity, exit, ids, paths, said};
 
 /// What amx records when it copies a conversation.
@@ -273,7 +274,7 @@ fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -
 /// the same spelling, for the caller writing the record rather than the
 /// command.
 fn opened_under(handoff: &Handoff, copy: &str) -> Option<String> {
-    spelling(spawn::vendor_of(handoff))
+    resume::spelling(spawn::vendor_of(handoff))
         .start
         .map(|_| copy.to_string())
 }
@@ -312,50 +313,18 @@ fn build_copy(
     prompt: Option<&str>,
     vendor: Option<&Vendor>,
 ) -> Vec<String> {
-    let spec = &spelling(vendor);
+    let spec = &resume::spelling(vendor);
     let ends_options = vendor.and_then(|vendor| vendor.ends_options);
     let fork = spec
         .fork
         .expect("a copy is only asked of a vendor that declares how it branches");
 
-    let mut words = handoff.command.clone().into_iter().peekable();
-    let mut command: Vec<String> = Vec::new();
-
-    while let Some(word) = words.next() {
-        // Only the last word is the task, which is where `new` put it, as
-        // the vendor's words for it or, from an older amx, as typed.
-        if words.peek().is_none()
-            && (word == handoff.task || word == spawn::as_words(vendor, &handoff.task))
-        {
-            break;
-        }
-        // And the word `new` put in front of it, or the vendor would read
-        // everything written after it as a message.
-        if words.len() == 1 && Some(word.as_str()) == ends_options {
-            continue;
-        }
-        // Where `word` stood in the recorded command: a subcommand is one
-        // only right after the program.
-        let first = handoff.command.len() - words.len() - 1 == 1;
-        if let ForkSpec::Marker(marker) = fork {
-            // A bare word, never carrying a value of its own: a copy of a
-            // copy drops it here rather than asking the vendor to branch
-            // twice.
-            if word == marker {
-                continue;
-            }
-        }
-        let Some(value_is_a_word_of_its_own) = spec.names_a_session(&word, first) else {
-            command.push(word);
-            continue;
-        };
-        // The value goes with the flag it belongs to. A word that begins with
-        // `-` is never one: the vendor documents `--resume`'s value as
-        // optional, and an optional value is not taken from a word that could
-        // be a flag in its own right.
-        if value_is_a_word_of_its_own && words.peek().is_some_and(|next| !next.starts_with('-')) {
-            words.next();
-        }
+    let mut command = resume::without_session(handoff, vendor, spec);
+    if let ForkSpec::Marker(marker) = fork {
+        // A bare word, never carrying a value of its own: a copy of a
+        // copy drops it here rather than asking the vendor to branch
+        // twice.
+        command.retain(|word| word != marker);
     }
 
     match fork {
@@ -391,23 +360,6 @@ fn push_flag(command: &mut Vec<String>, flag: &str, joined: bool, value: &str) {
         command.push(flag.to_string());
         command.push(value.to_string());
     }
-}
-
-/// The vendor's own session vocabulary, read off its entry. Claude's — the
-/// vendor amx was written against — for a command amx has measured nothing
-/// about: unmeasured is not refused ([`cannot_branch`] already says so), and
-/// claude's is the only spelling amx has ever assumed for one.
-fn spelling(vendor: Option<&Vendor>) -> SessionSpec {
-    vendor
-        .and_then(|vendor| vendor.session)
-        .unwrap_or_else(unmeasured)
-}
-
-/// Claude's own session vocabulary. See [`spelling`].
-fn unmeasured() -> SessionSpec {
-    vendor::claude::VENDOR
-        .session
-        .expect("claude declares a session vocabulary")
 }
 
 /// Why this vendor cannot be asked for a copy of a conversation, when it
@@ -459,27 +411,13 @@ fn copied_session(meta: &Meta) -> Result<String> {
             meta.id
         );
     };
-    if !is_session_id(session) {
+    if !resume::is_session_id(session) {
         bail!(
             "the session recorded for {} is not a session id, so it will not be handed on",
             meta.id
         );
     }
     Ok(session.to_string())
-}
-
-/// Whether a recorded session id is one.
-///
-/// A word amx is about to hand the vendor as an argument, checked for being a
-/// word and nothing else: an id that could read as a flag, or that carries
-/// anything but the characters an id is made of, is not passed on.
-fn is_session_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && !value.starts_with('-')
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Claim an id for the copy by making its directory, which is how `new` claims
@@ -517,6 +455,7 @@ fn make_dir(dir: &Path) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::tmux::{PaneId, Socket};
+    use crate::vendor::SessionSpec;
     use crate::vendor::second::{BRANCHING, SECOND};
     use tempfile::TempDir;
 
@@ -662,6 +601,35 @@ mod tests {
                 "--fork-session",
                 "now do it with sqlite"
             ]
+        );
+    }
+
+    #[test]
+    fn fork_drops_a_task_a_role_put_its_brief_in_front_of() {
+        // `new` hands the vendor `brief\n\ntask` as one word and records the
+        // task alone, so the copy must not send the old task again.
+        let started = handoff(
+            &["claude", "You are a scout.\n\nfix the login bug"],
+            "fix the login bug",
+        );
+        assert_eq!(
+            copying(&started, "abc-123", "port-it-b2c", None),
+            ["claude", "--resume=abc-123", "--fork-session"]
+        );
+
+        let started = handoff(
+            &[
+                "pi",
+                "--session-id",
+                "abc-123",
+                "--",
+                "You are a scout.\n\nfix the login bug",
+            ],
+            "fix the login bug",
+        );
+        assert_eq!(
+            copying(&started, "abc-123", "port-it-b2c", None),
+            ["pi", "--fork", "abc-123", "--session-id", "port-it-b2c"]
         );
     }
 
@@ -958,19 +926,6 @@ mod tests {
             "and a command amx has no entry for is not amx's to refuse: \
              nothing measured is not a measurement"
         );
-    }
-
-    #[test]
-    fn fork_hands_on_a_session_id_and_nothing_else() {
-        assert!(is_session_id("6f1c9f4e-0d5b-4a51-9f6e-2b1f0c3d4e5a"));
-        assert!(is_session_id("abc_123"));
-
-        assert!(!is_session_id(""));
-        assert!(!is_session_id("--dangerously-skip-permissions"));
-        assert!(!is_session_id("abc 123"));
-        assert!(!is_session_id("$(rm -rf /)"));
-        assert!(!is_session_id("../../elsewhere"));
-        assert!(!is_session_id(&"a".repeat(65)));
     }
 
     #[test]
