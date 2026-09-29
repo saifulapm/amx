@@ -111,12 +111,7 @@ fn beside_the_agents(state_root: &Path, name: &str) -> Option<PathBuf> {
 /// harness, and a spawn that has to know which harness runs a model reads it
 /// rather than starting the vendor again.
 pub fn models_dir() -> Result<PathBuf> {
-    let agents = state_root()?;
-    let root = agents
-        .parent()
-        .filter(|root| !root.as_os_str().is_empty())
-        .context("no state root to keep a model listing under")?;
-    Ok(root.join(MODELS))
+    beside_the_agents(&state_root()?, MODELS).context("no state root to keep a model listing under")
 }
 
 /// What that directory is called.
@@ -179,7 +174,6 @@ pub fn anchored(dir: &Path) -> Result<PathBuf> {
 }
 
 fn home() -> Result<PathBuf> {
-    #[allow(deprecated)]
     std::env::home_dir().context("no home directory: set $HOME, or $AMX_STATE_DIR in tests")
 }
 
