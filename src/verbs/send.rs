@@ -382,6 +382,54 @@ fn submissions(hooks: Option<&Hooks>, events: &[Event]) -> usize {
 /// it has been answered, and a reader watching the prompt come back — see
 /// [`derive::READ_TURN_END`] — is the second way out of that.
 pub fn queued(hooks: Option<&Hooks>, events: &[Event]) -> Vec<String> {
+    unanswered(hooks, events)
+        .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// [`queued`] for the agent `meta` describes, less every message its
+/// transcript says the vendor took off its queue since it was sent.
+///
+/// claude folds a message typed mid-turn into the turn still running without
+/// firing a hook; its transcript's `queue-operation` line is the only record.
+pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
+    let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
+    let pending: Vec<&Event> = unanswered(hooks.as_ref(), events).collect();
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    let mut taken = match (
+        &meta.transcript,
+        crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default()),
+    ) {
+        (Some(path), Some(format)) => std::fs::read_to_string(path)
+            .map(|jsonl| crate::conversation::unqueued(format, &jsonl))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    pending
+        .into_iter()
+        .filter_map(|event| {
+            let text = event.payload["text"].as_str()?;
+            let at = taken
+                .iter()
+                .position(|(when, words)| *when >= event.at && words.trim() == text.trim());
+            match at {
+                Some(at) => {
+                    taken.remove(at);
+                    None
+                }
+                None => Some(text.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// The `send` events on the log after the last turn edge.
+fn unanswered<'a>(
+    hooks: Option<&Hooks>,
+    events: &'a [Event],
+) -> impl Iterator<Item = &'a Event> + use<'a> {
     let mut running = false;
     let mut answered = 0;
     for (at, event) in events.iter().enumerate() {
@@ -415,11 +463,7 @@ pub fn queued(hooks: Option<&Hooks>, events: &[Event]) -> Vec<String> {
             answered = at + 1;
         }
     }
-    events[answered..]
-        .iter()
-        .filter(|event| event.kind == SEND)
-        .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
-        .collect()
+    events[answered..].iter().filter(|event| event.kind == SEND)
 }
 
 /// Exit `BLOCKED`, with the pending question — and the choices under it —
@@ -869,6 +913,46 @@ mod tests {
                 &[sent("carry on"), Event::new("told", json!({}))]
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_message_claude_folded_into_the_running_turn_is_no_longer_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        // 2026-09-29T20:32:04Z is 1790713924.
+        std::fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-09-29T20:00:00.000Z\",\"content\":\"check the tests\",\"reason\":\"absorbed_mid_turn\"}\n",
+                "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-09-29T20:27:34.348Z\",\"content\":\"why MEM_PROJECT?\"}\n",
+                "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-09-29T20:32:04.768Z\",\"content\":\"why MEM_PROJECT?\",\"reason\":\"absorbed_mid_turn\"}\n",
+            ),
+        )
+        .unwrap();
+        let mut meta = asking(None, &[], None).meta;
+        meta.agent = Some("claude".to_string());
+        meta.transcript = Some(transcript);
+        let sent = |text: &str, at: u64| {
+            let mut event = Event::new(SEND, json!({ "text": text }));
+            event.at = at;
+            event
+        };
+        let events = [
+            Event::new("UserPromptSubmit", json!({})),
+            sent("why MEM_PROJECT? ", 1_790_713_654),
+            Event::new("UserPromptSubmit", json!({})),
+            sent("check the tests", 1_790_713_700),
+            Event::new("UserPromptSubmit", json!({})),
+        ];
+
+        // The first was absorbed after it was sent; the second matches only an
+        // absorption from before it was sent, so claude still holds it.
+        assert_eq!(still_queued(&meta, &events), ["check the tests"]);
+        meta.transcript = None;
+        assert_eq!(
+            still_queued(&meta, &events),
+            ["why MEM_PROJECT? ", "check the tests"]
         );
     }
 

@@ -33,10 +33,9 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     // turn and an idle one holds where a turn cut short by hand left it. One
     // that has ended will never take it.
     let queued = match view.phase() {
-        Phase::Working | Phase::Idle => send::queued(
-            crate::vendor::hooks_for(view.meta.agent.as_deref().unwrap_or_default()).as_ref(),
-            &Agent::open(root, id)?.events()?,
-        ),
+        Phase::Working | Phase::Idle => {
+            send::still_queued(&view.meta, &Agent::open(root, id)?.events()?)
+        }
         _ => Vec::new(),
     };
     if json {

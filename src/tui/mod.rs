@@ -4157,11 +4157,7 @@ fn card_of(view: &View, root: &Path, width: u16, theme: Theme) -> (Card<Body>, F
     let queued = match (&agent, working) {
         (Some(agent), true) => agent
             .events()
-            .map(|events| {
-                let hooks =
-                    crate::vendor::hooks_for(view.meta.agent.as_deref().unwrap_or_default());
-                verbs::send::queued(hooks.as_ref(), &events)
-            })
+            .map(|events| verbs::send::still_queued(&view.meta, &events))
             .unwrap_or_default(),
         _ => Vec::new(),
     };

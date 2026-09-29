@@ -475,6 +475,44 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
 const QUEUED: &str = "queue-operation";
 const ABSORBED: &str = "absorbed_mid_turn";
 
+/// Every message claude took off its queue, with the second it was taken.
+///
+/// Only claude keeps a queue in its transcript; other formats answer empty.
+pub fn unqueued(format: Transcript, jsonl: &str) -> Vec<(u64, String)> {
+    if format != Transcript::Claude {
+        return Vec::new();
+    }
+    jsonl
+        .lines()
+        .filter(|line| line.contains(QUEUED))
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|entry| entry["type"] == QUEUED && entry["operation"] == "remove")
+        .filter_map(|entry| {
+            let at = epoch(entry["timestamp"].as_str()?)?;
+            Some((at, entry["content"].as_str()?.to_string()))
+        })
+        .collect()
+}
+
+/// Seconds since the epoch for a UTC stamp like `2026-09-29T20:32:04.768Z`.
+fn epoch(stamp: &str) -> Option<u64> {
+    let (date, time) = stamp.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(str::parse::<i64>);
+    let (year, month, day) = (date.next()?.ok()?, date.next()?.ok()?, date.next()?.ok()?);
+    let mut time = time.trim_end_matches('Z').splitn(3, ':');
+    let hours: i64 = time.next()?.parse().ok()?;
+    let minutes: i64 = time.next()?.parse().ok()?;
+    let seconds: f64 = time.next()?.parse().ok()?;
+    // Days from 1970-01-01, after Howard Hinnant's `days_from_civil`.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    u64::try_from(days * 86_400 + hours * 3_600 + minutes * 60 + seconds as i64).ok()
+}
+
 /// The words of a queued message claude took without writing a turn for it.
 fn absorbed(entry: &Value) -> Option<&str> {
     let taken =
@@ -880,6 +918,14 @@ mod tests {
             "a prompt, the call with the first line of its command, the words; \
              thinking, the tool's result and the bookkeeping are nobody's reading"
         );
+    }
+
+    #[test]
+    fn a_claude_timestamp_reads_as_epoch_seconds() {
+        assert_eq!(epoch("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch("2000-03-01T00:00:00.000Z"), Some(951_868_800));
+        assert_eq!(epoch("2026-09-29T20:27:34.348Z"), Some(1_790_713_654));
+        assert_eq!(epoch("yesterday"), None);
     }
 
     #[test]
