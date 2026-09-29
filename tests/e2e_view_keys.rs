@@ -11,20 +11,18 @@ mod common;
 use common::{Harness, press, resize, until_empty};
 use serde_json::json;
 
-/// The foot of the keys screen, which is where a group somebody bound is
-/// drawn: after the last of amx's own, because the keys the view binds are the
-/// ones on every machine.
+/// The keys screen, whole. A group somebody bound is drawn at its foot, after
+/// amx's own keys.
 ///
-/// Waited for by the last key amx itself binds, so a screen caught before the
-/// foot of the document is not read as a group that is missing.
+/// The window must be tall enough to hold the whole document. The view has no
+/// synchronized output, so a capture can land mid-frame; the screen's key row
+/// is the last row the frame that opens it writes, so once that row is up the
+/// document above it is too.
 fn keys_screen(amx: &Harness, view: &str) -> String {
     press(amx, view, "?");
-    press(amx, view, "G");
-    amx.until("the foot of the keys", || {
+    amx.until("the keys, with their key row drawn under them", || {
         let drawn = amx.capture(view);
-        drawn
-            .contains("which vendor runs it, for one spawn")
-            .then_some(drawn)
+        drawn.contains("any key goes back").then_some(drawn)
     })
 }
 
@@ -86,7 +84,7 @@ fn the_keys_screen_gives_what_somebody_bound_a_group_of_their_own() {
 
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
-    resize(&amx, &view, 120, 40);
+    resize(&amx, &view, 120, 80);
 
     let keys = keys_screen(&amx, &view);
     assert!(
@@ -109,16 +107,19 @@ fn a_spelling_the_view_cannot_read_is_said_once_and_binds_nothing() {
     amx.config("[keys]\n\"shift+z\" = \"never runs\"\n");
 
     let view = amx.in_a_terminal(&[], &[]);
+    // Waited for by the whole notice the assertion reads: it is the last row
+    // of the frame, and a capture can land partway through it.
     let said = amx.until("the view to say which spelling it could not read", || {
         let drawn = amx.capture(&view);
-        drawn.contains("shift+z").then_some(drawn)
+        (drawn.contains("shift+z") && drawn.contains("is no key the view can read"))
+            .then_some(drawn)
     });
     assert!(
         said.contains("is no key the view can read"),
         "in words that say what is wrong with it:\n{said}"
     );
 
-    resize(&amx, &view, 120, 40);
+    resize(&amx, &view, 120, 80);
     let keys = keys_screen(&amx, &view);
     assert!(
         !keys.contains("YOURS"),
@@ -136,9 +137,11 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
     amx.config("[keys]\n\"ctrl+x\" = \"never runs\"\n");
 
     let view = amx.in_a_terminal(&[], &[]);
+    // Waited for by the whole notice the assertions read, as above.
     let said = amx.until("the view to say the key is its own", || {
         let drawn = amx.capture(&view);
-        drawn.contains("ctrl+x").then_some(drawn)
+        (drawn.contains("ctrl+x") && drawn.contains("amx's own") && drawn.contains("stop it"))
+            .then_some(drawn)
     });
     assert!(
         said.contains("amx's own"),
@@ -149,7 +152,7 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
         "and what amx does on it, so the person knows what they were taking:\n{said}"
     );
 
-    resize(&amx, &view, 120, 40);
+    resize(&amx, &view, 120, 80);
     let keys = keys_screen(&amx, &view);
     assert!(
         !keys.contains("YOURS"),
