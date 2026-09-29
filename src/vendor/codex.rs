@@ -1,10 +1,9 @@
-//! codex, the third vendor amx knows anything about.
+//! codex's entry in the vendor table.
 //!
-//! Everything here is the vendor's own words, measured against codex-cli
-//! 0.157.1's `--help` and the source it was built from (tag rust-v0.157.1,
-//! paths below relative to its `codex-rs/`), each value on the date it
-//! carries. Re-measure at every vendor bump: these are not amx's names to
-//! choose, and a renamed flag turns a dial into a spawn that fails.
+//! Every value is codex's own spelling, checked against codex-cli 0.157.1's
+//! `--help` and source (tag rust-v0.157.1; paths below are relative to its
+//! `codex-rs/`). Re-check on every vendor bump: a renamed flag turns a dial
+//! into a spawn that fails.
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
@@ -15,21 +14,15 @@ use super::{
 pub const VENDOR: Vendor = Vendor {
     name: "codex",
     // Open: `-m, --model <MODEL>` is a free string
-    // (utils/cli/src/shared_options.rs:22-23), and codex documents no aliases
-    // of its own, so the cycle offers nothing beyond the sentinel. Measured at
-    // 0.157.1 on 2026-09-28.
+    // (utils/cli/src/shared_options.rs:22-23) and codex names no aliases.
     model: Some(DialSpec::open("--model", &[DEFAULT])),
     // `codex debug models` prints the account's catalog as JSON
-    // (cli/src/main.rs:258, 2068-2095): `models[]`, each with a `slug` and a
-    // `visibility`, and the picker offers the ones whose visibility is
-    // `list`. Measured at 0.157.1 on 2026-09-28.
+    // (cli/src/main.rs:258, 2068-2095): `models[]` with a `slug` and a
+    // `visibility`; the picker offers those whose visibility is `list`.
     models: Models::Json(&["debug", "models"]),
-    // Closed: `-s, --sandbox <SANDBOX_MODE>` names exactly these three in
-    // `--help` (utils/cli/src/sandbox_mode_cli_arg.rs:12-17), and clap refuses
-    // any other. The approval flag `-a` is the other half of codex's
-    // permissions and is left to the agent command: amx has one dial, and the
-    // sandbox is the half every run is under. Measured at 0.157.1 on
-    // 2026-09-28.
+    // Closed: `-s, --sandbox <SANDBOX_MODE>` takes exactly these
+    // (utils/cli/src/sandbox_mode_cli_arg.rs:12-17). The approval flag `-a` is
+    // the other half of codex's permissions and is left to the agent command.
     permission: Some(DialSpec::closed(
         "--sandbox",
         &[
@@ -39,46 +32,37 @@ pub const VENDOR: Vendor = Vendor {
             "danger-full-access",
         ],
     )),
-    // codex has no effort flag, only the setting
-    // `-c model_reasoning_effort=<v>` (config/src/config_toml.rs:392). Closed
-    // over the levels the catalog's models support between them
-    // (protocol/src/openai_models.rs:59-89), and knowingly partial: which of
-    // them a model takes is per model, in its `supported_reasoning_levels`,
-    // and a level the model lacks is the vendor's to refuse. Measured at
-    // 0.157.1 on 2026-09-28.
+    // No effort flag, only `-c model_reasoning_effort=<v>`
+    // (config/src/config_toml.rs:392). Closed over the levels the catalog's
+    // models support between them (protocol/src/openai_models.rs:59-89); each
+    // model's `supported_reasoning_levels` is a subset, and codex refuses a
+    // level the model lacks.
     effort: Some(DialSpec {
         key: Some("model_reasoning_effort"),
         ..DialSpec::closed("-c", &[DEFAULT, "low", "medium", "high", "xhigh", "max"])
     }),
-    // codex mints its own ids and takes none (tui/src/cli.rs:11-88 names no
-    // session flag), so nothing starts a session under an id amx chose: the
-    // SessionStart hook names it, at the first turn. `codex resume <id>`
-    // carries one on (cli/src/main.rs:350-373) and `codex fork <id>` branches
-    // one (cli/src/main.rs:412-431), each a subcommand right after the
-    // program. `--last`, `--all` and `--include-non-interactive` are the
-    // other words both subcommands pick a session by (`codex resume --help`,
-    // `codex fork --help`). Measured at 0.157.1 on 2026-09-28.
+    // codex mints its own ids and has no flag to take one (tui/src/cli.rs:11-88),
+    // so SessionStart names the session at the first turn. `codex resume <id>`
+    // (cli/src/main.rs:350-373) and `codex fork <id>` (cli/src/main.rs:412-431)
+    // are subcommands right after the program. `--last`, `--all` and
+    // `--include-non-interactive` also pick a session for both.
     session: Some(SessionSpec {
         start: None,
         resume: Resume::Subcommand("resume"),
         conflicts: &["--last", "--all", "--include-non-interactive"],
         fork: Some(ForkSpec::Subcommand("fork")),
     }),
-    // Handed to every command codex's shell tool runs
-    // (protocol/src/shell_environment.rs:6, core/src/exec_env.rs:40-50): the
-    // root session's id, which is the pane's. Measured on 0.157.1 on
-    // 2026-09-28: it equalled the SessionStart payload's `session_id`
-    // (docs/codex-screens.md, open question 2).
+    // Set on every command the shell tool runs to the root session's id
+    // (protocol/src/shell_environment.rs:6, core/src/exec_env.rs:40-50), which
+    // equals the SessionStart payload's `session_id`.
     session_env: Some("CODEX_SESSION_ID"),
-    // What codex puts in the environment of every process it starts, read at
-    // 0.157.1 on 2026-09-28: the session, thread and version
-    // (core/src/exec_env.rs:16, protocol/src/shell_environment.rs:6-7), the
-    // permission profile (core/src/exec_env.rs:20), the sandbox markers
-    // (core/src/spawn.rs:21, 26), the proxy marker
-    // (network-proxy/src/proxy.rs:626), apply-patch's line endings
-    // (apply-patch/src/lib.rs:59) and the plugin metrics sidecar
-    // (core-plugins/src/plugin_metrics_sidecar.rs:26). And
-    // `CODEX_EXEC_SERVER_URL`, which puts a codex that inherits it on another
+    // What codex sets for every process it starts: session, thread and
+    // version (core/src/exec_env.rs:16, protocol/src/shell_environment.rs:6-7),
+    // permission profile (core/src/exec_env.rs:20), sandbox markers
+    // (core/src/spawn.rs:21, 26), proxy marker (network-proxy/src/proxy.rs:626),
+    // apply-patch line endings (apply-patch/src/lib.rs:59) and the plugin
+    // metrics sidecar (core-plugins/src/plugin_metrics_sidecar.rs:26).
+    // `CODEX_EXEC_SERVER_URL` would put an inheriting codex on another
     // machine's executor (tui/src/daemon_startup.rs:37-38).
     not_inherited: &[
         "CODEX_SESSION_ID",
@@ -92,12 +76,10 @@ pub const VENDOR: Vendor = Vendor {
         "CODEX_PLUGIN_METRICS_OUTPUT",
         "CODEX_EXEC_SERVER_URL",
     ],
-    // codex reports through the hooks file `HOOKS` below merges into, and a
-    // report names the rollout it appends to, which `crate::conversation`
-    // reads by the shape at the foot of this entry. No Trust: codex keys a
-    // folder's trust on the main checkout's root (config/src/state.rs:233-243),
-    // so trusting a worktree amx cut would trust the person's repository. Its
-    // trust screen is theirs to answer. Measured at 0.157.1 on 2026-09-28.
+    // Hook reports name the rollout file, which gives Transcript. No Trust:
+    // codex keys a folder's trust on the main checkout's root
+    // (config/src/state.rs:233-243), so trusting an amx worktree would trust
+    // the person's whole repository.
     capabilities: &[
         Capability::Hooks,
         Capability::Transcript,
@@ -106,32 +88,24 @@ pub const VENDOR: Vendor = Vendor {
         Capability::Adopt,
     ],
     hooks: Some(HOOKS),
-    // Driven live against 0.157.1 on 2026-09-28 under `--no-daemon`, at four
-    // widths: every gate codex draws before a turn, a running turn, a box, a
-    // question, the prompt and an Esc'd turn (docs/codex-screens.md).
+    // Read off live panes under `--no-daemon` at four widths.
     screens: Some(include_str!("../../assets/screen-rules-codex.toml")),
-    // The rollout codex writes under `$CODEX_HOME/sessions/`, named on every
-    // hook payload as `transcript_path`. Measured off 0.157.1's rollouts on
-    // 2026-09-28 (tests/codex/rollouts).
+    // The rollout under `$CODEX_HOME/sessions/`, named on every hook payload
+    // as `transcript_path`. Samples are in tests/codex/rollouts.
     transcript: Some(Transcript::Codex),
-    // codex runs a skill as a bare `$name` anywhere in a message
-    // (skills/src/mentions.rs:41), so its sigil is `$` and nothing follows it
-    // but the name; `/name` runs no skill. The four skill places are the
-    // person's and the project's of the roots ext/skills/src/host_roots.rs
-    // reads (:86-108, 137-185): `~/.agents/skills`, `$CODEX_HOME/skills`
-    // (taken as `~/.codex/skills`), and the project's `.codex/skills` and
-    // `.agents/skills`, which codex reads in every directory from the project
-    // root down to where it runs and amx only where it runs. Custom prompts are gone, so no
-    // commands; roles are TOML the model spawns by `agent_type`, with no CLI
-    // flag, so no agents; and a slash command typed as the first prompt is
-    // sent as words rather than run, so no built-ins. Measured at 0.157.1 on
-    // 2026-09-28.
+    // A skill runs as a bare `$name` anywhere in a message
+    // (skills/src/mentions.rs:41); `/name` runs no skill. The skill places are
+    // the person's and the project's roots from ext/skills/src/host_roots.rs
+    // (:86-108, 137-185), with `$CODEX_HOME/skills` taken as `~/.codex/skills`.
+    // codex reads the project places in every directory from the project root
+    // down; amx reads them only where the agent runs. No commands (custom
+    // prompts are gone), no agents (roles have no CLI flag) and no built-ins
+    // (a slash command as the first prompt is sent as text).
     //
-    // codex finds a SKILL.md anywhere to depth 6 under a place
-    // (ext/skills/src/loader/mod.rs:31) and names it by its frontmatter
-    // `name`; `crate::catalog` reads one directory deep and names a skill by
-    // its directory, as it does for claude and pi, so a skill nested deeper
-    // or named apart from its directory is not offered.
+    // codex finds a SKILL.md up to depth 6 (ext/skills/src/loader/mod.rs:31)
+    // and names it by its frontmatter `name`. `crate::catalog` reads one level
+    // deep and names a skill by its directory, so deeper or renamed skills are
+    // not offered.
     catalog: Some(Catalog {
         skills: &[
             Place::Person(".agents/skills"),
@@ -146,53 +120,45 @@ pub const VENDOR: Vendor = Vendor {
         sigil: '$',
         skill_prefix: "",
     }),
-    // clap reads a message word opening with `-` as a flag, and one that is a
-    // subcommand's name as that subcommand (cli/src/main.rs:125-140), until
-    // `--`. Measured on 0.157.1 on 2026-09-28: `codex --no-daemon -- resume`
-    // started a session with the prompt `resume`, and `-- -v` sent `-v`.
+    // clap reads a message word starting with `-` as a flag, and a
+    // subcommand's name as that subcommand, until `--` (cli/src/main.rs:125-140):
+    // `codex --no-daemon -- resume` sends the prompt `resume`.
     ends_options: Some("--"),
-    // The argv prompt is submitted as it stands, with no `@` expansion
-    // (tui/src/chatwidget/user_messages.rs:196-221). Read at 0.157.1 on
-    // 2026-09-28.
+    // The argv prompt is sent as is, with no `@` expansion
+    // (tui/src/chatwidget/user_messages.rs:196-221).
     attaches_at: false,
-    // Esc puts Tab-queued messages back in the composer, unsent — measured on
-    // 0.157.1 on 2026-09-28 — but amx never Tabs. Its sends are steers:
-    // bracketed paste and Enter, measured to submit mid-turn on 0.157.1 on
-    // 2026-09-28, and a steer still pending at Esc is resubmitted as a fresh
-    // turn rather than restored (tui/src/chatwidget/input_restore.rs:316-378).
-    // So nothing amx sent is ever waiting in the composer after a cancel.
+    // Esc restores Tab-queued messages, but amx never queues with Tab. amx
+    // sends steers (bracketed paste and Enter, which submit mid-turn), and a
+    // steer still pending at Esc is resubmitted as a new turn rather than
+    // restored (tui/src/chatwidget/input_restore.rs:316-378).
     restores_queued_on_cancel: false,
     prompt_flag: None,
     popups: &[],
     cancel_presses: 1,
     interrupt_signal: None,
-    // Every codex amx starts runs its own app server. Under the shared daemon
-    // a hook runs in the daemon's environment, so `AMX_ID` never reaches
-    // `amx _hook`, and a killed pane's turn runs on (tui/src/cli.rs:85,
-    // hooks/src/engine/command_runner.rs:426-432; plan codex-lands Ruling 1).
-    // Measured on 0.157.1 on 2026-09-28: the hook's environment carried the
-    // pane's `AMX_ID` under `--no-daemon`.
+    // Each codex gets its own app server. Under the shared daemon hooks run in
+    // the daemon's environment, so `AMX_ID` never reaches `amx _hook`, and a
+    // killed pane's turn keeps running (tui/src/cli.rs:85,
+    // hooks/src/engine/command_runner.rs:426-432).
     launch: &["--no-daemon"],
 };
 
-/// How codex reports what it is doing, and where amx asks it to.
+/// codex's hook events and the words its payloads use.
 ///
-/// codex reads a `hooks.json` beside its `config.toml` in `$CODEX_HOME`
-/// (hooks/src/engine/discovery.rs:339-380), and runs each handler with the
+/// codex reads `hooks.json` beside `config.toml` in `$CODEX_HOME`
+/// (hooks/src/engine/discovery.rs:339-380) and runs each handler with the
 /// payload on stdin. amx merges its groups into that file and trusts each in
-/// the config (plan codex-lands Rulings 2-4). What a handler prints on stdout
-/// is fed to the model (hooks/src/events/user_prompt_submit.rs:157-225), which
-/// is why a hooks wire never listens.
+/// the config. A handler's stdout is fed to the model
+/// (hooks/src/events/user_prompt_submit.rs:157-225), so this wire never
+/// listens.
 ///
-/// Four moments out of codex's twelve (hooks/src/lib.rs:23-36), measured on
-/// 0.157.1 on 2026-09-28 (tests/codex/hooks). There is no Taken: a message
-/// steered into a running turn is a second `UserPromptSubmit` under the same
-/// `turn_id` (core/src/session/turn.rs:427-445), read as Prompted, which
-/// leaves a working record working (Ruling 6). The approval box is read off
-/// the screen rather than `PermissionRequest`, which fires before any box and
-/// may be answered with none; an Esc'd or errored turn sends no `Stop` and is
-/// closed by the pane reader too (Ruling 5). Re-measure at every vendor bump:
-/// a renamed event is a moment amx never hears.
+/// Four of codex's twelve events (hooks/src/lib.rs:23-36); samples are in
+/// tests/codex/hooks. No `Taken`: a steered message is a second
+/// `UserPromptSubmit` with the same `turn_id` (core/src/session/turn.rs:427-445),
+/// read as `Prompted`, which leaves a working record working. The approval box
+/// is read off the screen, because `PermissionRequest` fires before any box
+/// and may be resolved without one. An interrupted or failed turn sends no
+/// `Stop`; the pane reader closes it.
 pub const HOOKS: Hooks = Hooks {
     wire: Wire::Hooks {
         dir_env: "CODEX_HOME",
@@ -206,24 +172,21 @@ pub const HOOKS: Hooks = Hooks {
         Wiring::new(Moment::Calling, "PreToolUse"),
         Wiring::new(Moment::Ended, "Stop"),
     ],
-    // None of these: a group with no matcher takes every tool
-    // (hooks/src/lib.rs:38-53), codex sends no notice hook at all, and it
-    // writes no permission sentence a payload carries. Nothing it runs as a
-    // turn is a prompt somebody did not type.
+    // A group without a matcher takes every tool (hooks/src/lib.rs:38-53).
+    // codex has no notice hook, no permission sentence in payloads and no
+    // turns of its own.
     matcher: "",
     idle_notice: "",
     permission_notice: "",
     permission_sentence: "",
     injected: &[],
-    // The tool that draws a question and waits on it: `request_user_input`
-    // (core/src/tools/registry.rs:130-139), measured on 0.157.1 on 2026-09-28
-    // as a PreToolUse with `tool_input.questions[]`.
+    // Arrives as a PreToolUse with `tool_input.questions[]`
+    // (core/src/tools/registry.rs:130-139).
     question_tool: "request_user_input",
-    // A session opening carries `source` `startup`, `resume`, `clear`,
-    // `compact` or `fork` (hooks/src/schema.rs:854); `startup` is a new
-    // conversation. Measured on 0.157.1 on 2026-09-28.
+    // `source` is `startup`, `resume`, `clear`, `compact` or `fork`
+    // (hooks/src/schema.rs:854).
     fresh_start: Some("startup"),
-    // Its notices are not hooks, so no payload says what one is waiting on.
+    // Notices are not hooks, so no payload says what a question is.
     question_kinds: &[],
 };
 
@@ -274,8 +237,16 @@ mod tests {
                 ("Stop", Moment::Ended, false),
             ]
         );
-        assert_eq!(HOOKS.moment("PermissionRequest"), None, "Ruling 5");
-        assert_eq!(HOOKS.moment("Interrupt"), None, "Ruling 5");
+        assert_eq!(
+            HOOKS.moment("PermissionRequest"),
+            None,
+            "the approval box is read off the screen"
+        );
+        assert_eq!(
+            HOOKS.moment("Interrupt"),
+            None,
+            "the pane reader closes an interrupted turn"
+        );
         assert_eq!(HOOKS.question_tool, "request_user_input");
         assert_eq!(HOOKS.fresh_start, Some("startup"));
         assert_eq!(HOOKS.permission_sentence("Bash"), None);
@@ -339,7 +310,11 @@ mod tests {
             session.conflicts,
             ["--last", "--all", "--include-non-interactive"]
         );
-        assert_eq!(VENDOR.launch, ["--no-daemon"], "Ruling 1");
+        assert_eq!(
+            VENDOR.launch,
+            ["--no-daemon"],
+            "each codex runs its own app server"
+        );
     }
 
     #[test]
@@ -373,7 +348,10 @@ mod tests {
         ] {
             assert!(VENDOR.can(can), "{can:?}");
         }
-        assert!(!VENDOR.can(Capability::Trust), "Ruling 7");
+        assert!(
+            !VENDOR.can(Capability::Trust),
+            "codex keys trust on the main checkout"
+        );
         assert_eq!(VENDOR.hooks, Some(HOOKS));
         assert_eq!(VENDOR.transcript, Some(Transcript::Codex));
     }
@@ -396,7 +374,7 @@ mod tests {
                 sigil: '$',
                 skill_prefix: "",
             }),
-            "Ruling 9: `$` opens a codex word, and a bare name follows it"
+            "`$` opens a codex word, and a bare name follows it"
         );
     }
 

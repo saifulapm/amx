@@ -1,10 +1,9 @@
-//! opencode, the fourth vendor amx knows anything about.
+//! opencode's entry in the vendor table.
 //!
-//! Everything here is the vendor's own words, measured against opencode
-//! 2.0.16 and the source it was built from (tag v2.0.16, paths below relative
-//! to its `packages/`), each value on the date it carries. Re-measure at every
-//! vendor bump: these are not amx's names to choose, and a renamed flag turns
-//! a dial into a spawn that fails.
+//! Every value is opencode's own spelling, checked against opencode 2.0.16 and
+//! its source (tag v2.0.16; paths below are relative to its `packages/`).
+//! Re-check on every vendor bump: a renamed flag turns a dial into a spawn
+//! that fails.
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, Hooks, Models, Moment, Place, Resume, SessionSpec,
@@ -14,41 +13,36 @@ use super::{
 /// opencode's entry in the table.
 pub const VENDOR: Vendor = Vendor {
     name: "opencode",
-    // The TUI takes no model flag: the root command's parameters are
-    // standalone, server, auto, directory, continue, session and prompt
-    // (cli/src/commands/commands.ts:26-58). So the model goes into the pane's
-    // env as `OPENCODE_CONFIG_CONTENT`, which is loaded last, over every
-    // config file (core/src/config.ts:230), on `new` only: a resumed session
-    // keeps its own model (tui/src/context/local.tsx:252-260). Open, since a
-    // model is `provider/model` and opencode names no aliases. Measured at
-    // 2.0.16 on 2026-09-30 (plan opencode-lands Ruling 8).
+    // The TUI has no model flag (its root options are standalone, server,
+    // auto, directory, continue, session and prompt;
+    // cli/src/commands/commands.ts:26-58). The model goes into the pane's env
+    // as `OPENCODE_CONFIG_CONTENT`, which is loaded over every config file
+    // (core/src/config.ts:230). It only applies to `new`: a resumed session
+    // keeps its model (tui/src/context/local.tsx:252-260). Open, since a model
+    // is `provider/model` and opencode names no aliases.
     model: Some(DialSpec {
         key: Some("model"),
         env: Some("OPENCODE_CONFIG_CONTENT"),
         ..DialSpec::open("", &[DEFAULT])
     }),
-    // `opencode models` is a subcommand that starts the shared service with
-    // the caller's env (Ruling 1), so amx never runs it: the cycle is the
-    // whole of what it offers.
+    // `opencode models` starts the shared service with the caller's env, so
+    // amx never runs it.
     models: Models::Cycle,
-    // `--auto` auto-approves every permission not explicitly denied
-    // (cli/src/commands/commands.ts:27-30), a flag with no value. Measured at
-    // 2.0.16 on 2026-09-30.
+    // `--auto` approves every permission not explicitly denied, and takes no
+    // value (cli/src/commands/commands.ts:27-30).
     permission: Some(DialSpec {
         bare: true,
         ..DialSpec::closed("--auto", &[DEFAULT, "auto"])
     }),
     // A `#variant` on the model loses to opencode's stored per-model variant
-    // (tui/src/context/local.tsx:236), so there is no effort to turn (Ruling
-    // 8).
+    // (tui/src/context/local.tsx:236), so there is no effort dial.
     effort: None,
     // opencode mints its own ids and the TUI takes none to start under, so the
-    // plugin's Started names the session. `-s, --session <id>` opens one that
-    // exists (tui/src/app.tsx:655-661), as two words; `-c, --continue` opens
-    // the newest in the cwd (app.tsx:664-690), and `--server` picks the
-    // process whose sessions these are. The TUI has no fork flag
-    // (cli/src/commands/handlers/default.ts:82-87). Measured at 2.0.16 on
-    // 2026-09-30.
+    // plugin's Started names the session. `-s, --session <id>` opens an
+    // existing session, as two words (tui/src/app.tsx:655-661). `-c,
+    // --continue` opens the newest in the cwd (app.tsx:664-690), and
+    // `--server` picks which process's sessions these are. The TUI has no fork
+    // flag (cli/src/commands/handlers/default.ts:82-87).
     session: Some(SessionSpec {
         start: None,
         resume: Resume::Flag {
@@ -58,15 +52,14 @@ pub const VENDOR: Vendor = Vendor {
         conflicts: &["-s", "-c", "--continue", "--server"],
         fork: None,
     }),
-    // No variable names the session in what opencode starts: its shell tool
-    // adds only `TERM` and `OPENCODE_TERMINAL` (core/src/shell.ts:264-268).
+    // The shell tool adds only `TERM` and `OPENCODE_TERMINAL`
+    // (core/src/shell.ts:264-268), so nothing names the session.
     session_env: None,
-    // What a pane typed inside opencode would carry into one amx starts, read
-    // at 2.0.16 on 2026-09-30: the shell and PTY marker (core/src/shell.ts:
-    // 264-268, core/src/pty.ts:173), the initial route and storybook the TUI
-    // opens on (tui/src/app.tsx:343-356), the PTY handoff
+    // What a pane started inside opencode would inherit: the shell and PTY
+    // markers (core/src/shell.ts:264-268, core/src/pty.ts:173), the TUI's
+    // initial route and storybook (tui/src/app.tsx:343-356), the PTY handoff
     // (cli/src/server-process.ts:46-47), the server passwords
-    // (cli/src/env.ts:10-13) and the app's name (default.ts:69).
+    // (cli/src/env.ts:10-13) and the app name (default.ts:69).
     not_inherited: &[
         "OPENCODE_TERMINAL",
         "OPENCODE_ROUTE",
@@ -76,34 +69,31 @@ pub const VENDOR: Vendor = Vendor {
         "OPENCODE_SERVER_PASSWORD",
         "OPENCODE_CLIENT",
     ],
-    // opencode reports through the TUI plugin `HOOKS` below places, and names
-    // the message list it writes at each turn's end. No Fork (the TUI has no
-    // fork flag), no Adopt (no session variable in children) and no Trust (no
-    // trust screen): Ruling 9.
+    // Hooks and Transcript come from the plugin in `HOOKS`, which writes the
+    // message list at each turn's end. No Fork (no fork flag), no Adopt (no
+    // session variable in children) and no Trust (no trust screen).
     capabilities: &[
         Capability::Hooks,
         Capability::Transcript,
         Capability::Resume,
     ],
     hooks: Some(HOOKS),
-    // Driven live against 2.0.16 on 2026-09-30 under `--standalone`, at four
-    // widths (docs/opencode-screens.md).
+    // Read off live panes under `--standalone` at four widths.
     screens: Some(include_str!("../../assets/screen-rules-opencode.toml")),
     // The message list the plugin writes to `$AMX_DIR/opencode-messages.jsonl`
-    // and names as `transcript_path` (Ruling 5).
+    // and names as `transcript_path`.
     transcript: Some(Transcript::Opencode),
     // A command runs as `/name` (tui/src/component/prompt/index.tsx:1141-1144),
     // named by its path under `{command,commands}/`
-    // (core/src/config/plugin/command.ts:144,159), loaded from the config dir
-    // and the project's `.opencode/` (core/src/config.ts:185-191,221-236).
-    // Agents come from `{agent,agents}/` in the same two
-    // (core/src/config/plugin/agent.ts:21-24), and the TUI has no flag to run
-    // as one. A skill is an autocomplete part with no text spelling
-    // (tui/src/component/prompt/autocomplete.tsx:406-440), so no skills. The
-    // built-ins are the app's (tui/src/app.tsx:720-1112), the session's
-    // (routes/session/index.tsx:871-1174), the prompt's, the feature
-    // plugins' and the server's (core/src/plugin/command.ts:29-53), aliases
-    // and all. Read at 2.0.16 on 2026-09-30.
+    // (core/src/config/plugin/command.ts:144,159) in the config dir and the
+    // project's `.opencode/` (core/src/config.ts:185-191,221-236). Agents come
+    // from `{agent,agents}/` in the same two (core/src/config/plugin/agent.ts:21-24),
+    // and the TUI has no flag to run as one. A skill is an autocomplete part
+    // with no text spelling (tui/src/component/prompt/autocomplete.tsx:406-440),
+    // so no skills. The built-ins, aliases included, come from the app
+    // (tui/src/app.tsx:720-1112), the session (routes/session/index.tsx:871-1174),
+    // the prompt, the feature plugins and the server
+    // (core/src/plugin/command.ts:29-53).
     catalog: Some(Catalog {
         skills: &[],
         commands: &[
@@ -170,50 +160,46 @@ pub const VENDOR: Vendor = Vendor {
         sigil: '/',
         skill_prefix: "",
     }),
-    // The task rides on `--prompt=`, never as a bare word: the root command's
-    // only positional is a directory (cli/src/commands/commands.ts:43-46).
+    // The task goes on `--prompt=`, since the root command's only positional
+    // is a directory (cli/src/commands/commands.ts:43-46).
     ends_options: None,
-    // The v2 server parses no `@path` in text (core/src/session/prompt.ts:
-    // 45-83); `@` opens a popup instead, which `popups` answers.
+    // The v2 server parses no `@path` in text (core/src/session/prompt.ts:45-83);
+    // `@` opens a popup instead, see `popups`.
     attaches_at: false,
-    // Esc cancels the turn and leaves nothing amx sent in the composer
-    // (docs/opencode-screens.md, "Idle, Esc and error").
+    // Esc cancels the turn and leaves nothing amx sent in the composer.
     restores_queued_on_cancel: false,
-    // One `--prompt=<text>` word (Ruling 2): a task that opens with `-` would
-    // otherwise be read as a flag.
+    // One `--prompt=<text>` word, so a task starting with `-` is not read as
+    // a flag.
     prompt_flag: Some("--prompt"),
-    // `submit` refuses while the autocomplete popup is up
-    // (tui/src/component/prompt/index.tsx:1112), and `@` and `/` open it at
-    // the start of a word. Measured on `@README` on 2026-09-30 (Ruling 7).
+    // `submit` is refused while the autocomplete popup is open
+    // (tui/src/component/prompt/index.tsx:1112), and `@` or `/` at the start
+    // of a word opens it.
     popups: &['@', '/'],
-    // The first Escape only arms the cancel (Ruling 6, measured 2026-09-30).
+    // The first Escape only arms the cancel.
     cancel_presses: 2,
-    // The plugin hears SIGUSR2 and interrupts its session, which ends a turn
-    // even under a permission card (Ruling 6, measured 2026-09-30).
+    // The plugin interrupts its session on SIGUSR2, which ends a turn even
+    // while a permission card is open.
     interrupt_signal: Some(nix::sys::signal::Signal::SIGUSR2),
-    // Every opencode amx starts runs its own server. Without it the TUI joins
-    // the shared service, started with the caller's env, and a killed pane's
-    // turn runs on (cli/src/services/standalone.ts:22-24; Ruling 1).
+    // Each opencode gets its own server. Otherwise the TUI joins the shared
+    // service, which runs with the caller's env, and a killed pane's turn
+    // keeps running (cli/src/services/standalone.ts:22-24).
     launch: &["--standalone"],
 };
 
-/// How opencode reports what it is doing, and where amx asks it to.
+/// opencode's plugin events and the words its payloads use.
 ///
-/// opencode's TUI loads `plugins/<dir>/tui.*` under its config dir with no
-/// registration (plugin/src/host.ts:17-44, loaded live on 2026-09-29), and
-/// `OPENCODE_CONFIG_DIR` replaces that dir (util/src/global.ts:79). The file
-/// is amx's own, runs in the pane, and hears what `amx _hook` answers (Ruling
-/// 3).
+/// The TUI loads `plugins/<dir>/tui.*` under its config dir with no
+/// registration (plugin/src/host.ts:17-44), and `OPENCODE_CONFIG_DIR` moves
+/// that dir (util/src/global.ts:79). The plugin is amx's own file, runs in the
+/// pane and reads what `amx _hook` prints.
 ///
-/// Every name is the plugin's, which is amx's to spell (Ruling 4). Four are
-/// opencode's own events: `session.execution.started`,
-/// `session.inbox.delivered` for a message enqueued while running,
-/// `session.tool.called` and `permission.asked`. `form.created` is opencode's
-/// too, sent only for a form of kind `question`. Three are coined:
+/// The event names are the plugin's. Five are opencode's own:
+/// `session.execution.started`, `session.inbox.delivered` (a message queued
+/// during a turn), `session.tool.called`, `permission.asked` and
+/// `form.created` (sent only for a form of kind `question`). Three are amx's:
 /// `session.selected` for the first session route, `permission.rejected` for
-/// a `reject` reply or a cancelled form, and `session.execution.ended` over
-/// succeeded, failed and interrupted. Re-measure at every vendor bump: a
-/// renamed event is a moment amx never hears.
+/// a `reject` reply or a cancelled form, and `session.execution.ended` for a
+/// turn that succeeded, failed or was interrupted.
 pub const HOOKS: Hooks = Hooks {
     wire: Wire::Placed {
         dir_env: "OPENCODE_CONFIG_DIR",
@@ -232,22 +218,21 @@ pub const HOOKS: Hooks = Hooks {
         Wiring::new(Moment::Notified, "form.created"),
         Wiring::new(Moment::Ended, "session.execution.ended"),
     ],
-    // None of these: a plugin takes no matcher, opencode sends no notice of
-    // its own, and a payload carries no sentence off the permission card.
-    // Nothing it runs as a turn is a prompt somebody did not type.
+    // A plugin takes no matcher, opencode sends no notices of its own, payloads
+    // carry no text from the permission card, and opencode starts no turns of
+    // its own.
     matcher: "",
     idle_notice: "",
     permission_notice: "",
     permission_sentence: "",
     injected: &[],
-    // The tool that opens a question form (core/src/tool/plugin/question.ts:
-    // 10), measured on 2.0.16 on 2026-09-30.
+    // The tool that opens a question form (core/src/tool/plugin/question.ts:10).
     question_tool: "question",
     // The plugin's Started carries `startup` for a new session and `resume`
-    // for one the pane was opened onto (Ruling 4).
+    // for one the pane was opened on.
     fresh_start: Some("startup"),
-    // `form.created` is sent for a form of `metadata.kind` `question` alone,
-    // and says so as its `kind`.
+    // `form.created` is only sent for `metadata.kind` `question`, and carries
+    // it as `kind`.
     question_kinds: &["question"],
 };
 
@@ -279,7 +264,7 @@ mod tests {
                 ".config/opencode",
                 "plugins/amx/tui.js"
             ),
-            "Ruling 3"
+            "where the TUI loads a plugin"
         );
         assert!(HOOKS.wire.listens(), "the plugin reads the hook's answer");
         assert!(body.starts_with("// installed by amx\n"), "{body}");
@@ -311,7 +296,7 @@ mod tests {
                 ("form.created", Moment::Notified, false),
                 ("session.execution.ended", Moment::Ended, false),
             ],
-            "Ruling 4"
+            "the plugin's event names"
         );
         assert_eq!(HOOKS.question_tool, "question");
         assert_eq!(HOOKS.fresh_start, Some("startup"));
@@ -331,7 +316,11 @@ mod tests {
             (model.cycle, model.open, model.flag, model.key, model.bare),
             (&["default"][..], true, "", Some("model"), false)
         );
-        assert_eq!(model.env, Some("OPENCODE_CONFIG_CONTENT"), "Ruling 8");
+        assert_eq!(
+            model.env,
+            Some("OPENCODE_CONFIG_CONTENT"),
+            "the TUI takes no model flag"
+        );
         assert_eq!(VENDOR.models, Models::Cycle);
 
         let permission = VENDOR.permission.expect("opencode has --auto");
@@ -346,7 +335,10 @@ mod tests {
             ),
             (&["default", "auto"][..], false, "--auto", None, true, None)
         );
-        assert_eq!(VENDOR.effort, None, "Ruling 8");
+        assert_eq!(
+            VENDOR.effort, None,
+            "the stored per-model variant wins over one on the model"
+        );
     }
 
     #[test]
@@ -365,7 +357,11 @@ mod tests {
         assert_eq!(session.conflicts, ["-s", "-c", "--continue", "--server"]);
         assert_eq!(session.fork, None);
         assert_eq!(session.resume_args("ses_1"), ["--session", "ses_1"]);
-        assert_eq!(VENDOR.launch, ["--standalone"], "Ruling 1");
+        assert_eq!(
+            VENDOR.launch,
+            ["--standalone"],
+            "each opencode runs its own server"
+        );
     }
 
     #[test]
@@ -378,7 +374,7 @@ mod tests {
             assert!(VENDOR.can(can), "{can:?}");
         }
         for cannot in [Capability::Fork, Capability::Adopt, Capability::Trust] {
-            assert!(!VENDOR.can(cannot), "Ruling 9: {cannot:?}");
+            assert!(!VENDOR.can(cannot), "{cannot:?}");
         }
         assert_eq!(VENDOR.hooks, Some(HOOKS));
         assert_eq!(VENDOR.transcript, Some(Transcript::Opencode));
@@ -399,13 +395,24 @@ mod tests {
 
     #[test]
     fn opencode_prompts_on_a_flag_and_cuts_a_turn_in_two_presses() {
-        assert_eq!(VENDOR.prompt_flag, Some("--prompt"), "Ruling 2");
-        assert_eq!(VENDOR.popups, ['@', '/'], "Ruling 7");
-        assert_eq!(VENDOR.cancel_presses, 2, "Ruling 6");
+        assert_eq!(
+            VENDOR.prompt_flag,
+            Some("--prompt"),
+            "a task is one --prompt=<text> word"
+        );
+        assert_eq!(
+            VENDOR.popups,
+            ['@', '/'],
+            "`@` and `/` open the autocomplete popup"
+        );
+        assert_eq!(
+            VENDOR.cancel_presses, 2,
+            "the first Escape only arms the cancel"
+        );
         assert_eq!(
             VENDOR.interrupt_signal,
             Some(nix::sys::signal::Signal::SIGUSR2),
-            "Ruling 6"
+            "the plugin interrupts its session on SIGUSR2"
         );
         assert_eq!(VENDOR.ends_options, None);
         assert_eq!(

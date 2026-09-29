@@ -1,9 +1,8 @@
-//! claude, the vendor amx was written against.
+//! claude's entry in the vendor table.
 //!
-//! Everything here is the vendor's own words, measured against 2.1.237's
-//! `--help`. Re-measure at every vendor bump: these are not amx's names to
-//! choose, and a renamed mode or a dropped alias turns a dial into a spawn
-//! that fails.
+//! Every value is claude's own spelling, checked against claude 2.1.237 to
+//! 2.1.270. Re-check on every vendor bump: a renamed mode or a dropped alias
+//! turns a dial into a spawn that fails.
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
@@ -13,20 +12,15 @@ use super::{
 /// claude's entry in the table.
 pub const VENDOR: Vendor = Vendor {
     name: "claude",
-    // Open: `--help` says an alias "or a model's full name", so the cycle
-    // lists the aliases and the dial takes anything. Four of them: 2.1.263's
-    // `--help` names fable, opus and sonnet as its examples, and haiku is the
-    // fourth family it answers to. The cycle is what a key offers rather than
-    // the set of legal values, which is what `open` above says.
+    // Open: `--help` takes an alias "or a model's full name". The cycle lists
+    // the aliases: fable, opus and sonnet from `--help` (2.1.263), plus haiku.
     model: Some(DialSpec::open(
         "--model",
         &[DEFAULT, "fable", "opus", "sonnet", "haiku"],
     )),
-    // The aliases above are the whole of what amx offers for claude, and the
-    // vendor prints no list of its own, so its models are the cycle.
+    // claude prints no model list, so the aliases above are all amx offers.
     models: Models::Cycle,
-    // Closed, and the vendor enforces it: `--permission-mode nonsense` is a
-    // hard error naming these six.
+    // Closed by the vendor: `--permission-mode nonsense` is a hard error.
     permission: Some(DialSpec::closed(
         "--permission-mode",
         &[
@@ -39,26 +33,19 @@ pub const VENDOR: Vendor = Vendor {
             "plan",
         ],
     )),
-    // Closed by judgement rather than by the vendor: `--effort nonsense`
-    // warns and falls back to the default rather than refusing. Five levels
-    // are the whole documented set, so amx warns at the config it can see
-    // instead of leaving the person to find the vendor's warning scrolled off
-    // the top of a pane.
+    // Closed by amx: `--effort nonsense` only warns and falls back, so amx
+    // warns at config time instead of in a pane that may have scrolled.
     effort: Some(DialSpec::closed(
         "--effort",
         &[DEFAULT, "low", "medium", "high", "xhigh", "max"],
     )),
-    // amx never asks claude to open a session under an id amx chose: claude's
-    // own SessionStart hook already names the one it opened
-    // (src/hook.rs:311), and the id it wants there is a UUID, not the
-    // <stem>-<suffix> amx mints. `--session-id` stays in the entry, but as a
-    // flag `resume` and `fork` strip rather than one either ever writes.
+    // No start flag: the SessionStart hook names the session claude opened,
+    // and `--session-id` wants a UUID rather than an amx id, so it is only
+    // listed as a conflict for resume and fork to strip.
     //
-    // `--resume` carries an agent on, its value joined on with `=` because
-    // that is the one spelling with no ambiguity about where the value is.
-    // `--fork-session` is a bare marker written beside it: measured against
-    // 2.1.237, it takes no value of its own and only says to branch rather
-    // than continue.
+    // `--resume=<id>` is joined with `=` so the value's position is never
+    // ambiguous. `--fork-session` takes no value and marks the resume as a
+    // branch (2.1.237).
     session: Some(SessionSpec {
         start: None,
         resume: Resume::Flag {
@@ -68,20 +55,14 @@ pub const VENDOR: Vendor = Vendor {
         conflicts: &["--session-id", "-r"],
         fork: Some(ForkSpec::Marker("--fork-session")),
     }),
-    // Measured at 2.1.240 on 2026-08-24: every process the vendor starts, a
-    // tool call or a hook alike, is handed this, holding the same session id
-    // its hook payloads carry.
+    // Set on every process claude starts, tools and hooks alike, to the
+    // session id its hook payloads carry (2.1.240).
     session_env: Some("CLAUDE_CODE_SESSION_ID"),
-    // The markers of the session a command was typed inside, which is a
-    // session an agent amx starts is not in. Measured at 2.1.240 on
-    // 2026-08-25: carrying them, the vendor came up with "Transcript saving
-    // is off, inherited CLAUDE_CODE_CHILD_SESSION marker", and an agent with
-    // no transcript is one `result` cannot quote and `resume` and `fork`
-    // cannot continue.
-    //
-    // Preferences are about the person and ride along; these name the
-    // session. CLAUDE_EFFORT is here because it is the spawner's own dial,
-    // and a dial nobody turned on this agent is a flag amx does not pass.
+    // The spawning session's markers. Inherited, they make claude start with
+    // "Transcript saving is off, inherited CLAUDE_CODE_CHILD_SESSION marker"
+    // (2.1.240), and without a transcript `result`, `resume` and `fork` break.
+    // CLAUDE_EFFORT is the spawner's dial, not this agent's. Preferences such
+    // as CLAUDE_CODE_NO_FLICKER are inherited.
     not_inherited: &[
         "CLAUDECODE",
         "CLAUDE_PID",
@@ -91,10 +72,6 @@ pub const VENDOR: Vendor = Vendor {
         "CLAUDE_CODE_EXECPATH",
         "CLAUDE_EFFORT",
     ],
-    // All of them, because amx was written against this vendor: the hooks it
-    // reports through, the transcript it keeps, `--resume` and
-    // `--fork-session`, the session id it hands what it starts, and the
-    // folder-trust screen amx answers for a tree it cut itself.
     capabilities: &[
         Capability::Hooks,
         Capability::Transcript,
@@ -104,31 +81,20 @@ pub const VENDOR: Vendor = Vendor {
         Capability::Trust,
     ],
     hooks: Some(HOOKS),
-    // The screens amx has measured off this vendor, every anchor in them with
-    // the capture, the version and the date it was read at. The file is the
-    // whole of what amx knows how to see on a claude pane.
+    // Each rule in the file records the capture and version it was read from.
     screens: Some(include_str!("../../assets/screen-rules.toml")),
-    // The conversation it writes under `~/.claude/projects/`, in the shape
-    // `crate::conversation` reads claude's by.
+    // The session files under `~/.claude/projects/`.
     transcript: Some(Transcript::Claude),
-    // Where claude loads what somebody can name on a line, measured at 2.1.263
-    // on 2026-09-07: the person's `.claude` and the project's for skills,
-    // commands and agents alike, and the plugin cache for the skills and
-    // commands a plugin brings, one directory deep in a market, a plugin and a
-    // version that are the plugin's to name and not amx's. A skill is run by
-    // its bare name, which is the empty prefix.
+    // Skills, commands and agents from the person's and the project's
+    // `.claude`, plus plugin skills and commands under
+    // `plugins/cache/<market>/<plugin>/<version>/` (2.1.263). A skill runs as
+    // `/name`, hence the empty prefix.
     //
-    // The built-ins are the twenty words claude's own agent view dispatches
-    // as a session's first prompt: its bundled skills and the built-ins that
-    // expand into a prompt, `/init` among them. Every other built-in that
-    // view refuses with `attach to a session to run it`, and `--help` names
-    // none of them. Read off code.claude.com/docs/en/commands, which marks the
-    // skills, at 2.1.263 on 2026-09-08; that a word handed as the first prompt
-    // runs was measured the same day, `claude "/help"` opening the help panel.
-    // Re-measure at every vendor bump against that page and not against
-    // claude's own `/` menu, which lists every built-in, the ones a fresh
-    // session cannot run included: a dropped word is one amx goes on offering
-    // after claude has stopped answering it.
+    // The built-ins are the words claude's agent view dispatches as a first
+    // prompt: its bundled skills and the built-ins that expand into a prompt.
+    // It refuses every other built-in with "attach to a session to run it".
+    // Taken from code.claude.com/docs/en/commands at 2.1.263, not from the `/`
+    // menu, which also lists built-ins a fresh session cannot run.
     catalog: Some(Catalog {
         skills: &[
             Place::Person(".claude/skills"),
@@ -144,8 +110,7 @@ pub const VENDOR: Vendor = Vendor {
             Place::Person(".claude/agents"),
             Place::Project(".claude/agents"),
         ],
-        // `--agent <agent>`, measured at 2.1.263 on 2026-09-07: the agent for
-        // the session, over whatever the settings name.
+        // `--agent <agent>` overrides the agent the settings name (2.1.263).
         agent_flag: Some("--agent"),
         builtins: &[
             "batch",
@@ -172,7 +137,7 @@ pub const VENDOR: Vendor = Vendor {
         sigil: '/',
         skill_prefix: "",
     }),
-    // claude reads its last word as the prompt whatever it opens with.
+    // The last word is the prompt whatever it starts with.
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
@@ -183,22 +148,17 @@ pub const VENDOR: Vendor = Vendor {
     launch: &[],
 };
 
-/// How claude reports what it is doing, and where amx asks it to.
+/// claude's hook events and the words its payloads use.
 ///
-/// Seven events out of the vendor's own list, one line each in the settings
-/// file. `PostToolUse` is deliberately not among them: nothing amx keeps needs
-/// to know that a tool finished, and every tool call would cost a process.
-///
-/// Measured at 2.1.240 on 2026-08-25. Re-measure at every vendor bump the same
-/// way as the dials above: a renamed event is hooks that never fire, and a
-/// renamed notification type is a nudge amx reads as a question.
+/// `PostToolUse` is left out on purpose: amx needs nothing from it, and it
+/// would cost a process per tool call. Checked against 2.1.240; a renamed
+/// event means hooks that never fire, and a renamed notification type turns a
+/// nudge into a question.
 pub const HOOKS: Hooks = Hooks {
-    // A plugin under the skills directory rather than entries in
-    // `~/.claude/settings.json`: claude loads a directory there that carries a
-    // manifest as `<name>@skills-dir` — personal scope, every project, read
-    // live from the directory, and the person's own settings never opened.
-    // Measured on 2.1.270, 2026-09-16: seven hooks, no token cost, and an
-    // event taken out of the file was gone from the inventory at once.
+    // A plugin in the skills directory rather than entries in
+    // `~/.claude/settings.json`: claude loads a directory there that has a
+    // manifest as `<name>@skills-dir`, for every project, read live, and the
+    // person's settings are never opened (2.1.270).
     wire: Wire::Plugin {
         dir: ".claude/skills/amx",
         files: &[
@@ -213,8 +173,6 @@ pub const HOOKS: Hooks = Hooks {
             ("SKILL.md", include_str!("../../skill/amx/SKILL.md")),
         ],
     },
-    // Nothing a person opts into: claude's wiring is the plugin above, and a
-    // second thing for it to load would be one nobody asked for.
     opt_in: &[],
     events: &[
         Wiring::new(Moment::Started, "SessionStart"),
@@ -225,22 +183,19 @@ pub const HOOKS: Hooks = Hooks {
         Wiring::new(Moment::Notified, "Notification"),
         Wiring::new(Moment::Ended, "Stop"),
     ],
-    // The three events above that take one, and amx wants all of them: what a
-    // tool call means for the record is decided by reading the payload, not by
-    // asking the vendor to send only some.
+    // Every tool: the hook reads the payload to decide what a call means.
     matcher: "*",
     question_tool: "AskUserQuestion",
     idle_notice: "idle_prompt",
     permission_notice: "permission_prompt",
     permission_sentence: "Claude needs your permission to use {tool}",
-    // Read off 121 real UserPromptSubmit payloads on 2026-09-26: a background
-    // task that finished, and a message from another agent.
+    // A finished background task and a message from another agent, seen in
+    // real UserPromptSubmit payloads.
     injected: &["<task-notification", "<agent-message"],
-    // A resume, a clear and a compact each open a session too, and say which
-    // they were, per code.claude.com/docs/en/hooks.
+    // Resume, clear and compact report other sources
+    // (code.claude.com/docs/en/hooks).
     fresh_start: Some("startup"),
-    // Its notices carry a type and no kind: the question it asks is the menu
-    // its question tool draws.
+    // Notices carry a type but no kind; questions come from the question tool.
     question_kinds: &[],
 };
 
@@ -250,10 +205,8 @@ mod tests {
 
     #[test]
     fn claude_words_a_permission_box_the_way_the_pane_does() {
-        // The sentence written when the box goes up is what every reader
-        // quotes for the six seconds until the vendor's own notification
-        // repeats it. One worded any other way is a sentence nothing drew,
-        // handed to whoever has to answer the box.
+        // Written when the box opens and quoted until claude's own
+        // notification repeats it, so it must match the pane's wording.
         assert_eq!(
             HOOKS.permission_sentence("Bash").as_deref(),
             Some("Claude needs your permission to use Bash")
@@ -268,9 +221,7 @@ mod tests {
 
     #[test]
     fn claude_declares_a_model_a_permission_and_an_effort_dial() {
-        // Measured against claude 2.1.237's `--help`. Re-measure at every
-        // vendor bump: a renamed mode or a dropped alias turns a dial into a
-        // spawn that fails.
+        // Checked against claude 2.1.237's `--help`.
         let model = VENDOR.model.expect("claude has a model dial");
         assert_eq!(model.flag, "--model");
         assert_eq!(model.cycle, ["default", "fable", "opus", "sonnet", "haiku"]);
@@ -303,19 +254,13 @@ mod tests {
 
     #[test]
     fn claude_lists_its_models_in_the_cycle_its_dial_already_names() {
-        // The aliases are the whole of what amx offers for this vendor, so
-        // there is nothing to run and nothing to read: the dial above is the
-        // listing.
         assert_eq!(VENDOR.models, Models::Cycle);
     }
 
     #[test]
     fn claude_declares_no_start_flag_and_a_resume_flag_joined_with_equals() {
-        // amx never asks claude to open a session under an id amx chose: its
-        // own SessionStart hook already names the one it opened, and the id
-        // it wants there is a UUID, not the id amx mints. `--session-id`
-        // stays in the entry as a flag `resume` and `fork` strip rather than
-        // write.
+        // SessionStart names the session, and `--session-id` wants a UUID, so
+        // it is only a conflict for resume and fork to strip.
         let session = VENDOR
             .session
             .expect("claude declares a session vocabulary");
@@ -334,21 +279,13 @@ mod tests {
 
     #[test]
     fn claude_names_the_session_every_process_it_starts_belongs_to() {
-        // Measured against claude 2.1.240 on 2026-08-24: every process the
-        // vendor starts, a tool call or a hook alike, is handed
-        // CLAUDE_CODE_SESSION_ID holding the same session id its hook payloads
-        // carry. Re-measure it at every vendor bump: it is the whole of how an
-        // adopted agent's events find their way home.
+        // How an adopted agent's events find their record (2.1.240).
         assert_eq!(VENDOR.session_env, Some("CLAUDE_CODE_SESSION_ID"));
     }
 
     #[test]
     fn claude_keeps_the_markers_of_the_session_a_spawn_was_typed_inside() {
-        // Measured at 2.1.240 on 2026-08-25: a vendor handed its spawner's
-        // markers believes it is a child of that session, and came up with
-        // "Transcript saving is off, inherited CLAUDE_CODE_CHILD_SESSION
-        // marker". An agent with no transcript is one `result` cannot quote
-        // and `resume` and `fork` cannot continue.
+        // Inherited, these made claude 2.1.240 turn transcript saving off.
         assert_eq!(
             VENDOR.not_inherited,
             [
@@ -362,10 +299,7 @@ mod tests {
             ]
         );
 
-        // Preferences are about the person rather than the session, and they
-        // ride along. CLAUDE_EFFORT is above with the markers because it is
-        // the spawner's own dial, and a dial nobody turned on this agent is a
-        // flag amx does not pass.
+        // Preferences are the person's and are inherited.
         for preference in [
             "CLAUDE_CODE_NO_FLICKER",
             "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
@@ -379,10 +313,8 @@ mod tests {
 
     #[test]
     fn claude_names_every_event_amx_wires_into_its_plugin() {
-        // Measured against claude 2.1.240's own hook list on 2026-08-25, and
-        // the whole of what amx asks to be told. Re-measure at every vendor
-        // bump: a renamed event is a hook that never fires again, and nothing
-        // says so — the record simply stops moving.
+        // Checked against claude 2.1.240's hook list. A renamed event fails
+        // silently: the record just stops moving.
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
         let Wire::Plugin { dir, files } = hooks.wire else {
             panic!("claude reports through a plugin amx writes");
@@ -398,8 +330,7 @@ mod tests {
             "the manifest claude loads it by, the file that wires the events, and amx's own skill"
         );
 
-        // What those files hold is install.rs's to check, since the wiring
-        // one is held to this table event by event there.
+        // install.rs checks the shipped hooks file against this table.
 
         let wired: Vec<(Moment, &str, bool)> = hooks
             .events
@@ -420,20 +351,15 @@ mod tests {
         );
         assert_eq!(hooks.matcher, "*", "every tool, on the three that ask");
 
-        // PostToolUse is the vendor's word for a tool that finished, and it is
-        // left out on purpose: nothing amx keeps needs it, and it would cost a
-        // process on every tool call. What that costs instead is written down
-        // in `hook` — the record still reads waiting when a box is approved.
+        // Left out on purpose; the cost, a record that still reads waiting
+        // after a box is approved, is handled in `hook`.
         assert_eq!(hooks.moment("PostToolUse"), None);
     }
 
     #[test]
     fn claude_names_the_tool_that_asks_and_the_notices_it_sends() {
-        // Three words the vendor writes into payloads, and amx has no other
-        // way to tell one screen from another. Measured at 2.1.240 on
-        // 2026-08-25: AskUserQuestion draws a menu rather than doing work, and
-        // a notification carries idle_prompt when nothing is open on the
-        // session or permission_prompt when a box is.
+        // AskUserQuestion draws a menu; a notification carries idle_prompt
+        // when nothing is open and permission_prompt when a box is (2.1.240).
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
         assert_eq!(hooks.question_tool, "AskUserQuestion");
         assert_eq!(hooks.idle_notice, "idle_prompt");
@@ -446,21 +372,16 @@ mod tests {
 
     #[test]
     fn claude_names_the_prompts_it_types_into_a_session_itself() {
-        // Read off 121 real UserPromptSubmit payloads: a background task
-        // finishing and a message from another agent arrive as prompts nobody
-        // typed, and each opens with its own tag.
+        // A finished background task and a message from another agent arrive
+        // as prompts nobody typed, each opening with its own tag.
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
         assert_eq!(hooks.injected, ["<task-notification", "<agent-message"]);
     }
 
     #[test]
     fn claude_names_where_it_loads_skills_commands_and_agents_from() {
-        // Measured at 2.1.263 on 2026-09-07 off the directories claude reads
-        // on a machine it is installed on: the person's `.claude` and the
-        // project's for each of the three, and the plugin cache for the two it
-        // keeps there, whose market, plugin and version segments are nobody's
-        // to name in advance. Re-measure at every vendor bump the same way as
-        // the dials: a moved directory is a suggestion that never arrives.
+        // Checked against claude 2.1.263. A moved directory means suggestions
+        // that never arrive.
         let catalog = VENDOR.catalog.expect("claude loads files by name");
         assert_eq!(
             catalog.skills,
@@ -492,11 +413,8 @@ mod tests {
         );
         assert_eq!(catalog.sigil, '/', "claude opens every word with a slash");
         assert_eq!(catalog.skill_prefix, "", "claude runs a skill by its name");
-        // And the twenty words claude's own agent view dispatches as a first
-        // prompt — the bundled skills and the prompt-expanding built-ins —
-        // read off code.claude.com/docs/en/commands at 2.1.263 on 2026-09-08,
-        // since `--help` names none of them. A dropped word is one amx offers
-        // after claude has stopped answering it.
+        // From code.claude.com/docs/en/commands at 2.1.263; `--help` lists
+        // none of them.
         assert_eq!(
             catalog.builtins,
             [
@@ -526,9 +444,6 @@ mod tests {
 
     #[test]
     fn claude_can_do_everything_amx_knows_how_to_ask_a_vendor_for() {
-        // The vendor amx was written against, so every capability in the list
-        // is one it was written against too. A second vendor is where the
-        // absences start, and where a verb's refusal has to say something.
         for what in [
             Capability::Hooks,
             Capability::Transcript,
