@@ -1128,6 +1128,7 @@ impl List {
         self.unfolded.insert(key);
         let on = self.on();
         self.rebuild(on.agent());
+        self.follow(&on);
     }
 
     /// What heading a row is drawn under, in terms that outlive the next
@@ -3168,6 +3169,31 @@ mod tests {
             "done-1",
             "the cursor stays where the fold was, which is now an agent"
         );
+    }
+
+    #[test]
+    fn view_keeps_the_cursor_on_its_agent_when_a_fold_above_it_opens() {
+        let mut views: Vec<View> = (0..FOLD_AT + 2)
+            .map(|n| view(&format!("busy-{n:02}"), Phase::Working, n as u64))
+            .collect();
+        views.push(view("done-a1b", Phase::Done, 100));
+        let mut list = listed(views);
+        list.bottom();
+        assert_eq!(list.selected().unwrap().id(), "done-a1b");
+
+        let fold = list
+            .items()
+            .iter()
+            .position(|item| matches!(item, Item::Fold(..)))
+            .expect("the working group folds");
+        list.unfold_at(fold);
+        assert!(
+            !list
+                .items()
+                .iter()
+                .any(|item| matches!(item, Item::Fold(..)))
+        );
+        assert_eq!(list.selected().unwrap().id(), "done-a1b");
     }
 
     #[test]
