@@ -213,6 +213,17 @@ pub enum Wire {
         dir: &'static str,
         body: &'static str,
     },
+    /// A file of amx's own, written whole into a directory a variable may
+    /// move, which reports through the hook command itself: opencode's TUI
+    /// plugin. The directory is `$<dir_env>` when that is set, else `dir`
+    /// under the home; `path` is the file's place in it, and `body` the file
+    /// as it ships. Everything else is a file wire's.
+    Placed {
+        dir_env: &'static str,
+        dir: &'static str,
+        path: &'static str,
+        body: &'static str,
+    },
 }
 
 impl Wire {
@@ -220,7 +231,7 @@ impl Wire {
     ///
     /// A file wire is amx's own code running inside the vendor, and it reads
     /// the answer: the record's directory, which a pane amx did not start has
-    /// no other way of learning. A settings wire is the vendor's own hook
+    /// no other way of learning. A placed wire is the same file, moved. A settings wire is the vendor's own hook
     /// runner, and what a hook prints is the vendor's to show — claude puts a
     /// `UserPromptSubmit` hook's stdout into the conversation — so a hook run
     /// over one says nothing. A plugin wire is the second kind however many
@@ -228,16 +239,17 @@ impl Wire {
     /// hooks itself. So is a hooks wire: codex feeds a hook's stdout to the
     /// model.
     pub fn listens(self) -> bool {
-        matches!(self, Wire::File { .. })
+        matches!(self, Wire::File { .. } | Wire::Placed { .. })
     }
 
     /// Where the wiring goes, under the home directory: for a hooks wire,
-    /// where it goes when its variable is not set.
+    /// where it goes when its variable is not set, and for a placed wire the
+    /// directory its file goes into then.
     pub fn path(&self) -> &'static str {
         match self {
             Wire::File { path, .. } => path,
             Wire::Plugin { dir, .. } => dir,
-            Wire::Hooks { dir, .. } => dir,
+            Wire::Hooks { dir, .. } | Wire::Placed { dir, .. } => dir,
         }
     }
 }
@@ -1177,6 +1189,20 @@ mod tests {
                 // else the plugin ships. Each path is relative to the
                 // directory for the same reason the directory is relative to
                 // the home.
+                Wire::Placed {
+                    dir_env,
+                    path: file,
+                    body,
+                    ..
+                } => {
+                    assert!(!dir_env.is_empty(), "{path} names no variable");
+                    assert!(!file.is_empty(), "{path} places no file");
+                    assert!(
+                        !std::path::Path::new(file).is_absolute(),
+                        "{path}/{file} is written outside the directory"
+                    );
+                    assert!(body.contains("_hook"), "{path} reports through nothing");
+                }
                 Wire::Hooks { dir_env, body, .. } => {
                     assert!(!dir_env.is_empty(), "{path} names no variable");
                     assert!(body.contains("_hook"), "{path} reports through nothing");

@@ -100,13 +100,17 @@ pub fn vendor_dir(set: Option<OsString>, dir: &str, home: &Path) -> PathBuf {
 
 /// Where one wire goes, given a home directory and the environment: the file
 /// amx writes where a vendor loads extensions from, the directory of a plugin
-/// amx wrote, or the directory holding the hooks file amx merges into.
+/// amx wrote, the directory holding the hooks file amx merges into, or the
+/// file placed in a directory its variable may move.
 ///
 /// Every verb asks this, so setup, doctor, uninstall and the trust keys all
 /// agree on where codex lives.
 pub fn wire_path(wire: &Wire, home: &Path, env: Env) -> PathBuf {
     match *wire {
         Wire::Hooks { dir_env, dir, .. } => vendor_dir(env(dir_env), dir, home),
+        Wire::Placed {
+            dir_env, dir, path, ..
+        } => vendor_dir(env(dir_env), dir, home).join(path),
         _ => home.join(wire.path()),
     }
 }
@@ -124,7 +128,7 @@ pub fn consent_line(wire: &Wire, path: &Path, backup: bool) -> String {
             "amx will write its extension to {}{and_backup}.",
             path.display()
         ),
-        Wire::Plugin { .. } => format!(
+        Wire::Plugin { .. } | Wire::Placed { .. } => format!(
             "amx will write its plugin to {}{and_backup}.",
             path.display()
         ),
@@ -156,7 +160,8 @@ pub enum Wired {
 pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
     let path = wire_path(wire, home, env);
     match *wire {
-        Wire::File { body, .. } => match std::fs::read_to_string(&path) {
+        Wire::File { body, .. } | Wire::Placed { body, .. } => match std::fs::read_to_string(&path)
+        {
             Ok(text) => Wired::File {
                 present: true,
                 current: text == body,
@@ -204,7 +209,7 @@ pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
 pub fn install_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
     let path = wire_path(wire, home, env);
     match *wire {
-        Wire::File { body, .. } => install_file(&path, body, now),
+        Wire::File { body, .. } | Wire::Placed { body, .. } => install_file(&path, body, now),
         Wire::Plugin { files, .. } => install_plugin(&path, files, now),
         Wire::Hooks { body, .. } => install_hooks(&path, body, now),
     }
@@ -221,7 +226,7 @@ pub fn install_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Repo
 pub fn would_keep_a_copy(wire: &Wire, home: &Path, env: Env) -> bool {
     let path = wire_path(wire, home, env);
     match *wire {
-        Wire::File { body, .. } => std::fs::read_to_string(&path)
+        Wire::File { body, .. } | Wire::Placed { body, .. } => std::fs::read_to_string(&path)
             .is_ok_and(|text| text != body && !is_amx_file(&text, body)),
         Wire::Plugin { files, .. } => {
             !is_amx_plugin(&path)
@@ -357,7 +362,7 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
 pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
     let path = wire_path(wire, home, env);
     match *wire {
-        Wire::File { body, .. } => uninstall_file(&path, body, now),
+        Wire::File { body, .. } | Wire::Placed { body, .. } => uninstall_file(&path, body, now),
         Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
         Wire::Hooks { body, .. } => uninstall_hooks(&path, body),
     }
@@ -1814,5 +1819,110 @@ mod tests {
         assert!(asked.contains("/home/dev/.codex/config.toml"), "{asked}");
         assert!(asked.contains("copy"), "{asked}");
         assert!(!consent_line(&HOOKS_WIRE, dir, false).contains("copy"));
+    }
+
+    /// A placed wire of the tests' own, shaped like opencode's.
+    const PLACED: Wire = Wire::Placed {
+        dir_env: "VENDOR_CONFIG_DIR",
+        dir: ".config/vendor",
+        path: "plugins/amx/tui.js",
+        body: "// installed by amx\nexport default {};\n",
+    };
+
+    /// An environment naming `dir` as the placed wire's.
+    fn placed_dir(dir: &Path) -> impl Fn(&str) -> Option<OsString> {
+        let dir = dir.as_os_str().to_owned();
+        move |name| (name == "VENDOR_CONFIG_DIR").then(|| dir.clone())
+    }
+
+    #[test]
+    fn a_placed_wire_goes_under_its_variables_dir_or_the_one_under_home() {
+        let home = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            wire_path(&PLACED, home.path(), &placed_dir(&dir)),
+            dir.join("plugins/amx/tui.js")
+        );
+        assert_eq!(
+            wire_path(&PLACED, home.path(), &no_env),
+            home.path().join(".config/vendor/plugins/amx/tui.js")
+        );
+    }
+
+    #[test]
+    fn a_placed_wire_installs_drifts_and_uninstalls_under_its_variables_dir() {
+        let home = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let env = placed_dir(&dir);
+        let path = dir.join("plugins/amx/tui.js");
+        let absent = Wired::File {
+            present: false,
+            current: false,
+        };
+        assert_eq!(wired(&PLACED, home.path(), &env), absent);
+
+        let report = install_wire(&PLACED, home.path(), &env, 1).unwrap();
+        assert!(report.changed);
+        assert_eq!(report.path, path);
+        assert_eq!(report.backup, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "// installed by amx\nexport default {};\n"
+        );
+        assert!(
+            !home.path().join(".config").exists(),
+            "nothing is written under the home the variable replaced"
+        );
+        assert_eq!(
+            wired(&PLACED, home.path(), &env),
+            Wired::File {
+                present: true,
+                current: true
+            }
+        );
+        assert_eq!(
+            wired(&PLACED, home.path(), &no_env),
+            absent,
+            "read where the variable points, not under the home"
+        );
+
+        // An older amx's file is a file that drifted.
+        std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
+        assert_eq!(
+            wired(&PLACED, home.path(), &env),
+            Wired::File {
+                present: true,
+                current: false
+            }
+        );
+        assert!(!would_keep_a_copy(&PLACED, home.path(), &env));
+
+        let report = uninstall_wire(&PLACED, home.path(), &env, 2).unwrap();
+        assert!(report.changed);
+        assert!(!path.exists());
+        assert_eq!(wired(&PLACED, home.path(), &env), absent);
+    }
+
+    #[test]
+    fn a_placed_wire_keeps_a_copy_of_somebody_elses_file_and_puts_it_back() {
+        let home = TempDir::new().unwrap();
+        let path = wire_path(&PLACED, home.path(), &no_env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "their plugin\n").unwrap();
+        assert!(would_keep_a_copy(&PLACED, home.path(), &no_env));
+        assert_eq!(
+            consent_line(&PLACED, &path, true),
+            format!(
+                "amx will write its plugin to {}, keeping a copy of the file as it is now.",
+                path.display()
+            )
+        );
+
+        let report = install_wire(&PLACED, home.path(), &no_env, 1).unwrap();
+        assert!(report.backup.is_some(), "somebody else's file is kept");
+        uninstall_wire(&PLACED, home.path(), &no_env, 2).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "their plugin\n");
     }
 }

@@ -368,6 +368,7 @@ fn wiring_check(found: &VendorWiring) -> Check {
     let what = match hooks.wire {
         Wire::File { .. } => "extension",
         Wire::Plugin { .. } => "plugin",
+        Wire::Placed { .. } => "plugin",
         Wire::Hooks { .. } => return hooks_check(who, &found.wire, &found.wired),
     };
 

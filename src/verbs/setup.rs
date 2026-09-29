@@ -139,6 +139,7 @@ fn wire_one(
     match wire {
         Wire::File { .. } => writeln!(out, "wrote the extension to {}", wrote.path.display())?,
         Wire::Plugin { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
+        Wire::Placed { .. } => writeln!(out, "wrote the plugin to {}", wrote.path.display())?,
         Wire::Hooks { .. } => writeln!(
             out,
             "added the hooks to {} and trusted them in {}",
