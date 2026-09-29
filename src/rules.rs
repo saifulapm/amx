@@ -157,6 +157,7 @@ pub enum Claim<'a> {
     Unclaimed,
 }
 
+#[cfg(test)]
 impl Claim<'_> {
     /// The state to report, when there is one.
     pub fn phase(&self) -> Option<Phase> {
@@ -525,11 +526,6 @@ impl Screen {
             folded: all[floor..].iter().map(|row| row.to_lowercase()).collect(),
             shown: all[floor..].iter().map(|row| row.to_string()).collect(),
         }
-    }
-
-    /// The topmost row carrying `needle`.
-    fn row_of(&self, needle: &str) -> Option<usize> {
-        self.folded.iter().position(|row| row.contains(needle))
     }
 
     /// Every row carrying `needle`, top to bottom.
@@ -3051,8 +3047,14 @@ Only showing models from configured providers. Use /login to add providers.
         // rule used to have both went with it, one out of the floor and one to
         // the wrap.
         let screen = Screen::new(ASK_MENU_259_24);
-        assert_eq!(screen.row_of("❯ 1."), None, "the marker is above the floor");
-        assert_eq!(screen.row_of("esc to cancel"), None, "the footer wrapped");
+        assert!(
+            screen.rows_of("❯ 1.").is_empty(),
+            "the marker is above the floor"
+        );
+        assert!(
+            screen.rows_of("esc to cancel").is_empty(),
+            "the footer wrapped"
+        );
 
         // What is left is the bottom of the box, which is where the rule that
         // claims the screen now stands.

@@ -28,7 +28,6 @@ mod paths;
 mod pr;
 mod registry;
 mod role;
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod rules;
 mod shade;
 mod spawn;
