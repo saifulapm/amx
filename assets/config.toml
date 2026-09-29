@@ -1,194 +1,163 @@
-# amx — the config, with the defaults written out.
+# amx configuration, with every default written out.
 #
-# Copy this to ~/.config/amx/config.toml and change what you want changed. A
-# copy nobody edits runs exactly as no file at all would: every value here is
-# the one amx uses when the key is left out. Twenty-five keys, the keys you bind
-# yourself and a table per harness; a key amx has never heard of is warned about
-# and ignored, and a file it cannot parse falls back to these defaults with a
-# warning, because losing an agent to a stray comma is the worse outcome.
+# Copy this file to ~/.config/amx/config.toml and change what you want. Every
+# value below is the default, so a copy you never edit behaves like no file at
+# all. amx warns about a key it does not know and ignores it. A file that does
+# not parse is ignored with a warning, and amx runs on the defaults.
 #
-# A project can keep the same file at <repo>/.amx/config.toml, laid over this
-# one a key at a time: a project file holding one line has changed its mind
-# about one key, and everything else is still what you set here. amx reads a
-# project file only once you have run `amx allow` in the project, and only as
-# long as it still says what it said then: an edit un-allows it.
+# A project can keep the same file at <repo>/.amx/config.toml. Its keys are laid
+# over yours one at a time, so a one-line project file changes one key. amx
+# reads a project file only after you run `amx allow` in that project, and any
+# edit to the file needs a new `amx allow`. A project file cannot set
+# `permission`, `trust` or `subagents_may_escalate`.
 
-# The command a new agent runs: claude, pi, or your own. The vendor is read off
-# the program this names, so `claude --dangerously-skip-permissions` is still
-# claude and gets claude's dials.
+# The command a new agent runs: claude, pi, codex, opencode or your own. amx
+# tells the vendor from the program name, so
+# `claude --dangerously-skip-permissions` is still claude and gets its dials.
 agent = "claude"
 
-# How many live agents in a project before `new` refuses. Counted over the
-# agents whose pane still answers for them, in the project the new one would
-# run in: a repository at its cap refuses nothing in the next one.
+# How many live agents one project may have before `amx new` refuses. Each
+# project counts its own agents.
 max_agents = 5
 
-# A ceiling over every project on the machine at once. Left out, there is
-# none: a machine is as busy as the projects on it ask between them.
+# How many live agents all projects on this machine may have together. No limit
+# when left out.
 # max_total = 10
 
-# How many live children one parent may have at once: the records whose parent
-# it is and which have not finished. 0 is no ceiling of its own. Children are
-# not counted toward max_agents or max_total — those are your ceiling on your
-# own wall, and a subagent is an agent's own work.
+# How many live children one agent may have at once. 0 means no limit.
+# Children do not count toward max_agents or max_total.
 max_children = 8
 
-# How deep a chain of subagents may go: 2 is a child and a grandchild, 1 stops
-# at the child, 0 is a root that may not spawn at all. Two, because an
-# orchestrator dispatches its workers as children, so the advisor a worker asks
-# for one answer from is already a grandchild. A spawn past this is refused
-# before anything is claimed. Only `amx sub` records a parent, so only a sub is
-# bounded.
+# How deep a chain of subagents may go: 2 allows a child and a grandchild, 1
+# only a child, 0 no children at all. Only `amx sub` records a parent, so only
+# `amx sub` is limited.
 subagent_depth = 2
 
-# Whether `amx sub` takes --permission from the caller. A model and an effort
-# the parent already chose are handed down, but widening the permission is a
-# decision, so it is off until you say so.
+# Whether `amx sub` accepts `--permission`. A child inherits its parent's model
+# and effort; a permission mode of its own is refused while this is false.
 subagents_may_escalate = false
 
-# Give each agent its own git worktree. Two agents editing one checkout is the
-# failure amx is arranged to avoid; `amx new --no-worktree` is the escape for
-# one spawn.
+# Give each agent its own git worktree, so two agents never edit one checkout.
+# `amx new --no-worktree` skips it for one spawn.
 worktrees = true
 
-# Where a notice about the transitions worth interrupting for goes: an agent
-# that finished, or one stuck waiting on an answer. "desktop" is the desktop's
-# own notifier, "terminal" writes the notice to every terminal you are sitting
-# at, "both" does the two and "off" does neither. true and false are still
-# written and still mean desktop and off.
+# Where notices go when an agent finishes or stops on a question: "desktop"
+# (the desktop's notifier), "terminal" (a notification escape written to every
+# terminal attached to your tmux servers), "both" or "off". true and false
+# still work and mean "desktop" and "off".
 notifications = "desktop"
 
-# Answer the vendor's folder-trust screen for the worktrees amx cuts. For
-# claude that writes an entry in claude's own trust store, which outlives the
-# agent; for pi it puts --approve on the pane's argv and writes nothing. Off
-# until you say so: that store is the vendor's file, and this is the consent
-# the write stands behind.
+# Answer the vendor's folder-trust screen for worktrees amx creates. For claude
+# this writes an entry to claude's own trust store, which outlives the agent.
+# For pi it passes --approve and writes nothing. codex and opencode are not
+# affected. Off by default because the trust store is the vendor's file.
 trust = false
 
-# The dials a new agent starts on. A key left out is a flag amx does not pass,
-# which leaves the choice to the vendor — there is no value that means that,
-# so leave the key out rather than write one. A value the configured agent
-# would not take is warned about and dropped.
+# The dials a new agent starts with. Leave a key out to pass no flag and let
+# the vendor decide. A value the configured agent does not accept is warned
+# about and dropped.
 #
-#   claude: model is open (fable, opus, sonnet, or any id); permission is one
-#   of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan; effort is
-#   one of low, medium, high, xhigh, max.
-#   pi: model is open (a provider/id pattern); effort is one of off, minimal,
-#   low, medium, high, xhigh, max; pi has no permission dial.
+#   claude:   model is any id or alias (fable, opus, sonnet, haiku); permission
+#             is acceptEdits, auto, bypassPermissions, manual, dontAsk or plan;
+#             effort is low, medium, high, xhigh or max.
+#   pi:       model is any provider/id pattern; effort is off, minimal, low,
+#             medium, high, xhigh or max; no permission dial.
+#   codex:    model is any id; permission is the sandbox: read-only,
+#             workspace-write or danger-full-access; effort is low, medium,
+#             high, xhigh or max.
+#   opencode: model is provider/model; permission is auto; no effort dial.
 # model = "opus"
 # permission = "plan"
 # effort = "high"
 
-# What writes the one line a turn is worth: run where the agent ran, handed the
-# answer on stdin with $AMX_ID naming the agent, and the first line it prints
-# goes on the row. The same command says what a working turn is about, every
-# three minutes, off the conversation so far. Only the view runs it. Left out,
-# nothing runs and nothing is spent.
+# A command that writes the one-line summary shown on an agent's row. It runs
+# in the agent's directory with the answer on stdin and $AMX_ID set, and its
+# first line of output is used. While a turn is running it is also asked every
+# three minutes, from the conversation so far. Only the view runs it. Left out,
+# nothing runs.
 # summary_command = "claude -p 'Sum this up in eight words. Answer with the words alone.'"
 
-# Which palette the view paints in: a theme amx ships (auto, default, light,
-# terminal), a file in ~/.config/amx/themes by name, or a path to one. The file
-# is re-read when it changes, so a theme switch lands in a running view.
+# The view's colours: a theme amx ships (auto, default, light, terminal), the
+# name of a file in ~/.config/amx/themes, or a path to one. The file is re-read
+# when it changes, so a running view picks up the new theme.
 #
-# `auto` is the odd one and the one amx paints with when this key is left out:
-# it is not a palette but the terminal being asked what shade its background is,
-# answered with `light` or `default`. A name written here is a decision already
-# made and is never overruled.
+# `auto` asks the terminal whether its background is light or dark and uses
+# `light` or `default` to match.
 theme = "auto"
 
-# Seconds an idle agent nobody is watching keeps its pane. A vendor at its
-# prompt holds a couple of hundred megabytes to do nothing with, so after this
-# long the pane goes and the record stays; enter, attach or resume starts the
-# agent again where it left off. A pane somebody is attached to or has pinned
-# is never taken. 0 turns this off.
+# Seconds an idle agent nobody is watching keeps its pane. An idle vendor still
+# holds a few hundred megabytes, so after this long amx closes the pane and
+# keeps the record; enter, attach or resume starts the agent again where it
+# left off. Attached and pinned agents are never parked. 0 turns this off.
 park_after = 3600
 
-# What a fresh worktree is furnished with before its pane starts, so an agent's
-# first turn goes on the task rather than on an install or a failed test. Paths
-# are exact and relative to the repository root, no globs, and one that is not
-# in the repository is warned about by name and skipped.
+# What a new worktree gets before its agent starts, so the first turn goes on
+# the task and not on setup. Paths are relative to the repository root, with no
+# globs. A path that does not exist is warned about and skipped.
 #
-# copy is files taken from the repository root into the tree: the few git is
-# right not to carry. link is directories pointed at the repository's own, so
-# an agent shares an install rather than making one of its own. setup is
-# commands run in the tree through sh -c, in order, with AMX_ID, AMX_WORKTREE,
-# AMX_REPO and AMX_AGENT_DIR set; the first that fails refuses the spawn and
-# the tree is removed, because a tree an agent cannot work in is worse than no
-# tree.
+#   copy:  files copied from the repository root, for the few git does not
+#          track (such as .env).
+#   link:  directories symlinked to the repository's own, so agents share one
+#          install.
+#   setup: commands run in the worktree with sh -c, in order, with AMX_ID,
+#          AMX_WORKTREE, AMX_REPO and AMX_AGENT_DIR set. If one fails, the
+#          spawn is refused and the worktree removed.
 # copy = [".env"]
 # link = ["node_modules"]
 # setup = ["pnpm install"]
 
-# What a tree is cut from: any branch, tag or commit git will resolve. Left
-# out, it is HEAD where you typed `amx new`.
+# The ref new worktrees are created from: any branch, tag or commit. Left out,
+# it is HEAD in the directory where you ran `amx new`.
 # base = "main"
 
-# What reads the patch: a command handed the unified diff on stdin and run in
-# the agent's tree, on the terminal you typed `amx diff` at. Left out, the
-# patch is git's own, and so it is down a pipe or under --stat whatever you
-# write here.
+# A pager for `amx diff`: it gets the unified diff on stdin and runs in the
+# agent's worktree. Left out, amx prints git's own diff. Piped output and
+# `--stat` always use git's diff.
 # diff = "delta --paging=always"
 
-# What runs when an agent reaches a moment: waiting on a question, back at its
-# prompt, finished, failed, or stopped by you. Each is a command run through
-# sh -c in the agent's worktree, or where the agent runs when it has none,
-# detached and never waited for, with AMX_ID, AMX_STATE, AMX_DIR,
-# AMX_AGENT_DIR, AMX_NESTED and AMX_WORKTREE where there is a tree, and the
-# event that moved the agent on stdin as one JSON line. The four a hook writes
-# also carry AMX_WATCHED, 1 when somebody is attached to the agent's pane.
-#
-# Five flat keys rather than one table, so a project file can lay its own over
-# yours a moment at a time. Nothing is captured: what a command prints goes
-# nowhere, and a log is a redirect you write into the command yourself.
+# Commands run when an agent reaches a state: waiting on a question, idle at its
+# prompt, done, failed, or stopped by you. Each runs with sh -c in the agent's
+# worktree (or its directory when it has none), in the background, with the
+# event as one JSON line on stdin. The environment has AMX_ID, AMX_STATE,
+# AMX_DIR, AMX_AGENT_DIR, AMX_NESTED, AMX_WORKTREE when there is a worktree,
+# and, for all but on_stopped, AMX_WATCHED (1 when someone is attached to the
+# pane, else 0). Output is discarded; redirect it yourself to keep it.
 # on_waiting = "curl -sX POST https://hooks.example.com/amx -d @-"
 # on_idle = "echo $AMX_ID idle >> ~/amx.log"
 # on_done = "notify-send 'amx' \"$AMX_ID $AMX_STATE\""
 # on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
 # on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
 
-# The keys you bind yourself: a spelling against the command pressing it runs.
-# ctrl+ and alt+ in either order, then one character or f1 through f12, and a
-# capital letter is shift with it.
+# Your own keys in the view, each bound to a shell command. Write ctrl+ and
+# alt+ in either order, then one character or f1 to f12; a capital letter
+# means shift. The command runs with sh -c in the selected agent's worktree (or
+# its directory), on the view's terminal, with AMX_ID, AMX_DIR, AMX_AGENT_DIR,
+# AMX_NESTED and AMX_WORKTREE set. The view waits for it and shows only errors.
+# The keys screen lists these under `yours`.
 #
-# Pressed in the view with the cursor on an agent's row, the key borrows the
-# terminal the way `alt+d` does for the patch and runs the command through
-# sh -c in that agent's worktree, or where the agent runs when it has none,
-# with the terminal as its stdin and stdout and with AMX_ID, AMX_DIR,
-# AMX_AGENT_DIR, AMX_NESTED and AMX_WORKTREE where there is a tree. The view
-# waits, takes the terminal back, and says only what went wrong. The keys
-# screen lists what you bind here under `yours`.
-#
-# amx's own keys keep their meaning: a spelling one of them would take is
-# refused when the view opens, named with what amx does on that key, and bound
-# to nothing. This is the one table a project's file lays over yours an entry
-# at a time, so a repository binds the key its work wants without unbinding the
-# keys you press everywhere.
+# A key amx already uses is refused when the view opens. A project file adds
+# its entries to yours one key at a time.
 
 [keys]
 # "alt+g" = "lazygit"
 # "alt+t" = "cargo test 2>&1 | less"
 
-# One table per harness, named after the command that harness runs. There is a
-# table to be had for each harness amx has an entry for, claude and pi today,
-# and a table naming anything else is warned about and ignored.
+# One table per harness amx supports, named after its command. A table for any
+# other name is warned about and ignored.
 #
-# models is the models that pick this harness: it is the list `amx new --model
-# X` is answered from, so a model named here says which harness starts and not
-# only which flag it is handed. Left out, the list is whatever the harness
-# itself offers.
+#   models: the models that select this harness. `amx new --model X` starts
+#           the harness whose list holds X. Left out, the harness's own list
+#           is used.
+#   args:   arguments added to every agent of this harness. A dial amx would
+#           set gives way to a flag written here.
+#   env:    a sub-table of environment variables for every agent of this
+#           harness, laid over your environment. Values are literal, except a
+#           leading ~. amx's own AMX_ID, AMX_BIN, AMX_DIR and AMX_AGENT_DIR
+#           always win.
 #
-# args is what every agent this harness runs carries on its argv, however that
-# agent was started. A dial amx would have set stands down for a flag written
-# here, the same way it stands down for one written into `agent` above.
-#
-# env is a sub-table of the harness table, and it is what every agent this
-# harness runs has in its environment, laid over the environment you typed the
-# command in: a second account of one vendor, or a proxy in front of it,
-# without a wrapper script to keep on the PATH. Values are literal, with a `~`
-# at the front of one spelled out, and amx's own AMX_ID, AMX_BIN, AMX_DIR and
-# AMX_AGENT_DIR go in over the top of whatever you write here.
-#
-# A table that sets none of them says nothing, which is what these three do.
+# A project's env cannot set PATH, HOME, SHELL, CLAUDE_CONFIG_DIR, CODEX_HOME,
+# OPENCODE_CONFIG_DIR, OPENCODE_CONFIG, OPENCODE_CONFIG_CONTENT, or anything
+# starting with LD_, DYLD_ or AMX_.
 
 [claude]
 # models = ["opus", "sonnet"]
@@ -212,6 +181,4 @@ park_after = 3600
 # [opencode.env]
 # OPENCODE_DISABLE_AUTOUPDATE = "1"
 #
-# A project's [opencode.env] may not set OPENCODE_CONFIG_DIR, OPENCODE_CONFIG
-# or OPENCODE_CONFIG_CONTENT: each picks which config opencode reads. Set here,
-# OPENCODE_CONFIG_CONTENT stands in for the model amx would have carried.
+# OPENCODE_CONFIG_CONTENT set here replaces the model amx would have passed.
