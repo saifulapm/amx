@@ -9,10 +9,6 @@
 //! Nothing here draws. It answers how wide each column is, fills text to a
 //! column, and takes the middle out of a path that will not fit.
 
-// The surfaces that spend these budgets are drawn in `paint`, which takes them
-// up next. Until it does, the module's only caller is its own tests.
-#![allow(dead_code)]
-
 use ratatui::text::Span;
 
 use super::rows::Axis;

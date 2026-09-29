@@ -248,11 +248,7 @@ impl Arrangement {
     ///
     /// The other half of the same question, asked the same way: see
     /// [`List::sleeping`].
-    // Nothing outside this module's tests asks it: the reader that steps the
-    // wall from a key arranges a whole list from the arrangement rather than
-    // asking after one id. Kept beside `has_pinned`, which park reads, for
-    // the verb that asks the same question of the other mark.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_asleep(&self, id: &str) -> bool {
         self.asleep.contains(id)
     }
