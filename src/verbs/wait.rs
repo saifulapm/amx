@@ -17,12 +17,12 @@
 //! result <id>` is still what hands one back, and it returns at once for an
 //! agent that has ended.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::derive::{self, Evidence};
+use crate::derive::{self, Evidence, Record, View};
 use crate::store::{Agent, Phase};
 use crate::verbs::result::{self, Ended, Settled};
 use crate::{complain, exit, paths, store};
@@ -84,9 +84,6 @@ pub fn run(
         return Ok(exit::FAILURE);
     }
     let mut pending = named;
-    for id in &pending {
-        Agent::open(root, id)?;
-    }
 
     let deadline = timeout.map(|patience| Instant::now() + patience);
     loop {
@@ -94,23 +91,24 @@ pub fn run(
         // covers the whole sweep, and an agent whose reading costs a screen
         // must not have every other agent's record poll it.
         let mut slowest = POLL;
-        let mut at = 0;
-        while at < pending.len() {
-            let view = derive::view(root, &pending[at], store::now())?;
-            if !ready(root, &pending[at], view.phase(), state)? {
+        let mut still = Vec::with_capacity(pending.len());
+        let views = readings(root, &pending)?;
+        for (id, view) in pending.into_iter().zip(views) {
+            if !ready(root, &id, view.phase(), state)? {
                 slowest = slowest.max(pace(&view.verdict.evidence));
-                at += 1;
+                still.push(id);
                 continue;
             }
             // Flushed a line at a time: a caller reading this as it comes is
             // the point, and a line held in a buffer until the last agent
             // settles says nothing sooner than `result` would have.
-            writeln!(out, "{} {}", pending.remove(at), view.phase())?;
+            writeln!(out, "{id} {}", view.phase())?;
             out.flush()?;
             if any {
                 return Ok(exit::OK);
             }
         }
+        pending = still;
 
         if pending.is_empty() {
             return Ok(exit::OK);
@@ -123,6 +121,30 @@ pub fn run(
         }
         std::thread::sleep(slowest);
     }
+}
+
+/// Read these agents in one pass, in the order given.
+///
+/// Through [`derive::views_of`], so tmux is asked once per server per sweep
+/// rather than once per agent.
+fn readings(root: &Path, ids: &[String]) -> Result<Vec<View>> {
+    let mut records = Vec::with_capacity(ids.len());
+    for id in ids {
+        let agent = Agent::open(root, id)?;
+        let meta = agent.meta()?;
+        let state = agent.state()?;
+        records.push(Record { agent, meta, state });
+    }
+    let mut views = derive::views_of(root, records, store::now());
+    ids.iter()
+        .map(|id| {
+            let at = views
+                .iter()
+                .position(|view| view.id() == id)
+                .with_context(|| format!("the record of {id} names another agent"))?;
+            Ok(views.swap_remove(at))
+        })
+        .collect()
 }
 
 /// The agents to wait on, in the order they were named, each one once.
@@ -293,6 +315,11 @@ mod tests {
         let (code, said) = waited(root.path(), &["a", "b"], false, None, None);
         assert_eq!(code, exit::OK);
         assert_eq!(said, "a done\nb idle\n");
+
+        // In the order named, whatever order the records are read in.
+        let (code, said) = waited(root.path(), &["b", "a"], false, None, None);
+        assert_eq!(code, exit::OK);
+        assert_eq!(said, "b idle\na done\n");
     }
 
     #[test]
