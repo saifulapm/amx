@@ -1,25 +1,14 @@
-//! Wiring amx into the vendor's hooks, and taking it back out.
+//! Installing and removing the wires that connect a vendor's hooks to amx.
 //!
-//! Everything amx knows about a running agent arrives through the vendor's own
-//! hooks. pi and claude load them out of files of amx's own: pi an extension,
-//! claude a plugin directory. codex has no such door, so amx merges its groups
-//! into codex's `hooks.json` and trusts each in `config.toml`. Which files, and
-//! where, is the vendor's entry to say; this file writes what the table holds
-//! and knows none of the words itself.
+//! Each vendor entry's [`Wire`] says what to write and where: a file of amx's
+//! own (pi's extension, opencode's plugin), a plugin directory (claude), or
+//! amx's groups merged into a shared `hooks.json` and trusted in `config.toml`
+//! (codex). This module only executes what the table describes.
 //!
-//! amx edited claude's settings once, merging seven entries into
-//! `~/.claude/settings.json` and carrying the rest of the document through a
-//! JSON round trip, and the round trip cost a person their hand formatting
-//! every time. Writing files amx owns outright costs them nothing. codex's two
-//! files are the exception: the hooks file goes through the same round trip,
-//! the config is edited in place with `toml_edit`, and each is copied aside
-//! before amx first edits it so uninstall can put it back.
-//!
-//! What survives from that door is the one rule worth keeping: **nothing of
-//! somebody's is written over without a copy kept beside it.** Whose a file is
-//! gets asked differently by each wire — an extension by the first line amx
-//! writes into it, a plugin by the manifest in its directory — because a first
-//! line cannot tell amx's `SKILL.md` from anybody else's.
+//! - Nothing of the person's is overwritten without a backup beside it.
+//! - Ownership is decided per wire: a file by its first line, a plugin
+//!   directory by its manifest, since a first line cannot tell amx's
+//!   `SKILL.md` from someone else's.
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -30,52 +19,45 @@ use std::path::{Path, PathBuf};
 
 use crate::vendor::Wire;
 
-/// The events amx listens to, under the vendor's own names for them, in
-/// wiring order.
+/// The vendor's event names from its entry, in wiring order.
 ///
-/// The names come off the vendor's entry: this file writes what the table says
-/// and knows none of the words itself. Nothing in the crate proper asks any
-/// more — the wires ship written — but the tests that hold a shipped file to
-/// its entry ask event by event, and that is the whole of what keeps the two
-/// from drifting.
+/// Used by tests to hold each shipped wire file to its vendor entry.
 #[cfg(test)]
 pub fn events(hooks: &crate::vendor::Hooks) -> impl Iterator<Item = &'static str> {
     hooks.events.iter().map(|wiring| wiring.event)
 }
 
-/// What was done to the file.
+/// The outcome of installing or removing one wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub path: PathBuf,
-    /// Where the previous bytes went, when there were any.
+    /// The backup taken or restored, if any.
     pub backup: Option<PathBuf>,
-    /// Whether the file needed changing at all.
+    /// Whether anything was written or removed.
     pub changed: bool,
 }
 
-/// The person's home directory, which every wire is written under.
+/// The home directory every wire is written under.
 pub fn home() -> Result<PathBuf> {
     std::env::home_dir().context("no home directory")
 }
 
-/// How a wire asks for a variable of the environment: the process's own in
-/// the verbs, one of the test's making in a test, so no test ever reads where
-/// the person running it keeps a vendor.
+/// An environment variable lookup, injectable so tests never read the real
+/// environment.
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
-/// The environment this process was started in.
+/// Look a variable up in this process's environment.
 pub fn process_env(name: &str) -> Option<OsString> {
     std::env::var_os(name)
 }
 
-/// An environment with nothing set in it, for the tests.
+/// An empty environment, for tests.
 #[cfg(test)]
 pub fn no_env(_: &str) -> Option<OsString> {
     None
 }
 
-/// A hooks wire of the tests' own, shaped like codex's: the body is the one
-/// codex's entry ships.
+/// A hooks wire for tests, carrying codex's shipped body.
 #[cfg(test)]
 pub const HOOKS_WIRE: Wire = Wire::Hooks {
     dir_env: "CODEX_HOME",
@@ -83,10 +65,11 @@ pub const HOOKS_WIRE: Wire = Wire::Hooks {
     body: include_str!("../assets/codex/hooks.json"),
 };
 
-/// Where a vendor that is told its directory by a variable keeps its files:
-/// the variable's value resolved to its real path when it is set and not
-/// empty, else `dir` under the home. codex's own rule for `CODEX_HOME`, which
-/// is also the path its trust keys are spelled with.
+/// A vendor directory that a variable may override: the variable's value,
+/// canonicalized, when set and non-empty, else `dir` under `home`.
+///
+/// This is codex's rule for `CODEX_HOME`, and the resulting path is what its
+/// trust keys are spelled with.
 pub fn vendor_dir(set: Option<OsString>, dir: &str, home: &Path) -> PathBuf {
     match set.filter(|value| !value.is_empty()) {
         Some(value) => {
@@ -97,13 +80,10 @@ pub fn vendor_dir(set: Option<OsString>, dir: &str, home: &Path) -> PathBuf {
     }
 }
 
-/// Where one wire goes, given a home directory and the environment: the file
-/// amx writes where a vendor loads extensions from, the directory of a plugin
-/// amx wrote, the directory holding the hooks file amx merges into, or the
-/// file placed in a directory its variable may move.
+/// Where `wire` is installed: the file for a file or placed wire, the plugin
+/// directory, or the directory holding the hooks file.
 ///
-/// Every verb asks this, so setup, doctor, uninstall and the trust keys all
-/// agree on where codex lives.
+/// Every verb resolves paths through this so they agree on the location.
 pub fn wire_path(wire: &Wire, home: &Path, env: Env) -> PathBuf {
     match *wire {
         Wire::Hooks { dir_env, dir, .. } => vendor_dir(env(dir_env), dir, home),
@@ -114,8 +94,8 @@ pub fn wire_path(wire: &Wire, home: &Path, env: Env) -> PathBuf {
     }
 }
 
-/// The one line a person is asked to agree to before amx writes under their
-/// home: what it will write, where, and whether a copy is kept.
+/// The consent line shown before writing a wire: what, where, and whether a
+/// backup is kept.
 pub fn consent_line(wire: &Wire, path: &Path, backup: bool) -> String {
     let and_backup = if backup {
         ", keeping a copy of the file as it is now"
@@ -144,18 +124,18 @@ pub fn consent_line(wire: &Wire, path: &Path, backup: bool) -> String {
     }
 }
 
-/// What is wired on this machine for a vendor, read without changing anything.
+/// The installed state of a vendor's wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wired {
-    /// The vendor reports nothing, so there is nothing to be wired.
+    /// The vendor has no hooks, so there is nothing to wire.
     Nothing,
-    /// A file wire: whether a file stands at the path, and whether it is the
-    /// one this amx ships. For a hooks wire, whether amx's groups are in the
-    /// hooks file, and whether each is trusted as it stands.
+    /// Whether the wire is present, and whether it matches what this build
+    /// ships. For a hooks wire, `present` means amx's groups are in the hooks
+    /// file and `current` that each is also trusted.
     File { present: bool, current: bool },
 }
 
-/// Read what is wired at one wire, under `home`.
+/// Read the installed state of `wire` under `home` without changing it.
 pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
     let path = wire_path(wire, home, env);
     match *wire {
@@ -170,10 +150,8 @@ pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
                 current: false,
             },
         },
-        // A plugin is wired when every file it ships is there and is the one
-        // this amx ships. Half a plugin is not half wired: claude reads the
-        // directory whole, so a missing manifest is a plugin it never loads
-        // and a stale hooks file is events amx never hears.
+        // Every file must be present and current: claude loads the directory
+        // as a whole.
         Wire::Plugin { files, .. } => {
             let mut present = true;
             let mut current = true;
@@ -204,7 +182,7 @@ pub fn wired(wire: &Wire, home: &Path, env: Env) -> Wired {
     }
 }
 
-/// Wire one wire under `home`, whichever shape it is.
+/// Install `wire` under `home`.
 pub fn install_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
     let path = wire_path(wire, home, env);
     match *wire {
@@ -214,14 +192,12 @@ pub fn install_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Repo
     }
 }
 
-/// Whether wiring `wire` under `home` would keep a copy of what stands there.
+/// Whether installing `wire` would back up something already there.
 ///
-/// The consent line is printed before the write, so it cannot read the report:
-/// it has to know the rule [`install_file`] and [`install_plugin`] apply. A
-/// file that is amx's own, a directory whose manifest says it is amx's, a name
-/// with nothing at it, and a file already equal to what amx ships are each
-/// written over or skipped with no copy kept; anything else standing there is
-/// copied aside first.
+/// Predicts the rule [`install_file`], [`install_plugin`] and
+/// [`install_hooks`] apply, for the consent line printed before the write.
+/// Missing files, files already equal to what amx ships, and files or
+/// directories amx owns are not backed up.
 pub fn would_keep_a_copy(wire: &Wire, home: &Path, env: Env) -> bool {
     let path = wire_path(wire, home, env);
     match *wire {
@@ -239,20 +215,14 @@ pub fn would_keep_a_copy(wire: &Wire, home: &Path, env: Env) -> bool {
     }
 }
 
-/// The file whose contents say a plugin directory is amx's.
+/// The manifest whose `name` marks a plugin directory as amx's.
 ///
-/// A plugin wire writes several files, and a first line is not enough to tell
-/// whose any of them is: amx's `SKILL.md` and somebody's own open with the
-/// same three lines. So ownership is asked of the directory once, through the
-/// manifest amx writes, and every file under it is answered the same way.
+/// Ownership is decided for the whole directory here, because amx's
+/// `SKILL.md` and someone else's can start with the same lines.
 pub const MANIFEST: &str = ".claude-plugin/plugin.json";
 
-/// Whether the plugin directory at `dir` is one amx wrote.
-///
-/// A manifest that does not parse, or names somebody else, is somebody else's
-/// directory: amx will write its own files into it and keep copies of whatever
-/// it wrote over, which is what it does for a directory with no manifest at
-/// all.
+/// Whether `dir` holds a manifest naming amx. A missing, unparsable or
+/// foreign manifest means the directory is not amx's.
 fn is_amx_plugin(dir: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST)) else {
         return false;
@@ -260,14 +230,12 @@ fn is_amx_plugin(dir: &Path) -> bool {
     serde_json::from_str::<Value>(&text).is_ok_and(|manifest| manifest["name"] == "amx")
 }
 
-/// Write amx's plugin into `dir`, and answer whether anything needed writing.
+/// Write amx's plugin files into `dir`.
 ///
-/// A directory already amx's is amx's to rewrite: an older amx's files are
-/// replaced where they differ and nothing is kept, the way an older amx's
-/// extension is. A directory that is not amx's may hold a file of the
-/// person's at one of these names — theirs is copied aside before amx writes
-/// anything, and the manifest goes in last, so a run that stops partway
-/// leaves a directory the next run still reads as not amx's.
+/// In a directory amx already owns, differing files are replaced without a
+/// backup. Otherwise any existing file at one of these names is backed up
+/// first. The manifest is written last, so an interrupted run leaves a
+/// directory the next run still treats as not amx's.
 pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Report> {
     let ours = is_amx_plugin(dir);
     let mut report = Report {
@@ -294,12 +262,8 @@ pub fn install_plugin(dir: &Path, files: &[(&str, &str)], now: u64) -> Result<Re
     Ok(report)
 }
 
-/// A plugin's files with its manifest moved to the end.
-///
-/// The manifest is what says the directory is amx's, so it is the last thing
-/// written and the last thing removed: until it stands, the directory is still
-/// somebody else's and a foreign file in it still gets a copy kept, and until
-/// it goes, a run that stopped partway can still be finished.
+/// A plugin's files with the manifest last, so it is written last and
+/// removed last. An interrupted install or uninstall can then be rerun safely.
 fn manifest_last<'a>(
     files: &'a [(&'a str, &'a str)],
 ) -> impl Iterator<Item = &'a (&'a str, &'a str)> {
@@ -307,11 +271,9 @@ fn manifest_last<'a>(
     rest.into_iter().chain(manifest)
 }
 
-/// Take amx's plugin away again, and put back whatever it was written over.
+/// Remove amx's plugin from `dir`, restoring any backed-up files.
 ///
-/// A directory whose manifest is not amx's is not amx's to empty, however many
-/// of these names it happens to carry. The manifest goes last, so a run that
-/// stops partway leaves one the next run can finish.
+/// Does nothing unless the manifest names amx. The manifest is removed last.
 pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result<Report> {
     let mut report = Report {
         path: dir.to_path_buf(),
@@ -338,11 +300,8 @@ pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result
     Ok(report)
 }
 
-/// Take away what amx's plugin left empty behind it, and nothing else.
-///
-/// `remove_dir` refuses a directory with anything in it, which is the whole of
-/// the rule: a directory still holding a file of somebody's stays, and so does
-/// the one their file was put back into.
+/// Remove the plugin's directories that are now empty. `remove_dir` refuses
+/// a non-empty directory, so anything still holding a file stays.
 fn prune(dir: &Path, files: &[(&str, &str)]) {
     for (name, _) in files {
         let mut at = dir.join(name);
@@ -353,7 +312,7 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
     let _ = std::fs::remove_dir(dir);
 }
 
-/// Take one wire back out from under `home`, whichever shape it is.
+/// Remove `wire` from under `home`.
 pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
     let path = wire_path(wire, home, env);
     match *wire {
@@ -363,22 +322,19 @@ pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Re
     }
 }
 
-/// The hooks file a hooks wire merges amx's groups into, in the vendor's
-/// directory.
+/// The hooks file a hooks wire merges amx's groups into.
 pub const HOOKS_FILE: &str = "hooks.json";
-/// The config beside it that says which handlers the person trusts.
+/// The config beside it where hook handlers are trusted.
 pub const CONFIG_FILE: &str = "config.toml";
 
-/// The hash codex keeps in `trusted_hash` for a group's one handler, and lists
-/// as its `currentHash`.
+/// The `trusted_hash` codex expects for a group's single handler (its
+/// `currentHash`).
 ///
-/// codex hashes what it made of the handler rather than what was written: the
-/// event under its snake-case name, the matcher where one is written (never
-/// for `user_prompt_submit` or `stop`, which take none), and the handler's
-/// type, command, timeout (600 when none is given) and async (false). The
-/// JSON is serialised compactly with every object's keys sorted — which
-/// `serde_json`'s map is, built without `preserve_order` — and the sha256 of
-/// it is written out byte by byte in lower-case hex.
+/// codex hashes its normalized handler, not the written JSON: the snake-case
+/// event name, the matcher if any (never for `user_prompt_submit` or `stop`),
+/// and the handler's type, command, timeout (default 600) and async (default
+/// false). The JSON is compact with sorted keys, which `serde_json`'s map
+/// gives without `preserve_order`, and the digest is lower-case hex sha256.
 pub fn trusted_hash(event_snake: &str, group: &Value) -> String {
     let handler = &group["hooks"][0];
     let mut identity = json!({
@@ -400,7 +356,7 @@ pub fn trusted_hash(event_snake: &str, group: &Value) -> String {
     format!("sha256:{hex}")
 }
 
-/// An event's name as codex spells it in a trust key: `PreToolUse` is
+/// An event name in codex's trust-key spelling: `PreToolUse` becomes
 /// `pre_tool_use`.
 fn snake(event: &str) -> String {
     let mut out = String::new();
@@ -417,7 +373,7 @@ fn snake(event: &str) -> String {
     out
 }
 
-/// The command amx's groups run: the one the shipped hooks file names.
+/// The command amx's groups run, read from the shipped hooks file.
 fn amx_command(shipped: &Value) -> &str {
     shipped["hooks"]
         .as_object()
@@ -426,16 +382,15 @@ fn amx_command(shipped: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// Whether a group is amx's: its one handler runs amx's hook command.
+/// Whether a group is amx's: its single handler runs `command`.
 fn is_amx_group(group: &Value, command: &str) -> bool {
     group["hooks"]
         .as_array()
         .is_some_and(|handlers| handlers.len() == 1 && handlers[0]["command"] == command)
 }
 
-/// What a hooks wire finds in the vendor's directory, and what amx would make
-/// of it: both files as they stand, and as they would stand with amx's groups
-/// merged in and trusted.
+/// Both files of a hooks wire as they stand, and as they would be with amx's
+/// groups merged in and trusted.
 struct Merge {
     hooks_path: PathBuf,
     config_path: PathBuf,
@@ -443,17 +398,17 @@ struct Merge {
     merged: Value,
     config: Option<toml_edit::DocumentMut>,
     trusted: toml_edit::DocumentMut,
-    /// Whether the hooks file held a group of amx's before the merge.
+    /// Whether the hooks file already held an amx group.
     had_groups: bool,
-    /// Whether the config held a trust entry under one of amx's keys.
+    /// Whether the config already held a trust entry under one of amx's keys.
     had_trust: bool,
 }
 
 impl Merge {
-    /// Read both files in `dir`, and merge amx's groups in `body` into them.
+    /// Read both files in `dir` and merge the groups in `body` into them.
     ///
-    /// Each event's array gets amx's group appended, unless a group of amx's
-    /// is already in it; the trust key is the index the group stands at.
+    /// amx's group is appended to each event's list unless one is already
+    /// there. The trust key is spelled with the group's index in that list.
     fn read(dir: &Path, body: &str) -> Result<Merge> {
         let hooks_path = dir.join(HOOKS_FILE);
         let config_path = dir.join(CONFIG_FILE);
@@ -537,28 +492,28 @@ impl Merge {
         })
     }
 
-    /// Whether writing the hooks file would copy it aside first: it is there,
-    /// and amx has never put a group in it.
+    /// Whether writing the hooks file would back it up first: it exists and
+    /// holds no amx group yet.
     fn copies_hooks(&self) -> bool {
         self.hooks.is_some() && !self.had_groups
     }
 
-    /// Whether the config already trusts every group of amx's as it stands.
+    /// Whether the config already trusts every amx group as merged.
     fn config_unchanged(&self) -> bool {
         self.config
             .as_ref()
             .is_some_and(|config| config.to_string() == self.trusted.to_string())
     }
 
-    /// The same of the config: it is there, and holds no trust of amx's.
+    /// Whether writing the config would back it up first: it exists and
+    /// holds no amx trust entry yet.
     fn copies_config(&self) -> bool {
         self.config.is_some() && !self.had_trust
     }
 }
 
-/// `[hooks.state]` in a codex config, made where it is missing. A table amx
-/// makes is implicit, so a config holding nothing else prints no empty
-/// `[hooks]` header.
+/// `[hooks.state]` in a codex config, created if missing. Created tables are
+/// implicit so no empty `[hooks]` header is printed.
 fn trust_table(doc: &mut toml_edit::DocumentMut) -> Result<&mut toml_edit::Table> {
     let implicit = || {
         let mut table = toml_edit::Table::new();
@@ -575,7 +530,7 @@ fn trust_table(doc: &mut toml_edit::DocumentMut) -> Result<&mut toml_edit::Table
         .context("[hooks.state] is not a table")
 }
 
-/// A file's text, or `None` when there is no file.
+/// A file's text, or `None` if it does not exist.
 fn read_text(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -585,10 +540,9 @@ fn read_text(path: &Path) -> Result<Option<String>> {
 }
 
 /// Merge amx's groups into the hooks file in `dir` and trust each in the
-/// config beside it, copying either file aside before amx first edits it.
+/// config beside it, backing up either file before amx first edits it.
 ///
-/// Run again with nothing moved, it writes nothing: both files are compared
-/// with what they would become before either is touched.
+/// Writes nothing when both files already match the merge.
 pub fn install_hooks(dir: &Path, body: &str, now: u64) -> Result<Report> {
     let merge = Merge::read(dir, body)?;
     let mut report = Report {
@@ -611,17 +565,15 @@ pub fn install_hooks(dir: &Path, body: &str, now: u64) -> Result<Report> {
     Ok(report)
 }
 
-/// Take amx's groups and their trust back out of the files in `dir`.
+/// Remove amx's groups and their trust entries from the files in `dir`.
 ///
-/// A file that holds nothing now but what amx added is put back as it was: the
-/// copy kept before amx's first edit goes back byte for byte, and a file amx
-/// made is removed. A file somebody has changed since keeps their change, and
-/// only amx's groups, their `[hooks.state]` tables, and a `[hooks.state]` or
-/// `[hooks]` table that leaves empty come out.
+/// A file whose only change since the backup is amx's is restored from that
+/// backup byte for byte, and a file amx created is removed. Otherwise only
+/// amx's groups, their `[hooks.state]` tables, and any `[hooks.state]` or
+/// `[hooks]` table left empty are removed.
 ///
-/// Taking a group out shifts every later group in its event down by one, and
-/// the trust keys are indices: codex asks again about the groups the person
-/// added after amx's, because their keys now name different places.
+/// Trust keys are list indices, so removing amx's group shifts later groups
+/// and codex asks again about the person's groups that followed it.
 pub fn uninstall_hooks(dir: &Path, body: &str) -> Result<Report> {
     let hooks_path = dir.join(HOOKS_FILE);
     let config_path = dir.join(CONFIG_FILE);
@@ -698,9 +650,8 @@ pub fn uninstall_hooks(dir: &Path, body: &str) -> Result<Report> {
     Ok(report)
 }
 
-/// Put a file amx edited back: the copy kept before its first edit when there
-/// is one that still holds everything else the file does, nothing at all when
-/// nothing else is left in it, and otherwise the file without amx's part.
+/// Restore a file amx edited: from `kept` when given, by removing it when
+/// `empty`, and otherwise by writing `rest`.
 fn restore(path: &Path, kept: Option<&Path>, empty: bool, rest: &[u8]) -> Result<()> {
     match kept {
         Some(kept) => {
@@ -715,9 +666,8 @@ fn restore(path: &Path, kept: Option<&Path>, empty: bool, rest: &[u8]) -> Result
     }
 }
 
-/// A hooks file without amx's groups, and without an event amx's group was
-/// the last of. Whether an event's list is empty or missing says the same
-/// thing to codex, so neither is kept.
+/// A hooks file without amx's groups, dropping any event list left empty
+/// (codex treats empty and missing the same).
 fn strip(hooks: &Value, command: &str) -> Value {
     let mut stripped = hooks.clone();
     if let Some(events) = stripped["hooks"].as_object_mut() {
@@ -731,9 +681,8 @@ fn strip(hooks: &Value, command: &str) -> Value {
     stripped
 }
 
-/// Take the trust tables under `keys` out of a config, and `[hooks.state]` and
-/// `[hooks]` with them where that leaves them empty. Answers whether there was
-/// any to take.
+/// Remove the trust tables under `keys`, and `[hooks.state]` and `[hooks]` if
+/// that leaves them empty. Returns whether any were removed.
 fn untrust(config: &mut toml_edit::DocumentMut, keys: &[String]) -> bool {
     let Some(hooks) = config
         .get_mut("hooks")
@@ -760,8 +709,8 @@ fn untrust(config: &mut toml_edit::DocumentMut, keys: &[String]) -> bool {
     true
 }
 
-/// Whether two configs say the same thing, an empty table being the same as
-/// none: codex writes an empty `[hooks.state]` that amx's removal takes away.
+/// Whether two configs hold the same values, treating an empty table as
+/// absent: codex writes an empty `[hooks.state]` that removal takes away.
 fn same_config(a: &toml_edit::DocumentMut, b: &toml_edit::DocumentMut) -> bool {
     fn said(doc: &toml_edit::DocumentMut) -> Option<toml::Table> {
         let mut table = doc.to_string().parse::<toml::Table>().ok()?;
@@ -779,6 +728,7 @@ fn same_config(a: &toml_edit::DocumentMut, b: &toml_edit::DocumentMut) -> bool {
     said(a).is_some_and(|a| Some(a) == said(b))
 }
 
+/// Write amx's file at `path`, backing up a file that is not amx's.
 pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     let existing = read_text(path)?;
     if existing.as_deref() == Some(body) {
@@ -800,10 +750,9 @@ pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     })
 }
 
-/// Take amx's own file away again, and put back whatever it was written over.
+/// Remove amx's file at `path` and restore the latest backup, if any.
 ///
-/// A file that is not amx's — one without amx's first line — is not amx's to
-/// remove, and stays.
+/// A file without amx's first line is left alone.
 pub fn uninstall_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     let _ = now;
     let Some(current) = read_text(path)? else {
@@ -834,20 +783,18 @@ pub fn uninstall_file(path: &Path, body: &str, now: u64) -> Result<Report> {
     })
 }
 
-/// Whether a file at a wire's path is amx's: it opens with the line amx's
-/// own file opens with, whichever version wrote it.
+/// Whether `text` is amx's file: its first line matches the shipped body's,
+/// whichever amx version wrote it.
 fn is_amx_file(text: &str, body: &str) -> bool {
     text.lines()
         .next()
         .is_some_and(|first| Some(first) == body.lines().next())
 }
 
-/// Take the hooks out again.
+/// Copy `path` to a timestamped backup beside it when `exists`, returning
+/// the backup's path.
 ///
-/// When the file is exactly what amx left behind, the backup goes back
-/// byte for byte and the person's own formatting with it. When it has been
-/// edited since, only amx's entries are removed and everything else stays —
-/// person's settings end up.
+/// Fails rather than overwrite an existing backup of the same name.
 fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
     if !exists {
         return Ok(None);
@@ -865,15 +812,11 @@ fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
-/// The most recent backup taken of `path`, if any.
+/// The most recent backup of `path`, if any.
 ///
-/// Ordered by each entry's own mtime, and only among regular files: the
-/// number in a backup's name is easy to plant, but the filesystem's own clock
-/// is not, and a symlink or directory under a backup's name is not a backup
-/// amx wrote, whatever number follows it. `trust::back_up` asks this same
-/// question to decide whether it still needs to take a copy, so a name that
-/// could win the answer without amx ever having written it would leave that
-/// copy untaken.
+/// Chosen by mtime among regular files only, not by the number in the name,
+/// which anyone can plant. `trust::back_up` relies on this to decide whether
+/// a copy is still needed.
 pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(None);
@@ -913,17 +856,15 @@ pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
     Ok(newest.map(|(_, path)| path))
 }
 
-/// Where a backup of `path` taken at `now` goes.
+/// The backup path for `path` at time `now`.
 fn backup_path(path: &Path, now: u64) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!("{name}.amx-backup-{now}"))
 }
-/// Write a file, making the directories above it on the way.
+/// Write a file, creating its parent directories.
 ///
-/// Staged beside the target and renamed over it, rather than written to the
-/// path directly: a rename replaces whatever is at that name without ever
-/// opening it, so a symlink standing at the path is replaced and never
-/// written through.
+/// Written to a temporary file beside the target and renamed over it, so a
+/// symlink at the path is replaced rather than written through.
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -942,7 +883,7 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-/// The half of the write that happens beside the file rather than to it.
+/// Write the temporary file for [`write_bytes`].
 fn staged(part: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -973,7 +914,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// A file wire of the tests' own, shaped like pi's.
+    /// A file wire for tests, shaped like pi's.
     const FILE: Hooks = Hooks {
         wire: Wire::File {
             path: ".vendor/extensions/amx.ts",
@@ -1044,11 +985,9 @@ mod tests {
 
     #[test]
     fn install_knows_whether_it_would_keep_a_copy_before_it_writes() {
-        // The consent line is printed before the write and cannot read the
-        // report, so the prediction has to agree with what install_file and
-        // install_plugin would do: a missing file, amx's own file, and a file
-        // already equal to amx's are written over or skipped with no copy;
-        // somebody else's is copied aside.
+        // The prediction must match what install_file and install_plugin do:
+        // no backup for a missing file, amx's own file or an identical one,
+        // and a backup for anyone else's.
         let home = TempDir::new().unwrap();
         let path = wire_path(&FILE.wire, home.path(), &no_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1075,9 +1014,8 @@ mod tests {
             "somebody else's file is copied aside"
         );
 
-        // And a plugin's: a directory with amx's manifest is rewritten whole,
-        // an empty one holds nothing to copy, and somebody else's is copied
-        // file by file before amx's goes over it.
+        // Plugins: amx's directory and an empty one need no backup, and a
+        // foreign file does.
         let ours = TempDir::new().unwrap();
         install_wire(&claude::HOOKS.wire, ours.path(), &no_env, 1).unwrap();
         assert!(!would_keep_a_copy(
@@ -1139,14 +1077,13 @@ mod tests {
         assert_eq!(report.backup, None);
         assert!(!path.exists());
 
-        // A file that is not amx's is not amx's to remove.
         std::fs::write(&path, "// theirs\n").unwrap();
         let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 3).unwrap();
         assert!(!report.changed);
         assert!(path.exists());
     }
 
-    /// claude's own plugin, and the three files it ships.
+    /// claude's plugin directory and the files it ships.
     fn plugin() -> (&'static str, &'static [(&'static str, &'static str)]) {
         let Wire::Plugin { dir, files } = claude::HOOKS.wire else {
             panic!("claude reports through a plugin");
@@ -1189,9 +1126,8 @@ mod tests {
 
     #[test]
     fn install_replaces_an_older_amxs_plugin_without_keeping_it() {
-        // The manifest is what says the directory is amx's, so a file beside
-        // one an older amx wrote is amx's to overwrite. Keeping a copy of
-        // every one of those would leave a backup behind at every upgrade.
+        // A directory with amx's manifest is amx's, so an upgrade overwrites
+        // its files without leaving backups behind.
         let home = TempDir::new().unwrap();
         let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
@@ -1215,10 +1151,8 @@ mod tests {
 
     #[test]
     fn install_keeps_a_file_in_the_plugins_directory_that_is_somebody_elses() {
-        // A person's own skill stands at the same name amx ships one under,
-        // and opens with the same three lines, so nothing about the file
-        // itself tells them apart. The directory answers instead: one with no
-        // manifest of amx's in it is not amx's, and what is in it is kept.
+        // The person's SKILL.md starts like amx's, so only the missing
+        // manifest shows the directory is not amx's.
         let home = TempDir::new().unwrap();
         let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1260,8 +1194,7 @@ mod tests {
         assert!(report.changed);
         assert!(!dir.exists(), "and the directory it emptied goes too");
 
-        // A directory whose manifest is somebody else's is not amx's to empty,
-        // however many of these names it carries.
+        // A directory with someone else's manifest is left alone.
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(dir.join(MANIFEST), "{\"name\": \"theirs\"}\n").unwrap();
         std::fs::write(dir.join("SKILL.md"), "theirs\n").unwrap();
@@ -1275,9 +1208,9 @@ mod tests {
 
     #[test]
     fn install_that_failed_after_the_first_file_still_keeps_their_file_when_run_again() {
-        // The manifest is what makes the directory amx's. Written first, a run
-        // that died after it would leave a directory the next run took for
-        // amx's own, and the person's skill would go under without a copy.
+        // If the manifest were written first, a failed run would leave the
+        // directory marked as amx's and the rerun would overwrite the
+        // person's skill without a backup.
         let home = TempDir::new().unwrap();
         let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1305,14 +1238,12 @@ mod tests {
 
     #[test]
     fn uninstall_that_failed_midway_removes_what_is_left_when_run_again() {
-        // The manifest is what makes the directory amx's to empty. Removed
-        // first, a run that died after it would leave the rest of amx's files
-        // in a directory no later run would touch.
+        // If the manifest were removed first, a failed run would strand amx's
+        // other files in a directory no rerun would touch.
         let home = TempDir::new().unwrap();
         let dir = wire_path(&claude::HOOKS.wire, home.path(), &no_env);
         install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
-        // A directory with something in it where amx's skill was cannot be
-        // removed as a file.
+        // A non-empty directory at the skill's path makes its removal fail.
         std::fs::remove_file(dir.join("SKILL.md")).unwrap();
         std::fs::create_dir_all(dir.join("SKILL.md/in-the-way")).unwrap();
 
@@ -1328,8 +1259,7 @@ mod tests {
 
     #[test]
     fn install_asks_before_it_writes_anything() {
-        // The file is the vendor's, under the person's home, and the sentence
-        // names it in full because that is the thing being agreed to.
+        // The line names the full path being agreed to.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
         let plugin = Path::new("/home/dev").join(table.wire.path());
         assert_eq!(
@@ -1346,7 +1276,6 @@ mod tests {
         );
         assert!(!consent_line(&table.wire, &plugin, false).contains("copy"));
 
-        // A file wire is a different sentence about a different write.
         let extension = Path::new("/home/dev").join(crate::vendor::pi::HOOKS.wire.path());
         let asked = consent_line(&crate::vendor::pi::HOOKS.wire, &extension, false);
         assert!(asked.contains("extension"), "{asked}");
@@ -1355,10 +1284,8 @@ mod tests {
 
     #[test]
     fn the_plugin_wires_exactly_the_events_the_vendors_entry_names() {
-        // The plugin is the same wiring by another door, so it is held to the
-        // same table `install` writes from rather than to a list spelled here:
-        // an event claude's entry stops naming, or starts, is an event the
-        // plugin would go on being loaded with while amx heard nothing of it.
+        // Checked against claude's entry rather than a list here, so the
+        // shipped hooks file cannot drift from the table.
         let table = claude::VENDOR.hooks.expect("claude reports through hooks");
         let Wire::Plugin { files, .. } = table.wire else {
             panic!("claude reports through a plugin");
@@ -1390,8 +1317,7 @@ mod tests {
             "the plugin wires every event the entry names and nothing else"
         );
 
-        // On the PATH, which is the one amx doctor already insists on: no
-        // wire carries the path this amx happens to stand at.
+        // The hook runs `amx` off the PATH, never this binary's own path.
         let command = "amx _hook";
         for wiring in table.events {
             assert_eq!(
@@ -1427,8 +1353,7 @@ mod tests {
         );
     }
 
-    /// Set a file's mtime to a moment in the past, the way `trust`'s own tests
-    /// put an old stamp on a lock.
+    /// Set a file's mtime to one second past the epoch.
     fn stamp_the_past(path: &Path) {
         let past = nix::sys::time::TimeSpec::new(1, 0);
         nix::sys::stat::utimensat(
@@ -1446,13 +1371,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("settings.json");
 
-        // Planted first, and stamped with a number no real backup would ever
-        // reach — but its mtime says it is old.
+        // The largest number in its name, but the oldest mtime.
         let planted = backup_path(&path, u64::MAX);
         std::fs::write(&planted, "{}\n").unwrap();
         stamp_the_past(&planted);
 
-        // Taken after it, under an ordinary timestamp.
         let real = backup_path(&path, 5);
         std::fs::write(&real, "{}\n").unwrap();
 
@@ -1530,8 +1453,8 @@ mod tests {
 
     #[test]
     fn trusted_hash_is_the_hash_codex_lists_for_each_of_amxs_groups() {
-        // The oracle is codex's own `hooks/list` answer for a hooks file in
-        // which amx's four groups sit at index 1 of their events.
+        // The expected hashes are codex's own `hooks/list` output for a hooks
+        // file with amx's four groups at index 1 of their events.
         let hooks: Value =
             serde_json::from_str(include_str!("../tests/codex/trust/hooks.json")).unwrap();
         for (event, snake, hash) in [
@@ -1562,15 +1485,15 @@ mod tests {
                 "{event}"
             );
         }
-        // And a recorder group of the person's, one with a command of its own.
+        // A group of the person's, with its own command.
         assert_eq!(
             trusted_hash("stop", &hooks["hooks"]["Stop"][0]),
             "sha256:2281b6dd8a3f60dcc689419f83d97a2095e52bafa7c998eccf3f5c66d863ac71"
         );
     }
 
-    /// The oracle's hooks file with amx's groups taken out: seven events, each
-    /// holding one recorder group of the person's.
+    /// The fixture hooks file without amx's groups: seven events, each with
+    /// one group of the person's.
     fn their_hooks() -> String {
         let mut theirs: Value =
             serde_json::from_str(include_str!("../tests/codex/trust/hooks.json")).unwrap();
@@ -1580,7 +1503,7 @@ mod tests {
         serde_json::to_string_pretty(&theirs).unwrap() + "\n"
     }
 
-    /// An environment naming `dir` as codex's.
+    /// An environment setting `CODEX_HOME` to `dir`.
     fn codex_home(dir: &Path) -> impl Fn(&str) -> Option<OsString> {
         let dir = dir.as_os_str().to_owned();
         move |name| (name == "CODEX_HOME").then(|| dir.clone())
@@ -1638,8 +1561,8 @@ mod tests {
         assert!(report.backup.is_some());
         assert!(!home.path().join(".codex").exists(), "the variable wins");
 
-        // Their groups keep their places and amx's land after them, where the
-        // oracle's stood, so the trust amx writes is what codex wrote there.
+        // amx's groups land after theirs, at the indices in the fixture, so
+        // the trust entries match what codex itself wrote.
         let merged: Value =
             serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
         let oracle: Value =
@@ -1715,7 +1638,6 @@ mod tests {
         assert!(!dir.join(HOOKS_FILE).exists());
         assert!(!dir.join(CONFIG_FILE).exists());
 
-        // And nothing of amx's is nothing to do.
         assert!(
             !uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 3)
                 .unwrap()
@@ -1731,7 +1653,7 @@ mod tests {
         let config_path = dir.join(CONFIG_FILE);
         install_wire(&HOOKS_WIRE, home.path(), &no_env, 1).unwrap();
 
-        // A group of their own after amx's, and a line of config.
+        // The person adds a group after amx's and a line of config.
         let mut hooks: Value =
             serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
         let theirs = json!({"hooks": [{"type": "command", "command": "notify-send done"}]});
@@ -1776,7 +1698,7 @@ mod tests {
         std::fs::remove_file(&config_path).unwrap();
         assert_eq!(wired(&HOOKS_WIRE, home.path(), &no_env), stale);
 
-        // And setup puts it right without a copy of amx's own edit.
+        // Reinstalling repairs it without backing up amx's own edit.
         let report = install_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None);
@@ -1808,7 +1730,7 @@ mod tests {
         assert!(!consent_line(&HOOKS_WIRE, dir, false).contains("copy"));
     }
 
-    /// A placed wire of the tests' own, shaped like opencode's.
+    /// A placed wire for tests, shaped like opencode's.
     const PLACED: Wire = Wire::Placed {
         dir_env: "VENDOR_CONFIG_DIR",
         dir: ".config/vendor",
@@ -1816,7 +1738,7 @@ mod tests {
         body: "// installed by amx\nexport default {};\n",
     };
 
-    /// An environment naming `dir` as the placed wire's.
+    /// An environment setting the placed wire's variable to `dir`.
     fn placed_dir(dir: &Path) -> impl Fn(&str) -> Option<OsString> {
         let dir = dir.as_os_str().to_owned();
         move |name| (name == "VENDOR_CONFIG_DIR").then(|| dir.clone())
@@ -1875,7 +1797,7 @@ mod tests {
             "read where the variable points, not under the home"
         );
 
-        // An older amx's file is a file that drifted.
+        // An older amx's file reads as not current.
         std::fs::write(&path, "// installed by amx\n// an older one\n").unwrap();
         assert_eq!(
             wired(&PLACED, home.path(), &env),

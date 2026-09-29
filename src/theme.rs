@@ -1,15 +1,8 @@
-//! What the view is painted in.
+//! The view's colour themes: six semantic roles, loaded from a shipped palette
+//! or a TOML file, and reloaded when that file changes.
 //!
-//! Six roles, named by what they mean rather than by what they are, because
-//! that is how the view already asks for a colour: a row is painted for having
-//! failed, not for being red. A theme is the answer to those six questions and
-//! nothing else — no per-widget keys, no styles, no glyphs — so a person can
-//! read one at a glance and write one in a minute.
-//!
-//! A theme is a convenience under the same law as [`crate::config`]: a file
-//! that cannot be read or cannot be understood degrades to the built-in
-//! palette with a warning, because a view painted in the wrong colours is a
-//! view, and no view at all is not.
+//! Like [`crate::config`], a theme never blocks the view: a file that cannot
+//! be read or parsed falls back to the built-in palette with a warning.
 
 use crate::shade::Shade;
 use anyhow::{Context, Result, anyhow};
@@ -18,30 +11,22 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
-/// The themes that ship inside the binary, by the name `theme` may call them.
+/// The themes built into the binary, by name.
 const SHIPPED: [(&str, &str); 3] = [
     ("default", include_str!("../assets/themes/default.toml")),
     ("light", include_str!("../assets/themes/light.toml")),
     ("terminal", include_str!("../assets/themes/terminal.toml")),
 ];
 
-/// The name that stands for whichever of the two the terminal turns out to be.
+/// The theme name that picks `light` or `default` from the terminal's
+/// background.
 ///
-/// Not a palette: nothing here can be read out of a file, and a person who
-/// wrote `auto.toml` would be writing a file amx never opens. It is a name
-/// resolved to one of the two below before anything is loaded at all — see
-/// [`for_the_shade`].
-///
-/// The default, because the alternative is amx painting the palette somebody
-/// configured on another machine onto whatever terminal they have opened it
-/// on, and one of those two machines is the one they are looking at.
+/// Resolved by [`for_the_shade`] before anything is loaded, so there is no
+/// `auto.toml`. It is the config default.
 pub const AUTO: &str = "auto";
 
-/// Which palette [`AUTO`] names on a terminal of this shade.
-///
-/// Any other name is itself. A theme named by hand is a decision already made,
-/// and reading the terminal to overrule it would make the config key a
-/// suggestion.
+/// The palette [`AUTO`] resolves to on a terminal of this shade. Any other
+/// name is returned unchanged.
 pub fn for_the_shade(named: &str, shade: Shade) -> &str {
     match (named == AUTO, shade) {
         (false, _) => named,
@@ -50,13 +35,8 @@ pub fn for_the_shade(named: &str, shade: Shade) -> &str {
     }
 }
 
-/// The same, reading a shade off the terminal's answer only where the name
-/// is [`AUTO`].
-///
-/// This is the only door the view comes through. The view asks the terminal
-/// its background whatever the theme, for the colour it keeps for the panes
-/// amx starts — see [`crate::shade`] — but somebody who named a palette has
-/// already chosen it, and the shade of that answer never overrules them.
+/// Like [`for_the_shade`], calling `ask` for the shade only when the name is
+/// [`AUTO`].
 pub fn chosen(named: &str, ask: impl FnOnce() -> Shade) -> &str {
     match named == AUTO {
         true => for_the_shade(named, ask()),
@@ -82,9 +62,8 @@ pub struct Theme {
 }
 
 impl Default for Theme {
-    /// The values `assets/themes/default.toml` spells out, kept here as well so
-    /// that a theme naming five roles still has a sixth. The two are held
-    /// together by a test, not by anybody remembering.
+    /// The values in `assets/themes/default.toml`, which fill any role a theme
+    /// file leaves out. A test keeps the two in step.
     fn default() -> Self {
         Self {
             waiting: Color::Rgb(255, 193, 7),
@@ -98,7 +77,7 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Where a role's colour is kept, for the parser to write into.
+    /// The field for `role`, or `None` for an unknown role.
     fn slot(&mut self, role: &str) -> Option<&mut Color> {
         Some(match role {
             "waiting" => &mut self.waiting,
@@ -112,10 +91,10 @@ impl Theme {
     }
 }
 
-/// What a theme file is called on disk.
+/// The extension of a theme file.
 const EXTENSION: &str = ".toml";
 
-/// The text of a theme that ships with amx.
+/// The text of a shipped theme.
 pub fn shipped(name: &str) -> Option<&'static str> {
     SHIPPED
         .iter()
@@ -123,17 +102,17 @@ pub fn shipped(name: &str) -> Option<&'static str> {
         .map(|(_, text)| *text)
 }
 
-/// Where a theme name pointed.
+/// Where a theme name resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// A palette in the binary. Nothing on disk, so nothing to watch.
+    /// A palette built into the binary.
     Shipped(&'static str),
-    /// A file, which is a file somebody may edit while the view is open.
+    /// A theme file on disk.
     File(PathBuf),
 }
 
 impl Source {
-    /// The file this came out of, when it came out of one.
+    /// The file path, for a theme on disk.
     pub fn path(&self) -> Option<&Path> {
         match self {
             Source::Shipped(_) => None,
@@ -142,14 +121,11 @@ impl Source {
     }
 }
 
-/// What `named` names, given the directory amx keeps themes in.
+/// Resolve a theme name against the themes directory.
 ///
-/// Three answers, in the order they are tried. A name amx ships is amx's own
-/// word and is answered out of the binary. A name with a path separator in it
-/// is a path, taken exactly as written, which is how a theme kept beside a
-/// project or shared between machines is reached. Anything else is a file of
-/// that name in the themes directory, with the extension added if it was left
-/// off, because `mine` and `mine.toml` are the same wish.
+/// A shipped name is built in. A name containing `/` is a path used as
+/// written. Anything else is a file in `themes`, with `.toml` added if
+/// missing.
 pub fn source_in(themes: &Path, named: &str) -> Source {
     if let Some((name, _)) = SHIPPED.iter().find(|(name, _)| *name == named) {
         return Source::Shipped(name);
@@ -163,7 +139,7 @@ pub fn source_in(themes: &Path, named: &str) -> Source {
     }
 }
 
-/// The theme `named`, with warnings for the caller to print.
+/// Load the theme `named`, with warnings for the caller to print.
 pub fn load(named: &str) -> (Theme, Vec<String>) {
     match themes_dir() {
         Ok(themes) => load_in(&themes, named),
@@ -174,34 +150,27 @@ pub fn load(named: &str) -> (Theme, Vec<String>) {
     }
 }
 
-/// A theme name, and what to stat to notice the file under it being edited.
+/// Polls a theme file for edits so the view can reload it.
 ///
-/// A stat rather than a watcher on the directory: the view already goes round
-/// on a clock, so this is one call a second on a path it has in hand, with no
-/// thread to join, no descriptor to hold open and nothing to unwind when the
-/// screen is handed back. What it costs is that an edit is seen on the next
-/// pass rather than the instant it lands, which is the cadence everything else
-/// on that screen moves at.
+/// A stat per view tick rather than a filesystem watcher: no thread or
+/// descriptor to manage, at the cost of seeing an edit on the next tick.
 #[derive(Debug, Default, Clone)]
 pub struct Watch {
-    /// The name to read again, which is the name the config gave.
+    /// The theme name from the config.
     named: String,
-    /// Where a name is read against, kept so the reread reaches the file the
-    /// first read did.
+    /// The themes directory the name was resolved against.
     themes: PathBuf,
-    /// The file to stat. Nothing to watch about a palette in the binary.
+    /// The file to stat; `None` for a shipped palette.
     file: Option<PathBuf>,
-    /// How that file looked when the theme was last read, or `None` for a name
-    /// with no file under it yet — which is a state, and a file appearing
-    /// under it is a change like any other.
+    /// The file's stamp at the last read. `None` means no file existed, so
+    /// one appearing counts as a change.
     seen: Option<Stamp>,
 }
 
-/// What one stat says about a theme file.
+/// A theme file's mtime and length.
 ///
-/// When it was written and how long it is, together: a filesystem whose
-/// timestamps move in whole seconds would let a second edit inside the same
-/// tick past unnoticed, and most edits to a palette change its length as well.
+/// The length catches a second edit within the same mtime tick on filesystems
+/// with coarse timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     modified: Option<SystemTime>,
@@ -209,7 +178,7 @@ struct Stamp {
 }
 
 impl Stamp {
-    /// What is at that path now, where there is anything there at all.
+    /// The stamp of `path`, or `None` if nothing is there.
     fn of(path: &Path) -> Option<Stamp> {
         let about = std::fs::metadata(path).ok()?;
         Some(Stamp {
@@ -220,23 +189,19 @@ impl Stamp {
 }
 
 impl Watch {
-    /// Watch `named`, wherever this machine keeps its themes.
+    /// Watch `named` in this machine's themes directory.
     ///
-    /// Stamped before the caller reads the theme, never after: a file edited
-    /// between the read and the stat would leave the view holding the old
-    /// palette under a stamp saying nothing had moved, and the edit would be
-    /// lost until the next one. Stamped first, that same edit costs one reread
-    /// of text already in hand.
+    /// Call before loading the theme: stamping after the read could miss an
+    /// edit made between the two.
     pub fn of(named: &str) -> Watch {
-        // Nowhere to keep themes is nowhere to watch. The read that follows
-        // this is the one that says so.
+        // The load that follows reports a missing themes directory.
         match themes_dir() {
             Ok(themes) => Watch::of_in(&themes, named),
             Err(_) => Watch::default(),
         }
     }
 
-    /// The same, with the themes directory as a parameter.
+    /// [`Watch::of`] with an explicit themes directory.
     pub fn of_in(themes: &Path, named: &str) -> Watch {
         let file = source_in(themes, named).path().map(Path::to_path_buf);
         let seen = file.as_deref().and_then(Stamp::of);
@@ -248,11 +213,8 @@ impl Watch {
         }
     }
 
-    /// The theme again, when the file has changed since it was last read.
-    ///
-    /// `None` on nearly every call, which is what the caller acts on: a view
-    /// that rebuilt its palette every second would be doing the work of an
-    /// edit nobody made.
+    /// The reloaded theme if the file changed since the last read, else
+    /// `None`.
     pub fn reread(&mut self) -> Option<(Theme, Vec<String>)> {
         let file = self.file.as_deref()?;
         let now = Stamp::of(file);
@@ -264,7 +226,7 @@ impl Watch {
     }
 }
 
-/// `~/.config/amx/themes`, beside the config file that names the theme.
+/// `~/.config/amx/themes`, beside the config file.
 fn themes_dir() -> Result<PathBuf> {
     let config = crate::paths::config_file()?;
     let dir = config
@@ -274,17 +236,14 @@ fn themes_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The load itself, with the themes directory as a parameter.
+/// [`load`] with an explicit themes directory.
 ///
-/// Whatever goes wrong, a theme comes back: the view is the thing amx is for,
-/// and a view in the wrong colours beats no view at all. What went wrong is
-/// said instead, naming the file, since a person who asked for a theme and got
-/// the default one is owed the reason.
+/// Always returns a theme, falling back to the default with a warning that
+/// names the file.
 fn load_in(themes: &Path, named: &str) -> (Theme, Vec<String>) {
     let path = match source_in(themes, named) {
-        // A file of a shipped name is a file amx will never read. Silence
-        // there is a person editing a copy of default.toml and watching
-        // nothing happen.
+        // A file shadowing a shipped name is never read, so warn about it
+        // rather than let edits to it go unnoticed.
         Source::Shipped(name) => {
             let text = shipped(name).expect("a shipped theme is part of the binary");
             let (theme, _) = parse(text).expect("a shipped theme is proved by its own test");
@@ -329,13 +288,9 @@ fn load_in(themes: &Path, named: &str) -> (Theme, Vec<String>) {
 
 /// Parse theme text, returning the theme and any warnings about it.
 ///
-/// A role left out keeps its default, so a file may say only what it wants
-/// changed. An unknown role is a warning and nothing more: theme files outlive
-/// the versions that wrote them, the same as config files do.
-///
-/// A value nothing can read is an error, which costs the whole file. Half a
-/// theme is a view painted in two people's decisions, and which half survived
-/// would depend on the order the keys happen to be written in.
+/// Missing roles keep their defaults and unknown roles are warnings. A value
+/// that is not a colour fails the whole file, so a theme is never half
+/// applied.
 pub fn parse(text: &str) -> Result<(Theme, Vec<String>)> {
     let table: toml::Table = text.parse().context("not valid TOML")?;
     let mut theme = Theme::default();
@@ -355,12 +310,8 @@ pub fn parse(text: &str) -> Result<(Theme, Vec<String>)> {
     Ok((theme, warnings))
 }
 
-/// One value as a colour: a name, a 256-colour index, or a hex.
-///
-/// ratatui's own reading of the three, rather than a second one here. What the
-/// terminal will do with the answer is that crate's business, and a parser of
-/// amx's own would be a slightly different set of spellings for a person to
-/// find out about the hard way.
+/// Parse a colour name, 256-colour index or hex value, using ratatui's own
+/// parser.
 fn colour(said: &str) -> Result<Color> {
     Color::from_str(said).map_err(|_| {
         anyhow!(
@@ -424,8 +375,7 @@ mod tests {
 
     #[test]
     fn a_colour_nothing_can_read_costs_the_whole_file() {
-        // Half a theme is a view painted in two people's decisions. The file
-        // is the unit, so the one bad value takes the rest of it with it.
+        // One bad value rejects the whole file.
         let e = parse("done = \"green\"\nfailed = \"burnt sienna\"\n").unwrap_err();
         let said = format!("{e:#}");
         assert!(said.contains("failed"), "names the role: {said}");
@@ -445,8 +395,7 @@ mod tests {
 
     #[test]
     fn the_default_theme_file_is_the_struct_default() {
-        // Two statements of the same palette, and the file is the one a person
-        // copies to start their own. They drift apart the day nothing checks.
+        // The file is what people copy to start their own theme.
         let (t, w) = parse(shipped("default").unwrap()).unwrap();
         assert_eq!(t, Theme::default());
         assert!(w.is_empty(), "{w:?}");
@@ -469,8 +418,7 @@ mod tests {
 
     #[test]
     fn the_terminal_theme_names_colours_and_never_measures_them() {
-        // The point of it: the person's own palette decides, and an RGB value
-        // in here would be amx overruling the terminal it was chosen for.
+        // Named colours only, so the terminal's own palette decides.
         let (t, _) = parse(shipped("terminal").unwrap()).unwrap();
         for colour in [t.waiting, t.done, t.failed, t.stopped, t.accent, t.cursor] {
             assert!(
@@ -519,9 +467,7 @@ mod tests {
         assert_eq!(for_the_shade(AUTO, Shade::Light), "light");
         assert_eq!(for_the_shade(AUTO, Shade::Dark), "default");
 
-        // And a name somebody wrote is that name, whatever the terminal turns
-        // out to be: reading the screen to overrule them would make the config
-        // key a suggestion.
+        // Any other name is used as written, whatever the shade.
         for named in ["default", "light", "terminal", "solarized", "./mine.toml"] {
             for shade in [Shade::Light, Shade::Dark] {
                 assert_eq!(for_the_shade(named, shade), named, "{named} {shade:?}");
@@ -531,9 +477,7 @@ mod tests {
 
     #[test]
     fn the_light_theme_is_a_palette_for_a_page_rather_than_a_pane() {
-        // Every one of the six carries on white, which is the whole of what
-        // this file is for: the fault it was written against was a row under
-        // the cursor that could not be read at all.
+        // Every role must be readable on a white background.
         let (light, w) = parse(shipped("light").unwrap()).unwrap();
         assert!(w.is_empty(), "{w:?}");
         for (role, colour) in [
@@ -553,8 +497,8 @@ mod tests {
             );
         }
 
-        // And the cursor's bar is a shade above the page rather than below it,
-        // so the row's own text still carries against it.
+        // The cursor bar is lighter than the text colours, so a row stays
+        // readable under it.
         let Color::Rgb(r, g, b) = light.cursor else {
             panic!("the bar is measured, like the rest of them");
         };
@@ -597,8 +541,7 @@ mod tests {
 
     #[test]
     fn only_a_theme_on_disk_has_a_path_to_watch() {
-        // What t13 stats to notice an edit. There is nothing to watch about a
-        // palette that is part of the binary.
+        // A shipped palette has no file to watch.
         assert_eq!(Source::Shipped("default").path(), None);
         let path = Path::new("/cfg/amx/themes/mine.toml");
         assert_eq!(Source::File(path.to_path_buf()).path(), Some(path));
@@ -624,8 +567,8 @@ mod tests {
 
     #[test]
     fn a_theme_written_after_the_watch_began_is_read_when_it_appears() {
-        // Somebody who named a palette, saw the default and went to write the
-        // file gets the palette they named without reopening the view.
+        // A theme file created after the view opened is picked up without a
+        // restart.
         let dir = TempDir::new().unwrap();
         let mut watch = Watch::of_in(dir.path(), "mine");
         assert!(watch.reread().is_none());
@@ -651,9 +594,8 @@ mod tests {
 
     #[test]
     fn a_palette_in_the_binary_has_nothing_to_watch() {
-        // Including the file of that name amx will never read: the view said
-        // so when it opened, and saying it again on every edit would be amx
-        // arguing with somebody about their own directory.
+        // Not even a file shadowing the shipped name: the warning was given
+        // at load and is not repeated on every edit.
         let dir = TempDir::new().unwrap();
         let mut watch = Watch::of_in(dir.path(), "default");
         write(dir.path(), "default", "accent = \"magenta\"\n");
@@ -699,8 +641,8 @@ mod tests {
 
     #[test]
     fn a_theme_that_is_not_there_says_so_rather_than_painting_on_quietly() {
-        // Unlike config.toml, which nobody has to write: a theme by name is
-        // something a person asked for, so getting the default instead is news.
+        // Unlike a missing config.toml, a missing named theme is worth a
+        // warning.
         let dir = TempDir::new().unwrap();
         let (t, w) = load_in(dir.path(), "solarized");
         assert_eq!(t, Theme::default());
@@ -710,8 +652,6 @@ mod tests {
 
     #[test]
     fn a_file_shadowing_a_name_amx_ships_is_said_out_loud() {
-        // The alternative is a person editing a copy of default.toml and
-        // watching nothing happen.
         let dir = TempDir::new().unwrap();
         write(dir.path(), "default", "accent = \"magenta\"\n");
 
@@ -723,9 +663,7 @@ mod tests {
 
     #[test]
     fn the_wrappers_look_for_a_theme_beside_the_config_file() {
-        // Reads the ambient environment and never touches it: whichever home
-        // it finds, a name amx ships is answered out of the binary and a name
-        // it does not is a file in the themes directory next to config.toml.
+        // Reads the real environment without changing it.
         let Ok(themes) = themes_dir() else {
             return;
         };
@@ -739,12 +677,11 @@ mod tests {
             path.display()
         );
 
-        // Whatever this machine has in its themes directory, a shipped name
-        // paints the palette out of the binary.
+        // A shipped name loads from the binary whatever is on disk.
         assert_eq!(load("default").0, Theme::default());
     }
 
-    /// A theme file in a themes directory that may not exist yet.
+    /// Write a theme file, creating the themes directory if needed.
     fn write(themes: &Path, name: &str, text: &str) {
         std::fs::create_dir_all(themes).unwrap();
         std::fs::write(themes.join(format!("{name}.toml")), text).unwrap();

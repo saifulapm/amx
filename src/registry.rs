@@ -1,17 +1,14 @@
-//! The crate's door to the vendor table.
+//! Lookups into the vendor table by the `agent` config key.
 //!
-//! Everything amx knows about a vendor lives in `vendor`, keyed by a program
-//! name. Everything that asks holds the `agent` config key instead, which is a
-//! command line: `claude`, or `claude --add-dir ..`, or a wrapper script
-//! somebody wrote. Reading that key as a vendor, and reading the arguments it
-//! carries as part of the argv a spawn is heading for, is all this is.
+//! `agent` holds a command line (`claude`, `claude --add-dir ..`, or a wrapper
+//! script), so this module resolves it to a [`Vendor`] entry and treats the
+//! arguments it carries as part of the argv a spawn builds.
 
 use crate::vendor::{self, Vendor};
 
 pub use crate::vendor::{DEFAULT, DialSpec, accepts, program};
 
-/// What `agent` can be launched with, or `None` when amx has registered no
-/// dials for it.
+/// The vendor entry for `agent`, or `None` for a program amx has no entry for.
 pub fn entry(agent: &str) -> Option<&'static Vendor> {
     vendor::find(agent)
 }
@@ -21,15 +18,11 @@ pub fn entries() -> &'static [Vendor] {
     vendor::table()
 }
 
-/// The dials this spawn resolved, as vendor argv in front of `vendor_args`.
+/// The resolved dials as vendor argv, followed by `vendor_args`.
 ///
-/// The agent command's own arguments are half of the argv the vendor will
-/// see, so a dial stands down for a flag written there just as it does for one
-/// written in `vendor_args`. They are not passed on from here: the caller put
-/// them in the command line already, and adding them again would run the
-/// program with its own arguments twice.
-///
-/// An agent with no entry is never given a flag, whatever the dials say.
+/// Arguments already on the `agent` command line count as present, so a dial
+/// stands down for a flag written there too. They are not returned: the caller
+/// already has them in the command. An agent with no entry gets no flags.
 pub fn inject(
     agent: &str,
     model: &str,
@@ -68,8 +61,7 @@ mod tests {
 
     #[test]
     fn an_agent_command_is_read_as_the_program_it_runs() {
-        // `agent` is a command line, not a program name, so someone who
-        // configures `claude --add-dir ..` still gets claude's dials.
+        // `claude --add-dir ..` still gets claude's dials.
         assert_eq!(
             entry("claude --dangerously-skip-permissions").map(|v| v.name),
             Some("claude")
@@ -92,17 +84,15 @@ mod tests {
                 "--verbose"
             ])
         );
-        // The proof of a sentinel is an absent flag, not a flag carrying the
-        // word default.
+        // The sentinel injects no flag at all.
         assert!(inject("claude", DEFAULT, DEFAULT, DEFAULT, &[]).is_empty());
     }
 
     #[test]
     fn a_dial_yields_to_a_flag_the_agent_command_already_carries() {
-        // `agent = "claude --model opus"` is one argv with the caller's args,
-        // so a dial that injected on top of it would hand claude the flag
-        // twice and leave which one wins to the vendor. The command's own
-        // arguments are not repeated here: they are already in the command.
+        // The command's own arguments share the argv with the injected ones,
+        // so injecting the same flag would pass it twice. They are not
+        // repeated in the result.
         assert_eq!(
             inject("claude --model opus", "fable", DEFAULT, "high", &[]),
             v(&["--effort", "high"])
@@ -121,8 +111,7 @@ mod tests {
 
     #[test]
     fn an_unregistered_agent_never_has_a_flag_injected() {
-        // Whatever the dials say, an agent with no entry spawns exactly as it
-        // did before there were dials. The caller's own args still travel.
+        // The caller's own args still pass through.
         assert!(inject("mock-claude", "fable", "plan", "high", &[]).is_empty());
         assert_eq!(
             inject("mock-claude", "fable", "plan", "high", &v(&["-p", "hi"])),
