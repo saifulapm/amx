@@ -31,9 +31,6 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -434,17 +431,9 @@ pub fn write_boot_env(dir: &Path, env: &BTreeMap<String, String>) -> Result<()> 
 /// Write `value` as JSON that only its owner can read: the mode `write_handoff`
 /// and `write_boot_env` both promise, kept in the one place that sets it.
 fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("creating {}", path.display()))?;
     let mut bytes = serde_json::to_vec_pretty(value).context("writing the record")?;
     bytes.push(b'\n');
-    file.write_all(&bytes)
-        .with_context(|| format!("writing {}", path.display()))
+    crate::store::write_atomic(path, &bytes)
 }
 
 /// The directory an agent is given to write in, made if it is not there.
@@ -1606,6 +1595,28 @@ mod tests {
             0o600,
             "what a command was launched with is not everyone's to read"
         );
+        assert_eq!(read_handoff(dir.path()).unwrap(), handoff);
+    }
+
+    #[test]
+    fn spawn_a_handoff_written_over_an_open_one_is_kept_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `resume` rewrites the handoff of a record an older amx may have
+        // written readable by everyone.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(HANDOFF);
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let handoff = Handoff {
+            task: "fix the login bug".to_string(),
+            command: vec!["claude".to_string(), "fix the login bug".to_string()],
+        };
+        write_handoff(dir.path(), &handoff).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         assert_eq!(read_handoff(dir.path()).unwrap(), handoff);
     }
 
