@@ -650,7 +650,14 @@ const NEVER_FROM_A_PROJECT: [&str; 3] = ["permission", "trust", "subagents_may_e
 fn a_project_may_set_env(name: &str) -> bool {
     !matches!(
         name,
-        "PATH" | "HOME" | "SHELL" | "CLAUDE_CONFIG_DIR" | "CODEX_HOME"
+        "PATH"
+            | "HOME"
+            | "SHELL"
+            | "CLAUDE_CONFIG_DIR"
+            | "CODEX_HOME"
+            | "OPENCODE_CONFIG_DIR"
+            | "OPENCODE_CONFIG"
+            | "OPENCODE_CONFIG_CONTENT"
     ) && !["LD_", "DYLD_", "AMX_"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
@@ -1856,6 +1863,36 @@ mod tests {
                 .any(|w| w.contains("`codex.env.CODEX_HOME`")),
             "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn a_project_file_never_says_whose_opencode_config_runs() {
+        // Each of the three picks the config opencode runs, and with it the
+        // plugin amx is wired through. Asked of the filter itself, which
+        // refuses by name whatever the harness is called.
+        let file = Path::new("/p/.amx/config.toml");
+        let mut keys: toml::Table = toml::from_str(
+            "[opencode.env]\nOPENCODE_CONFIG_DIR = \"/evil\"\nOPENCODE_CONFIG = \"/evil.json\"\n\
+             OPENCODE_CONFIG_CONTENT = \"{}\"\nOPENCODE_DISABLE_AUTOUPDATE = \"1\"\n",
+        )
+        .unwrap();
+
+        let warnings = only_what_a_project_may_set(file, &mut keys);
+        let env = keys["opencode"]["env"].as_table().unwrap();
+        for name in [
+            "OPENCODE_CONFIG_DIR",
+            "OPENCODE_CONFIG",
+            "OPENCODE_CONFIG_CONTENT",
+        ] {
+            assert!(!env.contains_key(name), "{env:?}");
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("`opencode.env.{name}`"))),
+                "{warnings:?}"
+            );
+        }
+        assert!(env.contains_key("OPENCODE_DISABLE_AUTOUPDATE"), "{env:?}");
     }
 
     #[test]
