@@ -1,104 +1,74 @@
 #!/bin/sh
-# A stand-in for pi, replaying a scenario of timed steps.
+# Stand-in for pi: replays a scenario of timed steps in a pane.
 #
-# It is called `pi`, and reached through the PATH, because that is the whole of
-# what makes it pi: amx keys its vendor table by the program an agent command
-# runs, so this directory in front of the PATH and `--agent pi` is the only way
-# to drive pi's entry on a machine with no pi on it. mock-claude next door is
-# the opposite fixture — a command the table has no entry for — and both are
-# shell scripts for the same reason: what is under test is amx's handling of a
-# foreign program in the pane, and a fixture sharing amx's own code would only
-# ever prove that amx agrees with itself.
+# It is named `pi` and found on the PATH because amx keys its vendor table by
+# the program an agent command runs; `--agent pi` with this directory first on
+# the PATH drives pi's entry. It is a shell script so that it shares no code
+# with amx.
 #
-# It answers for three of the things pi's entry claims, and for nothing else:
+# What it models:
 #
-#   the listing         `--list-models` prints what pi's providers hold, a
-#                       header line and then a row per model whose first two
-#                       columns are the provider and the id that model has
-#                       there. amx runs it to find out whether a typed model is
-#                       pi's, which is a question asked before there is a pane
-#                       or a scenario for one, so it is answered first and the
-#                       run ends with it.
-#   the session flags   `--session-id <id>` opens the session already kept
-#                       under that id and creates one under it when there is
-#                       none, and `--fork <origin> --session-id <new>` branches
-#                       the first into the second. A `--session-id` written
-#                       beside one of the five flags pi refuses it next to ends
-#                       this the way it ends pi: an exit, not a warning. Beside
-#                       `--no-session`, which pi refuses nothing over, the run
-#                       goes ahead and the id is thrown away.
-#   the screens         the screens `assets/screen-rules-pi.toml` was measured
-#                       off, drawn by repainting the pane rather than
-#                       appending to it, and each in one write. The rules read
-#                       the bottom of a capture: a screen with the last one
-#                       still above it is not a screen pi ever drew, and
-#                       neither is half of one.
+#   listing         `--list-models` prints a header and one row per model,
+#                   provider and id first, then exits. amx asks before there
+#                   is a pane or a scenario.
+#   session flags   `--session-id <id>` opens the session kept under that id,
+#                   creating it if absent. `--fork <origin> --session-id <new>`
+#                   copies the first into the second. `--session-id` beside one
+#                   of the five flags pi refuses it with exits, as pi does.
+#                   Beside `--no-session` the run goes ahead and the id is
+#                   discarded.
+#   screens         the screens `assets/screen-rules-pi.toml` was measured
+#                   off, each painted as a full repaint in one write. The rules
+#                   read the bottom of a capture, so a screen must never show
+#                   half drawn or with the previous one above it.
 #
-# How it was called, and what it did with the session it was handed, are
-# written before the first repaint: they leave the screen with it and stay in
-# the pane's history, which is where `capture-pane -S -` reads them. What pi
-# reports is a scenario's to say, step by step, the way claude's stand-in
-# says it.
+# The argv and the session outcome are printed before the first repaint and
+# stay in the pane's history, where `capture-pane -S -` reads them. Reports
+# come only from scenario steps.
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
-#   screen <name>   repaint the pane with one of pi's screens: `boot`, the pane
-#                   of a pi nobody has typed into yet; `notice`, the same pane
-#                   with the Update Available box pi draws above its composer
-#                   when a newer pi exists, and `notice-working`, a turn
-#                   running under that box; `working`, with the frame and
-#                   the word in its box's top border; `compacting` and
-#                   `retrying`, the row pi keeps above the box for those
-#                   two, and `renamed`, an extension's message where the
-#                   word was; `dialog`, blocked on a question with the
-#                   composer replaced; `input` and `editor`, blocked the same
-#                   way on a line and on a block of text; `trust`, blocked on
-#                   whether this folder is one to trust; `setup`, the gate a
-#                   first run stops at before there is a pane at all; `login`,
-#                   waiting for the key a provider wants; `selector` and
-#                   `scrolled`, one of pi's own selectors in the slot the
-#                   composer had, with nothing above it and with a transcript
-#                   above it; `idle`, the prompt a finished turn leaves behind;
-#                   and `wordless`, the prompt left by a turn the model
-#                   answered with no prose at all.
-#   sleep <ms>      wait. A long trailing sleep is how a scenario keeps its
-#                   agent alive for the test driving it.
+#   screen <name>   repaint with one of pi's screens:
+#                     boot            a fresh pi nobody has typed into
+#                     notice          boot with the Update Available box
+#                     notice-working  a turn running under that box
+#                     working         frame and word in the box's top border
+#                     compacting      the compaction row above the box
+#                     retrying        the retry row above the box
+#                     renamed         an extension's message in the border
+#                     dialog          a question replacing the composer
+#                     input, editor   asking for a line, a block of text
+#                     trust           the folder-trust question
+#                     setup           the first-run gate, before any pane
+#                     login           asking for a provider's key
+#                     selector        a pi selector in the composer's slot
+#                     scrolled        the same under a transcript
+#                     idle            the prompt after a finished turn
+#                     wordless        the prompt after a turn with no prose
+#   sleep <ms>      wait. A long trailing sleep keeps the agent alive.
 #   hook <event> <json>
-#                   report a moment the way amx's pi extension reports one:
-#                   the payload on `amx _hook`'s stdin under pi's own event
-#                   name, with the session this run opened and the file it is
-#                   kept in added unless the json names them. What the hook
-#                   answers — the record's directory — is kept, the way the
-#                   extension keeps it, and never reaches the pane.
+#                   report as amx's pi extension does: the payload on
+#                   `amx _hook`'s stdin under pi's event name, with the session
+#                   id and session file added unless named. The hook's answer,
+#                   the record directory, is kept and not printed.
 #   transcript <json>
-#                   append a line to that session file, which is what pi does
-#                   as a turn runs and what amx reads the conversation from.
-#   live <text>     stream what pi is saying, the way the extension does:
-#                   written whole to `live` in the record directory the last
-#                   report was answered with, and renamed in. Bare `live`
-#                   takes it away, as the extension does when a message ends.
-#                   Before any report was answered there is nowhere to write.
-#   heartbeat       beat, the way the extension beats while a turn runs:
-#                   `heartbeat` touched in that same directory, so the record
-#                   says the turn is still going between one report and the
-#                   next. What is written in it is nothing — its mtime is the
-#                   whole of what a reader takes from it — and a scenario beats
-#                   by writing the step as often as the turn it is replaying
-#                   would. `heartbeat off` takes the file away, as the
-#                   extension does when the turn settles.
+#                   append a line to the session file, which amx reads the
+#                   conversation from.
+#   live <text>     write `live` whole in the last answered record directory,
+#                   via rename, as the extension streams. Bare `live` removes
+#                   it. Nothing is written before a report was answered.
+#   heartbeat       touch `heartbeat` in that directory, as the extension does
+#                   while a turn runs; only its mtime matters. `heartbeat off`
+#                   removes it, as when the turn settles.
 #
 # Environment:
-#   MOCK_PI_SCENARIO   the scenario to replay (required, except on a run that
-#                      only asks for the listing)
+#   MOCK_PI_SCENARIO   the scenario to replay (required except for listing)
 
 set -u
 
-# The listing, answered before the scenario below is even looked for. amx asks
-# which models a harness offers while it is working out which harness a typed
-# model belongs to, and that is a question about the program rather than about
-# a session: there is no pane yet and nothing to replay. Real pi prints 490
-# rows here; two are enough for a reader, which needs the shape and not the
-# catalogue.
+# The listing comes before the scenario check: amx asks for it to decide which
+# harness a typed model belongs to, with no pane yet. Real pi prints about 490
+# rows; two show the shape.
 for arg do
 	[ "$arg" = "--list-models" ] || continue
 	cat <<'LISTING'
@@ -121,29 +91,25 @@ fi
 
 sessions=$HOME/.pi/sessions
 
-# The five flags pi exits rather than take `--session-id` beside. Its entry
-# lists a sixth, `--no-session`, and that one is not here: pi takes the id
-# under it and keeps the conversation in memory, writing no file and saying
-# nothing about it. amx displaces all six, but only these five are a refusal,
-# and a stand-in that refused where the vendor is silent would prove a test
-# against a pi nobody can run.
+# The five flags pi refuses `--session-id` beside. amx's entry also displaces
+# `--no-session`, but pi accepts that one silently and keeps the conversation
+# in memory, so the stand-in does too.
 REFUSES="-c -r --continue --resume --session"
 
 printf 'argv: %s\n' "$*"
 
-# `--session-id <id>` and `--fork <origin>` are two words each: `--help` shows
-# them that way and nothing in pi reads a `=` spelling of either, so neither is
-# read here.
+# `--session-id <id>` and `--fork <origin>` are two words each; pi reads no
+# `=` spelling of either.
 session=
-# Where amx keeps this agent's record, as the last report was answered.
+# The record directory the last report was answered with.
 record=
 origin=
 clash=
 in_memory=
 value_of=
-# A word opening with `@` names a file to attach, before `--` and after it
-# alike: `--` ends pi's flags, not its file arguments (dist/cli/args.js:23-31
-# and :224, read at 0.87.1 on 2026-09-27). A file that is not there ends pi.
+# A word starting with `@` names a file to attach, before or after `--`, since
+# `--` ends pi's flags and not its file arguments (dist/cli/args.js:23-31 and
+# :224, pi 0.87.1). A missing file ends pi.
 attaches() {
 	case $1 in
 	@*)
@@ -191,10 +157,8 @@ if [ -n "$clash" ] && [ -n "$session" ]; then
 fi
 
 if [ -n "$in_memory" ]; then
-	# pi reads this branch before the one that writes a session to disk, so the
-	# id is taken and the conversation is kept in memory: no file under it, and
-	# nothing said about one. This is the run amx's `conflicts` list exists to
-	# keep a minted id out of.
+	# pi checks this before writing a session, so the id is accepted and no
+	# file is written. amx's `conflicts` list keeps a minted id out of this run.
 	:
 elif [ -n "$origin" ]; then
 	if [ -z "$session" ]; then
@@ -224,13 +188,11 @@ elif [ -n "$session" ]; then
 fi
 
 # ── The screens ──────────────────────────────────────────────────────────────
-# Trimmed from the captures in `assets/screen-rules-pi.toml`, which were read
-# off pi 0.84.4 on 2026-09-04. Two things are drawn rather than copied. The box
-# is as wide as the pane, which is what pi does and what makes twenty columns
-# of border worth anchoring on; and the stats line is written to fit eighty
-# columns rather than the hundred it was captured at, because pi truncates
-# that line from the right and what a narrower pane keeps is its opening —
-# which is where every anchor in the document sits.
+# Trimmed from the captures in `assets/screen-rules-pi.toml`, taken off pi
+# 0.84.4. Two things are drawn rather than copied: the box is as wide as the
+# pane, as pi draws it, and the stats line is cut to 80 columns from the 100 it
+# was captured at. pi truncates that line from the right, and the anchors sit
+# at its start.
 
 width=$( (stty size </dev/tty) 2>/dev/null | cut -d' ' -f2 )
 case $width in
@@ -243,30 +205,25 @@ while [ "$column" -lt "$width" ]; do
 	column=$((column + 1))
 done
 
-# Where pi says it is running, which is the first of its two footer rows.
+# The working directory, the first of pi's two footer rows.
 here=$PWD
 case $here in
 "$HOME"*) here="~${here#"$HOME"}" ;;
 esac
 
-# The one piece of a repaint that is not a row: the cursor home and the pane
-# emptied, which every screen opens with.
+# Cursor home and clear, which opens every repaint.
 CLEAR=$(printf '\033[H\033[2J')
 
-# The three stats lines measured: a subscription-backed session before its
-# first turn, one that has taken a turn, and one on a pi with no provider to
-# take a turn with, which is the pi the login screen below belongs to.
+# The stats lines measured: a subscription session before its first turn,
+# after a turn, and on a pi with no provider (the login screen's).
 FRESH='$0.000 (sub) 0.0%/264k (auto)              (github-copilot) gpt-5-mini • minimal'
 TURNED='↑1.5k ↓69 R1.3k CH90.3% $0.001 (sub) 0.5%/264k (auto)   (github-copilot)'
 UNSET='0.0%/0 (auto)                                                        unknown'
 
-# Each screen below is written to a pipe rather than to the pane: `draw` reads
-# what it printed, adds the clear in front of it, and puts the whole screen on
-# the pane in one write.
+# The functions below print a screen for `draw` to capture and write in one go.
 #
-# The composer box and the footer under it, which every screen below ends with.
-# `$1` is the stats line, because its opening is the one part of the chrome
-# that differs between a session that has taken a turn and one that has not.
+# The composer box and the footer under it. `$1` is the stats line, the one
+# part of the chrome that differs before and after a first turn.
 box() {
 	printf '%s\n\n%s\n%s\n%s\n' "$border" "$border" "$here" "$1"
 }
@@ -279,13 +236,12 @@ boot() {
 	box "$FRESH"
 }
 
-# The box pi draws above its composer when a newer pi exists — measured
-# 2026-09-06 on 0.84.4 with 0.85.1 out, at 120x40, 100x30, 80x24 and 40x24:
-# a border, the title, the instruction, the changelog line, a border, then one
-# blank row and the composer. Its borders are the composer's own, which is
-# what took every windowed rule off the pane until a rule learned to stand on
-# the rows that fit. A release note, when a release ships one, goes between
-# the instruction and the changelog with a blank row either side.
+# The box pi draws above its composer when a newer pi exists, measured on
+# 0.84.4 with 0.85.1 out at 120x40, 100x30, 80x24 and 40x24: a border, the
+# title, the instruction, the changelog line, a border, one blank row, then the
+# composer. Its borders are the composer's own glyphs. A release note, when
+# there is one, goes between the instruction and the changelog with a blank
+# row either side.
 update_box() {
 	printf '%s\n' "$border"
 	printf ' Update Available\n'
@@ -294,8 +250,7 @@ update_box() {
 	printf '%s\n\n' "$border"
 }
 
-# A fresh pi with the update box up: the boot screen's own rows, then the box,
-# then the composer.
+# A fresh pi with the update box: the boot rows, the box, the composer.
 notice() {
 	printf ' pi v0.84.4\n'
 	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
@@ -305,9 +260,9 @@ notice() {
 	box "$FRESH"
 }
 
-# A turn running under the update box, as measured at 100x30 on 0.84.4: the
-# prompt echoed two rows under the box, and then the composer with the frame
-# and the word in its top border, which is where 0.85.1 draws them.
+# A turn running under the update box, measured at 100x30 on 0.84.4: the
+# prompt two rows under the box, then the composer with the frame and word in
+# its top border, where 0.85.1 draws them.
 notice_working() {
 	printf ' pi v0.84.4\n'
 	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
@@ -318,12 +273,12 @@ notice_working() {
 	working_box '⠦' 'Working' "$FRESH"
 }
 
-# The composer with the working indicator in its top border, which is where
-# pi 0.85.1 draws it: `── `, the frame, the message, a space, and the rule out
-# to the pane's edge, with no status row above the box. Measured 2026-09-06 at
-# 100, 54, 40, 30, 24 and 20 columns; at 20 the rule after the message is
-# seven wide, and the bottom border is the twenty the spinner rule asks for.
-# `$1` is the frame, `$2` the message, `$3` the stats line.
+# The composer with the working indicator in its top border, as pi 0.85.1
+# draws it: `── `, the frame, the message, a space, and the rule to the pane's
+# edge, with no status row above. Measured at 100, 54, 40, 30, 24 and 20
+# columns; at 20 the rule after the message is seven wide and the bottom
+# border is the twenty the spinner rule needs. `$1` is the frame, `$2` the
+# message, `$3` the stats line.
 working_box() {
 	lead="── $1 $2 "
 	rule=
@@ -335,27 +290,22 @@ working_box() {
 	printf '%s%s\n\n%s\n%s\n%s\n' "$lead" "$rule" "$border" "$here" "$3"
 }
 
-# A turn running: the prompt echoed, and the frame and the word in the box's
-# top border for the whole of it.
+# A running turn: the prompt, and the frame and word in the box's top border.
 working() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
 	working_box '⠼' 'Working' "$TURNED"
 }
 
-# The other three things pi says while a turn runs. pi has one status
-# indicator and swaps out which of its four kinds is up. Only the working one
-# is drawn in the border: `/compact` and a retry each take it down and put
-# their own on the row above the box, with a blank row between, which is where
-# every kind was drawn before 0.85.1 — so `Working` is off the pane for the
-# whole of either. `ctx.ui.setWorkingMessage` rewrites the message on the
-# working kind, and the message goes where the word went. What none of them
-# changes is the frame in front of the message. The frame is a different one
-# of the ten on each screen below, because the vendor cycles them and no
-# capture can say which one a pane is on. Measured at 100 columns on
-# 2026-09-05 — the first two against a provider that never answered and one
-# that answered 503 to everything, the third against an extension that set its
-# own message on session start; the rows the first two keep and the border the
-# third moved into are 0.85.1's own source, read 2026-09-06 and not driven.
+# pi's other three running indicators. pi shows one of four kinds at a time.
+# Only the working kind is drawn in the border; `/compact` and a retry replace
+# it with their own row above the box, a blank row between, so `Working` is
+# gone for their duration. `ctx.ui.setWorkingMessage` replaces the word with
+# the extension's message. The frame before the message stays, and each screen
+# uses a different one of the ten since pi cycles them. Measured at 100
+# columns: compacting against a provider that never answered, retrying against
+# one answering 503, renamed against an extension setting its message on
+# session start. The row positions and the border placement come from 0.85.1's
+# source, not a live run.
 compacting() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
 	printf ' ⠴ Compacting context... (escape to cancel)\n\n'
@@ -379,18 +329,14 @@ idle() {
 	box "$TURNED"
 }
 
-# The prompt a turn the model answered with no prose at all leaves behind. pi
-# draws an answer with no glyph, no label and no colour of its own, and draws
-# the model's thinking in the same column, so a turn that wrote no answer
-# leaves a pane carrying the tail of the turn before it, this turn's tool call,
-# and the thinking under it — and not one row of it is what the turn was asked
-# for. Same screen as `idle` to every rule in the document, and a different one
-# to anything reading the rows.
+# The prompt after a turn the model answered with no prose. pi draws an answer
+# with no glyph, label or colour, in the same column as the model's thinking,
+# so the pane shows the previous turn's tail, this turn's tool call and the
+# thinking, and none of it is an answer. The rules read it as `idle`; a reader
+# of the rows must not take it as the answer.
 #
-# The turn `docs/pi-screens.md` drove at 100 columns, with its sentences cut to
-# fit eighty the way the stats line above is. The words on those rows are the
-# model's; the shapes they are drawn in are the vendor's, and those are what
-# this screen is here for.
+# The turn `docs/pi-screens.md` drove at 100 columns, with its lines cut to fit
+# 80 like the stats line. The words are the model's; the layout is pi's.
 wordless() {
 	printf ' Took 15.2s\n\n\n'
 	printf ' Now run: sleep 25; echo finished  with the bash tool. Say nothing else.\n\n\n'
@@ -400,28 +346,23 @@ wordless() {
 	box "$TURNED"
 }
 
-# pi blocked on a dialog raised while gating a tool call: the turn is still
-# running, and nothing on the pane spins. 0.85.1 keeps the working indicator
-# in the editor, and the dialog has replaced the editor with the question and
-# its choices, so the frame is off the screen for as long as the question is
-# on it. The two borders stay where they were, with the working directory and
-# the stats line under them exactly as on any other screen. Measured at 100
-# and 20 columns on 2026-09-06 with an extension gating the bash tool with
-# `ctx.ui.select`.
+# pi blocked on a dialog raised while gating a tool call. The turn is still
+# running but nothing spins: 0.85.1 draws the working indicator in the editor,
+# and the dialog replaces the editor. The borders, working directory and stats
+# line stay as on any other screen. Measured at 100 and 20 columns with an
+# extension gating the bash tool through `ctx.ui.select`.
 dialog() {
 	printf ' Run this exact bash command and nothing else: echo hi\n\n\n'
 	printf '%s\n\n Run echo hi?\n\n → Allow once\n   Allow always\n   Deny\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
 		"$border" "$border" "$here" "$TURNED"
 }
 
-# The other two stops a caller puts pi on, drawn where the dialog above is and
-# with the same footer under them. `ctx.ui.input` asks for one line, and pi
-# draws the row it waits to be typed into between the title and the hint row;
-# `ctx.ui.editor` asks for a block, and draws a second box there instead. Both
-# hint rows open on `enter submit`, and the editor's says how to end a line as
-# well, which is what tells the two apart. Nothing runs over either: an
-# extension raised these with no turn under way, which is how they were
-# measured at 100 columns on 2026-09-05.
+# The other two blocking prompts, drawn where the dialog is, with the same
+# footer. `ctx.ui.input` asks for a line and draws the input row between the
+# title and the hint row; `ctx.ui.editor` asks for a block and draws a second
+# box there. Both hint rows start `enter submit`; the editor's also names the
+# newline key, which tells them apart. Measured at 100 columns, raised by an
+# extension with no turn running.
 input() {
 	printf '%s\n\n Which branch should I push to?\n\n>\n\n enter submit  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
 		"$border" "$border" "$here" "$FRESH"
@@ -432,34 +373,27 @@ editor() {
 		"$border" "$border" "$border" "$border" "$here" "$FRESH"
 }
 
-# pi asking whether this folder is one to trust. The same box the dialog above
-# is drawn in, ending in the same hint row, and two rows are what tell the two
-# apart: the title `Project trust`, which no other screen pi draws carries, and
-# a hint row that reads `enter save` where a gated tool call's reads `enter
-# select`. Nothing is running under it — a person raises this with `/trust`
-# rather than a tool call raising it mid-turn — so the line pi spins is not on
-# this screen and the stats line is a session that has not taken a turn.
+# pi asking whether to trust this folder. Same box and hint row as the dialog;
+# two rows tell them apart: the title `Project trust`, on no other pi screen,
+# and a hint row reading `enter save` where a gated tool call reads `enter
+# select`. `/trust` raises it with no turn running, so there is no spinner and
+# the stats line is a fresh session's.
 #
-# The folder is written out in full on its own row under the title and
-# abbreviated in the footer, which is pi's own inconsistency and the reason
-# `within` has to allow for a row that wraps. Measured at 100 columns on
-# 2026-09-05, on a worktree the vendor had nothing saved about.
+# The folder is written in full under the title and abbreviated in the footer,
+# which is why `within` has to allow for a wrapped row. Measured at 100
+# columns on a worktree pi had no saved decision for.
 trust() {
 	printf '%s\n\n Project trust\n %s\n\n Saved decision: none\n Current session: trusted\n\n → Trust\n   Trust parent folder (%s)\n   Do not trust\n\n ↑↓ navigate  enter save  escape/ctrl+c cancel\n\n%s\n%s\n%s\n' \
 		"$border" "$PWD" "${PWD%/*}" "$border" "$here" "$FRESH"
 }
 
-# The gate pi puts in front of a first run: no settings.json under the agent
-# directory, so the vendor asks for a theme and then for an answer about
-# analytics before it will draw a pane at all. It is the one screen here that
-# is not the pane a session runs in — its own TUI, with no composer, no working
-# directory and no stats line under it — and pi draws it at the top of the
-# pane with whatever room is left below. The theme step is what a fresh run
-# stops on first, and the banner over it is on both steps.
+# The first-run gate: with no settings.json in the agent directory, pi asks for
+# a theme and then about analytics before drawing a session pane. It is its
+# own TUI, with no composer, working directory or stats line, drawn at the top
+# of the pane. The theme step comes first; the banner is on both steps.
 #
-# Measured at 100 columns on 2026-09-05, with PI_EXPERIMENTAL=1 and an agent
-# directory with nothing saved in it, which is what makes the vendor draw this
-# rather than skip it.
+# Measured at 100 columns with PI_EXPERIMENTAL=1 and an empty agent directory,
+# which is what makes pi draw it.
 setup() {
 	printf '%s\n\n ██████\n ██  ██\n ████  ██\n ██    ██\n\n' "$border"
 	printf ' Welcome to pi, the minimal coding agent.\n\n'
@@ -468,34 +402,28 @@ setup() {
 	printf ' ↑↓ navigate  enter continue  escape/ctrl+c skip setup\n\n%s\n' "$border"
 }
 
-# pi asking for the key a provider wants, which is where `/login` ends on every
-# provider that is not signed into with an account. The dialog takes the
-# editor's slot the way an extension's does and keeps the same footer under it;
-# what is drawn differently is the title, which sits directly under the top
-# border rather than a blank row below it.
+# pi asking for a provider's API key, where `/login` ends for any provider not
+# signed into with an account. The dialog takes the editor's slot with the
+# same footer; its title sits directly under the top border, with no blank row.
 #
-# Measured at 100 columns on 2026-09-05 on a pi with no provider configured —
-# the one a spawned agent has when nobody has logged it in — so the rows above
-# the box are the vendor's own warning about it and the stats line says
-# `unknown` where a model would be.
+# Measured at 100 columns on a pi with no provider configured, as a spawned
+# agent nobody logged in has, so pi's warning is above the box and the stats
+# line says `unknown` for the model.
 login() {
 	printf ' Warning: No models available. Use /login to log into a provider via OAuth\n or API key. See:\n\n'
 	printf '%s\n Login to Cerebras\n\n Enter Cerebras API key\n>\n (escape/ctrl+c to cancel, enter to submit)\n%s\n%s\n%s\n' \
 		"$border" "$border" "$here" "$UNSET"
 }
 
-# One of pi's own selectors, in the slot the composer had. Every screen above
-# is here for the words a rule stands on; these two are here for a shape and a
-# distance — a widget between the composer's borders with the footer under it,
-# and how far the last rule in the document reaches over it.
+# One of pi's own selectors in the composer's slot. These two screens test a
+# shape and a distance: a widget between the composer's borders with the
+# footer under it, and how far the last rule in the document reaches.
 #
-# Measured at 100 columns on 2026-09-05 with the show-images selector, which is
-# the shortest box pi puts in that slot: the vendor's own component, raised
-# through `ctx.ui.custom` by an extension that does nothing else. With nothing
-# above it, five rows separate its top border from the stats line. Under a
-# transcript it is seven, because `!seq 1 60` leaves the bottom border of its
-# own box on the pane and the rules read the TOPMOST border they can see. The
-# widget did not move and neither did its box.
+# Measured at 100 columns with the show-images selector, the shortest box pi
+# puts there, raised through `ctx.ui.custom`. With nothing above it, five rows
+# separate its top border from the stats line. Under a transcript it is seven,
+# because `!seq 1 60` leaves its own box's bottom border on the pane and the
+# rules read the topmost border they see.
 selector() {
 	printf ' pi v0.84.4\n'
 	printf ' escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more\n'
@@ -511,21 +439,15 @@ scrolled() {
 		"$border" "$border" "$border" "$here" "$FRESH"
 }
 
-# Repaint, the way a program that owns its pane draws a new screen. What was
-# there goes into the pane's history rather than above the new screen.
+# Repaint as a full-screen program does; the old screen goes into the pane's
+# history.
 #
-# The clear and every row leave in ONE write. A repaint that reaches the
-# terminal in two pieces puts a screen on the pane pi never draws — an empty
-# one between the clear and the first row, or the spinner line with no box
-# under it — and whatever is reading the pane reads a pi that does not exist.
-#
-# So the screen is built first and written second, and it is written by `cat`
-# rather than by `printf`. That is a measured choice, not a stylistic one: the
-# shell's own printf hands a terminal a screen this size in two pieces often
-# enough to see. Counted over ~12,000 captures of a pane repainting without a
-# pause between screens: 374 torn captures when each screen was several
-# printfs, 41 when it was one, and 2 through the heredoc below — and those two
-# are the terminal dividing one write, which is not this script's to mend.
+# The clear and every row go out in one write. A repaint split in two shows a
+# screen pi never draws, such as an empty pane or a spinner row with no box.
+# The screen is built first and written with `cat`, since the shell's printf
+# splits a screen this size often enough to see: over about 12,000 captures,
+# 374 were torn with several printfs, 41 with one printf, and 2 with the
+# heredoc below (the terminal splitting one write).
 draw() {
 	case $1 in
 	boot) screen=$(boot) ;;
@@ -555,18 +477,15 @@ $CLEAR$screen
 EOF
 }
 
-# Milliseconds, because a scenario's interesting waits are shorter than a
-# second.
+# Sleep for $1 milliseconds.
 nap() {
 	[ "$1" -gt 0 ] || return 0
 	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
 }
 
-# One report, delivered the way amx's pi extension delivers one: the payload
-# on `amx _hook`'s stdin, under pi's own event name, with the session the
-# stand-in opened and the file it keeps that session in — which is the
-# transcript amx reads back. `AMX_BIN` and `AMX_ID` ride the pane's own
-# environment, the same as they do for the real extension.
+# Report one event as amx's pi extension does: the payload on `amx _hook`'s
+# stdin under pi's event name, with the session id and its file, which is the
+# transcript amx reads. `AMX_BIN` and `AMX_ID` come from the pane's env.
 deliver() {
 	event=${1%% *}
 	json=${1#"$event"}
@@ -592,9 +511,8 @@ deliver() {
 	[ -z "$answer" ] || record=$answer
 }
 
-# What pi is saying at this moment, beside the record the hook named. Whole
-# and renamed in, so a reader never sees half of it; nothing to say takes it
-# away.
+# Write the streamed text beside the record, whole and renamed in so a reader
+# never sees half of it. Empty text removes it.
 say() {
 	[ -n "$record" ] || return 0
 	if [ -z "$1" ]; then
@@ -604,9 +522,8 @@ say() {
 	printf '%s' "$1" >"$record/live.tmp" && mv "$record/live.tmp" "$record/live"
 }
 
-# One beat, beside the same record. The extension writes this file every few
-# seconds for as long as a turn runs and takes it away when the turn settles;
-# a scenario says when each of those happens.
+# Touch the heartbeat beside the record, or remove it with `off`. The
+# extension touches it every few seconds while a turn runs.
 beat() {
 	[ -n "$record" ] || return 0
 	if [ "$1" = off ]; then
@@ -616,7 +533,7 @@ beat() {
 	: >"$record/heartbeat"
 }
 
-# One line of the session file, which is what pi appends to as a turn runs.
+# Append one line to the session file, as pi does during a turn.
 transcribe() {
 	[ -n "$session" ] || return 0
 	mkdir -p "$sessions"

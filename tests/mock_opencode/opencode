@@ -1,59 +1,51 @@
 #!/bin/sh
-# A stand-in for opencode 2.0.16, replaying a scenario of steps.
+# Stand-in for opencode 2.0.16: replays a scenario of steps in a pane.
 #
-# It is called `opencode`, and reached through the PATH, for the reason codex's
-# and pi's stand-ins are: amx keys its vendor table by the program an agent
-# command runs, and a fixture sharing amx's own code would only ever prove
-# that amx agrees with itself.
+# It is named `opencode` and found on the PATH because amx keys its vendor
+# table by the program an agent command runs. It is a shell script so that it
+# shares no code with amx.
 #
-# What it answers for:
+# What it models:
 #
-#   the argv          `opencode [--standalone] [--auto] [-s|--session <id>]
-#                     [-c|--continue] [--server <url>] [--prompt=<text>]
-#                     [<dir>]`, read the way the TUI's root command reads it
-#                     (cli/src/commands/commands.ts:26-58). A value opening
-#                     with `-` is never taken as a word of its own, so
-#                     `--prompt -v` is a prompt with nothing in it, which is
-#                     a refusal. Without `--standalone` the TUI would join the
-#                     shared service, started with somebody else's env, so the
-#                     stand-in refuses to run there at all (plan
-#                     opencode-lands Ruling 1).
-#   the session       opencode mints its own `ses_` id, and says it at the
-#                     first session route. `--session <id>` opens the one kept
-#                     under that id and refuses one with none.
-#   the model         `OPENCODE_CONFIG_CONTENT`, the config loaded over every
-#                     other, carries `{"model":"<value>"}` (Ruling 8).
-#   the plugin        amx's `plugins/amx/tui.js`, whose reports this plays:
-#                     `amx _hook` with the payload on stdin, in the pane's own
-#                     env, and nothing at all without `AMX_ID` (Ruling 3).
-#   SIGUSR2           the plugin interrupts its session, which ends a running
-#                     turn as `aborted` wherever it is, a card up or not
-#                     (Ruling 6).
-#   the screens       the captures in tests/opencode/screens, painted whole in
-#                     one write, at the widest width captured that fits the
-#                     pane, bottom rows kept.
+#   argv      `opencode [--standalone] [--auto] [-s|--session <id>]
+#             [-c|--continue] [--server <url>] [--prompt=<text>] [<dir>]`, read
+#             as the TUI's root command reads it
+#             (cli/src/commands/commands.ts:26-58). A value starting with `-`
+#             is never taken as a flag's value, so `--prompt -v` is refused.
+#             Without `--standalone` the TUI would join the shared service,
+#             which runs with another environment, so the stand-in refuses.
+#   session   opencode mints its own `ses_` id and says it at the first
+#             session route. `--session <id>` opens the one kept under that id
+#             and refuses an unknown id.
+#   model     `OPENCODE_CONFIG_CONTENT`, loaded over every other config,
+#             carries `{"model":"<value>"}`.
+#   plugin    the reports amx's `plugins/amx/tui.js` makes: `amx _hook` with
+#             the payload on stdin in the pane's env, and nothing without
+#             `AMX_ID`.
+#   SIGUSR2   the plugin interrupts its session, which ends a running turn as
+#             `aborted`, with or without a card up.
+#   screens   the captures in tests/opencode/screens, painted in one write at
+#             the widest captured width that fits the pane, bottom rows kept.
 #
-# How it was called, what it did with the session, the model and the prompt
-# are written before the first repaint, where `capture-pane -S -` reads them
-# back. Each argv word is quoted, so a trailing space can be seen.
+# The argv, the session outcome, the model and the prompt are printed before
+# the first repaint, where `capture-pane -S -` reads them back. Each argv word
+# is quoted so a trailing space shows.
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
-#   screen <name>   repaint with tests/opencode/screens/<name>-<width>.txt.
-#   sleep <ms>      wait. A long trailing sleep keeps the agent alive.
-#   hook <event> <json>
-#                   report a moment the way the plugin reports one, under the
-#                   plugin's own event name. `session_id` is added where the
-#                   json names none; `session.selected` gets the source this
-#                   run opened with, `session.execution.started` the prompt
-#                   this turn was given, and `session.execution.ended` the
-#                   message list, where one was written.
-#   messages <name> write tests/opencode/messages/<name>.jsonl whole to
-#                   `$AMX_DIR/opencode-messages.jsonl`, as the plugin writes
-#                   the session's messages at a turn's end.
-#   await line      block until a line is typed at the pane: the next turn's
-#                   prompt, bracketed paste taken off.
-#   await esc       block until Escape reaches the pane.
+#   screen <name>       repaint with tests/opencode/screens/<name>-<width>.txt.
+#   sleep <ms>          wait. A long trailing sleep keeps the agent alive.
+#   hook <event> <json> report as the plugin does, under its event name.
+#                       `session_id` is added unless named; `session.selected`
+#                       gets the source, `session.execution.started` this
+#                       turn's prompt, and `session.execution.ended` the
+#                       message list when one was written.
+#   messages <name>     copy tests/opencode/messages/<name>.jsonl to
+#                       `$AMX_DIR/opencode-messages.jsonl`, as the plugin
+#                       writes the session's messages.
+#   await line          block until a line is typed at the pane. It is the
+#                       next prompt, bracketed paste markers stripped.
+#   await esc           block until Escape reaches the pane.
 #
 # Environment:
 #   MOCK_OPENCODE_SCENARIO   the scenario to replay (required)
@@ -150,7 +142,7 @@ else
 	printf 'session: started %s\n' "$session"
 fi
 
-# The model the config loaded last names, as one string value.
+# The model named in the config loaded last.
 model=$(printf '%s' "${OPENCODE_CONFIG_CONTENT:-}" |
 	sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 printf 'model: %s\n' "${model:-default}"
@@ -163,8 +155,8 @@ if [ -t 1 ]; then
 fi
 
 # ── The screens ──────────────────────────────────────────────────────────────
-# Captured off opencode 2.0.16 on 2026-09-30 at 220, 100, 54 and 24 columns
-# (docs/opencode-screens.md). As codex's stand-in paints them.
+# Captured off opencode 2.0.16 at 220, 100, 54 and 24 columns
+# (docs/opencode-screens.md), painted as codex's stand-in paints its own.
 size=$( (stty size </dev/tty) 2>/dev/null)
 rows=${size% *}
 width=${size#* }
@@ -191,7 +183,8 @@ $CLEAR$screen
 EOF
 }
 
-# A wait a signal can cut into: the trap runs, and the wait carries on.
+# Sleep in the background and `wait`, so a trapped signal runs its trap
+# mid-sleep and the sleep then continues.
 napping=
 nap() {
 	[ "$1" -gt 0 ] || return 0
@@ -211,8 +204,8 @@ record=${AMX_DIR:-}
 listed=${record:+$record/opencode-messages.jsonl}
 running=0
 
-# One report, the way the plugin makes one: silent without AMX_ID, and to the
-# amx the pane names, else the one on the PATH.
+# Report one event as the plugin does: nothing without AMX_ID, and to AMX_BIN
+# or else the amx on the PATH.
 deliver() {
 	event=${1%% *}
 	json=${1#"$event"}
@@ -255,7 +248,7 @@ list() {
 	cp "$fixtures/$1.jsonl" "$listed.tmp" && mv "$listed.tmp" "$listed"
 }
 
-# SIGUSR2: the plugin interrupts the session, and a running turn ends.
+# SIGUSR2: the plugin interrupts the session and a running turn ends.
 interrupted() {
 	[ "$running" -eq 1 ] || return 0
 	printf 'signal: USR2\n'

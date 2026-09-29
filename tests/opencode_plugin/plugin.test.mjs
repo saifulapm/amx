@@ -1,8 +1,7 @@
-// opencode's plugin, `assets/opencode/tui.js`, replayed against the events
-// opencode 2.0.16 sent on 2026-09-29 (`tests/opencode/events/`, read in
-// `docs/opencode-screens.md`). The ctx is a fake that hands each captured
-// event to the handlers `ctx.data.on` registered for its type, and amx is
-// `./amx`, which writes down every report it is handed.
+// Tests for `assets/opencode/tui.js`, replaying the events opencode 2.0.16
+// sent (`tests/opencode/events/`, described in `docs/opencode-screens.md`).
+// The ctx is a fake that hands each event to the handlers registered for its
+// type through `ctx.data.on`; amx is `./amx`, which records every report.
 import { test, mock, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -44,7 +43,7 @@ afterEach(() => {
 });
 
 // One pane: a scratch record, the stub on AMX_BIN, and a ctx whose route the
-// test moves. `amx: false` is a pane amx did not start.
+// test sets. `amx: false` is a pane amx did not start.
 function pane({ scenario = "turn", argv = [], amx = true, bin = STUB } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "amx-oc-plugin-"));
   undo.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -117,8 +116,8 @@ function pane({ scenario = "turn", argv = [], amx = true, bin = STUB } = {}) {
     emit(event) {
       for (const handler of handlers.get(event.type) ?? []) handler(event);
     },
-    // Hands the scenario's events over in order. The route moves to the new
-    // session with its `session.created`, as it did live.
+    // Emit the scenario's events in order. The route moves to the new session
+    // on its `session.created`, as it does live.
     replay(list = events(scenario)) {
       for (const event of list) {
         if (event.type === "session.created") {
@@ -142,7 +141,7 @@ function pane({ scenario = "turn", argv = [], amx = true, bin = STUB } = {}) {
   return self;
 }
 
-// Reports go out through child processes; this waits for `count` of them.
+// Reports go out through child processes; wait until `count` have arrived.
 async function reported(p, count) {
   const began = performance.now();
   while (p.reports().length < count) {
@@ -151,7 +150,7 @@ async function reported(p, count) {
     }
     await new Promise((resolve) => setImmediate(resolve));
   }
-  // Give a report that should not be there the time to turn up.
+  // Wait a little longer so an unexpected extra report shows up.
   await new Promise((resolve) => setImmediate(resolve));
   const settle = performance.now();
   while (performance.now() - settle < 300) await new Promise((r) => setImmediate(r));
@@ -295,7 +294,7 @@ test("SIGUSR2 interrupts the pane's session and keeps it", async () => {
   const p = pane({ scenario: "interrupt" });
   await p.start();
   p.replay(events("interrupt").slice(0, 5));
-  // Node writes a diagnostic report on SIGUSR2 where it is set to.
+  // Node writes a diagnostic report on SIGUSR2 when configured to.
   const reporting = process.report.reportOnSignal;
   process.report.reportOnSignal = false;
   undo.push(() => {

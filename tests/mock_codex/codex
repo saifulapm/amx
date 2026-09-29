@@ -1,66 +1,51 @@
 #!/bin/sh
-# A stand-in for codex 0.157.1, replaying a scenario of steps.
+# Stand-in for codex 0.157.1: replays a scenario of steps in a pane.
 #
-# It is called `codex`, and reached through the PATH, because that is the
-# whole of what makes it codex: amx keys its vendor table by the program an
-# agent command runs, so this directory in front of the PATH is the only way to
-# drive codex's entry on a machine with no codex on it. It is a shell script
-# for the reason pi's stand-in next door is one: a fixture sharing amx's own
-# code would only ever prove that amx agrees with itself.
+# It is named `codex` and found on the PATH because amx keys its vendor table
+# by the program an agent command runs. It is a shell script so that it shares
+# no code with amx.
 #
-# What it answers for:
+# What it models:
 #
-#   the listing       `codex debug models` prints the catalog as JSON,
-#                     `models[]` with a `slug` and a `visibility` each, and
-#                     ends. amx asks it before there is a pane or a scenario.
-#   the argv          `codex [resume <id> | fork <id>] [options] [-- <prompt>]`,
-#                     parsed the way clap parses it on 0.157.1: a subcommand is
-#                     one only right after the program, a word opening with `-`
-#                     before `--` is an option or a refusal, and everything
-#                     after `--` is the prompt, whatever it looks like
-#                     (docs/codex-screens.md, open question 7).
-#                     `--no-daemon` twice is clap's refusal. Without it the
-#                     run goes ahead and its hooks run the way the shared
-#                     daemon runs them: in the daemon's environment, with no
-#                     `AMX_ID` (plan codex-lands Ruling 1).
-#   the session       codex mints its own id at launch and says it at the
-#                     first turn's SessionStart, never before. `resume <id>`
-#                     carries on the rollout kept under that id and `fork <id>`
-#                     copies it under a new one; either refuses an id with no
-#                     rollout.
-#   the screens       the captures in tests/codex/screens, painted whole in
-#                     one write, at the widest width captured that fits the
-#                     pane, bottom rows kept.
+#   listing   `codex debug models` prints the catalog as JSON (`models[]`, each
+#             with `slug` and `visibility`) and exits. amx asks before there
+#             is a pane or a scenario.
+#   argv      `codex [resume <id> | fork <id>] [options] [-- <prompt>]`, parsed
+#             as clap parses it on 0.157.1: a subcommand only right after the
+#             program, a `-` word before `--` is an option or a refusal, and
+#             everything after `--` is the prompt. `--no-daemon` twice is
+#             refused. Without it, hooks run as under the shared daemon: in
+#             the daemon's environment, with no `AMX_ID`.
+#   session   codex mints its id at launch and first says it at the first
+#             turn's SessionStart. `resume <id>` continues the rollout kept
+#             under that id and `fork <id>` copies it under a new one; both
+#             refuse an id with no rollout.
+#   screens   the captures in tests/codex/screens, painted in one write at the
+#             widest captured width that fits the pane, bottom rows kept.
 #
-# How it was called, what it did with the session, and the prompt it read are
-# written before the first repaint, where `capture-pane -S -` reads them back.
+# The argv, the session outcome and the prompt are printed before the first
+# repaint, where `capture-pane -S -` reads them back.
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
-#   screen <name>   repaint with tests/codex/screens/<name>-<width>.txt.
-#   sleep <ms>      wait. A long trailing sleep keeps the agent alive.
-#   hook <Event> <json>
-#                   run the command amx's hooks.json names, `amx _hook`, with
-#                   the payload on stdin, the way codex runs a handler. The
-#                   payload is the json with codex's own keys added where it
-#                   names none: hook_event_name, session_id, transcript_path,
-#                   cwd, model, permission_mode, and turn_id on every event
-#                   but SessionStart, which gets the source this run opened
-#                   with. A UserPromptSubmit with no `prompt` carries the one
-#                   this turn was given, and opens a new turn. codex feeds a
-#                   handler's stdout to the model, so a hook that prints
-#                   anything ends the stand-in with the words it printed.
-#   transcript <json>
-#                   append a line to the rollout the payloads name.
-#   await line      block until a line is typed at the pane, the way a message
-#                   amx sends arrives: a bracketed paste and Enter. The line is
-#                   the next turn's prompt.
-#   await esc       block until Escape reaches the pane.
+#   screen <name>       repaint with tests/codex/screens/<name>-<width>.txt.
+#   sleep <ms>          wait. A long trailing sleep keeps the agent alive.
+#   hook <Event> <json> run `amx _hook` with the payload on stdin, as codex runs
+#                       a handler. Added unless the json names them:
+#                       hook_event_name, session_id, transcript_path, cwd,
+#                       model, permission_mode, turn_id (all but SessionStart)
+#                       and source (SessionStart). A UserPromptSubmit with no
+#                       `prompt` gets this turn's prompt and opens a new turn.
+#                       codex feeds a handler's stdout to the model, so any
+#                       output from the hook ends the stand-in with an error.
+#   transcript <json>   append a line to the rollout the payloads name.
+#   await line          block until a line is typed at the pane (a bracketed
+#                       paste and Enter, as amx sends). It is the next prompt.
+#   await esc           block until Escape reaches the pane.
 #
 # Environment:
-#   MOCK_CODEX_SCENARIO   the scenario to replay (required, except for the
-#                         listing)
-#   CODEX_HOME            where the rollouts go, `$HOME/.codex` without it
+#   MOCK_CODEX_SCENARIO   the scenario to replay (required except for listing)
+#   CODEX_HOME            where rollouts go, default `$HOME/.codex`
 
 set -u
 
@@ -87,8 +72,8 @@ sessions=${CODEX_HOME:-$HOME/.codex}/sessions
 
 printf 'argv: %s\n' "$*"
 
-# clap takes `resume` or `fork` as the subcommand wherever it is the first
-# word that is no option's, until `--`: past it every word is the prompt.
+# `resume` or `fork` is the subcommand when it is the first non-option word
+# before `--`. Every word after `--` is the prompt.
 mode=new
 origin=
 prompt=
@@ -179,20 +164,18 @@ esac
 printf 'prompt: %s\n' "$prompt"
 transcript=$(rollout "$session")
 
-# The pane is a terminal: a message arrives as a bracketed paste, which codex
-# asks for, and nothing typed is echoed over the screen.
+# Ask for bracketed paste, as codex does, and turn off echo.
 if [ -t 1 ]; then
 	printf '\033[?2004h'
 	stty -echo </dev/tty 2>/dev/null
 fi
 
 # ── The screens ──────────────────────────────────────────────────────────────
-# Captured off codex 0.157.1 on 2026-09-28 at 220, 100, 54 and 24 columns and
-# 40 rows (docs/codex-screens.md). The widest capture that fits the pane is
-# painted, with the blank rows between the history and the composer closed up
-# the way codex closes them on a shorter pane, and then its bottom rows, which
-# are the rows every rule reads. A capture wider than the pane wraps, and
-# `capture-pane -J` joins it back.
+# Captured off codex 0.157.1 at 220, 100, 54 and 24 columns and 40 rows
+# (docs/codex-screens.md). The widest capture that fits is painted with runs
+# of blank rows squeezed, as codex does on a shorter pane, and only its bottom
+# rows kept, which are the rows the rules read. A capture wider than the pane
+# wraps, and `capture-pane -J` joins it back.
 size=$( (stty size </dev/tty) 2>/dev/null)
 rows=${size% *}
 width=${size#* }
@@ -213,8 +196,8 @@ draw() {
 		echo "mock codex: $scenario: no screen called \`$1\`" >&2
 		exit 65
 	fi
-	# Built first and written second, in one write: a screen that reaches the
-	# pane in two pieces is a screen codex never drew.
+	# One write: a screen that reaches the pane in two pieces is one codex
+	# never draws.
 	screen=$(sed 's/[[:space:]]*$//' "$file" | cat -s | tail -n "$((rows - 1))")
 	cat <<EOF
 $CLEAR$screen
@@ -226,16 +209,15 @@ nap() {
 	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
 }
 
-# A string as the inside of a JSON string.
+# Escape a string for use inside a JSON string.
 quoted() {
 	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
 turn=0
 
-# One handler run, the way codex runs one: the command amx wrote into
-# hooks.json, through a shell, the payload on stdin. Under the daemon the
-# handler runs in the daemon's environment, which never had the pane's.
+# Run one handler as codex does: the hooks.json command through a shell, the
+# payload on stdin. Under the daemon it runs without the pane's environment.
 deliver() {
 	event=${1%% *}
 	json=${1#"$event"}
@@ -282,8 +264,8 @@ transcribe() {
 	printf '%s\n' "$1" >>"$transcript"
 }
 
-# What a person, or amx, types at the pane. A message amx sends is a bracketed
-# paste and then Enter; the brackets come off, and what is left is the prompt.
+# Read what is typed at the pane. A message from amx is a bracketed paste and
+# Enter; the paste markers are stripped and the rest is the prompt.
 await() {
 	case $1 in
 	line)

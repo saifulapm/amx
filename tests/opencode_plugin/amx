@@ -1,6 +1,6 @@
 #!/bin/sh
-# Stands in for amx under the plugin: writes down which binary was run and the
-# payload it was handed, one report a line, and answers with the record's
-# directory the way `amx _hook` does.
+# Stand-in for amx under the plugin: appends the binary path and the payload,
+# one report per line, to $AMX_REC, and prints the record directory as
+# `amx _hook` does.
 { printf '%s ' "$0"; cat; echo; } >> "$AMX_REC"
 echo "$AMX_DIR"

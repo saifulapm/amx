@@ -1,48 +1,35 @@
 #!/bin/sh
-# A stand-in for the vendor, replaying a scenario of timed steps.
+# Stand-in for claude: replays a scenario of timed steps in a pane.
 #
-# Every end-to-end test drives a pane running this instead of claude, so the
-# suite exercises the real path — real tmux, real panes, real `amx _hook`
-# invocations — with no API key and nothing on the network.
-#
-# It is deliberately a shell script rather than a Rust helper. What is under
-# test is amx's handling of a *foreign* program in the pane; a fixture sharing
-# amx's own code would only ever prove that amx agrees with itself.
+# The e2e tests run this instead of claude, so they exercise real tmux, real
+# panes and real `amx _hook` calls with no API key and no network. It is a
+# shell script so that it shares no code with amx.
 #
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
-#   argv                  write the arguments this stand-in was given to the
-#                         pane, so a test can read what the vendor was asked
-#                         for rather than only what amx recorded asking.
-#   hook <Event> <json>   deliver a hook payload the way claude delivers one:
-#                         on `amx _hook`'s stdin. `<json>` is the rest of the
-#                         payload and may be left out; `session_id` and
-#                         `transcript_path` are filled in unless it names them.
-#   print <text>          write a line to the pane, backslash escapes and all,
-#                         because the thing this stands in for repaints its
-#                         screen rather than only appending to it.
-#   sleep <ms>            wait. A long trailing sleep is how a scenario keeps
-#                         its agent alive for the test driving it.
-#   await <Key>           wait until this key is typed at the pane, the way a
-#                         vendor at work waits to be told to stop. `Escape`,
-#                         which is byte 27, is the only key named so far.
-#   transcript <json>     append a line to the transcript the hooks announced.
-#   ignore <signal>       stop answering this signal, so a test can prove what
-#                         happens to an agent that will not stop when asked.
-#   exit <code>           end, with this code.
+#   argv                  print the arguments this stand-in was given.
+#   hook <Event> <json>   send a hook payload on `amx _hook`'s stdin. `<json>`
+#                         is optional; `session_id` and `transcript_path` are
+#                         added unless it names them.
+#   print <text>          print a line, with backslash escapes.
+#   sleep <ms>            wait. A long trailing sleep keeps the agent alive.
+#   await <Key>           block until the key is typed at the pane. Only
+#                         `Escape` (byte 27) is known.
+#   transcript <json>     append a line to the transcript the hooks named.
+#   ignore <signal>       ignore this signal, for an agent that will not stop.
+#   exit <code>           exit with this code.
 #
-# Placeholders substituted when the scenario is read: @SESSION@, @SESSION2@,
-# @TRANSCRIPT@, @TRANSCRIPT2@. @NOW@ is substituted as each line is written,
-# since it stands for the moment of writing.
+# @SESSION@, @SESSION2@, @TRANSCRIPT@ and @TRANSCRIPT2@ are substituted when
+# the scenario is read. @NOW@ is substituted as each transcript line is written.
 #
 # Environment:
 #   MOCK_CLAUDE_SCENARIO      the scenario to replay (required)
 #   MOCK_CLAUDE_SESSION       the session id it announces
 #   MOCK_CLAUDE_SESSION_2     the id a resumed session announces
 #   MOCK_CLAUDE_TRANSCRIPT    the transcript it writes
-#   MOCK_CLAUDE_TRANSCRIPT_2  the one a resumed session writes
-#   AMX_BIN                   the amx the hooks are delivered through
-#   AMX_ID                    inherited from the pane; `amx _hook`'s business
+#   MOCK_CLAUDE_TRANSCRIPT_2  the transcript a resumed session writes
+#   AMX_BIN                   the amx that hooks are delivered to
+#   AMX_ID                    inherited from the pane, read by `amx _hook`
 
 set -u
 
@@ -62,8 +49,7 @@ session2=${MOCK_CLAUDE_SESSION_2:-b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42}
 transcript=${MOCK_CLAUDE_TRANSCRIPT:-${TMPDIR:-/tmp}/mock-claude-$$.jsonl}
 transcript2=${MOCK_CLAUDE_TRANSCRIPT_2:-$transcript.2}
 
-# One hook, delivered the way claude delivers one: the payload on stdin, and
-# the environment saying which agent it belongs to.
+# Deliver one hook as claude does: the payload on stdin, the agent in the env.
 deliver() {
 	event=${1%% *}
 	json=${1#"$event"}
@@ -77,7 +63,7 @@ deliver() {
 	esac
 	case "$json" in
 	*'"transcript_path"'*)
-		# The scenario moved the transcript; later `transcript` steps follow.
+		# The payload moves the transcript; later `transcript` steps follow it.
 		transcript=$(printf '%s' "$json" |
 			sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 		;;
@@ -91,14 +77,13 @@ deliver() {
 	printf '%s' "{$fields}" | "$amx" _hook
 }
 
-# Milliseconds, because a scenario's interesting waits are shorter than a
-# second.
+# Sleep for $1 milliseconds.
 nap() {
 	[ "$1" -gt 0 ] || return 0
 	sleep "$(($1 / 1000)).$(printf '%03d' "$(($1 % 1000))")"
 }
 
-# The byte a terminal sends for a key a scenario can wait on.
+# The byte a terminal sends for a named key.
 byte_of() {
 	case "$1" in
 	Escape) printf '27' ;;
@@ -106,17 +91,11 @@ byte_of() {
 	esac
 }
 
-# Block until that byte arrives on stdin.
+# Block until the key's byte arrives on stdin, or stdin closes.
 #
-# The vendor this stands in for reads keys rather than lines, so the terminal
-# is taken out of the mode that holds everything back until enter, and told
-# not to echo what it is holding. Whatever is typed before the key is read and
-# dropped: this waits for one key, and a message somebody sent the agent
-# first is not it.
-#
-# Stdin closing is the other way out. Nothing more is ever coming down it, and
-# a scenario left blocking on a pane whose terminal has gone would hold the
-# test driving it until its own deadline.
+# The terminal is put in non-canonical, no-echo mode, as claude reads keys.
+# Bytes before the key, such as a message sent to the agent, are dropped.
+# EOF also returns, so a pane whose terminal is gone does not hold the test.
 await() {
 	want=$(byte_of "$1") || {
 		echo "mock-claude: $scenario: no key called \`$1\`" >&2
@@ -137,9 +116,8 @@ await() {
 	fi
 }
 
-# The stamp claude puts on every transcript line: ISO-8601 UTC to the
-# millisecond. `%3N` is GNU date; where it is unsupported the field comes back
-# literal, so fall back to `.000` rather than write a stamp nothing can order.
+# claude's transcript timestamp: ISO-8601 UTC to the millisecond. `%3N` is GNU
+# date; where it comes back literal, fall back to `.000`.
 now() {
 	stamp=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null)
 	case $stamp in
@@ -155,10 +133,9 @@ sed -e "s|@TRANSCRIPT2@|$transcript2|g" \
 	-e "s|@SESSION@|$session|g" \
 	"$scenario" >"$steps"
 
-# The steps are read on a descriptor of their own, so the pane's own stdin is
-# still stdin while a step runs: `await` has nowhere else to read a key from.
-# The file is unlinked once open instead of removed by an EXIT trap. An EXIT
-# trap makes bash 5.3 catch SIGHUP, and a hangup landing in a command
+# Steps are read on fd 3 so that stdin stays the pane's, where `await` reads
+# keys. The file is unlinked once open instead of removed by an EXIT trap. An
+# EXIT trap makes bash 5.3 catch SIGHUP, and a hangup landing in a command
 # substitution then runs the trap there and spins forever.
 exec 3<"$steps"
 rm -f "$steps"
