@@ -389,7 +389,12 @@ pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, 
 pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
     match format {
         Transcript::Pi | Transcript::Codex | Transcript::Opencode => None,
-        Transcript::Claude => entries(jsonl)
+        // The hook asks this on every event, and title lines are rare, so
+        // only lines that could be one are parsed.
+        Transcript::Claude => jsonl
+            .lines()
+            .filter(|line| line.contains("-title"))
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .filter_map(|entry| {
                 let title = match entry["type"].as_str()? {
                     "custom-title" => entry["customTitle"].as_str()?,
