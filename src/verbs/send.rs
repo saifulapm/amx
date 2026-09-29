@@ -1,36 +1,17 @@
-//! `amx send` — put a message in front of a running agent.
+//! `amx send`: paste a message into a running agent's pane and submit it.
 //!
-//! The message goes into the pane as a bracketed paste and is submitted with
-//! Enter, so the agent reads it the way it reads a person typing. Three things
-//! around that are the whole verb:
+//! After typing, the verb waits up to [`CONFIRM`] for the prompt to be taken:
+//! the vendor's own prompt event, or for a vendor without hooks, a reading of
+//! the pane that saw a turn begin. The refusal helpers here are shared with
+//! `result`, `answer` and `interrupt`.
 //!
-//! * **It refuses while the agent is waiting.** Text typed at a permission
-//!   prompt answers the prompt, and answering a question by accident is not
-//!   something a caller can take back. The question and the choices under it
-//!   go to stdout, where the answer would have been, and the exit code says
-//!   blocked.
-//! * **It refuses a message that ends its own paste.** The brackets around the
-//!   text are what make it text; a message carrying a copy of the closing one
-//!   is typing at the agent from the middle of itself. See
+//! - A waiting agent is refused: typed text would answer its question. The
+//!   question and its choices go to stdout and the exit code is `BLOCKED`.
+//! - A message containing bracketed-paste delimiters is refused; see
 //!   [`ends_its_own_paste`].
-//! * **It records itself before it types.** A `result` in another shell must
-//!   not hand back the last turn's answer as this send's, so the send is on the
-//!   record — the event log and the sequence number — before a byte reaches the
-//!   pane.
-//!
-//! Then it waits for the word that the text arrived. On a vendor that reports,
-//! that word is the vendor's own — a `UserPromptSubmit`. On one that reports
-//! nothing it is a reader's: the turn a look at the pane watched begin, which
-//! nothing but a look will ever write down. Without either within [`CONFIRM`]
-//! the text went nowhere that amx can see, and saying so beats reporting a
-//! success the caller would then wait on. The other way round is what pi got
-//! for as long as the only word here was the vendor's, and `docs/vendors.md`
-//! has it measured four times: a failure reported over a message that had
-//! landed and a turn that had run.
-//!
-//! The refusals here are shared: `result` and `answer` speak the same three
-//! sentences, and a caller reading amx's stderr should not find three ways of
-//! saying that an agent has ended.
+//! - The send is appended to the event log and `seq` is bumped before anything
+//!   is typed, so a concurrent `result` never takes the previous turn's answer
+//!   for this one.
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
@@ -47,14 +28,11 @@ use crate::{complain, exit, paths, registry, spawn, store, warn};
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
 
-/// Whether this event is the record's vendor saying it has the message: the
-/// moment its entry calls `Prompted`, or the `Taken` a vendor that steers a
-/// message into a running turn says instead, in its own word for it.
+/// Whether `event` is the vendor reporting that it took a prompt: its
+/// `Prompted` or `Taken` moment.
 ///
-/// That the vendor has it, and not that it has answered it — see [`queued`],
-/// which is about the difference. This is what a send waits on, and having it
-/// is the whole of what a send can ask for: the paste landed and the vendor
-/// took it off the composer.
+/// This says the vendor has the message, which is what a send waits for. It
+/// does not say the message was answered; see [`queued`].
 fn submitted(hooks: Option<&Hooks>, event: &Event) -> bool {
     matches!(
         hooks.and_then(|hooks| hooks.moment(&event.kind)),
@@ -62,27 +40,20 @@ fn submitted(hooks: Option<&Hooks>, event: &Event) -> bool {
     )
 }
 
-/// How long a send waits for the agent to take what it was given. Long enough
-/// for a vendor that is redrawing its screen, short enough that a caller
-/// scripting a conversation is not left holding a lie.
+/// How long a send waits for the agent to take the message.
 const CONFIRM: Duration = Duration::from_secs(5);
 
-/// How often the event log is read while waiting for that word.
+/// How often the event log is polled while waiting.
 const POLL: Duration = Duration::from_millis(50);
 
-/// How often the *pane* is read, on the vendor where that word can only come
-/// off one. Reading two small files twenty times a second is free and asking
-/// tmux for a screen twenty times a second is not, so a look gets a clock of
-/// its own — which is what `result` does with its own wait. Still often enough
-/// that a turn short enough to be over between two looks is a turn nothing
-/// could have seen at all.
+/// How often the pane is read for a vendor without hooks. A tmux capture costs
+/// far more than reading the log, so it gets a slower clock.
 const LOOK: Duration = Duration::from_millis(250);
 
 /// Run the verb against the machine.
 ///
-/// The message is read before anything else happens, because it is the whole
-/// point of the call: a file amx cannot read is a command line that never
-/// reached an agent, and saying so costs nothing and touches no record.
+/// A `--file` that cannot be read is a usage error, reported before any record
+/// is touched.
 pub fn from_env(id: &str, text: Option<&str>, file: Option<&Path>) -> Result<i32> {
     let text = match file {
         Some(path) => match crate::cli::text_of(path) {
@@ -110,11 +81,8 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
-    // Asked before the phase is, because a pane amx let go is no ending and
-    // the record reads whatever the agent was doing when the pane was taken.
-    // Nothing below would say a word about it: the message would be pasted at
-    // a pane that is not there, or somebody would be sent to answer a question
-    // on a screen that has gone.
+    // Checked before the phase: a parked record still reads whatever the agent
+    // was doing when its pane was taken.
     if view.verdict.evidence == derive::Evidence::LetGo {
         complain!("amx: {}", was_let_go(id));
         return Ok(exit::FAILURE);
@@ -128,8 +96,8 @@ pub fn run(
     }
 
     let agent = Agent::open(root, id)?;
-    // Where the log ends before the send: the confirmation is looked for in
-    // what is appended after it, so the wait never re-reads the whole log.
+    // The confirmation is looked for only in what is appended after this
+    // offset, so the wait never re-reads the whole log.
     let from = std::fs::metadata(agent.events_path()).map_or(0, |log| log.len());
 
     let server = Server::from_socket(view.meta.socket.clone());
@@ -151,8 +119,7 @@ pub fn run(
         }
     }
 
-    // An agent that is mid-turn will not submit this until the turn it is on
-    // ends, which is not a stall and may be a long way off.
+    // A working agent takes the message only when its current turn ends.
     if phase == Phase::Working {
         warn!("amx: {id} is working; the message is queued behind the turn it is on");
         return Ok(exit::OK);
@@ -168,19 +135,15 @@ pub fn run(
     Ok(exit::FAILURE)
 }
 
-/// Put the text in front of the agent, recorded before it is typed.
+/// Record the message, then paste it into the pane and press Enter.
 ///
-/// The record comes first, under the writer's lock, because it is what tells a
-/// reader in another process that the answer it can see belongs to the turn
-/// before this message. The view acts through this too: what is shared is the
-/// order, which is the part that must not be got wrong twice.
+/// The event and `seq` are written under the writer lock before anything is
+/// typed, so a reader in another process knows the visible answer belongs to
+/// the previous turn. The view sends through here too.
 ///
-/// Written with the observing hand, like everything else amx puts on a record
-/// without having heard it from the agent. The record's freshness says when the
-/// agent was last heard from, and a message is amx doing the talking: moving it
-/// would have every reader for the next [`derive::FRESH`] seconds believe a
-/// document written before the message over the pane that has since taken it —
-/// including the reading this send is about to wait on.
+/// The write uses `observe`, which leaves the record's freshness alone: amx
+/// sent the message, the agent said nothing. Bumping it would make readers
+/// trust the pre-send record over the pane for [`derive::FRESH`] seconds.
 pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
     match delivered(agent, server, pane, text)? {
         Delivered::Sent => Ok(()),
@@ -192,24 +155,22 @@ pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Res
     }
 }
 
-/// What became of a message [`delivered`] was handed.
+/// Outcome of [`delivered`].
 enum Delivered {
     Sent,
-    /// Nothing typed and nothing recorded, for the reason given.
+    /// Nothing typed or recorded, for the reason given.
     Refused(String),
-    /// The record reads waiting now, which the reading before this did not
-    /// say: nothing typed and nothing recorded, and this is the record.
+    /// The record turned to waiting since the caller read it. Nothing typed or
+    /// recorded; this is the current state.
     Waiting(Box<State>),
 }
 
-/// [`deliver`], with what the record says now handed back rather than turned
-/// into an error.
+/// [`deliver`], returning a refusal or a new question instead of an error.
 ///
-/// The caller decided to send on a reading taken without the lock, and a park
-/// or a question can land between that reading and the paste. So the record
-/// is read again under the writer, and the writer is held until the Enter is
-/// pressed: `_park` holds it from its own reading to its kill, and a send
-/// either lands before that reading or finds the stamp it left.
+/// The caller's reading was taken without the lock, so the record is read
+/// again under the writer, which is held until Enter is pressed. `_park` holds
+/// the same lock from its check to its kill, so a send either lands first or
+/// sees the parked stamp.
 fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<Delivered> {
     if ends_its_own_paste(text) {
         bail!(
@@ -237,7 +198,8 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
         )));
     }
 
-    // Recorded as written, and typed with the space a popup word needs.
+    // Logged as given; typed with a trailing space if the last word opens a
+    // popup.
     let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
     writer.observe(|state| state.seq += 1)?;
@@ -245,12 +207,10 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     server.send_keys(pane, &["Enter"]).map(|()| Delivered::Sent)
 }
 
-/// What a send says to a composer an interrupt put text back in.
+/// The refusal for a composer an interrupt put queued text back into.
 ///
-/// The text is on the vendor's prompt, unsubmitted, and a paste would land
-/// after it and go out with it as one message. Somebody at the pane decides
-/// whether it goes or is cleared, and the vendor's next prompt is what lifts
-/// the refusal.
+/// A paste would be appended to that text and submitted with it. The refusal
+/// lasts until the vendor's next prompt.
 fn held(id: &str, held: &[String]) -> String {
     let held: Vec<String> = held.iter().map(|text| format!("{text:?}")).collect();
     format!(
@@ -260,42 +220,32 @@ fn held(id: &str, held: &[String]) -> String {
     )
 }
 
-/// Whether the message carries the brackets of the paste it travels in.
+/// Whether `text` contains a bracketed-paste start or end sequence.
 ///
-/// tmux writes `ESC [ 200 ~` before the text and `ESC [ 201 ~` after it, and
-/// it does not look at the text in between. A message carrying the closing
-/// pair ends its own paste early: the rest of it arrives at the vendor as
-/// keystrokes, where a newline submits, an arrow moves a menu's cursor and a
-/// line beginning with a slash is a command. That is a message writing itself
-/// a second turn, and there is no escape for it — a paste is bytes, so the
-/// only answer is to refuse.
-///
-/// The opening pair goes with it. Nothing amx has any business sending carries
-/// either, and a message that is trying to open a paste of its own is a
-/// message worth stopping on the same sentence.
+/// tmux wraps the paste in `ESC [ 200 ~` and `ESC [ 201 ~` without escaping
+/// the text. An embedded end sequence ends the paste early, and the rest
+/// arrives as keystrokes: a newline submits, an arrow moves a menu, a leading
+/// slash runs a command. There is no way to escape it, so both sequences are
+/// refused.
 pub(crate) fn ends_its_own_paste(text: &str) -> bool {
-    // `ESC [` and the one character an 8-bit terminal takes in its place.
+    // `ESC [` and its 8-bit C1 equivalent.
     ["\u{1b}[", "\u{9b}"]
         .iter()
         .any(|csi| text.contains(&format!("{csi}200~")) || text.contains(&format!("{csi}201~")))
 }
 
-/// Wait for the word that the message was taken.
+/// Wait up to `patience` for a prompt submission logged after byte `from`.
 ///
-/// A vendor that reports says it itself, and this reads the log until it
-/// arrives. A vendor that reports nothing never says anything: the only account
-/// of the turn beginning is a reader's, nothing reads a pane unless somebody
-/// asks it to, and while a send waits nobody is asking. So the wait asks, and
-/// what the reading writes down is what it then finds in the log — one word,
-/// read the one way, whoever said it.
+/// For a vendor without hooks nothing else reads the pane while the send
+/// waits, so this takes a reading each round; the reading logs
+/// [`derive::READ_PROMPT`] when it sees a turn begin.
 fn took_it(root: &Path, meta: &Meta, agent: &Agent, from: u64, patience: Duration) -> Result<bool> {
     let deadline = Instant::now() + patience;
     let looking = only_a_reader_will_say(meta);
     let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
     loop {
         if looking {
-            // A reading that cannot be taken is a look this wait did not get,
-            // and the deadline below is what answers for that.
+            // A failed reading is just a missed look; the deadline covers it.
             let _ = derive::view(root, agent.id(), store::now());
         }
         if submissions(hooks.as_ref(), &events_from(agent, from)?) > 0 {
@@ -330,32 +280,19 @@ fn events_from(agent: &Agent, from: u64) -> Result<Vec<Event>> {
         .collect())
 }
 
-/// Whether the only word that will ever say this message was taken is a
-/// reader's.
+/// Whether only a pane reading can confirm the send: the vendor has no hooks.
 ///
-/// A vendor with hooks says [`SUBMITTED`] itself, at the moment it takes the
-/// text. One with none says nothing ever, so the turn beginning is on the pane
-/// and nowhere else and the only account of it there will ever be is a reading
-/// that watched it happen — see [`derive::READ_PROMPT`].
-///
-/// A command amx has no entry for is judged as a vendor that reports, the way
-/// `doctor` judges one: nothing measured is not a measurement, and a wrapper
-/// somebody wrote around a vendor reports through it.
+/// A command with no registry entry counts as a vendor with hooks, as in
+/// `doctor`: it is usually a wrapper around one.
 fn only_a_reader_will_say(meta: &Meta) -> bool {
     crate::registry::entry(meta.agent.as_deref().unwrap_or_default())
         .is_some_and(|vendor| !vendor.can(Capability::Hooks))
 }
 
-/// How many prompts this agent has submitted, in whichever words the record has
-/// them.
+/// How many prompts the agent took: the vendor's own prompt events plus
+/// [`derive::READ_PROMPT`] from pane readings.
 ///
-/// The vendor's own where there was a vendor to say it, and amx's own name for
-/// the same moment where a reading of the pane is the only thing that will ever
-/// place it. Both say a prompt went in; a send that waited only for the first
-/// was a send that could never be confirmed on half the table.
-///
-/// A subagent's events ride the same log and are not the agent's doing, so
-/// they do not confirm anybody's send.
+/// Subagent events share the log and are not counted.
 fn submissions(hooks: Option<&Hooks>, events: &[Event]) -> usize {
     events
         .iter()
@@ -366,47 +303,26 @@ fn submissions(hooks: Option<&Hooks>, events: &[Event]) -> usize {
         .count()
 }
 
-/// What has been sent and not yet answered: the text of every `send` the
-/// vendor is still holding, oldest first, with the log read in the record's
-/// own vendor's `hooks`.
+/// The text of every send the vendor still holds, oldest first, reading the
+/// log with the record's own vendor's `hooks`.
 ///
-/// A vendor mid-turn holds a message until it is ready for it, and says
-/// nothing about holding it that amx can read off the pane: claude draws it in
-/// the composer band a card cuts off. The log is the one place the fact is
-/// written, by `deliver` on the way in and by the vendor's own moments — or a
-/// reader's [`derive::READ_PROMPT`] — on the way out. With nothing on the log
-/// at all, everything sent is still waiting.
-///
-/// **The two vendors say different things at that moment, so the turn is what
-/// is counted rather than the word.** pi reports the message it has *started
-/// on* — the moment its table calls `Taken` — and until then the message is
-/// waiting, which is exactly what this wants. claude reports only that it has
-/// the message. Measured at 2.1.278 on 2026-09-21: a prompt typed twelve
-/// seconds into a running turn fired `UserPromptSubmit` seven milliseconds
-/// later, the model did not see it for another thirty-one seconds, and it
-/// arrived folded into the turn already running rather than as a turn of its
-/// own — one `Stop` for both, and no second prompt event when the vendor
-/// picked it up. claude's own composer says `Press up to edit queued messages`
-/// for the whole of that half-minute, and amx said nothing at all: the row's
-/// `· queued` came and went inside one frame (Saiful, 2026-09-21).
-///
-/// So a prompt the vendor reports while a turn is already running is a message
-/// it is holding, and the end of that turn is what says it has been answered.
-/// A turn ending is also the only thing here that can go wrong in the safe
-/// direction: a `Stop` amx missed would leave a message listed as waiting when
-/// it has been answered, and a reader watching the prompt come back — see
-/// [`derive::READ_TURN_END`] — is the second way out of that.
+/// Turn edges decide it. pi reports `Taken` when it starts on a message.
+/// claude 2.1.278 fires `UserPromptSubmit` as soon as a mid-turn message is
+/// queued, then folds it into the running turn with one `Stop` and no second
+/// prompt event. So a prompt reported while a turn runs is held, and the end
+/// of that turn answers it. A missed `Stop` errs towards "still queued"; a
+/// reader's [`derive::READ_TURN_END`] clears it.
 pub fn queued(hooks: Option<&Hooks>, events: &[Event]) -> Vec<String> {
     unanswered(hooks, events)
         .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
         .collect()
 }
 
-/// [`queued`] for the agent `meta` describes, less every message its
-/// transcript says the vendor took off its queue since it was sent.
+/// [`queued`] for `meta`'s agent, minus messages its transcript says the
+/// vendor took off its queue after they were sent.
 ///
-/// claude folds a message typed mid-turn into the turn still running without
-/// firing a hook; its transcript's `queue-operation` line is the only record.
+/// claude fires no hook when it absorbs a queued message into the running
+/// turn; the transcript's `queue-operation` line is the only record.
 pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
     let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
     let pending: Vec<&Event> = unanswered(hooks.as_ref(), events).collect();
@@ -448,28 +364,21 @@ fn unanswered<'a>(
     let mut running = false;
     let mut answered = 0;
     for (at, event) in events.iter().enumerate() {
-        // A subagent's events ride the same log and are not the agent's turn.
+        // Subagent events share the log.
         if !event.payload["agent_id"].is_null() {
             continue;
         }
-        // Which edge of a turn this event is, where it is one at all: a turn
-        // beginning, or a turn ending. Either way everything sent before it
-        // has been answered; what they disagree about is what the next prompt
-        // the vendor reports will mean.
+        // Some(true) for a turn start, Some(false) for a turn end. Either
+        // answers everything sent before it.
         let edge = match hooks.and_then(|hooks| hooks.moment(&event.kind)) {
-            // The vendor saying it has started on the message, which is the
-            // one word that means the message is no longer waiting whenever
-            // it arrives.
             Some(Moment::Taken) => Some(true),
-            // And the vendor saying it has the message, which means that only
-            // where there was no turn for it to be held behind.
+            // A prompt reported mid-turn is a message the vendor queued.
             Some(Moment::Prompted) if running => None,
             Some(Moment::Prompted) => Some(true),
             Some(Moment::Ended) => Some(false),
             _ if event.kind == derive::READ_PROMPT => Some(true),
             _ if event.kind == derive::READ_TURN_END => Some(false),
-            // amx's own word that it cut the turn short, which the vendor
-            // may never mention: see [`crate::verbs::interrupt`].
+            // claude writes no `Stop` for an interrupted turn.
             _ if event.kind == crate::verbs::interrupt::INTERRUPT => Some(false),
             _ => None,
         };
@@ -481,15 +390,10 @@ fn unanswered<'a>(
     events[answered..].iter().filter(|event| event.kind == SEND)
 }
 
-/// Exit `BLOCKED`, with the pending question — and the choices under it —
-/// where the answer would have gone.
+/// Exit `BLOCKED`, printing the pending question and its numbered choices on
+/// stdout and the `amx answer` command on stderr.
 ///
-/// stdout carries the question because that is the pipe a caller reads, and
-/// stderr names the verb that unblocks it. The choices go on stdout too: they
-/// are what the answer has to be one of, and a caller that has to capture the
-/// pane and parse it for them is a caller amx has not finished the job for.
-/// A question amx never captured still blocks — the state says so, and only
-/// the text is missing.
+/// A question whose text was never captured still blocks; stdout is empty.
 pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let id = view.id();
     if let Some(question) = &view.state.question {
@@ -505,10 +409,9 @@ pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Writ
     Ok(exit::BLOCKED)
 }
 
-/// The choices under a question, numbered the way the screen numbers them.
+/// The choices under a question, numbered from 1 as `amx answer` takes them.
 ///
-/// Every surface that prints them prints them from here, so the number a
-/// person reads off `ls` is the number `amx answer` takes.
+/// Every surface prints choices through this.
 pub fn numbered(options: &[String]) -> impl Iterator<Item = String> + '_ {
     options
         .iter()
@@ -516,13 +419,9 @@ pub fn numbered(options: &[String]) -> impl Iterator<Item = String> + '_ {
         .map(|(at, label)| format!("{}. {label}", at + 1))
 }
 
-/// The command that answers this question, with the grammar it will take.
+/// The `amx answer` command for this question, with the keys it accepts.
 ///
-/// What the screen was read as decides that grammar, not the kind of thing it
-/// is: two screens of one kind take different keys when one of them numbers
-/// its choices and the other does not. Every key named here is one `amx
-/// answer` takes, and an offer amx then refuses is worse than no offer at all
-/// — it is the sentence a person reads before they type.
+/// Every key offered must be one `answer` accepts for this screen.
 pub fn how_to_answer(view: &View) -> String {
     format!(
         "amx answer {} {}",
@@ -531,16 +430,11 @@ pub fn how_to_answer(view: &View) -> String {
     )
 }
 
-/// The keys the screen showing will take, named the way a usage line names its
-/// argument.
+/// The keys the current screen accepts, in usage-line form.
 ///
-/// Four readings decide it. A list the vendor puts no numbers on takes only the
-/// walk. A list amx numbered itself, off the mark in front of the row under its
-/// cursor, takes those numbers and the key that cancels — every other key is
-/// one that selector swallows. A question the vendor asked itself takes its
-/// choices and, unless it draws a preview beside them, words of your own.
-/// Everything else — a permission box, a numbered trust screen, a question amx
-/// knows nothing about — reads one key.
+/// An unnumbered list takes a walk. A list amx numbered from the cursor mark
+/// takes its digits and `esc`. A vendor question takes a digit, plus free
+/// words unless it has previews. Anything else takes one key.
 fn takes(kind: Option<Kind>, state: &State) -> String {
     if answer::unnumbered(kind, state) {
         return "<down enter|up enter|esc>".to_string();
@@ -558,25 +452,19 @@ fn takes(kind: Option<Kind>, state: &State) -> String {
     }
 }
 
-/// Exit `FAILURE`: this agent is not going to answer anybody.
+/// Exit `FAILURE` for an agent that has ended, saying what to do next.
 pub fn nothing_more_is_coming(id: &str, phase: Phase) -> i32 {
     complain!("amx: {id} is {phase}. {}", remedy(id, phase));
     exit::FAILURE
 }
 
-/// What an agent whose pane amx let go has to say for itself, and what to do
-/// about it.
-///
-/// Its own sentence rather than one of [`remedy`]'s: nothing here has ended.
-/// The agent is where it was, its session is where it was, and the one thing
-/// missing is the pane — which is what `amx resume` puts back. See
-/// [`crate::verbs::park`].
+/// The refusal for a parked agent: its pane is gone, the session is intact,
+/// and `amx resume` brings it back. See [`crate::verbs::park`].
 fn was_let_go(id: &str) -> String {
     format!("{id} is parked; amx let its pane go. run: amx resume {id}")
 }
 
-/// What to do about an agent in this state — the same offer `ls` makes on a
-/// row that needs a person.
+/// What to do about an agent that ended in `phase`, as `ls` suggests it.
 fn remedy(id: &str, phase: Phase) -> String {
     match phase {
         Phase::Stopped => format!("run: amx resume {id}"),
@@ -595,13 +483,8 @@ pub fn line(text: &str, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// The vendor's own words, as this stdout should receive them.
-///
-/// Down a pipe they are the payload and stay verbatim: a caller reading
-/// `$(amx result …)` is reading what the agent said, not a rendering of it.
-/// A terminal is the other case, and a terminal is an interpreter — the same
-/// bytes can retitle the window or clear the screen, so a person gets them
-/// inert. The agent's own line breaks survive either way.
+/// Vendor text for stdout: verbatim down a pipe, sanitized on a terminal so
+/// escape sequences cannot drive it. Line breaks survive either way.
 pub fn rendered(text: &str, to_terminal: bool) -> String {
     match to_terminal {
         true => crate::tmux::sanitize(text),
@@ -624,7 +507,7 @@ mod tests {
             .collect()
     }
 
-    /// An agent stopped on a question, as a reader hands it over.
+    /// A view of an agent waiting on a question.
     fn asking(question: Option<&str>, options: &[&str], kind: Option<Kind>) -> View {
         View {
             meta: Meta {
@@ -674,7 +557,7 @@ mod tests {
             "the escape \u{1b}[2J on its own is text"
         ));
 
-        // What follows the terminator is not pasted, it is typed.
+        // Text after the end sequence would be typed, not pasted.
         assert!(ends_its_own_paste("done\u{1b}[201~/exit\r"));
         assert!(
             ends_its_own_paste("done\u{9b}201~/exit\r"),
@@ -688,9 +571,8 @@ mod tests {
 
     #[test]
     fn hardening_a_message_amx_refuses_never_reaches_the_record() {
-        // The record is written before the text is typed, so a refusal that
-        // came afterwards would leave a send on the log that never happened
-        // and a sequence number `result` reads as this turn's.
+        // The record is written before typing, so the paste check must come
+        // first or a refused send would still be logged and counted.
         let root = tempfile::TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &asking(None, &[], None).meta).unwrap();
         let server = Server::from_socket(Socket::Name("amx-no-such-server".to_string()));
@@ -709,8 +591,7 @@ mod tests {
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
     }
 
-    /// claude's word for a prompt taken, as its entry spells it: what the
-    /// table hands back for it is what this file waits on.
+    /// claude's prompt-submitted hook event.
     const SUBMITTED: &str = "UserPromptSubmit";
 
     #[test]
@@ -725,8 +606,7 @@ mod tests {
             2
         );
 
-        // A turn a reader watched begin is the same moment, on the vendor whose
-        // pane is the only place it was ever written.
+        // A reader's READ_PROMPT counts as a prompt; READ_TURN_END does not.
         assert_eq!(
             submissions(
                 claude,
@@ -736,7 +616,7 @@ mod tests {
             "and the other edge of a turn is not a prompt"
         );
 
-        // A subagent's prompt rides the same log and is not this agent's.
+        // Subagent prompts share the log and do not count.
         let mixed = vec![
             Event::new(SUBMITTED, json!({})),
             Event::new(SUBMITTED, json!({ "agent_id": "sub-1" })),
@@ -768,8 +648,7 @@ mod tests {
 
     #[test]
     fn send_counts_a_prompt_only_in_the_records_own_vendors_words() {
-        // A pi record's prompts are pi's words; claude's word for one landing
-        // on it is nothing pi said.
+        // Events are read in the record's own vendor's vocabulary.
         let pi = crate::vendor::pi::VENDOR.hooks;
         assert_eq!(
             submissions(pi.as_ref(), &events(&["agent_start", "message_start"])),
@@ -786,9 +665,9 @@ mod tests {
         let pi = crate::vendor::pi::VENDOR.hooks;
 
         assert!(queued(claude.as_ref(), &[]).is_empty());
-        // Nothing has ever been taken, so everything sent is waiting.
+        // Nothing taken yet: everything sent is queued.
         assert_eq!(queued(claude.as_ref(), &[sent("carry on")]), ["carry on"]);
-        // Taken, and then two more behind the turn, oldest first.
+        // Two more sent after a prompt was taken, oldest first.
         assert_eq!(
             queued(
                 claude.as_ref(),
@@ -801,7 +680,7 @@ mod tests {
             ),
             ["and the linter", "then the docs"]
         );
-        // pi's word that a message steered into a running turn went in.
+        // pi's `Taken` for a message steered into a running turn.
         assert_eq!(
             queued(
                 pi.as_ref(),
@@ -812,7 +691,7 @@ mod tests {
             ),
             Vec::<String>::new()
         );
-        // A reader's word that a turn began is the same edge.
+        // A reader's READ_PROMPT is the same edge.
         assert_eq!(
             queued(
                 claude.as_ref(),
@@ -820,8 +699,7 @@ mod tests {
             ),
             Vec::<String>::new()
         );
-        // A subagent's prompt rides the same log and takes nothing of this
-        // agent's.
+        // A subagent's prompt does not take this agent's message.
         assert_eq!(
             queued(
                 claude.as_ref(),
@@ -841,12 +719,9 @@ mod tests {
         let pi = crate::vendor::pi::VENDOR.hooks;
         let ended = || Event::new("Stop", json!({}));
 
-        // claude reports a prompt seven milliseconds after it is typed and
-        // does not give it to the model until the turn it is already on is
-        // over — measured at 2.1.278 on 2026-09-21, thirty-one seconds apart,
-        // with one `Stop` for both and no second prompt event when it picked
-        // the message up. So the word arriving mid-turn is the vendor saying
-        // it has the message, not that it has answered it.
+        // claude 2.1.278 fires UserPromptSubmit as soon as a mid-turn message
+        // is queued, and fires no second prompt event when it takes it up. A
+        // prompt event mid-turn means the message is held.
         let holding = vec![
             Event::new(SUBMITTED, json!({})),
             sent("and the linter"),
@@ -854,27 +729,22 @@ mod tests {
         ];
         assert_eq!(queued(claude.as_ref(), &holding), ["and the linter"]);
 
-        // The end of that turn is what says it has been answered.
+        // The end of the turn answers it.
         let mut answered = holding.clone();
         answered.push(ended());
         assert!(queued(claude.as_ref(), &answered).is_empty());
 
-        // And the next one begins a turn of its own, because there is none for
-        // it to be held behind.
+        // With no turn running, the next prompt starts a turn of its own.
         let mut again = answered.clone();
         again.extend([sent("then the docs"), Event::new(SUBMITTED, json!({}))]);
         assert!(queued(claude.as_ref(), &again).is_empty());
 
-        // A reader watching the prompt come back is the same edge, and is the
-        // way out of a `Stop` amx never heard: without it a missed stop would
-        // leave every message after it listed as waiting for ever.
+        // A reader's READ_TURN_END also ends the turn, covering a missed Stop.
         let mut watched = holding.clone();
         watched.push(Event::new(derive::READ_TURN_END, json!({})));
         assert!(queued(claude.as_ref(), &watched).is_empty());
 
-        // An interrupt ends the turn where it stands, and claude writes no
-        // `Stop` for a turn cut short: the next message is a turn of its own,
-        // not one held behind the turn that is gone.
+        // An interrupt ends the turn; claude writes no Stop for it.
         let cut = vec![
             Event::new(SUBMITTED, json!({})),
             Event::new(crate::verbs::interrupt::INTERRUPT, json!({})),
@@ -883,9 +753,7 @@ mod tests {
         ];
         assert!(queued(claude.as_ref(), &cut).is_empty());
 
-        // pi says the other thing, and it means what it always did: its
-        // `Taken` is the vendor having started on the message, so it is no
-        // longer waiting whenever it arrives.
+        // pi's `Taken` means it started on the message, whenever it arrives.
         let steered = vec![
             Event::new("agent_start", json!({})),
             sent("and the linter"),
@@ -899,7 +767,7 @@ mod tests {
         let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
         let second = crate::vendor::second::HOOKS;
 
-        // claude's words on a second record are nobody's: nothing was taken.
+        // claude's event name means nothing on a `second` record.
         assert_eq!(
             queued(
                 Some(&second),
@@ -907,7 +775,7 @@ mod tests {
             ),
             ["carry on"]
         );
-        // Its own word for a prompt is the edge.
+        // Its own prompt event does.
         assert!(
             queued(
                 Some(&second),
@@ -947,8 +815,8 @@ mod tests {
             Event::new("UserPromptSubmit", json!({})),
         ];
 
-        // The first was absorbed after it was sent; the second matches only an
-        // absorption from before it was sent, so claude still holds it.
+        // The first was absorbed after it was sent. The second matches only an
+        // absorption from before it was sent, so it is still queued.
         assert_eq!(still_queued(&meta, &events), ["check the tests"]);
         meta.transcript = None;
         assert_eq!(
@@ -965,12 +833,11 @@ mod tests {
             only_a_reader_will_say(&meta)
         };
 
-        // Every vendor in the table says it itself: claude through its hooks,
-        // pi through the extension amx writes.
+        // claude reports through its hooks, pi through amx's extension.
         assert!(!asked(Some("claude")), "claude says it itself");
         assert!(!asked(Some("pi")), "and so does pi, through its extension");
-        // Neither a command amx has no entry for nor a record from before amx
-        // kept the field is measured either way.
+        // An unknown command, or a record without the field, counts as
+        // reporting.
         assert!(!asked(Some("some-tool --flag")));
         assert!(!asked(None));
     }
@@ -1007,8 +874,7 @@ mod tests {
 
     #[test]
     fn surfaces_the_offer_says_what_this_kind_of_question_will_take() {
-        // A permission box and the trust screen take one key. Offering words
-        // at either would be an offer amx cannot keep.
+        // A permission box and the trust screen take one key, never words.
         for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
             let offered = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], kind));
             assert!(offered.contains("y|n|1-2"), "{offered}");
@@ -1026,26 +892,21 @@ mod tests {
 
     #[test]
     fn surfaces_the_offer_names_the_keys_that_move_the_screen_it_was_read_off() {
-        // The run of digits is as long as the choices amx read: a box of two
-        // is not answered by `7`, and offering it invites seven keys that do
-        // nothing to that screen.
+        // The digit range matches the number of choices read.
         let box_of_two = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], None));
         assert!(box_of_two.contains("1-2"), "{box_of_two}");
         assert!(!box_of_two.contains("1-9"), "{box_of_two}");
 
-        // Where amx counted no choices, `1-9` is what a box of two and a box
-        // of five have in common.
+        // With no choices read, offer `1-9`.
         let unread = how_to_answer(&asking(Some("Proceed?"), &[], Some(Kind::Permission)));
         assert!(unread.contains("1-9"), "{unread}");
 
-        // claude 2.1.259's folder-trust gate numbers neither of its rows, so no
-        // digit reaches one and the key that takes what is highlighted takes
-        // the exit. What is offered is the walk that names the row first.
+        // claude 2.1.259's folder-trust gate numbers no rows and opens on the
+        // exit row, so only a walk is offered.
         let gate = how_to_answer(&asking(Some("Quick safety check"), &[], Some(Kind::Trust)));
         assert_eq!(gate, "amx answer fix-login-a1b <down enter|up enter|esc>");
 
-        // And a trust screen of a vendor that still numbers its rows is read
-        // as what it is rather than as what claude's does.
+        // A trust screen with numbered rows takes the usual keys.
         let numbered = how_to_answer(&asking(
             Some("Trust this folder?"),
             &["Yes", "No"],
@@ -1056,11 +917,10 @@ mod tests {
 
     #[test]
     fn surfaces_a_list_amx_numbered_itself_is_offered_the_digits_amx_wrote() {
-        // pi draws every blocking list with an arrow and no numbers, so the
-        // numbers under such a question are amx's own — and they are the whole
-        // of what that screen takes, because `answer` walks to the row they
-        // name. Offering `y`, `n` or `enter` beside them would be offering
-        // three keys the selector swallows.
+        // pi draws blocking lists with a cursor arrow and no numbers. amx
+        // numbers the rows itself and `answer` walks to them, so only those
+        // digits and `esc` are offered; the selector ignores `y`, `n` and
+        // `enter`.
         let mut gate = asking(
             Some("Trust project folder? /srv/app"),
             &[
@@ -1075,8 +935,7 @@ mod tests {
         gate.state.walked = true;
         assert_eq!(how_to_answer(&gate), "amx answer fix-login-a1b <1-5|esc>");
 
-        // And pi's own tool gate, which is a question rather than a trust
-        // screen and takes exactly the same keys.
+        // pi's tool gate is a question and takes the same keys.
         let mut dialog = asking(
             Some("Allow pi to run `rm -rf build`?"),
             &["Allow once", "Allow always", "Deny"],
@@ -1088,9 +947,8 @@ mod tests {
 
     #[test]
     fn surfaces_a_question_drawn_beside_a_preview_is_offered_no_words() {
-        // That shape has no row for words of your own — measured against
-        // 2.1.240 and refused by `answer` — so naming them here would be amx
-        // offering what it will not take.
+        // claude 2.1.240 draws no free-text row beside previews, and `answer`
+        // refuses words there.
         let mut view = asking(Some("Which layout?"), &[], Some(Kind::Question));
         view.state.asks_all(vec![Ask {
             header: None,
@@ -1127,11 +985,8 @@ mod tests {
 
     #[test]
     fn send_says_so_when_amx_has_let_the_agents_pane_go() {
-        // A parked agent reads idle, which is where it was when its pane was
-        // taken, so nothing above this refuses it: without a word here the
-        // message would be pasted at a pane that is not there. The record is
-        // untouched — the send is not queued for a vendor that will never see
-        // it — and one command puts the agent back.
+        // A parked agent reads idle, so the phase check alone would let the
+        // send through. The record must stay untouched.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
             parent: None,
@@ -1157,7 +1012,7 @@ mod tests {
         assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
 
-        // And what it says is the command that undoes it.
+        // The refusal names the command that brings it back.
         let said = was_let_go(&meta.id);
         assert!(said.contains("parked"), "{said}");
         assert!(said.contains("amx resume fix-login-a1b"), "{said}");
@@ -1211,10 +1066,9 @@ mod tests {
         assert_eq!(String::from_utf8(out).unwrap(), "no newline\nhas one\n");
     }
 
-    /// A pane of the test's own on a server of its own, gone when the test
-    /// is, in a session named the way [`crate::spawn::place`] names one so it
-    /// answers for `fix-login-a1b`. It runs `cat`, so whatever is typed at it
-    /// is on its screen.
+    /// A `cat` pane on a private tmux server, in a session named as
+    /// [`crate::spawn::place`] names one so it answers for `fix-login-a1b`.
+    /// Killed on drop.
     struct Listening {
         server: Server,
         pane: PaneId,
@@ -1234,8 +1088,7 @@ mod tests {
             Listening { server, pane }
         }
 
-        /// An agent whose record points at this pane, in the state `change`
-        /// leaves it.
+        /// An agent recorded on this pane, with `change` applied to its state.
         fn agent(&self, root: &Path, change: impl FnOnce(&mut State)) -> Agent {
             let meta = Meta {
                 socket: self.server.socket().clone(),
@@ -1262,9 +1115,8 @@ mod tests {
 
     #[test]
     fn send_refuses_a_record_parked_since_it_was_read() {
-        // The reading said idle, and park took the pane before the paste: the
-        // record under the writer is the one that is true now, and nothing of
-        // the send reaches it.
+        // Parked between the caller's reading and the paste: the record under
+        // the writer lock wins.
         let root = tempfile::TempDir::new().unwrap();
         let pane = Listening::new("parked");
         let agent = pane.agent(root.path(), |state| {
@@ -1298,9 +1150,7 @@ mod tests {
 
     #[test]
     fn send_to_a_record_now_waiting_presses_nothing_and_hands_back_the_question() {
-        // The reading said idle, and a question went up before the paste.
-        // Text typed now would answer it, so none is, and what comes back is
-        // the question as the record has it.
+        // A question appeared between the caller's reading and the paste.
         let root = tempfile::TempDir::new().unwrap();
         let pane = Listening::new("waiting");
         let agent = pane.agent(root.path(), |state| {
@@ -1322,10 +1172,8 @@ mod tests {
 
     #[test]
     fn send_refuses_while_the_composer_holds_what_an_interrupt_put_back() {
-        // pi puts the messages it was holding back in its composer when a turn
-        // is cancelled, so a paste now would be typed after them and submitted
-        // with them. Nothing is typed and nothing recorded, and the refusal
-        // names what is sitting there.
+        // pi puts queued messages back in its composer when a turn is
+        // cancelled; a paste would be submitted with them.
         let root = tempfile::TempDir::new().unwrap();
         let pane = Listening::new("holds");
         let agent = pane.agent(root.path(), |state| {
