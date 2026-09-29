@@ -502,8 +502,9 @@ impl Drop for Harness {
 ///
 /// `AMX_NESTED` drops every hook a stand-in delivers as nested, and the rest
 /// name that outer agent's record, its scratch directory and the amx it runs
-/// (#KR7ZYJ5Z, #C2G0FZ5E). `CODEX_HOME` names the person's own codex, which
-/// no test may read or write: a test that wants one sets it itself.
+/// (#KR7ZYJ5Z, #C2G0FZ5E). `CODEX_HOME` names the person's own codex, and the
+/// three `OPENCODE_CONFIG` variables their own opencode's config, which no
+/// test may read or write: a test that wants one sets it itself.
 fn leaks_nothing(command: &mut Command) {
     for name in [
         "AMX_NESTED",
@@ -512,6 +513,9 @@ fn leaks_nothing(command: &mut Command) {
         "AMX_WORKTREE",
         "AMX_BIN",
         "CODEX_HOME",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT",
     ] {
         command.env_remove(name);
     }
