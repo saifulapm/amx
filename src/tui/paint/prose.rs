@@ -1,16 +1,10 @@
-//! An agent's words, drawn the way the agent meant them.
+//! Rendering an agent's markdown into styled rows.
 //!
-//! What an agent says is markdown, and a card that showed the marks would be
-//! showing the agent's typing rather than its answer. So the text is parsed
-//! the way the vendor's own screen parses it and drawn into rows a card can
-//! hold: headings in weight, emphasis in its two slants, a block of code set
-//! apart and dim, code in a line in the accent, lists with a bullet in the
-//! gutter, a quote behind a bar, a rule a rule.
-//! Every row is already wrapped to the width it was asked for, because the
-//! rows of a card are windowed and not reflowed — see [`super::card::Body`].
-//!
-//! The words are the agent's, and an agent's words go through [`inert`] before
-//! a terminal sees them, the same as every other byte amx did not write.
+//! Headings are bold, emphasis italic, code blocks indented and dim, inline
+//! code in the accent, list items behind a bullet or number, quotes behind a
+//! bar. Rows come out wrapped to the requested width, because a card windows
+//! its rows without reflowing them (see [`super::card::Body`]). All text goes
+//! through [`inert`].
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
@@ -20,27 +14,19 @@ use super::style::{bold, dim};
 use super::text::{RULE, char_width, inert, width_of};
 use crate::theme::Theme;
 
-/// The marker a list item wears in the gutter, and the bar a quote stands
-/// behind.
 const BULLET: &str = "• ";
 const QUOTE: &str = "│ ";
-/// What code is set in from the margin, block and fence alike.
+/// Indent of a code block.
 const CODE_INDENT: &str = "  ";
-/// What a tab in a block of code is worth: spaces to the next stop, at the
-/// four columns an editor shows a tab-indented block at. Left to the
-/// sanitiser it would be one space, and a Go or Makefile block would lose
-/// its indentation.
+/// Tab stop width in code blocks. The sanitiser would turn a tab into one
+/// space and flatten tab-indented code.
 const TAB: usize = 4;
 
 /// `text` as markdown, drawn into rows no wider than `width`, never ending on
 /// a blank row.
 ///
-/// A single newline ends the row it stands on, the way a hard break does,
-/// rather than becoming the space markdown calls it. That is what the pane
-/// beside the card shows: pi draws an answer through pi-tui's `Markdown`, which
-/// leaves the newline in the paragraph it renders and starts a row on it when
-/// it wraps. An agent that wrote three short lines meant three rows, and a card
-/// that ran them into one would be redrafting the agent.
+/// A soft line break ends the row, as a hard break does, rather than becoming
+/// a space. This matches pi-tui's `Markdown`, which keeps the newline.
 pub(super) fn render(text: &str, width: u16, theme: Theme) -> Vec<Line<'static>> {
     let mut drawing = Drawing::new(width.max(1) as usize, theme);
     let mut options = Options::empty();
@@ -53,50 +39,45 @@ pub(super) fn render(text: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
     drawing.finish()
 }
 
-/// One run of words in one style, inside the block being gathered.
+/// A run of text in one style within the current block.
 #[derive(Debug, Clone)]
 struct Run {
     text: String,
     style: Style,
 }
 
-/// A list being drawn: what the next item is numbered, or bulleted.
+/// An open list: bulleted, or numbered with the next item's number.
 #[derive(Debug, Clone, Copy)]
 enum Listing {
     Bulleted,
     Numbered(u64),
 }
 
-/// The drawing as it is gathered: finished rows above, and the block still
-/// being filled below them.
+/// Render state: finished rows, and the block still being gathered.
 struct Drawing {
     width: usize,
     theme: Theme,
     rows: Vec<Line<'static>>,
-    /// The runs of the block being gathered, styled as they arrived.
+    /// The current block's runs.
     runs: Vec<Run>,
-    /// The styles open around the words arriving now, innermost last.
+    /// Open inline styles, innermost last.
     open: Vec<Style>,
-    /// Every list the block is inside, outermost first.
+    /// Open lists, outermost first.
     lists: Vec<Listing>,
-    /// The marker the next row of this block wears in its gutter, if the block
-    /// opened one: an item's bullet or number, drawn once on its first row.
+    /// The bullet or number for the current block's first row.
     marker: Option<String>,
-    /// How many quote bars stand in front of the block.
+    /// Quote nesting depth.
     quoted: usize,
-    /// Inside a code block, where lines are rows and nothing is wrapped.
+    /// Inside a code block: one row per line, no wrapping.
     coding: bool,
-    /// Inside a table: the cells of the row being gathered, and the rows
-    /// gathered before it, each in the weight it arrived in. Drawn together
-    /// once the table closes, because a column is as wide as its widest cell
-    /// and that is not known until the last row.
+    /// Cells of the table row being gathered, and the finished rows with
+    /// their style. The table is drawn when it closes, once column widths are
+    /// known.
     cell: Vec<String>,
     table: Vec<(Vec<String>, Style)>,
-    /// The link open around the words arriving now: where it points, and how
-    /// much of the block was gathered before it opened, so its words can be
-    /// told from its address once it closes.
+    /// The open link's URL and where its text starts in the block.
     link: Option<(String, usize)>,
-    /// Whether the last block drawn wants a blank row before the next one.
+    /// Whether the next block needs a blank row before it.
     spaced: bool,
 }
 
@@ -119,7 +100,7 @@ impl Drawing {
         }
     }
 
-    /// The style the words arriving now are drawn in.
+    /// The style of text arriving now: every open style patched together.
     fn current(&self) -> Style {
         self.open
             .iter()
@@ -134,11 +115,9 @@ impl Drawing {
                 true => self.code_lines(&text),
                 false => self.push(&text, self.current()),
             },
-            // A path or a flag is what a reader scans an answer for, and dim
-            // is what a tool row, a rule and a gutter already wear: the one
-            // colour the theme lends the card keeps code apart from both.
+            // The accent, since dim is already used by tool rows and gutters.
             Event::Code(code) => self.push(&code, self.current().fg(self.theme.accent)),
-            // Both breaks end their row — see [`render`].
+            // Both breaks end the row; see [`render`].
             Event::SoftBreak | Event::HardBreak => self.push("\n", self.current()),
             Event::Rule => {
                 self.flush();
@@ -164,8 +143,8 @@ impl Drawing {
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Paragraph => {
-                // A paragraph inside an item stands on the item's own row;
-                // one after another in the same item is a block of its own.
+                // An item's first paragraph starts on the marker's row; later
+                // ones are spaced like any block.
                 if self.marker.is_none() {
                     self.space();
                 }
@@ -280,9 +259,8 @@ impl Drawing {
             }
             TagEnd::Link => {
                 self.open.pop();
-                // The address, dim behind the words, so a reader can copy
-                // where the words point — unless the words are the address
-                // already, which an autolink's are.
+                // The URL, dim after the link text, unless the text already is
+                // the URL (an autolink).
                 if let Some((url, from)) = self.link.take() {
                     let address = inert(url.strip_prefix("mailto:").unwrap_or(&url));
                     if self.gathered().get(from..).map(str::trim) != Some(address.as_str()) {
@@ -291,7 +269,7 @@ impl Drawing {
                 }
             }
             TagEnd::TableHead => {
-                // Drawn in the weight the head opened, before it closes.
+                // Gather the head row while its bold style is still open.
                 self.table_row();
                 self.open.pop();
             }
@@ -315,12 +293,13 @@ impl Drawing {
         }
     }
 
-    /// Everything gathered for this block so far, as one string.
+    /// The current block's text so far.
     fn gathered(&self) -> String {
         self.runs.iter().map(|run| run.text.as_str()).collect()
     }
 
-    /// Words arriving for the block being gathered.
+    /// Append text to the current block, merging with the last run when the
+    /// style matches.
     fn push(&mut self, text: &str, style: Style) {
         let text = inert(text);
         match self.runs.last_mut() {
@@ -329,8 +308,8 @@ impl Drawing {
         }
     }
 
-    /// Lines of a code block, a row apiece, set in and dim, never wrapped: a
-    /// row too wide for the card is cut by the card, the way code is.
+    /// Code block lines, one dim indented row each. Never wrapped; the card
+    /// clips a row that is too wide.
     fn code_lines(&mut self, text: &str) {
         for line in text.lines() {
             let row = format!("{}{CODE_INDENT}{}", self.gutter(), inert(&untabbed(line)));
@@ -338,7 +317,7 @@ impl Drawing {
         }
     }
 
-    /// The cells gathered for one table row, kept for the table to draw.
+    /// Keep the gathered cells as a table row.
     fn table_row(&mut self) {
         if self.cell.is_empty() {
             return;
@@ -347,9 +326,8 @@ impl Drawing {
         self.table.push((std::mem::take(&mut self.cell), style));
     }
 
-    /// The table gathered, a row apiece: every cell padded to the widest in
-    /// its column so the columns stand under one another, two blanks apart,
-    /// and the last cell of a row left as it is.
+    /// Draw the gathered table, one row per table row. Cells are padded to
+    /// their column's widest, two spaces apart; the last cell is not padded.
     fn table(&mut self) {
         let rows = std::mem::take(&mut self.table);
         let columns = rows.iter().map(|(cells, _)| cells.len()).max().unwrap_or(0);
@@ -380,8 +358,7 @@ impl Drawing {
         }
     }
 
-    /// A blank row between one block and the next, where the last block asked
-    /// for one and there is something above it to stand apart from.
+    /// Push a blank row if the last block asked for one and is not the first.
     fn space(&mut self) {
         if self.spaced && !self.rows.is_empty() {
             self.rows.push(Line::raw(String::new()));
@@ -389,15 +366,14 @@ impl Drawing {
         self.spaced = false;
     }
 
-    /// What stands in front of every row of the block: the quote bars and
-    /// the indent of the lists it is inside.
+    /// The prefix of every row in the block: quote bars and list indent.
     fn gutter(&self) -> String {
         let quotes = QUOTE.repeat(self.quoted);
         let depth = self.lists.len().saturating_sub(1);
         format!("{quotes}{}", " ".repeat(depth * 2))
     }
 
-    /// The block gathered so far, wrapped into rows and drawn.
+    /// Wrap the current block into rows and push them.
     fn flush(&mut self) {
         if self.runs.is_empty() {
             return;
@@ -405,8 +381,7 @@ impl Drawing {
         let runs = std::mem::take(&mut self.runs);
         let gutter = self.gutter();
         let marker = self.marker.take().unwrap_or_default();
-        // A block inside a list item hangs under its marker: the first row
-        // wears it, and every row after stands in the room it took.
+        // Hanging indent: continuation rows line up after the marker.
         let first = format!("{gutter}{marker}");
         let rest = format!("{gutter}{}", " ".repeat(width_of(&marker)));
         let room = self.width.saturating_sub(width_of(&first)).max(1);
@@ -435,15 +410,13 @@ impl Drawing {
     }
 }
 
-/// The runs of one block, wrapped at whitespace into rows no wider than
-/// `width`, each row the styled spans that fell on it.
+/// A block's runs wrapped at whitespace into rows of styled spans no wider
+/// than `width`.
 ///
-/// A word wider than the whole row is broken where the row ends rather than
-/// pushed off the edge of the terminal, and a hard break inside a run ends
-/// the row where it stands.
+/// A word longer than a row is broken at the row's end. A `\n` ends the row.
+/// Spaces at a wrap point are dropped.
 fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
-    // Flattened to characters so a word can span two styles and still be one
-    // word to the wrap.
+    // Flattened to chars so one word can span two styles.
     let mut chars: Vec<(char, Style)> = Vec::new();
     for run in runs {
         chars.extend(run.text.chars().map(|c| (c, run.style)));
@@ -460,8 +433,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
             at += 1;
             continue;
         }
-        // The next word, which is the run of characters up to the next
-        // whitespace, and its width on a screen.
+        // The word starting here, up to the next whitespace.
         let end = chars[at..]
             .iter()
             .position(|(c, _)| c.is_whitespace())
@@ -470,7 +442,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
         let wide: usize = word.iter().map(|(c, _)| char_width(*c)).sum();
 
         if c.is_whitespace() {
-            // A space at the head of a row is the wrap's own and is dropped.
+            // Each whitespace char becomes a space, dropped at a row's edges.
             if used > 0 && used < width {
                 rows.last_mut().expect("a row").push((' ', chars[at].1));
                 used += 1;
@@ -479,8 +451,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
             continue;
         }
         if used > 0 && used + wide > width {
-            // Off the end of this row: the word starts the next one, and the
-            // space that led to it goes.
+            // Move the word to a new row and drop the trailing spaces.
             let row = rows.last_mut().expect("a row");
             while row.last().is_some_and(|(c, _)| *c == ' ') {
                 row.pop();
@@ -489,7 +460,6 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
             used = 0;
         }
         if wide > width {
-            // Wider than a whole row: broken where the row ends.
             for (c, style) in word {
                 let w = char_width(*c);
                 if used + w > width && used > 0 {
@@ -509,7 +479,7 @@ fn wrap(runs: &[Run], width: usize) -> Vec<Vec<Span<'static>>> {
     rows.into_iter().map(|row| spans_of(&row)).collect()
 }
 
-/// Consecutive characters in one style, as one span.
+/// A row of styled chars as spans, one per run of equal style.
 fn spans_of(row: &[(char, Style)]) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut current: Option<(String, Style)> = None;
@@ -530,7 +500,7 @@ fn spans_of(row: &[(char, Style)]) -> Vec<Span<'static>> {
     spans
 }
 
-/// `line` with every tab spelled out as the spaces to the next [`TAB`] stop.
+/// `line` with each tab expanded to the next [`TAB`] stop.
 fn untabbed(line: &str) -> String {
     let mut out = String::new();
     let mut column = 0;
@@ -555,14 +525,14 @@ mod tests {
         Theme::default()
     }
 
-    /// What the rows say, one string a row.
+    /// Each row's text.
     fn words(rows: &[Line<'static>]) -> Vec<String> {
         rows.iter()
             .map(|row| row.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
     }
 
-    /// The row holding `text`, or a panic naming what was drawn.
+    /// The first row containing `text`.
     fn row_with<'a>(rows: &'a [Line<'static>], text: &str) -> &'a Line<'static> {
         rows.iter()
             .find(|row| row.spans.iter().any(|span| span.content.contains(text)))
@@ -677,11 +647,11 @@ Done.";
         let rows = render("abcdefghijkl", 5, theme());
         assert_eq!(words(&rows), vec!["abcde", "fghij", "kl"]);
 
-        // A hard break ends the row where it stands.
+        // A hard break ends the row.
         let rows = render("first  \nsecond", 40, theme());
         assert_eq!(words(&rows), vec!["first", "second"]);
 
-        // Width is measured in columns, so a wide glyph is two of them.
+        // Width is in columns; a wide glyph takes two.
         let rows = render("日本 語", 4, theme());
         assert_eq!(words(&rows), vec!["日本", "語"]);
     }
@@ -695,9 +665,7 @@ Done.";
             "one newline is a row break, not the space markdown calls it"
         );
 
-        // The blocks that were already drawing their own rows are untouched by
-        // that: a fence is a row a line, a list an item a row, and a paragraph
-        // too wide for the card still wraps at its words.
+        // Code blocks, list items and long paragraphs wrap as before.
         let rows = render(
             "```rust\nfn check() {}\n```\n\n\
              - first thing\n\
@@ -721,7 +689,7 @@ Done.";
             ]
         );
 
-        // A line broken inside an item hangs under that item's marker.
+        // A line break inside an item keeps the hanging indent.
         let rows = render("- first line\n  second line", 40, theme());
         assert_eq!(words(&rows), vec!["• first line", "  second line"]);
     }
