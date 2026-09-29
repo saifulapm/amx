@@ -9,7 +9,7 @@ use ratatui::text::Span;
 
 /// How many columns a block of spans takes.
 pub(super) fn said(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
+    spans.iter().map(Span::width).sum()
 }
 
 /// What stands between two things said on one row.

@@ -320,7 +320,7 @@ fn clipped(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
         if left == 0 {
             break;
         }
-        let taken = span.content.chars().count();
+        let taken = span.width();
         if taken <= left {
             left -= taken;
             kept.push(span);
@@ -935,6 +935,14 @@ mod tests {
             !cramped.contains("running"),
             "and the counting is what gave the room up: {cramped:?}"
         );
+    }
+
+    #[test]
+    fn header_measures_a_wide_directory_in_columns() {
+        let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
+        screen.profile.dir = "~/code/日本語".to_string();
+        let line = screen_line(&screen, WIDE, 0);
+        assert!(line.ends_with(" 1 WAITING"), "{line:?}");
     }
 
     #[test]

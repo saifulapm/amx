@@ -240,11 +240,7 @@ fn line(
 /// selected line, measured from the 2.1.237 bundle for the reason the rest of
 /// them are.
 fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
-    let said: usize = line
-        .spans
-        .iter()
-        .map(|span| span.content.chars().count())
-        .sum();
+    let said = line.width();
     let mut line = line;
     if said < width {
         line.spans.push(Span::raw(" ".repeat(width - said)));
