@@ -157,8 +157,6 @@ pub enum Source {
     Transcript,
     /// The last screenful of the pane.
     Screen,
-    /// No source had an answer, and this says why.
-    Error,
 }
 
 /// What an agent has stopped to ask, and the answers it offers.

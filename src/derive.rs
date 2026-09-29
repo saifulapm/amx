@@ -283,7 +283,6 @@ fn source_name(source: Source) -> &'static str {
         Source::Payload => "payload",
         Source::Transcript => "transcript",
         Source::Screen => "screen",
-        Source::Error => "error",
     }
 }
 
