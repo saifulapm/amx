@@ -9,8 +9,9 @@
 mod common;
 
 use common::{
-    Harness, a_pane_showing, agents, card_on, click, clients_on, coloured, coloured_line, finished,
-    mouse, now, pane_field, press, types, until_empty, watching,
+    Harness, a_pane_showing, agents, bar, card_on, click, clients_on, coloured, coloured_line,
+    finished, foreground, mouse, now, pane_field, press, rgb, sgr_at, text_in, types, until_empty,
+    watching,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -69,108 +70,6 @@ fn row_of(amx: &Harness, view: &str, id: &str) -> Option<String> {
 /// which is how many of a group's rows the fold left standing.
 fn rows_of(drawn: &str, prefix: &str) -> usize {
     drawn.lines().filter(|line| line.contains(prefix)).count()
-}
-
-/// The SGR attributes in force where `word` starts on this capture: every
-/// escape before it walked, resets honoured, and the colour introducers'
-/// arguments consumed — the `2` of `38;2;r;g;b` is a colourspace, never the
-/// dim attribute.
-///
-/// A whole screen where the attribute being read was turned on further up it:
-/// tmux writes an attribute where it changes and leaves it in force, so a
-/// line lifted out on its own carries none of what the lines above it set.
-fn sgr_at(drawn: &str, word: &str) -> Vec<u16> {
-    let at = drawn
-        .find(word)
-        .unwrap_or_else(|| panic!("{word:?} is not on {drawn:?}"));
-    let mut on: Vec<u16> = Vec::new();
-    let mut rest = &drawn[..at];
-    while let Some(start) = rest.find("\u{1b}[") {
-        let after = &rest[start + 2..];
-        let Some(end) = after.find('m') else { break };
-        let params: Vec<u16> = after[..end]
-            .split(';')
-            .map(|param| param.parse().unwrap_or(0))
-            .collect();
-        let mut n = 0;
-        while n < params.len() {
-            match params[n] {
-                0 => on.clear(),
-                22 => on.retain(|param| *param != 1 && *param != 2),
-                38 | 48 => {
-                    n += match params.get(n + 1) {
-                        Some(2) => 4,
-                        Some(5) => 2,
-                        _ => 0,
-                    };
-                }
-                param => on.push(param),
-            }
-            n += 1;
-        }
-        rest = &after[end + 1..];
-    }
-    on
-}
-
-/// What the default theme paints a role in, as the file that states it spells
-/// it: a hex it measured, or the name of one of the terminal's own.
-///
-/// The escapes below are what tmux wrote for a colour, and a colour typed out
-/// here as well would part company with the palette the day somebody edited
-/// one. `assets/themes/default.toml` is held to the struct default by a test
-/// of its own, so reading it here reaches both.
-fn default_theme(role: &str) -> &'static str {
-    include_str!("../assets/themes/default.toml")
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{role} = ")))
-        .unwrap_or_else(|| panic!("the default theme names {role}"))
-        .trim()
-        .trim_matches('"')
-}
-
-/// A colour as a theme file spells it, in the three bytes tmux writes.
-fn rgb(said: &str) -> (u8, u8, u8) {
-    let hex = said
-        .strip_prefix('#')
-        .unwrap_or_else(|| panic!("a hex colour: {said}"));
-    let byte = |at: usize| {
-        u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or_else(|_| panic!("a hex colour: {said}"))
-    };
-    (byte(0), byte(2), byte(4))
-}
-
-/// A colour as the escape tmux writes for text painted in it.
-fn text_in((r, g, b): (u8, u8, u8)) -> String {
-    format!("38;2;{r};{g};{b}")
-}
-
-/// A colour the theme named rather than measured, as the same escape: the
-/// terminal's own eight, which is what a name is written as and what tmux
-/// keeps.
-fn text_named(said: &str) -> String {
-    let at = [
-        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-    ]
-    .iter()
-    .position(|name| *name == said)
-    .unwrap_or_else(|| panic!("a colour of the terminal's own: {said}"));
-    format!("38;5;{at}")
-}
-
-/// A role of the default theme as the escape tmux writes for text in it.
-fn foreground(role: &str) -> String {
-    let said = default_theme(role);
-    match said.starts_with('#') {
-        true => text_in(rgb(said)),
-        false => text_named(said),
-    }
-}
-
-/// And as the escape for a line drawn on it.
-fn background(role: &str) -> String {
-    let (r, g, b) = rgb(default_theme(role));
-    format!("48;2;{r};{g};{b}")
 }
 
 /// Write a theme where the config file's `theme` name reaches it, which is the
@@ -1543,11 +1442,6 @@ fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
         done.contains(&foreground("done")),
         "in the colour that says so:\n{done:?}"
     );
-}
-
-/// The background the cursor's bar is made of, as tmux writes the escape.
-fn bar() -> String {
-    background("cursor")
 }
 
 #[test]

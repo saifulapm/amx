@@ -8,7 +8,8 @@
 mod common;
 
 use common::{
-    Harness, agents, coloured, coloured_line, finished, pane_field, press, types, until_empty,
+    Harness, agents, bar, coloured, coloured_line, finished, foreground, in_force, pane_field,
+    press, sgr_at, starts_at, types, until_empty,
 };
 use serde_json::{Value, json};
 
@@ -18,11 +19,6 @@ use serde_json::{Value, json};
 /// at the left edge and does not answer to this.
 fn a_row_called(line: &str, name: &str) -> bool {
     line.chars().skip(3).collect::<String>().starts_with(name)
-}
-
-/// The SGR attributes in force where `word` starts on this captured line.
-fn sgr_at(line: &str, word: &str) -> Vec<u16> {
-    in_force(&line[..starts_at(line, word)])
 }
 
 /// The same, on the cell after `word` ends, which is where the block stands at
@@ -35,90 +31,6 @@ fn sgr_past(line: &str, word: &str) -> Vec<u16> {
         end += "\u{1b}[".len() + over + 1;
     }
     in_force(&line[..end])
-}
-
-/// Where a word begins on a captured line, escapes and all.
-fn starts_at(line: &str, word: &str) -> usize {
-    line.find(word)
-        .unwrap_or_else(|| panic!("{word:?} is not on {line:?}"))
-}
-
-/// The SGR attributes in force at the end of this much of a capture: every
-/// escape in it walked, resets honoured, and the colour introducers' arguments
-/// consumed — the `2` of `38;2;r;g;b` is a colourspace, never the dim
-/// attribute.
-fn in_force(walked: &str) -> Vec<u16> {
-    let mut on: Vec<u16> = Vec::new();
-    let mut rest = walked;
-    while let Some(start) = rest.find("\u{1b}[") {
-        let after = &rest[start + 2..];
-        let Some(end) = after.find('m') else { break };
-        let params: Vec<u16> = after[..end]
-            .split(';')
-            .map(|param| param.parse().unwrap_or(0))
-            .collect();
-        let mut n = 0;
-        while n < params.len() {
-            match params[n] {
-                0 => on.clear(),
-                22 => on.retain(|param| *param != 1 && *param != 2),
-                38 | 48 => {
-                    n += match params.get(n + 1) {
-                        Some(2) => 4,
-                        Some(5) => 2,
-                        _ => 0,
-                    };
-                }
-                param => on.push(param),
-            }
-            n += 1;
-        }
-        rest = &after[end + 1..];
-    }
-    on
-}
-
-/// What the default theme paints a role in, out of the file that states it.
-///
-/// The escapes below are what tmux wrote for a colour, and a colour typed out
-/// here as well would part company with the palette the day somebody edited
-/// one. `assets/themes/default.toml` is held to the struct default by a test
-/// of its own, so reading it here reaches both.
-fn default_theme(role: &str) -> (u8, u8, u8) {
-    let said = include_str!("../assets/themes/default.toml")
-        .lines()
-        .find_map(|line| line.strip_prefix(&format!("{role} = ")))
-        .unwrap_or_else(|| panic!("the default theme names {role}"))
-        .trim()
-        .trim_matches('"');
-    rgb(said)
-}
-
-/// A colour as a theme file spells it, in the three bytes tmux writes.
-fn rgb(said: &str) -> (u8, u8, u8) {
-    let hex = said
-        .strip_prefix('#')
-        .unwrap_or_else(|| panic!("a hex colour: {said}"));
-    let byte = |at: usize| {
-        u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or_else(|_| panic!("a hex colour: {said}"))
-    };
-    (byte(0), byte(2), byte(4))
-}
-
-/// A colour as the escape tmux writes for text painted in it.
-fn text_in((r, g, b): (u8, u8, u8)) -> String {
-    format!("38;2;{r};{g};{b}")
-}
-
-/// A role of the default theme as the escape tmux writes for text in it.
-fn foreground(role: &str) -> String {
-    text_in(default_theme(role))
-}
-
-/// The background the cursor's bar is made of, as tmux writes the escape.
-fn bar() -> String {
-    let (r, g, b) = default_theme("cursor");
-    format!("48;2;{r};{g};{b}")
 }
 
 /// Paste text at the view the way a terminal delivers a paste: in one
