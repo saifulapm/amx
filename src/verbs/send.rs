@@ -38,9 +38,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, View};
-use crate::store::{Agent, Ask, Event, Kind, Meta, Phase, State};
+use crate::store::{Agent, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::vendor::{Capability, Hooks, Moment};
+use crate::verbs::answer;
 use crate::{complain, exit, paths, registry, spawn, store, warn};
 
 /// The event amx records for a message it sent.
@@ -527,56 +528,20 @@ pub fn how_to_answer(view: &View) -> String {
 /// Everything else — a permission box, a numbered trust screen, a question amx
 /// knows nothing about — reads one key.
 fn takes(kind: Option<Kind>, state: &State) -> String {
-    if unnumbered(kind, state) {
+    if answer::unnumbered(kind, state) {
         return "<down enter|up enter|esc>".to_string();
     }
+    let digits = answer::digits(state.options.len());
     if state.walked {
-        return format!("<{}|esc>", digits(&state.options));
+        return format!("<{digits}|esc>");
     }
-    let digits = digits(&state.options);
     match kind {
-        Some(Kind::Question) if previewed(state) => format!("<{digits}|enter|esc>"),
+        Some(Kind::Question) if answer::previewed(state.pending()) => {
+            format!("<{digits}|enter|esc>")
+        }
         Some(Kind::Question) => format!("<{digits}|\"words of your own\">"),
         _ => format!("<y|n|{digits}|enter|esc>"),
     }
-}
-
-/// Whether the screen showing is a list the vendor puts no numbers on.
-///
-/// Measured against claude 2.1.259 on 2026-09-05 and written up in
-/// `docs/claude-screens.md`: its folder-trust gate draws `❯ No, exit` over
-/// `Yes, I trust this folder` with a number on neither, so `1`, `2` and `y` do
-/// nothing there and the key that takes what is highlighted is the key that
-/// ends the agent. The choices a reader hands back are the numbered ones, so
-/// none on the record is how that screen says so.
-///
-/// `answer` reads the same thing off the same record to refuse that key. The
-/// two are one sentence said twice on purpose: what is offered here has to be
-/// what is taken there.
-fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
-    kind == Some(Kind::Trust) && state.options.is_empty()
-}
-
-/// The run of digits that reaches a row of this screen.
-///
-/// As long as the choices amx read off it, so a box of two does not invite a
-/// `7`. Nine where amx counted none — a question a hook carried the words of
-/// and nothing else — because `1-9` is what a box of two and a box of five
-/// have in common. Nine is also the end of it: past that the grammar has no
-/// key to send.
-fn digits(options: &[String]) -> String {
-    match options.len().min(9) {
-        0 => "1-9".to_string(),
-        1 => "1".to_string(),
-        last => format!("1-{last}"),
-    }
-}
-
-/// Whether the vendor draws this question with a preview beside its choices,
-/// which is the shape that has no row for words of your own — so offering them
-/// is offering something `answer` will refuse.
-fn previewed(state: &State) -> bool {
-    state.pending().is_some_and(Ask::takes_notes)
 }
 
 /// Exit `FAILURE`: this agent is not going to answer anybody.
@@ -634,7 +599,7 @@ pub fn rendered(text: &str, to_terminal: bool) -> String {
 mod tests {
     use super::*;
     use crate::derive::{Evidence, Verdict};
-    use crate::store::Choice;
+    use crate::store::{Ask, Choice};
     use crate::tmux::Socket;
     use serde_json::json;
 

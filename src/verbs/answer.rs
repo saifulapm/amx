@@ -575,7 +575,7 @@ fn marked_now(server: &Server, view: &derive::View) -> Option<usize> {
 /// longer list is offered what it can take rather than what it has. Zero is a
 /// screen amx counted no rows on at all, where `1-9` is what a box of two and a
 /// box of five have in common.
-fn digits(rows: usize) -> String {
+pub(crate) fn digits(rows: usize) -> String {
     match rows.min(9) {
         0 => "1-9".to_string(),
         1 => "1".to_string(),
@@ -594,7 +594,7 @@ fn digits(rows: usize) -> String {
 /// highlighted row is either one amx has read and numbered, or a prompt whose
 /// one answer is `Enter` — and a refusal there would leave that prompt with
 /// nothing that answers it.
-fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
+pub(crate) fn unnumbered(kind: Option<Kind>, state: &State) -> bool {
     kind == Some(Kind::Trust) && state.options.is_empty()
 }
 
@@ -720,7 +720,7 @@ fn field(text: &str, kind: Option<Kind>, state: &State) -> Result<Answer, String
 
 /// Whether the vendor draws this question with a preview beside its choices,
 /// which is the shape that has no free-text row.
-fn previewed(pending: Option<&Ask>) -> bool {
+pub(crate) fn previewed(pending: Option<&Ask>) -> bool {
     pending.is_some_and(Ask::takes_notes)
 }
 
