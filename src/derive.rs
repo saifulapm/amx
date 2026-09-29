@@ -2497,14 +2497,22 @@ pub struct Record {
 /// walk that broke on one unreadable document would cost every agent listed
 /// after it, not just the one whose file is bad.
 pub fn records(root: &Path) -> Result<Vec<Record>> {
+    Ok(records_of(root, crate::store::list(root)?))
+}
+
+/// The records of `ids`, skipping any that cannot be read.
+fn records_of(root: &Path, ids: Vec<String>) -> Vec<Record> {
     let mut records = Vec::new();
-    for id in crate::store::list(root)? {
-        let agent = Agent::open(root, &id)?;
+    for id in ids {
+        // Gone since the listing, when another amx removed it.
+        let Ok(agent) = Agent::open(root, &id) else {
+            continue;
+        };
         let Ok(meta) = agent.meta() else { continue };
         let Ok(state) = agent.state() else { continue };
         records.push(Record { agent, meta, state });
     }
-    Ok(records)
+    records
 }
 
 /// One agent's record, whether the pane it names still answers for it, and the
@@ -4419,6 +4427,19 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             records.iter().map(|r| r.agent.id()).collect::<Vec<_>>(),
             vec!["fine-b2c"]
         );
+    }
+
+    #[test]
+    fn records_skips_an_agent_removed_after_the_listing() {
+        // `amx clear` or a sweep in another amx can remove a directory
+        // between `store::list` and the open. That costs the one record, not
+        // the whole listing.
+        let root = TempDir::new().unwrap();
+        a_record(root.path(), &meta(), &state(Phase::Idle, 1_000));
+        let listed = vec!["going-g0e".to_string(), meta().id];
+        let records = records_of(root.path(), listed);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].meta.id, meta().id);
     }
 
     #[test]
