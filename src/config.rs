@@ -554,20 +554,30 @@ fn for_project_in(project: &Path, root: &Path) -> &'static Config {
         std::sync::Mutex<std::collections::HashMap<PathBuf, &'static Config>>,
     > = std::sync::OnceLock::new();
     let read = READ.get_or_init(Default::default);
+    let known = |path: &Path| read.lock().ok().and_then(|read| read.get(path).copied());
 
-    let key = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
-    if let Some(config) = read.lock().ok().and_then(|read| read.get(&key).copied()) {
+    // The path as asked first: it is what every reading after the first
+    // asks with, and resolving it again each time is a stat per component.
+    if let Some(config) = known(project) {
         return config;
     }
+    let key = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
 
     // Kept for the life of the process rather than behind the lock, because
     // what a reader is handed it holds for as long as it is drawing with it,
     // and there is one of these per project somebody has run an agent in. Two
     // readers arriving at once make one read apiece and agree on which of the
     // two the map keeps: they read the same file and got the same answer.
-    let config: &'static Config = Box::leak(Box::new(for_dir_in(&key, root).0));
+    let config = match known(&key) {
+        Some(config) => config,
+        None => Box::leak(Box::new(for_dir_in(&key, root).0)),
+    };
     match read.lock() {
-        Ok(mut read) => read.entry(key).or_insert(config),
+        Ok(mut read) => {
+            let config = *read.entry(key).or_insert(config);
+            read.insert(project.to_path_buf(), config);
+            config
+        }
         // A map nothing can reach is a memory, not an answer.
         Err(_) => config,
     }
@@ -1957,5 +1967,14 @@ mod tests {
             42,
             "an edited file is what the next amx reads, not this one"
         );
+
+        // Another spelling of the same project is the same reading.
+        let elsewhere = TempDir::new().unwrap();
+        let link = elsewhere.path().join("repo");
+        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+        assert!(std::ptr::eq(
+            for_project_in(&link, &root),
+            for_project_in(repo.path(), &root)
+        ));
     }
 }
