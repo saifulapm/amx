@@ -170,11 +170,14 @@ fn slugs(listing: &str) -> Vec<String> {
 }
 
 /// Cache a listing for the next spawn.
-fn keep(cache: &Path, list: &[String]) -> std::io::Result<()> {
+///
+/// Written atomically: a concurrent spawn reading a partial list would trust
+/// it for [`FRESH_FOR`].
+fn keep(cache: &Path, list: &[String]) -> anyhow::Result<()> {
     if let Some(dir) = cache.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(cache, list.join("\n"))
+    crate::store::write_atomic(cache, list.join("\n").as_bytes())
 }
 
 #[cfg(test)]
@@ -314,6 +317,28 @@ mod tests {
             ]),
             "and what was read stands in place of what was there"
         );
+    }
+
+    #[test]
+    fn a_listing_is_replaced_whole_under_a_reader() {
+        let dir = TempDir::new().unwrap();
+        let cache = dir.path().join("models/pi.txt");
+        keep(
+            &cache,
+            &["openai/gpt-4".to_string(), "openai/gpt-4o".to_string()],
+        )
+        .unwrap();
+        let mut reading = std::fs::File::open(&cache).unwrap();
+
+        keep(&cache, &["openai/gpt-5".to_string()]).unwrap();
+
+        let mut read = String::new();
+        std::io::Read::read_to_string(&mut reading, &mut read).unwrap();
+        assert_eq!(
+            read, "openai/gpt-4\nopenai/gpt-4o",
+            "a reader that opened the old listing reads all of it"
+        );
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), "openai/gpt-5");
     }
 
     #[test]
