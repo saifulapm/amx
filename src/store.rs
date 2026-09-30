@@ -1,29 +1,22 @@
-//! What amx knows about an agent, on disk.
+//! The per-agent record on disk.
 //!
-//! One directory per agent, `<state root>/<id>/`, holding three files:
+//! Each agent has a directory `<state root>/<id>/` holding:
 //!
-//! * `meta.json` — how the agent was started and where to find it again.
-//! * `state.json` — what it is doing, as the last event left it.
-//! * `events.jsonl` — one line per event, in the order they arrived.
+//! - `meta.json`: how the agent was started and where to reach it.
+//! - `state.json`: what it is doing, as the last event left it.
+//! - `events.jsonl`: one line per event, in arrival order.
 //!
-//! **One writer at a time.** Every mutation goes through a [`Writer`], which
-//! holds an exclusive `flock` for as long as it lives, so two hooks firing at
-//! once cannot lose each other's work or split a line in half.
+//! Invariants:
 //!
-//! **Readers never lock to read.** `ls`, `status` and the view read these
-//! files while agents are running, and waiting on a lock to draw a list would
-//! be a poor trade. They see whole documents anyway: a document is written to
-//! a neighbouring temporary file and renamed over its target, and a rename is
-//! atomic. A reader gets the old document or the new one, never a half of
-//! either. A reader does take the lock to put what it read off a pane where
-//! the next reader will find it — see [`Writer::observe`] — but only on a look
-//! that found something the record has not got: the question a screen is
-//! asking, the answer a finished turn left, and which screen is up with the
-//! moment it went up.
-//!
-//! A crash can therefore lose the last write, since the rename is not followed
-//! by an fsync. That is the trade the hook path is worth: state on disk is a
-//! fast path, and a reader that finds it stale falls back to the pane.
+//! - Every mutation goes through a [`Writer`], which holds an exclusive
+//!   `flock` for its lifetime, so concurrent hooks never lose writes or split
+//!   a line.
+//! - Readers never lock. Documents are written to a temporary file and renamed
+//!   into place, so a reader sees the old or the new document, never a mix. A
+//!   reader takes the lock only to record something new it read off a pane
+//!   (see [`Writer::observe`]).
+//! - Renames are not fsynced, so a crash can lose the last write. Readers that
+//!   find the state stale fall back to the pane.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -44,52 +37,41 @@ const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";
 const SPAWN_LOCK: &str = "spawn.lock";
 const CLAIM: &str = "claim";
-/// What a vendor is saying right now, streamed by its own report while a turn
-/// runs and taken away when the turn ends. Written by the vendor's side and
-/// only ever read here.
+/// Text the vendor is streaming during a turn, removed when the turn ends.
+/// Written by the vendor's reporter, only read here.
 pub const LIVE: &str = "live";
-/// That a turn is still running, beaten by a vendor's own report every few
-/// seconds from the start of a turn to its end and taken away at the end.
-/// Written by the vendor's side and only ever read here — see
-/// [`Agent::heartbeat`]. The record's own file rather than any one vendor's:
-/// whichever wire can write here may beat.
+/// Heartbeat file whose mtime a vendor's reporter refreshes every few seconds
+/// while a turn runs, removed when it ends. Written by the vendor side, only
+/// read here; see [`Agent::heartbeat`].
 pub const HEARTBEAT: &str = "heartbeat";
-/// When a reader last saw the pane of a vendor that reports say its turn is
-/// running, stamped by the reader on every such look — see [`Agent::seen`].
-/// What a hook-less end of turn books work up to, where esc cut the turn
-/// mid-tool and nothing the vendor fires said it was still at work.
+/// Stamped by a reader each time it sees a hook-reporting vendor's pane show a
+/// running turn; see [`Agent::seen`]. A turn end no hook reported (Esc
+/// mid-tool) counts work up to this stamp.
 pub const SEEN: &str = "seen";
-/// What a pane has printed, written by tmux piping the pane here — see
-/// [`crate::spawn::boot`]. A command's whole output, and the first
-/// [`crate::spawn::BOOT_BYTES`] of an agent's pane: the account a vendor
-/// leaves when it dies before its first hook, and boot paint where it spoke —
-/// see [`Agent::output`].
+/// The pane's output, piped here by tmux (see [`crate::spawn::boot`]): a
+/// command's whole output, or the first [`crate::spawn::BOOT_BYTES`] of an
+/// agent's pane. See [`Agent::output`].
 pub const OUTPUT: &str = "output";
-/// How much of a transcript's end [`Agent::transcript_tail`] reads. A fixed
-/// cost however long the session has run, at the price of the half line the
-/// seek opens on, which is dropped; a last entry larger than it is read whole,
-/// with this much before it.
+/// How much of a transcript's end [`Agent::transcript_tail`] reads.
 const TAIL: u64 = 64 * 1024;
-/// How much of a command's output [`Agent::output_tail`] reads. About three
-/// thousand rows of eighty columns, which is more than a card is ever paged
-/// through, and a fixed cost however long the command has been printing.
+/// How much of a command's output [`Agent::output_tail`] reads: about three
+/// thousand 80-column rows, more than a card ever pages through.
 pub const OUTPUT_TAIL: u64 = 256 * 1024;
 
-/// Where an agent is, as far as amx has been told.
+/// An agent's phase as the hooks and exit record report it.
 ///
-/// This is what the hooks and the exit record say. It is not the whole answer:
-/// a reader weighs it against how old it is and against the pane itself.
+/// Readers weigh this against its age and against the pane itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
-    /// Spawned, with nothing heard from it yet.
+    /// Spawned, nothing heard yet.
     #[default]
     Starting,
-    /// Working on the turn.
+    /// Working on a turn.
     Working,
-    /// Stopped on a question and waiting to be answered.
+    /// Stopped on a question.
     Waiting,
-    /// The turn ended; the agent is sitting at its prompt.
+    /// The turn ended; the agent is at its prompt.
     Idle,
     /// The command exited successfully.
     Done,
@@ -102,7 +84,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// Whether nothing more is coming from this agent.
+    /// Whether nothing more will come from this agent.
     pub fn is_terminal(self) -> bool {
         matches!(self, Phase::Done | Phase::Failed | Phase::Stopped)
     }
@@ -120,17 +102,12 @@ impl Phase {
         }
     }
 
-    /// What a reader is shown a state as, where a row or a table says it in a
-    /// word rather than by the group it was gathered under.
+    /// The word shown for this phase in rows and tables.
     ///
-    /// The turn being over is one ending whether the vendor is still at its
-    /// prompt or the command has gone. What is left to say about it is how the
-    /// turn went, which is the colour, and whether a process is still there,
-    /// which is the glyph. So both read `done`, the word the header's counter
-    /// already uses for the group they share, rather than `idle` — which named
-    /// the one thing the glyph says better. The record still holds `idle`: it
-    /// is what `amx wait --for idle` and the `AMX_STATE` of an `on_idle`
-    /// command are matched on.
+    /// `Idle` reads `done`, like the header's counter: an ended turn is done
+    /// whether or not the process remains, and the glyph shows which. The
+    /// record still holds `idle`, which `amx wait --for idle` and `on_idle`'s
+    /// `AMX_STATE` match on.
     pub fn word(self) -> &'static str {
         match self {
             Phase::Idle => "done",
@@ -145,13 +122,12 @@ impl std::fmt::Display for Phase {
     }
 }
 
-/// Where a result came from, recorded beside the result itself: the transcript
-/// is written asynchronously, so which source answered says how much to trust
-/// what it said.
+/// Where a result came from. The transcript is written asynchronously, so the
+/// source says how far to trust the result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
-    /// The Stop hook's own payload — the freshest source there is.
+    /// The turn-end hook's payload, the freshest source.
     Payload,
     /// The tail of the session transcript.
     Transcript,
@@ -159,60 +135,49 @@ pub enum Source {
     Screen,
 }
 
-/// What an agent has stopped to ask, and the answers it offers.
+/// A question an agent stopped on, with the choices it offers.
 ///
-/// The text is the vendor's own words where a hook carried them, and amx's
-/// reading of the pane where none did. The options are always the pane's: no
-/// hook this vendor fires has ever named them, and the screen is the only
-/// place they are written down.
+/// The text is the vendor's own when a hook carried it, otherwise amx's
+/// reading of the pane. The options always come from the pane: no hook
+/// carries them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Question {
     /// What is being asked.
     pub text: String,
-    /// The numbered choices, in the order the screen lists them. Empty until
-    /// something has read the screen, and empty on a question that takes words
-    /// rather than a key.
+    /// The numbered choices, in screen order. Empty until the screen is read,
+    /// and for a question answered with free text.
     pub options: Vec<String>,
-    /// Whether those choices were read off the mark a vendor draws in front of
-    /// the row its cursor is on, rather than off numbers the vendor wrote.
+    /// Whether the choices were read off the cursor mark rather than off
+    /// numbers the vendor drew.
     ///
-    /// The numbers on a walked list are amx's own — see `rules::Rule::marks` —
-    /// so the key that takes one is not the digit beside it but a walk down
-    /// from the top, and everything offering an answer has to know which of
-    /// the two it is looking at.
+    /// A walked list's numbers are amx's own (see `rules::Rule::marks`), so a
+    /// choice is taken by moving the cursor, not by typing its digit.
     pub walked: bool,
-    /// Which of those choices the vendor's mark was on when the screen was
-    /// read, counting from one, on a walked list. The cursor a walk starts
-    /// from: measured on claude 2.1.276 on 2026-09-18, the trust gate's list
-    /// wraps at both ends where 2.1.259's clamped, so a walk that goes to the
-    /// top first lands wherever the cursor was standing sent it. `None` where
-    /// the list was not read off a mark.
+    /// The 1-based choice the cursor mark was on, for a walked list; `None`
+    /// otherwise. A walk starts here: since claude 2.1.276 the trust gate's
+    /// list wraps at both ends (2.1.259 clamped), so walking to the top first
+    /// lands wherever the cursor was.
     pub marked: Option<usize>,
 }
 
-/// What kind of thing an agent has stopped to ask.
+/// The kind of prompt an agent is stopped on.
 ///
-/// Three screens block a claude agent, and none of them takes the answer the
-/// others take: a permission box wants one tool call allowed or refused, an
-/// AskUserQuestion menu wants a choice or words of your own, and the
-/// folder-trust screen wants a decision about the directory before the vendor
-/// will start a session in it at all. Which one it is decides what may be sent
-/// back, so it belongs on the record beside the question rather than left for
-/// whoever reads it to guess from the wording.
+/// Each takes a different answer: a permission box allows or refuses one tool
+/// call, an AskUserQuestion menu takes a choice or free text, and the
+/// folder-trust screen decides whether the vendor may start in the directory.
 ///
-/// It is only ever written from something that said so: a hook event that is
-/// about a permission prompt, the vendor's own name for a notification, the
-/// tool a question arrives as, or the rule that claimed the screen. Nothing
-/// here is inferred from the words of the question.
+/// Only set from an explicit signal: a permission hook, the vendor's
+/// notification type, the question tool, or the screen rule that matched.
+/// Never inferred from the question's words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// A tool call the agent may not make until somebody allows it.
+    /// A tool call waiting to be allowed or refused.
     Permission,
-    /// The vendor asking its own question, which takes a choice or words.
+    /// The vendor's own question, answered with a choice or text.
     Question,
-    /// The folder-trust screen, which stands between the vendor and a session.
+    /// The folder-trust screen shown before a session starts.
     Trust,
 }
 
@@ -220,50 +185,43 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Choice {
-    /// What an answer names it by, and what comes back when it is chosen.
+    /// The label an answer names and gets back.
     pub label: String,
-    /// The sentence the screen draws under the label. The label is the answer;
-    /// this is what explains it to whoever is reading.
+    /// The sentence drawn under the label.
     pub description: Option<String>,
-    /// The block the vendor draws beside the choice instead of the
-    /// descriptions. It is also what turns the notes field on — a question
-    /// whose choices carry no preview takes no note — and the chosen one rides
-    /// back beside the note in the vendor's own answer.
+    /// The block drawn beside the choice in place of descriptions. Any
+    /// preview turns on the notes field, and the chosen one is returned with
+    /// the note.
     pub preview: Option<String>,
 }
 
-/// One question of a call that asks more than one.
+/// One question of an `AskUserQuestion` call.
 ///
-/// `AskUserQuestion` takes up to four questions and draws them as tabs on a
-/// single screen, and the payload is the only place their number, their names,
-/// the sentences under their choices and the flag saying how many may be taken
-/// are ever written down. Measured against 2.1.240 on 2026-08-24 and recorded
-/// in `docs/question-shapes.md`: the tab strip elides its headers as the pane
-/// narrows, and at 24 columns the showing tab's own name is drawn as nothing
-/// but an ellipsis. So this is the payload's version of the question, and
-/// nothing here is ever read off a screen.
+/// A call holds up to four questions shown as tabs on one screen. Their count,
+/// headers, descriptions and multi-select flags exist only in the payload: the
+/// tab strip elides headers as the pane narrows (claude 2.1.240; see
+/// `docs/question-shapes.md`). So this is built from the payload, never from
+/// the screen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Ask {
-    /// The short word the tab strip draws for it.
+    /// The short tab label.
     pub header: Option<String>,
     /// What is being asked.
     pub text: String,
-    /// The choices under it, in the order the screen lists them.
+    /// The choices, in screen order.
     pub options: Vec<Choice>,
-    /// Whether it takes more than one choice. The flag is per question and not
-    /// per call: a checkbox tab and two plain ones sit in the same prompt, and
-    /// the keys that drive one are not the keys that drive the next.
+    /// Whether it takes several choices. Set per question: one call can mix
+    /// checkbox and single-choice tabs, driven by different keys.
     pub multi: bool,
-    /// What was sent back for it, once somebody has answered it. A call with
-    /// more than one question does not end when one is answered — the vendor
-    /// moves to the next tab and the prompt is still up — so the answer goes
-    /// on the question it belongs to.
+    /// The answer sent, once answered. Answering one question moves the vendor
+    /// to the next tab without ending the call, so each answer is kept on its
+    /// own question.
     pub answer: Option<String>,
 }
 
 impl Ask {
-    /// The choices as an answer names them.
+    /// The choice labels.
     pub fn labels(&self) -> Vec<String> {
         self.options
             .iter()
@@ -271,82 +229,66 @@ impl Ask {
             .collect()
     }
 
-    /// Whether the vendor draws a notes field on this question. It draws one
-    /// when a choice carries a preview and only then: `n` on a menu without
-    /// one does nothing at all.
+    /// Whether the vendor shows a notes field: only when a choice has a
+    /// preview. Otherwise `n` does nothing.
     pub fn takes_notes(&self) -> bool {
         self.options.iter().any(|option| option.preview.is_some())
     }
 }
 
-/// How the agent was started, and how to reach it again.
+/// How the agent was started, and how to reach it.
 ///
-/// Fields are added, never renamed or removed: a record outlives the version
-/// of amx that wrote it, so every field that may be absent carries a default.
+/// Fields are only ever added, never renamed or removed, and every field that
+/// may be missing has a default, so records from older builds still read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
     pub id: String,
     pub task: String,
-    /// What runs the agent: the command `new` resolved for it, the word the
-    /// agent it was forked from was launched with, or the vendor an adoption
-    /// found in the pane. `None` from a shell command, which runs no vendor,
-    /// and from a record written before amx kept this.
+    /// What runs the agent: the command `new` resolved, the parent's command
+    /// for a fork, or the vendor an adoption found. `None` for a shell command
+    /// and for records written before this field existed.
     #[serde(default)]
     pub agent: Option<String>,
-    /// Which model the spawn asked the vendor for, and how hard it asked the
-    /// model to think — the two dials `new` turns that say something about the
-    /// agent rather than about the command line. `None` where nobody turned
-    /// the dial, which is what a spawn that sent no flag has to say: the word
-    /// the vendor picked for itself is the vendor's, and amx never sees it.
-    /// `None` too from a shell command, which takes no dials at all, and from
-    /// an adoption, which finds a vendor in a pane it did not start.
+    /// The model and effort flags the spawn passed. `None` when no flag was
+    /// passed (the vendor's own default is unknown to amx), for a shell
+    /// command, and for an adopted agent.
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// The agent `amx sub` named as this one's parent, where it named one.
-    /// A subagent is an ordinary agent whose record names a parent, and
-    /// `None` is a root: anything `amx new` started, a `sub --no-parent`, or
-    /// a record written before this field existed.
+    /// The parent `amx sub` recorded, if any. `None` is a root: `amx new`,
+    /// `sub --no-parent`, or an older record.
     ///
-    /// The parent's own record is where its directory is read from, and a
-    /// parent that has been removed — `stop --delete`, `clear`, `sweep` —
-    /// leaves a child that reads as a root, because a reader that finds no
-    /// record for it has nothing to draw it under.
+    /// A child whose parent record has been removed (`stop --delete`, `clear`,
+    /// `sweep`) reads as a root.
     #[serde(default)]
     pub parent: Option<String>,
-    /// How deep in a family this agent stands: 0 for a root, 1 for a child of
-    /// one, and one more than whatever [`parent`](Meta::parent) names. Written
-    /// beside the parent and read as 0 from a record an older amx wrote, where
-    /// the two fields were not there to write.
+    /// Depth in the family: 0 for a root, parent's depth plus one otherwise.
+    /// Reads as 0 from older records.
     #[serde(default)]
     pub depth: u32,
-    /// The role this spawn was asked for, by name — the file it read its dials
-    /// and its brief out of. `None` from a spawn that named none, from a shell
-    /// command, and from a record written before amx kept this.
+    /// The role the spawn named, whose file supplied its dials and brief.
+    /// `None` when none was named, for a shell command, and for older records.
     #[serde(default)]
     pub role: Option<String>,
-    /// Where the agent runs — its worktree, or the directory it was asked for.
+    /// Where the agent runs: its worktree, or the directory it was given.
     pub dir: PathBuf,
-    /// The worktree amx made for it, if it made one.
+    /// The worktree amx made for it, if any.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
     #[serde(default)]
     pub branch: Option<String>,
-    /// The commit the worktree started from, so a diff has something to say.
+    /// The commit the worktree started from, for diffs.
     #[serde(default)]
     pub base: Option<String>,
-    /// The tmux server the pane lives on. Recorded at spawn, because every
-    /// tmux-touching verb has to target this server and not whichever one the
-    /// caller happens to be inside.
+    /// The tmux server the pane lives on. Every tmux call for this agent must
+    /// target it, whichever server the caller is inside.
     pub socket: Socket,
     pub pane: PaneId,
-    /// Started out of sight rather than on the wall — which is where a
-    /// resume puts it back.
+    /// Started in the background, off the wall. `resume` keeps it there.
     #[serde(default)]
     pub bg: bool,
-    /// The vendor's own session id, learned from a hook — what `resume` hands
-    /// back to the vendor.
+    /// The vendor's session id, learned from a hook. `resume` passes it back.
     #[serde(default)]
     pub session: Option<String>,
     /// The transcript that session writes.
@@ -361,77 +303,54 @@ pub struct Meta {
 #[serde(default, from = "Wire", into = "Wire")]
 pub struct State {
     pub state: Phase,
-    /// What a person calls this agent, where somebody has renamed it. The id
-    /// is what the record is filed under and what every surface addresses, and
-    /// it never moves; this is only what the wall says.
-    ///
-    /// It lives here rather than beside the task because it is written the way
-    /// everything else here is written — by whoever is looking, while the
-    /// agent runs — and how the agent was started is not something a rename
-    /// changes.
+    /// A display name set by a rename. The id never changes; this only
+    /// changes what the wall shows. Kept here, not in [`Meta`], because it is
+    /// written while the agent runs.
     pub name: Option<String>,
-    /// What the vendor calls the session this agent is running, where it has
-    /// said so. It is read out of the transcript — see
-    /// [`crate::conversation::session_title`] — because that is the only place
-    /// the vendor ever writes it down.
-    ///
-    /// Not a second [`name`](State::name): that is what somebody here called
-    /// this agent, and this is what the session was called on the other side
-    /// of the pane.
+    /// The vendor's title for the session, read from the transcript (see
+    /// [`crate::conversation::session_title`]). Distinct from
+    /// [`name`](State::name), which is set in amx.
     pub session_title: Option<String>,
     /// Bumped by each `send`, so `result` can tell this turn's end from the
-    /// end of the turn before it.
+    /// previous one.
     pub seq: u64,
     /// Epoch seconds when the agent entered this phase.
     pub since: u64,
     /// One line about what it is doing.
     pub summary: Option<String>,
-    /// How many background shells were still running when the turn ended.
+    /// Background tasks still running when the turn ended.
     ///
-    /// claude ends a turn with the shells it started still going, and lists
-    /// them on the payload that says the turn ended. The model is done and the
-    /// work it started is not, and everything that reads an ended turn as an
-    /// idle agent is wrong about this one: the vendor's own nudge a minute
-    /// later, and the rule that reads the prompt on the pane. The count is what
-    /// tells them otherwise — see [`crate::hook::apply`] and
-    /// [`crate::derive::read`]. It is counted at the end of the turn and
-    /// cleared by the next thing the agent does.
+    /// claude can end a turn with shells it started still running and lists
+    /// them in the turn-end payload. A nonzero count keeps the agent working
+    /// against the idle nudge that follows and the prompt rule on the pane;
+    /// see [`crate::hook::apply`] and [`crate::derive::read`]. Cleared by the
+    /// agent's next action.
     pub background: u32,
     /// The question it is waiting on.
     pub question: Option<String>,
-    /// The choices that question offers, in the order the screen lists them.
-    /// They belong to the question above them and go wherever it goes; the
-    /// record has no place for options with no question over them.
+    /// The choices that question offers, in screen order. They belong to the
+    /// question and are never kept without one.
     pub options: Vec<String>,
-    /// Whether the choices above were read off a mark rather than off numbers
-    /// the vendor wrote — see [`Question::walked`]. It goes where they go, and
-    /// a record with no choices claims nothing about how they would be taken.
+    /// Whether the choices were read off a cursor mark (see
+    /// [`Question::walked`]). Travels with the choices.
     pub walked: bool,
-    /// The whole of the call the question came from, where the call is the
-    /// vendor asking its own: every question in it, the sentences under their
-    /// choices, and which of them have been answered. One question of it is
-    /// on the screen at a time, and that one is `question` and `options`
-    /// above — which is where everything that wants the question on the screen
-    /// has always looked.
+    /// The whole `AskUserQuestion` call: every question, its choices'
+    /// descriptions, and which are answered. The question on screen is also
+    /// mirrored in `question` and `options`.
     pub asking: Vec<Ask>,
-    /// What kind of thing is being asked, where something has said so. It can
-    /// be known when the words are not: a menu whose payload amx could not
-    /// read is still a menu somebody has to answer.
+    /// The kind of prompt, where something said so. Can be known without the
+    /// words: an unreadable menu is still a menu.
     pub kind: Option<Kind>,
-    /// Whether the question above is the vendor's own word, carried by one of
-    /// its hooks, rather than amx's reading of a picture of its pane.
+    /// Whether the question came from a vendor hook rather than from amx
+    /// reading the pane.
     ///
-    /// It decides which of the two laws the next reading of that pane is
-    /// under — see [`learn`](State::learn) and [`correct`](State::correct) —
-    /// and it is written here, beside the question, because that is what the
-    /// law is about. Asking the vendor instead is what put this record wrong:
-    /// pi has reported through an extension since fa96854, so every question
-    /// on a pi was treated as pi's own word, and the ones pi draws itself and
-    /// says nothing about — `/login`, `/trust`, `/model`, the startup trust
-    /// gate — stood on the record while the pane moved on to the next of them.
+    /// Selects how the next pane reading applies: [`learn`](State::learn) for
+    /// a reported question, [`correct`](State::correct) otherwise. It is kept
+    /// per question because it cannot be derived from the vendor: pi reports
+    /// through an extension yet draws some screens (`/login`, `/trust`,
+    /// `/model`, the startup trust gate) without reporting them.
     ///
-    /// It goes wherever the question goes, and a record with nothing
-    /// outstanding claims nothing about where the nothing came from.
+    /// Travels with the question; false when nothing is outstanding.
     pub reported: bool,
     /// The answer from the last turn that ended.
     pub result: Option<String>,
@@ -439,120 +358,78 @@ pub struct State {
     pub source: Option<Source>,
     /// The exit code of the agent's command, once it has one.
     pub exit: Option<i32>,
-    /// Epoch seconds of the last event recorded. How fresh this document is,
-    /// which decides whether a reader trusts it over the pane.
+    /// Epoch seconds of the last recorded event. Readers use it to decide
+    /// whether to trust this document over the pane.
     pub last_event: u64,
-    /// Epoch seconds when the run ended, and zero while it is still going.
-    ///
-    /// A finished row says how long the run took rather than how long ago it
-    /// ended, so the moment it ended is something the record keeps. `since`
-    /// holds the same number for as long as the ending is the last thing that
-    /// changed, but `since` is about the phase an agent is in, and nothing
-    /// asking when a run ended should have to know that the two coincide.
+    /// Epoch seconds when the run ended, 0 while it runs. A finished row shows
+    /// how long the run took, so the end is kept separately from `since`.
     pub ended: u64,
-    /// Epoch seconds when amx let this agent's pane go, and zero for one whose
-    /// pane amx has not touched.
-    ///
-    /// An idle agent nobody is attached to loses its pane after a while and
-    /// keeps everything else — see `amx _park`. The stamp is what tells that
-    /// pane from one that was killed or whose server died: both are records
-    /// with no pane behind them, and only one of them is coming back on the
-    /// next enter, attach or resume.
+    /// Epoch seconds when amx released this agent's pane (see `amx _park`), 0
+    /// otherwise. Tells a parked pane, which comes back on the next enter,
+    /// attach or resume, from one that was killed.
     pub parked_at: u64,
-    /// Epoch seconds when `amx interrupt` cut this agent's turn short, and zero
-    /// for one the vendor has spoken about since, or that nobody cut short.
+    /// Epoch seconds when `amx interrupt` cut the turn short, 0 otherwise.
     ///
-    /// claude sends no hook for an interrupt: the key ends the turn where it
-    /// stands and the vendor says nothing about it, so the record is left
-    /// saying a turn is running that amx itself ended. The stamp is what says
-    /// otherwise, for as long as it stands — see [`crate::derive::read`]. The
-    /// vendor's next event about this agent takes it back off, because that is
-    /// the agent speaking for itself again. It is written with the observing
-    /// hand, like `parked_at` above: amx typed at a pane and heard nothing
-    /// back.
+    /// claude fires no hook on an interrupt, so without this the record would
+    /// read as working (see [`crate::derive::read`]). The vendor's next event
+    /// clears it. Written with [`Writer::observe`], like `parked_at`.
     pub interrupted_at: u64,
-    /// Epoch seconds when somebody last looked at this agent, and zero for one
-    /// nobody has opened. Read against `last_event`, it says whether what the
-    /// agent has to say came before or after the last look at it.
+    /// Epoch seconds when someone last opened this agent, 0 if never. Compared
+    /// with `last_event` to tell unseen news.
     pub seen: u64,
-    /// The seconds this agent has spent working, summed over every span of it.
+    /// Seconds spent working, summed over every working span.
     ///
-    /// A run that took an afternoon because nobody answered its question until
-    /// four did not work for an afternoon, and the wall clock over a finished
-    /// run cannot tell the two apart. The spans are added up at the writes that
-    /// move the phase in and out of `working`, because those are the moments
-    /// amx is told about; what a span is worth is settled once, at the write
-    /// that ends it, and never worked out again from stamps that have moved on.
+    /// Wall time over a run includes time waiting on answers. Each span is
+    /// added once, by the write that moves the phase out of `working`.
     pub worked: u64,
-    /// The screen the last reader found on the pane, and when a reader first
-    /// found it. `None` until something has looked.
+    /// The screen the last reader saw on the pane and when it first appeared.
+    /// `None` until something has looked.
     pub still: Option<Still>,
-    /// Whether the session this record is waiting to hear open has nobody
-    /// asking it for anything: `amx resume <id>` with no message.
+    /// Set by `amx resume <id>` with no message: the session will open idle.
     ///
-    /// Every other boot has a first turn in it — `new` puts the task in the
-    /// argv, a resume with a message puts the message there — and the record's
-    /// `starting` lasts the second until the vendor says it is working. A
-    /// resume with no message has no such moment. The vendor restores the
-    /// conversation, draws its prompt and waits, and the only thing it says is
-    /// that the session opened; the pane is then the one witness left, and a
-    /// pi whose footer somebody replaced is a pane no rule here can read. So
-    /// the record carries what only `resume` knew: nothing is coming. See
-    /// [`crate::hook::apply`], which spends it the moment the session opens.
+    /// Every other boot has a first turn, so `starting` lasts only until the
+    /// vendor reports work. A bare resume opens at the prompt and reports only
+    /// the session start, and the pane may not be readable (a pi with a
+    /// custom footer). [`crate::hook::apply`] consumes this on session start.
     pub opens_idle: bool,
-    /// Whether the vendor has said a turn started and not yet that it ended.
+    /// Whether the vendor reported a turn start and not yet its end.
     ///
-    /// The phase cannot say it: a turn is working, waiting and working again,
-    /// and a question can go up with no turn under it at all. pi draws a
-    /// dialog for an extension whenever the extension asks, and closing one
-    /// says only that it went — see [`crate::hook::apply`], where a refusal
-    /// goes back to work inside a turn and back to idle outside one.
+    /// The phase cannot say this: a turn moves between working and waiting,
+    /// and pi can raise a dialog outside any turn. See [`crate::hook::apply`],
+    /// where a refusal returns to working inside a turn and to idle outside
+    /// one.
     pub turn_open: bool,
-    /// What an interrupt put back in the vendor's composer: the text of every
-    /// send it was still holding when the turn was cut short, oldest first,
-    /// and empty for a composer amx put nothing in.
+    /// Sends an interrupt put back into the vendor's composer, oldest first.
     ///
-    /// pi does that on a cancel, where claude drops what it held — see
-    /// [`crate::vendor::Vendor::restores_queued_on_cancel`]. The text then
-    /// sits on the vendor's prompt unsubmitted, a paste would land after it
-    /// and go out with it, and `send` refuses for as long as this stands. The
-    /// vendor's next prompt takes it off, because that is the composer
-    /// emptied. Written with the observing hand, like `interrupted_at`.
+    /// pi restores queued messages on cancel, where claude drops them (see
+    /// [`crate::vendor::Vendor::restores_queued_on_cancel`]). The text sits
+    /// unsubmitted, so a paste would be sent along with it, and `send` refuses
+    /// until the vendor's next prompt clears it. Written with
+    /// [`Writer::observe`].
     pub composer_holds: Vec<String>,
 }
 
-/// A screen a reader saw, and the moment it went up.
+/// A screen a reader saw, and when it first appeared.
 ///
-/// The one thing on this record that is about the pane rather than about the
-/// agent, and it is here rather than in the reader's memory because a reader
-/// is usually a process that prints a line and exits. How long a screen has
-/// held still is what a quiescent rule waits on — see
-/// [`crate::rules::SETTLED_LOOKS`] — and a run of looks counted inside one
-/// process is a run that starts over at one for every `amx ls` anybody types.
+/// Kept on the record because readers are usually short-lived processes: how
+/// long a screen has held still (see [`crate::rules::SETTLED_LOOKS`]) must
+/// survive across `amx ls` invocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Still {
-    /// The screen above the vendor's chrome, hashed. A look only ever asks
-    /// whether it is the screen the look before it saw, never what it said, so
-    /// a fleet of long-lived agents costs one small number apiece.
+    /// Hash of the screen above the vendor's chrome. Only compared for
+    /// equality, so each agent costs one number.
     pub screen: u64,
-    /// Epoch seconds when a reader first saw that screen. It stays where it is
-    /// for as long as the screen does, which is what makes the seconds since
-    /// an answer about the pane rather than about the last look at it.
+    /// Epoch seconds when a reader first saw this screen. Unchanged while the
+    /// screen stays the same.
     pub since: u64,
 }
 
 impl State {
-    /// Set what the agent is being asked.
+    /// Set the question the agent is asking, from a hook.
     ///
-    /// The options go with it. They are the choices drawn under one particular
-    /// question, and under the next question they are somebody else's answers.
-    ///
-    /// The kind goes only when the question does. Words arriving for a
-    /// question already outstanding are just words: the hook that carries them
-    /// is describing the same screen something else already named, and it
-    /// names nothing itself.
-    ///
-    /// This is a hook's hand, so what it leaves is the vendor's own word — see
+    /// Clears the options and the call, which belong to the previous question.
+    /// The kind is cleared only when the question is: new words for a question
+    /// already outstanding describe the same screen. Marks the question as
     /// [`reported`](State::reported).
     pub fn asks(&mut self, question: Option<String>) {
         self.question = question;
@@ -565,27 +442,20 @@ impl State {
         }
     }
 
-    /// Set the whole of what a call is asking.
+    /// Set every question of an `AskUserQuestion` call, from a hook.
     ///
-    /// The question on the screen is the first with no answer on it, and it
-    /// goes where every reader has always found the question. The rest is the
-    /// part no screen carries: how many questions there are, what they are
-    /// called, what the sentences under their choices say, and which of them
-    /// take more than one choice.
+    /// The first unanswered question is mirrored into `question` and
+    /// `options`, where readers look for the question on screen.
     pub fn asks_all(&mut self, asking: Vec<Ask>) {
         self.asking = asking;
         self.shows_the_pending_one();
     }
 
-    /// Record what was sent back for the question on the screen, and put up
-    /// the one after it.
+    /// Record the answer to the question on screen and show the next one.
     ///
-    /// Answering does not end a call that asks more than one question: the
-    /// vendor moves to the next tab and the prompt is still up. So the answer
-    /// goes on the question it belongs to, and the question is the next one
-    /// with nothing on it. When every question has an answer there is nothing
-    /// left to ask and the answers stand on the record, which is what the
-    /// vendor's own Submit tab is showing.
+    /// Answering one question moves the vendor to the next tab without ending
+    /// the call. Once every question has an answer, nothing is left to ask and
+    /// the answers stay on the record, as the vendor's Submit tab shows them.
     pub fn answered(&mut self, answer: impl Into<String>) {
         if let Some(pending) = self.asking.iter_mut().find(|ask| ask.answer.is_none()) {
             pending.answer = Some(answer.into());
@@ -593,21 +463,21 @@ impl State {
         self.shows_the_pending_one();
     }
 
-    /// The question of the call that is on the screen.
+    /// The call's question on screen: the first without an answer.
     pub fn pending(&self) -> Option<&Ask> {
         self.asking.iter().find(|ask| ask.answer.is_none())
     }
 
-    /// Whether the question on the screen takes more than one choice.
+    /// Whether the question on screen takes several choices.
     pub fn multi(&self) -> bool {
         self.pending().is_some_and(|ask| ask.multi)
     }
 
-    /// Put the question the call is showing where the question goes.
+    /// Mirror the call's pending question into `question` and `options`.
     ///
-    /// Reached from the two writers a hook drives — [`asks_all`](State::asks_all)
-    /// and [`answered`](State::answered) — and from nowhere else, so what it
-    /// leaves is the vendor's own word the same way [`asks`](State::asks)'s is.
+    /// Only reached from the hook-driven [`asks_all`](State::asks_all) and
+    /// [`answered`](State::answered), so it marks the question reported, as
+    /// [`asks`](State::asks) does.
     fn shows_the_pending_one(&mut self) {
         let (text, options) = self
             .pending()
@@ -619,16 +489,12 @@ impl State {
         self.reported = self.question.is_some();
     }
 
-    /// The seconds worked as of a stated moment, counting a span still open.
+    /// Seconds worked as of `at`, including a span still open.
     ///
-    /// The total is added up at the write that ends a span, so a record left
-    /// mid-turn — the pane went, and nothing got to write the phase out of
-    /// working — is carrying one nothing closed. `at` is how far to count it,
-    /// which is whoever is asking's business: the last moment amx can say the
-    /// agent was running, or the moment it is being asked in.
-    ///
-    /// A record with no moment to date the open span from is one amx cannot say
-    /// worked at all, so it says nothing rather than counting from the epoch.
+    /// Spans are added when the phase leaves `working`, so a record left
+    /// mid-turn (the pane died before anything wrote the phase out) has one
+    /// span still open. The caller picks `at`. A working record with no
+    /// `since` counts no open span.
     pub fn worked_by(&self, at: u64) -> u64 {
         let open = match (self.state, self.since) {
             (Phase::Working, since) if since > 0 => at.saturating_sub(since),
@@ -637,25 +503,19 @@ impl State {
         self.worked.saturating_add(open)
     }
 
-    /// Whether a screen's reading would tell the record anything it has not
-    /// got. Asked before the writer's lock is taken, because a reader that has
-    /// learned nothing has no business holding it.
+    /// Whether a screen reading would add anything the record lacks. Checked
+    /// before taking the writer lock.
     pub fn learns_from(&self, seen: &Question) -> bool {
         (self.question.is_none() && !seen.text.is_empty())
             || (self.options.is_empty() && !seen.options.is_empty())
     }
 
-    /// Take what a screen said, and overwrite nothing.
+    /// Fill in what a screen reading adds, overwriting nothing.
     ///
-    /// The law for a question the vendor reported. A hook is its own words
-    /// about its own state; a screen is amx's reading of a picture of it. So
-    /// the screen fills what the hooks left empty — the options, which no hook
-    /// has ever carried, and the text when no hook reported one — and never
-    /// corrects them.
-    ///
-    /// Filling the choices under a question does not make it anybody else's
-    /// word, so the mark stands. Taking the text is this reading being the
-    /// first account of the question there is, and the mark says so.
+    /// Used for a question a hook reported: the hook's words stand, and the
+    /// screen only fills gaps (the options, which no hook carries, and the text
+    /// when no hook gave one). Filling options keeps the question reported;
+    /// taking the text marks it as read from the screen.
     pub fn learn(&mut self, seen: &Question) {
         if self.question.is_none() && !seen.text.is_empty() {
             self.question = Some(seen.text.clone());
@@ -667,10 +527,8 @@ impl State {
         }
     }
 
-    /// Whether a screen's reading would leave the record saying anything other
-    /// than what it says now. Asked before the writer's lock for the same
-    /// reason [`learns_from`](State::learns_from) is: a look that found the
-    /// screen the record already has has no business holding it.
+    /// Whether a screen reading would change what the record says. Checked
+    /// before taking the writer lock, like [`learns_from`](State::learns_from).
     pub fn corrected_by(&self, seen: Option<&Question>) -> bool {
         let (text, options, walked) = match asked(seen) {
             Some(seen) => (
@@ -683,21 +541,15 @@ impl State {
         self.question.as_deref() != text || self.options != options || self.walked != walked
     }
 
-    /// Take what a screen said over what a screen said before it.
+    /// Replace the question with a screen reading.
     ///
-    /// The other law, for a question no hook ever reported — see
-    /// [`reported`](State::reported), which is what decides which of the two a
-    /// reader is under. There is no vendor's word here for a picture to be put
-    /// in front of: the question on the record is what some earlier look read
-    /// off the same pane, and a pane holds one screen at a time. So a later
-    /// reading replaces an earlier one whole — the question and the choices
-    /// drawn under it together — and a screen with nothing on it to answer
-    /// leaves nothing outstanding.
-    ///
-    /// Replacing it whole is also what keeps a screen's choices off another
-    /// screen's question: filling one field at a time, which is what
-    /// [`learn`](State::learn) does, grafted the trust selector's answers under
-    /// the sentence the login box had left behind.
+    /// Used for a question no hook reported (see
+    /// [`reported`](State::reported)): the record holds only an earlier
+    /// reading of the same pane, and a pane shows one screen at a time. The
+    /// question and its choices are replaced together, and a screen with
+    /// nothing to answer clears them. Filling field by field, as
+    /// [`learn`](State::learn) does, once left the trust selector's choices
+    /// under the login box's question.
     pub fn correct(&mut self, seen: Option<&Question>) {
         let seen = asked(seen);
         self.question = seen.map(|seen| seen.text.clone());
@@ -706,14 +558,11 @@ impl State {
         self.reported = false;
     }
 
-    /// The record a new session of the same agent starts from: `resume`, and
-    /// a `/clear` in the pane.
+    /// The state a new session of the same agent starts from, for `resume`
+    /// and `/clear`.
     ///
-    /// Everything the last session left behind goes with it: its answer is not
-    /// this session's answer, and an exit code is not how a running command
-    /// ended. The count of messages sent stays, because the log it counts is
-    /// still the agent's own, and so do the seconds it worked and the name
-    /// somebody gave it, because it is the same agent.
+    /// The previous session's answer and exit code are dropped. The send
+    /// count, the seconds worked and the display name are kept.
     pub fn for_a_new_session(&self) -> State {
         State {
             seq: self.seq,
@@ -724,22 +573,19 @@ impl State {
     }
 }
 
-/// What a reading of a screen found to answer, where it found anything. A
-/// reading with no words in it is a screen that asked nothing, whatever else
-/// was drawn on it.
+/// The reading if it has a question. A reading with no text asked nothing,
+/// whatever else it shows.
 fn asked(seen: Option<&Question>) -> Option<&Question> {
     seen.filter(|seen| !seen.text.is_empty())
 }
 
-/// A state document as it is written down.
+/// The on-disk shape of [`State`].
 ///
-/// It differs from [`State`] in one place, and this is the only place the two
-/// shapes meet: the record keeps a question, the answers it offers and the
-/// call it came from under a single `question` key, because they are one thing
-/// to everything that reads them, while in memory the text is a field of its
-/// own, because the text alone is what most of amx asks for. Options and
-/// questions with no question over them are not written at all, which is what
-/// keeps an answered question from leaving its choices behind.
+/// It differs in one place: the question text, its options and its call are
+/// stored together under one `question` key, while in memory the text is its
+/// own field because most of amx only needs the text. Options with no
+/// question are not written, so an answered question never leaves its choices
+/// behind.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Wire {
@@ -767,14 +613,11 @@ struct Wire {
     composer_holds: Vec<String>,
 }
 
-/// A phase this build knows, or [`Phase::Unknown`] for one it does not.
+/// A known phase, or [`Phase::Unknown`] for one this build does not know.
 ///
-/// `state.json` is written by whatever build of amx last touched an agent, and
-/// a phase this reader has never heard of is not a document to give up on: the
-/// rest of it — the question, the summary, everything else a surface draws —
-/// still reads. Only the shared [`Phase`] type stays strict about naming a
-/// phase that does not exist, because the screen rules a vendor ships lean on
-/// that strictness to catch a typo in the state a rule claims.
+/// `state.json` may come from a newer build, and the rest of the document
+/// should still read. [`Phase`] itself stays strict, because vendor screen
+/// rules rely on it to catch typos in the phase a rule claims.
 fn phase_or_unknown<'de, D>(deserializer: D) -> std::result::Result<Phase, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -791,19 +634,13 @@ where
     })
 }
 
-/// A question on the record: its words alone, or the whole of it.
+/// A stored question: its words alone, or everything known about it.
 ///
-/// Everything amx knows about a question beyond its words is read off the
-/// screen, and the screen is only read once the hooks have gone quiet — so a
-/// question that has only just been asked is its words and nothing else. That
-/// is what amx has always written there, and it still means the same thing.
-///
-/// Which is why the words alone are also how a document says the vendor
-/// reported this question. Nothing but a hook has ever left a question in this
-/// shape: a reading of a pane arrives with the choices under it, and one that
-/// arrives with none is written whole below, so it can say where it came from.
-/// A document from before that field existed reads the same way, and reads
-/// right — the words alone were a hook's then too.
+/// Anything beyond the words comes from reading the screen, so a question a
+/// hook just reported is only words. The words-only shape therefore also
+/// means "reported by the vendor"; a screen reading is always written whole
+/// so it can say otherwise. Documents from before the `reported` field read
+/// correctly under the same rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum Asked {
@@ -811,9 +648,8 @@ enum Asked {
     Whole(Known),
 }
 
-/// Everything the record has on one question. Each part is left out when amx
-/// has not got it, so the document never claims to know more than it does —
-/// and a document written before any of this existed still reads.
+/// Everything known about one question. Missing parts are omitted, so the
+/// document never claims more than amx knows and older documents still read.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Known {
@@ -821,38 +657,33 @@ struct Known {
     text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<String>,
-    /// Whether those choices were read off a mark — see [`State::walked`].
-    /// Written only where it is true, the way `reported` is: a document that
-    /// does not say is a list the vendor numbered itself, which is what every
-    /// document written before this field holds.
+    /// Whether the choices were read off a cursor mark (see
+    /// [`State::walked`]). Written only when true; absent means the vendor
+    /// numbered the list, as in every older document.
     #[serde(skip_serializing_if = "is_not")]
     walked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<Kind>,
-    /// The call the question came from, whole. The question showing and its
-    /// choices are written above as well as here, because they are what every
-    /// reader of this document has always read and this adds a field rather
-    /// than moving one.
+    /// The whole call. The question on screen and its choices are also
+    /// written above, where existing readers look for them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     asking: Vec<Ask>,
-    /// Whether the vendor reported this question — see
-    /// [`State::reported`]. Written only where it is true, because a document
-    /// that does not say is a reading: the only shape a hook leaves that says
-    /// nothing else is the words alone above.
+    /// Whether the vendor reported this question (see [`State::reported`]).
+    /// Written only when true: the whole shape without it is a screen
+    /// reading, and a hook's question with nothing else is the words alone.
     #[serde(skip_serializing_if = "is_not")]
     reported: bool,
 }
 
-/// A `false` a document has no reason to carry.
+/// Skip writing a `false`.
 fn is_not(said: &bool) -> bool {
     !said
 }
 
 impl From<State> for Wire {
     fn from(state: State) -> Wire {
-        // Named one by one rather than by `..`: a field added to the record
-        // and left out of the document would be a field that silently does not
-        // survive a restart.
+        // Destructure every field so a new field cannot be silently left out
+        // of the document.
         let State {
             state,
             name,
@@ -891,26 +722,19 @@ impl From<State> for Wire {
             summary,
             background,
             question: match (question, kind) {
-                // Nothing outstanding. Options with no question over them are
-                // not written at all, which is what keeps an answered question
-                // from leaving its choices behind.
+                // Nothing outstanding. Options without a question are dropped.
                 (None, None) => None,
-                // A question amx knows the kind of and not the words: a menu
-                // whose payload it could not read, or a call whose questions
-                // have all been answered and is waiting to be submitted. The
-                // choices showing under nothing are nobody's to press, but the
-                // call itself is what is on the screen and holds the answers
-                // given to it so far.
+                // The kind without the words: an unreadable menu, or a call
+                // whose questions are all answered and awaiting submit. The
+                // call is kept for its answers; stray options are dropped.
                 (None, kind) => Some(Asked::Whole(Known {
                     kind,
                     asking,
                     ..Known::default()
                 })),
-                // The words alone, as amx has always written a question a hook
-                // has only just carried — and only for one, now that the shape
-                // is also what says so. A reading with nothing but words is
-                // written whole below, where it has a field to say it is a
-                // reading.
+                // A hook's question with nothing else is written as its words
+                // alone, which is what marks it reported. A words-only screen
+                // reading takes the whole shape below.
                 (Some(text), None) if reported && options.is_empty() && asking.is_empty() => {
                     Some(Asked::Words(text))
                 }
@@ -986,14 +810,14 @@ impl From<Wire> for State {
     }
 }
 
-/// One thing that happened, as it happened.
+/// One recorded event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     /// Epoch seconds when amx recorded it.
     pub at: u64,
-    /// The vendor's hook event name, or amx's own word for what it did.
+    /// The vendor's hook event name, or amx's own name for what it did.
     pub kind: String,
-    /// What arrived with it, whole and unedited.
+    /// The payload as received.
     #[serde(default)]
     pub payload: serde_json::Value,
 }
@@ -1008,22 +832,19 @@ impl Event {
     }
 }
 
-/// Which edge of a turn an event is, in its vendor's words.
+/// Which edge of a turn an event is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
     Opens,
     Closes,
 }
 
-/// The seconds of work a log's turns add up to: each from the event that
-/// opened it to the one that closed it, and `None` for a log with no turn
-/// edges in it at all.
+/// Seconds of work the log's turns add up to, each from its opening event to
+/// its closing one. `None` if the log has no turn edges.
 ///
-/// The record's own `worked` is what a reader asks, and this is for one whose
-/// spans never got added up: the log kept every edge they would have been
-/// added up from. A second opening inside an open turn is a message steered
-/// into it, not a new turn, and a turn nothing closed counts nothing, because
-/// no event says where it stopped.
+/// For records whose `worked` total was never kept. A second opening inside an
+/// open turn is a message steered into it, not a new turn, and a turn never
+/// closed counts nothing.
 pub fn worked_in(events: &[Event], edge: impl Fn(&str) -> Option<Edge>) -> Option<u64> {
     let mut edged = false;
     let mut open: Option<u64> = None;
@@ -1054,7 +875,7 @@ pub fn now() -> u64 {
         .unwrap_or_default()
 }
 
-/// A file's mtime in epoch seconds, or `None` where there is no file.
+/// A file's mtime in epoch seconds, or `None` if there is no file.
 fn modified_at(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .and_then(|file| file.modified())
@@ -1072,18 +893,16 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Make the directory and write the opening record.
+    /// Make the directory and write the initial record.
     pub fn create(root: &Path, meta: &Meta) -> Result<Agent> {
         let dir = crate::paths::agent_dir_in(root, &meta.id)?;
-        // The record is the document, not the directory: `new` makes the
-        // directory first, puts the pane's handoff in it, and only writes the
-        // record once there is a pane to record.
+        // `new` creates the directory and writes the pane's handoff into it
+        // before there is a pane to record, so only `meta.json` marks a
+        // record.
         if dir.join(META).exists() {
             bail!("agent `{}` already has a record", meta.id);
         }
-        // A task and the answers to it are the owner's business alone — and
-        // the directory is usually there already, made by whatever put the
-        // pane's handoff in it, so the mode is set rather than asked for.
+        // The directory usually exists already, so set its mode explicitly.
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(paths::DIR_MODE)
@@ -1106,7 +925,7 @@ impl Agent {
         Ok(agent)
     }
 
-    /// An agent that already has a directory.
+    /// Open an agent whose directory exists.
     pub fn open(root: &Path, id: &str) -> Result<Agent> {
         let dir = crate::paths::agent_dir_in(root, id)?;
         if !dir.is_dir() {
@@ -1126,62 +945,47 @@ impl Agent {
         &self.dir
     }
 
-    /// What the agent is saying at this moment, where its vendor streams it —
-    /// see [`LIVE`]. `None` between turns, and from a vendor that streams
-    /// nothing.
+    /// Text the vendor is streaming now (see [`LIVE`]). `None` between turns
+    /// and for vendors that do not stream.
     pub fn live(&self) -> Option<String> {
         std::fs::read_to_string(self.dir.join(LIVE))
             .ok()
             .filter(|text| !text.trim().is_empty())
     }
 
-    /// When the vendor's own report last said the turn it is in is still
-    /// running, in epoch seconds — see [`HEARTBEAT`]. `None` between turns,
-    /// and from a vendor that beats nothing.
+    /// When the vendor's reporter last beat during a turn, in epoch seconds
+    /// (see [`HEARTBEAT`]). `None` between turns and for vendors that do not
+    /// beat.
     ///
-    /// The file's mtime rather than anything written in it. What a beat says
-    /// is that the report was alive at that moment, which is a time and
-    /// nothing else, and a file the wire only has to touch is one it can beat
-    /// on cheaply.
+    /// The beat is the file's mtime, so the reporter only has to touch it.
     pub fn heartbeat(&self) -> Option<u64> {
         modified_at(&self.dir.join(HEARTBEAT))
     }
 
-    /// When a reader last saw this agent's pane say its turn is running, in
-    /// epoch seconds — see [`SEEN`]. The file's mtime, as [`heartbeat`]'s is.
-    ///
-    /// [`heartbeat`]: Self::heartbeat
+    /// When a reader last saw this agent's pane show a running turn, in epoch
+    /// seconds (see [`SEEN`]).
     pub fn seen(&self) -> Option<u64> {
         modified_at(&self.dir.join(SEEN))
     }
 
-    /// Stamp [`SEEN`] at `at`. A reader's note and nothing else, so it takes
-    /// no lock, as the vendor's beat takes none.
+    /// Stamp [`SEEN`] at `at`. Takes no lock, like the vendor's heartbeat.
     pub fn saw_working(&self, at: u64) -> Result<()> {
         let file = File::create(self.dir.join(SEEN))?;
         file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(at))?;
         Ok(())
     }
 
-    /// What the pane printed, where its boot piped it into the record — see
-    /// [`OUTPUT`]. The whole file, for the reader that wants the whole of it
-    /// and reads it once: `amx logs` does, and the card that is retaken every
-    /// second reads [`output_tail`](Self::output_tail) instead.
+    /// The whole of what the pane printed (see [`OUTPUT`]), for one-off
+    /// readers like `amx logs`. The card uses [`output_tail`](Self::output_tail).
     ///
-    /// As a terminal would have shown it, not as the bytes went by: the bytes
-    /// are laid out on a grid and the cells read back — see
-    /// [`crate::ansi::laid_out`] — so a progress bar that drew itself a
-    /// hundred times over one row is one row, a vendor that put its cursor
-    /// where each word goes keeps the space between them, and the paint is
-    /// walked off. Bytes that are not text are read past rather than costing
-    /// the file.
+    /// Rendered as a terminal would show it (see [`crate::ansi::laid_out`]):
+    /// overwritten rows collapse, cursor moves become spacing, and escape
+    /// codes are removed. Invalid UTF-8 is replaced, not fatal.
     ///
-    /// `None` where there is no file, and where the vendor has spoken: a
-    /// record naming a transcript has the record and that transcript to answer
-    /// with, and the boot bytes beside it are a drawing rather than an
-    /// account. The file is a fallback for the one case with no other witness
-    /// — a vendor that died before its first hook — and for a command, which
-    /// reports nothing at all.
+    /// `None` if there is no file, or once the vendor has spoken (the record
+    /// names a transcript): then the record and transcript are the account and
+    /// boot output is just paint. The file matters for a vendor that died
+    /// before its first hook, and for a command, which reports nothing.
     pub fn output(&self) -> Option<String> {
         if self.spoke() {
             return None;
@@ -1190,24 +994,13 @@ impl Agent {
         Some(crate::ansi::laid_out(&String::from_utf8_lossy(&bytes)))
     }
 
-    /// The end of what the pane printed, for the card that shows it.
+    /// The last [`OUTPUT_TAIL`] bytes of what the pane printed, for the card.
     ///
-    /// A card is taken again every second it is open, and a `!cargo build`
-    /// prints tens of megabytes over an hour: reading and walking all of that
-    /// once a second is a cost that grows with the log. So this seeks to
-    /// [`OUTPUT_TAIL`] bytes from the end, which is more rows than a card is
-    /// paged through anyway, and the long command costs the view what a short
-    /// one does.
-    ///
-    /// Hidden and laid out the way [`output`](Self::output) is, and for the
-    /// same reasons.
-    ///
-    /// The offset lands inside a row, and that half row is dropped rather than
-    /// drawn: a card shows every row it is given, so half of one would be a row
-    /// the command never printed. A tail with no row boundary in it at all is
-    /// kept as it stands — half a row is more than none. Otherwise this is
-    /// [`output`](Self::output): as the terminal would have shown it, off the
-    /// grid the bytes are laid on, and `None` where there is no file.
+    /// The card is re-read every second and a long build can print tens of
+    /// megabytes, so only the end is read. Rendered and hidden as
+    /// [`output`](Self::output) is. The partial first row is dropped, since
+    /// the card would show it as a row the command never printed, unless the
+    /// tail holds no row break at all.
     pub fn output_tail(&self) -> Option<String> {
         if self.spoke() {
             return None;
@@ -1227,50 +1020,31 @@ impl Agent {
         Some(crate::ansi::laid_out(whole))
     }
 
-    /// Whether the vendor has said a word of its own: the transcript a report
-    /// named is the account, and every reader afterwards has that to weigh
-    /// instead of boot bytes.
+    /// Whether the vendor has reported anything, i.e. the record names a
+    /// transcript.
     ///
-    /// Not `meta.session`: amx writes one at spawn for a vendor that opens
-    /// under the id it minted — pi takes `--session-id` — so a pi that died
-    /// before its first hook carries a session and never spoke. The transcript
-    /// pointer is written by a report and by nothing else, which is why it is
-    /// the one that answers here.
-    ///
-    /// A record with no `meta.json` reads as not having spoken, which is what
-    /// the card's own fixtures are: a directory and an output file, nothing
-    /// more.
+    /// `meta.session` does not tell: amx writes it at spawn for vendors that
+    /// take a session id (pi's `--session-id`), before the vendor says a word.
+    /// Only a report sets the transcript. A directory with no `meta.json`
+    /// counts as not having spoken.
     fn spoke(&self) -> bool {
         self.meta().is_ok_and(|meta| meta.transcript.is_some())
     }
 
-    /// The end of the transcript the record names, for a reader that wants
-    /// the newest thing on it rather than the whole conversation.
+    /// The end of the transcript the record names.
     ///
-    /// A session's transcript grows all day — a long one runs to megabytes,
-    /// most of it tool results — and a row redrawn every second must not read
-    /// all of that to learn the last line of it. So this seeks to [`TAIL`]
-    /// bytes from the end and reads from there.
+    /// Transcripts grow to megabytes and rows are redrawn every second, so
+    /// this reads only the last [`TAIL`] bytes. The read usually starts inside
+    /// a line; readers skip lines that are not JSON (see
+    /// [`crate::conversation`]), which covers that partial line and any split
+    /// character.
     ///
-    /// The offset lands wherever it lands, usually inside a line. That is the
-    /// reader's to handle and it already does: a line that is not JSON is
-    /// skipped rather than fatal — see [`crate::conversation`] — and the half
-    /// line this opens on is one of those. Bytes that are half a character are
-    /// in that same first line, and go the same way.
+    /// If the window holds no line break except the final one (a huge last
+    /// entry, such as a large tool result), the tail is that whole entry plus
+    /// the [`TAIL`] bytes before it, so the entry before is still readable.
     ///
-    /// A last entry bigger than the window — a tool's result that read a large
-    /// file — would leave nothing whole to read, and the context with it,
-    /// which is the entry before. So where the window holds no line break but
-    /// the one ending the file, the tail is that entry whole and the [`TAIL`]
-    /// bytes before it.
-    ///
-    /// `None` where the record names no transcript, or names one that is not
-    /// there: the vendor announces the path in its first hook, and the file
-    /// can be gone by the time somebody reads the record.
-    ///
-    /// Asks nothing of an `Agent` but this — the record's own `meta` is the
-    /// whole of what it reads — so a caller with a record and no open `Agent`
-    /// still reads it this way rather than the whole file's.
+    /// `None` if the record names no transcript or the file is missing. Takes
+    /// only `meta`, so callers without an open [`Agent`] can use it.
     pub fn transcript_tail(meta: &Meta) -> Option<String> {
         let path = meta.transcript.as_ref()?;
         let mut file = File::open(path).ok()?;
@@ -1288,8 +1062,8 @@ impl Agent {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Where the line holding `at` starts: just past the nearest line break
-    /// before it, read back a [`TAIL`] at a time, or the file's start.
+    /// The start of the line holding `at`: just past the nearest line break
+    /// before it, scanning back [`TAIL`] bytes at a time, or 0.
     fn line_start(file: &mut File, at: u64) -> Option<u64> {
         let mut end = at;
         let mut chunk = Vec::new();
@@ -1314,8 +1088,7 @@ impl Agent {
         serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))
     }
 
-    /// What it is doing. A record with no state document yet reads as the
-    /// opening state rather than as an error.
+    /// What it is doing. A missing state document reads as the initial state.
     pub fn state(&self) -> Result<State> {
         let path = self.dir.join(STATE);
         match std::fs::read_to_string(&path) {
@@ -1327,14 +1100,13 @@ impl Agent {
         }
     }
 
-    /// Where the log itself is, for a reader that tails it rather than reading
-    /// it whole.
+    /// The event log's path, for readers that tail it.
     pub fn events_path(&self) -> PathBuf {
         self.dir.join(EVENTS)
     }
 
-    /// Everything that has happened, oldest first. A line that does not parse
-    /// is skipped: a damaged tail must not cost a reader the whole history.
+    /// Every event, oldest first. Unparseable lines are skipped, so a damaged
+    /// tail does not lose the history.
     pub fn events(&self) -> Result<Vec<Event>> {
         let path = self.dir.join(EVENTS);
         let text = match std::fs::read_to_string(&path) {
@@ -1348,7 +1120,7 @@ impl Agent {
             .collect())
     }
 
-    /// Take the writer's lock. Held until the returned value is dropped.
+    /// Take the writer lock, held until the returned value is dropped.
     pub fn writer(&self) -> Result<Writer<'_>> {
         let path = self.dir.join(LOCK);
         let file = OpenOptions::new()
@@ -1375,8 +1147,8 @@ impl Agent {
     }
 }
 
-/// The right to change one agent's record. Only one exists at a time, across
-/// every amx process on the machine.
+/// The right to change one agent's record. At most one exists at a time
+/// across all amx processes.
 pub struct Writer<'a> {
     agent: &'a Agent,
     _lock: nix::fcntl::Flock<File>,
@@ -1388,40 +1160,29 @@ impl Writer<'_> {
         self.agent.state()
     }
 
-    /// Change the state, and record when it was changed.
+    /// Change the state and stamp `last_event`.
     ///
-    /// `since` moves only when the phase does: how long an agent has been
-    /// working is the question a reader asks, and a summary arriving mid-turn
-    /// must not reset the clock.
-    ///
-    /// The ending is stamped by the same rule, because it is the same event:
-    /// the write that turns a phase terminal is the run ending, and an answer
-    /// or an exit code arriving after it is not a second ending. An agent that
-    /// leaves a terminal phase has not ended at all, so the stamp goes with it.
-    ///
-    /// And a span of work is added up by the same rule again: a phase moving
-    /// out of `working` is the span ending, and this write is the only moment
-    /// amx is told so. What the span was worth is settled here rather than
-    /// worked out later from `since`, which the next phase takes for itself.
+    /// When the phase changes: `since` moves (a mid-turn summary must not
+    /// reset the clock); `ended` is set on entering a terminal phase and
+    /// cleared on leaving one; and a span leaving `working` is added to
+    /// `worked`, since this write is the only moment amx learns the span
+    /// ended.
     pub fn update_state(&self, change: impl FnOnce(&mut State)) -> Result<State> {
         self.update_state_at(now(), change)
     }
 
-    /// The same, with the clock named, so a test can lay a span of work out in
-    /// the past rather than sit through one.
+    /// [`update_state`](Self::update_state) at a given time, for tests.
     fn update_state_at(&self, at: u64, change: impl FnOnce(&mut State)) -> Result<State> {
         self.update_state_closing_at(at, at, change)
     }
 
-    /// Change the state for somebody who is not the agent speaking: `stop`,
+    /// Change the state on behalf of someone other than the agent: `stop`,
     /// `resume`, the exit hook.
     ///
-    /// The same write, except for where an open span of work closes. Nothing
-    /// the vendor said is being written, so the span runs to when the agent
-    /// was last heard and not to this moment: a record left working over a
-    /// pane that died ten hours ago did not work for ten hours. Heard is what
-    /// [`crate::derive`] means by it, the latest of `last_event`, `since` and
-    /// the beat beside the record, and never later than now.
+    /// An open working span closes when the agent was last heard, not now: a
+    /// record left working over a pane that died ten hours ago did not work
+    /// for ten hours. "Heard" is the latest of `last_event`, `since` and the
+    /// heartbeat, capped at now, as in [`crate::derive`].
     pub fn update_state_heard(
         &self,
         heartbeat: Option<u64>,
@@ -1472,18 +1233,14 @@ impl Writer<'_> {
         Ok(after)
     }
 
-    /// Write down something read off the pane rather than heard from the
-    /// agent.
+    /// Record something read off the pane rather than heard from the agent.
     ///
-    /// `last_event` stays where it was. It says how fresh the *record* is, and
-    /// a reader that has looked at a screen has heard nothing: moving it would
-    /// make the next reader trust this document over the pane it was copied
-    /// from, and an agent that is standing at a question would read as working
-    /// again until it went stale a second time.
+    /// `last_event` is left alone: it measures how fresh the record is, and a
+    /// screen reading is not news from the agent. Moving it would make the
+    /// next reader trust the record over the pane.
     ///
-    /// A change that changes nothing writes nothing, so a wall of agents being
-    /// redrawn once a second costs one write per question and not one per
-    /// look.
+    /// Writes nothing when nothing changed, so redrawing a wall of agents
+    /// costs one write per new question, not one per look.
     pub fn observe(&self, change: impl FnOnce(&mut State)) -> Result<State> {
         let before = self.state()?;
         let mut after = before.clone();
@@ -1495,8 +1252,8 @@ impl Writer<'_> {
         Ok(after)
     }
 
-    /// Change the record of how the agent was started — the vendor's session
-    /// id and its transcript arrive later, from a hook.
+    /// Change the meta. The session id and transcript arrive later, from a
+    /// hook.
     pub fn update_meta(&self, change: impl FnOnce(&mut Meta)) -> Result<Meta> {
         let mut meta = self.agent.meta()?;
         change(&mut meta);
@@ -1504,8 +1261,8 @@ impl Writer<'_> {
         Ok(meta)
     }
 
-    /// Append one event. One line, one write, under the lock: two hooks firing
-    /// together cannot split each other's records.
+    /// Append one event as a single write under the lock, so concurrent hooks
+    /// never interleave lines.
     pub fn append(&self, event: &Event) -> Result<()> {
         let path = self.agent.dir.join(EVENTS);
         let mut line = serde_json::to_vec(event).context("writing an event")?;
@@ -1537,7 +1294,7 @@ pub fn list(root: &Path) -> Result<Vec<String>> {
         let Some(id) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        // A directory named like an id, with the record that makes it one.
+        // An id-shaped directory holding a record.
         if crate::ids::is_valid(&id) && entry.path().join(META).is_file() {
             ids.push(id);
         }
@@ -1545,12 +1302,11 @@ pub fn list(root: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The lock every spawn counts the caps and claims its place under, on
-/// `spawn.lock` beside the agents. Held until the returned file is dropped.
+/// Take `spawn.lock`, next to the agents directory, under which a spawn
+/// counts the caps and claims its place. Held until the file is dropped.
 ///
-/// One lock for the whole machine rather than one per record: what it guards
-/// is a count over every record, and two spawns that each counted before the
-/// other claimed would both find room for one.
+/// One machine-wide lock: the caps count every record, and two spawns that
+/// both counted before either claimed would both find room.
 pub fn spawn_lock(root: &Path) -> Result<File> {
     let path = root.parent().unwrap_or(root).join(SPAWN_LOCK);
     let file = OpenOptions::new()
@@ -1565,12 +1321,11 @@ pub fn spawn_lock(root: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// A place under the caps, taken for an agent that has no running record yet:
-/// the file naming the project it counts against, locked for as long as the
-/// spawn that wrote it is still setting it up.
+/// A place under the caps held by a spawn still setting up: a file naming the
+/// project it counts against, locked while the spawn runs.
 ///
-/// A claim whose spawn died is not locked by anybody, and counts for nothing.
-/// Dropping it takes the file away.
+/// A claim whose spawn died is unlocked and counts for nothing. Dropping the
+/// claim removes the file.
 pub struct Claim {
     path: PathBuf,
     _file: File,
@@ -1601,8 +1356,8 @@ impl Drop for Claim {
     }
 }
 
-/// The places claimed under `root` by spawns still setting up, as the id
-/// each was claimed for and the project it counts against.
+/// Places claimed under `root` by spawns still setting up: each claim's id
+/// and project.
 pub fn claims(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
@@ -1616,7 +1371,7 @@ pub fn claims(root: &Path) -> Result<Vec<(String, PathBuf)>> {
         let Some(id) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        // Gone between the listing and the open is a spawn that finished.
+        // A claim gone since the listing is a spawn that finished.
         let Ok(mut file) = File::open(entry.path().join(CLAIM)) else {
             continue;
         };
@@ -1637,12 +1392,11 @@ fn to_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Write `bytes` to `path` as a whole document: a reader sees what was there
-/// before, or all of this, and never a mixture.
+/// Write `bytes` to `path` atomically: readers see the old content or all of
+/// the new, never a mix.
 ///
-/// Shared with the view, which keeps one small document of its own beside the
-/// agents: two views open at once, and the last one to quit must not publish
-/// half a file to the next one that starts.
+/// Also used for the view's own file next to the agents, which several views
+/// may write.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1664,8 +1418,8 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .mode(paths::FILE_MODE)
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
-    // Before a byte of the document goes in, and not after: what is renamed
-    // over the target is a file that was never readable by anybody else.
+    // Restrict the mode before writing, so the file is never readable by
+    // others.
     paths::keep_to_the_owner(&temporary, paths::FILE_MODE)?;
     file.write_all(bytes)
         .with_context(|| format!("writing {}", temporary.display()))?;
@@ -1724,9 +1478,8 @@ mod tests {
 
     #[test]
     fn store_reads_a_record_with_no_family_as_a_root_at_zero() {
-        // Parent and depth are new fields, and a record outlives the version
-        // of amx that wrote it: one from an older amx names no parent and
-        // stands at depth 0.
+        // `parent` and `depth` were added later; an older record reads as a
+        // root at depth 0.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let fresh = agent.meta().unwrap();
@@ -1746,8 +1499,7 @@ mod tests {
 
     #[test]
     fn store_reads_a_record_with_no_role_as_none() {
-        // `role` is newer still, and the same law holds: a record an older amx
-        // wrote names no role rather than failing to read.
+        // `role` was added later still; an older record reads as having none.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
 
@@ -1765,8 +1517,7 @@ mod tests {
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         assert_eq!(agent.heartbeat(), None, "nothing has beaten yet");
 
-        // What the beat says is that it happened and when, so the file is
-        // written rather than read: its own mtime is the whole of it.
+        // The beat is the file's mtime, not its content.
         std::fs::write(agent.dir().join(HEARTBEAT), "").unwrap();
         let beat = agent.heartbeat().expect("a beat");
         assert!(
@@ -1777,8 +1528,8 @@ mod tests {
 
     #[test]
     fn store_writes_a_record_into_a_directory_that_is_waiting_for_it() {
-        // Spawning makes the directory before there is anything to record in
-        // it, so a directory is not a record and does not stand in for one.
+        // Spawning creates the directory before there is a record, so a bare
+        // directory does not count as one.
         let root = TempDir::new().unwrap();
         let dir = root.path().join("fix-login-a1b");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1791,7 +1542,7 @@ mod tests {
             "and nothing was swept up"
         );
 
-        // Twice is a mistake worth naming.
+        // Creating the same record twice is an error.
         assert!(Agent::create(root.path(), &meta("fix-login-a1b")).is_err());
     }
 
@@ -1809,22 +1560,21 @@ mod tests {
         );
     }
 
-    /// The permission bits, as anything but amx would read them.
+    /// The permission bits of `path`.
     fn mode_of(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
-    /// A mode as a set of permissions, for a test that leaves one lying about.
+    /// Permissions with the given mode bits.
     fn mode(bits: u32) -> std::fs::Permissions {
         std::fs::Permissions::from_mode(bits)
     }
 
     #[test]
     fn hardening_every_file_in_a_record_is_the_owners_alone() {
-        // Neither the directory nor the files in it are amx's to assume: the
-        // directory is made before there is a record to put in it, a mode
-        // passed to `open` is a request the umask may take bits out of, and it
-        // is ignored outright for a file that is already there.
+        // The directory may exist before the record, the umask can strip bits
+        // from the mode passed to `open`, and that mode is ignored for an
+        // existing file, so every path must be chmodded explicitly.
         let root = TempDir::new().unwrap();
         let dir = root.path().join("fix-login-a1b");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1879,13 +1629,13 @@ mod tests {
         assert_eq!(done.ended, done.since);
         assert_eq!(written(&agent)["ended"], done.ended);
 
-        // An answer written after the ending is not a second ending.
+        // An answer written after the end does not move the end.
         let after = writer
             .update_state(|s| s.result = Some("wrote the parser".to_string()))
             .unwrap();
         assert_eq!(after.ended, done.ended);
 
-        // And an agent put back to work has not ended at all.
+        // Leaving a terminal phase clears it.
         let again = writer.update_state(|s| s.state = Phase::Working).unwrap();
         assert_eq!(again.ended, 0);
     }
@@ -1899,16 +1649,15 @@ mod tests {
         let idle = writer.update_state(|s| s.state = Phase::Idle).unwrap();
         assert_eq!(idle.parked_at, 0, "its pane is still there");
 
-        // The stamp goes on the record without moving `last_event`: letting a
-        // pane go is something amx did, not something the agent said.
+        // Parking is amx's doing, not news from the agent, so `last_event`
+        // stays.
         let parked = writer.observe(|s| s.parked_at = 1_700).unwrap();
         assert_eq!(parked.parked_at, 1_700);
         assert_eq!(parked.last_event, idle.last_event);
         assert_eq!(written(&agent)["parked_at"], 1_700);
         assert_eq!(agent.state().unwrap().parked_at, 1_700);
 
-        // And a document from before the field existed reads as a pane amx
-        // never let go.
+        // A document from before the field reads as never parked.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
         assert_eq!(agent.state().unwrap().parked_at, 0);
     }
@@ -1929,8 +1678,7 @@ mod tests {
         assert_eq!(written(&agent)["background"], 2);
         assert_eq!(agent.state().unwrap().background, 2);
 
-        // And a document from before the field existed reads as an agent with
-        // nothing of its own left running.
+        // A document from before the field reads as nothing left running.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
         assert_eq!(agent.state().unwrap().background, 0);
     }
@@ -1944,16 +1692,15 @@ mod tests {
         let working = writer.update_state(|s| s.state = Phase::Working).unwrap();
         assert_eq!(working.interrupted_at, 0, "nothing has been cut short");
 
-        // The stamp goes on the record without moving `last_event`, the way
-        // the parked stamp does: a key amx typed is not news from the agent.
+        // An interrupt is amx's doing, not news from the agent, so
+        // `last_event` stays.
         let cut = writer.observe(|s| s.interrupted_at = 1_700).unwrap();
         assert_eq!(cut.interrupted_at, 1_700);
         assert_eq!(cut.last_event, working.last_event);
         assert_eq!(written(&agent)["interrupted_at"], 1_700);
         assert_eq!(agent.state().unwrap().interrupted_at, 1_700);
 
-        // And a document from before the field existed reads as an agent whose
-        // turn nothing ever cut short.
+        // A document from before the field reads as never interrupted.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"working"}"#).unwrap();
         assert_eq!(agent.state().unwrap().interrupted_at, 0);
     }
@@ -1964,7 +1711,7 @@ mod tests {
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let writer = agent.writer().unwrap();
 
-        // Six seconds of work, and then a question nobody answers for an hour.
+        // Six seconds of work, then a question left unanswered for an hour.
         writer
             .update_state_at(1_000, |s| s.state = Phase::Working)
             .unwrap();
@@ -1981,7 +1728,7 @@ mod tests {
             "an hour of waiting is not an hour's work"
         );
 
-        // Four seconds more, and the run ends.
+        // Four more seconds, then the run ends.
         let done = writer
             .update_state_at(4_610, |s| {
                 s.state = Phase::Done;
@@ -1991,7 +1738,7 @@ mod tests {
         assert_eq!(done.worked, 10);
         assert_eq!(written(&agent)["worked"], 10);
 
-        // Nothing written after the ending is work.
+        // Writes after the end add no work.
         let after = writer
             .update_state_at(9_000, |s| s.result = Some("the tests pass now".to_string()))
             .unwrap();
@@ -2000,9 +1747,8 @@ mod tests {
 
     #[test]
     fn store_counts_a_span_of_work_nothing_ever_closed() {
-        // The record adds up at the write that moves the phase, so an agent the
-        // pane went out from under is still on the record as working with its
-        // last span open. Whoever asks says how far to count it.
+        // Spans are added when the phase changes, so a record whose pane died
+        // mid-turn still has one open. The caller says how far to count it.
         let working = State {
             state: Phase::Working,
             since: 1_200,
@@ -2011,7 +1757,7 @@ mod tests {
         };
         assert_eq!(working.worked_by(1_300), 120);
 
-        // A phase that is not work has nothing open to count.
+        // A phase other than working has no open span.
         let waiting = State {
             state: Phase::Waiting,
             since: 1_200,
@@ -2020,8 +1766,7 @@ mod tests {
         };
         assert_eq!(waiting.worked_by(9_000), 20);
 
-        // And a document with no moment to date a span from is one amx cannot
-        // say worked at all.
+        // A working record with no `since` counts no open span.
         let undated = State {
             state: Phase::Working,
             ..State::default()
@@ -2035,8 +1780,8 @@ mod tests {
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let writer = agent.writer().unwrap();
 
-        // A turn that started at 1_000, whose last hook landed at 1_100, and
-        // whose pane died with it. Ten hours later somebody stops it.
+        // A turn opened at 1_000, last heard at 1_100, whose pane then died.
+        // Ten hours later it is stopped.
         writer
             .update_state_at(1_000, |s| s.state = Phase::Working)
             .unwrap();
@@ -2047,7 +1792,7 @@ mod tests {
         assert_eq!(stopped.worked, 100, "ten hours of a dead pane are not work");
         assert_eq!(stopped.ended, 37_100, "the stop is still when it stopped");
 
-        // A report that beat on after the last hook was the agent heard.
+        // A heartbeat after the last hook counts as heard.
         writer
             .update_state_at(40_000, |s| s.state = Phase::Working)
             .unwrap();
@@ -2056,7 +1801,7 @@ mod tests {
             .unwrap();
         assert_eq!(beaten.worked, 150);
 
-        // And a beat from the future is capped at the write.
+        // A heartbeat in the future is capped at the write.
         writer
             .update_state_at(90_000, |s| s.state = Phase::Working)
             .unwrap();
@@ -2082,13 +1827,13 @@ mod tests {
             at(1_000, "Start"),
             at(1_010, "Prompt"),
             at(1_020, "Tool"),
-            // Steered into the turn already running, which goes on.
+            // Steered into the running turn, which continues.
             at(1_030, "Prompt"),
             at(1_050, "End"),
-            // A day at the prompt is not work.
+            // A day idle at the prompt is not work.
             at(87_450, "Prompt"),
             at(87_455, "End"),
-            // And a turn nothing closed says nothing about where it stopped.
+            // A turn never closed counts nothing.
             at(90_000, "Prompt"),
         ];
         assert_eq!(worked_in(&log, edge), Some(45));
@@ -2112,7 +1857,7 @@ mod tests {
         assert!(working.since > 0);
         assert_eq!(working.last_event, working.since);
 
-        // A second event in the same phase leaves the clock where it was.
+        // Another event in the same phase leaves `since` alone.
         let still = writer
             .update_state(|s| s.summary = Some("Editing src/cli.rs".to_string()))
             .unwrap();
@@ -2122,7 +1867,7 @@ mod tests {
         assert_eq!(agent.state().unwrap(), still);
     }
 
-    /// The document on disk, as a reader that is not amx would find it.
+    /// The state document on disk, parsed as plain JSON.
     fn written(agent: &Agent) -> serde_json::Value {
         let text = std::fs::read_to_string(agent.dir().join(STATE)).unwrap();
         serde_json::from_str(&text).unwrap()
@@ -2153,9 +1898,8 @@ mod tests {
 
     #[test]
     fn store_writes_a_question_it_knows_nothing_about_as_its_words() {
-        // Everything amx knows beyond the words comes off the screen, and the
-        // screen is not read until the hooks go quiet. A question that has
-        // only just been asked is its words, and that is how it is written.
+        // A question a hook just reported is only words, and is written as a
+        // plain string.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         agent
@@ -2173,9 +1917,8 @@ mod tests {
 
     #[test]
     fn store_leaves_no_options_behind_when_a_question_is_answered() {
-        // `answer` clears the question and nothing else. Options with no
-        // question over them are somebody else's answers, and the document has
-        // no place to put them.
+        // Clearing the question drops its options too; the document has no
+        // place for options without a question.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let writer = agent.writer().unwrap();
@@ -2215,7 +1958,7 @@ mod tests {
         assert_eq!(agent.state().unwrap().kind, Some(Kind::Question));
     }
 
-    /// A choice with the sentence the screen draws under it.
+    /// A choice with a description.
     fn choice(label: &str, description: &str) -> Choice {
         Choice {
             label: label.to_string(),
@@ -2224,9 +1967,9 @@ mod tests {
         }
     }
 
-    /// The three-question call measured against claude 2.1.240 on 2026-08-24,
-    /// as `docs/question-shapes.md` records its payload: two questions taking
-    /// one choice each and a third taking several.
+    /// A three-question call as claude 2.1.240 sends it (see
+    /// `docs/question-shapes.md`): two single-choice questions and one
+    /// multi-choice.
     fn a_call_of_three() -> Vec<Ask> {
         vec![
             Ask {
@@ -2277,7 +2020,7 @@ mod tests {
             })
             .unwrap();
 
-        // The question showing is where a question has always been.
+        // The question on screen is where readers look for it.
         let document = written(&agent);
         assert_eq!(
             document["question"]["text"],
@@ -2286,7 +2029,7 @@ mod tests {
         assert_eq!(document["question"]["options"][0], "Node");
         assert_eq!(document["question"]["kind"], "question");
 
-        // And the rest of the call is under it: what no screen carries.
+        // The rest of the call, which no screen carries, is under it.
         let asking = &document["question"]["asking"];
         assert_eq!(asking.as_array().unwrap().len(), 3);
         assert_eq!(asking[1]["header"], "Storage");
@@ -2309,9 +2052,8 @@ mod tests {
 
     #[test]
     fn store_answering_one_question_leaves_the_next_one_pending() {
-        // Measured against 2.1.240: answering a tab does not return the vendor
-        // to its composer. It records the answer, moves to the tab after it,
-        // and the prompt is still up.
+        // In claude 2.1.240, answering a tab moves to the next one; the
+        // prompt stays up.
         let mut state = State {
             state: Phase::Waiting,
             kind: Some(Kind::Question),
@@ -2335,8 +2077,8 @@ mod tests {
         );
         assert!(state.multi(), "and this one takes more than one choice");
 
-        // Every question answered: nothing left to ask, every answer on the
-        // record, and the vendor's own Submit tab on the screen.
+        // All answered: nothing left to ask, every answer kept, and the
+        // vendor's Submit tab on screen.
         state.answered("Canary, Announce");
         assert_eq!(state.pending(), None);
         assert_eq!(state.question, None);
@@ -2349,7 +2091,7 @@ mod tests {
             .collect();
         assert_eq!(said, ["Node", "Redis", "Canary, Announce"]);
 
-        // With nothing pending there is nothing an answer belongs to.
+        // With nothing pending, a further answer goes nowhere.
         state.answered("late");
         assert_eq!(state.asking[2].answer.as_deref(), Some("Canary, Announce"));
     }
@@ -2367,9 +2109,7 @@ mod tests {
             })
             .unwrap();
 
-        // The questions of a call belong to the call. Once nothing is
-        // outstanding they are answers nobody can give to a screen that is
-        // gone, exactly as the choices under one question are.
+        // The call goes with its question, like the options do.
         writer.update_state(|s| s.asks(None)).unwrap();
         assert_eq!(written(&agent)["question"], serde_json::Value::Null);
         assert!(agent.state().unwrap().asking.is_empty());
@@ -2377,10 +2117,9 @@ mod tests {
 
     #[test]
     fn store_keeps_the_preview_that_puts_a_notes_field_on_a_question() {
-        // Measured against 2.1.240 on 2026-08-24: the vendor draws the notes
-        // field when a choice carries a preview, and `n` on a menu without one
-        // does nothing. Nothing on the screen says which sort it is looking
-        // at, so the record has to.
+        // In claude 2.1.240 a preview on any choice draws the notes field, and
+        // `n` does nothing without one. The screen does not show which, so the
+        // record must.
         let previewed = Ask {
             header: Some("Layout".to_string()),
             text: "Which header layout should the page use?".to_string(),
@@ -2412,9 +2151,8 @@ mod tests {
 
     #[test]
     fn store_writes_a_kind_it_has_no_words_for() {
-        // What kind of thing is outstanding is worth having even where the
-        // words are not to be had, and the choices under a question amx cannot
-        // quote are nobody's to press.
+        // The kind is kept even without the words, and options without a
+        // question are dropped.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         agent
@@ -2448,9 +2186,8 @@ mod tests {
             ..State::default()
         };
 
-        // Words arriving for the question already outstanding are only words:
-        // the hook that carries them says nothing about what kind of screen
-        // they are on, and it is the same screen.
+        // New words for the outstanding question keep its kind: the hook
+        // carrying them does not name the screen.
         state.asks(Some("Claude needs your permission to use Bash".to_string()));
         assert_eq!(state.kind, Some(Kind::Permission));
 
@@ -2484,7 +2221,7 @@ mod tests {
             "and looking again learns nothing"
         );
 
-        // With nothing on the record the screen is all there is.
+        // With nothing on the record, the screen supplies the question.
         let mut nothing_heard = State::default();
         nothing_heard.learn(&seen);
         assert_eq!(
@@ -2495,8 +2232,8 @@ mod tests {
 
     #[test]
     fn store_says_whether_a_question_was_reported_or_read() {
-        // The mark travels with the question and with nothing else, because it
-        // is what decides whether the next reading of the pane may replace it.
+        // `reported` travels with the question and decides whether the next
+        // pane reading may replace it.
         let seen = Question {
             marked: None,
             text: "Run echo hi?".to_string(),
@@ -2520,17 +2257,13 @@ mod tests {
         read.correct(Some(&seen));
         assert!(!read.reported, "and a later screen still is not the vendor");
 
-        // A question that goes takes the mark with it, whichever hand clears
-        // it: a record with nothing outstanding claims nothing about where the
-        // nothing came from.
+        // Clearing the question clears the flag, whoever clears it.
         for mut state in [heard, read] {
             state.asks(None);
             assert!(!state.reported, "nothing outstanding is nobody's word");
         }
 
-        // The whole of a call is the vendor's own words the same way one
-        // question of it is, and answering one moves to the next tab of the
-        // same call.
+        // A whole call is reported the same way as a single question.
         let mut call = State::default();
         call.asks_all(vec![Ask {
             header: None,
@@ -2550,10 +2283,8 @@ mod tests {
 
     #[test]
     fn store_round_trips_where_a_question_came_from() {
-        // A question amx knows nothing else about is written as its words
-        // alone, and that shape has only ever been written for one a hook has
-        // just carried — so that is how one is read back, including from a
-        // document written before this mark existed.
+        // A reported question with nothing else is written as its words alone
+        // and read back as reported, including from older documents.
         let mut heard = State::default();
         heard.asks(Some("Claude needs your permission".to_string()));
         let document = serde_json::to_value(heard.clone()).unwrap();
@@ -2563,9 +2294,8 @@ mod tests {
             "the words alone are the vendor's own"
         );
 
-        // Everything else says so in the open, and a document that does not
-        // say is a reading: the options on one could only ever have come off a
-        // screen.
+        // Anything else carries the flag explicitly; without it, the question
+        // is a screen reading.
         let mut read = State::default();
         read.correct(Some(&Question {
             marked: None,
@@ -2589,11 +2319,9 @@ mod tests {
 
     #[test]
     fn store_round_trips_a_list_amx_numbered_itself() {
-        // Choices read off the marks a vendor draws in front of the row its
-        // cursor is on are choices no digit takes by itself, and what may be
-        // sent back turns on that. So the mark travels with the options:
-        // written where it is true, absent where it is not, and off every
-        // record written before it existed.
+        // Choices read off a cursor mark are not taken by typing a digit, so
+        // `walked` travels with the options: written when true, absent when
+        // false, and false on older records.
         let seen = Question {
             marked: None,
             text: "Run echo hi?".to_string(),
@@ -2608,9 +2336,8 @@ mod tests {
         assert_eq!(document["question"]["walked"], true);
         assert_eq!(serde_json::from_value::<State>(document).unwrap(), state);
 
-        // The same choices read off numbers the vendor wrote are a different
-        // answer to how they are taken, so a reading that changes nothing else
-        // still corrects the record.
+        // The same choices read off vendor numbers are taken differently, so
+        // that change alone corrects the record.
         let numbered = Question {
             marked: None,
             walked: false,
@@ -2626,8 +2353,8 @@ mod tests {
         );
         assert_eq!(serde_json::from_value::<State>(document).unwrap(), state);
 
-        // A document written before any of this reads the same way, and the
-        // choices take the mark with them when the question goes.
+        // Older documents read as not walked, and the flag goes with the
+        // question.
         let before: State = serde_json::from_str(
             r#"{"state":"waiting","question":{"text":"Run echo hi?","options":["Allow once"]}}"#,
         )
@@ -2647,9 +2374,8 @@ mod tests {
 
     #[test]
     fn store_lets_a_later_screen_correct_what_an_earlier_screen_said() {
-        // The law for a question a screen read: there is no vendor's word on
-        // the record to be careful of, only what some earlier look read off
-        // the same pane, and a pane holds one screen at a time.
+        // For a question read off the screen, a later reading replaces an
+        // earlier one: a pane shows one screen at a time.
         let mut state = State {
             question: Some("Run echo hi?".to_string()),
             options: vec!["Allow once".to_string(), "Deny".to_string()],
@@ -2677,20 +2403,16 @@ mod tests {
             "while looking again at the same screen corrects nothing"
         );
 
-        // A screen with nothing on it to answer is an agent with nothing
-        // outstanding, rather than one still offering the last question its
-        // pane ever carried.
+        // A screen with nothing to answer clears the question.
         assert!(state.corrected_by(None));
         state.correct(None);
         assert_eq!(state.question, None);
         assert!(state.options.is_empty());
         assert!(!state.corrected_by(None), "with nothing left to clear");
 
-        // And a screen's choices never end up under another screen's question,
-        // which is what filling one field at a time did to a pi driven from
-        // the login box to the trust selector: the box asks for a key and
-        // offers nothing to press, the selector offers three, and the record
-        // ended up asking for a key with the selector's answers under it.
+        // One screen's choices never land under another's question. Filling
+        // one field at a time did that to a pi going from the login box (a key
+        // prompt, no choices) to the trust selector (three choices).
         let mut typed_at = State::default();
         typed_at.correct(Some(&Question {
             marked: None,
@@ -2718,7 +2440,7 @@ mod tests {
         let looked = writer.observe(|s| s.learn(&Question::default())).unwrap();
         assert_eq!(looked, heard, "including the clock");
 
-        // And what it does learn is written without claiming to have heard it.
+        // What it learns is written without moving `last_event`.
         let seen = Question {
             marked: None,
             text: "Do you want to proceed?".to_string(),
@@ -2754,8 +2476,7 @@ mod tests {
         );
         assert_eq!(written(&agent)["seen"], looked.seen);
 
-        // A document from before anybody could be said to have looked is one
-        // nobody has looked at.
+        // A document from before the field reads as never seen.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"done"}"#).unwrap();
         assert_eq!(agent.state().unwrap().seen, 0);
     }
@@ -2778,8 +2499,7 @@ mod tests {
             "and the id the record is filed under is where it was"
         );
 
-        // A document written before anybody could rename anything is a record
-        // of an agent nobody has renamed.
+        // A document from before the field reads as never renamed.
         std::fs::write(agent.dir().join(STATE), r#"{"state":"idle"}"#).unwrap();
         assert_eq!(agent.state().unwrap().name, None);
     }
@@ -2852,8 +2572,8 @@ mod tests {
             "a transcript shorter than the tail is read whole"
         );
 
-        // A day's session, longer than the tail: 800 lines of 84 bytes and a
-        // call at the end of them, so the read opens 19 bytes into a line.
+        // Longer than the tail: 800 lines of 84 bytes and a call after them, so
+        // the read starts 19 bytes into a line.
         let mut session = padding.repeat(800);
         session.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n");
         std::fs::write(&path, &session).unwrap();
@@ -2878,9 +2598,8 @@ mod tests {
         let path = root.path().join("abc-123.jsonl");
         record.transcript = Some(path.clone());
 
-        // The call that read a large file, and its result bigger than the
-        // whole tail: the window opens inside the result and holds no line
-        // a reading can parse.
+        // A tool result larger than the tail: the window starts inside it and
+        // holds no whole line.
         let called = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"big.log\"}}],\"usage\":{\"input_tokens\":1200}}}\n";
         let result = format!(
             "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":\"{}\"}}]}}}}\n",
@@ -2932,10 +2651,8 @@ mod tests {
             "and a file shorter than the cap is the tail, whole"
         );
 
-        // As the terminal showed it: the pane ends its lines the terminal's
-        // way, and a progress bar is one row however many times it drew. The
-        // paint goes too, because a reader is handed words and a terminal is
-        // an interpreter.
+        // Rendered as the terminal showed it: CRLF line ends, a progress bar
+        // redrawn in place as one row, and escape codes removed.
         std::fs::write(
             agent.dir().join(OUTPUT),
             b"\x1b[32mgreen\x1b[0m\r\n 1/3\r 2/3\r 3/3 done\r\nlast",
@@ -2963,10 +2680,9 @@ mod tests {
 
     #[test]
     fn store_reads_a_boot_as_the_screen_it_drew() {
-        // Two frames of a boot, drawn the way a vendor draws one: the cursor
-        // put where each word goes rather than spaces printed up to it, and
-        // the second frame written over the first. Read in the order the bytes
-        // went by, this came back as `Accessingworkspace:` in one long line.
+        // Two boot frames drawn by cursor positioning, the second over the
+        // first. Read as a byte stream, this was `Accessingworkspace:` on one
+        // line.
         let boot = concat!(
             "\u{1b}[2J\u{1b}[H",
             "\u{1b}[1;1HAccessing",
@@ -2997,8 +2713,7 @@ mod tests {
     #[test]
     fn store_reads_an_agents_dying_words_only_before_it_spoke() {
         let root = TempDir::new().unwrap();
-        // A vendor that never got a session left no account but the bytes its
-        // boot kept: those are the dying words.
+        // A vendor that died before any report leaves only its boot output.
         let quiet = Agent::create(
             root.path(),
             &Meta {
@@ -3013,10 +2728,8 @@ mod tests {
             Some("could not read the state file")
         );
 
-        // The first report that names a transcript is the vendor saying it is
-        // alive: from there the record and the transcript are the account,
-        // and boot paint is not read as either. A session is not that signal:
-        // pi's is written at spawn, before it has said anything.
+        // Once a report names a transcript, boot output is no longer read. A
+        // session id does not count: pi's is written at spawn.
         let spoke = Agent::create(
             root.path(),
             &Meta {
@@ -3036,8 +2749,8 @@ mod tests {
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("build-a1b")).unwrap();
 
-        // A build's log, longer than the cap: 3840 numbered rows of 80 bytes,
-        // 300 KiB of them, so the read opens 16 bytes into row 564.
+        // 3840 numbered 80-byte rows (300 KiB), so the read starts 16 bytes
+        // into row 564.
         let printed: String = (1..=3840)
             .map(|n| format!("{:<79}\n", format!("row {n}")))
             .collect();
@@ -3067,8 +2780,7 @@ mod tests {
 
     #[test]
     fn store_reads_a_record_written_by_an_older_amx() {
-        // Fields are added, never renamed: a document from before a field
-        // existed still reads, with the default in its place.
+        // Fields are only added; an older document reads with defaults.
         let root = TempDir::new().unwrap();
         let dir = root.path().join("fix-login-a1b");
         std::fs::create_dir_all(&dir).unwrap();
@@ -3092,8 +2804,7 @@ mod tests {
         assert_eq!(state.ended, 0, "and no run of it has ended");
         assert_eq!(state.worked, 0, "and no span of work is added up on it");
 
-        // A question written before amx could read the choices under it is a
-        // string, and a string is still a question.
+        // An older document stores the question as a plain string.
         std::fs::write(
             dir.join(STATE),
             r#"{"state":"waiting","question":"Do you want to proceed?"}"#,
@@ -3104,8 +2815,7 @@ mod tests {
         assert!(state.options.is_empty());
         assert!(state.asking.is_empty());
 
-        // And a question written before amx held the call it came from is one
-        // question, with nothing behind it.
+        // An older document has no call behind the question.
         std::fs::write(
             dir.join(STATE),
             r#"{"state":"waiting","question":{"text":"Do you want to proceed?",
@@ -3155,7 +2865,7 @@ mod tests {
             .unwrap()
             .append(&Event::new("Stop", serde_json::json!({})))
             .unwrap();
-        // A machine that died mid-write leaves a partial last line.
+        // A crash mid-write leaves a partial last line.
         let mut file = OpenOptions::new()
             .append(true)
             .open(agent.dir().join(EVENTS))
@@ -3172,7 +2882,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let agent = Arc::new(Agent::create(root.path(), &meta("fix-login-a1b")).unwrap());
 
-        // Payloads big enough that a naive write would be split by another.
+        // Payloads large enough that unlocked writes could interleave.
         let filler = "x".repeat(4096);
         let writers = 8;
         let each = 25;
@@ -3208,9 +2918,7 @@ mod tests {
 
     #[test]
     fn store_two_writers_never_lose_each_others_work() {
-        // The read-modify-write the lock exists for: two hooks firing at once
-        // both read the state, both change it, and the second must not write
-        // over what the first decided.
+        // Concurrent read-modify-writes must not lose updates.
         let root = TempDir::new().unwrap();
         let agent = Arc::new(Agent::create(root.path(), &meta("fix-login-a1b")).unwrap());
         let writers = 8;
@@ -3258,7 +2966,7 @@ mod tests {
                 })
             };
 
-            // A reader takes no lock, so it reads straight through the writes.
+            // Readers take no lock, so this reads during the writes.
             let mut reads = 0;
             while !done.load(Ordering::Acquire) {
                 agent
