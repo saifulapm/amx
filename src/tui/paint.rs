@@ -171,8 +171,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let helping = matches!(screen.mode, Mode::Keys);
     let head = header_rows(area.height);
     let space = space_rows(area.height);
-    let permission = permission(screen);
-    let allowing = u16::from(permission.is_some());
+    permission(screen);
 
     // The typed line in its own band; a card's answer line is drawn on the card.
     let banded = screen.banded();
@@ -190,7 +189,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
 
     // Every band but the list. The card is not one: it covers the foot of the
     // list instead of taking rows from it.
-    let chrome = head + space + space + 1 + allowing;
+    let chrome = head + space + space + 1;
     let composing = match banded {
         Some(composer) => composer_height(composer, area, chrome),
         None => 0,
@@ -202,13 +201,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .and_then(|composer| composer.suggest.as_ref());
     let offering = rows_wanted(suggest).min(area.height.saturating_sub(chrome + composing + 1));
 
-    let [top, _, middle, line, offered, allowed, _, keys] = Layout::vertical([
+    let [top, _, middle, line, offered, _, keys] = Layout::vertical([
         Constraint::Length(head),
         Constraint::Length(space),
         Constraint::Min(1),
         Constraint::Length(composing),
         Constraint::Length(offering),
-        Constraint::Length(allowing),
         Constraint::Length(space),
         Constraint::Length(1),
     ])
@@ -289,9 +287,6 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             Paragraph::new(band(suggest, offered.width as usize, theme)),
             offered,
         );
-    }
-    if let Some(row) = permission {
-        frame.render_widget(Paragraph::new(row), allowed);
     }
     frame.render_widget(Paragraph::new(footer(screen, keys.width)), keys);
 

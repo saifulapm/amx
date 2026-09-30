@@ -356,9 +356,9 @@ pub(super) fn behind(frame: &mut Frame, until: u16) {
 /// Only a task line gets one, not a `!` command, and only when the vendor
 /// declares a permission dial. At the default it reads "vendor default",
 /// since amx does not know the vendor's configured mode.
-pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
+pub(super) fn permission(screen: &Screen) {
     let Mode::Typing(composer) = &screen.mode else {
-        return None;
+        return;
     };
     composer.allowed.set(
         (matches!(composer.asking, Asking::Task)
@@ -369,7 +369,6 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
             mode => mode.to_string(),
         }),
     );
-    None
 }
 
 /// Placeholder text for an empty task line, listing the prefixes it accepts.
