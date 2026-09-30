@@ -369,7 +369,7 @@ pub struct List {
     /// The branch a repository root has checked out. Injected for tests.
     branch_at: fn(&Path) -> Option<String>,
     /// Checked-out branch per repository root, repo axis only. Cached per root
-    /// (a root on no branch included) and cleared with `roots`.
+    /// (a root on no branch included), cleared and pruned with `roots`.
     branches: HashMap<PathBuf, Option<String>>,
     /// Pull requests per agent id, read again on every reading because their
     /// status changes while the row is on screen.
@@ -1088,19 +1088,19 @@ impl List {
     }
 
     /// Look up the checked-out branch of every root not yet cached. Keyed by
-    /// root, so many agents in one repository cost one lookup.
+    /// root, so many agents in one repository cost one lookup. Roots no agent
+    /// is under any more are dropped.
     fn remember_the_branches(&mut self) {
         let branch_at = self.branch_at;
-        let fresh: Vec<PathBuf> = self
-            .roots
-            .values()
-            .filter(|root| !self.branches.contains_key(*root))
-            .cloned()
-            .collect();
-        for root in fresh {
-            self.branches
-                .entry(root)
-                .or_insert_with_key(|root| branch_at(root));
+        let mut known = std::mem::take(&mut self.branches);
+        for root in self.roots.values() {
+            if self.branches.contains_key(root) {
+                continue;
+            }
+            let (root, branch) = known
+                .remove_entry(root)
+                .unwrap_or_else(|| (root.clone(), branch_at(root)));
+            self.branches.insert(root, branch);
         }
     }
 
@@ -2938,6 +2938,24 @@ mod tests {
             list.roots.keys().collect::<Vec<_>>(),
             ["busy-b2c"],
             "a view left open for days does not keep every agent it ever saw"
+        );
+    }
+
+    #[test]
+    fn repo_axis_forgets_the_branch_of_a_repository_that_left_the_wall() {
+        let mut list = over_the_repos(vec![
+            at(view("busy-a1b", Phase::Working, 10), "/work/repo/src"),
+            at(view("loose-b2c", Phase::Idle, 20), "/tmp/scratch"),
+        ]);
+        assert_eq!(list.branches.len(), 2);
+
+        list.show(vec![at(
+            view("busy-a1b", Phase::Working, 10),
+            "/work/repo/src",
+        )]);
+        assert_eq!(
+            list.branches.keys().collect::<Vec<_>>(),
+            [Path::new("/work/repo")]
         );
     }
 
