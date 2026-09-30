@@ -7,8 +7,7 @@ amx's third vendor. `assets/screen-rules-codex.toml` has nine rules, and
 inventory those rules were written from: which screens exist, how each was
 raised, what it reads as, and the screens that were not raised. It also
 records the hook payloads, rollouts and trust hashes captured in the same
-sitting, and the answers to the open questions in the source reading
-(`~/.local/share/amx-research/codex.md`).
+sitting, and answers the questions a reading of codex's source left open.
 
 codex reports through hooks (SessionStart, UserPromptSubmit, PreToolUse,
 Stop), so the pane is read where they go quiet: the gates in front of a
@@ -19,8 +18,8 @@ answer with no box at all.
 ## How this was read
 
 Source says which screens exist and how to raise them: the tree at tag
-rust-v0.157.1 in `/tmp/vendors/codex`, which is the code of the installed
-binary. No anchor came from it. Every anchor was read off a live pane.
+rust-v0.157.1, which is the code of the installed binary. No anchor came from
+it. Every anchor was read off a live pane.
 
 The rig:
 
@@ -30,7 +29,7 @@ The rig:
   40 rows, started at 220 columns.
 - Three scratch git repositories under the same scratch directory: two
   trusted in the scratch config.toml, one not.
-- Every launch was `codex --no-daemon`, per Ruling 1.
+- Every launch was `codex --no-daemon`, as amx launches it.
 - A capture was `capture-pane -p -J`, the call `src/tmux.rs` makes. Each
   screen was captured at 220, 100, 54 and 24 columns by resizing the window
   with the screen up, two seconds after each resize. The tests read each
@@ -55,8 +54,8 @@ create PATH aliases` line from the scratch CODEX_HOME sat in the scrollback.
 amx never reads scrollback (every capture is of the visible pane), so the
 flag buys amx nothing and would change the footer the idle rule stands on.
 **amx should launch codex without `--no-alt-screen`.** Every rule was
-measured on the alternate screen. This matches the Spec's `launch
-["--no-daemon"]`.
+measured on the alternate screen. This matches the entry's `launch`, which
+is `--no-daemon` alone.
 
 ## The screens
 
@@ -87,17 +86,14 @@ with a standalone install it looks for its own executable under
 with the PATH `codex` (whose release lives under `~/.codex`), it printed an
 `✨ Update available! 0.157.1 -> 0.158.0` banner into the history instead,
 which blocks nothing. Copying the release directory into the scratch
-CODEX_HOME and running that copy raised the prompt. On Saiful's machine,
-where the binary is under `~/.codex`, codex would draw the prompt.
+CODEX_HOME and running that copy raised the prompt. On a machine whose codex
+binary lives under `~/.codex`, codex draws the prompt.
 
 codex skips it when a prompt is on the argv, so `amx new` with a task never
 meets it. A new with no task, or a resume with nothing after the id, can.
-`enter continue · esc skip`; Esc skips. When this document was first written
-the rule was a plain waiting question, because Ruling 7 named three setup
-gates and this was not one of them. The drift ruling after t1 made it the
-fourth, so `update` is a `setup` rule: the person answers it, `doctor` names
-an agent stopped on it, and amx never picks a choice that would update codex
-or skip an update on anybody's behalf.
+`enter continue · esc skip`; Esc skips. `update` is a `setup` rule: the person
+answers it, `doctor` names an agent stopped on it, and amx never picks a
+choice that would update codex or skip an update on anybody's behalf.
 
 ### The hooks review
 
@@ -299,11 +295,11 @@ sit at index 1:
 | `stop:1:0` | `sha256:4de4283a553cfcda6ea020eec3ae1d66555d7f3bce089906e6723de26975e6d7` |
 
 All four are the sha256 of `{"event_name":"<event_snake>","hooks":[{"async":false,"command":"amx _hook","timeout":600,"type":"command"}]}`,
-Ruling 2's recipe, checked with `sha256sum`.
+the recipe `amx setup codex` uses, checked with `sha256sum`.
 
 ## The open questions
 
-The numbering is the source reading's.
+The questions the source reading left open, numbered as the code cites them.
 
 1. **Anchors and the pane title.** The anchors the source proposed hold under
    tmux on the alternate screen, except `to interrupt)` at 24 columns (cut;
@@ -340,12 +336,12 @@ The numbering is the source reading's.
    prompt `resume`. `codex --no-daemon -- -v` sent `-v` as a prompt, and
    without the `--` clap refused it.
 
-## What differs from the plan
+## What differs from the source reading
 
-- The Spec sets `restores_queued_on_cancel` false. On 0.157.1 Esc put a
-  Tab-queued message back into the composer, unsent. That is the true
-  behaviour for Tab-queued messages. The source says a steer still pending at
-  Esc is resubmitted as a new turn instead; that was not measured.
+- The entry sets `restores_queued_on_cancel` false. On 0.157.1 Esc put a
+  Tab-queued message back into the composer, unsent. amx never queues with
+  Tab: its sends are steers, and the source says a steer still pending at Esc
+  is resubmitted as a new turn instead. That case was not measured.
 - Esc does not stop a shell command the turn started. It keeps running as a
   background terminal after the turn is aborted.
 - A killed pane leaves its turn open in the rollout for good, with no

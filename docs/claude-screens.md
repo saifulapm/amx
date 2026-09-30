@@ -2,7 +2,7 @@
 
 `assets/screen-rules.toml` held six rules when this was written. Every string in
 them was read off a live claude, and until this pass the newest of those
-readings was three bumps old — 2.1.226, 2.1.237, 2.1.240. This file is those six
+readings was three bumps old: 2.1.226, 2.1.237, 2.1.240. This file is those six
 rules driven against 2.1.259 at 220, 54, 40, 30 and 24 columns, with the capture
 beside each verdict. It is a measurement and not a second ruleset: no anchor in
 it, and nothing here changes what amx recognises. The pass at the foot of the
@@ -20,8 +20,8 @@ not when the pass began. A claude stopped on its own folder-trust gate read
 `unknown` at 24 columns, so nothing keyed on `setup` fired and the offer of the
 trust key never came. A menu somebody was standing at read `unknown` there too,
 because the box was taller than the rows a rule may see. And a claude with a
-turn running read **`idle`** at 30 and at 24 — not `unknown`, which is the
-answer a missing rule is supposed to give, but the confident wrong one, because
+turn running read **`idle`** at 30 and at 24. That is the confident wrong
+answer rather than `unknown`, the one a missing rule is supposed to give, because
 the mode footer is still on the screen and `idle_prompt` is the next rule in
 the file.
 
@@ -32,7 +32,7 @@ to type at that screen doing nothing or ending the agent. And the line claude
 leaves behind when a turn is over now carries one of the two fragments the
 spinner rule used to stand on. The rule has been moved off both, and on
 2026-09-06 the walk in `[furniture] spinner` followed it, driven at 80 columns
-with `--effort low` — see the spinner section.
+with `--effort low`; see the spinner section.
 
 ## How this was read
 
@@ -49,19 +49,19 @@ done to them.
 
 **The verdict** is the crate's own reading and not a second implementation of
 it. Each capture went through `Ruleset::claim` over `assets/screen-rules.toml`
-as this branch carries it, run out of a copy of the tree, with `Phase::Unknown`
-on the record and no still looks — so `idle_prompt`, the one quiescent rule,
+as it stood after this pass, run out of a copy of the tree, with `Phase::Unknown`
+on the record and no still looks, so `idle_prompt`, the one quiescent rule,
 decides at once, the way it does for an agent nothing is outstanding for. The
 `span` column is that rule's own arithmetic: the topmost row carrying each
 `all` string and the topmost row carrying any `any` string, the lowest of those
-rows minus the highest, counted inside the floor — the last 24 rows
+rows minus the highest, counted inside the floor: the last 24 rows
 (`FLOOR_LINES`) of the trimmed capture.
 
 That call was made twice: once against the document as 2.1.240 left it, which
 is what the findings at the end of this file were found by, and again against
 the document those findings were answered in. Four cells moved between the two
 runs and the other twenty-six did not, because no rule lost an anchor that was
-holding — `folder_trust` dropped a string the screen had stopped drawing,
+holding: `folder_trust` dropped a string the screen had stopped drawing,
 `ask_menu` gained one below the two it had, and both keep matching the rows
 they matched before. The captures the second run read are the five in this file
 and the four checked in beside the rules they answer, in `src/rules.rs`.
@@ -69,7 +69,7 @@ and the four checked in beside the rules they answer, in `src/rules.rs`.
 **Raising the screens.** The trust gate by starting claude in a git repository
 it had no decision for. The permission box with `--permission-mode manual` over
 a `.claude/settings.json` carrying `{"permissions": {"ask": ["Bash"]}}`, then
-asking for `sleep 300` — manual mode alone was not enough, a bare `sleep` ran
+asking for `sleep 300`. Manual mode alone was not enough: a bare `sleep` ran
 without a box. The menu by asking for `AskUserQuestion` with a description
 under each choice. The plan box by cycling to plan mode with shift+tab and
 asking for a one-paragraph plan. The spinner by asking for a long multiplication
@@ -84,8 +84,8 @@ both, and the two agree to the row at every width.
 
 ## The six screens at five widths
 
-`span` is the rows the rule's own matches covered. The rules are the ones this
-branch carries; the four cells the re-anchoring moved say what they read before
+`span` is the rows the rule's own matches covered. The rules are the ones after
+this pass; the four cells the re-anchoring moved say what they read before
 it in brackets, and a bracketed rule name is the rule that claimed the screen
 instead.
 
@@ -160,7 +160,7 @@ trust this folder` / `2. No, exit` is now `❯ No, exit` / `Yes, I trust this
 folder`, with the cursor on the exit.
 
 The rule survived that: `any` was a pair, and `enter to confirm` is the half
-the screen kept. `❯ 1.` has come out of the rule since — an anchor the vendor
+the screen kept. `❯ 1.` has come out of the rule since: an anchor the vendor
 has stopped drawing holds nothing up, and all it can still match is a numbered
 list somewhere else on the pane. Three things around the rule did not survive,
 and each was answered where it broke.
@@ -169,7 +169,7 @@ and each was answered where it broke.
 "trust" }` reads the sentence the lowest row carrying `trust` belongs to, above
 the first numbered choice. With no numbered choice on the screen there is no
 ceiling, and the lowest row carrying `trust` is no longer the safety-check
-sentence — it is `Yes, I trust this folder`. So the question read back as
+sentence; it is `Yes, I trust this folder`. So the question read back as
 **"Yes, I trust this folder"** and the options list came back **empty**, at
 220, 54, 40 and 30 columns alike. Whoever read that row was handed an answer in
 the place where the thing being asked should be.
@@ -178,12 +178,12 @@ the place where the thing being asked should be.
 nowhere else on the screen, and it is one word, so no width can break it: the
 question reads back whole at 54 and at 24 columns, *Quick safety check: Is this
 a project you created or one you trust? …* to the full stop. The options list
-came back empty on this pass — the options were the numbered choices, and this
-screen numbers nothing — and that is what the 2.1.276 pass at the foot of the
+came back empty on this pass (the options were the numbered choices, and this
+screen numbers nothing), and that is what the 2.1.276 pass at the foot of the
 file answered, by reading the rows off the cursor glyph.
 
 **Every key the answer grammar allowed was wrong.** `amx answer` took `y`, `n`,
-`1`–`9`, `enter` and `esc` at a screen of this kind. Driven one key per fresh
+`1` to `9`, `enter` and `esc` at a screen of this kind. Driven one key per fresh
 boot of the screen:
 
 | Key | What 2.1.259 does with it |
@@ -205,20 +205,19 @@ the cursor and answers nothing while the record would say the question was
 answered. A bare `enter` is refused too, at a screen whose rows the record
 carries no numbers for: it takes whichever row the vendor opened on, and here
 that is the exit. What a waiting row prints is read off the same record, so
-this screen was offered the walk rather than `1-9` — `1-2` since the 2.1.276
-pass put the rows on the record — and a key whose effect on
-the screen amx cannot check leaves the record saying `waiting` — so the screen
-can be answered again rather than refused with *nothing to answer* while it is
-still on the pane.
+this screen was offered the walk rather than `1-9` (`1-2` since the 2.1.276
+pass put the rows on the record). A key whose effect on the screen amx cannot
+check leaves the record saying `waiting`, so the screen can be answered again
+rather than refused with *nothing to answer* while it is still on the pane.
 
-None of this was a hole amx fell into on the usual day — `src/trust.rs`
+None of this was a hole amx fell into on the usual day: `src/trust.rs`
 answers claude's gate by writing `hasTrustDialogAccepted` into the vendor's own
 store before the pane exists, and a tree that already has the entry never draws
 the screen. It is what is left for an agent that meets the screen anyway: on a
 repository the person has never trusted, or with `trust` off in the config.
 
 **At 24 columns the rule walked past its own gate.** The whole capture but for
-its blank first row — 29 rows after the trim, floor from row 6 down:
+its blank first row, 29 rows after the trim, floor from row 6 down:
 
      /home/saiful/.claude/j
      obs/dfc82656/tmp/scrat
@@ -252,7 +251,7 @@ its blank first row — 29 rows after the trim, floor from row 6 down:
 `trust` is first found on ` trust? (Like your own`, where the wrap put it, and
 `enter to confirm` is 19 rows below that. `within` was 16, so the rule walked
 past, and no other rule claimed the screen: `unknown`. The reading is a fact
-about the width and not about the pane's height — the same 19 came back at pane
+about the width and not about the pane's height: the same 19 came back at pane
 heights 40, 30 and 24. At 30 columns the span is 16 exactly, so the rule held
 there by one row.
 
@@ -264,7 +263,7 @@ the document that carries it, `doctor` reads the flag rather than the rule's
 name, and a screen nothing claims is not a gate anybody is standing at. So at
 24 columns `amx doctor` said "no agent is stopped at the vendor's own setup"
 about an agent that was stopped at exactly that, and the remedy that goes with
-it — attach and answer it, or set `trust = true` and let amx answer it — was
+it (attach and answer it, or set `trust = true` and let amx answer it) was
 never printed.
 
 ## `permission_prompt`
@@ -336,7 +335,7 @@ a footer that still opens with `Enter to select`: the same shape 2.1.229 and
 40 and 30.
 
 At 24 columns the rule went quiet, and not because a string changed. The box is
-taller than the floor. Here is the whole capture below its blank first row — 30
+taller than the floor. Here is the whole capture below its blank first row, 30
 rows in all, so the floor is the last 24 and begins on the seventh:
 
     Should this project be
@@ -375,8 +374,8 @@ breaks the other half of `any`. `enter to select` is on the screen and matched;
 with both entries in `any` gone at once there was no affordance left inside the
 rows a rule may see, and the screen read `unknown`.
 
-That is the hazard the rule's own comment names — "the box's height is the
-agent's own choice" — arriving at a width. Two one-sentence descriptions were
+That is the hazard the rule's own comment names, "the box's height is the
+agent's own choice", arriving at a width. Two one-sentence descriptions were
 enough to do it. The `within = 24` this rule carries is not what failed: the
 marker was outside the floor, not too far from the footer.
 
@@ -390,7 +389,7 @@ of the footer.
 Being claimed is not the same as being read. The question is the sentence above
 the first numbered choice, and `❯ 1. Spaces` is exactly the row that fell out
 of the floor, so at this width there is no first option to read above and the
-reading comes back with nothing on it — no question and no options. The row
+reading comes back with nothing on it: no question and no options. The row
 says an agent is waiting on a question and carries none of the words it is
 being asked, where the four wider widths carry all of them. That is the same
 box being taller than the rows a rule may see, arriving one step further in:
@@ -427,8 +426,8 @@ The strongest of the four. At 24 columns, the narrowest driven:
        aliant.md
 
 `ready` and `execute` land on one row at every width driven, the span never
-opens past 4, and the question reads back whole — `Claude has written up a plan
-and is ready to execute. Would you like to proceed?` — at all five, because the
+opens past 4, and the question reads back whole (`Claude has written up a plan
+and is ready to execute. Would you like to proceed?`) at all five, because the
 reading joins the rows the vendor wrapped it out of. The options are read as
 far as their own rows go, so at 24 columns they come back as `Yes, and use`,
 `Yes, manually`, `Tell Claude`, which is the documented behaviour and not a
@@ -454,7 +453,7 @@ at each:
 
 The rule wanted both, so at 30 and at 24 it did not hold. What claimed the
 screen instead was `idle_prompt`, because the mode footer is under the spinner
-the whole time a turn runs — which the idle rule's own comment says in capitals
+the whole time a turn runs, which the idle rule's own comment says in capitals
 and is exactly the trap it was written for. Sampled eight times a second apart
 at each of three widths, over one live turn:
 
@@ -473,24 +472,24 @@ agent is sometimes missing one anchor and sometimes both.
 Two things stood between that and a wrong row in practice, and neither was
 much. `quiescent` gates `idle_prompt` from ending a turn that is on the record
 as running until the screen has held still for `SETTLED_LOOKS`; but the
-narrower the pane, the less of that row there is to move — at 24 columns it is
+narrower the pane, the less of that row there is to move: at 24 columns it is
 the elapsed second and nothing else, and the four 30-column samples that read
 `● Finagling… thinking` carry nothing that moves at all. And an agent whose
 hooks are flowing is read from its hooks and not from its screen. The reading
-is what is left when the hooks stop — an agent interrupted with Escape, or one
-nobody has heard from — and on a narrow pane what was left said a working agent
+is what is left when the hooks stop (an agent interrupted with Escape, or one
+nobody has heard from), and on a narrow pane what was left said a working agent
 had finished.
 
 **Where the rule stands now.** `ing…`: the end of the gerund and the ellipsis
 after it, which is the left of the row and the part the truncation never
-reaches. One fragment, not a list of the tails the vendor sometimes keeps — a
+reaches. One fragment, not a list of the tails the vendor sometimes keeps: a
 list goes quiet at whatever width drops the next of them, and this row is not
 even steady at one width. It holds on all five rows of the table above:
 `working`, span 0, at 220, 54, 40, 30 and 24.
 
 The ellipsis alone would not do. It is how claude elides anything too long for
-the room it has, and what it elides is under every idle pane — the statusline
-reads `Opus 5 (1M context) (1M context) │ …` at 40 columns — so an agent parked
+the room it has, and what it elides is under every idle pane (the statusline
+reads `Opus 5 (1M context) (1M context) │ …` at 40 columns), so an agent parked
 at its prompt on a narrow pane would read `working` for as long as it sat
 there. What makes `ing…` a spinner rather than an elision is the vendor's own
 grammar: the word it spins is a present participle in every sample this file
@@ -498,8 +497,8 @@ and `assets/screen-rules.toml` record across three vendor versions, and the
 word on the line a turn leaves behind is a past one.
 
 A transcript could also put `s · ` back by accident. Driven at 24 columns with
-a tool call above the box, `● Sleeping for 300 seconds · 42s` — claude's own
-tool header with the elapsed time on it — carried the fragment the spinner row
+a tool call above the box, `● Sleeping for 300 seconds · 42s`, claude's own
+tool header with the elapsed time on it, carried the fragment the spinner row
 had dropped, and the rule held with a span of 8 rows between two rows that have
 nothing to do with each other. That is the same rule holding for the wrong
 reason, which is why the clean measurement above was driven on a pane with
@@ -512,8 +511,8 @@ leaves this behind:
     ✻ Cogitated for 2m 6s · done 10:09 AM
 
 The rule's old comment said of this line: "same glyph, no ellipsis and no
-parenthesis", and that neither fragment was on it. One of them is on it —
-`6s · done` carries `s · ` — measured at all five widths. It walked past
+parenthesis", and that neither fragment was on it. One of them is on it:
+`6s · done` carries `s · `, measured at all five widths. It walked past
 anyway, because `all` wanted both and `… (` is genuinely absent, so the whole
 of what kept a finished agent from reading `working` had come down to one
 punctuation fragment. `ing…` is not on that line either, and it is not a margin
@@ -525,8 +524,8 @@ box.
 `[furniture] spinner`, which is what `src/furniture.rs` walks over to find the
 rows an agent earned, stood on the two old fragments until 2026-09-06, when it
 was driven at 80 columns with `--effort low`. claude spun `● Actioning…` with
-nothing after it for the 65 seconds before the first token — no parenthesis at
-all, a shape the table above never reached — and the walk printed that row at
+nothing after it for the 65 seconds before the first token (no parenthesis at
+all, a shape the table above never reached), and the walk printed that row at
 the foot of the view's card as the agent's own output. The walk now stands on
 `ing…` as the rule does, and that row is cut.
 
@@ -555,7 +554,7 @@ screen in all six permission modes at 220 columns and at 24:
     ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
 
 Six lines, word for word what the document recorded at 2.1.237 and 2.1.240,
-including the tail that counts — the same pane read `← 5 agents` earlier in
+including the tail that counts: the same pane read `← 5 agents` earlier in
 this pass and `← for agents` later, which is the 2.1.240 change still in place.
 Four of the six modes are reachable with shift+tab, and the other two were
 driven with `--permission-mode` on the argv.
@@ -567,10 +566,10 @@ a shell running on every idle screen. `← 5 agents` is a count and still reads 
 running.
 
 At 24 columns the footer truncates to `⏵⏵ auto mode on`, `⏸ manual mode on · …`
-and `⏵⏵ bypass`, so the glyph is all that is left — which is the whole reason
+and `⏵⏵ bypass`, so the glyph is all that is left, which is the whole reason
 it is the anchor.
 
-The screen itself, at 40 columns — box, statusline elided from the right,
+The screen itself, at 40 columns: box, statusline elided from the right,
 footer:
 
     ───────────────────── execute t1 brief ─
@@ -617,7 +616,7 @@ what it was before, which is the only way to check the answers.
    and `y` do nothing; `n` and `enter` exit the agent, because the cursor now
    opens on `No, exit`. The way to yes is an arrow key, which was not in the
    grammar. The store write in `src/trust.rs` is what keeps this off the usual
-   day, and it was unaffected — it never touches the screen. *Answered in the
+   day, and it was unaffected: it never touches the screen. *Answered in the
    verbs:* `answer` takes a walk and a take as one line, refuses a bare take at
    a screen whose rows carry no numbers, and leaves the record `waiting` after
    a key whose effect it cannot check; the offer a waiting row prints is read
@@ -632,7 +631,7 @@ what it was before, which is the only way to check the answers.
 One thing was not driven and should not be read as measured here: the
 review-answers screen that both multi-part shapes of `AskUserQuestion` end on,
 which the document already records as claimed by nothing. `[furniture]
-spinner` was the other, and was driven on 2026-09-06 — see the spinner section.
+spinner` was the other, and was driven on 2026-09-06; see the spinner section.
 
 And one thing the re-run turned up that nothing answers yet. At 24 columns
 `ask_menu` is claimed off the bottom of the box while the question above it is
@@ -645,12 +644,12 @@ is a separate measurement and nobody has made it.
 
 Driven on 2026-09-14 against the claude on this machine, `claude --version`
 reporting `2.1.270 (Claude Code)`. The pass above drove the six screens the
-document already knew; this one went after screens it does not — the viewer and
+document already knew; this one went after screens it does not: the viewer and
 the overlay a person opens in front of a session, and the shape a pane takes
-when the turn is over and the work is not. It carried a question from outside
-with it. herdr's claude manifest reads the pane title before it reads anything
-on the screen, and amx reads no title at all; the first finding below is the
-answer to that, and `docs/vendors.md` carries the rest of the comparison.
+when the turn is over and the work is not. It also checked one question from
+outside: herdr, another pane reader, reads claude's pane title before anything
+on the screen, and amx reads no title at all. The first finding below answers
+that, and `docs/vendors.md` carries the rest of the comparison.
 
 The short version: two screens amx read as `idle` are claimed by nobody now,
 one screen nobody claimed is claimed as `working`, the pane title is no signal
@@ -665,11 +664,11 @@ spaces stripped and nothing else done to them. Fifty-nine of them, off one
 scratch folder that was nobody's work.
 
 **The verdict** is `Ruleset::claim` over `assets/screen-rules.toml`, run out of
-a copy of the tree with `Phase::Unknown` on the record and no still looks — the
-same call the pass above made, and for the same reason: that is the reading amx
-gives an agent nothing is outstanding for. It was made twice over every capture,
-once against the document as 2.1.259 left it and once against the document this
-branch carries, which gains a `not` list on `idle_prompt` and a seventh rule
+a copy of the tree with `Phase::Unknown` on the record and no still looks: the
+same call the pass above made, and for the same reason, since that is the
+reading amx gives an agent nothing is outstanding for. It was made twice over
+every capture, once against the document as 2.1.259 left it and once against
+the document after this pass, which gains a `not` list on `idle_prompt` and a seventh rule
 between `spinner` and it. Both readings are in the tables, because the reading a
 rule was written for is the only way to check the rule.
 
@@ -696,13 +695,12 @@ samples in all:
 Seventy of the seventy-one are claude's own and every one of them opens with
 `✳`. The glyph did not move while the state did, and no braille frame or
 half-circle ever reached the title. herdr's claude manifest ranks two rules on
-it first of all — `osc_title_working` and `osc_title_idle`, measured at 2.1.227
-and 2.1.228 — and on this version both would be reading the same character in
+it first of all (`osc_title_working` and `osc_title_idle`, measured at 2.1.227
+and 2.1.228), and on this version both would be reading the same character in
 every state there is.
 
-Reading the title was the one item on the 2026-09-09 herdr list that would have
-bought amx a width-independent signal, since a title does not wrap. This is the
-measurement that says there is nothing on it to read.
+A title would have given amx a width-independent signal, since a title does
+not wrap. This is the measurement that says there is nothing on it to read.
 
 ### The transcript viewer read `idle` over a running turn
 
@@ -776,8 +774,8 @@ overlay reads `unknown` while it answers. Once it has answered:
 
         ↑/↓ to scroll · c to copy · f to fork · Esc to close
 
-No mode row under this one either, and the footer it opens — `↑/↓ to scroll · c
-to copy · f to fork · Esc to close` — is whole at all five widths. Nothing in
+No mode row under this one either, and the footer it opens (`↑/↓ to scroll · c
+to copy · f to fork · Esc to close`) is whole at all five widths. Nothing in
 the document claimed the overlay before and nothing claims it now. `↑/↓ to
 scroll` went into the rule's `not` list all the same, and on these fifty-nine
 captures it moves no verdict: the rows `idle_prompt` stands on are the
@@ -789,7 +787,7 @@ The overlay is not the whole pane, though, and the pane is what amx captures.
 Directly above the overlay's top border, on the pane it came off, the turn's own
 `✻ Waiting for 1 background agent to finish` was still drawn. Where that row
 falls is what the width decides: twelve rows up from the bottom at 100 columns,
-sixteen at 54 and nineteen at 40, all inside the floor — and twenty-six and
+sixteen at 54 and nineteen at 40, all inside the floor, and twenty-six and
 twenty-nine rows up at 30 and 24, where the taller overlay pushes it out:
 
 | The answered overlay | 100 | 54 | 40 | 30 | 24 |
@@ -824,7 +822,7 @@ columns:
 The Stop hook has fired and the record says the turn is over. The line above the
 composer says it is not, the mode row is under the line as it is under
 everything this vendor draws, and there is a panel below that with a row per
-agent. Before there was a rule for it this screen read `idle` — the mode row is
+agent. Before there was a rule for it this screen read `idle`: the mode row is
 what `idle_prompt` stands on, and the line above it was nobody's anchor.
 
 The words wrap, and not at one place: after `to` at 40 columns, after
@@ -875,8 +873,8 @@ The coincidence is why the rule under it was measured at the other four
 widths as well.
 
 The glyph is not what the rule reads. `✻` is one of the six the spinner cycles
-and it is also what the line a finished turn leaves behind opens with — `✻
-Cooked for 18s · done 2:17 PM`, on the same pane an hour earlier — so it is in
+and it is also what the line a finished turn leaves behind opens with (`✻
+Cooked for 18s · done 2:17 PM`, on the same pane an hour earlier), so it is in
 the anchor only to put the words on the row the vendor drew them on. It held at
 `✻` in every capture over ten seconds rather than cycling, which is a fact about
 this version and nothing the rule leans on; the next bump re-measures it.
@@ -898,13 +896,13 @@ The one below. On `c4-bgline` the last drawn row is the agents panel, so there
 is no footer at the bottom, no anchor, and nothing is cut at all: the card over
 that agent carried the banner, the whole transcript, the composer box, the
 statusline, the mode row and both rows of the panel. That is the walk's own law
-working as written — what a shape it was not measured against costs is furniture
-left on the screen and never a row of work taken off it — and it is still a card
+working as written (what a shape it was not measured against costs is furniture
+left on the screen and never a row of work taken off it), and it is still a card
 of chrome.
 
 The one above is `● high · /effort`, right-aligned directly on the composer's
 top border with no blank row between the two. It is drawn on a fresh pane, over
-a running turn and on an idle pane after one — though not on every idle screen,
+a running turn and on an idle pane after one, though not on every idle screen,
 since `4-idle` and `c9-workflow` have none. The walk's last step looks for the
 spinner row above the box, and where this row is drawn it is what that step
 finds instead, so on a pane with a turn running it cost two rows and not one:
@@ -937,7 +935,7 @@ the box.
   carries at all five widths. It is read as a fragment rather than as what the
   row opens with because the row is right-aligned: where it starts is the pane's
   width. Where the walk finds it the cut moves above it, and the blank-skip and
-  the spinner check run from there — which is how the spinner row over
+  the spinner check run from there, which is how the spinner row over
   `c8-plan-after` now goes with it.
 
 Both are steps the walk takes where it finds the row and neither is a row it
@@ -952,8 +950,8 @@ requires, so a screen that draws neither is cut where it always was:
 | `4-idle` and `c9-workflow`, neither row drawn | 30 | 25 | 25 |
 
 The five `c4-bgline` widths keep the same twenty-one rows and end on the row the
-turn left up — `✻ Waiting for 1 background agent to finish`, wherever the width
-broke it — with the panel, the footer, the statusline, the box and the hint row
+turn left up (`✻ Waiting for 1 background agent to finish`, wherever the width
+broke it), with the panel, the footer, the statusline, the box and the hint row
 off the bottom. `c8-plan-after` keeps through the blank row under `● Agent
 "Sleep 45 then report" finished · 1m 34s`. Those five widths, `c8-plan-after`,
 `2-fresh`, `4-idle` and `b6-idle` are held verbatim as tests in
@@ -1016,8 +1014,8 @@ had started:
 is a row worth having and not a row any rule reads: `do you want to`, `❯ 1.` and
 `esc to cancel` are all on the screen and all in their old places, and the footer
 still ends at `Esc to cancel · Tab to amend`. The sentence above it is the
-vendor's wording for an `ask` rule under auto mode — `Ask rule Bash overrides
-auto mode for this command.` — where the pass above read `Permission rule Bash
+vendor's wording for an `ask` rule under auto mode (`Ask rule Bash overrides
+auto mode for this command.`), where the pass above read `Permission rule Bash
 requires confirmation for this command.` under manual mode. Neither is an anchor.
 
 The plan box, at 100 columns, the same rows in the same order as 2.1.259:
@@ -1045,7 +1043,7 @@ agents`, the count coming back after the 2.1.240 bump had taken it away:
       ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
 
 And the agents panel under the mode row, the two rows in the background capture
-above. Neither is an anchor either — the rule stands on the glyph the mode row
+above. Neither is an anchor either: the rule stands on the glyph the mode row
 opens with, and both of these are drawn after it.
 
 ### What was not raised, and so has no rule
@@ -1103,22 +1101,22 @@ The 220-column capture is held whole in `src/rules.rs` as
 What moved is the reading. The rule carries `marks = "❯"` now, which is what
 pi's four selectors have carried since 2026-09-14: the run of rows the cursor
 glyph is in is the list, and amx numbers it itself. The gate reads back two
-choices in the order the vendor draws them — `No, exit`, then `Yes, I trust this
-folder` — and the record says they are amx's numbers rather than the vendor's.
+choices in the order the vendor draws them (`No, exit`, then `Yes, I trust this
+folder`), and the record says they are amx's numbers rather than the vendor's.
 So the row a person reads offers `1-2` instead of a walk typed blind, `amx
 answer <id> 2` is the walk that reaches the row that trusts the folder, and
 `enter`, `y` and `n` are refused with the two digits offered in their place. `esc` still cancels. The walk is still an answer: `down enter` is
 what it always was, for a caller reading the rows rather than their numbers.
 
 Two things the mark does not do. A run the vendor numbered itself is read off
-its numbers, so the 2.1.226 captures in `src/rules.rs` — `❯ 1. Yes, I trust this
-folder` over `2. No, exit` — read back exactly as they did, unwalked, with the
+its numbers, so the 2.1.226 captures in `src/rules.rs` (`❯ 1. Yes, I trust this
+folder` over `2. No, exit`) read back exactly as they did, unwalked, with the
 digits the vendor drew. And the question is unmoved: `asks` still anchors on
 `quick`, and the sentence reads whole at every width.
 
 The 24-column capture is where the wrap had to be read. claude hangs the rest of
-a label under the label, both at the same column — `Yes, I trust this` over
-`folder` — where pi wraps to the left of it and the indent is what tells a wrap
+a label under the label, both at the same column (`Yes, I trust this` over
+`folder`), where pi wraps to the left of it and the indent is what tells a wrap
 from a choice. A row opening in lower case is the rest of the row above it, the
 way the prose reader already treats one, and that is what keeps this gate at two
 choices rather than three at the narrowest width driven.
@@ -1127,7 +1125,7 @@ choices rather than three at the narrowest width driven.
 
 Driven by hand on 2026-09-18 against 2.1.276 at 100 columns, from a fresh
 directory: `Down` on `No, exit` moves the cursor to `Yes, I trust this folder`,
-and `Up` on `No, exit` moves it to `Yes` as well — the list wraps at both ends,
+and `Up` on `No, exit` moves it to `Yes` as well: the list wraps at both ends,
 where 2.1.259 clamped (measured 2026-09-05). A walk that goes to the top first
 therefore lands wherever the cursor was standing sends it: `Up Up Down` from
 `Yes` ends on `No, exit`, and the `Enter` after it ends the agent with exit 1
@@ -1136,7 +1134,7 @@ way before it was driven.
 
 `amx answer` now reads the pane at the moment it answers: the rule's mark says
 which row the cursor is on (`Question.marked`, counting from one), and the walk
-is the difference — `Down Enter` from the first row to the second, `Enter`
+is the difference: `Down Enter` from the first row to the second, `Enter`
 where the cursor already stands there, `Up Enter` back. Only a pane amx cannot
 read falls back to the top-first walk, which is still right for pi's clamped
 lists. Bursts of arrows in one `send-keys` call were also tried and are not

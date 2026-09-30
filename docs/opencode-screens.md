@@ -7,7 +7,7 @@ amx's fourth vendor. `assets/screen-rules-opencode.toml` has six rules, and
 inventory those rules were written from: which screens exist, how each was
 raised, what it reads as, and the screens that were not raised. It also
 records the event feed and message lists captured in the same sitting, which
-the plugin (Rulings 3 to 5) is written against.
+amx's plugin, `assets/opencode/tui.js`, is written against.
 
 opencode reports through amx's TUI plugin, so the pane is read where the
 plugin cannot answer for the person: a pane with no provider to call, and the
@@ -16,9 +16,8 @@ permission card and question form a turn stops on.
 ## How this was read
 
 Source says which screens exist and how to raise them: the tree at tag
-v2.0.16 in `/tmp/vendors/opencode`, which is the code of the installed
-binary, and the research at `~/.local/share/amx-research/opencode.md`. No
-anchor came from it. Every anchor was read off a live pane.
+v2.0.16, which is the code of the installed binary. No anchor came from it.
+Every anchor was read off a live pane.
 
 The rig:
 
@@ -32,14 +31,14 @@ The rig:
   written.
 - A private tmux server (`tmux -L ocmeasure -f /dev/null`), one session, 40
   rows, started at 220 columns, in a scratch git repository.
-- Every launch was `opencode --standalone`, per Ruling 1. Every prompt was
-  typed into the composer and sent with Enter half a second later.
+- Every launch was `opencode --standalone`, as amx launches it. Every prompt
+  was typed into the composer and sent with Enter half a second later.
 - A recorder TUI plugin at `<config>/plugins/rec/tui.js`, loaded unregistered
-  the way Ruling 3's is. It wrote every event `ctx.data.listen` saw, which is
-  the object `ctx.data.on` hands its handler, one per line, and at each
+  the way amx's plugin is. It wrote every event `ctx.data.listen` saw, which
+  is the object `ctx.data.on` hands its handler, one per line, and at each
   `session.execution.succeeded`, `failed` or `interrupted` it awaited
   `ctx.data.session.message.sync(id)` and wrote `message.list(id)` whole, one
-  message a line, as Ruling 5 has the amx plugin do.
+  message a line, as the amx plugin does.
 - A capture was `capture-pane -p -J`, the call `src/tmux.rs` makes. Each
   screen was captured at 220, 100, 54 and 24 columns by resizing the window
   with the screen up, two seconds after each resize. The tests read each file
@@ -176,7 +175,7 @@ the permission card and at idle. It is no second signal.
 
 `tests/opencode/events/` holds every event the recorder saw, one JSON object
 per line, as `ctx.data.on` hands them over: `{id, created, type, data,
-location?, durable?, metadata?}`. Ruling 3's plugin reads `e.data`.
+location?, durable?, metadata?}`. amx's plugin reads `e.data`.
 
 - `turn.jsonl`: a fresh session, one turn running `sleep 40` in the shell
   tool and answering `done`.
@@ -238,7 +237,7 @@ What they show:
 
 `tests/opencode/messages/<scenario>.jsonl` is what the recorder wrote at the
 scenario's last terminal event: `message.list(id)` of that session, whole,
-one message a line, the file Ruling 5 has the plugin write to
+one message a line, the file amx's plugin writes to
 `$AMX_DIR/opencode-messages.jsonl`. Each line is `{id, type, …}`:
 
 - `user`: `{text, files, agents, time}`.
@@ -257,16 +256,16 @@ assistant **with no `idle` row after it** (`permission.jsonl`,
 `question.jsonl`), so a reader of the list cannot take the last `idle` as the
 end of the last turn.
 
-## What differs from the plan
+## What differs from the source reading
 
-- Ruling 4's Refused is coined from a `reject` reply or `form.cancelled`, and
-  both of those also end the turn: `session.execution.interrupted` follows at
-  once, with `reason: "shutdown"`. Ended has to fire for it like any other
-  interrupt.
+- The plugin's Refused is coined from a `reject` reply or `form.cancelled`,
+  and both of those also end the turn: `session.execution.interrupted`
+  follows at once, with `reason: "shutdown"`. Ended has to fire for it like
+  any other interrupt.
 - That `shutdown` keeps the execution claim (`execution.ts:131-137`), the
-  same way Ruling 6 says a killed server's does, so a turn ended by a
-  rejection or a dismissed question is left for the next service boot to
-  resume. Not measured past the event.
+  same way a killed server's does, so a turn ended by a rejection or a
+  dismissed question is left for the next service boot to resume. Not
+  measured past the event.
 - Calling (`session.tool.called`) needs the name from the
   `session.tool.input.started` before it.
 - A steer shows no pending mark on the screen: it is drawn as a user row the

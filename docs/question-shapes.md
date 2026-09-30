@@ -1,8 +1,8 @@
 # The vendor's question screens
 
 `AskUserQuestion` is the one blocking prompt whose contents the agent wrote
-itself, and it is not one screen. The menu in `assets/screen-rules.toml` — a
-question, numbered choices, a rule, `N. Chat about this`, a footer — is only its
+itself, and it is not one screen. The menu in `assets/screen-rules.toml` (a
+question, numbered choices, a rule, `N. Chat about this`, a footer) is only its
 plainest shape. Four more are in the tool's own schema and all four reach a
 pane: a checkbox list, several question tabs in one call, a note beside a
 choice, and the free-text `Other` row. A fifth, the Submit tab, is not in the
@@ -23,7 +23,7 @@ happens when the two rows the payload does not name are pressed.
 ## How these were measured
 
 One `claude 2.1.240` in a detached tmux session on 2026-08-24, driven with
-`send-keys` and read with `capture-pane -p -J` — the same call `tmux.rs`'s
+`send-keys` and read with `capture-pane -p -J`, the same call `tmux.rs`'s
 `capture` makes, so the rows below are the rows a reader would match against.
 Widths were changed with `resize-window` and the vendor redraws on the resize,
 so a 24-column capture is a real render at 24 columns rather than a reflow of a
@@ -42,14 +42,14 @@ is its `tool_response`.
 The 2026-08-25 sitting was driven through amx itself rather than by hand: `amx
 new` on the same probe project, one agent per shape, at 220 columns. Its hook
 log is the whole event stream and not the two `AskUserQuestion` events, and the
-answers below are `amx answer` typing at the pane rather than a person. One
-thing that took an hour to find is worth saying here: this machine's own
-`~/.claude/settings.json` already wires amx's hooks, so a probe project that
-wires them again gets every payload folded twice, once by each binary. The
-second fold is by whatever `amx` is installed, which is not the one under test.
+answers below are `amx answer` typing at the pane rather than a person. A
+trap for the next sitting: if the machine's own claude settings already wire
+amx's hooks, a probe project that wires them again gets every payload folded
+twice, once by each binary, and the second fold is by whatever `amx` is
+installed rather than the one under test.
 
-That response carries three keys and not two. `questions` — the whole call, as
-it went in — sits beside `answers` and `annotations`, on both a one-question and
+That response carries three keys and not two. `questions`, the whole call as
+it went in, sits beside `answers` and `annotations`, on both a one-question and
 a three-question call measured on 2026-08-24 against v2.1.240. So what was asked
 can be read off the answer coming back, not only off the question going out.
 
@@ -64,7 +64,7 @@ keys on and it survived every shape measured, but its wording is not one string:
     Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel
                                                         (an option has a preview)
 
-and where the cursor is on a text row — the `Other` row or the notes field — it
+and where the cursor is on a text row (the `Other` row or the notes field) it
 gains one more term:
 
     Enter to select · ↑/↓ to navigate · ctrl+g to edit in Kak · Esc to cancel
@@ -92,8 +92,8 @@ checkbox and the header:
 
      ☐ License
 
-Anything that needs an explicit submit — more than one question, or one
-multi-select question — draws a tab strip with arrows and a Submit tab:
+Anything that needs an explicit submit, meaning more than one question or one
+multi-select question, draws a tab strip with arrows and a Submit tab:
 
     ←  ☐ Runtime  ☐ Storage  ☐ Rollout  ✔ Submit  →
 
@@ -193,23 +193,23 @@ unnumbered one under them.
 | `↑` `↓` | move the cursor: choices, then the `Other` row, then `Submit`, wrapping |
 | `Enter` | toggle the choice under the cursor. It does **not** submit |
 | `Space` | the same toggle. Not named in the footer |
-| `1`–`9` | toggle that choice without moving the cursor, unless the cursor is in the `Other` row, where it is a character |
+| `1` to `9` | toggle that choice without moving the cursor, unless the cursor is in the `Other` row, where it is a character |
 | `→` | leave the choices for the Submit tab |
 | `Enter` on `Submit` | the same |
 
-So two choices and a submit is `1`, `3`, `→`, `Enter` — the `Enter` being the
+So two choices and a submit is `1`, `3`, `→`, `Enter`, the `Enter` being the
 one on the review screen in section 5.
 
 The `Other` row is a text field, and on a checkbox screen it behaves unlike the
 rest of the list:
 
-* typing into it **checks it by itself** — `❯ 4. [✔] Audit`, and the tab goes
-  `☐` → `☒` — so the text alone is the answer;
+* typing into it **checks it by itself** (`❯ 4. [✔] Audit`, and the tab goes
+  `☐` → `☒`), so the text alone is the answer;
 * `Enter` on it then **unchecks it again**, because `Enter` is still the toggle;
 * while it has the cursor, `←` and `→` are text-editing keys, not tab keys.
 
-`Up`, `paste`, `Enter` — what `answer.rs`'s `say` sends today — therefore types
-the words, checks the row, and unchecks it, leaving the prompt up and
+`Up`, `paste`, `Enter`, what `answer.rs`'s `say` sent at the time, therefore
+types the words, checks the row, and unchecks it, leaving the prompt up and
 unanswered. The sequence that works is `Up`, paste, `↓`, `Enter`, `Enter`.
 
 ### What answering it produced
@@ -350,7 +350,7 @@ none of the shape of the rest.
 | `Enter` on a choice of the last plain tab | advances to the Submit tab |
 | `→` / `Tab` | next tab |
 | `←` | previous tab, answer kept |
-| `1`–`9` on a plain tab | selects that choice and submits the tab at once |
+| `1` to `9` on a plain tab | selects that choice and submits the tab at once |
 
 Answering never returns to the composer until the Submit tab is confirmed, which
 is what "answering one tab leaves the next pending" has to mean on the record: a
@@ -393,7 +393,7 @@ checkboxes.
 | key | what it does on a checkbox tab |
 | --- | --- |
 | `Enter` on a choice | toggles it, and does **not** advance |
-| `1`–`9` | toggles that choice, cursor unmoved, tab unadvanced |
+| `1` to `9` | toggles that choice, cursor unmoved, tab unadvanced |
 | `→` / `Tab` | the next question's tab, not the Submit tab |
 | `←` | back a tab, the boxes kept |
 | `Enter` on `Next` | the next question's tab |
@@ -405,8 +405,8 @@ rather than on leaving the tab, so the strip says a tab has been touched and not
 that it is finished.
 
 Driven end to end the call took `Enter` on `Node`, then `2` and `Enter` on the
-`Rollout` tab, then the tab-moving keys in the table above — `→`, `←`, four `↓`
-and `Enter` on `Next` — which left both answers alone, then `Enter` on `Redis`,
+`Rollout` tab, then the tab-moving keys in the table above (`→`, `←`, four `↓`
+and `Enter` on `Next`), which left both answers alone, then `Enter` on `Redis`,
 then `Enter` on the review tab. What came back is at the end of this section.
 
 ### What answering it produced
@@ -417,7 +417,7 @@ then `Enter` on the review tab. What came back is at the end of this section.
       "Which rollout steps should run?": "Canary, Announce"
     }
 
-Keyed by the question text, verbatim — not by header, not by index. Two
+Keyed by the question text, verbatim: not by header, not by index. Two
 questions with the same text would collide in the vendor's own answer map.
 
 The reordered call driven above came back the same way, one entry per tab, keyed
@@ -430,7 +430,7 @@ by its question's text:
     }
 
 `Migrate, Canary` is the order the two boxes were checked and not the order the
-payload lists them in — section 1's finding again, on a tab this time rather
+payload lists them in: section 1's finding again, on a tab this time rather
 than on a screen of its own.
 
 ## 3. The `Other` row
@@ -441,7 +441,7 @@ the rule. Measured at 220, 80, 54 and 24 columns on 2026-08-24 against v2.1.240.
 ### The capture
 
 At rest it is a numbered choice like any other, and nothing in the payload
-accounts for it — or for `Chat about this` under the rule:
+accounts for it, or for `Chat about this` under the rule:
 
      ☐ License
 
@@ -457,8 +457,8 @@ accounts for it — or for `Chat about this` under the rule:
 
     Enter to select · ↑/↓ to navigate · Esc to cancel
 
-Typed into, it is the text, in place. The label is gone — there is no row on the
-screen that still says `Type something.` — and the footer has gained the editor
+Typed into, it is the text, in place. The label is gone, with no row on the
+screen still saying `Type something.`, and the footer has gained the editor
 term:
 
       1. MIT
@@ -492,13 +492,13 @@ there, so its position can only be counted from the end.
 
 ### The keystrokes
 
-`Up` from the first row wraps onto it — reconfirmed against v2.1.240 on
+`Up` from the first row wraps onto it, reconfirmed against v2.1.240 on
 2026-08-24 on both a plain menu and a checkbox one, which is what
 `answer.rs`'s `TO_THE_FIELD` rests on. `Chat about this` sits below the rule and
 is not in that ring, so the wrap lands on the field and not past it.
 
 Then type, then `Enter` on a plain menu. On a checkbox menu, `↓` `Enter`
-instead — see section 1.
+instead; see section 1.
 
 **A digit is not the same key twice.** On a plain menu a digit at a choice
 selects it and submits at once, but once the cursor is on the `Other` row every
@@ -593,8 +593,8 @@ text is not on the screen** once it is longer than the column the preview left
 for it: `keep the subtitle on…` is all that is drawn of a note the record holds
 whole.
 
-At 24 columns the layout comes apart. The box takes the whole 50-row pane — rows
-4 to 50 — because the preview column is two characters wide and the box stretches
+At 24 columns the layout comes apart. The box takes the whole 50-row pane, rows
+4 to 50, because the preview column is two characters wide and the box stretches
 to hold what will not fit, with the middle cut out and marked:
 
      4|────────────────────────
@@ -625,8 +625,8 @@ to hold what will not fit, with the middle cut out and marked:
     49|notes · ctrl+g to edit
     50|in Kak · Esc to cancel
 
-The choice's own label has left the row its number is on — `❯ 1.` on row 10 and
-`Stacked` on row 11 — and both choices sit fifteen rows above where the floor's
+The choice's own label has left the row its number is on (`❯ 1.` on row 10 and
+`Stacked` on row 11), and both choices sit fifteen rows above where the floor's
 last 24 rows begin. The rule still holds, on the footer; there is nothing left
 for it to read.
 
@@ -683,7 +683,7 @@ of the field first and then choosing gives the shape a caller means:
                        "notes":   "prefer the stacked one" } }
 
 The chosen option's own `preview` rides back in `annotations` beside the note,
-keyed — like `answers` — by the question's text.
+keyed, like `answers`, by the question's text.
 
 `n` was pressed on a checkbox menu with no previews and nothing happened, which
 is the refusal `amx answer --note` owes a question that offers no such thing.
@@ -711,7 +711,7 @@ schema; it is the vendor's own confirm step.
       2. Cancel
 
 That is the whole screen at 220 columns and there is nothing under it. **It
-draws no footer** — not `Enter to select`, not `Esc to cancel`, and not the mode
+draws no footer**: not `Enter to select`, not `Esc to cancel`, and not the mode
 footer either, since it is a blocking prompt. Measured at 220, 54 and 24
 columns; at 24 the tab strip elides and `Ready to submit your` / `answers?`
 wraps, while `Review your answers` and `❯ 1. Submit answers` both stay whole:
@@ -745,10 +745,9 @@ never draws. An agent parked one keystroke from finishing an answer reads
 If a rule is written for it, the anchor these captures support is
 `review your answers`: 19 columns wide, the fragment its row opens with, and
 whole at every width measured. `❯ 1.` or `submit answers` is the affordance, and
-`not_below` carries the same weight as it does on its neighbours — this box ends
+`not_below` carries the same weight as it does on its neighbours: this box ends
 at `2. Cancel` with nothing beneath. Adding it means adding its name to
-`rules_the_bundled_file_is_the_ruleset` in `src/rules.rs`, which this task does
-not own; it belongs with the work that does.
+`rules_the_bundled_file_is_the_ruleset` in `src/rules.rs` as well.
 
 ## 6. The three events behind one menu
 
@@ -771,7 +770,7 @@ behind every time, which is this vendor's own timer.
 
 Two smaller things worth knowing. The `PermissionRequest` carries the whole
 call, `tool_input` and all, so it is the second and only other place the
-questions are ever sent — which is what a record that missed the tool call can
+questions are ever sent, which is what a record that missed the tool call can
 learn them from. And its `permission_mode` field read `default` on all six,
 including the two the session was started in `manual` and `auto`, so that field
 is not the mode the footer shows and nothing should read it as one.
@@ -790,8 +789,8 @@ at a menu read was this:
 writing the notification's words retired the call; and the five options because
 the words it wrote were `Claude needs your permission`, which is a placeholder a
 reader forgets, and forgetting it sent the reader to the pane for the rows.
-That is 02BQ6442 whole: the grammar amx offered was a permission box's, and the
-numbering was the screen's five rows rather than the question's three.
+So the grammar amx offered was a permission box's, and the numbering was the
+screen's five rows rather than the question's three.
 
 Folding the same three payloads through the fixed hook leaves:
 
@@ -822,7 +821,7 @@ Two separate findings sit in that table.
 **Several keys in one call are not several keypresses.** `tmux send-keys -t %3
 1 3` writes both into the pty in one go, and the menu took neither: three rounds
 of three, the tab still `☐`, and the Submit tab drawing `⚠ You have not answered
-all questions`. `tmux send-keys -t %3 Right Enter` was worse than losing a key —
+all questions`. `tmux send-keys -t %3 Right Enter` was worse than losing a key:
 the `Right` moved to the Submit tab and the `Enter` was answered against the tab
 it had just left, unchecking a box that was already checked, so the review tab
 showed `→ Tracing` where two boxes had been ticked.
@@ -848,8 +847,8 @@ whoever asked stops watching a row that will never move again.
 with `"answers": { "Which features should be enabled?": "Logging, Tracing" }` in
 the `PostToolUse` payload. `amx answer <id> --text BSD-3-Clause` at the plain
 menu of section 3 gave `→ BSD-3-Clause`. The three-question call of section 2,
-answered `1`, then `1`, then `1,3`, advanced a tab at a time — the record showing
-`Runtime: Node`, then `Storage: Redis`, with the prompt still up between them —
+answered `1`, then `1`, then `1,3`, advanced a tab at a time (the record showing
+`Runtime: Node`, then `Storage: Redis`, with the prompt still up between them),
 and the last answer pressed the vendor's own Submit tab:
 
     ● User answered Claude's questions:
@@ -893,8 +892,7 @@ refused against the count the payload carries.
 ## What the shipped ruleset makes of these
 
 Every capture above was run through the bundled ruleset's own matcher. It was
-run outside the crate's tests, because this task owns
-`assets/screen-rules.toml` and not `src/rules.rs`; the matcher was checked first
+run outside the crate's tests; the matcher was checked first
 against the 22 captures already in `rules.rs`'s tests, where it reproduced the
 rule each one matches and the question read off it.
 
@@ -924,7 +922,7 @@ two behind it, which is the worst of the nine, because it looks right.
 one: the very first capture of the session, a 50-row pane, the box drawn at rows
 17 to 33 and **17 blank rows under the footer**, because the vendor pads the
 screen it drew rather than sitting at the bottom of it. `FLOOR_LINES` is 24, so
-the floor began at row 27 — seven rows below the question and five below
+the floor began at row 27, seven rows below the question and five below
 `❯ 1.`. `ask_menu` still ruled `waiting`, on `esc to cancel` in the footer, but
 `first_option` found no row numbered 1 and the question came back empty.
 
@@ -933,12 +931,11 @@ above them to push the box to the bottom of the pane, and read correctly. So
 whether a caller gets the question depends on how much the agent had said before
 it asked, which is not a property of the question.
 
-### What the next tasks take from this
+### What amx takes from this
 
-Five of these are now spent. The kind precedence, the numbering and the three
-keystroke findings are in `hook.rs`, `derive.rs` and `verbs/answer.rs`, driven
-against a live 2.1.240 and covered by `cargo test answer`. What is left is
-marked below.
+The kind precedence, the numbering and the three keystroke findings are in
+`hook.rs`, `derive.rs` and `verbs/answer.rs`, driven against a live 2.1.240
+and covered by `cargo test answer`. What is left is marked below.
 
 * the tabs, the descriptions, the `multiSelect` flag and the note are all in the
   payload and none of them can be read off a narrow pane. The record should hold
@@ -948,7 +945,7 @@ marked below.
   question where there is no `Other` row and `Chat about this` has no number.
   Nothing on the screen distinguishes the vendor's rows from the agent's;
 * `Up`, paste, `Enter` answers a plain menu's `Other` row and unchecks a
-  checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case — and every one
+  checkbox one. `↓`, `Enter`, `Enter` finishes the checkbox case, and every one
   of those keys needs a call and a pause of its own, per section 7;
 * a digit answers a plain menu, toggles a checkbox menu, and types a character
   once the cursor is on the free-text row. Past the question's own choices it
@@ -969,7 +966,7 @@ marked below.
   and not on the strip;
 * the Submit tab needs a rule, and the question read at the moment `waiting` is
   first concluded needs to come from somewhere other than the last 24 rows of a
-  half-empty pane. **Still open**: both belong to whatever owns `src/rules.rs`;
+  half-empty pane. **Still open**, in `src/rules.rs`;
 * a menu fires a permission event and a permission notification of its own, so
   nothing that reads either of them alone can tell a menu from a box. What tells
   them apart is the tool call in front, per section 6.
