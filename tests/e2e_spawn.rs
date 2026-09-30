@@ -636,7 +636,7 @@ fn spawned_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) ->
 }
 
 /// Run `amx sub --bg` from `parent`'s pane. `sub` is the only verb that
-/// records a parent, and it prints the child id on stderr.
+/// records a parent, and it prints the child id on stdout.
 fn sub_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Output {
     amx.amx_command(&[&["sub", "--bg"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
@@ -646,9 +646,13 @@ fn sub_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Out
 }
 
 fn id_on(out: &Output) -> String {
-    let said = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "amx sub: {said}");
-    assert_eq!(said.lines().count(), 1, "one line on stderr: {said:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "amx sub: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(said.lines().count(), 1, "one line on stdout: {said:?}");
     said.trim().to_string()
 }
 

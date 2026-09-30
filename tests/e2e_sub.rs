@@ -60,6 +60,13 @@ fn id_on(out: &Output) -> String {
     said.trim().to_string()
 }
 
+/// The id `amx sub --bg` wrote on stdout, as `amx new` does.
+fn bg_id(out: &Output) -> String {
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(said.lines().count(), 1, "one line on stdout: {said:?}");
+    said.trim().to_string()
+}
+
 #[test]
 fn sub_spawns_a_child_and_prints_its_answer_and_its_id() {
     let amx = Harness::new();
@@ -208,8 +215,8 @@ fn sub_bg_returns_as_soon_as_it_has_an_id() {
         "it did not wait for the turn: {:?}",
         started.elapsed()
     );
-    assert!(out.stdout.is_empty(), "and printed no answer");
-    assert_eq!(amx.meta(&id_on(&out))["parent"], parent);
+    assert!(out.stderr.is_empty(), "the id is on stdout alone");
+    assert_eq!(amx.meta(&bg_id(&out))["parent"], parent);
 }
 
 #[test]
@@ -220,7 +227,7 @@ fn sub_no_parent_spawns_a_peer_with_no_family() {
 
     let out = a_sub(&amx, &parent, &mock, &["--no-parent", "--bg", "scout"]);
     assert_eq!(out.status.code(), Some(0));
-    let child = id_on(&out);
+    let child = bg_id(&out);
     assert_eq!(amx.meta(&child)["parent"], Value::Null);
     assert_eq!(amx.meta(&child)["depth"], 0);
 }
@@ -236,7 +243,7 @@ fn sub_from_a_persons_shell_is_an_ordinary_spawn() {
         "amx sub: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let child = id_on(&out);
+    let child = bg_id(&out);
     assert_eq!(amx.meta(&child)["parent"], Value::Null);
     assert_eq!(amx.meta(&child)["depth"], 0);
 }
@@ -311,7 +318,7 @@ fn sub_hands_the_parents_vendor_down_when_no_agent_is_named() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let child = id_on(&out);
+    let child = bg_id(&out);
     assert_eq!(
         amx.meta(&child)["agent"],
         amx.meta(&parent)["agent"],
@@ -365,7 +372,7 @@ fn sub_from_outside_takes_a_name_and_a_parent_that_has_ended() {
         "amx sub: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(id_on(&out), "wf-t1-review-a1b2", "the name is the id");
+    assert_eq!(bg_id(&out), "wf-t1-review-a1b2", "the name is the id");
     let meta = amx.meta("wf-t1-review-a1b2");
     assert_eq!(meta["parent"], parent);
     assert_eq!(meta["depth"], 1);
@@ -381,7 +388,7 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
     let cut = a_sub_from_outside(&amx, &mock, &["--bg", "--dir", &repo_s, "scout"]);
     assert_eq!(cut.status.code(), Some(0));
     assert_ne!(
-        amx.meta(&id_on(&cut))["worktree"],
+        amx.meta(&bg_id(&cut))["worktree"],
         Value::Null,
         "without the flag a tree is cut, which is what the flag is against"
     );
@@ -397,7 +404,7 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
         "amx sub: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let meta = amx.meta(&id_on(&out));
+    let meta = amx.meta(&bg_id(&out));
     assert_eq!(meta["worktree"], Value::Null, "no tree of its own");
     assert_eq!(meta["dir"], repo_s);
 
@@ -428,7 +435,7 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        amx.meta(&id_on(&out))["worktree"],
+        amx.meta(&bg_id(&out))["worktree"],
         Value::Null,
         "the flag stands over the role"
     );

@@ -186,7 +186,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
         .to_string();
 
     if args.bg {
-        return report(root, &id, None, args.json, out, err);
+        return report(root, &id, None, args.json, out);
     }
 
     // The id first, so a caller reading a question on stdout knows who to
@@ -209,7 +209,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             exit::OK => Some(String::from_utf8_lossy(&answer).trim_end().to_string()),
             _ => None,
         };
-        report(root, &id, answer, true, out, err)?;
+        report(root, &id, answer, true, out)?;
     } else {
         out.write_all(&answer)?;
     }
@@ -340,10 +340,9 @@ fn report(
     answer: Option<String>,
     json: bool,
     out: &mut impl Write,
-    err: &mut impl Write,
 ) -> Result<i32> {
     if !json {
-        writeln!(err, "{id}")?;
+        writeln!(out, "{id}")?;
         return Ok(exit::OK);
     }
     let view = derive::view(root, id, store::now())?;
@@ -408,15 +407,12 @@ mod tests {
             .unwrap();
 
         let mut out = Vec::new();
-        report(
-            root.path(),
-            "scout-c3d",
-            None,
-            true,
-            &mut out,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        report(root.path(), "scout-c3d", None, true, &mut out).unwrap();
+
+        // Without --json, the id alone on stdout, as `amx new` prints it.
+        let mut id = Vec::new();
+        report(root.path(), "scout-c3d", None, false, &mut id).unwrap();
+        assert_eq!(String::from_utf8(id).unwrap(), "scout-c3d\n");
 
         let object: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(object["phase"], "waiting");
