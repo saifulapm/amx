@@ -1810,8 +1810,7 @@ pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
 /// record is read against its own vendor's screens.
 pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
-    // `None` for a server whose tmux could not be asked.
-    let mut owners: Vec<(crate::tmux::Socket, Option<crate::tmux::PaneOwners>)> = Vec::new();
+    let mut listings = crate::tmux::Listings::default();
     let mut views = Vec::new();
 
     for record in records {
@@ -1819,17 +1818,9 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         let alive = if record.state.state.is_terminal() {
             true
         } else {
-            let listed = match owners.iter().find(|(socket, _)| socket == &meta.socket) {
-                Some((_, listed)) => listed,
-                None => {
-                    let listed = Server::from_socket(meta.socket.clone())
-                        .owners_for_now()
-                        .ok();
-                    owners.push((meta.socket.clone(), listed));
-                    &owners.last().expect("just pushed").1
-                }
-            };
-            let Some(listed) = listed else {
+            // A server whose tmux could not be asked leaves the record as
+            // written.
+            let Ok(listed) = listings.of(&meta.socket) else {
                 let Record { agent, meta, state } = record;
                 let verdict = as_written(&agent, &state, meta.created, now);
                 views.push(View::new(meta, state, verdict));

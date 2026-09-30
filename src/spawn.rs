@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::registry;
 use crate::store::{Agent, Meta, Phase};
-use crate::tmux::{PaneId, PaneOwners, Server, Socket, Spawn};
+use crate::tmux::{Listings, PaneId, Server, Spawn};
 use crate::vendor::Vendor;
 
 /// File holding the [`Handoff`].
@@ -676,8 +676,7 @@ fn going(root: &Path) -> Result<Vec<Meta>> {
 /// running agent.
 fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<Meta>> {
     let mut kept = Vec::new();
-    // One pane listing per server, however many agents sit on it.
-    let mut owners: Vec<(Socket, PaneOwners)> = Vec::new();
+    let mut listings = Listings::default();
     for id in crate::store::list(root)? {
         let agent = Agent::open(root, &id)?;
         let Ok(state) = agent.state() else { continue };
@@ -685,15 +684,10 @@ fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<M
         if !wanted(state.state, &meta) {
             continue;
         }
-        let listed = match owners.iter().position(|(socket, _)| socket == &meta.socket) {
-            Some(at) => &owners[at].1,
-            None => {
-                let listed = Server::from_socket(meta.socket.clone()).owners_for_now()?;
-                owners.push((meta.socket.clone(), listed));
-                &owners.last().expect("just pushed").1
-            }
-        };
-        if listed.pane_answers_for(&meta.pane, &meta.id) {
+        if listings
+            .of(&meta.socket)?
+            .pane_answers_for(&meta.pane, &meta.id)
+        {
             kept.push(meta);
         }
     }

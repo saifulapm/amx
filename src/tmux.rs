@@ -120,6 +120,31 @@ impl PaneOwners {
     }
 }
 
+/// Pane owners per server, each server listed once however many agents sit
+/// on it.
+#[derive(Default)]
+pub struct Listings(Vec<(Socket, Option<PaneOwners>)>);
+
+impl Listings {
+    /// The pane owners on `socket`'s server.
+    ///
+    /// A server whose tmux could not be asked gives its error the first time
+    /// and a plain one after, without being asked again.
+    pub fn of(&mut self, socket: &Socket) -> Result<&PaneOwners> {
+        let at = match self.0.iter().position(|(known, _)| known == socket) {
+            Some(at) => at,
+            None => {
+                self.0.push((socket.clone(), None));
+                let listed = Server::from_socket(socket.clone()).owners_for_now()?;
+                let at = self.0.len() - 1;
+                self.0[at].1 = Some(listed);
+                at
+            }
+        };
+        self.0[at].1.as_ref().context("tmux could not be asked")
+    }
+}
+
 /// What to create, and where.
 #[derive(Debug, Default, Clone)]
 pub struct Spawn<'a> {
