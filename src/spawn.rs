@@ -1,32 +1,18 @@
-//! Starting an agent: where its pane goes, and what the pane is handed.
+//! Starting an agent: placing its pane and handing it what it runs.
 //!
 //! An agent is one detached tmux session, `amx-<id>`, on the server the person
-//! is already using. Nothing is tiled, nothing is bundled, and nothing amx
-//! does moves anybody's screen: `new-session -d` cannot, and there is no other
-//! way in here.
+//! already uses; `new-session -d` never moves anybody's screen. Nothing stays
+//! resident: the pane runs `amx _boot <id>`, which reads the handoff, restores
+//! the environment and execs the vendor with `amx _exit` after it.
 //!
-//! Nothing amx starts stays resident. A pane runs `amx _boot <id>`, which
-//! reads the handoff its record holds, puts the environment back, and execs
-//! the vendor with `amx _exit` behind it. From then on the pane belongs to the
-//! vendor, and amx is only ever a reader of the record and the screen.
-//!
-//! Three variables are amx's own, and they go in over whatever the snapshot
-//! carried: `AMX_BIN`, `AMX_ID`, which is how a hook says which agent it
-//! belongs to, and `AMX_AGENT_DIR`, a directory of the agent's own to write
-//! in. A spawn typed inside another agent's pane inherits that pane's, and the
-//! new agent is not the old one.
-//!
-//! Two things travel beside the tmux command line rather than on it, because a
-//! tmux command line is the one place either could be read as syntax. The
-//! **task** rides in the handoff, which outlives the boot that reads it: every
-//! verb that later asks what an agent was started with reads it there. The
-//! **environment** is the one `new` was run with — a tmux server started an
-//! hour ago carries an hour-old environment, and an agent that inherited it
-//! would be missing whatever its owner exported since — and it rides a file of
-//! its own, read once by `_boot` and unlinked the moment it has been: nothing
-//! that runs after `_boot` has a use for a second copy of somebody's
-//! environment sitting in the agent's own directory for as long as the record
-//! does. Both files are the owner's alone to read.
+//! - The task and the environment travel in owner-only files, never on the
+//!   tmux command line, where they could be read as syntax. The handoff keeps
+//!   the task for later verbs; the environment file is read once by `_boot`
+//!   and removed.
+//! - The environment is the one `new` ran in, since the tmux server's own can
+//!   be hours old.
+//! - `AMX_BIN`, `AMX_ID` and `AMX_AGENT_DIR` are set over the snapshot, so an
+//!   agent spawned from another agent's pane gets its own values.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -39,123 +25,98 @@ use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{PaneId, PaneOwners, Server, Socket, Spawn};
 use crate::vendor::Vendor;
 
-/// What the pane is handed at birth.
+/// File holding the [`Handoff`].
 pub const HANDOFF: &str = "handoff.json";
 
-/// Where the environment `new` was run with waits for `_boot`, and nowhere
-/// else: beside the handoff rather than in it, so that a copy of somebody's
-/// environment never outlives the one pane that needed it.
+/// File holding the environment for `_boot`, removed once read.
 pub const BOOT_ENV: &str = "boot-env.json";
 
-/// Where a pane is told to find the directory that is its own to write in.
+/// Variable naming the agent's scratch directory.
 pub const AGENT_DIR_ENV: &str = "AMX_AGENT_DIR";
 
-/// Where a pane is told the directory its record is kept in. Not the agent's
-/// to write in — that is the scratch directory above — but where amx's own
-/// reporting inside the pane, a vendor's extension amx wrote, streams what the
-/// agent is saying for the record's readers to find: see `store::LIVE`.
+/// Variable naming the agent's record directory.
+///
+/// amx's extensions inside the pane stream the agent's output there; see
+/// `store::LIVE`.
 pub const RECORD_DIR_ENV: &str = "AMX_DIR";
 
-/// Where a child is told the id of the agent whose pane it was started in.
+/// Variable naming the agent whose pane a child was started in.
 pub const PARENT_ENV: &str = "AMX_PARENT";
 
-/// Where a child is told the directory that parent's record is kept in, so it
-/// can `amx logs $AMX_PARENT` and read the record itself.
+/// Variable naming the parent's record directory, for `amx logs $AMX_PARENT`.
 pub const PARENT_DIR_ENV: &str = "AMX_PARENT_DIR";
 
-/// Where a child is told how deep in a family it stands: 0 for a root, 1 for a
-/// child of one.
+/// Variable giving an agent's depth: 0 for a root, 1 for its child.
 pub const DEPTH_ENV: &str = "AMX_DEPTH";
 
-/// What that directory is called, inside the one the agent's record is kept
-/// in.
+/// Name of the scratch directory inside the agent's record directory.
 const SCRATCH: &str = "scratch";
 
-/// tmux's own default socket name, which is the server a bare `tmux` reaches.
+/// tmux's default socket name, the server a bare `tmux` reaches.
 const DEFAULT_SOCKET: &str = "default";
 
-/// Test-only override of the socket amx puts agents on, so a suite never
-/// reaches the machine's real tmux.
+/// Test-only override of the socket agents are placed on.
 const SOCKET_ENV: &str = "AMX_TMUX_SOCKET";
 
-/// The variables that belong to the pane a command was typed in, not to the
-/// pane it starts: tmux's own two, and the shell's idea of where it is.
+/// Variables describing the pane a command was typed in, left out of the
+/// snapshot.
 ///
-/// The vendors' own are not here. Each of them names the variables that mark
-/// the session a command was typed inside, and [`env_snapshot`] asks the table
-/// for those: they are the vendor's words to spell, and a second copy of them
-/// here would be the one that goes stale the day a vendor renames something.
+/// Vendor session markers come from the registry instead; see
+/// [`env_snapshot`].
 const NOT_INHERITED: [&str; 4] = ["TMUX", "TMUX_PANE", "PWD", "OLDPWD"];
 
-/// How long `_boot` waits for the record whose pane it is.
+/// How long `_boot` waits for its record to appear.
 const RECORD_PATIENCE: Duration = Duration::from_secs(10);
 
-/// How much of an agent's pane its boot keeps beside the record.
+/// How many bytes of an agent's pane `_boot` keeps in the record.
 ///
-/// A command's pane is piped whole — nothing reports on a command and what it
-/// printed has nowhere else to go. An agent's is a vendor's full-screen
-/// drawing, repaints and cursor moves and all, and a file of the whole of it
-/// grows with the session and says nothing. So the first bytes are kept and
-/// the pipe stops there: a vendor that dies before its first hook says why
-/// before it draws anything, and pi's bad-model error is the first 96 bytes of
-/// its pane.
+/// A shell command's output is kept whole. A vendor's pane is a full-screen
+/// drawing that grows without bound, so only the start is kept: a vendor that
+/// dies before its first hook says why there (pi's bad-model error is the
+/// first 96 bytes).
 pub const BOOT_BYTES: u64 = 64 * 1024;
 
-/// What the pane is handed at birth, apart from the environment: that rides
-/// [`BOOT_ENV`] instead, because this outlives the boot that reads it and the
-/// environment should not.
+/// What a pane is started with, apart from the environment.
+///
+/// It outlives the boot that reads it, so the environment goes in
+/// [`BOOT_ENV`] instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handoff {
-    /// What the agent was asked to do.
+    /// The task the agent was given.
     pub task: String,
-    /// The vendor and its arguments, as an argv.
+    /// The vendor argv.
     pub command: Vec<String>,
 }
 
-/// The environment an agent inherits, given the one `new` was run with.
+/// The environment an agent inherits from the one `new` ran in.
 ///
-/// Two kinds are left out: the variables that describe the pane the command
-/// was typed in, and the markers of whichever vendor's session it was typed
-/// inside. A vendor handed its spawner's markers believes it is a child of
-/// that session, and an agent that believes that keeps no transcript.
+/// Drops the calling pane's variables and every vendor's session markers: a
+/// vendor that sees its spawner's markers thinks it is a child session and
+/// keeps no transcript.
 pub fn env_snapshot(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
     vars.into_iter()
         .filter(|(name, _)| !NOT_INHERITED.contains(&name.as_str()) && !marks_a_session(name))
         .collect()
 }
 
-/// Every name some vendor marks the session a command was typed inside with.
+/// Every vendor's session-marker variables.
 ///
-/// Every vendor amx knows, rather than the one about to be started: the
-/// markers to leave behind are the ones around whoever typed the command, and
-/// nothing here is told what they were sitting in.
+/// All vendors, since the caller could be inside any of them.
 fn session_markers() -> impl Iterator<Item = &'static str> {
     registry::entries()
         .iter()
         .flat_map(|vendor| vendor.not_inherited.iter().copied())
 }
 
-/// Whether `name` is a variable some vendor marks the session a command was
-/// typed inside with.
+/// Whether `name` is some vendor's session marker.
 fn marks_a_session(name: &str) -> bool {
     session_markers().any(|marker| marker == name)
 }
 
-/// Lay what the file says this harness runs with over the environment the
-/// spawn snapshotted.
+/// Lay the config's harness table for `agent`'s program over `env`.
 ///
-/// The harness the agent command names, read off the program the way the
-/// harness's own arguments are: two accounts of one vendor, or a proxy in
-/// front of it, are a table of the harness rather than a wrapper script in
-/// front of every spawn. A pair replaces whatever the snapshot carried under
-/// that name — it is the newer instruction, and a person who wrote it down
-/// meant the agents amx starts to run with it.
-///
-/// Called before amx's own variables go in, never after: an agent whose
-/// [`crate::hook::ID_ENV`] a table changed would file its events under
-/// somebody else.
-///
-/// A program with no table of its own changes nothing.
+/// A table entry replaces the snapshot's value. Must run before amx's own
+/// variables go in, or a table could change [`crate::hook::ID_ENV`].
 pub fn harness_env(
     env: &mut BTreeMap<String, String>,
     config: &crate::config::Config,
@@ -166,12 +127,10 @@ pub fn harness_env(
     }
 }
 
-/// Where a spawn's three dials are pointed, each of them a value the vendor
-/// would take or [`registry::DEFAULT`] for one nobody turned.
+/// The model, permission and effort for a spawn, each a vendor value or
+/// [`registry::DEFAULT`].
 ///
-/// Resolving them is `new`'s business, because they come from what the caller
-/// typed and what the config holds. Turning them into flags is the registry's,
-/// and happens once, here.
+/// `new` resolves them; [`vendor_command`] turns them into flags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dials {
     pub model: String,
@@ -180,8 +139,7 @@ pub struct Dials {
 }
 
 impl Default for Dials {
-    /// Every dial left where the vendor's own configuration puts it, which
-    /// amx says by sending no flag.
+    /// Every dial at [`registry::DEFAULT`], which sends no flag.
     fn default() -> Dials {
         Dials {
             model: registry::DEFAULT.to_string(),
@@ -191,25 +149,15 @@ impl Default for Dials {
     }
 }
 
-/// The vendor's argv: the configured command, the dials that are turned, the
-/// session flag when this spawn opens one under an id of amx's own choosing,
-/// the flag that answers this vendor's folder-trust screen when the person has
-/// said amx may, whatever the caller passed through, and the task last — where
-/// a prompt goes.
+/// The vendor argv for a spawn.
 ///
-/// `session` is the agent's own id, offered to a vendor that declares a start
-/// flag — [`opens_under_id`] is the same question asked of the same two
-/// arguments, for a caller that has to know without building the whole argv.
+/// The configured command and launch words, the turned dials, the session and
+/// trust flags, `vendor_args`, the end-of-options word and the task.
 ///
-/// `trust` is the config key, which is the whole of the person's consent to
-/// amx answering that screen. A spawn without it is one this never writes a
-/// trust flag for, whatever the vendor would take.
-///
-/// A dial yields to the same flag written by hand, wherever it was written, so
-/// the vendor is never handed one flag twice. The session flag yields the
-/// same way: to itself, and to whatever the entry lists as conflicting with
-/// it. So does the trust flag, to every spelling of the question its vendor
-/// takes.
+/// `session` is the id offered to a vendor with a start flag
+/// ([`opens_under_id`] answers that without building the argv). `trust` is the
+/// config key; without it no trust flag is written. Every flag amx adds yields
+/// to one already on the command line, so the vendor never gets a flag twice.
 pub fn vendor_command(
     agent: &str,
     dials: &Dials,
@@ -242,11 +190,10 @@ pub fn vendor_command(
     command
 }
 
-/// `command` with the vendor's launch words right after the program, each one
-/// the command line does not carry already — in `command` itself, where the
-/// configured command and a harness's args put it, or in `vendor_args`, which
-/// the caller adds later. So a launch word is on the argv once, and `resume`
-/// and `fork`, which keep every word that names no session, keep it once.
+/// `command` with the vendor's launch words inserted after the program,
+/// skipping any already in `command` or `vendor_args`.
+///
+/// `resume` and `fork` keep those words, so they never end up doubled.
 fn with_launch_words(
     mut command: Vec<String>,
     vendor: Option<&Vendor>,
@@ -266,17 +213,17 @@ fn with_launch_words(
     command
 }
 
-/// The word that tells the vendor a recorded command names that every word
-/// after it is a message, for a verb about to put one on that argv: a
-/// resume's message or a fork's prompt.
+/// The recorded vendor's end-of-options word, for a verb appending a message
+/// to its argv.
 pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
     vendor_of(handoff)?.ends_options
 }
 
-/// A message as the word amx hands `vendor`: with one space in front where it
-/// opens with `@` and the vendor would read that as a file to attach — see
-/// [`Vendor::attaches_at`] — typed the way [`as_typed`] types it, and after
-/// the vendor's [`Vendor::prompt_flag`] and `=` where it takes one.
+/// A message as the argv word handed to `vendor`.
+///
+/// Typed as [`as_typed`] types it, with a leading space where the vendor reads
+/// a leading `@` as a file to attach ([`Vendor::attaches_at`]), and prefixed
+/// with `<prompt_flag>=` where the vendor has a [`Vendor::prompt_flag`].
 pub fn as_words(vendor: Option<&Vendor>, message: &str) -> String {
     let typed = as_typed(vendor, message);
     let typed = if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
@@ -290,9 +237,8 @@ pub fn as_words(vendor: Option<&Vendor>, message: &str) -> String {
     }
 }
 
-/// A message as amx types it at `vendor`'s composer: with one space after it
-/// where its last word opens a popup — see [`Vendor::popups`]. A message that
-/// already ends in a space has no last word to open one.
+/// A message as typed into `vendor`'s composer, with a trailing space where
+/// its last word would open a popup ([`Vendor::popups`]).
 pub fn as_typed(vendor: Option<&Vendor>, message: &str) -> String {
     let last = message
         .rsplit(char::is_whitespace)
@@ -305,12 +251,8 @@ pub fn as_typed(vendor: Option<&Vendor>, message: &str) -> String {
     }
 }
 
-/// The flag that opens this spawn's session under an id amx chose, or `None`
-/// from a vendor with no start flag to offer one — the same `None` a vendor
-/// declaring one answers when the command line already carries it, or a flag
-/// the entry lists as conflicting with it: either way the command line has
-/// already said which session this vendor opens, and amx is not the one
-/// minting it.
+/// The vendor's session start flag, or `None` when it has none or the command
+/// line already carries it or a flag that conflicts with it.
 fn start_flag(
     vendor: Option<&Vendor>,
     carried: &[&str],
@@ -325,13 +267,10 @@ fn start_flag(
     Some(start)
 }
 
-/// Whether the command line already carries `flag`, wherever it was written —
-/// in the configured command or after the separator — and whichever way: on
-/// its own, or joined onto its value with `=`.
+/// Whether `flag` is on the command line, alone or as `flag=value`, in the
+/// configured command or in `vendor_args`.
 ///
-/// The reading every other walker of an argv in this tree uses, `vendor::already`
-/// and `resume::names_a_session` included, so a flag amx would add stands down
-/// from a spelling of it the person wrote.
+/// The same reading as `vendor::already` and `resume::names_a_session`.
 fn already(flag: &str, carried: &[&str], vendor_args: &[String]) -> bool {
     let joined = format!("{flag}=");
     carried
@@ -342,15 +281,11 @@ fn already(flag: &str, carried: &[&str], vendor_args: &[String]) -> bool {
             .any(|arg| arg == flag || arg.starts_with(&joined))
 }
 
-/// The flag that answers this vendor's folder-trust screen, as a word of the
-/// vendor's own arguments — empty from a spawn the person has not consented to,
-/// from a vendor amx cannot answer for, and from one whose answer is a write
-/// rather than a word.
+/// The folder-trust flag to add, if any.
 ///
-/// It stands down from every spelling that already settles the question, this
-/// flag's own included: an argv carrying one of them has said what this run
-/// does about the folder, and a flag amx added after it would be overruling
-/// somebody rather than answering anything.
+/// `None` without consent, for a vendor amx cannot answer or answers with a
+/// store write, and when any spelling that settles the question is already on
+/// the command line.
 fn trust_flag(
     agent: &str,
     carried: &[&str],
@@ -368,13 +303,9 @@ fn trust_flag(
     (!settled).then(|| flag.send.to_string())
 }
 
-/// The session flag and the id it opens, as the first tokens of the vendor's
-/// own arguments — empty from a vendor with nothing to offer, or from a spawn
-/// that opens no session of its own.
+/// The session flag and the id it opens, or nothing.
 ///
-/// Split out of [`vendor_command`] so that the flag and the id landing
-/// together, rather than [`start_flag`] merely answering yes, is provable on
-/// its own.
+/// Separate from [`vendor_command`] so a test can check the two land together.
 fn session_flag(
     vendor: Option<&Vendor>,
     carried: &[&str],
@@ -391,12 +322,8 @@ fn session_flag(
     args
 }
 
-/// Whether this spawn opens its session under the id amx mints for it, so
-/// that whoever writes the record can put it in [`Meta::session`] at the
-/// moment it spawns rather than leave it for a hook that may never come.
-///
-/// The same question [`vendor_command`] answers while building the argv, for
-/// a caller that needs it without building one.
+/// Whether the spawn opens its session under the amx id, so the record can
+/// carry [`Meta::session`] from the start.
 ///
 /// [`Meta::session`]: crate::store::Meta::session
 pub fn opens_under_id(agent: &str, vendor_args: &[String]) -> bool {
@@ -404,49 +331,35 @@ pub fn opens_under_id(agent: &str, vendor_args: &[String]) -> bool {
     start_flag(registry::entry(agent), &carried, vendor_args).is_some()
 }
 
-/// A shell command's argv: the command itself, for a shell to read.
+/// The argv for a shell command row: `sh -c <command>`.
 ///
-/// Whole and unparsed, because what is in it is the person's business and a
-/// shell is what it was written for. `npm test && echo ok` is one row and one
-/// exit code, and so is a pipeline, a redirect or a `cd` in front of the rest.
-///
-/// `sh` rather than the login shell: this is the command a row runs, and what
-/// it does should not change with whose machine it is on.
+/// Passed whole, so pipelines, redirects and `&&` run as one row with one exit
+/// code. `sh` rather than the login shell, so it behaves the same everywhere.
 pub fn exec_command(command: &str) -> Vec<String> {
     vec!["sh".to_string(), "-c".to_string(), command.to_string()]
 }
 
-/// Write the handoff, readable by nobody else: what a command was launched
-/// with is the owner's account of it, not everyone's to read.
+/// Write the handoff, readable by the owner only.
 pub fn write_handoff(dir: &Path, handoff: &Handoff) -> Result<()> {
     write_owned(&dir.join(HANDOFF), handoff)
 }
 
-/// Write the environment a pane is about to be started with, readable by
-/// nobody else: the person's environment is in it.
+/// Write the environment for `_boot`, readable by the owner only.
 pub fn write_boot_env(dir: &Path, env: &BTreeMap<String, String>) -> Result<()> {
     write_owned(&dir.join(BOOT_ENV), env)
 }
 
-/// Write `value` as JSON that only its owner can read: the mode `write_handoff`
-/// and `write_boot_env` both promise, kept in the one place that sets it.
+/// Write `value` as pretty JSON, atomically and owner-only.
 fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value).context("writing the record")?;
     bytes.push(b'\n');
     crate::store::write_atomic(path, &bytes)
 }
 
-/// The directory an agent is given to write in, made if it is not there.
+/// The agent's scratch directory, created if missing.
 ///
-/// Beside the record rather than in it. A file dropped next to `state.json` is
-/// one name away from being the record, and what an agent scribbles is not
-/// something amx will ever read.
-///
-/// It goes when the record goes, which is what makes it scratch: `stop
-/// --delete`, forgetting a finished row and the weekly sweep all take the
-/// agent's whole directory. Nothing kept here outlives the agent that wrote
-/// it, so what has to be kept belongs in the worktree with the rest of the
-/// work.
+/// It sits beside the record files and goes when the agent's directory does,
+/// so anything worth keeping belongs in the worktree.
 pub fn scratch(agent_dir: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
 
@@ -460,14 +373,10 @@ pub fn scratch(agent_dir: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The vendor an agent was started with: the entry for the program its
-/// recorded command names.
+/// The registry entry for the program the handoff's command names.
 ///
-/// `None` twice over, and the two mean different things to whoever asks. A
-/// command amx has no entry for — a wrapper somebody wrote, a vendor nobody
-/// has taught amx about — is one amx has measured nothing about, which is not
-/// the same as one measured and found wanting. An agent amx never started has
-/// no recorded command at all, and its caller has no handoff to pass here.
+/// `None` for a program amx has no entry for (a wrapper, an unknown vendor)
+/// and for an empty command.
 pub fn vendor_of(handoff: &Handoff) -> Option<&'static Vendor> {
     registry::entry(handoff.command.first()?)
 }
@@ -479,9 +388,7 @@ pub fn read_handoff(dir: &Path) -> Result<Handoff> {
     serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))
 }
 
-/// The environment `_boot` was written to become, read once and taken away:
-/// nothing that runs after `_boot` has a use for a second copy of it sitting
-/// in the agent's own directory.
+/// Read the boot environment and remove the file.
 fn take_boot_env(dir: &Path) -> Result<BTreeMap<String, String>> {
     let path = dir.join(BOOT_ENV);
     let text =
@@ -491,12 +398,10 @@ fn take_boot_env(dir: &Path) -> Result<BTreeMap<String, String>> {
     Ok(env)
 }
 
-/// The server an agent lives on: the one the caller is already inside, or the
-/// machine's default.
+/// The server agents are placed on: the one this process is inside, else the
+/// default socket.
 ///
-/// No conf rides these calls. The server is the person's, and what it reads
-/// when it starts is the config they wrote for it — amx has none of its own to
-/// put in front of that.
+/// No conf is passed: the server is the person's and reads their config.
 pub fn server() -> Result<Server> {
     if let Some(inside) = std::env::var("TMUX").ok().filter(|v| !v.is_empty())
         && let Some(server) = Server::from_tmux_env(&inside)
@@ -511,19 +416,16 @@ pub fn server() -> Result<Server> {
     Ok(Server::named(socket))
 }
 
-/// What the session holding an agent is called.
+/// The name of the session holding agent `id`.
 ///
-/// The prefix is [`crate::tmux::SESSION_PREFIX`] and is spelled there alone:
-/// the name written here is the name tmux.rs reads back to say whose a pane
-/// is, and two spellings of it would be a rename nobody noticed.
+/// Built from [`crate::tmux::SESSION_PREFIX`], which tmux.rs reads back to
+/// tell whose a pane is.
 fn session_name(id: &str) -> String {
     format!("{}{id}", crate::tmux::SESSION_PREFIX)
 }
 
-/// Kill the session [`place`] named for this agent, if one is still standing.
-///
-/// For a record on its way out: a session left under its name is a name the
-/// next agent given that id could not open a session under.
+/// Kill the session [`place`] made for `id`, if it is still there, freeing
+/// the name for the next agent with that id.
 pub fn end_session(server: &Server, id: &str) -> Result<()> {
     if let Some(session) = server.session_named(&session_name(id))? {
         server.kill_session(&session)?;
@@ -531,15 +433,10 @@ pub fn end_session(server: &Server, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Start the agent's pane: a detached session of its own, named for the id.
+/// Start the agent's pane in a detached session named for `id`.
 ///
-/// `-d` is what keeps a spawn from moving anybody. tmux switches to a window
-/// it has just made unless it is told not to, so an agent that arrived as a
-/// window in the caller's session took the screen out from under whoever typed
-/// the command. A session nobody is attached to cannot.
-///
-/// A tmux below [`crate::tmux::MINIMUM_VERSION`] is refused before anything
-/// is opened on it.
+/// Detached so the spawn never switches anybody's client. A tmux older than
+/// [`crate::tmux::MINIMUM_VERSION`] is refused before anything is created.
 pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Result<PaneId> {
     meets_the_floor(crate::tmux::version()?)?;
     let name = session_name(id);
@@ -551,23 +448,20 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
         ..Spawn::default()
     })?;
 
-    // Without this, tmux destroys the session the moment whoever looked in on
-    // it detaches again.
+    // Otherwise tmux destroys the session when a client detaches from it.
     server.set_session_option(&session, "destroy-unattached", "off")?;
-    // And without this, a tmux.conf that keeps dead panes keeps the agent's,
-    // and with it the session's name, which a resume needs to open again.
+    // A tmux.conf with remain-on-exit would keep the dead pane and with it the
+    // session name, which a resume needs free.
     server.set_session_option(&session, "remain-on-exit", "off")?;
-    // A detached pane has no terminal behind it to answer a program asking
-    // for the background, and one that tints itself off the answer draws
-    // untinted. tmux answers from `window-style` instead: the colours the view
-    // last read off the terminal, where it kept them.
+    // A detached pane has no terminal to answer background colour queries, so
+    // tmux answers from window-style: the colours the view last read.
     if let Some(style) = crate::shade::remembered(&crate::paths::state_root()?) {
         server.set_session_option(&session, "window-style", &style)?;
     }
     Ok(pane)
 }
 
-/// Refuse a tmux older than the one amx runs against, naming both.
+/// Refuse a tmux older than [`crate::tmux::MINIMUM_VERSION`].
 fn meets_the_floor((major, minor): (u32, u32)) -> Result<()> {
     let (want_major, want_minor) = crate::tmux::MINIMUM_VERSION;
     if (major, minor) < (want_major, want_minor) {
@@ -580,9 +474,8 @@ fn meets_the_floor((major, minor): (u32, u32)) -> Result<()> {
 
 /// `amx _boot <id>`: become the agent.
 ///
-/// The record is written by `new` once the pane exists, and this *is* that
-/// pane, so the two cross. Waiting for it is what keeps the vendor's first
-/// hooks from arriving before there is anywhere to put them.
+/// `new` writes the record only after the pane exists, so this waits for it;
+/// otherwise the vendor's first hooks would have nowhere to go.
 pub fn boot(root: &Path, id: &str) -> Result<i32> {
     use std::os::unix::process::CommandExt;
 
@@ -596,32 +489,24 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         bail!("the handoff for {id} names no command to run");
     };
 
-    // Before the exec below, so that the first byte the command prints is in
-    // the file rather than only the bytes after amx got out of the way. A
-    // pipe that cannot be attached costs the file and nothing else: the
-    // command is what the row was started for, and a boot that died here
-    // would be a row that never ran and never recorded why.
+    // Before the exec, so the first bytes are captured. A pipe that fails
+    // costs the output file only; the command still runs.
     if let Err(e) = keep_output(&meta, &keeping_output(&meta, &dir)) {
         crate::warn!("amx: {id}: what it prints will not be kept: {e:#}");
     }
 
     let mut command = std::process::Command::new("sh");
     command
-        // `$0` is the vendor and `$@` its arguments, so the task never passes
-        // through a shell's hands. What follows it records how it ended.
+        // `"$0" "$@"` keeps the task out of the shell's parsing; `_exit`
+        // records the exit code.
         .arg("-c")
         .arg(r#""$0" "$@"; "$AMX_BIN" _exit "$AMX_ID" $?"#)
         .arg(vendor)
         .args(&handoff.command[1..]);
 
-    // A `Command` starts from this process's own environment, and this
-    // process is the pane tmux made it in -- not the one `new` was typed in.
-    // Its baseline can be as stale as the server itself: a server first
-    // started inside a claude session still carries that session's markers,
-    // and no snapshot taken later ever reaches them because a snapshot only
-    // ever strips a name from what it is given, not from what a later pane
-    // inherits some other way. Removed here rather than trusted to the
-    // snapshot below.
+    // The pane inherits the tmux server's environment, which can hold a
+    // vendor's session markers from whenever the server started. The snapshot
+    // never saw them, so strip them here.
     for marker in session_markers() {
         command.env_remove(marker);
     }
@@ -642,16 +527,15 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         command.env(name, value);
     }
 
-    // Exec, so the pane's process is the vendor's and amx is not in its way.
+    // Exec, so the pane's process is the vendor itself.
     Err(command.exec()).context("starting the agent's command")
 }
 
-/// The shell command that keeps a pane's output in its record: the whole of a
-/// command's, the first [`BOOT_BYTES`] of an agent's.
+/// The shell command that pipes a pane into its output file.
 ///
-/// `>>` for a command, because a resumed command is the same record saying
-/// more; `>` for an agent, because a resume is a new boot whose words are its
-/// own.
+/// A shell command's output is appended whole, since a resume adds to the
+/// same record. An agent's first [`BOOT_BYTES`] overwrite the file, since a
+/// resume is a new boot.
 fn keeping_output(meta: &Meta, dir: &Path) -> String {
     let path = quoted(&dir.join(crate::store::OUTPUT));
     match meta.agent.is_none() {
@@ -660,24 +544,12 @@ fn keeping_output(meta: &Meta, dir: &Path) -> String {
     }
 }
 
-/// Keep what the pane prints in the record, by asking tmux to pipe the pane
-/// through `command`.
+/// Pipe this pane's output through `command` with tmux `pipe-pane`.
 ///
-/// Nothing reports on a command — there is no vendor in it and no hook behind
-/// it — so what it printed is on its screen and nowhere else, and a screen is
-/// the first thing a pane throws away. So its whole output is kept. A vendor's
-/// pane is a full-screen drawing, and only its first [`BOOT_BYTES`] are: a
-/// vendor that dies before its first hook says why before it draws, and a
-/// vendor that draws on for an hour costs a record nothing.
-///
-/// The pane is the one `_boot` runs in, as tmux told it, rather than the one
-/// its record names: a resume writes the new pane on the record only once tmux
-/// has made it, and a boot that read the record first would pipe the pane the
-/// agent had before. The server is the one tmux told it too, else the one the
-/// record names.
-///
-/// The pipe is a shell command the tmux server runs, so the path goes in as
-/// one word a shell reads whole — [`quoted`] is what makes it one.
+/// The pane and server come from `$TMUX_PANE` and `$TMUX`: on a resume the
+/// record still names the old pane until tmux has made the new one. The
+/// record's socket is the fallback server. `command` runs under the server's
+/// `sh`, so paths go in through [`quoted`].
 fn keep_output(meta: &Meta, command: &str) -> Result<()> {
     let pane = std::env::var("TMUX_PANE").context("reading $TMUX_PANE")?;
     let server = std::env::var("TMUX")
@@ -687,23 +559,18 @@ fn keep_output(meta: &Meta, command: &str) -> Result<()> {
     server.pipe_pane(&PaneId::new(pane)?, command)
 }
 
-/// A path as one word, whatever is in it.
+/// `path` single-quoted as one shell word.
 fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
-/// The environment the pane runs in: the one the spawn snapshotted, and the
-/// four variables amx puts in over the top of it.
+/// The pane's environment: the snapshot with amx's per-pane variables set
+/// over it.
 ///
-/// Over the top, because those three are about this pane and this pane only.
-/// The snapshot is whatever environment `new` was typed in, and that is often
-/// another agent's pane — a spawn from inside one would otherwise hand the new
-/// agent the old one's id, the old one's directory to write in, and the old
-/// one's parent to call its own. `parent` is the id and record directory of
-/// the agent whose pane this one was started in, where there is one, and the
-/// three family variables are removed rather than left alone when there is
-/// not. [`crate::hook::NESTED_ENV`] is removed always: a spawn from inside an
-/// agent's shell carries that agent's marker, and this pane is an agent.
+/// The snapshot often comes from another agent's pane, so the id, record and
+/// scratch variables are always replaced, and the parent variables are set
+/// from `parent` or removed. [`crate::hook::NESTED_ENV`] is always removed:
+/// this pane is an agent, not a shell nested in one.
 fn pane_env(
     snapshot: &BTreeMap<String, String>,
     bin: &Path,
@@ -743,12 +610,12 @@ fn pane_env(
     env
 }
 
-/// `_boot`, against the machine's own state directory.
+/// [`boot`] against the machine's state directory.
 pub fn boot_from_env(id: &str) -> Result<i32> {
     boot(&crate::paths::state_root()?, id)
 }
 
-/// Wait for a file somebody else is writing.
+/// Wait up to [`RECORD_PATIENCE`] for another process to create `path`.
 fn wait_for(path: &Path) -> Result<()> {
     let deadline = Instant::now() + RECORD_PATIENCE;
     while !path.exists() {
@@ -760,16 +627,15 @@ fn wait_for(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The agents running a turn, on the whole machine.
+/// Ids of the agents running a turn, machine-wide.
 pub fn live(root: &Path) -> Result<Vec<String>> {
     Ok(named(going(root)?))
 }
 
-/// The agents of one project that are running a turn.
+/// Ids of the agents running a turn in `project`.
 ///
-/// A cap is a key some file sets, so the agents counted against it are the
-/// agents that read that file: whichever directory one was started in, it
-/// belongs to the project [`project_of`] finds behind that directory.
+/// An agent belongs to the project [`project_of`] finds for its directory,
+/// the same project whose config file sets the cap.
 pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
     // Agents share directories, and each distinct one costs a git call.
     let mut projects: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
@@ -785,45 +651,30 @@ pub fn live_under(root: &Path, project: &Path) -> Result<Vec<String>> {
     Ok(named(theirs))
 }
 
-/// The agents amx has not finished with: every record that has not ended and
-/// whose pane still answers for it, whatever it is doing on that pane.
+/// Ids of every agent that has not ended and still has its pane.
 ///
-/// Shell rows and agents at their prompts included, which is where this parts
-/// company with [`live`]. A cap rations the turns a project runs at once, so
-/// it counts the agents taking one; `uninstall` is about to delete every
-/// record there is, and a command still printing into its output file loses as
-/// much by that as an agent mid-turn does.
+/// Unlike [`live`], this includes shell rows and idle agents: `uninstall`
+/// checks it before deleting every record.
 pub fn unfinished(root: &Path) -> Result<Vec<String>> {
     Ok(named(answering(root, |phase, _| !phase.is_terminal())?))
 }
 
-/// The records of the agents that are running: a vendor agent partway through
-/// a turn.
+/// Records of vendor agents in a turn: `Starting`, `Working` or `Waiting`.
 ///
-/// Running is `Starting`, `Working` or `Waiting`, and a vendor to be running
-/// it. A shell row has no vendor at all, and an agent that is `Idle` is sitting
-/// at its prompt with the turn over — neither is doing anything a cap is there
-/// to ration, and counting them refused people spawns over an afternoon's
-/// leftover panes (friction #JX6B7GWF). `Unknown` is a screen amx cannot
-/// account for and is not counted either.
+/// Shell rows and `Idle` agents run no turn, so a cap does not count them;
+/// nor does it count `Unknown`.
 fn going(root: &Path) -> Result<Vec<Meta>> {
     answering(root, |phase, meta| {
         matches!(phase, Phase::Starting | Phase::Working | Phase::Waiting) && meta.agent.is_some()
     })
 }
 
-/// The records `wanted` takes, of the agents whose pane still answers for them
-/// on the server it was recorded on.
+/// Records `wanted` accepts whose pane still answers for them.
 ///
-/// Whose the pane is rather than whether it is there: a record whose server
-/// died names a number tmux has since handed to somebody else, and counting it
-/// would hold a place against an agent that stopped running yesterday.
-///
-/// An agent whose state amx cannot read is skipped rather than failing the
-/// whole walk: one bad document should cost that agent, not everyone listed
-/// after it. The pane is asked last, since it is the only question here that
-/// leaves the machine's own disk. A tmux that could not be asked fails the
-/// walk: a record it cannot account for may be a running agent.
+/// Ownership rather than presence, since after a server restart a pane number
+/// can belong to another agent. Records whose state or meta cannot be read are
+/// skipped. A tmux that cannot be asked is an error, since the record may be a
+/// running agent.
 fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<Meta>> {
     let mut kept = Vec::new();
     // One pane listing per server, however many agents sit on it.
@@ -850,27 +701,20 @@ fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<M
     Ok(kept)
 }
 
-/// What those agents are called, in order.
+/// The ids of `agents`, sorted.
 fn named(agents: Vec<Meta>) -> Vec<String> {
     let mut ids: Vec<String> = agents.into_iter().map(|meta| meta.id).collect();
     ids.sort();
     ids
 }
 
-/// The project an agent belongs to: the repository behind the tree it works
-/// in, and the directory it runs in where there is no repository.
+/// The project an agent belongs to: the repository behind its tree, else its
+/// directory.
 ///
-/// Two readings, because there are two kinds of tree and one of them outlives
-/// its directory. A worktree of amx's own shape is `<repo>/.amx/worktrees/<id>`
-/// and is read off the path alone, so the answer holds once the tree has gone.
-/// Any other linked worktree — `workflow run` cuts its own, under
-/// `~/.local/state/workflow`, in a layout of its own — is read off the `.git`
-/// git left in it. Neither starts a process: this is asked of every agent on
-/// every reading the wall takes.
-///
-/// It is what a person means by the project an agent belongs to. A worktree
-/// agent of `~/code/amx` is an agent of `~/code/amx`, whatever directory it
-/// happens to run in and whoever cut the tree.
+/// Starts no process, since the wall asks it of every agent on every reading.
+/// An amx tree is read off its path, so the answer survives the tree's
+/// removal; any other linked worktree (such as `workflow run`'s) is read off
+/// its `.git` file.
 pub fn project_dir(meta: &Meta) -> PathBuf {
     let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
     crate::worktree::repo_of(tree)
@@ -878,14 +722,11 @@ pub fn project_dir(meta: &Meta) -> PathBuf {
         .unwrap_or_else(|| meta.dir.clone())
 }
 
-/// The project a directory works in: the repository behind it, or the
-/// directory itself where there is no repository.
+/// The project a directory belongs to: the repository behind it, or the
+/// directory itself.
 ///
-/// Read off the file that project keeps rather than worked out again here, so
-/// that the agents a cap counts are exactly the agents that read the file
-/// setting it. [`crate::paths::project_config`] is where that layout lives,
-/// and it answers for a checkout, for either kind of worktree of one, and for
-/// a directory git has never heard of.
+/// Derived from [`crate::paths::project_config`], so a cap counts exactly the
+/// agents that read the config file setting it.
 pub fn project_of(dir: &Path) -> PathBuf {
     crate::paths::project_config(dir)
         .as_deref()
@@ -895,20 +736,12 @@ pub fn project_of(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
-/// Whether the project a spawn is for, or the machine under it, is already
-/// running as many agents as it will — and the sentence saying which, for the
-/// verb about to refuse in its own words.
+/// The refusal message when a spawn in `project` would exceed a cap, else
+/// `None`.
 ///
-/// Two numbers and two counts. `max_agents` is the project's own key, counted
-/// over that project's agents alone: what one repository can afford to run at
-/// once says nothing about what the next one can, and an afternoon is spread
-/// over several of them. `max_total` is the ceiling over all of it, counted
-/// over every agent there is, and where nobody has set one there is none: a
-/// machine is as busy as the projects on it ask between them.
-///
-/// Both counts are of agents running a turn — see [`going`] for what that
-/// leaves out — and of the places spawns still setting up have claimed. One
-/// that has finished is a record, not a running program.
+/// `max_agents` counts the project's own agents; `max_total`, when set,
+/// counts every agent on the machine. Both count agents running a turn (see
+/// [`going`]) plus places claimed by spawns still setting up.
 pub fn at_capacity(
     root: &Path,
     project: &Path,
@@ -946,14 +779,13 @@ pub fn at_capacity(
     }))
 }
 
-/// Count the caps and, where there is room, claim a place: `claim` makes the
-/// agent's directory and says which it is, and the place is held in it until
-/// the returned [`crate::store::Claim`] is dropped. The refusal is the
-/// sentence [`at_capacity`] says.
+/// Check the caps and, if there is room, run `claim` and hold its place.
 ///
-/// Both under [`crate::store::spawn_lock`], which is let go before this
-/// returns: a spawn's setup is seconds of worktree and install, and the next
-/// spawn counts this one's claim rather than waiting for it.
+/// `claim` creates the agent's directory and returns it; the place is held
+/// until the returned [`crate::store::Claim`] drops. The inner `Err` is
+/// [`at_capacity`]'s refusal. Runs under [`crate::store::spawn_lock`], which is
+/// released on return so the next spawn counts this claim without waiting for
+/// setup.
 pub fn take_a_place<T>(
     root: &Path,
     project: &Path,
@@ -970,7 +802,7 @@ pub fn take_a_place<T>(
     Ok(Ok((claimed, held)))
 }
 
-/// The record `new` writes once the pane exists.
+/// Write the record for a spawned agent.
 pub fn record(root: &Path, meta: &Meta) -> Result<Agent> {
     Agent::create(root, meta)
 }
@@ -1010,10 +842,8 @@ mod tests {
 
     #[test]
     fn spawn_leaves_behind_the_session_markers_of_every_vendor_amx_knows() {
-        // Whichever vendor's session the command was typed inside, the pane it
-        // starts is not in that session. The names are the vendors' own words,
-        // so the table is walked rather than a list here being trusted to
-        // still match it.
+        // Every vendor's markers are dropped, whichever session the command was
+        // typed in. The names come from the registry, not a copy here.
         let typed_inside: Vec<(String, String)> = registry::entries()
             .iter()
             .flat_map(|vendor| vendor.not_inherited)
@@ -1027,10 +857,8 @@ mod tests {
 
     #[test]
     fn spawn_spells_no_vendors_variable_of_its_own() {
-        // Half of what a pane does not inherit is the vendors' and half is the
-        // pane's, and only the pane's half is spelled here. A second copy of a
-        // vendor's measurement is the one that goes stale on the day the
-        // vendor renames something.
+        // Only the pane's variables are spelled in spawn.rs. Vendor markers come
+        // from the registry, so a vendor renaming one leaves no stale copy.
         let ships = include_str!("spawn.rs")
             .split("#[cfg(test)]")
             .next()
@@ -1048,11 +876,10 @@ mod tests {
 
     #[test]
     fn spawn_a_claude_spawning_another_does_not_make_it_a_child() {
-        // Measured against a live claude 2.1.240 on 2026-08-25: an agent
-        // handed its spawner's session markers came up with `Transcript
-        // saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` on its
-        // own screen, and an agent with no transcript is one `result` cannot
-        // quote and `resume` and `fork` cannot continue.
+        // Handed its spawner's markers, claude 2.1.240 turned transcript saving
+        // off (inherited CLAUDE_CODE_CHILD_SESSION), and an agent with no
+        // transcript cannot be quoted by `result` or continued by `resume` or
+        // `fork`.
         let snapshot = env_snapshot(vars(&[
             ("CLAUDECODE", "1"),
             ("CLAUDE_PID", "12345"),
@@ -1083,7 +910,7 @@ mod tests {
             !snapshot.contains_key("CLAUDE_EFFORT"),
             "the spawner's effort is a dial nobody turned on this agent"
         );
-        // A preference is about the person, not the session, and rides along.
+        // Preferences belong to the person, not the session, and are kept.
         assert_eq!(snapshot.get("CLAUDE_CODE_NO_FLICKER").unwrap(), "1");
         assert_eq!(
             snapshot.get("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").unwrap(),
@@ -1146,9 +973,7 @@ mod tests {
 
     #[test]
     fn spawn_dials_stand_down_from_a_flag_the_argv_already_carries() {
-        // Whichever way the caller wrote it, and whether they wrote it in the
-        // configured command or after the separator, claude is never handed
-        // the same flag twice with the winner left to the vendor.
+        // However and wherever the flag was written, claude never gets it twice.
         let dials = Dials {
             model: "opus".to_string(),
             permission: "plan".to_string(),
@@ -1179,8 +1004,7 @@ mod tests {
 
     #[test]
     fn spawn_dials_send_nothing_to_a_vendor_the_table_has_no_entry_for() {
-        // The stand-in every end to end test runs is unregistered, so a dial
-        // set for it changes nothing about how it is launched.
+        // The e2e stand-in is unregistered, so dials change nothing.
         let command = vendor_command(
             "mock-claude",
             &Dials {
@@ -1198,9 +1022,8 @@ mod tests {
 
     #[test]
     fn spawn_claude_declares_no_start_flag_and_its_argv_is_unchanged() {
-        // claude's own SessionStart hook already names the session it opened,
-        // so its entry declares no start flag at all -- offering a session
-        // here changes nothing about what it is launched with.
+        // claude's SessionStart hook reports the session it opened, so its
+        // entry declares no start flag and a session id changes nothing.
         let without = vendor_command(
             "claude",
             &Dials::default(),
@@ -1223,10 +1046,8 @@ mod tests {
 
     #[test]
     fn spawn_a_vendor_that_declares_a_start_flag_is_offered_it_with_the_agents_own_id() {
-        // second is the fixture that disagrees with claude here: it declares
-        // a start flag amx is free to open a session under. It answers with
-        // its own flag alone -- the agent's own id is vendor_command's to add
-        // once this says yes, not this function's to know.
+        // The `second` fixture declares a start flag. start_flag returns the
+        // flag alone; vendor_command adds the id.
         use crate::vendor::second::SECOND;
 
         assert_eq!(
@@ -1257,10 +1078,8 @@ mod tests {
         use crate::vendor::SessionSpec;
         use crate::vendor::second::SECOND;
 
-        // second's own conflicts list is ["--open"], its own start flag, so
-        // testing with --open cannot tell this arm from the one above it.
-        // Built here instead: the same vendor, with a conflict of its own
-        // that is not the flag that mints a session.
+        // SECOND's only conflict is its own start flag, which cannot tell this
+        // arm from the one above, so build a vendor with a separate conflict.
         let disagrees = Vendor {
             session: Some(SessionSpec {
                 conflicts: &["--resume-elsewhere"],
@@ -1285,10 +1104,8 @@ mod tests {
     fn spawn_the_start_flag_stands_down_from_a_joined_spelling_of_itself() {
         use crate::vendor::second::SECOND;
 
-        // Every other reader of an argv in this tree counts `flag=value` as
-        // the flag: vendor::already and resume::names_a_session. A session
-        // flag written that way already says which session to open, the
-        // same as the flag on its own.
+        // `flag=value` counts as the flag, as in vendor::already and
+        // resume::names_a_session.
         assert_eq!(
             start_flag(Some(&SECOND), &["--open=mine"], &[]),
             None,
@@ -1312,9 +1129,7 @@ mod tests {
     fn spawn_the_flag_and_the_id_it_opens_land_in_the_vendors_own_args() {
         use crate::vendor::second::SECOND;
 
-        // start_flag above proves the vendor is offered its own flag; this
-        // proves the id amx minted rides beside it in what vendor_command
-        // hands the vendor, not merely that start_flag said yes.
+        // The minted id lands beside the flag, beyond start_flag saying yes.
         assert_eq!(
             session_flag(Some(&SECOND), &[], &[], Some("fix-login-a1b")),
             ["--open", "fix-login-a1b"]
@@ -1333,11 +1148,9 @@ mod tests {
 
     #[test]
     fn spawn_answers_pis_trust_screen_only_where_the_person_said_amx_may() {
-        // pi's answer to the folder-trust question is a word on the argv
-        // rather than a write, so this is where it is sent — and the config
-        // key is the whole of the consent it is sent on. Ungated, every pi
-        // amx started would be told to load whatever repository it was
-        // pointed at without anybody being asked.
+        // pi answers the folder-trust screen with an argv flag, sent only with
+        // the `trust` key's consent. Ungated, every pi would load whatever
+        // repository it was pointed at.
         let approved = vendor_command(
             "pi",
             &Dials::default(),
@@ -1361,10 +1174,9 @@ mod tests {
 
     #[test]
     fn spawn_ends_pis_options_before_a_task_so_an_at_sign_is_words() {
-        // pi reads a word opening with `-` as a flag until `--`, and a word
-        // opening with `@` as a file to attach on either side of it, so that
-        // one goes with a space in front. claude has no such reading and is
-        // handed the task as it always was.
+        // pi reads a word starting with `-` as a flag until `--`, and one
+        // starting with `@` as a file to attach on either side, so that word
+        // gets a leading space. claude has neither reading.
         let pi = vendor_command(
             "pi",
             &Dials::default(),
@@ -1388,10 +1200,9 @@ mod tests {
 
     #[test]
     fn spawn_a_message_rides_on_the_prompt_flag_as_one_word() {
-        // A vendor that reads no bare word as a prompt is handed the message
-        // as one `flag=<text>` word, so a message opening with `-` is never
-        // read as a flag of its own. One whose last word opens a popup gets a
-        // space after it, or the popup takes the Enter.
+        // A vendor that takes no bare prompt gets one `flag=<text>` word, so a
+        // leading `-` is never read as a flag. A last word that opens a popup
+        // gets a trailing space, or the popup takes the Enter.
         use crate::vendor::second::ELSEWHERE;
 
         let vendor = Some(&ELSEWHERE);
@@ -1422,10 +1233,8 @@ mod tests {
 
     #[test]
     fn spawn_launch_words_go_right_after_the_program_once() {
-        // Every process of the vendor is started with them, right after the
-        // program, but a command line that already carries one — from the
-        // configured command, a harness's args or after the separator — is
-        // not handed it twice.
+        // Launch words go right after the program, once: not again when the
+        // configured command, a harness's args or the caller's args carry one.
         use crate::vendor::second::BRANCHING;
 
         let words =
@@ -1451,9 +1260,8 @@ mod tests {
 
     #[test]
     fn spawn_sends_no_trust_flag_for_a_vendor_answered_some_other_way() {
-        // claude's answer is an entry in its own store, written before the
-        // pane is started. There is no flag for it, and the key being on for a
-        // claude spawn must not grow one.
+        // claude is answered by a store entry written before the pane starts,
+        // so it gets no flag even with the key on.
         let claude = vendor_command(
             "claude",
             &Dials::default(),
@@ -1481,11 +1289,10 @@ mod tests {
 
     #[test]
     fn spawn_the_trust_flag_stands_down_from_an_argv_that_settles_it_already() {
-        // All four spellings pi reads, wherever they were written. The
-        // opposite two are why this matters most: amx's flag lands behind the
-        // configured command's own arguments, and pi takes the last of the
-        // four it sees, so a `--approve` added over somebody's `--no-approve`
-        // would overrule them rather than answer anything.
+        // All four spellings pi reads, wherever written. The opposites matter
+        // most: pi takes the last one it sees and amx's flag lands after the
+        // configured arguments, so an added `--approve` would overrule a
+        // `--no-approve`.
         for written in ["--approve", "-a", "--no-approve", "-na"] {
             assert_eq!(
                 trust_flag("pi", &[written], &[], true),
@@ -1512,9 +1319,8 @@ mod tests {
 
     #[test]
     fn spawn_an_agent_that_splits_to_nothing_still_spawns_something_that_runs() {
-        // `agent = ""` in the config, or `amx new --agent "" ...` typed by
-        // hand: nothing requires it non-empty, and indexing the split argv
-        // at 1 used to panic on a vector with nothing at 0 either.
+        // `agent = ""` in the config, or `--agent ""` typed by hand. Indexing
+        // the split argv used to panic here.
         let command = vendor_command(
             "",
             &Dials::default(),
@@ -1528,9 +1334,7 @@ mod tests {
 
     #[test]
     fn spawn_an_unregistered_agent_still_spawns_something_that_runs() {
-        // A command line that already carries a flag of its own, for a
-        // program amx has no entry for at all: nothing about the session
-        // parameter changes what runs.
+        // A program with no registry entry: the session parameter changes nothing.
         let command = vendor_command(
             "pi -c",
             &Dials::default(),
@@ -1544,10 +1348,9 @@ mod tests {
 
     #[test]
     fn spawn_opens_under_id_answers_the_same_question_vendor_command_asks_itself() {
-        // opens_under_id does the same lookup and the same call to
-        // start_flag as vendor_command; start_flag above is where a vendor
-        // that answers yes is proven, this is the wiring for one that never
-        // gets that far: no entry, or an entry with nothing to offer.
+        // opens_under_id shares vendor_command's lookup and start_flag call.
+        // The yes case is covered on start_flag above; this covers no entry
+        // and no start flag.
         assert!(!opens_under_id("claude", &[]), "no start flag to offer");
         assert!(
             !opens_under_id("pi -c", &[]),
@@ -1572,8 +1375,7 @@ mod tests {
             .map(|vendor| vendor.name),
             Some("claude")
         );
-        // The command amx has no entry for is the one every end to end test
-        // spawns, and it is not a vendor amx has measured anything about.
+        // The e2e stand-in has no entry, so it has no vendor.
         assert!(vendor_of(&started(&["mock-claude", "fix the login bug"])).is_none());
         assert!(vendor_of(&started(&[])).is_none(), "nothing was recorded");
     }
@@ -1605,8 +1407,7 @@ mod tests {
     fn spawn_a_handoff_written_over_an_open_one_is_kept_to_its_owner() {
         use std::os::unix::fs::PermissionsExt;
 
-        // `resume` rewrites the handoff of a record an older amx may have
-        // written readable by everyone.
+        // `resume` rewrites handoffs an older amx may have left world-readable.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(HANDOFF);
         std::fs::write(&path, "{}").unwrap();
@@ -1667,11 +1468,8 @@ mod tests {
 
     #[test]
     fn spawn_keeps_a_commands_output_whole_and_an_agents_bounded() {
-        // A command's pane is piped whole: nothing reports on it and what it
-        // printed has nowhere else to go. An agent's is a vendor's drawing,
-        // and only the start of it is kept, where a vendor that dies before
-        // its first hook says why. `>` for the agent: a resume is a new boot,
-        // not more of the same output.
+        // A shell command's output is appended whole. An agent's is capped at
+        // BOOT_BYTES and overwritten, since a resume is a new boot.
         let socket = crate::tmux::Socket::Name("amx".to_string());
         let pane = PaneId::new("%1").unwrap();
         let dir = Path::new("/srv/state/agents/fix-login-a1b");
@@ -1692,8 +1490,7 @@ mod tests {
         );
     }
 
-    /// A record of a vendor agent, which is what a cap counts: a row with no
-    /// vendor is a shell command and fills no place.
+    /// A vendor agent's record, the kind a cap counts.
     fn meta(id: &str, socket: crate::tmux::Socket, pane: PaneId) -> Meta {
         Meta {
             role: None,
@@ -1717,7 +1514,7 @@ mod tests {
         }
     }
 
-    /// A tmux server of this test's own, gone when the test is.
+    /// A tmux server killed when the test ends.
     struct Own(Server);
 
     impl Drop for Own {
@@ -1726,12 +1523,8 @@ mod tests {
         }
     }
 
-    /// A pane of this agent's own, placed where amx places one and running
-    /// something that does not exit.
-    ///
-    /// Through [`place`], because what makes a pane answer for an agent is the
-    /// session `place` names, and a test that named its own would be proving
-    /// the counting against a rule nothing else follows.
+    /// A long-running pane for agent `id`, created by `place`, whose session
+    /// name is what makes the pane answer for the agent.
     fn placed(server: &Server, id: &str) -> PaneId {
         let command = ["sh", "-c", "while :; do sleep 0.05; done"].map(str::to_string);
         place(server, id, Path::new("/"), &command).expect("a pane for it")
@@ -1754,9 +1547,8 @@ mod tests {
 
     #[test]
     fn spawn_an_exited_agents_pane_is_gone_under_a_global_remain_on_exit() {
-        // Somebody's tmux.conf keeps every dead pane to read. An agent's pane
-        // that stayed would keep its session's name, and a resume could not
-        // open a session under that name again.
+        // A tmux.conf may keep dead panes. An agent's dead pane would keep its
+        // session name, and a resume could not reuse it.
         let server =
             Own(Server::named(format!("amx-remain-{}", std::process::id())).with_conf("/dev/null"));
         server
@@ -1802,20 +1594,17 @@ mod tests {
         };
         assert_eq!(project_dir(&cut), Path::new("/srv/app"));
 
-        // Anywhere else is the directory the agent runs in, whatever is above
-        // it: nothing here asks the disk, and a record outlives the tree it
-        // names.
+        // Any other agent's project is its directory. The disk is not
+        // consulted, since a record outlives its tree.
         let plain = meta("port-it-b2c", socket, pane);
         assert_eq!(project_dir(&plain), plain.dir);
     }
 
     #[test]
     fn spawn_an_agent_of_a_tree_somebody_else_cut_belongs_to_that_repository_too() {
-        // `workflow run` cuts its trees under `~/.local/state/workflow`, in a
-        // layout of its own and nowhere near the checkout. They are worktrees
-        // of the repository all the same, so the agents in them are the
-        // project's agents, and the wall and `amx ls --dir <checkout>` have to
-        // say so. What git left in the tree is what says which repository.
+        // `workflow run` cuts trees under `~/.local/state/workflow`, far from
+        // the checkout. They are still the repository's worktrees, and their
+        // `.git` file names it.
         let home = TempDir::new().unwrap();
         let repo = home.path().join("code/amx");
         let tree = home.path().join("state/workflow/worktrees/amx/t3");
@@ -1836,8 +1625,8 @@ mod tests {
         };
         assert_eq!(project_dir(&worker), repo);
 
-        // A directory git has never heard of is its own project, and so is a
-        // tree whose `.git` points somewhere that is not a worktree's.
+        // A directory git never heard of is its own project, as is a tree whose
+        // `.git` points somewhere other than a worktree record.
         std::fs::write(tree.join(".git"), "gitdir: /srv/elsewhere\n").unwrap();
         assert_eq!(project_dir(&worker), tree);
         std::fs::remove_file(tree.join(".git")).unwrap();
@@ -1846,20 +1635,17 @@ mod tests {
 
     #[test]
     fn spawn_the_project_behind_a_directory_is_where_its_config_file_is() {
-        // A tree amx cut is read off the layout alone, so this holds for one
-        // git can no longer be asked about.
+        // An amx tree is read off its path, so this holds after the tree is gone.
         assert_eq!(
             project_of(Path::new("/srv/app/.amx/worktrees/fix-login-a1b")),
             Path::new("/srv/app")
         );
 
-        // Outside a repository there is nothing above the directory, and the
-        // directory is the whole of the project.
+        // Outside a repository the directory is the project.
         let dir = TempDir::new().unwrap();
         assert_eq!(project_of(dir.path()), dir.path());
 
-        // However the directory was spelled: a record holds it from the root,
-        // and a project that was compared as typed would count nobody.
+        // A relative spelling resolves to the absolute project records hold.
         let here = std::env::current_dir().unwrap();
         assert_eq!(
             project_of(Path::new("scratch")),
@@ -1901,8 +1687,8 @@ mod tests {
             "and the machine is all"
         );
 
-        // The cap is the project's own, so one project is full where the next
-        // one has room, at the same number.
+        // max_agents is per project: at the same number one project is full and
+        // the other has room.
         let full = at_capacity(root.path(), alpha.path(), 2, None)
             .unwrap()
             .expect("alpha is at its cap");
@@ -1916,7 +1702,7 @@ mod tests {
             None
         );
 
-        // The ceiling is the machine's, counted over both of them.
+        // max_total counts every project.
         let over = at_capacity(root.path(), beta.path(), 2, Some(3))
             .unwrap()
             .expect("the machine is at its ceiling");
@@ -1930,10 +1716,8 @@ mod tests {
 
     #[test]
     fn live_counts_neither_a_shell_command_nor_an_agent_at_its_prompt() {
-        // friction #JX6B7GWF. All three panes are there and answering; what
-        // separates them is what is happening in one. A command has no vendor,
-        // and an idle agent has finished its turn and is waiting to be spoken
-        // to -- a cap rations turns, and neither of those is one.
+        // All three panes answer. A shell command has no vendor and an idle
+        // agent's turn is over; a cap rations turns, so neither counts.
         let root = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let server = Own(
@@ -1971,8 +1755,8 @@ mod tests {
 
     #[test]
     fn a_cap_refuses_a_tmux_that_cannot_be_asked() {
-        // A running record whose pane nobody could ask about may be taking a
-        // place, and a count that skipped it would let one spawn too many.
+        // A running record whose pane cannot be checked may hold a place, and
+        // skipping it would let one spawn too many.
         let root = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let of_theirs = Meta {
@@ -2001,11 +1785,9 @@ mod tests {
 
     #[test]
     fn live_does_not_count_an_agent_whose_pane_answers_for_another() {
-        // Yesterday's record, naming the number today's agent was handed: the
-        // server it was placed on died overnight, and tmux numbers panes from
-        // %0 per server. An agent that has lost its pane is not running,
-        // whatever is standing at its number, and counting it would refuse
-        // somebody a spawn the cap has room for.
+        // The old record's server died and tmux numbers panes from %0 per
+        // server, so today's agent has the same pane number. A record whose
+        // pane answers for another agent is not running.
         let root = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let server =
@@ -2033,9 +1815,8 @@ mod tests {
 
     #[test]
     fn two_spawns_at_the_cap_start_one() {
-        // Two spawns asked for at once, with room for one: each counts before
-        // either has a record, so the count has to see the other's claim, and
-        // see it under a lock only one of them holds at a time.
+        // Two spawns at once with room for one: each must see the other's
+        // claim, under a lock only one holds at a time.
         let home = TempDir::new().unwrap();
         let root = home.path().join("agents");
         std::fs::create_dir(&root).unwrap();
@@ -2082,10 +1863,9 @@ mod tests {
         let refusal = refused.into_iter().next().unwrap().err().unwrap();
         assert!(refusal.contains("max_agents is 2"), "{refusal}");
 
-        // The lock is given back before setup runs, while the claim is still
-        // held: the next spawn counts without waiting on this one's setup.
-        // Asked for a moment rather than once: a child another test forks
-        // while the lock is held shares it until that child execs.
+        // The lock is released before setup while the claim stays held, so the
+        // next spawn counts without waiting. Polled briefly: a child another
+        // test forks while the lock is held shares it until exec.
         let lock = std::fs::File::open(home.path().join("spawn.lock")).unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         while let Err(e) = lock.try_lock() {
@@ -2166,10 +1946,9 @@ mod tests {
 
     #[test]
     fn exec_every_pane_is_told_which_directory_is_its_own() {
-        // The environment a spawn snapshots is the one somebody typed the
-        // command in, and that may be another agent's pane. What amx puts in
-        // is about this pane, so it is written over what was inherited —
-        // otherwise the second agent writes in the first one's directory.
+        // The snapshot may come from another agent's pane, so amx's per-pane
+        // variables are written over it; otherwise the new agent would write
+        // in the old one's directory.
         let inherited = env_snapshot(vars(&[
             ("PATH", "/usr/bin"),
             ("AMX_ID", "fix-login-a1b"),
@@ -2203,13 +1982,12 @@ mod tests {
         assert_eq!(env.get(crate::hook::ID_ENV).unwrap(), "port-it-b2c");
         assert_eq!(env.get("AMX_BIN").unwrap(), "/usr/local/bin/amx");
         assert_eq!(env.get("PATH").unwrap(), "/usr/bin", "and the rest stands");
-        // A root is nobody's child: the spawner's own family does not become
-        // the agent's.
+        // A root has no parent, whatever the spawner's family was.
         assert_eq!(env.get(PARENT_ENV), None, "{env:?}");
         assert_eq!(env.get(PARENT_DIR_ENV), None, "{env:?}");
         assert_eq!(env.get(DEPTH_ENV), None, "{env:?}");
-        // The spawning agent's shell is marked nested, and this pane is an
-        // agent that reports for itself.
+        // The spawner's shell is marked nested; this pane is an agent that
+        // reports for itself.
         assert_eq!(env.get(crate::hook::NESTED_ENV), None, "{env:?}");
     }
 
@@ -2271,8 +2049,8 @@ mod tests {
 
     #[test]
     fn harness_env_is_laid_under_the_variables_amx_puts_in_itself() {
-        // An agent whose id a table changed would file its events under
-        // somebody else, so the table goes in first and amx's own over it.
+        // A table that changed the id would file events under another agent,
+        // so amx's variables go in after the table.
         let name = registry::entries()[0].name;
         let config = told(name, &[(crate::hook::ID_ENV, "somebody-else")]);
 
