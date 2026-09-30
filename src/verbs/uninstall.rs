@@ -1,12 +1,9 @@
-//! `amx uninstall` — take amx back out of the machine.
+//! `amx uninstall`: remove amx's wiring from every vendor and delete the records.
 //!
-//! Every vendor's wiring comes out — the plugin from where claude loads one,
-//! the extension from where pi loads its, amx's hooks and their trust from
-//! codex's two files — and the agents' records are
-//! deleted. A directory amx never left a manifest in is not amx's to empty. It
-//! refuses while any agent is still running: those agents would keep working
-//! with nothing recording what they do, and their records would be the only
-//! place their answers were kept.
+//! Removes claude's plugin, pi's extension, and codex's hooks and their trust
+//! entries. A directory without amx's manifest is left alone. Refuses while
+//! any agent is still running, since its record is the only place its answer
+//! is kept and nothing would record what it does next.
 
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -29,9 +26,8 @@ pub fn from_env() -> Result<i32> {
     )
 }
 
-/// Run the verb, with everything it touches named: the records, the home
-/// every vendor's wiring is under, and the environment a wire may name its
-/// directory in.
+/// The verb, with the state root, the home the wiring lives under, and the
+/// environment a wire may name its directory in.
 pub fn run(
     state_root: &Path,
     home: &Path,
@@ -51,8 +47,7 @@ pub fn run(
 
     for vendor in registry::entries() {
         let Some(hooks) = &vendor.hooks else { continue };
-        // Every wire the vendor carries, the reporting one and whatever a
-        // person opted into: the tool leaves with amx like everything else.
+        // Opt-in wires go too, not only the reporting one.
         for wire in std::iter::once(&hooks.wire).chain(hooks.opt_in.iter()) {
             let report = install::uninstall_wire(wire, home, env, now)?;
             let path = report.path.display();
@@ -90,7 +85,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
-    /// A private tmux server that goes when the test does.
+    /// A private tmux server, killed on drop.
     struct TestServer(Server);
 
     impl TestServer {
@@ -151,15 +146,14 @@ mod tests {
         agent
     }
 
-    /// amx's plugin, written where claude loads one from under a home.
+    /// Install amx's claude plugin under `home`, returning its directory.
     fn plugin_with_amx(home: &Path) -> PathBuf {
         let dir = install::wire_path(&claude::HOOKS.wire, home, &install::no_env);
         install::install_wire(&claude::HOOKS.wire, home, &install::no_env, 1).unwrap();
         dir
     }
 
-    /// Whether amx's plugin is still standing at `dir`, judged the way claude
-    /// judges it: the manifest that names it.
+    /// Whether `dir` holds a manifest naming amx, which is how claude finds it.
     fn plugin_is_there(dir: &Path) -> bool {
         std::fs::read_to_string(dir.join(install::MANIFEST))
             .ok()
@@ -169,18 +163,15 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_while_an_agent_is_still_running() {
-        // Everything that has not ended and still has its pane, whatever it is
-        // doing on it. A cap counts the agents taking a turn; this counts the
-        // programs whose records are about to be deleted, and a command still
-        // printing into its output file loses as much as an agent mid-turn.
+        // Anything unended with a live pane counts, idle agents and commands
+        // included: deleting their records loses their output.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         let plugin = plugin_with_amx(home.path());
 
         let server = TestServer::new();
-        // In a session named the way spawn::place names one, so the pane
-        // answers for this agent: a pane nobody owns is a pane its record has
-        // lost, and uninstall waits on no such agent.
+        // Named the way spawn::place names sessions, so the pane answers for
+        // the agent.
         let pane_for = |id: &str| {
             server
                 .0
@@ -193,8 +184,7 @@ mod tests {
                 .1
         };
 
-        // A shell command, which has no vendor, and an agent sitting at its
-        // prompt with the turn over.
+        // A shell command (no vendor) and an idle agent.
         for (id, vendor, phase) in [
             ("watch-log-a1b", None, Phase::Working),
             ("port-it-b2c", Some("claude"), Phase::Idle),
@@ -252,8 +242,8 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_a_tmux_that_cannot_be_asked_and_removes_nothing() {
-        // A record saying `working` whose pane nobody could ask about may be a
-        // running agent, and deleting its record is not undone.
+        // An unanswered tmux may hide a running agent, and a deleted record is
+        // gone for good.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         let plugin = plugin_with_amx(home.path());
@@ -282,8 +272,7 @@ mod tests {
 
     #[test]
     fn uninstall_does_not_wait_on_an_agent_whose_pane_is_gone() {
-        // A record left saying `working` after a reboot is not a running
-        // agent, and must not block a person from removing amx.
+        // A record left `working` by a reboot is not a running agent.
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         plugin_with_amx(home.path());

@@ -1,19 +1,11 @@
-//! `amx sub` — start a subagent and wait for its answer.
+//! `amx sub`: start a subagent and wait for its answer.
 //!
-//! A subagent is an ordinary amx agent whose record names a parent, and this
-//! verb is `amx new` plus `amx result` in one call: a parent asks a question
-//! and is handed the answer, without a second command and without knowing an
-//! id it has not been told yet. The id goes to stderr on one line, the answer
-//! to stdout, and the exit code is `result`'s — 0 an answer, 1 failed or
-//! stopped, 2 the child is asking a question, 3 the caller's own deadline.
-//!
-//! What it adds over the two verbs is what makes a child a child. The parent's
-//! directory is where it runs by default, so a scout sees the uncommitted work
-//! the parent is asking about and needs no branch to answer one question. A
-//! model and an effort the parent already chose are handed down when the child
-//! runs the same vendor, since a claude model means nothing to a codex child.
-//! The number of live children one parent may have is its own key, and a
-//! child's `--permission` is an escalation the config has to allow.
+//! `amx new` plus `amx result` in one call, for an agent whose record names a
+//! parent. The id goes to stderr and the answer to stdout, with `result`'s exit
+//! codes; `--bg` prints the id on stdout and returns without waiting. A child
+//! runs in its parent's directory by default and inherits the parent's vendor,
+//! and its model and effort when the vendor matches. `max_children` caps live
+//! children per parent, and `--permission` needs `subagents_may_escalate`.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -27,7 +19,7 @@ use crate::store::{Agent, Meta};
 use crate::verbs::{new, result, wait};
 use crate::{Severity, derive, exit, paths, registry, said, spawn, store};
 
-/// The verb, against the machine's own state directory.
+/// Run the verb against the machine.
 pub fn from_env(args: &SubArgs) -> Result<i32> {
     let root = paths::state_root()?;
     let mut out = std::io::stdout().lock();
@@ -41,9 +33,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     let colours = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
     let mut env = spawn::env_snapshot(std::env::vars());
-    // A named parent rides the same way a pane's own does: `new` reads the
-    // lineage off `AMX_ID`, and the pane the child gets has its own id put
-    // there over this one.
+    // `new` reads the lineage off `AMX_ID`, so a named parent goes there too.
     if let Some(id) = &args.parent {
         if Agent::open(root, id)
             .and_then(|agent| agent.meta())
@@ -77,8 +67,6 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
         return Ok(exit::USAGE);
     }
 
-    // The parent's directory unless the caller named one: a child is an
-    // extension of the parent's work and shares the checkout it is about.
     let dir = match &args.dir {
         Some(dir) => paths::anchored(dir)?,
         None => parent
@@ -86,10 +74,8 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             .map(|meta| meta.dir.clone())
             .unwrap_or(std::env::current_dir().context("no working directory")?),
     };
-    // A parent that has stopped may have had a worktree, and a worktree that
-    // has been removed is a directory nothing can run in. Said here, where the
-    // parent is still in hand: `new` would name the path alone, and the path
-    // is not what the caller typed — the parent is.
+    // A stopped parent's worktree may be gone. Refused here so the message
+    // names the parent, which is what the caller typed.
     if args.dir.is_none()
         && let Some(parent) = &parent
         && !dir.is_dir()
@@ -114,9 +100,8 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
 
     let mut spawn_args = as_new(args, parent.as_ref());
 
-    // The role's dials before the parent's, so a role beats an inheritance and
-    // a typed flag beats both. Its `worktree` stands where the verb's own
-    // default would, unless the caller typed one.
+    // Role before inheritance, so a role beats the parent and a typed flag
+    // beats both. The role's `worktree` replaces the default, not a typed flag.
     if let Some(role) = new::fill_role(&dir, &mut spawn_args)
         && !args.worktree
         && !args.no_worktree
@@ -173,8 +158,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
         );
     }
 
-    // The same claim and start path `amx new` runs, with its id caught on the
-    // way past rather than printed to the caller.
+    // `new` prints the id; catch it rather than pass it through.
     let mut printed = Vec::new();
     let code = new::run(root, &dir, env, config, &spawn_args, &mut printed, err)?;
     if code != exit::OK {
@@ -189,8 +173,8 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
         return report(root, &id, None, args.json, out);
     }
 
-    // The id first, so a caller reading a question on stdout knows who to
-    // answer. `--json` says it in the object instead.
+    // The id first, so a caller that gets a question knows who to answer.
+    // `--json` carries it in the object instead.
     if !args.json {
         writeln!(err, "{id}")?;
     }
@@ -216,14 +200,11 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
     Ok(code)
 }
 
-/// The two spawns `amx sub` makes: the child that records a parent and the
-/// top-level one a person's own shell gets.
+/// The `new` arguments for this spawn.
 ///
-/// This is the one place a parent is handed to `new`: `new` typed in a pane
-/// records none of its own. A child shares the parent's directory —
-/// `--worktree` is the child that will change something — while a spawn from
-/// outside a pane is an ordinary `amx new` and cuts a tree by default, unless
-/// `--no-worktree` says otherwise.
+/// The only place a parent is handed to `new`. A child shares its parent's
+/// directory unless `--worktree` is given; a parentless spawn cuts a tree
+/// unless `--no-worktree` is given, as `amx new` does.
 fn as_new(args: &SubArgs, parent: Option<&Meta>) -> NewArgs {
     let has_parent = parent.is_some();
     NewArgs {
@@ -246,11 +227,8 @@ fn as_new(args: &SubArgs, parent: Option<&Meta>) -> NewArgs {
     }
 }
 
-/// The short read of a parent a `--context digest` child is handed: its task,
-/// and its latest word where the transcript has one.
-///
-/// A state rather than a log. The child can still read the whole of the
-/// parent's conversation with `amx logs $AMX_PARENT`, which its pane names.
+/// The brief a `--context digest` child gets: the parent's task and, where its
+/// transcript has one, its latest answer.
 fn digest_of(parent: &Meta) -> String {
     let mut digest = format!(
         "Your parent agent, {}, is working on this task:\n\n{}",
@@ -275,23 +253,17 @@ fn parent_of(root: &Path, env: &BTreeMap<String, String>, no_parent: bool) -> Op
     Agent::open(root, id).ok()?.meta().ok()
 }
 
-/// Hand the parent's dials down, where the child runs the same vendor.
+/// Hand the parent's vendor down, and its model and effort when the child runs
+/// the same vendor.
 ///
-/// The command first: a child of a pi agent is pi unless the caller says
-/// otherwise. Then a claude parent hands its `model` and `effort` to a claude
-/// child and says nothing to a `--agent codex` child, where a claude model
-/// name means nothing. Anything the caller typed wins, and `--permission` is
-/// not here at all: widening it is a decision rather than an inheritance.
+/// Anything the caller typed wins. `--permission` is never inherited.
 fn inherit(config: &Config, parent: Option<&Meta>, spawn_args: &mut NewArgs) -> Result<(), String> {
     let Some(parent) = parent else {
         return Ok(());
     };
     let named = spawn_args.agent.clone().unwrap_or_default();
-    // The vendor is the first dial a child inherits: a subagent of a pi agent
-    // is pi. Only a default — an `--agent` names the command outright, and a
-    // `--model` still picks the harness the model belongs to the way it does
-    // for `new` — and it is the parent's whole command that rides, so a
-    // `claude --add-dir ..` parent hands the flag down with the vendor.
+    // Only when neither `--agent` nor `--model` was given, since a model picks
+    // its own harness. The parent's whole command rides, flags included.
     if named.command.is_none()
         && named.model.is_none()
         && let Some(command) = parent.agent.as_deref().filter(|agent| !agent.is_empty())
@@ -303,8 +275,6 @@ fn inherit(config: &Config, parent: Option<&Meta>, spawn_args: &mut NewArgs) -> 
             effort: None,
         });
     }
-    // What this child would have launched as now, which is the vendor the
-    // comparison is about.
     let launch = new::Launch::resolve(config, spawn_args)?;
     let theirs = registry::program(parent.agent.as_deref().unwrap_or_default());
     if registry::program(&launch.agent) != theirs {
@@ -313,8 +283,8 @@ fn inherit(config: &Config, parent: Option<&Meta>, spawn_args: &mut NewArgs) -> 
 
     let named = spawn_args.agent.clone().unwrap_or_default();
     spawn_args.agent = Some(AgentArgs {
-        // Pinned to the vendor already resolved, so an inherited model cannot
-        // send the child to a different harness than the comparison allowed.
+        // Pinned, so an inherited model cannot move the child to another
+        // harness.
         command: Some(launch.agent.clone()),
         model: named.model.or_else(|| parent.model.clone()),
         permission: named.permission,
@@ -333,7 +303,7 @@ fn live_children(root: &Path, parent: &str) -> Result<usize> {
         .count())
 }
 
-/// Write the child's id, and with `--json` the one object instead.
+/// Print the child's id, or with `--json` the child as one object.
 fn report(
     root: &Path,
     id: &str,
@@ -353,8 +323,7 @@ fn report(
     Ok(exit::OK)
 }
 
-/// A refusal that is the answer rather than a failure: exit 2, the word
-/// naming what was over the line.
+/// Refuse with `BLOCKED`, naming the limit that was hit.
 fn refuse(err: &mut impl Write, colours: bool, message: String) -> Result<i32> {
     writeln!(err, "{}", said(Severity::Warned, &message, colours))?;
     Ok(exit::BLOCKED)
@@ -368,8 +337,8 @@ mod tests {
 
     #[test]
     fn sub_json_on_a_question_carries_what_answer_needs() {
-        // A caller reading the one object has no other pipe to find the
-        // question on, so the choices and what kind of screen it is ride too.
+        // The object is the caller's only pipe, so it carries the choices
+        // and the kind of question.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
             role: None,
@@ -400,8 +369,7 @@ mod tests {
                 state.question = Some("Which runner?".to_string());
                 state.options = vec!["Node".to_string(), "Deno".to_string()];
                 state.kind = Some(Kind::Question);
-                // Parked, so the record's own phase is what a reader hands
-                // back with no pane left to look at.
+                // Parked, so the reading is the record's phase.
                 state.parked_at = 4_600;
             })
             .unwrap();

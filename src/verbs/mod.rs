@@ -1,4 +1,4 @@
-//! One module per verb.
+//! One module per verb, plus the output helpers several verbs share.
 
 pub mod adopt;
 pub mod allow;
@@ -27,7 +27,7 @@ pub mod sweep;
 pub mod uninstall;
 pub mod wait;
 
-/// Print a question and its numbered choices where an answer would have gone.
+/// Print a question and its numbered choices, one per line.
 pub(crate) fn print_question(
     question: &str,
     options: &[String],
@@ -41,8 +41,7 @@ pub(crate) fn print_question(
     Ok(())
 }
 
-/// The first line of text amx did not author, trimmed, with nothing left in it
-/// that can drive a terminal.
+/// The first line of `text`, trimmed and sanitized so it cannot drive a terminal.
 pub(crate) fn inert_line(text: &str) -> String {
     crate::tmux::sanitize(text.lines().next().unwrap_or(""))
         .trim()

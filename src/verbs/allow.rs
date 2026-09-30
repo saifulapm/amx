@@ -1,14 +1,10 @@
-//! `amx allow` — let amx read this project's `.amx/config.toml`.
+//! `amx allow`: consent to reading this project's `.amx/config.toml`.
 //!
-//! A project file names programs amx will run, so it counts only once a
-//! person has read it and said so — see [`crate::consent`]. The verb prints
-//! the file, because what is being allowed is what it says, and keeps a copy
-//! of exactly those bytes. Typing the verb is the consent; there is no second
-//! question. `--forget` takes it back.
-//!
-//! A directory with no project file is a failure rather than a no-op: a
-//! person typing this believes there is a file, and the one they meant is
-//! somewhere else.
+//! A project file names programs amx will run, so it is read only after a
+//! person has allowed it (see [`crate::consent`]). The verb prints the file and
+//! records a copy of exactly those bytes; running it is the consent. `--forget`
+//! withdraws it. A directory with no project file is a failure, since the
+//! caller expected one.
 
 use anyhow::Result;
 use std::io::Write;
@@ -16,7 +12,7 @@ use std::path::Path;
 
 use crate::{complain, consent, exit, paths};
 
-/// Run the verb against the machine, for the project `dir` is in.
+/// Run the verb for the project `dir` (or the working directory) is in.
 pub fn from_env(dir: Option<&Path>, forget: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let dir = match dir {
