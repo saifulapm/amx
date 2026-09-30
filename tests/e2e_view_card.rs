@@ -1448,7 +1448,9 @@ fn alt_d_on_a_row_with_no_tree_says_what_the_verb_says() {
     // A directory outside any repository gets `amx diff`'s own error.
     press(&amx, &view, "M-d");
     amx.until("what the verb says of it", || {
-        amx.capture(&view).contains("no git worktree").then_some(())
+        amx.capture(&view)
+            .contains("not in a git repository")
+            .then_some(())
     });
 }
 

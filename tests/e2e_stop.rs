@@ -298,7 +298,7 @@ fn a_worktree_with_work_in_it_is_always_kept_and_always_said() {
         Path::new(&worktree).exists(),
         "work no commit has is not amx's to delete: {out}"
     );
-    assert!(out.contains("no commit has"), "and it says so: {out}");
+    assert!(out.contains("uncommitted changes"), "and it says so: {out}");
 }
 
 #[test]
@@ -314,7 +314,10 @@ fn stopping_an_agent_takes_its_tree_back_out_of_claudes_store() {
 
     let out = said(&stop(&amx, &["fix-login-a1b", "--force"]));
     assert!(!Path::new(&worktree).exists(), "the tree is gone: {out}");
-    assert!(out.contains("forgot"), "and it says so: {out}");
+    assert!(
+        out.contains(&format!("removed {worktree} from {}", store.display())),
+        "and it says so: {out}"
+    );
 
     let after = read_store(&store);
     assert_eq!(after["projects"].get(&tree_key), None, "{after}");
@@ -351,7 +354,7 @@ fn a_worktree_that_is_kept_keeps_its_key_in_claudes_store() {
     ));
 
     assert!(Path::new(&worktree).exists(), "{out}");
-    assert!(!out.contains("forgot"), "{out}");
+    assert!(!out.contains(&format!("from {}", store.display())), "{out}");
     let after = read_store(&store);
     assert_eq!(
         after["projects"][&tree_key]["hasTrustDialogAccepted"],

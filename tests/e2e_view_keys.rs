@@ -104,11 +104,11 @@ fn a_spelling_the_view_cannot_read_is_said_once_and_binds_nothing() {
     // synchronized output a capture can land partway through it.
     let said = amx.until("the view to say which spelling it could not read", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("shift+z") && drawn.contains("is no key the view can read"))
+        (drawn.contains("shift+z") && drawn.contains("is not a key the view can read"))
             .then_some(drawn)
     });
     assert!(
-        said.contains("is no key the view can read"),
+        said.contains("is not a key the view can read"),
         "in words that say what is wrong with it:\n{said}"
     );
 
@@ -133,11 +133,13 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
     // Wait for the whole notice, as above.
     let said = amx.until("the view to say the key is its own", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("ctrl+x") && drawn.contains("amx's own") && drawn.contains("stop it"))
-            .then_some(drawn)
+        (drawn.contains("ctrl+x")
+            && drawn.contains("already bound by amx")
+            && drawn.contains("stop it"))
+        .then_some(drawn)
     });
     assert!(
-        said.contains("amx's own"),
+        said.contains("already bound by amx"),
         "in words that say whose key it is:\n{said}"
     );
     assert!(
