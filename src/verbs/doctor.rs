@@ -661,16 +661,19 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         for (dir, _) in &old {
             std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
         }
-        writeln!(
-            out,
-            "\nremoved {} id {} with no record",
-            old.len(),
-            if old.len() == 1 {
-                "directory"
-            } else {
-                "directories"
-            }
-        )?;
+        // Nothing to report when every orphan is still too young to remove.
+        if !old.is_empty() {
+            writeln!(
+                out,
+                "\nremoved {} id {} with no record",
+                old.len(),
+                if old.len() == 1 {
+                    "directory"
+                } else {
+                    "directories"
+                }
+            )?;
+        }
         current.orphan_ids = young;
         checks = report(&current);
     }
@@ -1234,6 +1237,21 @@ mod tests {
         assert!(!old.exists(), "the old one went");
         assert!(young.exists(), "a spawn still starting keeps its claim");
         assert!(tree.exists(), "and a tree is never taken");
+    }
+
+    #[test]
+    fn fix_says_nothing_about_ids_it_is_too_soon_to_remove() {
+        let root = TempDir::new().unwrap();
+        let young = root.path().join("fix-login-a1b");
+        std::fs::create_dir_all(&young).unwrap();
+        let found = Findings {
+            orphan_ids: vec![(young.clone(), 30)],
+            ..healthy()
+        };
+
+        let (_, said) = said(&found, true);
+        assert!(!said.contains("removed"), "{said}");
+        assert!(young.exists());
     }
 
     #[test]
