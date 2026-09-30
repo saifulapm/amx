@@ -1,15 +1,7 @@
-//! The seam a program drives amx through.
-//!
-//! amx has two callers. One is a person at a terminal, and the rest of this
-//! suite is about them. The other is a program running a fleet of agents: it
-//! cuts its own directory for each one, hands it a brief, and then has exactly
-//! four questions — start this, is it still going, what did it say, stop it.
-//! This file asks those four in the order and with the flags such a program
-//! uses, and reads nothing but exit codes and JSON.
-//!
-//! What is under test is the contract rather than the wiring. A caller here
-//! never learns that tmux is underneath any of this, never parses a table
-//! written for a person, and never sees an agent's screen.
+//! amx driven by a program that runs a fleet of workers: it prepares a
+//! directory per worker, then calls `new`, `ls --json`, `result` and `stop`
+//! with the flags such a program uses. The caller reads only exit codes and
+//! JSON, never tmux, a human-readable table or a pane's screen.
 
 mod common;
 
@@ -18,17 +10,14 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Output;
 
-/// The conversation id the caller mints for itself. It names the transcript
-/// the caller reads afterwards, so it is the caller's to choose and amx's to
-/// pass along.
+/// The session id the caller picks. It names the transcript the caller reads
+/// later, so amx must pass it through.
 const SESSION: &str = "018f2c7e-0000-4000-8000-000000000000";
 
-/// The brief the worker is pointed at, the way a caller writes one: a path,
-/// with the instruction to read it.
+/// The path of the brief the worker is told to read.
 const BRIEF: &str = "/cache/briefs/t1.md";
 
-/// The caller: one method per question it has, and the single amx call that
-/// answers it.
+/// A program driving amx, with one method per amx call it makes.
 struct Caller<'a> {
     amx: &'a Harness,
 }
@@ -38,10 +27,8 @@ impl<'a> Caller<'a> {
         Caller { amx }
     }
 
-    /// Start a worker in a directory the caller has already prepared, on the
-    /// conversation id the caller minted. It goes in a session of its own,
-    /// where nothing it does reaches anybody's screen. The handle is the id
-    /// this prints; nothing else about it is read.
+    /// Run `amx new` in `dir`, which the caller has already prepared, passing
+    /// the caller's session id and model to the vendor.
     fn dispatch(&self, dir: &Path, scenario: &str) -> Output {
         self.amx
             .amx_command(&[
@@ -63,9 +50,8 @@ impl<'a> Caller<'a> {
             .expect("dispatching a worker")
     }
 
-    /// One reading of every worker there is. Both of the caller's questions
-    /// about liveness are answered from this, so a fleet costs one call and
-    /// not one per worker.
+    /// Every worker, from one `ls --json` call. Both liveness checks read
+    /// this, so polling a fleet costs one call.
     fn ls(&self) -> Vec<Value> {
         let out = self.amx.amx(&["ls", "--json"]);
         assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -79,8 +65,7 @@ impl<'a> Caller<'a> {
             .unwrap_or_else(|| panic!("no row for {id}"))
     }
 
-    /// Is anything of this worker still running? Three states mean it is over;
-    /// every other state is a worker the caller keeps waiting on.
+    /// Whether the worker is in any state other than done, failed or stopped.
     fn alive(&self, id: &str) -> bool {
         !matches!(
             self.row(id)["state"].as_str(),
@@ -88,24 +73,23 @@ impl<'a> Caller<'a> {
         )
     }
 
-    /// The most recent sign of life, in epoch seconds — what a caller counts
-    /// its stall deadline from. A worker nothing has been heard from yet still
-    /// has the moment it was dispatched.
+    /// The later of `last_event` and `since`, in epoch seconds, which a caller
+    /// measures its stall deadline from. A worker with no events yet still
+    /// has its dispatch time.
     fn last_activity(&self, id: &str) -> u64 {
         let row = self.row(id);
         let field = |name: &str| row[name].as_u64().unwrap_or(0);
         field("last_event").max(field("since"))
     }
 
-    /// Wait for the turn to end, and take whatever the worker said. Every wait
-    /// here is bounded, so a verb that never returns fails its own test rather
-    /// than the suite.
+    /// Run `amx result`, which waits for the turn to end. The timeout makes a
+    /// wait that never returns fail its own test instead of hanging the suite.
     fn result(&self, id: &str) -> Output {
         self.amx.amx(&["result", id, "--timeout", "20"])
     }
 
-    /// Stop the worker and everything it started, taking the defaults: there
-    /// is nobody at a terminal to be asked.
+    /// Stop the worker with `--force`, taking every default, since nobody is
+    /// at a terminal to answer prompts.
     fn stop(&self, id: &str) -> Output {
         self.amx.amx(&["stop", id, "--force"])
     }
@@ -115,15 +99,13 @@ impl<'a> Caller<'a> {
 fn a_worker_is_dispatched_watched_answered_and_stopped() {
     let amx = Harness::new();
     let caller = Caller::new(&amx);
-    // The caller cut this itself, and will read the work out of it itself.
     let dir = amx.a_repo();
 
     let dispatched = caller.dispatch(&dir, "a-dispatched-worker");
     assert_eq!(code(&dispatched), 0, "{}", stderr(&dispatched));
     let id = handle(&dispatched);
 
-    // Liveness, from the moment the dispatch returns. There is no window in
-    // which a worker that has just started reads as one that has gone.
+    // The worker must read as alive as soon as `new` returns.
     assert!(caller.alive(&id), "a worker is alive as soon as it exists");
     assert!(
         caller.last_activity(&id) > 0,
@@ -131,8 +113,7 @@ fn a_worker_is_dispatched_watched_answered_and_stopped() {
          has already passed"
     );
 
-    // The answer: waited for rather than polled, and handed over as the worker
-    // said it, line breaks and all.
+    // `result` prints the answer verbatim, blank lines included.
     let answered = caller.result(&id);
     assert_eq!(code(&answered), 0, "{}", stderr(&answered));
     assert_eq!(
@@ -140,8 +121,7 @@ fn a_worker_is_dispatched_watched_answered_and_stopped() {
         "the importer is ported\n\n- four endpoints moved\n- the tests pass\n"
     );
 
-    // Answering is not ending. The worker is still there — to look in on, to
-    // send more work to — until the caller says otherwise.
+    // The worker outlives its turn until the caller stops it.
     assert!(caller.alive(&id), "the turn ended, not the worker");
     assert!(
         caller.last_activity(&id) >= caller.row(&id)["created"].as_u64().unwrap(),
@@ -156,9 +136,8 @@ fn a_worker_is_dispatched_watched_answered_and_stopped() {
 
 #[test]
 fn a_worker_runs_where_it_was_put_and_cuts_nothing_of_its_own() {
-    // The caller made this directory, wrote the brief into it, and will merge
-    // what comes out of it. A worker that cut a second one underneath would do
-    // its work somewhere nobody was ever going to look.
+    // The caller merges from this directory, so a worktree cut inside it
+    // would hold work the caller never looks at.
     let amx = Harness::new();
     let caller = Caller::new(&amx);
     let dir = amx.a_repo();
@@ -171,8 +150,7 @@ fn a_worker_runs_where_it_was_put_and_cuts_nothing_of_its_own() {
         row["worktree"].is_null() && row["branch"].is_null(),
         "the caller owns the branch: {row}"
     );
-    // The commit is still written down, so `amx diff` has something to measure
-    // the worker's work from even though amx cut nothing here.
+    // `base` is still recorded, so `amx diff` has a commit to diff against.
     let head = std::process::Command::new("git")
         .current_dir(&dir)
         .args(["rev-parse", "HEAD"])
@@ -188,7 +166,7 @@ fn a_worker_runs_where_it_was_put_and_cuts_nothing_of_its_own() {
     );
     assert!(!dir.join(".amx").exists(), "and nothing was cut inside it");
 
-    // Not only on the record: the vendor's own process is in that directory.
+    // The vendor process itself runs there too.
     let pane = amx.pane_of(&id);
     let ran_in = amx.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_path}"]);
     assert_eq!(
@@ -199,10 +177,7 @@ fn a_worker_runs_where_it_was_put_and_cuts_nothing_of_its_own() {
 
 #[test]
 fn the_arguments_the_caller_passes_reach_the_vendor_untouched() {
-    // How the worker is configured — which conversation it opens, which model
-    // it runs — is the caller's business and travels in the caller's own
-    // words. amx adds the brief at the end, where a prompt goes, and changes
-    // nothing else.
+    // amx appends the brief as the prompt and changes nothing else.
     let amx = Harness::new();
     let caller = Caller::new(&amx);
     let dir = amx.a_repo();
@@ -234,7 +209,6 @@ fn liveness_and_every_answer_about_a_fleet_come_from_one_reading() {
     let first = handle(&caller.dispatch(&dir, "a-dispatched-worker"));
     let second = handle(&caller.dispatch(&dir, "finishes"));
 
-    // Each answer belongs to the worker whose handle asked for it.
     let answered = caller.result(&first);
     assert_eq!(code(&answered), 0, "{}", stderr(&answered));
     assert!(stdout(&answered).starts_with("the importer is ported"));
@@ -243,8 +217,7 @@ fn liveness_and_every_answer_about_a_fleet_come_from_one_reading() {
     assert_eq!(code(&answered), 0, "{}", stderr(&answered));
     assert_eq!(stdout(&answered).trim(), "hello");
 
-    // And one reading accounts for both of them, with the fields a caller
-    // branches on carried on every row.
+    // One `ls` lists both, each row with the fields a caller branches on.
     let listed = caller.ls();
     assert_eq!(listed.len(), 2, "{listed:#?}");
     for row in &listed {
@@ -274,10 +247,8 @@ fn a_worker_that_ends_badly_is_an_ending_the_caller_can_read() {
 
 #[test]
 fn a_worker_that_stops_to_ask_is_handed_back_rather_than_waited_out() {
-    // There is nobody here to answer a permission question. What the caller
-    // must not do is spend its deadline finding that out — the wait ends at
-    // the question, with the question, so the worker can be set aside and the
-    // rest of the fleet got on with.
+    // Nobody can answer a permission prompt here, so `result` must return at
+    // the prompt, with the prompt, instead of running out the timeout.
     let amx = Harness::new();
     let caller = Caller::new(&amx);
     let dir = amx.a_repo();
@@ -306,9 +277,8 @@ fn a_worker_that_stops_to_ask_is_handed_back_rather_than_waited_out() {
 
 #[test]
 fn stopping_a_worker_mid_turn_ends_it_and_the_next_question_says_so() {
-    // The caller's deadline passed, or the wave was abandoned. Whatever the
-    // worker was in the middle of, the ending has to be one the next reading
-    // agrees with, or the caller waits on a worker that is not there.
+    // After a stop mid-turn, `ls` and `result` must both see the worker as
+    // ended, or the caller waits on a worker that no longer exists.
     let amx = Harness::new();
     let caller = Caller::new(&amx);
     let dir = amx.a_repo();
@@ -339,8 +309,7 @@ fn status_json_carries_the_conversations_context_and_last_words() {
 
     let id = handle(&caller.dispatch(&dir, "carries-usage"));
 
-    // Nothing has been read off a transcript yet: dispatch returns before the
-    // worker's own process has even started.
+    // `new` returns before the vendor starts, so no transcript exists yet.
     let before = amx.amx(&["status", &id, "--json"]);
     assert_eq!(code(&before), 0, "{}", stderr(&before));
     let before: Value = serde_json::from_slice(&before.stdout).expect("status --json prints json");
@@ -360,8 +329,7 @@ fn status_json_carries_the_conversations_context_and_last_words() {
     assert_eq!(after["last_words"], "hello", "{after}");
 }
 
-/// The handle a dispatch hands back: the id, and nothing else on stdout for a
-/// caller to have to strip.
+/// The agent id `amx new` printed, which must be the only line on stdout.
 fn handle(out: &Output) -> String {
     assert!(out.status.success(), "amx new: {}", stderr(out));
     let printed = stdout(out);

@@ -1,4 +1,5 @@
-//! Starting an agent, and what that leaves behind.
+//! `amx new` and related spawns: how the task arrives, what the pane starts
+//! with, what the record keeps, worktrees, caps, names, dials and roles.
 
 mod common;
 
@@ -7,7 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-/// `amx new`, with the vendor pointed at a scenario.
+/// Run `amx new` with `MOCK_CLAUDE_SCENARIO` set to `scenario`.
 fn new(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
     amx.amx_command(&[&["new"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
@@ -15,8 +16,7 @@ fn new(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
         .expect("running amx new")
 }
 
-/// `amx new`, with the task typed at its stdin rather than on its command
-/// line.
+/// Run `amx new` with `typed` on its stdin.
 fn new_typed_at(amx: &Harness, scenario: &str, args: &[&str], typed: &str) -> Output {
     use std::io::Write;
     use std::process::Stdio;
@@ -38,15 +38,11 @@ fn new_typed_at(amx: &Harness, scenario: &str, args: &[&str], typed: &str) -> Ou
     child.wait_with_output().expect("waiting for amx new")
 }
 
-/// `amx new`, with the vendor's stand-in installed under the name the dial
-/// table knows.
+/// Run `amx new` with mock-claude copied to `claude` at the front of PATH.
 ///
-/// The table is keyed by the program an agent command runs, and the program it
-/// has an entry for is claude. A spawn that wants a dial turned has to be
-/// launching something by that name, so the stand-in is copied under it into a
-/// directory of this harness's own and put in front of PATH. The pane resolves
-/// the command through the environment `new` was run with, which is how the
-/// copy is the one that runs.
+/// The dial table is keyed by program name and has an entry for claude only,
+/// so a spawn that turns a dial must launch a program called `claude`. The
+/// pane resolves the command through the PATH `new` ran with.
 fn new_as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
@@ -59,9 +55,9 @@ fn new_as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
         .expect("running amx new")
 }
 
-/// The PATH the stand-in is found on, for a command that starts an agent
-/// `new_as_claude` started once already: a resume and a fork launch what the
-/// record names, and what it names is claude.
+/// PATH with the `claude` stand-in first, for relaunching an agent that
+/// [`new_as_claude`] started: resume and fork run the recorded command,
+/// which is `claude`.
 fn path_with_the_stand_in(amx: &Harness) -> String {
     format!(
         "{}:{}",
@@ -70,9 +66,8 @@ fn path_with_the_stand_in(amx: &Harness) -> String {
     )
 }
 
-/// A process's real environment, read from the kernel rather than from
-/// anything amx wrote down -- the only way to see what a pane started with
-/// underneath whatever amx laid over it.
+/// A process's environment read from `/proc`, which shows what the pane
+/// really started with, independent of anything amx recorded.
 fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
     let raw = std::fs::read(format!("/proc/{pid}/environ"))
         .unwrap_or_else(|e| panic!("reading /proc/{pid}/environ: {e}"));
@@ -86,12 +81,10 @@ fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// The environment of the pane this agent is in, once the vendor is the
-/// process in it.
+/// The environment of the agent's pane process, once the vendor runs in it.
 ///
-/// Waiting for the stand-in to say how it was called is waiting for `_boot` to
-/// have read the boot file and exec'd the vendor, which is the moment the
-/// pane's own environment is the one amx handed over.
+/// Once the stand-in prints its argv, `_boot` has read the boot file and
+/// exec'd the vendor, so the pane's environment is the one amx handed over.
 fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, String> {
     argv_of(amx, id);
     let pid = amx.tmux(&[
@@ -104,10 +97,11 @@ fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, Strin
     pane_environ(&pid)
 }
 
-/// What a `ls --json` row prints under a key. A field the record has nothing
-/// for is printed null; one the shape does not carry at all is missing, and a
-/// caller reading it off the row cannot tell those apart -- so this panics on
-/// the second rather than handing back the first.
+/// The value a `ls --json` row prints under `key`, panicking if the key is
+/// absent.
+///
+/// Indexing a `Value` gives null for a missing key, which would hide a field
+/// the listing never prints behind one it prints as null.
 fn printed<'a>(row: &'a Value, key: &str) -> &'a Value {
     row.as_object()
         .expect("a row is an object")
@@ -115,7 +109,7 @@ fn printed<'a>(row: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("the listing prints no `{key}`: {row}"))
 }
 
-/// The row `amx ls --json` prints for this agent, where it has one.
+/// The agent's `amx ls --json` row, if it has one.
 fn listed(amx: &Harness, id: &str) -> Option<Value> {
     ls(amx).into_iter().find(|row| row["id"] == id)
 }
@@ -160,12 +154,9 @@ fn new_starts_an_agent_and_prints_its_id() {
 
 #[test]
 fn new_leaves_the_session_for_a_hook_to_report_from_a_vendor_with_no_start_flag() {
-    // claude declares no start flag of its own -- its SessionStart hook is
-    // the one thing that ever learns which session it opened, so the record
-    // waits on it rather than guessing a session amx never told the vendor to
-    // use. The stable property is that nothing amx minted ever lands in
-    // meta.session; waiting for the hook's own report and checking what it
-    // wrote proves that without racing it for an empty field.
+    // claude declares no start flag, so only its SessionStart hook learns
+    // which session it opened, and nothing amx minted may land in
+    // meta.session. Waiting for the hook's report avoids racing an empty field.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -181,9 +172,8 @@ fn new_leaves_the_session_for_a_hook_to_report_from_a_vendor_with_no_start_flag(
 
 #[test]
 fn new_records_the_command_it_launched_the_agent_with() {
-    // Which vendor is in the pane is settled at the spawn, from the flag, the
-    // config and the vendor amx falls back to. Nothing after the spawn can
-    // work it out again, so the record keeps it.
+    // The vendor is resolved at spawn time from the flag, the config and the
+    // fallback, and cannot be worked out later, so the record keeps it.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -192,8 +182,8 @@ fn new_records_the_command_it_launched_the_agent_with() {
     ));
     assert_eq!(amx.meta(&id)["agent"], "claude");
 
-    // A shell command runs no vendor, and a record saying it ran one would be
-    // read as an agent to resume or fork.
+    // An `--exec` command runs no vendor. Recording one would make it look
+    // like an agent to resume or fork.
     let ran = id_of(
         &amx.amx_command(&["new", "--exec", "true"])
             .output()
@@ -208,8 +198,6 @@ fn new_records_the_command_it_launched_the_agent_with() {
 
 #[test]
 fn new_takes_the_task_from_a_file() {
-    // A brief worth writing down is one nobody wants to quote into a shell,
-    // and what the row used to say was "Read /tmp/x and execute it exactly".
     let amx = Harness::new();
     let mock = amx.mock();
     let brief = amx.home().join("brief.md");
@@ -222,9 +210,8 @@ fn new_takes_the_task_from_a_file() {
         &["--no-worktree", "--agent", &mock, "--file", &named],
     ));
 
-    // The file's text is the task everywhere a typed one would have been: the
-    // id cut from it, the row, the handoff, and the argv the vendor is handed.
-    // The newline the editor wrote is not part of it.
+    // The file's text, minus the trailing newline, is the task everywhere:
+    // the id, the record, the handoff and the vendor's argv.
     assert!(id.starts_with("fix-the-login-bug-"), "{id}");
     assert_eq!(amx.meta(&id)["task"], "fix the login bug");
     assert_eq!(amx.handoff(&id)["task"], "fix the login bug");
@@ -237,8 +224,6 @@ fn new_takes_the_task_from_a_file() {
 
 #[test]
 fn new_takes_the_task_from_stdin_for_a_bare_dash() {
-    // The brief a coordinator has in hand rather than on disk: a heredoc or a
-    // pipe is the whole of what it takes.
     let amx = Harness::new();
     let mock = amx.mock();
 
@@ -277,7 +262,8 @@ fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("something to do"), "{said}");
 
-    // A file amx cannot read is named, because the name is what was mistyped.
+    // An unreadable file is named in the error, since the name is the likely
+    // typo.
     let missing = amx.home().join("nowhere.md").to_string_lossy().into_owned();
     let mistyped = new(
         &amx,
@@ -291,7 +277,7 @@ fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
         String::from_utf8_lossy(&mistyped.stderr)
     );
 
-    // And a task typed beside a file is two tasks, which is none.
+    // A task argument beside `--file` is ambiguous.
     let both = new(
         &amx,
         "happy-turn",
@@ -312,13 +298,10 @@ fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
     );
 }
 
-/// `amx new`, with `$VISUAL` pointed at a script standing in for the editor
-/// somebody would have written the task in.
+/// Run `amx new` with `$VISUAL` set to `script`, a stand-in editor.
 ///
-/// A script rather than an editor: what `$VISUAL` names is run with the file
-/// behind it, so a script that writes the file is exactly what closing an
-/// editor on a task looks like from amx's side, and it is the only editor a
-/// test can be sure of.
+/// amx runs `$VISUAL` with the file as its argument, so a script that writes
+/// the file looks the same to amx as a person saving in an editor.
 fn new_edited_by(amx: &Harness, scenario: &str, args: &[&str], script: &str) -> Output {
     use std::os::unix::fs::PermissionsExt;
 
@@ -336,8 +319,7 @@ fn new_edited_by(amx: &Harness, scenario: &str, args: &[&str], script: &str) -> 
 
 #[test]
 fn new_takes_the_task_from_the_editor() {
-    // The brief nobody has written yet: `--file` for the file that does not
-    // exist, opened the way the view's own `ctrl+g` opens one.
+    // `--edit` opens the editor the same way the view's `ctrl+g` does.
     let amx = Harness::new();
     let mock = amx.mock();
 
@@ -348,8 +330,7 @@ fn new_takes_the_task_from_the_editor() {
         "#!/bin/sh\nprintf 'fix the login bug\\n' > \"$1\"\n",
     ));
 
-    // What was left in the file is the task everywhere a typed one would have
-    // been, with the newline the editor wrote taken off.
+    // The saved text, minus the trailing newline, is the task everywhere.
     assert!(id.starts_with("fix-the-login-bug-"), "{id}");
     assert_eq!(amx.meta(&id)["task"], "fix the login bug");
     assert_eq!(amx.handoff(&id)["task"], "fix the login bug");
@@ -362,9 +343,8 @@ fn new_takes_the_task_from_the_editor() {
 
 #[test]
 fn new_starts_nothing_where_the_editor_would_have_none_of_it() {
-    // An editor that exits on you is somebody saying no to the spawn, which is
-    // a spawn that did not happen rather than a command line nobody could
-    // read: it exits 1 and leaves no id behind.
+    // A non-zero editor exit cancels the spawn: amx exits 1, not 64, and
+    // mints no id.
     let amx = Harness::new();
     let mock = amx.mock();
 
@@ -384,9 +364,8 @@ fn new_starts_nothing_where_the_editor_would_have_none_of_it() {
 
 #[test]
 fn new_refuses_an_editor_closed_on_nothing_the_way_it_refuses_an_empty_task() {
-    // The file amx opened is empty, and an editor closed without writing
-    // anything into it is an empty task: a malformed command line, wherever
-    // the emptiness was typed.
+    // amx opens an empty file, so an editor closed without writing leaves an
+    // empty task, refused as a usage error.
     let amx = Harness::new();
     let mock = amx.mock();
 
@@ -405,10 +384,9 @@ fn new_refuses_an_editor_closed_on_nothing_the_way_it_refuses_an_empty_task() {
 
 #[test]
 fn a_running_command_says_what_it_last_printed() {
-    // A command has no vendor: nothing reports on it, and no document amx
-    // holds describes a screen of somebody else's program. What is true of it
-    // is what tmux can say -- the pane is still there, so the command is still
-    // running -- and the line the row shows is the last one it printed.
+    // An `--exec` command has no vendor and no hooks. Its state comes from
+    // tmux (a live pane means it is running), and the row's summary is the
+    // last line it printed.
     let amx = Harness::new();
     let id = "print-two-a1b";
     let out = amx
@@ -440,9 +418,8 @@ fn a_running_command_says_what_it_last_printed() {
 
 #[test]
 fn a_command_that_has_exited_ends_by_its_exit_code() {
-    // The pane is where a command is read from only while it is in it. How the
-    // command ended is the record's, and nothing read off a screen stands in
-    // front of that.
+    // The screen is read only while the command runs. Once it exits, the
+    // recorded exit status decides the state.
     let amx = Harness::new();
     let id = "run-tests-a1b";
     let out = amx
@@ -467,11 +444,9 @@ fn a_command_that_has_exited_ends_by_its_exit_code() {
 
 #[test]
 fn a_commands_output_is_kept_beside_its_record() {
-    // Nothing reports on a command: it has no vendor and no hooks, so what it
-    // printed is on its screen and nowhere else, and a screen is the first
-    // thing a pane throws away. Its boot pipes the pane into a file of the
-    // record's before the command starts, so the first line is in it as well
-    // as the last.
+    // A command has no hooks, so its output exists only on a screen that
+    // scrolls away. The boot pipes the pane into the record's `output` file
+    // before the command starts, so the first line is kept too.
     let amx = Harness::new();
     let id = "print-two-b2c";
     let out = amx
@@ -495,9 +470,8 @@ fn a_commands_output_is_kept_beside_its_record() {
 
 #[test]
 fn an_agents_pane_is_piped_into_its_record() {
-    // A vendor's pane is a full-screen drawing, so what is kept of it is
-    // bounded -- but kept it is, because the one moment it matters is the
-    // vendor that dies before it draws anything and says why on the way out.
+    // A vendor's pane is a full-screen UI, so only a bounded amount is kept.
+    // It matters when a vendor dies before drawing anything and prints why.
     let amx = Harness::new();
     let mock = amx.mock();
     let id = id_of(&new(
@@ -506,8 +480,7 @@ fn an_agents_pane_is_piped_into_its_record() {
         &["--no-worktree", "--agent", &mock, "fix the login bug"],
     ));
 
-    // The vendor saying how it was called is the boot already past the point
-    // where it would have attached a pipe.
+    // Once the vendor prints its argv, the boot has attached the pipe.
     argv_of(&amx, &id);
     let piped = amx.tmux(&[
         "display-message",
@@ -525,10 +498,9 @@ fn an_agents_pane_is_piped_into_its_record() {
 
 #[test]
 fn a_vendor_that_dies_before_it_speaks_leaves_its_words_on_the_record() {
-    // Nothing reports on a vendor that exits before its first hook: no session
-    // and no transcript reach the record, and its pane is gone. The bytes its
-    // boot kept are the only account of why it went, and `amx logs` hands them
-    // back where it used to say it captured no answer.
+    // A vendor that exits before its first hook leaves no session, no
+    // transcript and no pane. The bytes its boot kept are the only record of
+    // why, and `amx logs` prints them.
     let amx = Harness::new();
     let mock = amx.mock();
     let id = id_of(&new(
@@ -544,8 +516,8 @@ fn a_vendor_that_dies_before_it_speaks_leaves_its_words_on_the_record() {
         amx.meta(&id)
     );
 
-    // `head` flushes when the pane closes, which is a moment after `_exit`
-    // writes the state this waited for.
+    // `head` flushes when the pane closes, shortly after `_exit` writes the
+    // state waited for above.
     amx.until("the dying words to reach the record", || {
         let out = amx.amx(&["logs", &id]);
         String::from_utf8_lossy(&out.stdout)
@@ -556,9 +528,8 @@ fn a_vendor_that_dies_before_it_speaks_leaves_its_words_on_the_record() {
 
 #[test]
 fn the_task_never_rides_the_tmux_command_line() {
-    // A task is arbitrary text and a tmux command line is not a place for it.
-    // It travels in a file only its owner can read, and the pane is started
-    // with nothing but an id.
+    // The task is arbitrary text, so it travels in an owner-only file and the
+    // pane's start command carries only the id.
     let amx = Harness::new();
     let mock = amx.mock();
     let out = new(
@@ -599,11 +570,9 @@ fn the_task_never_rides_the_tmux_command_line() {
 
 #[test]
 fn the_agent_gets_the_environment_new_was_run_with() {
-    // A tmux server started an hour ago has an hour-old environment. The
-    // agent's comes from the command that asked for it, not from the server.
-    // The environment no longer rides the handoff, so this reads the pane's
-    // real environment off the kernel, the same way `boot_strips_a_marker...`
-    // does below.
+    // A long-running tmux server has a stale environment, so the agent gets
+    // the one `amx new` ran with. The handoff does not carry it, so this
+    // reads the pane's environment from `/proc`.
     let amx = Harness::new();
     let mock = amx.mock();
     let out = amx
@@ -622,9 +591,8 @@ fn the_agent_gets_the_environment_new_was_run_with() {
 
     let id = id_of(&out);
 
-    // Waiting for the vendor to say how it was called is waiting for `_boot`
-    // to have already read the boot file, unlinked it and exec'd the vendor
-    // with what it held.
+    // Once the vendor prints its argv, `_boot` has read and unlinked the boot
+    // file and exec'd the vendor.
     argv_of(&amx, &id);
     let pid = amx.tmux(&[
         "display-message",
@@ -657,8 +625,8 @@ fn the_agent_gets_the_environment_new_was_run_with() {
     );
 }
 
-/// `amx new` with an agent's own id already in the environment, the way a
-/// pane amx started carries it.
+/// Run `amx new` with `AMX_ID` set to `parent`, as from inside an agent's
+/// pane.
 fn spawned_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Output {
     amx.amx_command(&[&["new"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
@@ -667,8 +635,8 @@ fn spawned_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) ->
         .expect("running amx new")
 }
 
-/// `amx sub --bg` typed in `parent`'s pane: the one verb that records a
-/// parent. The id is the line it leaves on stderr.
+/// Run `amx sub --bg` from `parent`'s pane. `sub` is the only verb that
+/// records a parent, and it prints the child id on stderr.
 fn sub_inside(amx: &Harness, scenario: &str, parent: &str, args: &[&str]) -> Output {
     amx.amx_command(&[&["sub", "--bg"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
@@ -686,9 +654,8 @@ fn id_on(out: &Output) -> String {
 
 #[test]
 fn new_inside_a_pane_is_still_a_root() {
-    // A child is asked for with `amx sub`, never inherited: a pane amx started
-    // carries its own id in the environment, and `amx new` typed inside it
-    // records no parent all the same.
+    // Only `amx sub` makes a child. `amx new` run inside an agent's pane,
+    // where `AMX_ID` is set, still records no parent.
     let amx = Harness::new();
     let mock = amx.mock();
     let parent = id_of(&new(
@@ -766,9 +733,8 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
         &["--no-worktree", "--agent", &mock, "the child"],
     ));
 
-    // The default is 2, which is an orchestrator's worker and the one helper
-    // that worker asks for: a run dispatches its workers as children, so a
-    // worker's advisor is already a grandchild.
+    // The default `subagent_depth` is 2: an orchestrator dispatches workers
+    // as children, so a worker's own helper is already a grandchild.
     let grandchild = id_on(&sub_inside(
         &amx,
         "a-dispatched-worker",
@@ -797,7 +763,7 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
         "and nothing was claimed"
     );
 
-    // `amx new` typed in the same pane is a root, and a root is never bounded.
+    // `amx new` in the same pane makes a root, which has no depth limit.
     let peer = id_of(&spawned_inside(
         &amx,
         "a-dispatched-worker",
@@ -810,12 +776,9 @@ fn a_spawn_past_the_depth_is_refused_before_anything_is_claimed() {
 
 #[test]
 fn every_pane_a_harness_starts_carries_what_its_table_sets() {
-    // A second account of one vendor, or a proxy in front of it, is written
-    // down once in that harness's table instead of in a wrapper script in
-    // front of every spawn -- and it reaches every pane amx opens on that
-    // harness, whichever verb opened it. amx's own variables stand over it:
-    // an agent whose AMX_ID a file changed would file its events under
-    // somebody else.
+    // `[claude.env]` reaches every claude pane amx opens, whichever verb
+    // opens it. amx's own variables win: an overridden AMX_ID would file the
+    // agent's events under another id.
     let amx = Harness::new();
     amx.config("[claude.env]\nAMX_HARNESS_PROOF = \"~/proof\"\nAMX_ID = \"somebody-else\"\n");
     let home = amx.home().to_path_buf();
@@ -847,8 +810,8 @@ fn every_pane_a_harness_starts_carries_what_its_table_sets() {
     ));
     carries(&pane_env(&amx, &id), &id);
 
-    // A resume and a fork read the config of the project the agent ran in,
-    // and neither is given the vendor's session until the hook reports one.
+    // Resume and fork read the agent's project config and need the session
+    // id, which only the hook reports.
     amx.until("the hook to report a session", || {
         amx.meta(&id)["session"].as_str().map(str::to_string)
     });
@@ -886,8 +849,8 @@ fn every_pane_a_harness_starts_carries_what_its_table_sets() {
     let copy = String::from_utf8_lossy(&forked.stdout).trim().to_string();
     carries(&pane_env(&amx, &copy), &copy);
 
-    // The table is the harness's, and a command that is a path is no harness
-    // the table has heard of.
+    // The table is claude's only. A command given as a path matches no
+    // vendor's table.
     let other = id_of(&new(
         &amx,
         "a-dispatched-worker",
@@ -909,9 +872,8 @@ fn every_pane_a_harness_starts_carries_what_its_table_sets() {
 
 #[test]
 fn trust_is_seeded_in_the_store_the_harness_table_points_the_agent_at() {
-    // A table that moves claude's config directory moves the store the agent
-    // reads its trust from, so that is the store the seeding has to write:
-    // one written under the home would answer a screen the agent never reads.
+    // With `CLAUDE_CONFIG_DIR` set in the table, claude reads trust from that
+    // directory, so amx must seed trust there and not under home.
     let amx = Harness::new();
     let work = amx.home().join("work");
     std::fs::create_dir_all(&work).expect("the other config directory");
@@ -955,12 +917,9 @@ fn trust_is_seeded_in_the_store_the_harness_table_points_the_agent_at() {
 
 #[test]
 fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
-    // A snapshot taken when `new` runs only ever strips a vendor's markers
-    // from what travels in the handoff. It says nothing about what the pane
-    // starts with before that snapshot is laid over it, and a server first
-    // started inside a claude session carries that session's markers as its
-    // own baseline -- set here on the command that starts this harness's
-    // server, before amx ever touches the socket.
+    // `new` strips vendor markers only from its own snapshot, but the pane
+    // also inherits the server's environment. A server first started inside a
+    // claude session carries its markers, so this starts the server with one.
     let amx = Harness::new();
     let state_dir = amx
         .state_root()
@@ -994,9 +953,8 @@ fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
         &["--no-worktree", "--agent", &mock, "fix the login bug"],
     ));
 
-    // Waiting for the vendor to say how it was called is waiting for `_boot`
-    // to have already exec'd it: only then is the pane's own environment the
-    // one this test needs to read.
+    // Once the vendor prints its argv, `_boot` has exec'd it and the pane's
+    // environment is final.
     argv_of(&amx, &id);
     let pid = amx.tmux(&[
         "display-message",
@@ -1127,7 +1085,7 @@ fn new_cuts_the_tree_from_the_ref_it_was_given() {
         "the work of the ref, and not what HEAD has since become"
     );
 
-    // And the key, which says it for every spawn instead of for one.
+    // The `base` config key does the same for every spawn.
     amx.config("base = \"release\"\n");
     let held = id_of(&new(
         &amx,
@@ -1233,11 +1191,9 @@ setup = ["printf '%s\\n' \"$AMX_ID\" \"$AMX_WORKTREE\" \"$AMX_REPO\" \"$AMX_AGEN
 
 #[test]
 fn new_reads_the_project_file_for_the_tree_it_furnishes() {
-    // The keys are laid over the person's file a key at a time, and a project
-    // says them in its own file: a spawn sent into that project furnishes the
-    // tree that file asks for, whatever the person's file says. Found on
-    // 2026-09-13 dogfooding, where `new` read the project's file for the cap
-    // alone and cut a bare tree beside a config asking for a furnished one.
+    // Project config overrides the global file key by key, so a spawn into
+    // the project furnishes the tree its `.amx/config.toml` asks for. `new`
+    // once read the project file for the cap only and cut a bare tree.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -1273,9 +1229,8 @@ fn new_reads_the_project_file_for_the_tree_it_furnishes() {
 
 #[test]
 fn new_runs_nothing_a_cloned_repository_names_until_it_is_allowed() {
-    // The blocker of the 2026-09-26 review: a repository committing
-    // `.amx/config.toml` ran its own shell the first time somebody typed
-    // `amx new` in it. Now the file is nobody's until a person allows it.
+    // A cloned repository's committed `.amx/config.toml` can name shell
+    // commands, so amx ignores the file until `amx allow` approves it.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -1325,8 +1280,8 @@ fn new_says_what_the_config_names_and_the_repository_does_not_have() {
         ],
     );
 
-    // A config file outlives the project it was written for, so a path this
-    // repository does not have is said and stepped over.
+    // A global config may name paths this repository lacks: amx warns and
+    // skips them.
     let id = id_of(&out);
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains(".env"), "the path by name: {said}");
@@ -1471,10 +1426,9 @@ fn new_refuses_to_move_work_that_is_not_there() {
 
 #[test]
 fn new_takes_back_the_tree_when_the_work_will_not_apply_in_it() {
-    // The work in hand was written against the second commit, and the tree is
-    // cut from the first: the stash will not apply, and what is left must be
-    // what there was before the command -- the work where it was typed, and no
-    // tree standing under an id nothing records.
+    // The work in hand is against the second commit and the tree is cut from
+    // the first, so the stash will not apply. amx must leave the work where
+    // it was and remove the tree and its branch.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -1526,12 +1480,11 @@ fn new_takes_back_the_tree_when_the_work_will_not_apply_in_it() {
     );
 }
 
-/// A repository with a bare origin beside it, one commit pushed there on a
-/// `feature` branch, and that commit set as request 7's head.
+/// A repository with a bare origin, where a `feature` commit is pushed and set
+/// as the head of pull request 7. Answers with the repo and that commit.
 ///
-/// The branch is taken back out of the checkout afterwards, which is what a
-/// request somebody else opened looks like from here: work that is on the
-/// forge and in no local branch at all.
+/// The local `feature` branch is then deleted, as for a PR someone else
+/// opened: the work exists only on the forge.
 fn a_repo_with_a_request(amx: &Harness) -> (PathBuf, String) {
     let repo = amx.a_repo();
     let origin = amx.home().join("origin.git");
@@ -1555,12 +1508,10 @@ fn a_repo_with_a_request(amx: &Harness) -> (PathBuf, String) {
     (repo, commit)
 }
 
-/// A `gh` of the suite's own under the harness's `bin`, answering about
-/// request 7 and refusing every other number the way gh refuses one that is
-/// not there.
+/// Install a fake `gh` in the harness's `bin` that describes PR 7 and fails
+/// for any other number, as gh does for a missing PR.
 ///
-/// Never the gh the machine running the suite has installed: it would ask a
-/// forge about a repository nobody here has heard of.
+/// The real gh would query a forge about a repository that exists only here.
 fn a_gh(amx: &Harness, commit: &str) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1585,8 +1536,8 @@ exit 1
         .expect("a gh that can be run");
 }
 
-/// `amx new`, with the harness's own `bin` in front of PATH, which is where
-/// the fake gh is.
+/// Run `amx new` with the harness's `bin`, which holds the fake gh, first on
+/// PATH.
 fn new_with_gh(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
     let path = format!(
         "{}:{}",
@@ -1639,7 +1590,8 @@ fn new_cuts_the_tree_on_the_head_branch_of_the_request_it_was_given() {
         "with the request's work checked out in it"
     );
 
-    // git holds one tree to a branch, and the first agent has this one.
+    // git allows one worktree per branch and the first agent holds `feature`,
+    // so the second gets a branch named after the PR.
     let second = id_of(&new_with_gh(
         &amx,
         "happy-turn",
@@ -1659,9 +1611,8 @@ fn new_cuts_the_tree_on_the_head_branch_of_the_request_it_was_given() {
 
 #[test]
 fn new_cuts_the_tree_for_a_request_whatever_the_worktrees_key_says() {
-    // The key answers for the spawns nobody said anything about. A request is
-    // work that lives on a branch, and there is no starting on it without the
-    // tree that branch is checked out in.
+    // `worktrees = false` is only a default. A PR's work lives on its branch,
+    // so `--pr` always needs a worktree with that branch checked out.
     let amx = Harness::new();
     let mock = amx.mock();
     let (repo, commit) = a_repo_with_a_request(&amx);
@@ -1763,9 +1714,8 @@ fn new_refuses_a_request_beside_the_flags_that_say_where_a_tree_comes_from() {
 
 #[test]
 fn new_cuts_the_tree_on_a_branch_this_checkout_already_has() {
-    // No origin in this repository at all, which is the whole of the point: a
-    // branch that is here is a branch there is nothing to fetch, and the
-    // commits somebody made on it locally stay where they are.
+    // The repository has no origin on purpose: a local branch needs no fetch,
+    // and its local commits are used as they are.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -1813,10 +1763,8 @@ fn new_cuts_the_tree_on_a_branch_this_checkout_already_has() {
 
 #[test]
 fn new_cuts_the_tree_on_a_branch_only_the_origin_has() {
-    // The same shape a request arrives in: `feature` is on the origin and in
-    // no local branch here, so the branch has to be fetched before there is
-    // anything to check out. `origin/feature` is how somebody reads that name
-    // out, and the tree goes on `feature` either way.
+    // As with a PR, `feature` exists only on the origin, so amx must fetch it
+    // first. `origin/feature` is accepted and the tree goes on `feature`.
     let amx = Harness::new();
     let mock = amx.mock();
     let (repo, commit) = a_repo_with_a_request(&amx);
@@ -1848,9 +1796,8 @@ fn new_cuts_the_tree_on_a_branch_only_the_origin_has() {
 
 #[test]
 fn new_refuses_a_branch_another_tree_already_holds() {
-    // git keeps one tree to a branch, and the checkout itself is a tree. A
-    // request can be started twice under a name of amx's own; a branch
-    // somebody typed has no second name.
+    // git allows one worktree per branch, and the main checkout counts. A PR
+    // can fall back to a branch name amx picks; a typed `--branch` cannot.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -1938,11 +1885,9 @@ fn new_refuses_once_the_cap_is_reached() {
 
 #[test]
 fn new_counts_the_cap_however_the_directory_was_spelled() {
-    // `--dir` as somebody types it at a prompt: relative to where they are
-    // standing. The record holds where they meant, spelled out from the root,
-    // and the cap counts it against the same project the absolute spelling
-    // names — outside a repository, where the directory is the whole of the
-    // project and nothing above it would have answered in absolute terms.
+    // A relative `--dir` is recorded as an absolute path and counted against
+    // the same project as the absolute spelling. This runs outside a
+    // repository, where the directory itself is the project.
     let amx = Harness::new();
     let mock = amx.mock();
     let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
@@ -1982,9 +1927,8 @@ fn new_counts_the_cap_however_the_directory_was_spelled() {
 
 #[test]
 fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
-    // Two projects, each of them allowed one agent at a time. What one is
-    // running is nothing the other answers for, and the refusal names the
-    // project it counted so that a person knows which file said so.
+    // Each project has its own cap. The refusal names the project it counted,
+    // so the person knows which config set the limit.
     let amx = Harness::new();
     let mock = amx.mock();
     let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
@@ -2042,9 +1986,8 @@ fn new_counts_the_cap_against_the_project_the_agent_will_run_in() {
 
 #[test]
 fn new_refuses_at_the_ceiling_over_every_project() {
-    // The ceiling is the machine's rather than any project's: two projects
-    // with room to spare between them still stop at what the person allowed
-    // in total.
+    // `max_total` counts across all projects, even when each project's own
+    // cap has room.
     let amx = Harness::new();
     let mock = amx.mock();
     amx.config("max_total = 1\n");
@@ -2107,11 +2050,8 @@ fn an_agent_that_has_ended_does_not_hold_a_place() {
 
 #[test]
 fn the_cap_counts_the_vendor_agents_that_are_running() {
-    // friction #JX6B7GWF: a project at max_agents 1 refused a spawn while the
-    // only records against it were a shell command and an agent sitting at its
-    // prompt. Neither is running a turn -- a command has no vendor at all, and
-    // an idle agent is a pane waiting to be spoken to -- so neither fills the
-    // place the cap is counting.
+    // The cap counts only agents running a turn. An `--exec` command has no
+    // vendor and an idle agent is waiting at its prompt, so neither counts.
     let amx = Harness::new();
     let mock = amx.mock();
     let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
@@ -2291,7 +2231,7 @@ fn dials_the_flags_amx_was_given_reach_the_vendor() {
         "and the task is still the last word: {command:?}"
     );
 
-    // Not only on the record: the process in the pane was called that way.
+    // The process in the pane got the same argv.
     let argv = argv_of(&amx, &id);
     assert!(argv.contains("--model opus"), "{argv}");
     assert!(argv.contains("--effort high"), "{argv}");
@@ -2299,9 +2239,8 @@ fn dials_the_flags_amx_was_given_reach_the_vendor() {
 
 #[test]
 fn dials_stand_down_from_a_flag_the_caller_wrote_out_by_hand() {
-    // Both spellings of the same thing are on this command line: amx's dial
-    // and claude's own flag. The vendor is handed one of them, the one that
-    // was written out, and the dial nobody wrote is still injected.
+    // `--model` is given both as amx's dial and as claude's own flag after
+    // `--`. The vendor flag wins, and `--effort` is still injected.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -2367,9 +2306,8 @@ fn dials_are_turned_by_the_config_for_every_spawn_that_says_nothing() {
 
 #[test]
 fn dials_the_record_keeps_the_model_and_effort_that_were_turned() {
-    // Which vendor ran is on the record already; which model and how hard it
-    // was told to think lived in the pane's argv alone, where nothing reading
-    // a wall could get at them.
+    // Model and effort go on the record because readers such as the wall
+    // cannot see the pane's argv.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -2398,9 +2336,8 @@ fn dials_the_record_keeps_the_model_and_effort_that_were_turned() {
 
 #[test]
 fn dials_a_spawn_that_turned_neither_records_neither() {
-    // A dial nobody turned sends no flag, and the record says the same thing
-    // the argv does: nothing. A reader that wants the word the vendor would
-    // have chosen has to ask the vendor.
+    // An unset dial sends no flag and records null. amx does not guess the
+    // vendor's default.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -2416,8 +2353,8 @@ fn dials_a_spawn_that_turned_neither_records_neither() {
 
 #[test]
 fn dials_a_command_spawn_records_no_vendor_and_no_dials() {
-    // The dials are refused beside --exec, so nothing about a launch is
-    // resolved for a shell row. All three read null, the way `agent` does.
+    // Dials are refused with `--exec`, so a command's row has null agent,
+    // model and effort.
     let amx = Harness::new();
     let ran = id_of(
         &amx.amx_command(&["new", "--exec", "true"])
@@ -2433,9 +2370,8 @@ fn dials_a_command_spawn_records_no_vendor_and_no_dials() {
 
 #[test]
 fn dials_a_fork_carries_the_ones_its_origin_was_started_with() {
-    // A copy runs the conversation it was made from, launched the same way,
-    // so it is running the same model at the same effort. Nothing on the
-    // command line of a fork can say otherwise.
+    // A fork relaunches its origin's conversation the same way, so it runs
+    // the same model and effort. `amx fork` takes no dials of its own.
     let amx = Harness::new();
     let id = id_of(&new_as_claude(
         &amx,
@@ -2524,14 +2460,12 @@ fn a_directory_that_is_not_there_is_said_so_before_anything_is_made() {
 
 #[test]
 fn new_two_racers_for_one_name_leave_the_winners_record_standing() {
-    // Two `amx new --name <same>` in flight at once. The name has one owner:
-    // whichever spawn claims the directory keeps it, and the id it printed is
-    // still a record afterwards — the loser tidying up after itself must
-    // never take the winner's meta.json with it.
+    // Two concurrent `amx new --name <same>`: exactly one wins, and the
+    // loser's cleanup must not delete the winner's meta.json.
     let amx = Harness::new();
     let mock = amx.mock();
-    // Ten attempts of racers, and the finished ones still hold panes: the
-    // default cap would start refusing spawns halfway through the race.
+    // Racers from earlier attempts still hold panes, so the default cap
+    // would start refusing spawns partway through the ten attempts.
     amx.config("max_agents = 40\n");
     let state_dir = amx
         .state_root()
@@ -2541,9 +2475,8 @@ fn new_two_racers_for_one_name_leave_the_winners_record_standing() {
 
     for attempt in 0..10 {
         let name = format!("race-{attempt}");
-        // Both racers are up and spinning before the starting gun fires, so
-        // they reach the uniqueness check together instead of one whole run
-        // apart.
+        // Both racers spin until the `go` file exists, so they reach the name
+        // check together.
         let go = state_dir.join(format!("go-{attempt}"));
         let racers: Vec<_> = (0..2)
             .map(|_| {
@@ -2616,8 +2549,7 @@ fn mode(path: &Path) -> u32 {
         .mode()
 }
 
-/// A role file written under this harness's own config, where the person's
-/// roles stand.
+/// Write a role file to the global roles directory under this harness's home.
 fn a_role(amx: &Harness, name: &str, text: &str) {
     let dir = amx.home().join(".config/amx/agents");
     std::fs::create_dir_all(&dir).expect("a directory for roles");
@@ -2626,10 +2558,8 @@ fn a_role(amx: &Harness, name: &str, text: &str) {
 
 #[test]
 fn new_spawns_on_a_roles_dials_and_hands_the_brief_before_the_task() {
-    // A role is a named recipe: its frontmatter is a default for the dials and
-    // its body is a brief. The vendor is handed the brief and then the task;
-    // the record keeps the task alone, because what somebody asked for is the
-    // task and the role is how they asked.
+    // A role's frontmatter sets default dials and its body is a brief. The
+    // vendor gets the brief then the task; the record keeps only the task.
     let amx = Harness::new();
     a_role(
         &amx,
@@ -2659,7 +2589,7 @@ fn new_spawns_on_a_roles_dials_and_hands_the_brief_before_the_task() {
     assert_eq!(meta["effort"], "low", "and its effort");
     assert_eq!(meta["role"], "scout", "and the role is named on the record");
 
-    // And the reading says so, both ways.
+    // `status` names the role in both its JSON and its text output.
     let json: Value =
         serde_json::from_slice(&amx.amx(&["status", &id, "--json"]).stdout).expect("one object");
     assert_eq!(json["role"], "scout");
@@ -2688,7 +2618,7 @@ fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
         "---\ndescription: fast recon\nagent: claude\nmodel: fable\n---\nYou are a scout.\n",
     );
 
-    // The role is a default: what the caller typed stands.
+    // A typed dial overrides the role's.
     let out = new_as_claude(
         &amx,
         "happy-turn",
@@ -2703,8 +2633,7 @@ fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
     );
     assert_eq!(amx.meta(&id_of(&out))["model"], "opus");
 
-    // A name amx does not know is a command line to fix, and the roles it does
-    // know are named so the next try is the right one.
+    // An unknown role is a usage error that lists the known roles.
     let out = new_as_claude(
         &amx,
         "happy-turn",
@@ -2723,8 +2652,8 @@ fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
 
 #[test]
 fn a_role_is_refused_beside_a_shell_command() {
-    // A role is a vendor recipe: model, effort, a brief for an agent. A shell
-    // command has none of those, so the pair is a command line nobody meant.
+    // A role configures a vendor (model, effort, brief), and `--exec` runs
+    // none.
     let amx = Harness::new();
 
     let out = amx.amx(&["new", "--exec", "--role", "scout", "echo hi"]);
@@ -2732,9 +2661,9 @@ fn a_role_is_refused_beside_a_shell_command() {
     assert_eq!(out.status.code(), Some(64));
 }
 
-/// What a command in a pane amx spawned hears back when it asks its terminal
-/// for its foreground and background (OSC 10 and 11, in one write, the way codex
-/// asks), with a second of silence taken as no answer.
+/// What a command in an amx pane reads back after querying its terminal's
+/// foreground and background colours (OSC 10 and 11 in one write, as codex
+/// does). A second of silence counts as no answer.
 fn background_answered(amx: &Harness, id: &str) -> String {
     let reply = amx.home().join("reply");
     let script = format!(
@@ -2756,10 +2685,9 @@ fn background_answered(amx: &Harness, id: &str) -> String {
 
 #[test]
 fn a_spawned_pane_answers_for_the_remembered_background() {
-    // A detached pane has no terminal behind it to answer, and a program that
-    // tints itself off the answer draws untinted. The colours the view last
-    // read off the terminal are what tmux answers with instead, both of them:
-    // codex uses neither unless it gets the pair.
+    // A detached pane has no terminal to answer colour queries, so tmux
+    // answers with the colours the view last read. It answers both: codex
+    // uses neither unless it gets the pair.
     let amx = Harness::new();
     std::fs::write(
         amx.state_root().parent().unwrap().join("background"),
@@ -2775,8 +2703,8 @@ fn a_spawned_pane_answers_for_the_remembered_background() {
 
 #[test]
 fn a_spawned_pane_answers_for_a_background_kept_alone() {
-    // What the view kept before it kept the foreground too: a bare colour,
-    // painted as the background and nothing else.
+    // The older file format, from before the view kept the foreground: a bare
+    // colour, used as the background only.
     let amx = Harness::new();
     std::fs::write(
         amx.state_root().parent().unwrap().join("background"),

@@ -1,10 +1,6 @@
-//! `amx sub`: one call that spawns a child and waits for its answer.
-//!
-//! A subagent is an ordinary amx agent whose record names a parent, so most of
-//! what these tests weigh is what `amx new` already does — the parent on the
-//! record, the id printed somewhere a caller can read it — and the one thing
-//! `new` does not: the answer, waited for and handed back, with the exit code
-//! saying how the turn ended.
+//! `amx sub`: spawn a child agent, wait for its turn to end and print its
+//! answer, with the exit code saying how the turn ended. The child is an
+//! ordinary agent whose record names its parent.
 
 mod common;
 
@@ -13,7 +9,7 @@ use serde_json::Value;
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-/// `amx new` for the parent whose pane later runs `amx sub`.
+/// Spawn a parent agent with `amx new`, and answer with its id.
 fn a_parent(amx: &Harness, mock: &str) -> String {
     let out = amx
         .amx_command(&[
@@ -36,7 +32,7 @@ fn a_parent(amx: &Harness, mock: &str) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// `amx sub` typed inside `parent`'s pane.
+/// Run `amx sub` as from `parent`'s pane, with `AMX_ID` set to `parent`.
 fn a_sub(amx: &Harness, parent: &str, mock: &str, args: &[&str]) -> Output {
     let mut line = vec!["sub", "--agent", mock];
     line.extend_from_slice(args);
@@ -47,7 +43,7 @@ fn a_sub(amx: &Harness, parent: &str, mock: &str, args: &[&str]) -> Output {
         .expect("running amx sub")
 }
 
-/// `amx sub` from a person's own shell, which has no `AMX_ID`.
+/// Run `amx sub` with no `AMX_ID`, as from a shell outside any agent.
 fn a_sub_from_outside(amx: &Harness, mock: &str, args: &[&str]) -> Output {
     let mut line = vec!["sub", "--agent", mock];
     line.extend_from_slice(args);
@@ -57,7 +53,7 @@ fn a_sub_from_outside(amx: &Harness, mock: &str, args: &[&str]) -> Output {
         .expect("running amx sub")
 }
 
-/// The id `amx sub` wrote on stderr, which is one line and nothing else.
+/// The child id `amx sub` printed, which must be the only line on stderr.
 fn id_on(out: &Output) -> String {
     let said = String::from_utf8_lossy(&out.stderr);
     assert_eq!(said.lines().count(), 1, "one line on stderr: {said:?}");
@@ -98,8 +94,8 @@ fn sub_context_digest_puts_the_parents_task_and_last_word_in_the_brief() {
     let mock = amx.mock();
     let parent = a_parent(&amx, &mock);
 
-    // The parent's last word comes off the transcript its first hook names,
-    // which is a moment after `amx new` has returned.
+    // The transcript path arrives with the parent's first hook, shortly after
+    // `amx new` returns.
     let transcript = amx.until("the parent to announce a transcript", || {
         amx.meta(&parent)["transcript"].as_str().map(str::to_string)
     });
@@ -293,17 +289,15 @@ fn sub_refuses_permission_unless_the_config_allows_it() {
 
 #[test]
 fn sub_hands_the_parents_vendor_down_when_no_agent_is_named() {
-    // A subagent of a pi agent is pi. The parent's own command is the child's
-    // default whenever the caller names neither `--agent` nor `--model`, so a
-    // child typed inside a pane does not quietly run whatever the config file
-    // says the machine's agent is. Found live on 2026-09-17: a pi parent's
-    // child came up claude.
+    // With neither `--agent` nor `--model`, the child runs the parent's
+    // command instead of the configured default, so a pi parent's child is
+    // pi.
     let amx = Harness::new();
     let mock = amx.mock();
     amx.config(&format!("agent = \"{mock} --not-the-parent\"\n"));
     let parent = a_parent(&amx, &mock);
 
-    // No `--agent`, unlike every other test here.
+    // No `--agent`, unlike the other tests here.
     let out = amx
         .amx_command(&["sub", "--bg", "scout"])
         .env("AMX_ID", &parent)
@@ -330,7 +324,7 @@ fn sub_hands_the_parents_vendor_down_when_no_agent_is_named() {
     );
 }
 
-/// `amx stop` on a parent that has no worktree, so it asks nothing.
+/// Run `amx stop` on an agent with no worktree, which prompts for nothing.
 fn stopped(amx: &Harness, id: &str) {
     let out = amx
         .amx_command(&["stop", id])
@@ -345,10 +339,9 @@ fn stopped(amx: &Harness, id: &str) {
 
 #[test]
 fn sub_from_outside_takes_a_name_and_a_parent_that_has_ended() {
-    // A program driving amx from no pane -- workflow dispatching a task's
-    // reader -- names the child and the agent it belongs to, and the parent
-    // may be one that has already ended: the worker whose diff is read, or
-    // the dead worker a fresh one takes over from.
+    // An orchestrator outside any pane names the child and its parent. The
+    // parent may have ended already, e.g. a worker whose diff a reviewer
+    // reads, or a dead worker a fresh one takes over from.
     let amx = Harness::new();
     let mock = amx.mock();
     let parent = a_parent(&amx, &mock);
@@ -380,7 +373,7 @@ fn sub_from_outside_takes_a_name_and_a_parent_that_has_ended() {
 
 #[test]
 fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
-    // In a checkout, where a parentless sub would otherwise cut a tree.
+    // In a repo, a sub with no parent cuts a worktree by default.
     let amx = Harness::new();
     let mock = amx.mock();
     let repo = amx.a_repo();
@@ -408,7 +401,7 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
     assert_eq!(meta["worktree"], Value::Null, "no tree of its own");
     assert_eq!(meta["dir"], repo_s);
 
-    // A role with an opinion does not undo a typed flag.
+    // `--no-worktree` wins over a role that sets `worktree: true`.
     std::fs::create_dir_all(repo.join(".amx/agents")).unwrap();
     std::fs::write(
         repo.join(".amx/agents/reader.md"),
@@ -443,10 +436,9 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
 
 #[test]
 fn sub_refuses_a_parent_whose_directory_has_gone() {
-    // A parent that has stopped may have had a worktree, and a run that has
-    // since removed it leaves a record naming a path nothing can run in. The
-    // child inherits that path, so the refusal has to name the parent it came
-    // from rather than the path alone: `--dir` is what the caller does next.
+    // The child inherits a stopped parent's directory, which may have been
+    // removed since. The error names the parent the path came from and
+    // suggests `--dir`.
     let amx = Harness::new();
     let mock = amx.mock();
     let gone = amx.home().join("a-tree-a-run-removed");
@@ -484,7 +476,7 @@ fn sub_refuses_a_parent_whose_directory_has_gone() {
     assert!(said.contains(&parent), "names the parent: {said}");
     assert!(said.contains("--dir"), "says what to do instead: {said}");
 
-    // Named a directory, the same call runs: the parent's is only a default.
+    // With `--dir` the same call runs: the parent's directory is a default.
     let out = a_sub_from_outside(
         &amx,
         &mock,
