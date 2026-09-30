@@ -1,10 +1,9 @@
-//! The wall itself: the agents on it, the groups they stand in, and what
-//! looking at a row or acting on one does.
+//! End-to-end tests for the wall view: which agents it lists, how it groups
+//! and orders them, and what keys and clicks on a row do.
 //!
-//! Every one of these drives the view in a real tmux pane, because a view is
-//! only a view when something is drawing it on a terminal: what it puts on the
-//! screen, what a keypress does to that, and what it leaves behind when it
-//! closes are all questions a pty answers and nothing else does.
+//! Each test runs the view in a real tmux pane and reads the screen back with
+//! `capture-pane`, since drawing, key handling and cleanup on exit need a real
+//! terminal.
 
 mod common;
 
@@ -16,9 +15,10 @@ use common::{
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// What the last look at the forge wrote down beside the record, which is what
-/// a row's number is read from. Written as of now, so the view takes it at its
-/// word and no forge is asked at all.
+/// Give agent `id` the branch `amx/<id>` and a pr.json with one request,
+/// `number`, in `standing`.
+///
+/// `asked` is now, so the view trusts the cache and never queries the forge.
 fn a_request(amx: &Harness, id: &str, number: u64, standing: &str) {
     let branch = format!("amx/{id}");
     amx.set_meta(id, json!({ "branch": branch }));
@@ -34,8 +34,7 @@ fn a_request(amx: &Harness, id: &str, number: u64, standing: &str) {
     .expect("what the last look wrote");
 }
 
-/// Which line of a drawn screen holds a word, for the tests about what stands
-/// over what.
+/// The 0-based index of the first line of `drawn` that contains `text`.
 fn line_of(drawn: &str, text: &str) -> usize {
     drawn
         .lines()
@@ -43,22 +42,22 @@ fn line_of(drawn: &str, text: &str) -> usize {
         .unwrap_or_else(|| panic!("no line holding {text} in:\n{drawn}"))
 }
 
-/// The glyph on an agent's row, as the view has it drawn now: past the blank
-/// cell its rows are indented by.
+/// The status glyph on the agent's row now, after the row's one-cell indent.
 fn mark(amx: &Harness, view: &str, id: &str) -> Option<char> {
     row_of(amx, view, id)?.chars().nth(1)
 }
 
-/// Somebody having been to read what an agent is holding, written where a look
-/// writes it. Nothing on the wall is painted for it: what it moves is where the
-/// row sorts against the completed fold.
+/// Mark the agent as seen now, as opening its card does.
+///
+/// The wall draws nothing for it; it only changes where the row sorts against
+/// the Completed fold.
 fn read(amx: &Harness, id: &str) {
     let mut state = amx.state(id);
     state["seen"] = json!(now());
     amx.set_state(id, state);
 }
 
-/// The line of the list an agent is drawn on.
+/// The first line of the view's screen that contains `id`.
 fn row_of(amx: &Harness, view: &str, id: &str) -> Option<String> {
     amx.capture(view)
         .lines()
@@ -66,36 +65,36 @@ fn row_of(amx: &Harness, view: &str, id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// How many rows of a drawn screen name an agent whose id begins this way,
-/// which is how many of a group's rows the fold left standing.
+/// How many lines of `drawn` contain `prefix`, i.e. how many of a group's rows
+/// the fold leaves visible.
 fn rows_of(drawn: &str, prefix: &str) -> usize {
     drawn.lines().filter(|line| line.contains(prefix)).count()
 }
 
-/// Write a theme where the config file's `theme` name reaches it, which is the
-/// directory beside the config a person keeps their own in.
+/// Write theme `name` into the user's themes directory, where the config's
+/// `theme` key looks it up.
 fn theme(amx: &Harness, name: &str, text: &str) {
     let dir = amx.home().join(".config/amx/themes");
     std::fs::create_dir_all(&dir).expect("the themes directory");
     std::fs::write(dir.join(format!("{name}.toml")), text).expect("writing the theme");
 }
 
-/// The title claude gave the session, where the hook writes it: on the record,
-/// at the end of a turn.
+/// Set the agent's `session_title` in state.json, as claude's end-of-turn hook
+/// does.
 fn titled(amx: &Harness, id: &str, title: &str) {
     let mut state = amx.state(id);
     state["session_title"] = json!(title);
     amx.set_state(id, state);
 }
 
-/// And what somebody at the wall renamed the agent to.
+/// Set the agent's `name` in state.json, as renaming it from the wall does.
 fn renamed(amx: &Harness, id: &str, name: &str) {
     let mut state = amx.state(id);
     state["name"] = json!(name);
     amx.set_state(id, state);
 }
 
-/// Move a record's directory, which is what decides its project.
+/// Set the agent's `dir` in meta.json, which decides its project.
 fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
     let path = amx.agent_dir(id).join("meta.json");
     let mut meta: serde_json::Value =
@@ -104,14 +103,13 @@ fn running_in(amx: &Harness, id: &str, dir: &std::path::Path) {
     std::fs::write(&path, serde_json::to_vec(&meta).expect("the record")).expect("the record");
 }
 
-/// The same key twice, close enough together that a view holding a window
-/// open for the second press still has it open.
+/// Send `key` twice in one tmux command, so the second press lands within any
+/// time window the view opens after the first.
 fn twice(amx: &Harness, view: &str, key: &str) {
     amx.tmux(&["send-keys", "-t", view, key, key]);
 }
 
-/// The 1-based screen row an agent's row is drawn on, for a pointer to land
-/// on.
+/// The 1-based screen row of the agent's row, for mouse events.
 fn screen_row_of(amx: &Harness, view: &str, id: &str) -> u16 {
     let drawn = amx.capture(view);
     let at = drawn
@@ -121,11 +119,10 @@ fn screen_row_of(amx: &Harness, view: &str, id: &str) -> u16 {
     at as u16 + 1
 }
 
-/// The five rows claude draws at the bottom of every pane it has the room
-/// for, in the vendor's own order: the composer's top border with its
-/// right-anchored label, whatever is staged in the box, the composer's bottom
-/// border, the statusline, and the mode footer. Transcribed from a live
-/// 2.1.237 on 2026-08-21.
+/// The five rows claude draws at the bottom of its pane, top to bottom: the
+/// composer's top border with its right-aligned label, the composer line, the
+/// bottom border, the statusline and the mode footer. Copied from claude
+/// 2.1.237.
 const CHROME: [&str; 5] = [
     "──────────────────────────── execute amx-v2 ─",
     "❯ ",
@@ -134,13 +131,13 @@ const CHROME: [&str; 5] = [
     "  ⏵⏵ accept edits on (shift+tab to cycle)",
 ];
 
-/// A terminal amx cannot tell is inside tmux, which is what tmux's own two
-/// variables say and the only thing that says it.
+/// Run bare amx in a pane with `TMUX` and `TMUX_PANE` unset, which is how amx
+/// decides it is outside tmux.
 fn outside_tmux(amx: &Harness) -> String {
     amx.in_a_terminal(&[("TMUX", ""), ("TMUX_PANE", "")], &[])
 }
 
-/// The sessions on this harness's server, by name.
+/// The names of the sessions on this harness's server.
 fn sessions(amx: &Harness) -> Vec<String> {
     amx.tmux(&["list-sessions", "-F", "#{session_name}"])
         .lines()
@@ -148,8 +145,8 @@ fn sessions(amx: &Harness) -> Vec<String> {
         .collect()
 }
 
-/// An agent as every agent is: a detached session of its own named for the id,
-/// with a line on its screen to know it by.
+/// Record agent `id` in a detached `amx-<id>` session, as amx names its own,
+/// showing "the agent at work".
 fn an_agent_session(amx: &Harness, id: &str) -> String {
     let pane = amx.tmux(&[
         "new-session",
@@ -172,8 +169,7 @@ fn an_agent_session(amx: &Harness, id: &str) -> String {
 fn bare_amx_draws_the_list_in_the_terminal_it_was_typed_in() {
     let amx = Harness::new();
 
-    // The same command at two terminals: one inside tmux, one that as far as
-    // amx can tell is not.
+    // Once inside tmux and once in a terminal amx sees as outside it.
     let inside = amx.in_a_terminal(&[], &[]);
     let outside = outside_tmux(&amx);
 
@@ -217,9 +213,8 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     for id in ["ask-a1b", "port-import-b2c", "fix-login-c3d", "old-job-d4e"] {
         assert!(drawn.contains(id), "{id} is missing from:\n{drawn}");
     }
-    // The agent sitting at its prompt is under the same heading as the one
-    // whose command exited: both turns are over, and whether the process is
-    // still there is the row's business rather than the group's.
+    // Idle and exited agents share Completed since both turns are over; only
+    // the row shows whether the process is still alive.
     assert!(
         !drawn.contains("Idle"),
         "an ended turn is completed, so there is no group between:\n{drawn}"
@@ -228,14 +223,14 @@ fn the_view_gathers_the_agents_under_what_they_need() {
         line_of(&drawn, "Completed") < line_of(&drawn, "fix-login-c3d"),
         "the idle agent stands under Completed:\n{drawn}"
     );
-    // A row says what the agent is up to: what it is asking, else what it is
-    // doing, else what it answered.
+    // A row's detail is the pending question, else the running tool, else the
+    // last answer.
     assert!(drawn.contains("Claude needs your permission"), "{drawn}");
     assert!(drawn.contains("Running Bash"), "{drawn}");
     assert!(drawn.contains("did what it was asked"), "{drawn}");
 
-    // Twice over, in two vocabularies: the heading says what the group means,
-    // and the band at the top says the word the list can be narrowed by.
+    // Group names appear only as headings; the header counts use the filter
+    // words (WAITING, done).
     for group in ["Needs input", "Completed"] {
         assert_eq!(
             drawn.matches(group).count(),
@@ -253,7 +248,7 @@ fn the_view_gathers_the_agents_under_what_they_need() {
     );
 }
 
-/// Record an agent that has ended, a child of the agent this id names.
+/// Record an ended agent `id` as a depth-1 child of `parent`.
 fn a_child(amx: &Harness, id: &str, parent: &str, ago: u64, created: u64) {
     finished(amx, id, "done", ago);
     amx.set_meta(
@@ -299,9 +294,8 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
         "the parent wears no connector of its own"
     );
 
-    // Nothing in front of the parent: a root stands at the column the wall
-    // starts at whether or not a family hangs from it, and the connector then
-    // starts in the column of the glyph it hangs from.
+    // A root keeps the wall's base indent even with children, and a child's
+    // connector starts in its parent's glyph column.
     let indent = |line: &str| line.len() - line.trim_start().len();
     assert_eq!(
         indent(&parent_line),
@@ -315,8 +309,7 @@ fn the_wall_draws_a_child_under_its_parent_on_a_connector() {
          {review_line:?} against {parent_line:?}"
     );
 
-    // The heading and the header count the top-level agent, not the family: a
-    // child is drawn under its parent rather than as a group of its own.
+    // Counts include top-level agents only.
     assert!(
         drawn.contains("1 done"),
         "one top-level agent has ended:\n{drawn}"
@@ -338,8 +331,8 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
         (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
     });
 
-    // Onto the working agent: the view opens on the first row, and the walk
-    // down takes the heading between them.
+    // The cursor starts on the first row, and the Working heading takes one
+    // step on the way down to port-import-b2c.
     press(&amx, &view, "Down");
     press(&amx, &view, "Down");
     press(&amx, &view, "C-t");
@@ -362,7 +355,6 @@ fn ctrl_t_pins_the_row_under_the_cursor_over_every_group_and_lets_it_go() {
         "the group it came out of was the last of it:\n{drawn}"
     );
 
-    // And the same key lets it go, back under what it is doing.
     press(&amx, &view, "C-t");
     let back = amx.until("the working group again", || {
         let drawn = amx.capture(&view);
@@ -389,8 +381,7 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
         (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
     });
 
-    // The view opens on the agent that is asking, which is the one to put
-    // away: whatever it is doing is where a sleeping row is not drawn.
+    // The cursor starts on ask-a1b, the waiting agent.
     press(&amx, &view, "z");
     let drawn = amx.until("the sleeping group", || {
         let drawn = amx.capture(&view);
@@ -416,8 +407,7 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
          its question:\n{drawn}"
     );
 
-    // The mark outlives the view that made it, so a terminal opened after it
-    // draws the same wall.
+    // The sleep mark is persisted, so a second view shows it too.
     let again = amx.in_a_terminal(&[], &[]);
     let opened = amx.until("the second view", || {
         let drawn = amx.capture(&again);
@@ -428,8 +418,7 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
         "the next view opens on the wall the last one was left on:\n{opened}"
     );
 
-    // And the word the header counts them by is the word that finds them
-    // again on the find line.
+    // The header's word for the group also works as a find filter.
     types(&amx, &view, "/");
     types(&amx, &view, "s:asleep");
     amx.until("the wall narrowed to the sleeping agent", || {
@@ -441,8 +430,7 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
         amx.capture(&view).contains("port-import-b2c").then_some(())
     });
 
-    // The same key wakes it, back under what it is doing. The foot of the
-    // wall is where it was put, so that is where the cursor goes for it.
+    // The sleeping row is last on the wall, so G reaches it.
     press(&amx, &view, "G");
     press(&amx, &view, "z");
     let back = amx.until("the asking group again", || {
@@ -504,8 +492,7 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
     amx.until_state("fix-login-c3d", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
 
-    // One shape while there is a process to go back to and another once there
-    // is not, whatever the row is doing with it.
+    // ✻ while the process is alive and ∙ once it has gone, whatever the state.
     let view = amx.in_a_terminal(&[], &[]);
     for (id, want) in [
         ("ask-a1b", '✻'),
@@ -517,9 +504,7 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
         });
     }
 
-    // What tells the two live ones apart is the colour on that one shape: the
-    // row that wants a person is painted for it, and the row sitting at its
-    // prompt is the quiet one.
+    // Only the colour tells the two live glyphs apart.
     let asking = coloured_line(&amx, &view, "ask-a1b");
     assert!(
         asking.contains(&foreground("waiting")),
@@ -532,9 +517,8 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
          not:\n{resting:?}"
     );
 
-    // The working row is drawn a frame at a time, so watching it for a moment
-    // shows more than one of them — and every one is the vendor's own, from the
-    // set tmux hands its panes rather than the one ghostty asks for.
+    // The working glyph animates, so polling sees several frames. Each must be
+    // from claude's spinner set under tmux; claude uses another set in ghostty.
     let mut frames = std::collections::BTreeSet::new();
     amx.until("the working row to breathe", || {
         frames.extend(mark(&amx, &view, "port-import-b2c"));
@@ -551,10 +535,9 @@ fn glyphs_say_a_live_agent_from_an_ended_one_and_the_working_one_breathes() {
 #[test]
 fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
     let amx = Harness::new();
-    // A shell row is a record with no agent on it, which is what `!cmd` and
-    // `amx new --exec` write. One still running and one over, beside an agent
-    // in each of the same two states, because what this is about is which of
-    // the shapes belongs to which kind of row.
+    // A shell row is a record with `agent: null`, as `!cmd` and
+    // `amx new --exec` write. A live and an ended shell row, next to an agent
+    // in each of those states.
     let pane = a_pane_showing(&amx, &["cargo build"]);
     amx.record("build-a1b", &pane);
     amx.set_meta("build-a1b", json!({ "agent": null }));
@@ -571,9 +554,7 @@ fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
         });
     }
 
-    // The agent rows are what they were: the one whose turn is running is
-    // drawn a frame at a time, and the one whose pane has gone rests on the
-    // dot.
+    // Agent rows keep their usual glyphs.
     amx.until("old-job-d4e to rest on the dot", || {
         (mark(&amx, &view, "old-job-d4e") == Some('∙')).then_some(())
     });
@@ -593,9 +574,8 @@ fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
 #[test]
 fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
     let amx = Harness::new();
-    // The three kinds of row the column has anything to say about: a spawn
-    // that turned both dials, one that turned neither, and a shell command,
-    // which runs no vendor at all.
+    // An agent with model and effort set, one with neither, and a shell row,
+    // which has no vendor.
     finished(&amx, "fix-login-a1b", "done", 30);
     amx.set_meta(
         "fix-login-a1b",
@@ -607,8 +587,8 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
     amx.set_meta("build-c3d", json!({ "agent": null }));
 
     let ids = ["fix-login-a1b", "port-b2c", "build-c3d"];
-    // The three rows or none of them: a capture can land mid-frame, and a
-    // screen half written is one to look at again rather than one to fail on.
+    // All three rows or None. The view has no synchronized output, so a
+    // capture can land mid-frame; a partial screen means poll again.
     let rows = |drawn: &str| -> Option<Vec<String>> {
         ids.iter()
             .map(|id| {
@@ -634,9 +614,8 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
         );
     }
 
-    // Waited for by all three rows, because all three are what is measured:
-    // a capture that landed between the frame and the assertion would read as
-    // a column that never came up.
+    // Wait on all three rows: a capture that lands mid-frame would look like
+    // a column that never appeared.
     press(&amx, &view, "v");
     let loud = amx.until("what each row runs", || {
         let drawn = amx.capture(&view);
@@ -659,7 +638,6 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
         );
     }
 
-    // The same key takes it away again.
     press(&amx, &view, "v");
     amx.until("the wall without it", || {
         let drawn = amx.capture(&view);
@@ -669,8 +647,7 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
             .then_some(())
     });
 
-    // And the choice outlives the view that made it: put back up, it is the
-    // wall the next terminal opens on.
+    // The setting persists, so a new view opens with the column on.
     press(&amx, &view, "v");
     amx.until("the column again", || {
         amx.capture(&view)
@@ -697,9 +674,8 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
     pane_rows.extend_from_slice(&CHROME);
     let pane = a_pane_showing(&amx, &pane_rows);
     amx.record("port-cli-b2c", &pane);
-    // The hooks have gone quiet inside the turn, which is the state a reader
-    // is at the pane for. What the record has to say about the turn is the
-    // tool call it last saw, and that call may have ended ten minutes ago.
+    // Hooks silent for ten minutes mid-turn: the record still names the last
+    // tool call, which may be long over.
     let quiet_since = now() - 600;
     amx.set_state(
         "port-cli-b2c",
@@ -722,8 +698,8 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
          what the hooks said:\n{row}"
     );
 
-    // The card's rule is where it belongs, and it is what the rule says about
-    // a turn under way the whole way through one.
+    // Unlike the row, the card's rule line shows claude's spinner line for
+    // the whole turn.
     let carded = card_on(&amx, &view, "port-cli-b2c");
     let ruled = carded
         .lines()
@@ -734,8 +710,8 @@ fn a_working_row_says_what_the_line_over_the_composer_says() {
         "the vendor's line whole, less the glyph it pulses in front of it:\n{ruled}"
     );
 
-    // Read and not written down: the line is about the second it was read in,
-    // and a record carrying it would have every later reader repeat it as news.
+    // The spinner line is read live and never stored: in the record it would
+    // go stale and later readers would show it as current.
     assert_eq!(
         amx.state("port-cli-b2c")["summary"],
         "Running Read",
@@ -751,15 +727,14 @@ fn a_working_row_says_the_newest_line_of_its_transcript() {
     let pane = a_pane_showing(&amx, &pane_rows);
     amx.record("port-cli-b2c", &pane);
 
-    // The transcript the session is writing, part way through a turn: the
-    // agent has said a sentence and called nothing since.
+    // Mid-turn transcript: one text message and no tool call after it.
     let transcript = amx.agent_dir("port-cli-b2c").join("session.jsonl");
     let said = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
                 \"text\":\"The importer keeps its own clock.\"}]}}\n";
     std::fs::write(&transcript, said).expect("the transcript");
     amx.set_meta("port-cli-b2c", json!({ "transcript": transcript }));
 
-    // The hooks went quiet ten minutes ago, on the call the record names.
+    // Hooks silent for ten minutes since the call the record names.
     let quiet_since = now() - 600;
     amx.set_state(
         "port-cli-b2c",
@@ -784,7 +759,7 @@ fn a_working_row_says_the_newest_line_of_its_transcript() {
         "which is newer than the line the vendor spins:\n{row}"
     );
 
-    // The next call lands: the row moves to the tool and the path it names.
+    // A newer tool call: the row shows the tool and its path.
     let call = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
                 \"name\":\"Read\",\"input\":{\"file_path\":\"src/importer.rs\"}}]}}\n";
     std::fs::write(&transcript, format!("{said}{call}")).expect("the transcript");
@@ -797,8 +772,8 @@ fn a_working_row_says_the_newest_line_of_its_transcript() {
         "the tool and its path, not the record's word for the same call:\n{row}"
     );
 
-    // Read and not written down, like the line over the composer: a transcript
-    // is read again by whoever looks next.
+    // Transcript lines are not stored either; each reader reads the
+    // transcript itself.
     assert_eq!(
         amx.state("port-cli-b2c")["summary"],
         "Running Read",
@@ -806,9 +781,8 @@ fn a_working_row_says_the_newest_line_of_its_transcript() {
     );
 }
 
-/// A turn that ended with five paragraphs, which is the shape a row cannot say
-/// anything useful about on its own: the answer opens with the work rather
-/// than with a line about the work.
+/// Record agent `id` as done a minute ago, with a multi-paragraph answer that
+/// has no summary yet.
 fn ended_with_an_answer(amx: &Harness, id: &str) {
     let at = now() - 60;
     amx.record(id, "%404");
@@ -827,9 +801,8 @@ fn ended_with_an_answer(amx: &Harness, id: &str) {
 #[test]
 fn summary_command_writes_the_line_a_finished_row_shows() {
     let amx = Harness::new();
-    // Whatever somebody configures here is routinely a model call. This one
-    // answers the same way every time, which is the only difference that
-    // matters to the reader that runs it.
+    // In real use this is usually a model call; `tr` gives a deterministic
+    // stand-in.
     amx.config("summary_command = \"tr a-z A-Z\"\n");
     ended_with_an_answer(&amx, "port-cli-b2c");
 
@@ -842,8 +815,8 @@ fn summary_command_writes_the_line_a_finished_row_shows() {
         "the line stands where the answer's first line stood:\n{row}"
     );
 
-    // On the record, so every reader after this one has the line without
-    // running the command again, and the ask is marked as having come back.
+    // The summary is stored so later readers skip the command, and
+    // summary.asked marks the ask as finished.
     assert_eq!(
         amx.state("port-cli-b2c")["summary"],
         "PORTED THE IMPORTER",
@@ -859,8 +832,6 @@ fn summary_command_writes_the_line_a_finished_row_shows() {
 #[test]
 fn a_finished_row_without_a_summary_command_costs_nothing_and_keeps_the_answer() {
     let amx = Harness::new();
-    // No config at all, which is the state every amx nobody has configured is
-    // in. Nothing is run and nothing is spent.
     ended_with_an_answer(&amx, "port-cli-b2c");
 
     let view = amx.in_a_terminal(&[], &[]);
@@ -872,8 +843,6 @@ fn a_finished_row_without_a_summary_command_costs_nothing_and_keeps_the_answer()
         "the answer's first line, which is what a row has room for:\n{row}"
     );
 
-    // Nothing was asked, so nothing was written down about an ask, and the
-    // record is where the turn left it.
     assert!(
         !amx.agent_dir("port-cli-b2c").join("summary.asked").exists(),
         "no command is no question"
@@ -889,9 +858,8 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     amx.play("fix-login-b2c", "happy-turn");
     amx.until_state("ask-a1b", "waiting");
     amx.until_state("fix-login-b2c", "idle");
-    // One in the repository itself and one in a subdirectory of it, which is
-    // the case the walk up the ancestors exists for. The third stays where the
-    // harness put it, outside any repository at all.
+    // One agent at the repo root and one in a subdirectory, which takes the
+    // walk up to the root. old-job-c3d stays outside any repository.
     running_in(&amx, "ask-a1b", &repo);
     running_in(&amx, "fix-login-b2c", &repo.join("src"));
     finished(&amx, "old-job-c3d", "done", 60);
@@ -914,10 +882,8 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
             .unwrap_or_else(|| panic!("no row for {id} in:\n{drawn}"))
             .to_string()
     };
-    // A heading opens on the project it stands over and ends on what the rows
-    // under it are doing, so the project is the line's first word rather than
-    // the whole of it: ~ heads the agents outside any repository, not the ones
-    // under ~/repo as well.
+    // A heading is the project followed by a state summary, so match its first
+    // word exactly: `~` must not match the `~/repo` heading.
     let headings = |text: &str| {
         let heading = text.to_string();
         drawn
@@ -937,7 +903,7 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
         headings("~/repo").count() == 1,
         "one heading for the repository, subdirectory and all:\n{drawn}"
     );
-    // The heading no longer says the state, so every row carries it.
+    // Project headings drop the state, so each row shows its own.
     assert!(row("ask-a1b").contains("waiting"), "{drawn}");
     assert!(row("fix-login-b2c").contains("done"), "{drawn}");
     assert!(row("old-job-c3d").contains("done"), "{drawn}");
@@ -946,9 +912,8 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
         "and the state headings are gone with the axis:\n{drawn}"
     );
 
-    // And on again: what they need, because the state axis stands between the
-    // two path axes, then the repository each tree shares, then once more back
-    // to what they need.
+    // Further presses go to state, repository, then state again: the state
+    // axis sits between the two path axes.
     press(&amx, &view, "C-s");
     amx.until("what they need in between", || {
         amx.capture(&view).contains("Needs input").then_some(())
@@ -956,9 +921,8 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
     press(&amx, &view, "C-s");
     amx.until("the repository headings", || {
         let drawn = amx.capture(&view);
-        // A repository heading names the branch its root is on, and it opens
-        // the line: the header says where the next agent would run, and that
-        // is `~/repo` too.
+        // A repository heading names its root's branch. Match at line start,
+        // since the header also shows `~/repo` as where the next agent runs.
         let whole = drawn.lines().any(|line| line.starts_with("~/repo (main)"));
         (whole && !drawn.contains("Needs input")).then_some(drawn)
     });
@@ -970,9 +934,8 @@ fn ctrl_s_turns_the_axis_onto_the_project_each_agent_runs_in() {
 
 #[test]
 fn a_pin_in_one_view_is_on_the_other_by_its_next_reading() {
-    // Two views are two hands on one wall, through one file. What one pins
-    // should stand on the other within the second, without either being
-    // reopened.
+    // Two views share one state file: a pin made in one shows in the other on
+    // its next refresh, without reopening either.
     let amx = Harness::new();
     amx.play("one-a1b", "asks-a-question");
     amx.play("two-b2c", "happy-turn");
@@ -991,14 +954,13 @@ fn a_pin_in_one_view_is_on_the_other_by_its_next_reading() {
         amx.capture(&right)
     );
 
-    // On the left, the cursor onto the agent that is asking, and the pin.
+    // w moves the cursor to the waiting agent.
     press(&amx, &left, "w");
     press(&amx, &left, "C-t");
     amx.until("the pin on the left", || {
         amx.capture(&left).contains("Pinned").then_some(())
     });
 
-    // And on the right, on its own reading rather than on a reopen.
     amx.until("the pin on the right", || {
         amx.capture(&right).contains("Pinned").then_some(())
     });
@@ -1011,9 +973,8 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
     until_empty(&amx, &view);
 
     let drawn = amx.capture(&view);
-    // No heading, because a heading stands over rows and there are none, and
-    // amx's own line where the rows would be. How many rows the empty wall
-    // comes to is the empty wall's own business.
+    // No group headings, only amx's empty-wall line. How many lines the empty
+    // wall takes is not pinned.
     for group in [
         "Pinned",
         "Ready for review",
@@ -1031,7 +992,6 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
         "and the wall says what it is in its own words:\n{drawn}"
     );
 
-    // And it goes the moment there is anything to read off a row.
     amx.play("ask-a1b", "asks-a-question");
     amx.until("the agent's own row", || {
         let drawn = amx.capture(&view);
@@ -1070,10 +1030,9 @@ fn a_blank_line_stands_the_list_off_from_the_header() {
 #[test]
 fn every_group_folds_past_thirty_rows_and_enter_opens_the_one_it_is_on() {
     let amx = Harness::new();
-    // Sixty-four ended agents: thirty-two still standing in front of a
-    // reviewer and thirty-two over, in a directory each. Both axes gather
-    // them into two groups of thirty-two, so what folds is the same either
-    // way.
+    // 64 ended agents: 32 with an open request and 32 without, each set in
+    // its own directory. The state and project axes both make two groups of
+    // 32, so the folds are the same on either.
     let reviews = amx.home().join("reviews");
     let shipped = amx.home().join("shipped");
     for at in [&reviews, &shipped] {
@@ -1089,8 +1048,7 @@ fn every_group_folds_past_thirty_rows_and_enter_opens_the_one_it_is_on() {
         running_in(&amx, &id, &shipped);
     }
 
-    // Room for every row a fold could give back, so nothing here is about
-    // the height of the screen.
+    // Tall enough that screen height never hides a row.
     let view = amx.in_a_terminal(&[], &[]);
     amx.tmux(&["resize-window", "-t", &view, "-x", "80", "-y", "80"]);
     let folded = amx.until("both groups folded", || {
@@ -1111,8 +1069,7 @@ fn every_group_folds_past_thirty_rows_and_enter_opens_the_one_it_is_on() {
         "and thirty of thirty-two:\n{folded}"
     );
 
-    // Down the thirty rows onto the fold under them, and open it. That group
-    // gives its rows back and the other one is holding its two still.
+    // Thirty Downs put the cursor on the first group's fold line.
     for _ in 0..30 {
         press(&amx, &view, "Down");
     }
@@ -1123,8 +1080,8 @@ fn every_group_folds_past_thirty_rows_and_enter_opens_the_one_it_is_on() {
     });
     assert_eq!(rows_of(&opened, "over-"), 30, "{opened}");
 
-    // The same fleet gathered by project folds the same way, and what was
-    // opened under a group heading is not open under a path.
+    // By project the groups fold the same way, and a fold opened under a state
+    // heading is shut again under a path heading.
     press(&amx, &view, "C-s");
     let by_project = amx.until("both projects folded", || {
         let drawn = amx.capture(&view);
@@ -1148,8 +1105,7 @@ fn a_row_brings_up_the_name_under_the_cursor_and_leaves_the_wall_quiet() {
         (drawn.contains("ask-a1b") && drawn.contains("fix-login-b2c")).then_some(())
     });
 
-    // A row the cursor is not on: the name as quiet as what the agent said
-    // beside it, and no weight anywhere on either.
+    // Off the cursor, the name and summary are both dim and neither is bold.
     let quiet = coloured_line(&amx, &view, "fix-login-b2c");
     let name = sgr_at(&quiet, "fix-login-b2c");
     assert!(
@@ -1165,10 +1121,8 @@ fn a_row_brings_up_the_name_under_the_cursor_and_leaves_the_wall_quiet() {
         "the glyph alone carries the state's colour:\n{quiet:?}"
     );
 
-    // The row the view opens on, which is the one asking: the name up at the
-    // terminal's own strength in the colour of a thing waiting on a person, and
-    // the question at full strength because it is the sentence somebody came to
-    // read.
+    // The cursor starts on ask-a1b: its name is normal intensity in the
+    // waiting colour, and its question is not dimmed.
     let asking = coloured_line(&amx, &view, "ask-a1b");
     let name = sgr_at(&asking, "ask-a1b");
     assert!(
@@ -1197,20 +1151,20 @@ fn a_row_lands_its_name_summary_and_age_in_the_columns_the_grid_fixes() {
     let cells: Vec<char> = row.chars().collect();
     assert_eq!(cells.len(), 80, "a row is drawn to the edge:\n{row:?}");
 
-    // A blank cell of indent, the state glyph and the space after it, and
-    // then the name column: sixteen cells of it below a hundred.
+    // One cell of indent, the glyph and a space, then the name column, which
+    // is 16 cells on a screen under 100 columns.
     let column = |from: usize, to: usize| cells[from..to].iter().collect::<String>();
     assert_eq!(column(3, 19), "fix-login-a1b   ", "{row:?}");
     assert_eq!(column(19, 21), "  ", "two cells stand the columns apart");
 
-    // Then the summary, which takes whatever is left of the screen.
+    // The summary takes whatever width is left.
     assert_eq!(
         column(21, 74),
         format!("{:<53}", "did what it was asked"),
         "{row:?}"
     );
 
-    // And the age, right-aligned in the last four cells.
+    // The age is right-aligned in the last four cells.
     assert_eq!(column(74, 76), "  ", "{row:?}");
     let age = column(76, 80);
     assert!(
@@ -1224,7 +1178,7 @@ fn a_row_goes_under_the_title_its_session_was_given_until_somebody_renames_it() 
     let amx = Harness::new();
     finished(&amx, "port-import-b2c", "done", 60);
     titled(&amx, "port-import-b2c", "Importer clock");
-    // A record carrying both, which is the one the order has to be read off.
+    // Title and name both set, to check which one wins.
     finished(&amx, "fix-login-a1b", "done", 120);
     titled(&amx, "fix-login-a1b", "Login timeout");
     renamed(&amx, "fix-login-a1b", "auth");
@@ -1244,8 +1198,7 @@ fn a_row_goes_under_the_title_its_session_was_given_until_somebody_renames_it() 
          under:\n{both}"
     );
 
-    // The find line reads the title the way it reads a name or an id: the row
-    // is on the wall under a word of it, and the row it does not reach is off.
+    // Find matches the title as it matches a name or an id.
     types(&amx, &view, "/");
     types(&amx, &view, "clock");
     let drawn = amx.until("the wall narrowed to the title", || {
@@ -1267,10 +1220,8 @@ fn a_group_heading_is_the_groups_own_words_and_stops_there() {
     finished(&amx, "two-c3d", "done", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    // Drawn whole, not merely drawn: the view puts out no synchronized-output
-    // markers, so a capture can land partway through a line. Waiting for the
-    // words the assertions below take is what makes them assertions rather
-    // than a coin toss.
+    // Wait for both headings complete: the view has no synchronized output,
+    // so a capture can land partway through a line.
     let drawn = amx.until("both headings, whole", || {
         let drawn = amx.capture(&view);
         let whole = ["Needs input", "Completed"]
@@ -1279,18 +1230,16 @@ fn a_group_heading_is_the_groups_own_words_and_stops_there() {
         whole.then_some(drawn)
     });
 
-    // The words a person would say out loud, and the line ends on them: no
-    // rule out to the edge, and no count while the rows the heading stands
-    // over are on the screen to be counted.
+    // A heading is just its label: no rule to the edge and no count, since
+    // the rows under it are on screen.
     assert!(
         !drawn.contains('┈'),
         "nothing carries the eye out to the edge of the wall:\n{drawn}"
     );
 
-    // Dim, the way the summary beside a row is, with the one exception the
-    // wall makes up here: the group that wants a person says so in colour.
-    // Read off the whole screen, because the dim the heading is drawn in was
-    // turned on by the row above it and left in force.
+    // Headings are dim like row summaries, except Needs input, which takes the
+    // waiting colour. Read the whole screen: the heading's dim is switched on
+    // by the row above it and left in force.
     let painted = coloured(&amx, &view);
     let label = sgr_at(&painted, "Completed");
     assert!(
@@ -1326,18 +1275,15 @@ fn a_path_heading_reads_the_way_a_group_heading_does() {
         whole.then_some(drawn)
     });
 
-    // One document on either axis: the path and nothing after it, with the
-    // count left to the rows under it the way a group's is.
+    // Same as a group heading: the path alone, with no rule or count.
     assert!(
         !drawn.contains('┈'),
         "no rule over a project either:\n{drawn}"
     );
 
-    // Dim end to end, so the segment that says which directory this is reads
-    // no louder than the parents it hangs off. Found by the segment alone,
-    // because the two used to be told apart by an escape between them, and
-    // read off the whole screen, because the dim carries down from the rows
-    // above rather than being turned on again here.
+    // The whole path is dim, last segment included. Each segment is looked up
+    // on its own since the two used to differ by an escape between them, and
+    // on the whole screen since the dim carries over from the rows above.
     let painted = coloured(&amx, &view);
     for segment in ["~/", "repo"] {
         let cells = sgr_at(&painted, segment);
@@ -1407,12 +1353,12 @@ fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
     assert_eq!(column(3, 19), "fix-login-a1b   ", "the name has not moved");
     assert_eq!(column(19, 21), "  ", "two cells stand the columns apart");
 
-    // The heading over the row is a place now, so the row says the state:
-    // eight cells of it, which is what the longest of the words needs.
+    // Under a path heading the row shows its state in an 8-cell column, the
+    // width of the longest state word.
     assert_eq!(column(21, 29), "done    ", "{row:?}");
     assert_eq!(column(29, 31), "  ", "{row:?}");
 
-    // The summary pays for all ten of those cells and nothing else does.
+    // Only the summary shrinks, by the ten cells of state word and gap.
     assert_eq!(
         column(31, 74),
         format!("{:<43}", "did what it was asked"),
@@ -1426,8 +1372,8 @@ fn a_row_under_a_path_grows_a_state_word_and_moves_no_other_column() {
         "the age is in the cells it was in under a state heading:\n{row:?}\n{before:?}"
     );
 
-    // The word is quiet while there is nothing to say about how the work went,
-    // and takes the phase's own colour once there is.
+    // The state word is dim while the agent works, and in the state's colour
+    // once it has ended.
     let working = coloured_line(&amx, &view, "port-import-b2c");
     assert!(
         sgr_at(&working, "working").contains(&2),
@@ -1455,19 +1401,16 @@ fn the_view_paints_in_the_theme_the_config_names() {
         amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
-    // The terminal theme names its colours and measures none, so the row is
-    // painted out of this terminal's own palette — by index, which is how
-    // tmux writes a colour that was named — rather than in a value amx
-    // measured.
+    // The terminal theme uses named colours only, so the row is painted from
+    // the terminal's palette. tmux writes a named colour as an index
+    // (`38;5;n`).
     let row = coloured_line(&amx, &view, "fix-login-a1b");
     assert!(
         row.contains("38;5;"),
         "nothing on the row is painted in a colour the palette names:\n{row:?}"
     );
 
-    // Which means the two the default theme would have put on this row — the
-    // green that says it went the way it was meant to, and the bar under the
-    // cursor — are not on it.
+    // Neither the default theme's done green nor its cursor bar is on the row.
     assert!(
         !row.contains(&foreground("done")) && !row.contains(&bar()),
         "the default theme is what is being painted:\n{row:?}"
@@ -1487,9 +1430,7 @@ fn editing_the_theme_recolours_the_view_that_is_open_on_it() {
         coloured(&amx, &view).contains(&before).then_some(())
     });
 
-    // What a person picking a palette does: edit the file and look at the
-    // screen. Nothing is restarted, nothing is pressed, and the view is the
-    // thing that has to notice.
+    // Edit the file with no restart or keypress; the view must pick it up.
     theme(&amx, "mine", "done = \"#00ffff\"\n");
 
     let after = text_in(rgb("#00ffff"));
@@ -1520,9 +1461,8 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         "the view asked the terminal for the mouse"
     );
 
-    // A click on the older agent's row moves the bar to it. Its id is about
-    // to be on the footer too, so the row is the line that also carries its
-    // summary.
+    // The id also appears in the footer once selected, so find the row by its
+    // summary too.
     click(
         &amx,
         &view,
@@ -1541,16 +1481,15 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         "one cursor, and the click is where it is"
     );
 
-    // And the click went on to bring the window forward, the way enter
-    // does: this agent has no session to carry back, and the refusal
-    // naming that is how far it got.
+    // The click also tries to switch to the agent, as enter does. This agent
+    // has no recorded session, so the refusal shows it got that far.
     amx.until("the refusal", || {
         amx.capture(&view)
             .contains("no session was ever recorded")
             .then_some(())
     });
 
-    // A click on the heading shuts the group, and another opens it.
+    // Clicking a heading toggles its group.
     let heading = amx
         .capture(&view)
         .lines()
@@ -1567,7 +1506,7 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
         amx.capture(&view).contains("port-import-b2c").then_some(())
     });
 
-    // The mouse goes back with the screen when the view closes.
+    // Quitting releases mouse capture.
     amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
     press(&amx, &view, "q");
     amx.until("the view to close", || {
@@ -1581,10 +1520,9 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     );
 }
 
-/// The 1-based screen column a word starts at on an agent's row, for a drag
-/// to be aimed at the cells it is drawn on.
-/// Cells rather than bytes: the glyph a row opens with is three bytes of one
-/// of them.
+/// The 1-based screen column where `word` starts on the agent's row.
+///
+/// Counted in chars, not bytes: the row's glyph is a multi-byte char.
 fn column_of(amx: &Harness, view: &str, id: &str, word: &str) -> u16 {
     let row = row_of(amx, view, id).unwrap_or_else(|| panic!("no row for {id}"));
     let at = row
@@ -1598,19 +1536,16 @@ fn a_left_drag_reverses_the_cells_it_covers_and_copies_them_on_release() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     let view = amx.in_a_terminal(&[], &[]);
-    // tmux only keeps a buffer of what a pane copies where it is asked to;
-    // by default it hands the sequence to the outer terminal and keeps
-    // nothing, and a buffer is the only way a test can read it back. Asked
-    // of the server the terminal above started, since there is no server to
-    // ask before it.
+    // By default tmux passes OSC 52 to the outer terminal and keeps no
+    // buffer; `set-clipboard on` makes it keep one the test can read. Set
+    // after the view starts, since that is what starts the server.
     amx.tmux(&["set-option", "-s", "set-clipboard", "on"]);
     amx.until("the row", || {
         amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
-    // Press on the first cell of the id and drag to its last: the cells
-    // between come up reversed while the button is held, which is what says
-    // out loud what a release would copy.
+    // Drag from the first cell of the id to its last; the covered cells show
+    // reversed while the button is held.
     let row = screen_row_of(&amx, &view, "fix-login-a1b");
     let from = column_of(&amx, &view, "fix-login-a1b", "fix-login-a1b");
     let to = from + "fix-login-a1b".len() as u16 - 1;
@@ -1621,8 +1556,8 @@ fn a_left_drag_reverses_the_cells_it_covers_and_copies_them_on_release() {
         sgr_at(&line, "fix-login-a1b").contains(&7).then_some(())
     });
 
-    // And the release puts them on the clipboard by OSC 52, which this
-    // server is holding as a buffer, and says so where the view says things.
+    // Release copies them by OSC 52, which lands in a tmux buffer here, and
+    // the view reports the copy.
     mouse(&amx, &view, 0, to, row, false);
     amx.until("the view to say it copied", || {
         amx.capture(&view).contains("copied").then_some(())
@@ -1647,8 +1582,7 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);
-    // Both read, which the wall paints neither way, so what the pointer does to
-    // a name is the whole of the difference between the two rows.
+    // Mark both seen so the hover tint is the only styling difference.
     read(&amx, "fix-login-a1b");
     read(&amx, "port-import-b2c");
 
@@ -1658,7 +1592,7 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
         (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
-    // The pointer comes to rest on the row the cursor is not on.
+    // Hover over the row the cursor is not on.
     let row = screen_row_of(&amx, &view, "port-import-b2c");
     mouse(&amx, &view, 35, 5, row, true);
     amx.until("the name to take the tint", || {
@@ -1678,10 +1612,10 @@ fn hovering_a_row_tints_its_name_and_moves_no_cursor() {
     );
 }
 
-/// The name on the card's rule, where a card is open: the one row a card
-/// draws whatever it is a look at, and the only line of the screen that starts
-/// at the column the list indents its rows past. The second word of it, because
-/// the rule opens on the mark the agent's own row wears.
+/// The agent id on the open card's rule line, or None with no card open.
+///
+/// The rule is the only line with `┈` that starts in column 0, since list rows
+/// are indented. The id is its second word, after the agent's glyph.
 fn card_rule(drawn: &str) -> Option<String> {
     drawn
         .lines()
@@ -1690,8 +1624,10 @@ fn card_rule(drawn: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether the cursor's bar is on an agent's row of the list, told from the
-/// card's rule below it by the summary only a row carries.
+/// Whether the cursor bar is on the agent's list row.
+///
+/// The card's rule also names the agent, so match on the summary only a row
+/// carries.
 fn barred(amx: &Harness, view: &str, id: &str) -> bool {
     coloured(amx, view)
         .lines()
@@ -1714,8 +1650,8 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
         .then_some(())
     });
 
-    // The pointer comes to rest on the third row. Space is read where it is
-    // resting, so the card is that row's and the cursor went with it.
+    // With the pointer resting on a row, space opens that row's card and
+    // moves the cursor there.
     mouse(
         &amx,
         &view,
@@ -1733,7 +1669,7 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
         "the cursor landed where the pointer was"
     );
 
-    // The same again, with the pointer back on the first row.
+    // Again with the pointer on the first row.
     press(&amx, &view, "Escape");
     amx.until("the card away", || {
         card_rule(&amx.capture(&view)).is_none().then_some(())
@@ -1755,8 +1691,8 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
         "the cursor landed where the pointer was"
     );
 
-    // And with the pointer off the list, space is the cursor's card: the
-    // walk down moves it, and the row the pointer last rested on is not it.
+    // With the pointer off the list, space opens the cursor's card, not the
+    // row the pointer last rested on.
     press(&amx, &view, "Escape");
     amx.until("the card away", || {
         card_rule(&amx.capture(&view)).is_none().then_some(())
@@ -1772,8 +1708,8 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
 #[test]
 fn the_wheel_scrolls_the_wall_and_the_keys_move_the_cursor() {
     let amx = Harness::new();
-    // More agents than a terminal this tall has band for, each a minute older
-    // than the one before it so they are drawn in the order they are named.
+    // More agents than the list fits, each a minute older than the last so
+    // they draw in name order.
     for n in 0..25u64 {
         finished(&amx, &format!("row-{n:02}-a1b"), "done", 60 + n * 60);
     }
@@ -1787,9 +1723,8 @@ fn the_wheel_scrolls_the_wall_and_the_keys_move_the_cursor() {
         "row-00-a1b",
     );
 
-    // Three lines of wheel over the list scroll the window three rows down:
-    // the heading and the first two rows are off the top, and the third row
-    // is drawn on the line the heading was on.
+    // Three wheel-downs scroll three lines: the heading and the first two rows
+    // go off the top, and row-02 takes the heading's line.
     for _ in 0..3 {
         mouse(&amx, &view, 65, 5, first as u16 + 1, true);
     }
@@ -1803,9 +1738,8 @@ fn the_wheel_scrolls_the_wall_and_the_keys_move_the_cursor() {
         "the row the cursor is on is off the top:\n{scrolled}"
     );
 
-    // And the cursor is still on it, which the next key says: `j` moves to the
-    // row under the one the wheel left it on, and the window comes back up to
-    // that row and no further.
+    // The wheel left the cursor on row-00, so `j` moves it to row-01 and the
+    // window scrolls back just far enough to show it.
     press(&amx, &view, "j");
     let walked = amx.until("the cursor's row back on the screen", || {
         let drawn = amx.capture(&view);
@@ -1845,10 +1779,8 @@ fn the_wheel_pages_the_card_under_the_pointer_and_leaves_the_cursor_alone() {
         (drawn.contains("tall-b2c") && drawn.contains("short-a1b")).then_some(())
     });
 
-    // With the card open, the wheel pages it where the pointer is over it:
-    // the recorded answer opens on its first words and wheel-down reads on.
-    // The row's own summary is the answer's first line too, so the card's
-    // copy is told from it by counting.
+    // The wheel over the open card pages it. The row's summary is also the
+    // answer's first line, so count "said 0" to tell the card's copy apart.
     let carded = card_on(&amx, &view, "tall-b2c");
     assert_eq!(
         carded.matches("said 0").count(),
@@ -1875,18 +1807,16 @@ fn the_wheel_pages_the_card_under_the_pointer_and_leaves_the_cursor_alone() {
         (amx.capture(&view).matches("said 0").count() == 2).then_some(())
     });
 
-    // The wall behind the card is the wheel's where the pointer is off it, and
-    // two rows in a band this tall have nowhere to scroll to. The wheel over
-    // the card follows the one over the rows, so a card paged again is the
-    // view having read both: the cursor and the card are where they were.
+    // A wheel over the rows scrolls the wall, which has nowhere to go with two
+    // rows. The card wheel sent after it shows when both are handled; neither
+    // may move the cursor or change the card.
     let over_rows = screen_row_of(&amx, &view, "short-a1b");
     mouse(&amx, &view, 65, 5, over_rows, true);
     mouse(&amx, &view, 65, 5, inside, true);
     amx.until("the card paged past its top again", || {
         (amx.capture(&view).matches("said 0").count() == 1).then_some(())
     });
-    // The row rather than the card's rule below it, which names the agent
-    // too: only a row carries what the agent said.
+    // Match the row, not the card's rule, by the summary only a row carries.
     let rows = coloured(&amx, &view);
     assert!(
         rows.lines().any(|line| line.contains("tall-b2c")
@@ -1912,9 +1842,8 @@ fn the_cursor_is_a_bar_over_rows_and_headings_alike() {
         amx.capture(&view).contains("ask-a1b").then_some(())
     });
 
-    // The bar is a background colour, so it is in the escapes rather than in
-    // the text: the theme's cursor colour, which is the vendor's own for a
-    // selected line.
+    // The bar is a background colour, so check the escapes. It is the theme's
+    // cursor colour, which matches the vendor's selected-line colour.
     amx.until("the bar under the cursor", || {
         coloured_line(&amx, &view, "ask-a1b")
             .contains(&bar())
@@ -1951,9 +1880,8 @@ fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
         (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
     });
 
-    // The working agent pinned over the rest, which puts the one that is
-    // asking below it: the key has to reach down the wall and not just to the
-    // top of it.
+    // Pin the working agent so the waiting one sits below it and w has to
+    // search down the wall.
     press(&amx, &view, "Down");
     press(&amx, &view, "Down");
     press(&amx, &view, "C-t");
@@ -1966,8 +1894,8 @@ fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
         "the agent that is asking stands under the working one:\n{drawn}"
     );
 
-    // From the top of the wall, which is the heading over the pinned row: the
-    // question is about the wall rather than about the line the cursor is on.
+    // Start at the top, the Pinned heading: w finds the first waiting agent
+    // on the wall wherever the cursor is.
     twice(&amx, &view, "g");
     amx.until("the bar at the top", || {
         coloured_line(&amx, &view, "Pinned")
@@ -1996,9 +1924,8 @@ fn w_lands_the_bar_on_the_first_agent_that_needs_you() {
 
 #[test]
 fn the_vim_letters_walk_the_bar_and_a_card_takes_them_as_text() {
-    // Every card opens with a line at its foot, and every letter is text the
-    // moment one is open: these letters are keys on the wall and characters
-    // over a card, which is why esc is what comes back out.
+    // A card opens with an input line at its foot, so over a card these
+    // letters are text and only esc closes it. On the wall they are keys.
     let amx = Harness::new();
     finished(&amx, "done-a1b", "done", 60);
 
@@ -2012,7 +1939,6 @@ fn the_vim_letters_walk_the_bar_and_a_card_takes_them_as_text() {
             .then_some(())
     });
 
-    // k walks up onto the heading exactly as the arrow does, and j back down.
     press(&amx, &view, "k");
     amx.until("the bar to move up onto the heading", || {
         coloured_line(&amx, &view, "Completed")
@@ -2026,9 +1952,8 @@ fn the_vim_letters_walk_the_bar_and_a_card_takes_them_as_text() {
             .then_some(())
     });
 
-    // Space goes in to the card and esc comes back out. The view still has the
-    // terminal either way: an attach would have handed it to tmux, and the
-    // wall would be gone rather than standing over a card.
+    // Space opens the card inside the view. An attach would hand the terminal
+    // to tmux and the wall would be gone.
     let carded = |drawn: &str| {
         drawn
             .lines()
@@ -2037,8 +1962,7 @@ fn the_vim_letters_walk_the_bar_and_a_card_takes_them_as_text() {
     press(&amx, &view, "Space");
     amx.until("the card", || carded(&amx.capture(&view)).then_some(()));
 
-    // And h, which used to close it, is a character of the line the card
-    // opened with: the card stands where it was with an h typed at it.
+    // h used to close the card; now it is typed into the card's line.
     press(&amx, &view, "h");
     let typed = amx.until("the letter on the line", || {
         let drawn = amx.capture(&view);
@@ -2068,7 +1992,6 @@ fn gg_and_g_reach_the_two_ends_of_the_list_and_one_g_waits() {
         (drawn.contains("one-a1b") && drawn.contains("two-b2c")).then_some(())
     });
 
-    // G is one press and lands on the last row there is.
     press(&amx, &view, "G");
     amx.until("the bar at the foot", || {
         coloured_line(&amx, &view, "two-b2c")
@@ -2076,7 +1999,6 @@ fn gg_and_g_reach_the_two_ends_of_the_list_and_one_g_waits() {
             .then_some(())
     });
 
-    // One g moves nothing and says on the keys row that it is waiting.
     press(&amx, &view, "g");
     let waiting = amx.until("the row to say a g is waiting", || {
         let drawn = amx.capture(&view);
@@ -2087,7 +2009,7 @@ fn gg_and_g_reach_the_two_ends_of_the_list_and_one_g_waits() {
         "and the cursor has not moved for it:\n{waiting}"
     );
 
-    // The second one goes to the top, which is the heading over the group.
+    // The top of the list is the Completed heading.
     press(&amx, &view, "g");
     amx.until("the bar at the top", || {
         let drawn = amx.capture(&view);
@@ -2103,8 +2025,8 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
     finished(&amx, "two-b2c", "failed", 120);
 
     let view = amx.in_a_terminal(&[], &[]);
-    // The heading whole, not merely started: a capture can land partway
-    // through the line it is drawn on.
+    // Wait for the whole heading: the view has no synchronized output, so a
+    // capture can land mid-line.
     let drawn = amx.until("both agents under a heading that says so", || {
         let drawn = amx.capture(&view);
         (drawn.contains("one-a1b")
@@ -2127,7 +2049,7 @@ fn enter_shuts_the_group_its_headings_stand_over_and_opens_it_again() {
          the rows to the rows:\n{drawn}"
     );
 
-    // Up off the first agent onto the heading over it, and shut the group.
+    // Up moves from the first row to the heading.
     press(&amx, &view, "Up");
     press(&amx, &view, "Enter");
     let shut = amx.until("the group to be put away", || {
@@ -2155,9 +2077,7 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
     let holding = pane_field(&amx, &view, "#{session_name}");
     until_empty(&amx, &view);
 
-    // Somebody looking at the view, on a terminal of their own. Without a
-    // client there is nothing for enter to move, and a view nobody has
-    // attached to is not a view anybody is reading.
+    // Enter moves the client showing the view, so attach one.
     let terminal = watching(&amx, &holding);
     let tty = amx.until("a client on the view", || {
         let clients = clients_on(&amx, &holding);
@@ -2165,8 +2085,8 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
     });
 
     an_agent_session(&amx, "fix-login-a1b");
-    // A window the agent opened for itself and left in front of its own, which
-    // is not the one somebody pressing enter is asking after.
+    // A second window, left current in the agent's session; enter must still
+    // show the agent's own pane.
     amx.tmux(&[
         "new-window",
         "-t",
@@ -2190,8 +2110,7 @@ fn enter_puts_the_agent_in_front_of_the_terminal() {
         "the client that was on the view is the one that moved"
     );
 
-    // And back the way they came, because the view never left the session it
-    // was drawing in.
+    // The view stayed in its own session, so switching back finds it.
     amx.tmux(&["switch-client", "-c", &tty, "-t", &holding]);
     amx.until("the list again", || {
         amx.capture(&terminal).contains("? keys").then_some(())
@@ -2209,8 +2128,7 @@ fn backspace_puts_the_cursor_on_the_agent_the_terminal_was_last_in() {
     let holding = pane_field(&amx, &view, "#{session_name}");
     until_empty(&amx, &view);
 
-    // A client on the view, because the trail is written where somebody went
-    // and a press that moved nobody is nowhere anybody has been.
+    // The trail records where a client went, so attach one to the view.
     let terminal = watching(&amx, &holding);
     let tty = amx.until("a client on the view", || {
         let clients = clients_on(&amx, &holding);
@@ -2223,17 +2141,16 @@ fn backspace_puts_the_cursor_on_the_agent_the_terminal_was_last_in() {
         let drawn = amx.capture(&view);
         (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(drawn)
     });
-    // Whichever of them the wall drew first, which is where the view opens the
-    // cursor: the order of the two rows is the list's business, and the walk
-    // down is the other one.
+    // The row order is not under test: the cursor starts on whichever row is
+    // drawn first, and one step down is the other.
     let (first, second) =
         match line_of(&drawn, "fix-login-a1b") < line_of(&drawn, "port-import-b2c") {
             true => ("fix-login-a1b", "port-import-b2c"),
             false => ("port-import-b2c", "fix-login-a1b"),
         };
 
-    // Into the agent under the cursor and back out the way somebody comes
-    // back: the client moves to it, and the view goes on drawing behind.
+    // Enter the agent under the cursor, then switch the client back to the
+    // view's session.
     let go_in_and_out = |id: &str| {
         press(&amx, &view, "Enter");
         amx.until("the client on the agent", || {
@@ -2254,8 +2171,8 @@ fn backspace_puts_the_cursor_on_the_agent_the_terminal_was_last_in() {
     });
     go_in_and_out(second);
 
-    // One press back along the trail: the row the cursor is standing on is
-    // the agent somebody is in, so going back is the one before it.
+    // The cursor's row is the agent last entered, so backspace goes to the
+    // one before it.
     press(&amx, &view, "BSpace");
     amx.until("the cursor on the agent before it", || {
         coloured_line(&amx, &view, first)
@@ -2278,8 +2195,8 @@ fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
     an_agent_session(&amx, "fix-login-a1b");
     amx.until("the row", || row_of(&amx, &view, "fix-login-a1b").map(drop));
 
-    // Outside tmux there is no client to move, so what the view has to give is
-    // the terminal itself.
+    // Outside tmux there is no client to move, so the view lends its own
+    // terminal to an attach.
     press(&amx, &view, "Enter");
     amx.until("the agent on the screen", || {
         amx.capture(&view)
@@ -2287,8 +2204,7 @@ fn enter_lends_the_terminal_to_a_view_that_has_it_to_itself() {
             .then_some(())
     });
 
-    // Detaching is how somebody comes back, and what they come back to is the
-    // list they left: the view waited rather than exiting.
+    // Detaching returns to the view, which waited for the attach to end.
     amx.tmux(&["detach-client", "-s", "amx-fix-login-a1b"]);
     amx.until("the list again", || {
         amx.capture(&view).contains("? keys").then_some(())
@@ -2315,9 +2231,8 @@ fn ctrl_z_in_the_session_gives_the_view_its_terminal_back() {
             .then_some(())
     });
 
-    // The key is pressed at the terminal the view lent out, which is where
-    // somebody looking at the agent is. It is the client tmux put there that
-    // reads it, not the view, and detaching is what hands the terminal back.
+    // The tmux client now in the view's terminal reads C-z, not the view, and
+    // detaches, which hands the terminal back.
     press(&amx, &view, "C-z");
     amx.until("the list again", || {
         amx.capture(&view).contains("? keys").then_some(())
@@ -2349,8 +2264,8 @@ fn ctrl_z_in_the_session_moves_the_client_back_to_the_view_inside_tmux() {
         (clients_on(&amx, "amx-fix-login-a1b") == tty).then_some(())
     });
 
-    // The key is pressed at the client's own terminal, which is the pane it
-    // runs in, and the client goes back to the session the view never left.
+    // C-z at the client's own terminal switches it back to the view's
+    // session.
     press(&amx, &terminal, "C-z");
     amx.until("the client on the view again", || {
         (clients_on(&amx, &holding) == tty).then_some(())
@@ -2363,9 +2278,8 @@ fn ctrl_z_in_the_session_moves_the_client_back_to_the_view_inside_tmux() {
 
 #[test]
 fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
-    // Two agents sitting at their prompts, which is a wall of rows that look
-    // alike: the same glyph, the same weight, and nothing to say which of them
-    // somebody has just been inside.
+    // Two idle agents have identical rows, so only the accent can show which
+    // one the terminal was in.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.play("port-import-b2c", "happy-turn");
@@ -2377,33 +2291,30 @@ fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
         let drawn = amx.capture(&view);
         (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(drawn)
     });
-    // The cursor opens on the first row, and which of the two that is is
-    // whichever of them ended last, so it is read off the screen.
+    // The first row is whichever turn ended last, so read it off the screen.
     let (went_into, stayed) =
         match line_of(&drawn, "fix-login-a1b") < line_of(&drawn, "port-import-b2c") {
             true => ("fix-login-a1b", "port-import-b2c"),
             false => ("port-import-b2c", "fix-login-a1b"),
         };
 
-    // In, the way enter takes somebody in outside tmux: the terminal is the
-    // view's to lend, and the agent's own screen comes up on it. The footer is
-    // the last thing the scenario prints, so waiting on it waits for the whole
-    // screen.
+    // Outside tmux, enter lends the terminal to the agent's session. The
+    // footer is the scenario's last line, so waiting for it waits for the
+    // whole screen.
     press(&amx, &view, "Enter");
     amx.until("the agent's own screen", || {
         amx.capture(&view).contains("⏵⏵ auto mode on").then_some(())
     });
 
-    // And out the way somebody who is looking at a session gets out: the tmux
-    // prefix and d, at the client the view handed the terminal to.
+    // Detach with the tmux prefix and d.
     press(&amx, &view, "C-b");
     press(&amx, &view, "d");
     amx.until("the wall again", || {
         amx.capture(&view).contains("? keys").then_some(())
     });
 
-    // The cursor onto the other row, so what is left on the first name is the
-    // mark rather than the bar that follows the cursor about.
+    // Move the cursor away so the entered row shows the accent without the
+    // bar.
     press(&amx, &view, "Down");
     amx.until("the cursor on the row nobody went into", || {
         coloured_line(&amx, &view, stayed)
@@ -2426,11 +2337,9 @@ fn the_row_the_terminal_came_back_from_is_the_one_the_accent_marks() {
 
 #[test]
 fn the_row_the_client_came_back_from_is_marked_inside_tmux_too() {
-    // The view's other way in, and the one most people are on: inside tmux
-    // the terminal is not the view's to lend, so enter moves the client to the
-    // agent's session and the view keeps drawing behind it. Coming back is the
-    // client moving again, and the wall has to say where it has been the same
-    // as when it lent the terminal out.
+    // Inside tmux, enter moves the client to the agent's session while the
+    // view keeps drawing. Switching back must mark the row as it is marked
+    // outside tmux.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.play("port-import-b2c", "happy-turn");
@@ -2439,7 +2348,7 @@ fn the_row_the_client_came_back_from_is_marked_inside_tmux_too() {
 
     let view = amx.in_a_terminal(&[], &[]);
     let holding = pane_field(&amx, &view, "#{session_name}");
-    // Without a client there is nothing for enter to move.
+    // Enter needs a client to move.
     watching(&amx, &holding);
     let tty = amx.until("a client on the view", || {
         let clients = clients_on(&amx, &holding);
@@ -2456,16 +2365,14 @@ fn the_row_the_client_came_back_from_is_marked_inside_tmux_too() {
             false => ("port-import-b2c", "fix-login-a1b"),
         };
 
-    // The session the agent's pane is in, by name: a harness pane is not one
-    // `new` named, so the pane is asked rather than the id spelled.
+    // Harness panes are not in `amx-<id>` sessions, so ask the pane for its
+    // session name.
     let into = pane_field(&amx, &amx.pane_of(went_into), "#{session_name}");
     press(&amx, &view, "Enter");
     amx.until("the client on the agent", || {
         (clients_on(&amx, &into) == tty).then_some(())
     });
 
-    // Back to the view the way tmux brings somebody back: the same client,
-    // moved to the session it left.
     amx.tmux(&["switch-client", "-c", &tty, "-t", &holding]);
     amx.until("the client on the view again", || {
         (clients_on(&amx, &holding) == tty).then_some(())
@@ -2506,15 +2413,14 @@ fn ctrl_x_stops_the_agent_and_then_forgets_it() {
     amx.until("the agent to stop", || {
         (amx.state("watch-log-e5f")["state"] == "stopped").then_some(())
     });
-    // The record says stopped before the signal is sent, so that the exit it
-    // causes reads as a stop rather than a failure. The pane going is the
-    // stopping itself, and it happens a moment after.
+    // The record says stopped before the signal is sent, so the exit reads as
+    // a stop and not a failure. The pane dies a moment later.
     amx.until("its pane to go with it", || {
         (!amx.pane_alive(&pane)).then_some(())
     });
 
-    // Again on the same row: an agent that has already ended is forgotten,
-    // and it takes the two presses forgetting takes anywhere.
+    // On an ended agent ctrl+x forgets it, which takes two presses as it does
+    // everywhere.
     twice(&amx, &view, "C-x");
     amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
     until_empty(&amx, &view);
@@ -2528,14 +2434,13 @@ fn i_cuts_short_the_turn_the_row_under_the_cursor_is_on() {
 
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the row", || row_of(&amx, &view, "port-import-c3d"));
-    // Gathered by the project, where a row carries its state as a word of its
-    // own rather than standing under a heading that says it.
+    // On the project axis the row shows its state as a word.
     press(&amx, &view, "C-s");
     amx.until("the working row", || {
         row_of(&amx, &view, "port-import-c3d").filter(|row| row.contains("working"))
     });
 
-    // The view opens on the first row, which is the one agent there is.
+    // The cursor starts on the only row.
     press(&amx, &view, "i");
     let said = amx.until("what the view says it did", || {
         amx.capture(&view)
@@ -2545,8 +2450,8 @@ fn i_cuts_short_the_turn_the_row_under_the_cursor_is_on() {
     });
     assert!(said.contains("interrupted port-import-c3d"), "{said}");
 
-    // The key reached the vendor and not only the record: this scenario sits
-    // on its stdin until Escape arrives, and draws its prompt only then.
+    // The key reached the vendor too: this scenario blocks on stdin until it
+    // reads Escape, and only then draws its prompt.
     amx.until("the vendor to go back to its prompt", || {
         amx.capture(&pane).contains("⏵⏵").then_some(())
     });
@@ -2555,8 +2460,8 @@ fn i_cuts_short_the_turn_the_row_under_the_cursor_is_on() {
     });
     assert!(!row.contains("working"), "{row}");
 
-    // What the press wrote down is the verb's own, so a `result` waiting on
-    // this turn is told there is no answer coming.
+    // The press logs the same `interrupt` event as the verb, so a `result`
+    // waiting on this turn learns no answer is coming.
     let kinds = amx.event_kinds("port-import-c3d");
     assert!(
         kinds.iter().any(|kind| kind == "interrupt"),
@@ -2576,7 +2481,6 @@ fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
             .map(|_| ())
     });
 
-    // One press says what a second one would do, on the row itself.
     press(&amx, &view, "C-x");
     let armed = amx.until("the warning where the summary was", || {
         coloured(&amx, &view)
@@ -2602,8 +2506,7 @@ fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
         "and one press forgets nothing"
     );
 
-    // The window closes on its own, and the row goes back to saying what the
-    // agent did.
+    // The window times out and the summary comes back.
     amx.until("the summary to come back", || {
         row_of(&amx, &view, "fix-login-a1b")
             .filter(|row| row.contains("did what it was asked"))
@@ -2615,7 +2518,6 @@ fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
         "a window that closed forgets nothing either"
     );
 
-    // Two presses inside the window is what forgets it.
     twice(&amx, &view, "C-x");
     amx.until("the record to go", || agents(&amx).is_empty().then_some(()));
     until_empty(&amx, &view);
@@ -2626,8 +2528,8 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     let amx = Harness::new();
     let repo = amx.a_repo();
 
-    // One agent that ran in a tree of its own and left work in it nothing has
-    // committed, and one that had no tree at all.
+    // One agent with uncommitted work in its own worktree, and one with no
+    // worktree.
     let out = amx
         .amx_command(&[
             "new",
@@ -2662,8 +2564,8 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
         (drawn.contains("keeps-work-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
-    // Up from the row the view opens on is the heading the group is under.
-    // One press arms every finished row under it, in the rows themselves.
+    // Up from the first row is the group heading. One press arms every
+    // finished row under it, and the warning shows on each row.
     press(&amx, &view, "Up");
     press(&amx, &view, "C-x");
     let armed = amx.until("the armed rows", || {
@@ -2678,9 +2580,8 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     );
     assert_eq!(agents(&amx).len(), 2, "and arming forgets nothing");
 
-    // Two presses whatever the clock did to the first window: if it is still
-    // open the first of these forgets, and if it lapsed the first re-arms and
-    // the second forgets.
+    // Two presses work whether or not the first window has lapsed: if open,
+    // the first forgets; if lapsed, the first re-arms and the second forgets.
     twice(&amx, &view, "C-x");
     amx.until("the sweep", || {
         (agents(&amx) == ["keeps-work-a1b"]).then_some(())
@@ -2694,8 +2595,8 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
 #[test]
 fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     let amx = Harness::new();
-    // A live agent sitting at its prompt and a finished one, both in the
-    // harness's home: one project heading stands over both states at once.
+    // An idle agent and a finished one, both in the harness's home, so one
+    // project heading covers both states.
     let pane = amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
     finished(&amx, "old-job-d4e", "done", 60);
@@ -2713,9 +2614,8 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
             .then_some(())
     });
 
-    // Up from the row the view opens on is the heading. One press arms every
-    // row under it, whatever its state — no group is refused any more — and
-    // stops nothing.
+    // Up from the first row is the heading. One press arms every row under
+    // it, whatever its state, and stops nothing.
     press(&amx, &view, "Up");
     press(&amx, &view, "C-x");
     let armed = amx.until("both rows to be armed", || {
@@ -2737,9 +2637,8 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
         "the live agent is sitting at its prompt with its pane"
     );
 
-    // Two presses whatever the clock did to the first window: if it is still
-    // open the first of these stops the live agent and forgets both, and if it
-    // lapsed the first re-arms and the second does it.
+    // Two presses work whether or not the first window has lapsed; either way
+    // the live agent is stopped and both are forgotten.
     twice(&amx, &view, "C-x");
     amx.until("the group to be stopped and forgotten", || {
         agents(&amx).is_empty().then_some(())
@@ -2747,16 +2646,15 @@ fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     amx.until("the live agent's pane to go with it", || {
         (!amx.pane_alive(&pane)).then_some(())
     });
-    // The project axis has no welcome line: a list of places with nothing to
-    // arrange says so plainly.
+    // The project axis has no empty-wall message, just "no agents".
     amx.until("the empty wall", || {
         amx.capture(&view).contains("no agents").then_some(())
     });
 }
 
-/// The wall the sweep has something to say about: two ended agents with work
-/// on branches of their own, one whose request the forge says went in and one
-/// whose branch somebody merged themselves. Their trees, in that order.
+/// Two ended agents with work on their own branches: fix-login-a1b with a
+/// merged request, and tidy-b2c merged by hand. Answers their worktrees in
+/// that order.
 fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) {
     let landed = an_ended_agent(amx, "fix-login-a1b", repo);
     work_on_the_branch(&landed, "login.rs");
@@ -2769,7 +2667,8 @@ fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) 
     (landed, merged)
 }
 
-/// Wait for the rows the first `c` marked, each saying its own reason.
+/// Wait until both rows armed by `c` show their reason, and answer with the
+/// screen.
 fn until_armed(amx: &Harness, view: &str) -> String {
     amx.until("both rows to say why their work has landed", || {
         let drawn = amx.capture(view);
@@ -2791,9 +2690,8 @@ fn c_clears_the_agents_whose_work_has_landed_and_says_why_on_each_row() {
         (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
     });
 
-    // One press marks every row the sweep found, wherever the cursor is
-    // standing, and each row says the reason it was found by where its summary
-    // was. Nothing is taken for it.
+    // One press arms every row the sweep found, wherever the cursor is, and
+    // each row shows its reason in place of its summary.
     press(&amx, &view, "c");
     let armed = until_armed(&amx, &view);
     assert!(
@@ -2806,8 +2704,8 @@ fn c_clears_the_agents_whose_work_has_landed_and_says_why_on_each_row() {
         "and one press clears nothing:\n{armed}"
     );
 
-    // The press inside the window takes both: the record, the tree and the
-    // branch, and the line at the foot says how many went.
+    // A second press within the window removes each record, worktree and
+    // branch, and the footer shows the count.
     press(&amx, &view, "c");
     amx.until("the records to go", || {
         agents(&amx).is_empty().then_some(())
@@ -2836,8 +2734,7 @@ fn c_whose_window_lapses_keeps_every_agent_it_marked() {
     press(&amx, &view, "c");
     until_armed(&amx, &view);
 
-    // Nobody answers, so the window closes on its own and the rows go back to
-    // saying what their agents did.
+    // With no second press the window times out and the summaries return.
     let back = amx.until("the summaries to come back", || {
         let drawn = amx.capture(&view);
         (!drawn.contains("c again clears")).then_some(drawn)
@@ -2865,10 +2762,9 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
     let repo = amx.a_repo();
     let (clean, holding) = two_agents_whose_work_landed(&amx, &repo);
 
-    // Both branches are in the main line, but somebody left a file in the
-    // second tree that no commit has. The sweep keeps such a tree and the
-    // record that names it, so the view has it to say before the press that
-    // would otherwise clear the row.
+    // Both branches are merged, but the second worktree has an uncommitted
+    // file. The sweep keeps that tree and its record, and the view says so
+    // before the clearing press.
     std::fs::write(Path::new(&holding).join("notes.md"), "half an idea\n")
         .expect("a file nobody committed");
 
@@ -2878,8 +2774,8 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
         (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
     });
 
-    // The first press asks git of every tree it found, and the row behind the
-    // one holding work says so where the others say what the next press does.
+    // The first press checks each tree with git. The held row says why it
+    // will be kept where the others say what the next press does.
     press(&amx, &view, "c");
     let armed = amx.until("the row that will be kept to say why", || {
         let drawn = amx.capture(&view);
@@ -2897,8 +2793,8 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
         "and the row with nothing uncommitted in it says what it said:\n{armed}"
     );
 
-    // The press inside the window takes the clean row and goes past the held
-    // one, and the line at the foot says how many stayed and why.
+    // The second press clears the clean row and skips the held one; the
+    // footer counts both and says why one was kept.
     press(&amx, &view, "c");
     amx.until("the count of what went and what was kept", || {
         amx.capture(&view)
@@ -2922,8 +2818,8 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
     );
 }
 
-/// An origin for `repo` to push to and be pruned against, bare and in a
-/// directory of its own, with `main` already on it.
+/// Add a bare `origin` remote to `repo` with `main` pushed to it, and answer
+/// with its path.
 fn an_origin(amx: &Harness, repo: &Path) -> PathBuf {
     let bare = amx.home().join("origin.git");
     std::fs::create_dir_all(&bare).expect("the origin");
@@ -2933,8 +2829,10 @@ fn an_origin(amx: &Harness, repo: &Path) -> PathBuf {
     bare
 }
 
-/// What git in `repo` records about where this agent's branch stands on the
-/// origin: nothing at all until somebody fetches, and `[gone]` afterwards.
+/// The `%(upstream:track)` of the agent's branch in `repo`.
+///
+/// After the remote branch is deleted this stays empty until a fetch, then
+/// reads `[gone]`.
 fn upstream_track(repo: &Path, id: &str) -> String {
     git(
         repo,
@@ -2960,10 +2858,9 @@ fn c_reads_a_branch_the_forge_deleted_because_the_view_fetched_for_it() {
         &["push", "-q", "-u", "origin", "amx/tidy-b2c"],
     );
 
-    // What a squash merge leaves behind: the forge took the commits under a sha
-    // this branch does not hold, so nothing reads as merged, and then it
-    // deleted the branch. Nobody has run a sweep here, so the view's own fetch
-    // is the only thing that can make the delete a fact git will say out loud.
+    // As after a squash merge: the branch's commits are not in main, so it
+    // does not read as merged, and the forge deleted it. Only the view's own
+    // fetch can make git report the branch as gone.
     git(&origin, &["branch", "-D", "amx/tidy-b2c"]);
     assert_eq!(
         upstream_track(&repo, "tidy-b2c"),
@@ -2979,7 +2876,7 @@ fn c_reads_a_branch_the_forge_deleted_because_the_view_fetched_for_it() {
         (upstream_track(&repo, "tidy-b2c") == "[gone]").then_some(())
     });
 
-    // And the press that waits on nothing has something current to read.
+    // `c` does not fetch; it reads what the view's fetch recorded.
     press(&amx, &view, "c");
     let armed = amx.until("the row to say why its work has landed", || {
         let drawn = amx.capture(&view);
@@ -3006,9 +2903,8 @@ fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
         (drawn.contains("fix-login-a1b") && drawn.contains("port-import-b2c")).then_some(())
     });
 
-    // The cursor opens on the newest ending, which is the row the card opens
-    // on. Nothing on the wall is painted for whether a row has been read, so
-    // what the look is worth is on the record rather than on the screen.
+    // The cursor starts on the most recently ended row. Being read shows
+    // nowhere on the wall, so check `seen` in the record.
     press(&amx, &view, "Space");
     amx.until("the look to reach the record", || {
         (amx.state("fix-login-a1b")["seen"].as_u64().unwrap_or(0) > 0).then_some(())
@@ -3020,11 +2916,9 @@ fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     };
     amx.until("the card", || carded(&amx.capture(&view)).then_some(()));
 
-    // With the card up the wall behind it is a wall behind a modal, and the
-    // whole of it goes quiet the way it does under a task line — the cursor's
-    // row with the rest, and nothing up there in weight. Read off the whole
-    // screen, because the dim is set once at the top of it and left in force;
-    // the first place either id stands is its row, above the card's rule.
+    // With a card open the whole wall is dim, cursor row included, as under a
+    // task line. Read the whole screen since the dim is set once at the top;
+    // each id's first match is its row, above the card's rule.
     let whole = coloured(&amx, &view);
     for id in ["fix-login-a1b", "port-import-b2c"] {
         let on = sgr_at(&whole, id);
@@ -3035,9 +2929,8 @@ fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
         );
     }
 
-    // And with the card away, the rows read as they did before the press: the
-    // cursor's row up out of the dim, the other as quiet as it always was.
-    // Which row has been looked at is on the record and nowhere on the wall.
+    // After esc the rows look as before the press: the cursor row at normal
+    // intensity and the other dim. Having been read changes nothing on screen.
     press(&amx, &view, "Escape");
     amx.until("the card put away", || {
         (!carded(&amx.capture(&view))).then_some(())
