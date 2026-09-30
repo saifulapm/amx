@@ -1731,11 +1731,12 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
 /// `pr.rs` uses. Not waited on in the draw loop, since it can block until
 /// the browser tab closes.
 pub fn open(view: &View, number: u64) -> Result<()> {
-    let at = match &view.meta.worktree {
-        Some(tree) if tree.is_dir() => tree.clone(),
-        _ => view.meta.dir.clone(),
-    };
-    opened(&at, Path::new("gh"), Path::new("glab"), number)
+    opened(
+        view.meta.workdir(),
+        Path::new("gh"),
+        Path::new("glab"),
+        number,
+    )
 }
 
 /// [`open`] with the forge commands named, so tests can use fakes instead of

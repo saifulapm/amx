@@ -290,11 +290,8 @@ pub fn written(meta: &Meta) -> Vec<Pr> {
 fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
     let branch = meta.branch.as_deref()?;
     let dir = crate::paths::agent_dir(&meta.id).ok()?;
-    let at = match &meta.worktree {
-        Some(tree) if tree.is_dir() => tree.clone(),
-        _ => meta.dir.clone(),
-    };
-    (dir.is_dir() && at.is_dir()).then_some((dir, at, branch))
+    let at = meta.workdir();
+    (dir.is_dir() && at.is_dir()).then(|| (dir, at.to_path_buf(), branch))
 }
 
 /// [`of`] with the record directory and the working directory given.

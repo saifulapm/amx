@@ -298,6 +298,16 @@ pub struct Meta {
     pub created: u64,
 }
 
+impl Meta {
+    /// The agent's worktree while it still exists, else its directory.
+    pub fn workdir(&self) -> &Path {
+        match &self.worktree {
+            Some(tree) if tree.is_dir() => tree,
+            _ => &self.dir,
+        }
+    }
+}
+
 /// What the agent is doing, as the last event left it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, from = "Wire", into = "Wire")]

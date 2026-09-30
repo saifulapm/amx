@@ -1661,7 +1661,7 @@ fn ask_about_the_turn(
     }
 
     let (root, id, turn) = (root.to_path_buf(), meta.id.clone(), state.since);
-    let at = where_it_ran(meta);
+    let at = meta.workdir().to_path_buf();
     let command = command.to_string();
     let asking = std::thread::Builder::new()
         .name("amx-summary".to_string())
@@ -1681,15 +1681,6 @@ fn the_turn_so_far(meta: &Meta) -> Option<String> {
     let (format, tail) = transcript(meta)?;
     let said = crate::conversation::plain(&crate::conversation::read(format, &tail));
     (!said.trim().is_empty()).then_some(said)
-}
-
-/// Where the command runs: the agent's worktree while it exists, else the
-/// directory the run was started in.
-fn where_it_ran(meta: &Meta) -> std::path::PathBuf {
-    match &meta.worktree {
-        Some(tree) if tree.is_dir() => tree.clone(),
-        _ => meta.dir.clone(),
-    }
 }
 
 /// Reads one agent.
@@ -5094,7 +5085,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             model: None,
             effort: None,
             transcript: Some(session),
-            // `where_it_ran` is the agent's directory, which must exist for
+            // `Meta::workdir` is the agent's directory, which must exist for
             // the command to start in.
             dir: root.path().to_path_buf(),
             ..meta()
