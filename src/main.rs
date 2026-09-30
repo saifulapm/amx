@@ -279,7 +279,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hardening_a_complaint_says_nothing_a_terminal_will_act_on() {
+    fn a_complaint_says_nothing_a_terminal_will_act_on() {
         // The id is quoted back as typed, escape sequences included.
         let line = said(
             Severity::Failed,
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_the_only_escapes_in_a_painted_line_are_the_ones_amx_wrote() {
+    fn the_only_escapes_in_a_painted_line_are_the_ones_amx_wrote() {
         // Sanitized before colouring: the only escapes left are amx's own.
         let line = said(Severity::Failed, "amx: `x\u{1b}]0;PWNED\u{7}y`", true);
         assert_eq!(line.matches('\u{1b}').count(), 2, "{line:?}");
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_reader_that_stopped_reading_is_not_a_failure() {
+    fn a_reader_that_stopped_reading_is_not_a_failure() {
         // The io error arrives wrapped in the verb's own context.
         let closed = anyhow::Error::new(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,

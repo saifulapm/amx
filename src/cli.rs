@@ -1373,7 +1373,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_task_with_nothing_in_it_is_not_a_task() {
+    fn a_task_with_nothing_in_it_is_not_a_task() {
         for argv in [
             &["amx", "new", ""][..],
             &["amx", "new", "   "],
@@ -1385,7 +1385,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_task_is_typed_or_read_from_a_file_and_never_both() {
+    fn a_task_is_typed_or_read_from_a_file_and_never_both() {
         let cli = parse(&["amx", "new", "--file", "brief.md"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1418,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_task_can_be_written_in_an_editor_instead_of_typed() {
+    fn a_task_can_be_written_in_an_editor_instead_of_typed() {
         let cli = parse(&["amx", "new", "--edit"]).unwrap();
         let Some(Command::New(args)) = cli.command else {
             panic!("expected new");
@@ -1444,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_message_is_typed_or_read_from_a_file_and_never_both() {
+    fn a_message_is_typed_or_read_from_a_file_and_never_both() {
         let cli = parse(&["amx", "send", "fix-login-a1b", "--file", "notes.md"]).unwrap();
         let Some(Command::Send { id, text, file }) = cli.command else {
             panic!("expected send");
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_message_with_nothing_in_it_is_not_a_message() {
+    fn a_message_with_nothing_in_it_is_not_a_message() {
         for argv in [
             &["amx", "send", "fix-login-a1b", ""][..],
             &["amx", "send", "fix-login-a1b", "   "],
@@ -1492,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_task_read_from_a_file_is_all_of_it_bar_the_last_newline() {
+    fn a_task_read_from_a_file_is_all_of_it_bar_the_last_newline() {
         let dir = tempfile::TempDir::new().unwrap();
         let brief = dir.path().join("brief.md");
 
@@ -1517,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_text_written_somewhere_else_is_read_the_way_a_files_text_is() {
+    fn text_written_somewhere_else_is_read_the_way_a_files_text_is() {
         // What `text_of` does after reading, and what `new --edit` reuses.
         assert_eq!(a_text("fix the login bug\n").unwrap(), "fix the login bug");
         assert_eq!(
@@ -1534,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_a_task_reaches_the_vendor_as_it_was_typed() {
+    fn a_task_reaches_the_vendor_as_it_was_typed() {
         // Only an empty task is refused; a task is never trimmed.
         let cli = parse(&["amx", "new", "  fix the login bug\n"]).unwrap();
         let Some(Command::New(args)) = cli.command else {

@@ -1581,7 +1581,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_every_file_in_a_record_is_the_owners_alone() {
+    fn every_file_in_a_record_is_the_owners_alone() {
         // The directory may exist before the record, the umask can strip bits
         // from the mode passed to `open`, and that mode is ignored for an
         // existing file, so every path must be chmodded explicitly.
@@ -2467,7 +2467,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_record_keeps_when_somebody_last_looked_at_the_agent() {
+    fn a_record_keeps_when_somebody_last_looked_at_the_agent() {
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         let writer = agent.writer().unwrap();
@@ -2492,7 +2492,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_record_keeps_what_a_person_renamed_an_agent_to() {
+    fn a_record_keeps_what_a_person_renamed_an_agent_to() {
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
         agent

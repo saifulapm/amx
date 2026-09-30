@@ -4062,7 +4062,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_heading_answers_for_its_agents_whether_or_not_they_are_drawn() {
+    fn a_heading_answers_for_its_agents_whether_or_not_they_are_drawn() {
         let mut list = listed(a_history(FOLD_AT + 2));
         list.up();
 
@@ -4095,7 +4095,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_heading_on_the_project_axis_answers_for_the_agents_under_it() {
+    fn a_heading_on_the_project_axis_answers_for_the_agents_under_it() {
         let mut list = over_the_disk(vec![
             at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
             at(view("done-b2c", Phase::Done, 20), "/src/api/cmd/serve"),
@@ -4116,7 +4116,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_row_says_the_program_then_the_dials_the_spawn_turned() {
+    fn a_row_says_the_program_then_the_dials_the_spawn_turned() {
         let mut agent = view("fix-login-a1b", Phase::Working, 10);
         // The record holds the launch command; the column names its program.
         agent.meta.agent = Some("claude --dangerously-skip-permissions".to_string());
@@ -4140,7 +4140,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_row_running_a_command_says_sh_where_the_vendor_would_be() {
+    fn a_row_running_a_command_says_sh_where_the_vendor_would_be() {
         // `!cmd` and `--exec` records have no agent.
         let command = view("build-b2c", Phase::Working, 10);
         assert_eq!(command.meta.agent, None);
@@ -4148,7 +4148,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_a_row_takes_the_rename_then_the_sessions_title_then_the_id() {
+    fn a_row_takes_the_rename_then_the_sessions_title_then_the_id() {
         // All three names on one agent, to check precedence on a single row.
         let mut named = view("fix-login-a1b", Phase::Idle, 10);
         named.state.session_title = Some("Login timeout".to_string());

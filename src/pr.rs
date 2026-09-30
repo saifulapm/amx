@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_forge_runs_nothing_the_tree_it_reads_names() {
+    fn a_forge_runs_nothing_the_tree_it_reads_names() {
         // The forges run git in the agent's tree; only the environment
         // reaches that git.
         let dir = TempDir::new().unwrap();

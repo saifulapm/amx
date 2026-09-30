@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_every_key_of_an_answer_is_a_call_of_its_own() {
+    fn every_key_of_an_answer_is_a_call_of_its_own() {
         // On claude 2.1.240, `send-keys 1 3` checked neither box; two calls
         // checked both.
         let checkbox = a_checkbox_question();
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_rows_the_vendor_adds_are_not_the_questions_choices() {
+    fn the_rows_the_vendor_adds_are_not_the_questions_choices() {
         // claude 2.1.240 draws `3. Type something.` and `4. Chat about this`
         // under a two-choice question, and `3` moves onto the field without
         // answering.
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_grammar_counts_the_choices_the_question_offers() {
+    fn the_grammar_counts_the_choices_the_question_offers() {
         // The offer must not include a digit that was just refused.
         assert_eq!(
             grammar(Some(Kind::Question), &a_plain_question()),
@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_that_takes_several_choices_takes_several() {
+    fn a_question_that_takes_several_choices_takes_several() {
         // claude 2.1.240: a digit toggles a box, `Right` moves to the Submit
         // tab, and `Enter` confirms there.
         let state = a_checkbox_question();
@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_one_choice_of_a_checkbox_menu_is_still_a_box() {
+    fn one_choice_of_a_checkbox_menu_is_still_a_box() {
         // `1` answers a plain menu but only toggles a box on a checkbox one.
         let checkbox = a_checkbox_question();
         assert_eq!(
@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_that_takes_one_choice_is_offered_one() {
+    fn a_question_that_takes_one_choice_is_offered_one() {
         // `1,3` at a plain menu would answer with `1` and type `3` at whatever
         // comes next.
         for state in [a_plain_question(), a_permission_box(), State::default()] {
@@ -1181,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_box_the_question_does_not_offer_is_not_a_box() {
+    fn a_box_the_question_does_not_offer_is_not_a_box() {
         // Digits past the choices land on the vendor's own rows.
         let state = a_checkbox_question();
         for refused in ["1,4", "1,9", "0,1"] {
@@ -1197,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_answer_that_finishes_a_call_confirms_it() {
+    fn the_answer_that_finishes_a_call_confirms_it() {
         // A call of several questions ends on a Submit tab nothing else presses.
         let mut state = asking(vec![
             a_plain_question().asking[0].clone(),
@@ -1224,7 +1224,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_words_of_your_own_go_in_the_row_the_question_offers_for_them() {
+    fn words_of_your_own_go_in_the_row_the_question_offers_for_them() {
         // On a plain menu `Up` wraps to the field, the words are pasted, and
         // `Enter` submits them.
         let plain = a_plain_question();
@@ -1265,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_row_for_words_reads_a_digit_as_the_character_it_is() {
+    fn the_row_for_words_reads_a_digit_as_the_character_it_is() {
         // Once the cursor is on the field every key is a character, so
         // `--text 2` is the text "2" while a bare `2` is the second choice.
         let state = a_plain_question();
@@ -1286,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_prompt_with_no_row_for_words_is_offered_none() {
+    fn a_prompt_with_no_row_for_words_is_offered_none() {
         // A permission box and a trust screen have no field for words.
         for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
             let state = State {
@@ -1310,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_note_rides_beside_the_choice_it_is_about() {
+    fn a_note_rides_beside_the_choice_it_is_about() {
         // claude 2.1.240: `n` enters the notes field, `Escape` leaves it with
         // the note kept, and the choice after that carries the note.
         let state = a_previewed_question();
@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_that_draws_no_notes_field_takes_no_note() {
+    fn a_question_that_draws_no_notes_field_takes_no_note() {
         // Without a notes field the note would be typed at the menu.
         for state in [
             a_plain_question(),
@@ -1361,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_record_names_the_choices_that_were_checked() {
+    fn the_record_names_the_choices_that_were_checked() {
         // The record gets the checked labels joined with a comma, as the
         // vendor writes them.
         let state = a_checkbox_question();
@@ -1396,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_list_with_no_numbers_is_answered_by_walking_to_the_row() {
+    fn a_list_with_no_numbers_is_answered_by_walking_to_the_row() {
         // claude 2.1.259's gate: `1`, `2` and `y` do nothing, and only `Down`
         // then `Enter` reaches the second row (`docs/claude-screens.md`).
         let gate = a_trust_gate();
@@ -1423,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_walk_starts_from_the_row_the_cursor_is_on() {
+    fn a_walk_starts_from_the_row_the_cursor_is_on() {
         // claude 2.1.276's trust list wraps, so walking up from `Yes` lands on
         // `No, exit`. From a known row the walk is the difference.
         let walk = |keys: &[&str]| -> Vec<String> { keys.iter().map(|k| k.to_string()).collect() };
@@ -1440,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_walk_that_takes_nothing_is_not_an_answer() {
+    fn a_walk_that_takes_nothing_is_not_an_answer() {
         // A move alone leaves the prompt up while the record would say it was
         // answered.
         let gate = a_trust_gate();
@@ -1457,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
+    fn the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
         // claude 2.1.259 opens the gate on `No, exit`, and with no numbered
         // rows amx cannot tell which row `enter` would take.
         let gate = a_trust_gate();
@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_claudes_own_gate_takes_a_digit_now_its_rows_are_read() {
+    fn claudes_own_gate_takes_a_digit_now_its_rows_are_read() {
         // Once the rule reads both rows off the cursor glyph (`No, exit` first,
         // as 2.1.259 and 2.1.276 draw them), a digit becomes the walk to that
         // row.
@@ -1525,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_digit_on_a_walked_list_is_the_walk_that_reaches_its_row() {
+    fn a_digit_on_a_walked_list_is_the_walk_that_reaches_its_row() {
         // pi 0.85.1's selector clamps at both ends, so `rows - 1` ups reach the
         // top from anywhere and amx only needs the row count.
         let gate = a_walked_trust_gate();
@@ -1563,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_digit_on_a_walked_list_records_the_row_it_chose() {
+    fn a_digit_on_a_walked_list_records_the_row_it_chose() {
         // A numbered row is a known row: the record gets its label and the
         // question is cleared.
         let root = tempfile::TempDir::new().unwrap();
@@ -1584,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_keys_a_walked_list_swallows_are_refused_for_the_digits_amx_wrote() {
+    fn the_keys_a_walked_list_swallows_are_refused_for_the_digits_amx_wrote() {
         // pi 0.85.1: `1`, `2`, `y` and `n` do nothing to the selector, and
         // `Enter` takes the row under the cursor. A digit past the rows is
         // nobody's row.
@@ -1611,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_walk_leaves_no_answer_amx_cannot_name_behind_it() {
+    fn a_walk_leaves_no_answer_amx_cannot_name_behind_it() {
         // The row a walk lands on has no number and the record has no choices
         // for it, so only the keys are logged and the question stands.
         let root = tempfile::TempDir::new().unwrap();
@@ -1646,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_of_the_vendors_own_takes_words() {
+    fn a_question_of_the_vendors_own_takes_words() {
         let state = a_plain_question();
         assert_eq!(
             answer(&given("neither, keep both"), Some(Kind::Question), &state),
@@ -1660,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_prompt_that_reads_one_key_is_offered_one_key() {
+    fn a_prompt_that_reads_one_key_is_offered_one_key() {
         // Words at a one-key prompt would land on the highlighted row.
         for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
             let state = State {
@@ -1676,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_choices_are_still_read_as_choices() {
+    fn the_choices_are_still_read_as_choices() {
         // A menu takes a field and numbered choices; `2` is the second choice.
         let state = a_plain_question();
         for key in ["2", "y", "enter", "esc"] {
@@ -1691,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_an_empty_answer_is_not_an_answer_to_a_question_either() {
+    fn an_empty_answer_is_not_an_answer_to_a_question_either() {
         // claude reads a blank submission at its menu as a cancel.
         let state = a_plain_question();
         for blank in ["", "   ", "\t\n"] {
@@ -1704,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_an_answer_may_not_end_its_own_paste() {
+    fn an_answer_may_not_end_its_own_paste() {
         // Words and notes are pasted, so a paste terminator in them is refused.
         let end = "fine\u{1b}[201~/exit\r";
         let plain = a_plain_question();
@@ -1757,7 +1757,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_answering_one_question_of_a_call_puts_up_the_next() {
+    fn answering_one_question_of_a_call_puts_up_the_next() {
         // claude 2.1.240: answering one tab leaves the prompt up until every
         // tab is answered, so the record must stay `waiting`.
         let call = asking(vec![
@@ -1808,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_key_amx_cannot_name_the_answer_of_settles_nothing() {
+    fn a_key_amx_cannot_name_the_answer_of_settles_nothing() {
         // `esc` and `enter` may or may not have changed the screen, so the
         // record keeps the question.
         for key in ["Escape", "Enter", "y"] {
@@ -1837,7 +1837,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_replaced_since_it_was_read_stays_on_the_record() {
+    fn a_question_replaced_since_it_was_read_stays_on_the_record() {
         // A hook put up a new question between the reading and the write, so
         // the record keeps the new one.
         let root = tempfile::TempDir::new().unwrap();

@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_resume_carries_everything_the_agent_was_started_with() {
+    fn resume_carries_everything_the_agent_was_started_with() {
         // Every original argument, such as `--add-dir`, is kept.
         let started = handoff(
             &[
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_resuming_twice_asks_for_one_session_and_not_two() {
+    fn resuming_twice_asks_for_one_session_and_not_two() {
         // A resumed command already carries `--resume`; the next resume
         // replaces it rather than adding a second.
         let started = handoff(&["claude", "--add-dir", "/srv/data", "go"], "go");

@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_mode_is_set_rather_than_asked_for() {
+    fn a_mode_is_set_rather_than_asked_for() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("state.json");
         std::fs::write(&path, "{}").unwrap();

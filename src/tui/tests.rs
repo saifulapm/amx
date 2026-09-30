@@ -3547,7 +3547,7 @@ fn card_is_where_a_reply_is_typed_whatever_the_agent_is_doing() {
 }
 
 #[test]
-fn acts_the_status_line_is_offered_once_and_never_written_anywhere() {
+fn the_status_line_is_offered_once_and_never_written_anywhere() {
     let state = TempDir::new().unwrap();
     let root = state.path().join("agents");
     std::fs::create_dir_all(&root).unwrap();
@@ -3590,7 +3590,7 @@ fn ordered(screen: &Screen) -> Vec<String> {
 }
 
 #[test]
-fn acts_shift_with_an_arrow_moves_the_agent_rather_than_the_cursor() {
+fn shift_with_an_arrow_moves_the_agent_rather_than_the_cursor() {
     let root = TempDir::new().unwrap();
     let working = |id: &str| {
         reading(
@@ -3659,7 +3659,7 @@ fn acts_shift_with_an_arrow_moves_the_agent_rather_than_the_cursor() {
 }
 
 #[test]
-fn acts_what_the_view_keeps_opens_the_next_one_and_leaves_the_file_alone() {
+fn what_the_view_keeps_opens_the_next_one_and_leaves_the_file_alone() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
@@ -3713,7 +3713,7 @@ fn acts_what_the_view_keeps_opens_the_next_one_and_leaves_the_file_alone() {
 }
 
 #[test]
-fn acts_ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
+fn ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
@@ -3783,7 +3783,7 @@ fn idle(root: &Path, id: &str) {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it() {
+fn ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -3827,7 +3827,7 @@ fn acts_ctrl_x_on_a_live_row_stops_it_and_arms_it_and_the_press_after_forgets_it
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forgets_them() {
+fn ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forgets_them() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
@@ -3864,7 +3864,7 @@ fn acts_ctrl_x_on_a_heading_arms_the_finished_under_it_and_the_press_after_forge
 }
 
 #[test]
-fn acts_ctrl_x_says_a_tree_it_kept_as_something_that_did_not_happen() {
+fn ctrl_x_says_a_tree_it_kept_as_something_that_did_not_happen() {
     let root = TempDir::new().unwrap();
     let repo = a_repo();
     let config = Config::default();
@@ -3893,7 +3893,7 @@ fn acts_ctrl_x_says_a_tree_it_kept_as_something_that_did_not_happen() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_says_a_tree_it_kept_the_same_way() {
+fn ctrl_x_on_a_heading_says_a_tree_it_kept_the_same_way() {
     let root = TempDir::new().unwrap();
     let repo = a_repo();
     let config = Config::default();
@@ -3920,7 +3920,7 @@ fn acts_ctrl_x_on_a_heading_says_a_tree_it_kept_the_same_way() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_arms_a_live_row_without_stopping_it() {
+fn ctrl_x_on_a_heading_arms_a_live_row_without_stopping_it() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -4129,7 +4129,7 @@ fn ctrl_x_a_vanished_armed_row_forgets_nothing() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse() {
+fn ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -4178,7 +4178,7 @@ fn acts_ctrl_x_on_a_heading_disarms_the_group_when_the_window_is_left_to_lapse()
 }
 
 #[test]
-fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
+fn ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -4220,7 +4220,7 @@ fn acts_ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
+fn ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     idle(root.path(), "quiet-a1b");
@@ -4266,7 +4266,7 @@ fn acts_ctrl_x_on_a_project_heading_reaches_rows_in_every_state() {
 }
 
 #[test]
-fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_cursor() {
+fn ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_cursor() {
     // An agent that ends while the window is open dissolves its heading, and
     // the live group below moves up into the cursor's index. The second press
     // there must finish the sweep, never stop the group that moved in.
@@ -4333,7 +4333,7 @@ fn acts_ctrl_x_sweep_follows_its_rows_when_another_heading_drifts_into_the_curso
 }
 
 #[test]
-fn acts_ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
+fn ctrl_x_second_press_lands_on_the_heading_now_over_the_armed_rows() {
     // An agent that ends while the window is open moves to completed, so on the
     // state axis the pressed heading can dissolve by the next reading. The
     // second press finds the armed rows under the heading now over them.
@@ -4921,7 +4921,7 @@ fn keys_backspace_says_there_is_nowhere_to_go_back_to() {
 }
 
 #[test]
-fn acts_peeking_at_an_agent_writes_the_look_on_its_record() {
+fn peeking_at_an_agent_writes_the_look_on_its_record() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
@@ -4981,7 +4981,7 @@ fn acts_peeking_at_an_agent_writes_the_look_on_its_record() {
 }
 
 #[test]
-fn acts_alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
+fn alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     finished(root.path(), "second-b2c", "wrote the tests", 120);
@@ -5017,7 +5017,7 @@ fn acts_alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
 }
 
 #[test]
-fn acts_ctrl_r_opens_the_line_on_the_name_the_row_is_carrying() {
+fn ctrl_r_opens_the_line_on_the_name_the_row_is_carrying() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     let mut screen = watching(vec![reading(
@@ -6514,7 +6514,7 @@ fn composer_alt_n_enters_the_line_the_way_enter_does_and_goes_with_it() {
 }
 
 #[test]
-fn acts_the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
+fn the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
     let root = TempDir::new().unwrap();
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     let mut screen = Screen::default();
@@ -6532,7 +6532,7 @@ fn acts_the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
 }
 
 #[test]
-fn acts_enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
+fn enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
     // The pane is gone, but what blocks enter is that the agent never had a
     // session to resume, so that is what the message says.
     let root = TempDir::new().unwrap();

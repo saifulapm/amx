@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_rename_puts_the_name_on_the_record_and_leaves_the_id_where_it_was() {
+    fn rename_puts_the_name_on_the_record_and_leaves_the_id_where_it_was() {
         let root = TempDir::new().unwrap();
         let agent = recorded(root.path(), "fix-login-a1b");
 
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn acts_rename_refuses_what_no_row_could_carry() {
+    fn rename_refuses_what_no_row_could_carry() {
         let root = TempDir::new().unwrap();
         let agent = recorded(root.path(), "fix-login-a1b");
         let refused = |typed: &str| match rename(root.path(), "fix-login-a1b", typed).unwrap() {

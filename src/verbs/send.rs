@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_message_may_not_end_its_own_paste() {
+    fn a_message_may_not_end_its_own_paste() {
         assert!(!ends_its_own_paste(
             "fix the login bug\nand the tests with it"
         ));
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_message_amx_refuses_never_reaches_the_record() {
+    fn a_message_amx_refuses_never_reaches_the_record() {
         // The record is written before typing, so the paste check must come
         // first or a refused send would still be logged and counted.
         let root = tempfile::TempDir::new().unwrap();
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_offer_says_what_this_kind_of_question_will_take() {
+    fn the_offer_says_what_this_kind_of_question_will_take() {
         // A permission box and the trust screen take one key, never words.
         for kind in [None, Some(Kind::Permission), Some(Kind::Trust)] {
             let offered = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], kind));
@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_offer_names_the_keys_that_move_the_screen_it_was_read_off() {
+    fn the_offer_names_the_keys_that_move_the_screen_it_was_read_off() {
         // The digit range matches the number of choices read.
         let box_of_two = how_to_answer(&asking(Some("Proceed?"), &["Yes", "No"], None));
         assert!(box_of_two.contains("1-2"), "{box_of_two}");
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_list_amx_numbered_itself_is_offered_the_digits_amx_wrote() {
+    fn a_list_amx_numbered_itself_is_offered_the_digits_amx_wrote() {
         // pi draws blocking lists with a cursor arrow and no numbers. amx
         // numbers the rows itself and `answer` walks to them, so only those
         // digits and `esc` are offered; the selector ignores `y`, `n` and
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_a_question_drawn_beside_a_preview_is_offered_no_words() {
+    fn a_question_drawn_beside_a_preview_is_offered_no_words() {
         // claude 2.1.240 draws no free-text row beside previews, and `answer`
         // refuses words there.
         let mut view = asking(Some("Which layout?"), &[], Some(Kind::Question));
@@ -974,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_the_choices_are_numbered_the_way_the_screen_numbers_them() {
+    fn the_choices_are_numbered_the_way_the_screen_numbers_them() {
         let options = ["the sqlite one".to_string(), "the docker one".to_string()];
         assert_eq!(
             numbered(&options).collect::<Vec<_>>(),

@@ -1411,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn clibatch_diff_stat_answers_with_the_shape_of_the_work() {
+    fn diff_stat_answers_with_the_shape_of_the_work() {
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
@@ -1432,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_every_git_is_run_with_the_system_config_shut_out() {
+    fn every_git_is_run_with_the_system_config_shut_out() {
         // /etc/gitconfig can name programs under keys the overrides miss, so
         // every git runs with GIT_CONFIG_NOSYSTEM.
         let dir = TempDir::new().unwrap();
@@ -1449,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_diff_runs_nothing_the_tree_it_reads_names() {
+    fn a_diff_runs_nothing_the_tree_it_reads_names() {
         // Each key names a program and can be set from inside the tree. The
         // attributes go in `.git/info/attributes`, which config cannot redirect.
         let repo = a_repo();
@@ -1504,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn hardening_a_filter_driver_is_whatever_lies_between_the_two_ends() {
+    fn a_filter_driver_is_whatever_lies_between_the_two_ends() {
         let listed = "filter.lfs.clean\nfilter.lfs.smudge\nfilter.git-lfs.2.process\n\
                       filter.lfs.clean\ncore.fsmonitor\nfilter.\n";
         assert_eq!(drivers_in(listed), ["git-lfs.2", "lfs"]);
