@@ -13,6 +13,12 @@ pub fn entry(agent: &str) -> Option<&'static Vendor> {
     vendor::find(agent)
 }
 
+/// The vendor a record running `agent` is read as: its own entry, else the
+/// first in the table, since a wrapper script is most often around claude.
+pub fn read_as(agent: &str) -> Option<&'static Vendor> {
+    entry(agent).or_else(|| entries().first())
+}
+
 /// Every registered vendor, in the order a cycle key offers them.
 pub fn entries() -> &'static [Vendor] {
     vendor::table()

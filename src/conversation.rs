@@ -36,9 +36,7 @@ pub enum Said {
 /// entry for a command amx does not know (a wrapper script, say). `None` for a
 /// vendor that keeps no transcript.
 pub fn format_of(agent: &str) -> Option<Transcript> {
-    crate::registry::entry(agent)
-        .or_else(|| crate::registry::entries().first())
-        .and_then(|vendor| vendor.transcript)
+    crate::registry::read_as(agent).and_then(|vendor| vendor.transcript)
 }
 
 /// Everything said in the conversation, in order.

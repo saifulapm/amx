@@ -703,7 +703,7 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
 /// a hooks line. A configured command with no table entry is judged as the
 /// first vendor, since a wrapper around claude loads claude's files.
 fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) -> Vec<VendorWiring> {
-    let configured = registry::entry(agent).or_else(|| registry::entries().first());
+    let configured = registry::read_as(agent);
     registry::entries()
         .iter()
         .filter(|vendor| {

@@ -33,6 +33,7 @@ pub const SECOND: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+    menus_take_letters: true,
     prompt_flag: None,
     popups: &[],
     cancel_presses: 1,

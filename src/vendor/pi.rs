@@ -149,6 +149,7 @@ pub const VENDOR: Vendor = Vendor {
     // editor, joined and unsent (interactive-mode.js:2332 and 3761-3778,
     // 0.87.1).
     restores_queued_on_cancel: true,
+    menus_take_letters: false,
     prompt_flag: None,
     popups: &[],
     cancel_presses: 1,

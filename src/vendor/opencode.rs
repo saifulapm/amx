@@ -168,6 +168,7 @@ pub const VENDOR: Vendor = Vendor {
     attaches_at: false,
     // Esc cancels the turn and leaves nothing amx sent in the composer.
     restores_queued_on_cancel: false,
+    menus_take_letters: false,
     // One `--prompt=<text>` word, so a task starting with `-` is not read as
     // a flag.
     prompt_flag: Some("--prompt"),

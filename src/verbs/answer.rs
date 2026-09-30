@@ -129,6 +129,12 @@ pub fn given(
         Ok(read) => read,
         Err(refused) => return Ok(Answered::No(refused)),
     };
+    let letters = crate::registry::read_as(view.meta.agent.as_deref().unwrap_or_default())
+        .is_none_or(|vendor| vendor.menus_take_letters);
+    let answer = match answer {
+        Answer::Key(key) if !letters => Answer::Key(row_saying(&key, &view.state).unwrap_or(key)),
+        answer => answer,
+    };
     // The walk starts from wherever the cursor is now, so read the pane last.
     let answer = match answer {
         Answer::Picked(at, _) => Answer::Picked(
@@ -778,6 +784,23 @@ fn answered(agent: &Agent, read: &State, answer: &Answer, note: Option<&str>) ->
     Ok(())
 }
 
+/// `y` or `n` as the number of the menu row whose first word says it, for a
+/// vendor whose menus ignore letters.
+fn row_saying(key: &str, state: &State) -> Option<String> {
+    let word = match key {
+        "y" => "yes",
+        "n" => "no",
+        _ => return None,
+    };
+    let at = state.options.iter().position(|label| {
+        label
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(word))
+    })?;
+    (at < 9).then(|| (at + 1).to_string())
+}
+
 /// One key of the grammar under its tmux name, or `None`.
 ///
 /// Case and surrounding space are ignored. `enter`, `esc`, `up` and `down`
@@ -799,6 +822,26 @@ pub fn named(key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::store::Choice;
+
+    #[test]
+    fn y_and_n_name_the_rows_that_say_yes_and_no() {
+        // claude 2.1.284's permission menu, which ignores the letters.
+        let state = State {
+            options: [
+                "Yes",
+                "Yes, and don't ask again for: npm test *",
+                "Yes, and switch to auto mode",
+                "No",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            ..State::default()
+        };
+        assert_eq!(row_saying("y", &state).as_deref(), Some("1"));
+        assert_eq!(row_saying("n", &state).as_deref(), Some("4"));
+        assert_eq!(row_saying("2", &state), None, "only the letters move");
+        assert_eq!(row_saying("y", &State::default()), None, "no rows read");
+    }
 
     /// A choice with a description.
     fn choice(label: &str, description: &str) -> Choice {

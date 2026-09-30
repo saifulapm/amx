@@ -141,6 +141,8 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
+    // 2.1.284's permission menu ignores `y`; digits work.
+    menus_take_letters: false,
     prompt_flag: None,
     popups: &[],
     cancel_presses: 1,

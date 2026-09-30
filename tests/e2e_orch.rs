@@ -680,13 +680,13 @@ fn answer_refuses_words_at_a_prompt_that_takes_a_key() {
 
 #[test]
 fn a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
-    // amx cannot confirm what `y` did at a box: claude fires no hook when a
-    // prompt is dismissed, and a screen where `y` did nothing looks the same.
-    // So the record keeps the key and stays `waiting`.
+    // `enter` takes whichever row the cursor is on, and claude fires no hook
+    // when a prompt is dismissed, so amx cannot tell what it did. The record
+    // keeps the key and stays `waiting`.
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
-    let out = amx.amx(&["answer", "ask-a1b", "y"]);
+    let out = amx.amx(&["answer", "ask-a1b", "enter"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(
         amx.state("ask-a1b")["state"],
@@ -697,14 +697,18 @@ fn a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
         .events("ask-a1b")
         .pop()
         .expect("the answer on the record");
-    assert_eq!(typed["payload"]["key"], "y", "{typed}");
+    assert_eq!(typed["payload"]["key"], "Enter", "{typed}");
 
-    // The same screen can be answered again.
-    let out = amx.amx(&["answer", "ask-a1b", "1"]);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-
-    // A numbered choice has a known effect, so the question is cleared and
+    // claude's menu ignores letters, so `y` is sent as the number of the Yes
+    // row. A numbered choice has a known effect: the question is cleared and
     // the agent is `working`.
+    let out = amx.amx(&["answer", "ask-a1b", "y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let typed = amx
+        .events("ask-a1b")
+        .pop()
+        .expect("the answer on the record");
+    assert_eq!(typed["payload"]["key"], "1", "{typed}");
     let recorded = amx.state("ask-a1b");
     assert_eq!(recorded["state"], "working", "{recorded}");
     assert_eq!(recorded["question"], json!(null), "{recorded}");

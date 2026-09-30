@@ -450,6 +450,9 @@ pub struct Vendor {
     /// unsent. `amx interrupt` then records them, and `send` waits for the
     /// next prompt before typing.
     pub restores_queued_on_cancel: bool,
+    /// Whether the vendor's numbered menus take `y` and `n`. Where they do not,
+    /// `amx answer` sends the number of the row whose first word is yes or no.
+    pub menus_take_letters: bool,
     /// The flag a message is passed on as one `flag=<text>` word, for a
     /// vendor with no positional prompt.
     pub prompt_flag: Option<&'static str>,

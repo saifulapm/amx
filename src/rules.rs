@@ -177,7 +177,7 @@ fn parsed() -> &'static [(&'static str, Ruleset)] {
 /// wrongly. A vendor whose screens are unmeasured gets an empty ruleset that
 /// claims nothing.
 pub fn of(agent: &str) -> &'static Ruleset {
-    let vendor = registry::entry(agent).or_else(|| registry::entries().first());
+    let vendor = registry::read_as(agent);
     select(parsed(), vendor.map_or("", |vendor| vendor.name)).unwrap_or_else(unmeasured)
 }
 

@@ -132,6 +132,8 @@ pub const VENDOR: Vendor = Vendor {
     // steer still pending at Esc is resubmitted as a new turn rather than
     // restored (tui/src/chatwidget/input_restore.rs:316-378).
     restores_queued_on_cancel: false,
+    // The approval box marks `y` on its first row, and `y` approves.
+    menus_take_letters: true,
     prompt_flag: None,
     popups: &[],
     cancel_presses: 1,
