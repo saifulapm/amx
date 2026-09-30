@@ -1,30 +1,13 @@
-//! Whether an agent's branch has a pull request, and how that request is
-//! doing.
+//! The pull request on an agent's branch and its status, asked of `gh` or
+//! `glab`.
 //!
-//! A branch is where an agent's work goes; a pull request is what happens to it
-//! afterwards. That is worth a column on the row, because it answers a question
-//! the rest of the row cannot: the agent finished, and then what? A number says
-//! the work left the machine, and the colour on the number says whether
-//! anything is standing in its way.
+//! A machine with neither installed gets no pull requests, never an error.
 //!
-//! None of this is amx's own knowledge. `gh` and `glab` are what a person
-//! already talks to their forge with, both answer in JSON, and both are asked
-//! the one question a row needs. A machine with neither installed loses the
-//! column and nothing else: every reader here answers with no pull requests
-//! rather than with a failure, and a row without a number is the row amx has
-//! always drawn.
-//!
-//! **No reader somebody is watching waits on a forge.** A look reads what the
-//! last look wrote down beside the record, and where that is old it sets a
-//! fresh look going in a thread nobody joins. The worst a reading costs is a
-//! number one look behind the network; the alternative is a list that stops for
-//! a second every time it is drawn, on the one surface whose whole promise is
-//! that it does not.
-//!
-//! A verb that decides something on the answer is the other case: `sweep` takes
-//! a record, a tree and a branch on it, and what was never written down is not
-//! a reason to keep them. Those readings say so in their own doc comments —
-//! [`asked_now`] and [`request_head`] — and they are the whole of the list.
+//! - Interactive readers never wait on a forge: they read the answer cached in
+//!   `pr.json` beside the record and, when it is stale, refresh it on a
+//!   detached thread.
+//! - Only [`asked_now`] (for `sweep`) and [`request_head`] (for `new --pr`)
+//!   call the forge synchronously.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -36,18 +19,13 @@ use std::sync::Mutex;
 
 use crate::store::Meta;
 
-/// How long an answer from the forge is taken at its word.
-///
-/// A check goes green somewhere between one minute and twenty, and a person
-/// watching a row for it will press nothing to make it move. Long enough that
-/// a wall of agents is not a wall of subprocesses, short enough that the
-/// number is about now.
+/// Seconds a cached forge answer stays fresh.
 pub const FRESH: u64 = 60;
 
-/// What the last look wrote down, beside the record it is about.
+/// The cache file, in the agent's record directory.
 const CACHE: &str = "pr.json";
 
-/// One pull request, as much of it as a row has room for.
+/// One pull request, as much of it as a row shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pr {
     pub number: u64,
@@ -55,47 +33,35 @@ pub struct Pr {
 }
 
 impl Pr {
-    /// What a row calls it, which is what the forges call it and what a person
-    /// types to find it again.
+    /// The row label, `#<number>`.
     pub fn label(&self) -> String {
         format!("#{}", self.number)
     }
 }
 
-/// Where a pull request has got to, in the one word worth a column.
-///
-/// Eight answers to four questions — is it in, is anybody looking at it yet,
-/// did the checks pass, has a reviewer answered — because the four have an
-/// order and what a row shows is the first of them with anything to say.
-/// [`fold`] is that order, written down.
+/// A pull request's status, reduced to one word; [`fold`] sets the precedence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Standing {
-    /// It is in.
     Merged,
-    /// It was shut without going in.
+    /// Closed without merging.
     Closed,
-    /// A draft: it is not asking anybody for anything yet.
     Draft,
-    /// A check on it failed.
+    /// A check failed.
     Failing,
-    /// A reviewer asked for changes.
+    /// A reviewer requested changes.
     Changes,
-    /// The checks are still running.
+    /// Checks are still running.
     Running,
-    /// A reviewer approved it and nothing is failing.
+    /// Approved, with nothing failing.
     Ready,
-    /// Open, and waiting on whoever reviews it.
+    /// Open and awaiting review.
     Open,
 }
 
 impl Standing {
-    /// What the card says beside the number.
-    ///
-    /// A row has one colour for this and the colours are five, so two
-    /// standings can wear one: the colour answers how it is going, and these
-    /// words answer which of the four questions the colour came from — which
-    /// is the thing a person opens a card to find out.
+    /// The card's word for it. Several standings share a row colour, so the
+    /// card names which one it is.
     pub fn says(self) -> &'static str {
         match self {
             Standing::Merged => "merged",
@@ -109,13 +75,13 @@ impl Standing {
         }
     }
 
-    /// Whether nothing more is going to happen to it.
+    /// Whether it is merged or closed.
     pub fn settled(self) -> bool {
         matches!(self, Standing::Merged | Standing::Closed)
     }
 }
 
-/// How the checks on a request went, folded from however many there were.
+/// The combined result of a request's checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Checks {
     Passing,
@@ -123,15 +89,10 @@ enum Checks {
     Running,
 }
 
-/// Where a pull request has got to, from what the forge said about it.
+/// A request's standing from the forge's fields.
 ///
-/// The order is what a person scanning a wall of rows wants first. An ending
-/// outranks everything, because nothing is being asked of anybody about a
-/// request that is over. A draft outranks the rest for the same reason: it is
-/// not offered yet, so a red check on it is not news. Then the checks, which
-/// are a fact, before the review, which is an opinion — and a failing check
-/// before a running one, because one failure decides the build whatever the
-/// rest are still doing.
+/// Precedence: merged or closed, then draft, then failing checks, then
+/// requested changes, then running checks, then approval.
 fn fold(state: &str, draft: bool, review: &str, checks: Option<Checks>) -> Standing {
     if state.eq_ignore_ascii_case("merged") {
         return Standing::Merged;
@@ -157,28 +118,22 @@ fn fold(state: &str, draft: bool, review: &str, checks: Option<Checks>) -> Stand
     Standing::Open
 }
 
-/// The requests in the order a row and a card read them: whatever is still
-/// live first, and the newest number of those, because a branch that has been
-/// through this twice is being read for the attempt that is still going.
+/// Open requests first, then settled ones, each newest first.
 fn sorted(mut prs: Vec<Pr>) -> Vec<Pr> {
     prs.sort_by_key(|pr| (pr.standing.settled(), std::cmp::Reverse(pr.number)));
     prs
 }
 
-/// The fields amx asks `gh` for, which are the four questions and nothing else.
+/// The fields requested from `gh pr list --json`.
 const GH_FIELDS: &str = "number,state,isDraft,reviewDecision,statusCheckRollup,headRefOid";
 
-/// What `gh pr list --json` said, read into what a row needs.
+/// Parse `gh pr list --json` output.
 ///
-/// Measured against gh 2.97.0 on 2026-08-24: `state` is `OPEN`, `CLOSED` or
-/// `MERGED`, `reviewDecision` is `APPROVED`, `CHANGES_REQUESTED`,
-/// `REVIEW_REQUIRED` or empty, and `statusCheckRollup` is a flat array holding
-/// two shapes at once — a `CheckRun` says how far it has got in `status` and
-/// how it went in `conclusion`, a `StatusContext` says only how it went, in
-/// `state`.
-///
-/// Read out of a `Value` rather than into a struct of amx's own: a field the
-/// forge renames should cost the one answer that field carried, not the row.
+/// As of gh 2.97.0: `state` is `OPEN`, `CLOSED` or `MERGED`; `reviewDecision`
+/// is `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or empty;
+/// `statusCheckRollup` mixes `CheckRun` entries (`status` and `conclusion`)
+/// with `StatusContext` entries (verdict in `state`). Fields are read from a
+/// `Value` so a renamed field loses only its own answer.
 fn read_gh(said: &str) -> Vec<Pr> {
     let Ok(serde_json::Value::Array(listed)) = serde_json::from_str(said) else {
         return Vec::new();
@@ -203,15 +158,13 @@ fn read_gh(said: &str) -> Vec<Pr> {
         .collect()
 }
 
-/// The flags amx gives `glab`, and the shape it answers in.
+/// Parse `glab mr list --output json` output.
 ///
-/// Written to what `glab mr list` documents rather than measured against a
-/// live one, which is why every field here is read as optional and why a
-/// spelling it does not know costs one answer rather than the request: `state`
-/// is `opened`, `merged`, `closed` or `locked`, a draft is `draft` in a recent
-/// glab and `work_in_progress` in an older one, and the checks are the head
-/// pipeline's status. GitLab's review decision is not in this listing at all,
-/// so a merge request is never read as approved or as asking for changes.
+/// Written from glab's documentation, not a live run, so every field is
+/// optional. `state` is `opened`, `merged`, `closed` or `locked`; a draft is
+/// `draft` (newer glab) or `work_in_progress` (older); checks come from the
+/// head pipeline's status. The listing has no review decision, so a merge
+/// request is never `Ready` or `Changes`.
 fn read_glab(said: &str) -> Vec<Pr> {
     let Ok(serde_json::Value::Array(listed)) = serde_json::from_str(said) else {
         return Vec::new();
@@ -235,13 +188,11 @@ fn read_glab(said: &str) -> Vec<Pr> {
         .collect()
 }
 
-/// The commits the forge merged, one per merged request: the head each was at
-/// when it went in. gh calls it `headRefOid` and glab `sha`.
+/// The head commit of each merged request (`headRefOid` for gh, `sha` for
+/// glab).
 ///
-/// What says a branch whose own commits are on no other branch has landed
-/// anyway: a squash or a rebase puts the work into main under commits of its
-/// own, and the branch's tip being exactly what was merged is what says
-/// nothing was added after.
+/// A branch whose tip equals a merged head has landed even when a squash or
+/// rebase merge left its commits on no other branch.
 fn merged_heads(said: &str, head: &str) -> Vec<String> {
     let Ok(serde_json::Value::Array(listed)) = serde_json::from_str(said) else {
         return Vec::new();
@@ -253,16 +204,13 @@ fn merged_heads(said: &str, head: &str) -> Vec<String> {
         .collect()
 }
 
-/// A string field of an object, or nothing said at all.
+/// A string field, or `""` when absent.
 fn word<'a>(object: &'a serde_json::Value, key: &str) -> &'a str {
     object.get(key).and_then(|it| it.as_str()).unwrap_or("")
 }
 
-/// How the checks went, from however many of them there were.
-///
-/// One failure decides the whole build, so it answers at once. Otherwise
-/// anything that has not finished leaves the answer running, and a request
-/// with no checks configured at all has nothing to say rather than a pass.
+/// Combine a request's checks: any failure is `Failing`, any unfinished check
+/// is `Running`. No checks at all is `None`, not a pass.
 fn rollup(entries: Option<&Vec<serde_json::Value>>) -> Option<Checks> {
     let entries = entries?;
     if entries.is_empty() {
@@ -271,9 +219,8 @@ fn rollup(entries: Option<&Vec<serde_json::Value>>) -> Option<Checks> {
 
     let mut running = false;
     for entry in entries {
-        // A check run's verdict is its conclusion and is empty until it has
-        // one; a status context has no conclusion and says its verdict in
-        // `state`. Whichever is there is the verdict.
+        // A CheckRun's verdict is `conclusion` (empty until done); a
+        // StatusContext has only `state`.
         let went = match word(entry, "conclusion") {
             "" => word(entry, "state"),
             conclusion => conclusion,
@@ -283,9 +230,7 @@ fn rollup(entries: Option<&Vec<serde_json::Value>>) -> Option<Checks> {
             return Some(Checks::Failing);
         }
         let passed = PASSED.iter().any(|good| went.eq_ignore_ascii_case(good));
-        // Finished with a verdict nothing here recognises is not a failure to
-        // report: it is a check amx has no word for, and the row says nothing
-        // about it rather than something wrong.
+        // A completed check with an unknown verdict counts as neither.
         running |= !passed && !done.eq_ignore_ascii_case("completed");
     }
     Some(match running {
@@ -294,7 +239,7 @@ fn rollup(entries: Option<&Vec<serde_json::Value>>) -> Option<Checks> {
     })
 }
 
-/// Every way a check can be over and not have passed.
+/// Check verdicts that count as a failure.
 const FAILED: [&str; 7] = [
     "FAILURE",
     "TIMED_OUT",
@@ -305,11 +250,10 @@ const FAILED: [&str; 7] = [
     "ERROR",
 ];
 
-/// And every way it can be over and not be in anybody's way. A check that was
-/// skipped or that does not vote is a check nobody is waiting on.
+/// Check verdicts that count as passing, skipped and neutral included.
 const PASSED: [&str; 3] = ["SUCCESS", "NEUTRAL", "SKIPPED"];
 
-/// GitLab's pipeline status as the same three answers.
+/// A GitLab pipeline status as [`Checks`].
 fn pipeline_of(status: &str) -> Option<Checks> {
     match status.to_ascii_lowercase().as_str() {
         "" => None,
@@ -319,8 +263,8 @@ fn pipeline_of(status: &str) -> Option<Checks> {
     }
 }
 
-/// The pull requests on this agent's branch, as the last look wrote them down,
-/// with a fresh look set going where what is written down has aged.
+/// The pull requests on this agent's branch from the cache, starting a
+/// background refresh when it is stale.
 pub fn of(meta: &Meta) -> Vec<Pr> {
     let Some((dir, at, branch)) = about(meta) else {
         return Vec::new();
@@ -328,17 +272,10 @@ pub fn of(meta: &Meta) -> Vec<Pr> {
     read(&dir, &at, branch, crate::store::now())
 }
 
-/// The same, for a reader that will not be here when a fresh answer arrives.
+/// The cached pull requests, with no refresh.
 ///
-/// A verb that prints once and exits is one of those. The thread a look starts
-/// is never joined, and the process is gone before a forge has answered: the
-/// subprocess is paid for, killed part way through, and what it was going to
-/// write is dropped — sometimes with the file it writes through left behind.
-/// So this reads what the last look wrote and starts nothing. It is handed no
-/// tree to ask in, which is the whole of the difference.
-///
-/// The view is the reader that does wait, and it is the one that keeps what is
-/// written down worth reading.
+/// For verbs that print and exit: a refresh thread would be killed with the
+/// process before the forge answered. The view keeps the cache current.
 pub fn written(meta: &Meta) -> Vec<Pr> {
     let Some((dir, _, branch)) = about(meta) else {
         return Vec::new();
@@ -346,14 +283,10 @@ pub fn written(meta: &Meta) -> Vec<Pr> {
     kept(&dir, branch)
 }
 
-/// Where a look about an agent goes: the record it is written down beside, the
-/// tree a forge would be asked from, and the branch it is about.
+/// The record directory, the directory to run the forge in, and the branch.
 ///
-/// There is nowhere for an agent amx did not cut a branch for: what a row would
-/// be labelling then is whatever the person's own checkout happens to be on,
-/// which is not this agent's work. A record that is not on the disk and a tree
-/// that has been removed are the same answer, because both leave nowhere to run
-/// the question in.
+/// `None` for an agent with no branch of amx's (the person's checkout is not
+/// its work) or when the record or both directories are gone.
 fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
     let branch = meta.branch.as_deref()?;
     let dir = crate::paths::agent_dir(&meta.id).ok()?;
@@ -364,11 +297,10 @@ fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
     (dir.is_dir() && at.is_dir()).then_some((dir, at, branch))
 }
 
-/// The same, with the record's directory and the repository named.
+/// [`of`] with the record directory and the working directory given.
 ///
-/// What is written down comes back whether or not it is fresh: a number a
-/// minute old is the answer until a better one arrives, and hiding it while
-/// the better one is fetched would blink the column on every reading.
+/// Returns the cached answer even when stale, so the column does not blink
+/// while a refresh runs.
 pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     let held = held(dir);
     if !still_good(held.as_ref(), branch, now) {
@@ -377,18 +309,12 @@ pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     theirs(held, branch)
 }
 
-/// The pull requests on this agent's branch, asked of the forge here and now
-/// where what is written down has aged.
+/// The pull requests on this agent's branch, asking the forge synchronously
+/// when the cache is stale.
 ///
-/// For the one reader that can wait and has to: `sweep` decides whether an
-/// agent's record, tree and branch are taken on this answer, and a look that
-/// never happened is not a reason to keep three copies of history somebody
-/// already has. An operator who never opens the view has nothing written down
-/// at all, which is the blind spot this closes.
-///
-/// A request that is over is still not asked about again, so the cost is one
-/// forge call per branch that is still going, once, in a verb that prints and
-/// exits.
+/// For `sweep`, which decides whether to remove an agent on this answer and
+/// cannot rely on a cache only the view fills. Settled requests are not asked
+/// about again.
 pub fn asked_now(meta: &Meta) -> Vec<Pr> {
     let Some((dir, at, branch)) = about(meta) else {
         return Vec::new();
@@ -396,7 +322,7 @@ pub fn asked_now(meta: &Meta) -> Vec<Pr> {
     ask_now(&dir, &at, branch, crate::store::now())
 }
 
-/// The same, with the record's directory and the repository named.
+/// [`asked_now`] with the record directory and the working directory given.
 fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     let held = held(dir);
     if still_good(held.as_ref(), branch, now) {
@@ -407,11 +333,9 @@ fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     looked.prs
 }
 
-/// The commits the last look says were merged from this branch — see
-/// [`merged_heads`] — however long ago it looked.
+/// The cached [`merged_heads`] for this agent's branch, however old.
 ///
-/// Read with nothing but the record: it is asked as the branch is about to go,
-/// when the tree the forge would be asked from has gone already.
+/// Needs only the record, since it is read when the tree may already be gone.
 pub fn merged_heads_written(meta: &Meta) -> Vec<String> {
     let (Some(branch), Ok(dir)) = (meta.branch.as_deref(), crate::paths::agent_dir(&meta.id))
     else {
@@ -423,43 +347,35 @@ pub fn merged_heads_written(meta: &Meta) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// What the last look wrote about this branch, however long ago it was written.
+/// The cached pull requests for `branch`, however old.
 pub fn kept(dir: &Path, branch: &str) -> Vec<Pr> {
     theirs(held(dir), branch)
 }
 
-/// The requests in a look, where the look is about the branch being asked
-/// after. One from before a rename answers a question nobody is asking now.
+/// The cached requests when the cache is for `branch` (a rename invalidates
+/// it).
 fn theirs(held: Option<Recorded>, branch: &str) -> Vec<Pr> {
     held.filter(|held| held.branch == branch)
         .map(|held| held.prs)
         .unwrap_or_default()
 }
 
-/// The last answer about one branch, as it is written down.
+/// The contents of `pr.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Recorded {
-    /// When the forge was asked, which is what says whether this is still
-    /// worth believing.
+    /// When the forge was asked, in epoch seconds.
     asked: u64,
-    /// And which branch it was asked about. A record from before a rename
-    /// answers a question nobody is asking now.
     branch: String,
     prs: Vec<Pr>,
-    /// The head each merged request was at when it went in, where the forge
-    /// said: see [`merged_heads`].
+    /// See [`merged_heads`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     merged_heads: Vec<String>,
 }
 
-/// Whether what is written down is this branch's and still stands.
+/// Whether the cache is for `branch` and needs no refresh: it is fresh, or
+/// every request on it is settled.
 ///
-/// Recent enough, or about a branch whose every request is over. A merged
-/// request stays merged, and a wall of finished agents would otherwise put a
-/// subprocess and a network call behind every one of them once a minute for as
-/// long as the view is open, to be told the same thing every time. A branch
-/// with nothing on it is asked about again: a request can be opened later, and
-/// that is the whole point of the column for an agent that has finished.
+/// An empty list is always refreshed, since a request may be opened later.
 fn still_good(held: Option<&Recorded>, branch: &str, now: u64) -> bool {
     let held = match held {
         Some(held) if held.branch == branch => held,
@@ -469,17 +385,13 @@ fn still_good(held: Option<&Recorded>, branch: &str, now: u64) -> bool {
     over || now.saturating_sub(held.asked) < FRESH
 }
 
-/// What the last look wrote. A file that is not there, or that nothing can
-/// read, is a look that has not happened yet.
+/// The cache, or `None` when it is missing or unreadable.
 fn held(dir: &Path) -> Option<Recorded> {
     let said = std::fs::read_to_string(dir.join(CACHE)).ok()?;
     serde_json::from_str(&said).ok()
 }
 
-/// Write down what the forge said, whole, for whoever reads next.
-///
-/// Into a file beside it and then renamed, so a reader that arrives mid-write
-/// sees the answer before or the answer after and never half of either.
+/// Write the cache atomically.
 fn write(
     dir: &Path,
     branch: &str,
@@ -497,15 +409,10 @@ fn write(
     crate::store::write_atomic(&dir.join(CACHE), said.as_bytes())
 }
 
-/// The branches a look is already out for. One question at a time per agent:
-/// a reading every second must not put a subprocess behind every one of them.
+/// Record directories with a refresh in flight, so each agent has at most one.
 static ASKING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
-/// Ask the forge again, with nobody waiting for the answer.
-///
-/// The thread is never joined. A view is open for hours and will have the
-/// answer on the next reading; a verb that exits first leaves the question
-/// unanswered, which costs the column and nothing else.
+/// Refresh the cache on a detached thread that is never joined.
 fn ask_again(dir: PathBuf, at: PathBuf, branch: String) {
     {
         let Ok(mut asking) = ASKING.lock() else {
@@ -541,16 +448,14 @@ fn forget(dir: &Path) {
     }
 }
 
-/// What one look at the forge found.
+/// One forge answer.
 #[derive(Debug, Default)]
 struct Looked {
     prs: Vec<Pr>,
     merged_heads: Vec<String>,
 }
 
-/// Whichever forge answers about this branch, in the order a machine is likely
-/// to have them. Neither of them installed is no pull requests, which is the
-/// same answer as a branch nobody has opened one for.
+/// Ask `gh`, then `glab`, about `branch`. Neither answering is no requests.
 fn ask(at: &Path, branch: &str) -> Looked {
     if let Some(said) = run(
         at,
@@ -585,8 +490,8 @@ fn ask(at: &Path, branch: &str) -> Looked {
     Looked::default()
 }
 
-/// One forge command, with its output as the answer. A command that is not
-/// installed, will not run, or says it failed answers with nothing.
+/// Run a forge command and return its stdout, or `None` if it is missing or
+/// fails.
 fn run(at: &Path, program: &str, args: &[&str]) -> Option<String> {
     let out = command(at, program, args).output().ok()?;
     out.status
@@ -594,15 +499,12 @@ fn run(at: &Path, program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A forge, pointed at the tree and ready to run.
+/// A forge command run in `at`.
 ///
-/// It runs in the tree the agent works in, and that tree's own `.git/config`
-/// is a list of programs the agent itself can write — `core.fsmonitor` names
-/// one git starts before it will look at a file, and a hook runs on the index
-/// git refreshes on its way past. `gh` and `glab` both shell out to git, so
-/// the same refusal `worktree.rs` writes with `-c` goes here through the
-/// environment, which every git underneath inherits and which beats the
-/// config files it would otherwise read them from.
+/// `gh` and `glab` shell out to git in the agent's tree, whose `.git/config`
+/// the agent can write. `core.fsmonitor` and `core.hooksPath` would run
+/// programs from it, so they are overridden through `GIT_CONFIG_*`, which
+/// every git underneath inherits and which beats the config files.
 fn command(at: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Command {
     let mut forge = Command::new(program);
     forge
@@ -616,22 +518,17 @@ fn command(at: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Command {
         .env("GIT_CONFIG_VALUE_0", "false")
         .env("GIT_CONFIG_KEY_1", "core.hooksPath")
         .env("GIT_CONFIG_VALUE_1", "/dev/null")
-        // Neither forge is being read by a person here, and a pager would hold
-        // a thread open waiting for one that is not there.
+        // A pager would wait for a reader that is not there.
         .env("GH_PAGER", "cat")
         .env("GLAB_PAGER", "cat")
         .env("NO_COLOR", "1");
     forge
 }
 
-/// The head of one pull request: the branch the work is on, the commit that
-/// branch is at, and whether the branch lives in somebody else's fork.
+/// A pull request's head, as `new --pr` needs it.
 ///
-/// The three answers a spawn on a request needs. The branch is what the local
-/// one is named after, so the column finds the request again by branch and
-/// nothing else has to be written down; the commit is the base the tree is
-/// recorded as cut from; and the fork is why that name is sometimes not free
-/// to take — a fork's `main` is not this repository's `main`.
+/// `cross` is set for a branch in another fork, whose name (often `main` or
+/// `patch-1`) may not be free to use locally.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PrHead {
     #[serde(rename = "headRefName")]
@@ -642,41 +539,26 @@ pub struct PrHead {
     pub cross: bool,
 }
 
-/// The fields amx asks `gh` for about one request, which are the three above.
+/// The fields requested from `gh pr view --json` for a [`PrHead`].
 const HEAD_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 
-/// Where request `number` in this repository has got to, as gh has it.
-///
-/// The one reading in this file that does wait on a forge, and the one that
-/// has to: a spawn on a request has no branch to cut a tree on and no commit
-/// to record until gh has answered, so there is nothing to draw a row with
-/// meanwhile and nothing an old answer would be good for. Whoever typed the
-/// number is waiting on the id.
-// The tests ask `head_from` instead, since a gh they wrote themselves is the
-// only one a suite may run. `new --pr` is what runs this one.
+/// The head of request `number` in `repo`, asked of gh synchronously.
 pub fn request_head(repo: &Path, number: u64) -> Result<PrHead> {
     head_from(repo, number, Path::new("gh"))
 }
 
-/// The same, from a gh named rather than looked for.
-///
-/// Which is how it is tested: a fake written under a tempdir, never the gh the
-/// machine running the suite has installed and never the repository it would
-/// answer about.
+/// [`request_head`] with the gh binary given, so tests can use a fake.
 fn head_from(repo: &Path, number: u64, gh: &Path) -> Result<PrHead> {
     let numbered = number.to_string();
     let out = command(repo, gh, &["pr", "view", &numbered, "--json", HEAD_FIELDS])
         .output()
         .map_err(|trouble| match trouble.kind() {
-            // The only one worth its own sentence: it is a machine to install
-            // something on rather than a request to check the number of.
             std::io::ErrorKind::NotFound => anyhow!("gh is not on the PATH"),
             _ => anyhow!("running gh: {trouble}"),
         })?;
     if !out.status.success() {
-        // gh's own complaint goes nowhere, because every way it can fail here
-        // is the same answer: this repository has no such request. A person
-        // with several checkouts has typed a real number in the wrong one.
+        // Every failure here means the number is not a request in this
+        // repository; naming the repository catches a wrong checkout.
         bail!("no pull request #{number} in {}", repo.display());
     }
     serde_json::from_slice(&out.stdout)
@@ -689,12 +571,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
-    /// A gh of amx's own, answering about request 7 with `said` and refusing
-    /// every other number the way gh refuses one that is not there.
-    ///
-    /// Written under a tempdir and handed to [`head_from`] by name rather than
-    /// put on the PATH: what a suite must never do is ask the machine's own
-    /// forge about a repository that is a temporary directory.
+    /// A fake gh in `dir` that prints `said` for request 7 and fails for any
+    /// other number. Passed by path so tests never run the real gh.
     fn a_fake_gh(dir: &Path, said: &str) -> PathBuf {
         let gh = dir.join("gh");
         std::fs::write(
@@ -707,14 +585,10 @@ mod tests {
         gh
     }
 
-    /// Wait for a file written a moment ago to be a file the kernel will run.
+    /// Wait until a just-written program can be executed.
     ///
-    /// A test that writes a program and runs it has one hazard nothing in amx
-    /// has: the suite is one process of many threads, a sibling's spawn forks
-    /// with this file's write handle still open, and an exec between the fork
-    /// and the exec that follows it is refused as a busy text file. It clears
-    /// in microseconds, and nothing opens this file for writing again, so one
-    /// spawn that gets through is the whole of the wait.
+    /// Another test thread's fork can briefly hold the file's write handle,
+    /// and exec then fails with ETXTBSY.
     fn wait_until_runnable(program: &Path) {
         for _ in 0..200 {
             match Command::new(program)
@@ -731,8 +605,7 @@ mod tests {
         panic!("{} was busy for a second", program.display());
     }
 
-    /// What gh 2.97.0 answered about this repository on 2026-08-24, cut to the
-    /// fields amx asks for and with the check runs trimmed to one apiece.
+    /// Real gh 2.97.0 output for amx's own repository, trimmed to one check.
     const A_MERGED_ONE: &str = r#"[
       {"headRefName":"ci-green-check","isDraft":false,"number":5,
        "reviewDecision":"","state":"MERGED",
@@ -746,8 +619,7 @@ mod tests {
         read.into_iter().next().expect("one request")
     }
 
-    /// A request of gh's own shape, with the four answers a row is folded from
-    /// written in the forge's own words.
+    /// A one-request gh listing with the given fields.
     fn a_request(state: &str, draft: bool, review: &str, checks: &str) -> String {
         format!(
             r#"[{{"number":12,"state":"{state}","isDraft":{draft},
@@ -755,7 +627,7 @@ mod tests {
         )
     }
 
-    /// The rollup of one check run that has finished with this conclusion.
+    /// A rollup of one completed check run.
     fn a_check(conclusion: &str) -> String {
         format!(r#"[{{"__typename":"CheckRun","status":"COMPLETED","conclusion":"{conclusion}"}}]"#)
     }
@@ -770,10 +642,7 @@ mod tests {
 
     #[test]
     fn a_request_that_ended_says_so_over_everything_else() {
-        // Nothing is being asked of anybody about a request that is over, so a
-        // red check on a merged branch is history rather than news. amx has
-        // merged a draft with a failing check on it, which is why this is a
-        // rule rather than a hypothetical.
+        // A merged or closed request outranks draft, review and checks.
         for (state, want) in [("MERGED", Standing::Merged), ("CLOSED", Standing::Closed)] {
             let ended = one(&a_request(
                 state,
@@ -797,8 +666,6 @@ mod tests {
 
     #[test]
     fn a_request_says_the_checks_before_it_says_the_review() {
-        // The checks are a fact and the review is an opinion, and a person
-        // scanning a wall wants the fact.
         let failing = one(&a_request("OPEN", false, "APPROVED", &a_check("FAILURE")));
         assert_eq!(failing.standing, Standing::Failing);
 
@@ -834,20 +701,19 @@ mod tests {
             {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]}]"#;
         assert_eq!(one(mixed).standing, Standing::Running);
 
-        // One failure decides the build whatever the rest are still doing.
+        // One failure wins over checks still running.
         let failed = r#"[{"number":12,"state":"OPEN","isDraft":false,"reviewDecision":"",
           "statusCheckRollup":[
             {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},
             {"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}]"#;
         assert_eq!(one(failed).standing, Standing::Failing);
 
-        // A status context has no conclusion and says its verdict in `state`.
+        // A StatusContext has its verdict in `state`.
         let context = r#"[{"number":12,"state":"OPEN","isDraft":false,"reviewDecision":"",
           "statusCheckRollup":[{"__typename":"StatusContext","state":"PENDING"}]}]"#;
         assert_eq!(one(context).standing, Standing::Running);
 
-        // And a request nobody has configured a check for has nothing to say
-        // about them, which is not the same as passing.
+        // No checks configured is not a pass.
         let none = one(&a_request("OPEN", false, "", "[]"));
         assert_eq!(none.standing, Standing::Open);
     }
@@ -859,7 +725,7 @@ mod tests {
             "null",
             "not json at all",
             r#"{"message":"gh had something else to say"}"#,
-            // A row with no number is a row amx cannot label.
+            // No number, so nothing to label.
             r#"[{"state":"OPEN"}]"#,
         ] {
             assert!(read_gh(said).is_empty(), "{said:?}");
@@ -945,10 +811,7 @@ mod tests {
         }];
         write(dir.path(), "amx/fix-login-a1b", prs.clone(), &[], 1_000).unwrap();
 
-        // Old enough that a look would set a fresh one going. A verb that
-        // prints this and exits has nowhere to put the answer, so it takes
-        // what is written down and leaves the forge alone: there is no tree
-        // to ask in here at all.
+        // Stale, but `kept` returns the cache without asking a forge.
         assert!(!still_good(
             held(dir.path()).as_ref(),
             "amx/fix-login-a1b",
@@ -1027,17 +890,13 @@ mod tests {
         );
         assert!(!still_good(None, "amx/fix-login-a1b", 1_010));
 
-        // A clock that has gone backwards is not a reason to stop reading what
-        // is there.
+        // A clock that went backwards keeps the cache.
         assert!(still_good(Some(&held), "amx/fix-login-a1b", 900));
     }
 
     #[test]
     fn a_look_stops_asking_about_a_branch_whose_requests_are_all_over() {
-        // A merged request stays merged. A wall of finished agents would
-        // otherwise put a network call behind every one of them once a minute,
-        // for as long as somebody left the view open, to be told the same
-        // thing every time.
+        // Settled requests do not change, so the view stops polling for them.
         let over = Recorded {
             asked: 1_000,
             branch: "amx/fix-login-a1b".to_string(),
@@ -1118,11 +977,8 @@ mod tests {
 
     #[test]
     fn hardening_a_forge_runs_nothing_the_tree_it_reads_names() {
-        // Both forges shell out to git, and the tree they run in is the tree
-        // the agent writes. `core.fsmonitor` names a program git starts before
-        // it will look at a file, and a hook runs on the index it refreshes on
-        // the way past; the environment is where an override reaches a git
-        // amx is not the one running.
+        // The forges run git in the agent's tree; only the environment
+        // reaches that git.
         let dir = TempDir::new().unwrap();
         let forge = command(dir.path(), "gh", &["pr", "list"]);
         let set: Vec<(String, String)> = forge
@@ -1170,9 +1026,8 @@ mod tests {
 
     #[test]
     fn a_request_from_a_fork_says_so_because_its_branch_name_is_not_free() {
-        // A fork's `main` is not this repository's `main`, and its `patch-1`
-        // is a name anybody's fork mints. What the flag buys is the caller
-        // knowing to name the local branch after the number instead.
+        // A fork's branch name may clash locally, so the caller names the
+        // local branch after the number instead.
         let dir = TempDir::new().unwrap();
         let gh = a_fake_gh(
             dir.path(),
@@ -1202,9 +1057,7 @@ mod tests {
 
     #[test]
     fn a_machine_with_no_gh_on_it_says_gh_is_not_on_the_path() {
-        // The column answers with no requests where there is no forge. This
-        // reading cannot: there is no branch to cut a tree on until gh has
-        // answered, so the whole spawn is refused and says why.
+        // Unlike the column, `new --pr` cannot proceed without gh.
         let dir = TempDir::new().unwrap();
 
         let refused = head_from(dir.path(), 7, &dir.path().join("gh")).unwrap_err();
