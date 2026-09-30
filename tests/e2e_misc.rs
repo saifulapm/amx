@@ -230,7 +230,7 @@ fn diff_leaves_the_viewer_out_down_a_pipe_and_under_stat() {
 }
 
 #[test]
-fn clibatch_diff_stat_summarises_the_work_instead_of_printing_it() {
+fn diff_stat_summarises_the_work_instead_of_printing_it() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = PathBuf::from(with_a_worktree(
@@ -377,7 +377,7 @@ fn diff_says_so_when_there_is_no_such_agent() {
 }
 
 #[test]
-fn clibatch_new_refuses_a_task_with_nothing_in_it() {
+fn new_refuses_a_task_with_nothing_in_it() {
     // `amx new "$TASK"` with `TASK` unset must not start an idle agent that
     // holds a pane and a worktree.
     let amx = Harness::new();
@@ -394,7 +394,7 @@ fn clibatch_new_refuses_a_task_with_nothing_in_it() {
 }
 
 #[test]
-fn clibatch_rename_puts_the_word_where_a_program_reads_it() {
+fn rename_puts_the_word_where_a_program_reads_it() {
     // The name is in `ls --json` next to the id, so programs can label agents
     // the way the person did.
     let amx = Harness::new();
@@ -492,7 +492,7 @@ fn events_has_nothing_to_say_about_an_agent_nothing_has_happened_to() {
 }
 
 #[test]
-fn clibatch_events_json_is_the_same_merge_for_a_program_to_read() {
+fn events_json_is_the_same_merge_for_a_program_to_read() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
     amx.play("port-importer-c3d", "finishes");

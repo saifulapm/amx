@@ -2524,7 +2524,7 @@ fn ctrl_x_arms_a_finished_row_and_says_so_where_its_summary_was() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
+fn ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
     let amx = Harness::new();
     let repo = amx.a_repo();
 
@@ -2593,7 +2593,7 @@ fn acts_ctrl_x_on_a_heading_forgets_the_finished_and_keeps_the_work() {
 }
 
 #[test]
-fn acts_ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
+fn ctrl_x_on_a_heading_arms_rows_in_every_state_before_it_stops_any() {
     let amx = Harness::new();
     // An idle agent and a finished one, both in the harness's home, so one
     // project heading covers both states.
@@ -2892,7 +2892,7 @@ fn c_reads_a_branch_the_forge_deleted_because_the_view_fetched_for_it() {
 }
 
 #[test]
-fn acts_space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
+fn space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     finished(&amx, "port-import-b2c", "done", 120);

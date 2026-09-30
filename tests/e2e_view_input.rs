@@ -2107,7 +2107,7 @@ fn a_reply_to_an_agent_between_turns_is_a_message() {
 }
 
 #[test]
-fn acts_ctrl_r_calls_the_agent_what_a_person_typed() {
+fn ctrl_r_calls_the_agent_what_a_person_typed() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
 

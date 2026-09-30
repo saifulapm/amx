@@ -6,7 +6,7 @@ mod common;
 use common::{Harness, pane_field, press, resize, types, until_empty};
 
 #[test]
-fn acts_the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
+fn the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
     let amx = Harness::new();
 
     // Keep the pane after the view exits so its last screen can be captured.

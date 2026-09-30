@@ -446,7 +446,7 @@ fn stopping_an_agent_that_has_already_ended_still_tidies_up() {
 }
 
 #[test]
-fn clibatch_delete_takes_the_record_away_with_the_agent() {
+fn delete_takes_the_record_away_with_the_agent() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let worktree = with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
@@ -467,7 +467,7 @@ fn clibatch_delete_takes_the_record_away_with_the_agent() {
 }
 
 #[test]
-fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
+fn delete_still_asks_before_it_takes_a_worktree() {
     // `--delete` is about the record only; it does not answer the worktree
     // question.
     let amx = Harness::new();
@@ -492,7 +492,7 @@ fn clibatch_delete_still_asks_before_it_takes_a_worktree() {
 }
 
 #[test]
-fn clibatch_delete_takes_the_record_off_when_the_worktree_is_gone() {
+fn delete_takes_the_record_off_when_the_worktree_is_gone() {
     // The worktree directory is already gone, so git cannot be asked from
     // inside it which repository it belongs to.
     let amx = Harness::new();
