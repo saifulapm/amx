@@ -25,6 +25,7 @@ use crate::store::Phase;
 use crate::theme::Theme;
 use crate::tui::grid::{self, Widths};
 use crate::tui::rows::{self, Group, Item, List, Tally, Under};
+use crate::verbs;
 
 /// Draw the list into `area`, starting at item `offset`.
 ///
@@ -324,7 +325,7 @@ fn row(
             None if moment.swept => AGAIN_ALL.to_string(),
             None => AGAIN.to_string(),
         },
-        None => inert(first_line(view.line().unwrap_or(""))),
+        None => verbs::inert_line(view.line().unwrap_or("")),
     };
 
     let asking = phase == Phase::Waiting;
@@ -432,11 +433,6 @@ fn request_column(list: &List) -> usize {
 
 /// Gap between two columns of a row.
 const GAP: usize = 2;
-
-/// The first line of `text`, trimmed.
-pub(super) fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("").trim()
-}
 
 /// A row's indent under its heading, as in claude's own agent view.
 const GUTTER: &str = " ";
@@ -2112,6 +2108,26 @@ mod tests {
         assert!(!row.contains('\u{200b}'), "{row:?}");
         assert!(row.contains("pro ceed now"), "{row:?}");
         assert!(row.ends_with("1m"), "{row:?}");
+    }
+
+    #[test]
+    fn rows_trim_what_an_agent_said_after_neutralising_it_as_ls_does() {
+        // A leading zero-width character becomes a space, which is trimmed
+        // like any other, so the summary starts where its column does.
+        let row = |said: &str| {
+            drawn(
+                vec![view("fix-login-a1b", Phase::Done, Some(said), 60)],
+                None,
+                (60, 8),
+            )
+            .into_iter()
+            .find(|line| line.contains("fix-login-a1b"))
+            .expect("the agent's row")
+        };
+        assert_eq!(
+            row("\u{200b}fixed the parser\u{1b}"),
+            row("fixed the parser")
+        );
     }
 
     #[test]
