@@ -749,8 +749,12 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         }
 
         Moment::Notified if typed(payload, hooks.idle_notice) => {
+            // Already idle, the nudge repeats that the turn ended, and the
+            // finished turn's line stays: it is asked for once per turn.
+            if state.state != Phase::Idle {
+                state.summary = None;
+            }
             state.state = Phase::Idle;
-            state.summary = None;
             state.asks(None);
             Screen::Clear
         }
@@ -2029,6 +2033,29 @@ mod tests {
         assert_eq!(state.result.as_deref(), Some("I fixed the login bug."));
         assert_eq!(state.source, Some(Source::Payload));
         assert_eq!(state.question, None);
+    }
+
+    #[test]
+    fn hook_coherence_a_late_nudge_keeps_the_finished_turns_line() {
+        // The summary command is asked once per turn, so a line cleared by the
+        // nudge a minute after the turn ended would never come back.
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("I fixed the login bug.".to_string()),
+            summary: Some("fixed the login bug".to_string()),
+            ..State::default()
+        };
+        apply(
+            &json!({
+                "hook_event_name": "Notification",
+                "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.summary.as_deref(), Some("fixed the login bug"));
     }
 
     #[test]
