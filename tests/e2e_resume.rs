@@ -927,7 +927,7 @@ fn resume_puts_back_the_tree_that_stopping_took_away() {
 }
 
 #[test]
-fn clibatch_resume_hands_the_vendor_what_the_agent_was_started_with() {
+fn resume_hands_the_vendor_what_the_agent_was_started_with() {
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start_with(
@@ -955,7 +955,7 @@ fn clibatch_resume_hands_the_vendor_what_the_agent_was_started_with() {
 }
 
 #[test]
-fn clibatch_resuming_twice_over_asks_for_one_session_and_not_two() {
+fn resuming_twice_over_asks_for_one_session_and_not_two() {
     // Each resume records the command it launched, so the second one reads a
     // command that already has `--resume`. With two, the vendor would pick
     // which session to open.
