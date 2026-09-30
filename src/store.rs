@@ -148,8 +148,8 @@ pub struct Question {
     /// The numbered choices, in screen order. Empty until the screen is read,
     /// and for a question answered with free text.
     pub options: Vec<String>,
-    /// Whether the choices were read off the cursor mark rather than off
-    /// numbers the vendor drew.
+    /// Whether the choices were read off the cursor mark. False when the
+    /// vendor drew its own numbers.
     ///
     /// A walked list's numbers are amx's own (see `rules::Rule::marks`), so a
     /// choice is taken by moving the cursor, not by typing its digit.
@@ -341,8 +341,8 @@ pub struct State {
     /// The kind of prompt, where something said so. Can be known without the
     /// words: an unreadable menu is still a menu.
     pub kind: Option<Kind>,
-    /// Whether the question came from a vendor hook rather than from amx
-    /// reading the pane.
+    /// Whether a vendor hook reported the question. False when amx read it
+    /// off the pane.
     ///
     /// Selects how the next pane reading applies: [`learn`](State::learn) for
     /// a reported question, [`correct`](State::correct) otherwise. It is kept
@@ -1233,7 +1233,7 @@ impl Writer<'_> {
         Ok(after)
     }
 
-    /// Record something read off the pane rather than heard from the agent.
+    /// Record something a reader saw on the pane.
     ///
     /// `last_event` is left alone: it measures how fresh the record is, and a
     /// screen reading is not news from the agent. Moving it would make the

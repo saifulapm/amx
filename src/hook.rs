@@ -1,28 +1,22 @@
-//! `amx _hook` and `amx _exit` — the two commands amx runs against itself.
+//! `amx _hook` and `amx _exit`, the commands vendors and panes run back into
+//! amx.
 //!
-//! `_hook` is wired into the vendor's settings and fires on the events amx
-//! listens to. It reads one payload on stdin, appends it to the agent's event
-//! log, folds it into the agent's state, and **always exits 0**. Every way it
-//! can fail — nothing that says whose the payload is, a record that is not
-//! there, a payload that is not JSON — ends in silence, because a hook that
-//! fails is a hook that interrupts somebody's agent to tell them about amx.
+//! `_hook` is wired into the vendor's hook settings. It reads one payload on
+//! stdin, appends it to the agent's event log, folds it into the agent's
+//! state, and always exits 0: a failing hook would interrupt the person's
+//! agent, so every failure is silent.
 //!
-//! Whose the payload is has two answers. A pane amx started carries the id in
-//! its environment, and that is the whole of it. A claude that was already
-//! there when amx arrived carries nothing, so the payload's own session id is
-//! what finds the record — see [`by_session`].
+//! - The agent is found by `AMX_ID` in the pane's environment, or, for an
+//!   adopted claude that has none, by the payload's session id (see
+//!   [`by_session`]).
+//! - It runs on every prompt and tool call while the vendor waits, so the
+//!   common path only touches the agent's directory. tmux is asked only when a
+//!   stop needs a notice or errand, and to set the park timer at a turn's end.
+//! - For vendors whose wire listens (amx's pi extension), it prints the
+//!   record's directory on stdout; see [`hears_the_answer`].
 //!
-//! It touches nothing but the agent's own directory. In particular it makes no
-//! tmux calls: this runs on every prompt and every tool call, and the pane it
-//! would ask about is the one waiting for it to return.
-//!
-//! It says one thing back, and only to a wire that listens: the record's
-//! directory, one line on stdout, for a vendor whose wire is amx's own
-//! extension — see [`hears_the_answer`]. That is how an adopted pi, whose pane
-//! carries no `AMX_DIR`, learns where to stream what it is saying.
-//!
-//! `_exit` runs after the vendor's command in the same pane, and records how
-//! it ended before the pane closes.
+//! `_exit` runs after the vendor's command in the same pane and records how it
+//! ended.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -37,26 +31,24 @@ use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
 use crate::tmux::Server;
 use crate::vendor::{Hooks, Moment};
 
-/// How the hook learns which agent it belongs to. `_boot` puts it in the
-/// pane's environment, so every process the vendor starts inherits it.
+/// The environment variable naming the agent a pane belongs to. `_boot` sets
+/// it in the pane, so every process the vendor starts inherits it.
 pub const ID_ENV: &str = "AMX_ID";
 
-/// How something started inside an agent says it is not the agent. Everything
-/// the vendor starts inherits [`ID_ENV`], claude included, so a claude run from
-/// an agent's own shell reports under that id with hooks of its own; this is
-/// what a caller that knows it is nested sets, and amx sets it itself on the
-/// one nested claude it starts, the `summary_command` child in
-/// [`crate::derive`].
+/// Set in a process started inside an agent that is not the agent itself.
+///
+/// Everything in the pane inherits [`ID_ENV`], so a claude run from an agent's
+/// shell would report under the agent's id. amx sets this on the one nested
+/// claude it starts itself, the `summary_command` child in [`crate::derive`].
 pub const NESTED_ENV: &str = "AMX_NESTED";
 
-/// The file claude hands a session-start hook for the variables its shells
-/// should have, per code.claude.com/docs/en/hooks. What is written there
-/// reaches every shell the session runs and none of its own later hooks
-/// (measured on 2.1.283, 2026-09-26), which is where [`NESTED_ENV`] belongs.
+/// The file claude hands a session-start hook for variables its shells should
+/// get (code.claude.com/docs/en/hooks). In claude 2.1.283 it reaches every
+/// shell the session runs and none of its later hooks, which is where
+/// [`NESTED_ENV`] belongs.
 const ENV_FILE: &str = "CLAUDE_ENV_FILE";
 
-/// Record one hook payload. Answers with the process's exit code, which is
-/// always `OK`.
+/// Record one hook payload. Always returns `OK`.
 pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
     if nested() {
         return exit::OK;
@@ -76,17 +68,15 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
     )
 }
 
-/// Whether this process is something an agent started rather than the agent.
+/// Whether this process was started inside an agent without being the agent.
 ///
-/// Asked before stdin is read, because the answer is a hook that has nothing
-/// to say and the vendor is waiting on it either way. Any value at all is a
-/// yes: the variable is a flag, and a person exporting it in a shell should not
-/// have to learn what amx wants it set to.
+/// Checked before reading stdin, since a nested hook has nothing to record.
+/// Any value counts.
 fn nested() -> bool {
     std::env::var_os(NESTED_ENV).is_some()
 }
 
-/// The same, with everything it touches named.
+/// [`from_env`] with its inputs passed in.
 pub fn run(
     id: Option<&str>,
     root: &Path,
@@ -95,9 +85,8 @@ pub fn run(
     config: &Config,
     env_file: Option<&Path>,
 ) -> i32 {
-    // Every early return here is a hook that is not amx's business, or a
-    // record amx cannot reach. Both end quietly: this process is standing
-    // between the vendor and its next token.
+    // Each early return is a payload that is not amx's or a record amx cannot
+    // reach. Both stay quiet: the vendor is waiting on this process.
     let mut text = String::new();
     if stdin.read_to_string(&mut text).is_err() {
         return exit::OK;
@@ -116,15 +105,13 @@ pub fn run(
     exit::OK
 }
 
-/// Whether whatever ran the hook is listening for an answer.
+/// Whether the hook's caller reads its stdout.
 ///
-/// pi's extension is amx's own code on the other end of a file wire, and an
-/// adopted pi has no `AMX_DIR` in its pane to stream to: the record's
-/// directory, printed by [`run`], is how it learns where. A vendor wired
-/// through its settings runs the hook itself and treats what it prints as its
-/// own — claude puts a `UserPromptSubmit` hook's stdout into the conversation
-/// — so nothing is printed for one. Which wire it is the record's vendor says;
-/// a record naming no vendor amx knows is answered like claude's.
+/// amx's pi extension does, and an adopted pi has no `AMX_DIR` in its pane,
+/// so [`run`] prints the record's directory for it to stream to. Vendors wired
+/// through settings treat hook output as their own (claude adds a
+/// `UserPromptSubmit` hook's stdout to the conversation), so they get nothing.
+/// An unknown vendor is treated like claude.
 fn hears_the_answer(agent: &Agent) -> bool {
     agent
         .meta()
@@ -134,11 +121,10 @@ fn hears_the_answer(agent: &Agent) -> bool {
         .is_some_and(|hooks| hooks.wire.listens())
 }
 
-/// Which agent a payload belongs to.
+/// The agent a payload belongs to.
 ///
-/// The environment first, because a pane amx started says so itself and says
-/// it without reading anything. An id that names no record is not a reason to
-/// go looking: the pane answered, and the answer was an agent that is gone.
+/// The pane's `AMX_ID` wins. An id with no record behind it ends the search:
+/// the pane named an agent that is gone.
 fn whose(id: Option<&str>, root: &Path, payload: &Value) -> Option<Agent> {
     match id {
         Some(id) => Agent::open(root, id).ok(),
@@ -146,25 +132,19 @@ fn whose(id: Option<&str>, root: &Path, payload: &Value) -> Option<Agent> {
     }
 }
 
-/// The record for a session, for the payloads that arrive with nothing else
-/// saying whose they are.
+/// The record for a session, for payloads with no `AMX_ID`.
 ///
-/// A claude `amx adopt` took over was launched by somebody else, so amx never
-/// put its id in that pane's environment and never will — the session the
-/// vendor stamps on every payload is the only thing tying the two together,
-/// and it is on the record because adopting is what wrote it there.
+/// A claude that `amx adopt` took over was launched outside amx, so its pane
+/// has no `AMX_ID`; the session id on every payload is what ties it to the
+/// record adoption wrote.
 ///
 /// One conversation can be on two records: an agent amx started and stopped,
-/// and the claude somebody resumed it in by hand and adopted. A payload is
-/// about a session that is running, so a record that has ended is not it, and
-/// the newest of what is left answers for the rest.
+/// and the claude someone resumed it in and adopted. Ended records are
+/// skipped, and the newest remaining one wins.
 ///
-/// This reads every record on the machine, and it runs for every claude amx
-/// did not start, adopted or not — a hook fired by a pane amx opened never
-/// arrives here at all. What it costs is a directory listing and two small
-/// files per agent, against the several milliseconds this process took to
-/// start; an index of sessions would be quicker and would be one more thing
-/// that can disagree with the records it was built from.
+/// This reads every record's meta, which costs a directory listing and a small
+/// file per agent. A session index would be faster but could disagree with
+/// the records.
 fn by_session(root: &Path, session: &str) -> Option<Agent> {
     if session.is_empty() {
         return None;
@@ -191,7 +171,7 @@ pub fn exited_from_env(id: &str, code: i32, config: &Config) -> i32 {
     exited(&root, id, code, config)
 }
 
-/// The same, with the state root named.
+/// [`exited_from_env`] with the state root passed in.
 pub fn exited(root: &Path, id: &str, code: i32, config: &Config) -> i32 {
     let Ok(agent) = Agent::open(root, id) else {
         return exit::OK;
@@ -200,26 +180,18 @@ pub fn exited(root: &Path, id: &str, code: i32, config: &Config) -> i32 {
     exit::OK
 }
 
-/// Whether this payload is some other conversation's.
+/// Whether this payload belongs to another conversation.
 ///
-/// A pane's `AMX_ID` is inherited by everything started in it, so a claude the
-/// agent launches from its own shell reports under the agent's id: its start
-/// would put its session on the record, and its stop would end the agent's
-/// turn. [`NESTED_ENV`] is the answer for a claude that knows it is nested;
-/// this is the answer for one that does not. Every payload carries the session
-/// it is about, and the record carries the agent's own, so the two disagreeing
-/// says whose it is.
+/// A claude launched from the agent's shell inherits `AMX_ID` and reports
+/// under the agent's id; its start would overwrite the session and its stop
+/// would end the agent's turn. [`NESTED_ENV`] covers a claude that knows it is
+/// nested; this covers one that does not, by comparing the payload's session
+/// with the record's.
 ///
-/// Except when the agent's session is the thing that changed. A resume, a
-/// clear and a compact each start a session and the vendor says which it was
-/// — `source` on a session opening — so only a fresh start, in the vendor's own
-/// word for one, under a session the record does not carry is another
-/// process's. A payload with no source at all is the agent's own, whatever
-/// else it says, and so is every opening from a vendor with no such word.
-///
-/// A record with no session has nothing to disagree with: an adopted agent
-/// learns its session from the reports it gets, and a record amx wrote before
-/// the vendor spoke has not heard one yet.
+/// A resume, clear or compact changes the agent's own session, and the vendor
+/// says which in `source`. So under another session, a session start is
+/// foreign only when the vendor calls it a fresh start, and any other event is
+/// foreign. A record with no session yet accepts every payload.
 fn anothers(meta: &Meta, payload: &Value) -> bool {
     let Some(session) = payload["session_id"].as_str().filter(|it| !it.is_empty()) else {
         return false;
@@ -237,13 +209,13 @@ fn anothers(meta: &Meta, payload: &Value) -> bool {
                 .is_some_and(|fresh| payload["source"] == fresh))
 }
 
-/// Fold one payload into an agent's record, under the writer's lock, and set
-/// the timer over the pane of a turn that has ended.
+/// Fold one payload into the agent's record under the writer lock, and start
+/// whatever reaching the new phase sets off.
 ///
-/// The agent's own session opening also marks every shell it runs as nested,
-/// in the file the vendor handed the hook for that, so a claude started from
-/// one of them never reports as the agent. [`anothers`] cannot catch a
-/// `claude -c` there: it continues the agent's own session, under its id.
+/// On the agent's own session start it also marks every shell the session
+/// runs as nested, via the file the vendor handed the hook. That catches a
+/// `claude -c` started from one of them, which [`anothers`] cannot: it
+/// continues the agent's own session under its id.
 fn record(
     root: &Path,
     agent: &Agent,
@@ -256,9 +228,7 @@ fn record(
     if anothers(&meta, &payload) {
         return Ok(());
     }
-    // Kept rather than appended and forgotten: the line the event log gets is
-    // the line an errand is handed, and they are the same line because they are
-    // the same event.
+    // The appended event is also what an errand gets on stdin.
     let kind = kind(&payload).unwrap_or("unknown").to_string();
     let event = crate::store::Event::new(kind, payload);
     writer.append(&event)?;
@@ -272,11 +242,11 @@ fn record(
     let payload: &Value = &without_a_synthetic_answer(payload, &meta, format);
     let notice = apply(payload, &mut state, &mut meta);
 
-    // A turn amx cut short ended at the stamp, and claude said nothing then,
-    // so the record is still working when the next prompt comes. The phase
-    // does not move and the store would count the gap as work, so the cut
-    // turn is closed at the stamp and the new one opens now. Only where the
-    // prompt was the agent's own, which is what took the stamp off.
+    // claude fires nothing when a turn is interrupted, so the record is still
+    // working when the next prompt arrives and the phase does not change. Close
+    // the cut turn at the interrupt stamp and open the new one now, or the gap
+    // would count as work. Only for the agent's own prompt, which is what
+    // cleared the stamp.
     if was == Phase::Working
         && cut > 0
         && state.interrupted_at == 0
@@ -286,10 +256,8 @@ fn record(
         state.since = crate::store::now();
     }
 
-    // The transcript is the second place an answer can be, and it is read only
-    // when the payload had none. Reading a file is all this costs; asking the
-    // pane would mean a tmux call on the hook path, which is not this
-    // command's to make.
+    // Fall back to the transcript when the payload carried no answer. Asking
+    // the pane would need a tmux call on the hook path.
     if state.state == Phase::Idle
         && state.result.is_none()
         && let Some(path) = &meta.transcript
@@ -301,14 +269,10 @@ fn record(
         state.source = Some(Source::Transcript);
     }
 
-    // The transcript is also the only place the session's name ever is, and
-    // the vendor writes it within seconds of the first prompt, before a word
-    // of the answer: a row that waited for the turn to end would go under its
-    // id for the whole of its first turn, which for a one-shot agent is most
-    // of its life. So it is read on every event, off the tail the view
-    // already reads once a second per row, where the newest name always is.
-    // A file with no name in it is a session the vendor has not named yet,
-    // which is not a reason to take the name off the record.
+    // The session title only exists in the transcript, and the vendor writes
+    // it within seconds of the first prompt, so read it on every event rather
+    // than waiting for the turn to end. A transcript without a title leaves the
+    // recorded one alone.
     if let Some(format) = format
         && let Some(tail) = Agent::transcript_tail(&meta)
         && let Some(title) = crate::conversation::session_title(format, &tail)
@@ -322,10 +286,8 @@ fn record(
     }
     drop(writer);
 
-    // The same fork, and the same answer about who is looking, for both: this
-    // hook is standing between the vendor and its next token, and one child is
-    // what it can afford. Idle has no notice to go with it, and is what
-    // [`after_the_write`] is for.
+    // Notice and errand share one fork, since the vendor is waiting on this
+    // hook. Idle has no notice and is handled by `after_the_write`.
     let errand = reached(written.state, was, notice.is_some())
         .filter(|phase| *phase != Phase::Idle)
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
@@ -345,13 +307,12 @@ fn record(
     Ok(())
 }
 
-/// The payload, less an answer that is the vendor's note about a turn rather
-/// than anything the agent said.
+/// The payload without an answer that is really claude's synthetic note.
 ///
-/// claude ends a turn that never reached the model — an API error, a session
-/// limit — with a synthetic entry, and hands its words to the hook that ends
-/// the turn as the answer. Only the transcript says whose words they are, so
-/// it is read for a payload that carries an answer, and for no other.
+/// claude ends a turn that never reached the model (an API error, a usage
+/// limit) with a synthetic transcript entry and passes its text to the
+/// turn-end hook as the answer. Only the transcript tells them apart, so it is
+/// read only for a turn-end payload that carries an answer.
 fn without_a_synthetic_answer<'a>(
     payload: &'a Value,
     meta: &Meta,
@@ -374,18 +335,15 @@ fn without_a_synthetic_answer<'a>(
     Cow::Borrowed(payload)
 }
 
-/// What a write that moved an agent to idle sets off: the `on_idle` errand,
-/// and the timer over the pane.
+/// Start what reaching idle sets off: the `on_idle` errand and the park timer.
 ///
-/// Run by whichever process wrote the phase, once. That is the hook where the
-/// vendor said its turn ended, and a reader where it said nothing and the pane
-/// did — see [`crate::derive`]'s `hear_what_went_unsaid`. A record already
-/// idle has had both, from whoever moved it there.
+/// Run once, by whichever process wrote the phase: the hook when the vendor
+/// reported the turn end, or a reader when only the pane showed it (see
+/// `hear_what_went_unsaid` in [`crate::derive`]).
 ///
-/// The errand is started here rather than behind the hook's fork: a reader is
-/// a process with threads in it, and forking one is not safe. Whether anybody
-/// is looking is asked of the agent's own pane, which is the pane the hook
-/// runs in, and asked only where somebody wrote a command to tell.
+/// The errand is started directly instead of behind the hook's fork, because a
+/// reader is multithreaded and forking it is unsafe. Whether the pane is
+/// watched is asked only when a command is configured.
 pub fn after_the_write(
     root: &Path,
     agent: &Agent,
@@ -403,40 +361,27 @@ pub fn after_the_write(
         notify::start(&errand, Some(server.pane_watched(&meta.pane)));
     }
 
-    // The turn is over and the vendor is sitting at its prompt, holding the
-    // couple of hundred megabytes it worked in. Nothing is watching for the
-    // hour when the pane is worth more than that — amx has no daemon — so the
-    // server that owns the pane is asked to ask itself, once, when the hour is
-    // up. See [`crate::verbs::park`], which is what it will run.
+    // amx has no daemon, so the pane's tmux server is asked to run `_park` once
+    // the idle timeout passes (see [`crate::verbs::park`]).
     //
-    // Idle is asked before the project's file is, because the file is behind
-    // a git lookup and this path runs on every event the vendor sends: a tool
-    // call is waiting on this hook, and it should not pay for a timer that
-    // was never going to be set.
+    // This runs on every event, and the project config lookup involves git,
+    // so the idle check comes first.
     if let Some(delay) = parks_in(written, park_after(config, meta))
         && let Some(command) = park_command(root, agent.id())
     {
-        // A timer that could not be set is a pane that keeps its memory, and
-        // that is not worth a word to somebody whose agent is waiting on this
-        // process to return.
+        // A timer that cannot be set only means the pane is kept.
         let _ = server.run_after(delay, &command);
     }
 }
 
-/// The moment one event brought the agent to, where it is one somebody may
-/// have written a command for.
+/// The moment an event brought the agent to, if a command may be configured
+/// for it.
 ///
-/// A moment is a thing that happened, not a phase the record holds: an agent
-/// that was waiting when the second notice about the same screen arrived has
-/// not reached anything, and neither has one the vendor nudges about an hour
-/// after its turn ended.
-///
-/// So each is asked the question its own phase answers. Waiting is asked of the
-/// notice, which is the one thing that tells one stop from the three events
-/// that say so — see [`apply`]. Idle is asked of the phase before it, because
-/// the nudge about an idle session is the turn that is already over, said
-/// again. Every other phase is either the agent on its way somewhere or the end
-/// of the command, which is [`record_exit`]'s to say.
+/// A moment is a change, not a phase: waiting counts only when the event
+/// earned a notice (see [`apply`], which folds the several events of one stop
+/// into one), and idle only when the agent was not already idle (the idle
+/// nudge repeats an ended turn). Other phases are transitions, or the command
+/// ending, which [`record_exit`] reports.
 fn reached(now: Phase, was: Phase, told: bool) -> Option<Phase> {
     match now {
         Phase::Waiting => told.then_some(Phase::Waiting),
@@ -445,15 +390,12 @@ fn reached(now: Phase, was: Phase, told: bool) -> Option<Phase> {
     }
 }
 
-/// How long this agent keeps a pane it is idle in.
+/// The idle timeout before this agent's pane is parked.
 ///
-/// The project's file over the person's, which is the file `_park` reads when
-/// the timer fires: a timer set by one number and judged against another fires
-/// at an hour the verb will not act on, and nothing then sets a second one.
-///
-/// Unless the person's own file has turned parking off, which is not a
-/// project's to turn back on — the pane is on their machine. Nothing is read
-/// off the disk to find that out.
+/// Uses the project's config over the person's, as `_park` does when the timer
+/// fires; a timer set from one value and checked against another would fire
+/// when `_park` will not act. A person who turned parking off keeps it off,
+/// and that check reads no files.
 fn park_after(config: &Config, meta: &Meta) -> u64 {
     if config.park_after == 0 {
         return 0;
@@ -461,29 +403,20 @@ fn park_after(config: &Config, meta: &Meta) -> u64 {
     crate::config::for_dir(&meta.dir).0.park_after
 }
 
-/// How long until this record's pane is worth more than what it is holding,
-/// where it is a record worth a timer at all.
+/// The park delay for this state, if it should get a timer: only when idle.
 ///
-/// Idle is the whole of it. Every other phase is an agent doing something with
-/// that pane, and `_park` reads the record again when it fires: a turn that
-/// ends twice sets two timers, and the second finds a pane that has already
-/// gone.
+/// `_park` re-reads the record when it fires, so a turn that ends twice sets
+/// two timers and the second finds the pane already gone.
 fn parks_in(state: &State, park_after: u64) -> Option<u64> {
     (park_after > 0 && state.state == Phase::Idle).then_some(park_after)
 }
 
-/// The command the server runs when the timer is up.
+/// The command the tmux server runs when the park timer fires.
 ///
-/// The state root is named on the line because the server's environment is not
-/// this process's: `run-shell` runs in the environment the server was started
-/// in, which is a login shell from whenever that was, so an amx pointed
-/// anywhere else — every test, and anybody who sets `$AMX_STATE_DIR` — would
-/// have its timers fire over the records in the default root. The variable
-/// names the directory the agents directory sits under, which is the layout
-/// `crate::paths` gives it.
-///
-/// `current_exe` rather than `amx`: the timer belongs to the amx that set it,
-/// and the server's path may name another or none at all.
+/// `run-shell` runs in the server's environment, not this process's, so the
+/// state directory is passed explicitly; otherwise tests and anyone setting
+/// `$AMX_STATE_DIR` would park records in the default root. `current_exe` is
+/// used because the server's `PATH` may name another amx or none.
 fn park_command(root: &Path, id: &str) -> Option<String> {
     let over = root.parent().filter(|over| !over.as_os_str().is_empty())?;
     let exe = std::env::current_exe().ok()?;
@@ -495,12 +428,12 @@ fn park_command(root: &Path, id: &str) -> Option<String> {
     ))
 }
 
-/// One word for the `sh` that reads the line, whatever is in it.
+/// Quote `word` as one `sh` word.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// Record how the command ended, and tell somebody if it is worth telling.
+/// Record how the command ended, and notify if it is worth it.
 fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     let writer = agent.writer()?;
     let event = crate::store::Event::new("exit", serde_json::json!({ "code": code }));
@@ -508,13 +441,12 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
 
     let state = writer.update_state_heard(agent.heartbeat(), |state| {
         state.exit = Some(code);
-        // The pane goes with the command, so a question left on the record
-        // here is one nobody can answer and nothing can deliver an answer to.
-        // It would also be the last thing every reader said about this agent,
-        // in front of the answer it did give.
+        // The pane is gone, so a pending question can never be answered, and
+        // it would otherwise sit in front of the agent's answer in every
+        // reader.
         state.asks(None);
-        // An agent somebody stopped exits with a signal's code moments later.
-        // That is not how it ended; being stopped is.
+        // A stopped agent exits with a signal's code moments later; it stays
+        // stopped.
         if state.state != Phase::Stopped {
             state.state = if code == 0 {
                 Phase::Done
@@ -527,9 +459,8 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
 
     let notice = Notice::finished(agent.id(), state.state, state.exit);
 
-    // The phase this wrote, and only where it wrote one. An agent somebody
-    // stopped keeps the phase `stop` gave it, and `stop` ran that moment's
-    // command itself; this exit is the signal landing a moment behind it.
+    // Run the errand only for a phase this exit wrote. A stopped agent keeps
+    // `stop`'s phase, and `stop` already ran that errand.
     let errand = (state.state != Phase::Stopped)
         .then(|| agent.meta().ok())
         .flatten()
@@ -538,59 +469,49 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// The event a payload is about, in the vendor's own word for it. What the
-/// event log keeps, because a record of what arrived is a record of what the
-/// vendor said.
+/// The payload's event name as the vendor spells it; what the event log
+/// keeps.
 fn kind(payload: &Value) -> Option<&str> {
     payload["hook_event_name"].as_str()
 }
 
-/// The hooks a record's vendor reports through, which are the words every
-/// payload landing on it is read in — see [`crate::vendor::hooks_for`].
+/// The hook table of the record's vendor (see [`crate::vendor::hooks_for`]).
 fn hooks(meta: &Meta) -> Option<Hooks> {
     crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default())
 }
 
-/// The moment a payload is about, in `hooks`' words, when it is one amx
-/// listens for.
+/// The moment a payload reports, if `hooks` maps its event.
 fn moment(hooks: &Hooks, payload: &Value) -> Option<Moment> {
     hooks.moment(kind(payload)?)
 }
 
-/// Whether a payload is about the one tool call that is not work: it draws a
-/// menu and waits on it.
+/// Whether a payload is about the question tool, which draws a menu and waits
+/// instead of doing work.
 ///
-/// Asked of three moments below, and two of them are the vendor asking itself
-/// for permission to use it. Measured against claude 2.1.240 on 2026-08-25, in
-/// manual mode and again in auto, on a checkbox question and a plain one: the
-/// call draws the menu, the permission event lands 10 to 30 ms later naming
-/// this same tool, and the notification six seconds after that. Three events,
-/// one screen, and the screen is a menu the whole time.
+/// In claude 2.1.240 one question fires three events for one screen: the tool
+/// call draws the menu, a permission event naming the same tool follows 10 to
+/// 30 ms later, and a notification about six seconds after that.
 fn menu(hooks: &Hooks, payload: &Value) -> bool {
     payload["tool_name"] == hooks.question_tool
 }
 
-/// Whether the vendor typed a notification as `what`.
+/// Whether the notification's type is `what`.
 fn typed(payload: &Value, what: &str) -> bool {
     payload["notification_type"] == what
 }
 
-/// Whether a prompt is one the vendor typed into the session itself — see
-/// [`crate::vendor::Hooks`]'s `injected`.
+/// Whether a prompt was typed into the session by the vendor itself (see
+/// [`crate::vendor::Hooks`]'s `injected`).
 fn injected(hooks: &Hooks, payload: &Value) -> bool {
     payload["prompt"]
         .as_str()
         .is_some_and(|prompt| hooks.injected.iter().any(|tag| prompt.starts_with(tag)))
 }
 
-/// How many background shells, and how many other tasks, the vendor says are
-/// still running.
+/// Background shells and other tasks the vendor reports still running.
 ///
-/// It lists every task the session has started, finished ones included, so
-/// what is counted is the ones it marks as running. A task typed `shell` is a
-/// shell and anything else is an agent it started. A payload that lists none,
-/// and one from a vendor that has never listed any, are both an agent with
-/// nothing of its own left to do.
+/// The list includes finished tasks, so only those marked running count. A
+/// task of type `shell` is a shell; anything else is an agent it started.
 fn running(payload: &Value) -> (u32, u32) {
     let Some(tasks) = payload["background_tasks"].as_array() else {
         return (0, 0);
@@ -607,7 +528,7 @@ fn running(payload: &Value) -> (u32, u32) {
         })
 }
 
-/// The line a row says that with.
+/// The summary line for tasks still running.
 fn still_running(shells: u32, agents: u32) -> String {
     let counted = |n: u32, one: &str| match n {
         1 => format!("1 {one}"),
@@ -624,109 +545,61 @@ fn still_running(shells: u32, agents: u32) -> String {
     }
 }
 
-/// What one payload means for the record.
+/// Fold one payload into the state and meta.
 ///
-/// Every moment below is one the vendor's entry names; what any of them is
-/// called there is no business of this file's. The mapping, in full:
+/// Events are read through the record vendor's own hook table:
 ///
-/// * A session [`Started`](Moment::Started) records the vendor's session id
-///   and the transcript it writes, and moves nothing. Only this moment may set
-///   the session id — every payload carries one, and a subagent's is not the
-///   agent's.
-/// * [`Taken`](Moment::Taken) is a message the agent was holding behind the
-///   turn going in. The turn goes on as it was, so it moves nothing here; it
-///   is on the log for `send` and the card, which count what was sent
-///   against what was taken.
-/// * [`Prompted`](Moment::Prompted) and [`Calling`](Moment::Calling) mean the
-///   agent is working, and the tool call says what it is doing. The one tool
-///   that is not work is the one that draws a [`menu`]: it waits, and its
-///   payload carries every question the menu will ask, whole.
-/// * [`Asked`](Moment::Asked) is the permission box the instant it goes up,
-///   tool and all — unless the tool it names is the one that draws the menu,
-///   in which case there is no box and the menu is what it is about;
-///   [`Refused`](Moment::Refused) is the only thing that says it closed with
-///   the tool refused, after which the turn is working again.
-/// * [`Notified`](Moment::Notified) means it has stopped on a question, and
-///   carries its words. The choices under it are on the pane, which this
-///   command does not read; a reader fills them in later. The type the vendor
-///   puts on it is its own word for what the notice is about: it is the only
-///   thing here that names a permission prompt for what it is, and the only
-///   thing that tells the nudge about an idle session apart from a question,
-///   which it is not.
-/// * [`Ended`](Moment::Ended) ends the turn, and its payload is the freshest
-///   place the answer ever exists — the transcript is written asynchronously
-///   and lags it. Unless that payload lists shells the session still has
-///   running, which is the model finishing and the turn going on: the count
-///   goes on the record and the phase stays working, and so does the nudge a
-///   minute later that would otherwise end it — see
-///   [`crate::store::State`]'s `background`.
-/// * Anything carrying an `agent_id` is a subagent's, and a subagent's work is
-///   not the agent's state.
-/// * A record that has already ended stays ended. A late hook is a hook about
-///   a turn that is over.
-/// * An event the vendor never told amx about moves nothing at all, save the
-///   stamps `amx interrupt` and `_park` left, which every event about the
-///   agent takes off: what they are about is that the vendor spoke, not what
-///   it said.
+/// - [`Started`](Moment::Started) records the session id and transcript. Only
+///   this moment sets the session, since subagents' payloads carry their own.
+/// - [`Taken`](Moment::Taken) is a queued message entering the running turn;
+///   it changes nothing here and is logged for `send` and the card.
+/// - [`Prompted`](Moment::Prompted) and [`Calling`](Moment::Calling) mean
+///   working, except a [`menu`] call, which waits and carries every question.
+/// - [`Asked`](Moment::Asked) is a permission box going up, unless it names the
+///   menu tool. [`Refused`](Moment::Refused) is the only sign the box closed
+///   with the tool refused.
+/// - [`Notified`](Moment::Notified) means stopped on a question, with its
+///   words. The choices are on the pane, filled in later by a reader. The
+///   notification type is the only thing that names a permission prompt, and
+///   the only thing that tells the idle nudge from a question.
+/// - [`Ended`](Moment::Ended) ends the turn and carries the freshest answer
+///   (the transcript lags). If it lists background tasks still running, the
+///   agent stays working; see [`crate::store::State`]'s `background`.
+/// - A subagent's payload (`agent_id` set) and any payload for an ended record
+///   change nothing.
+/// - Any event about the agent clears the interrupt and park stamps, since
+///   the vendor spoke.
 ///
-/// What comes back is the one notice a stop is worth, and one for every stop.
-/// Somebody is told when a screen goes up that nothing has told them about,
-/// with the question if the event that put it there carried one, and anything
-/// repeating a screen already up is folded in silently. Three of the moments
-/// above end in waiting and one [`menu`] fires all three — the tool call that
-/// draws the menu, the permission box over that same tool, and the
-/// notification that repeats the box. They are three different sentences, so
-/// nothing but the record's own phase tells one stop from three.
+/// Returns the notice this stop is worth, once per stop. A menu fires three
+/// events (the call, a permission event for the same tool, a notification),
+/// so the record's phase is what folds them into one notice. A menu counts as
+/// a new stop even when the record already reads waiting, because nothing amx
+/// installs fires when a box is approved.
 ///
-/// The phase alone would then fold two stops into one. Nothing amx installs
-/// fires when a box is approved or a menu answered — the vendor says so with
-/// an event amx does not wire, and its entry says why — so the record still
-/// reads waiting when the next screen goes up, and the person is told about a
-/// box they have answered and not about the menu in front of them. A menu says
-/// for itself that it is a stop of its own.
-///
-/// The same three decide what the agent is being asked, and there the order
-/// they arrive in is the wrong way round: the one that knows is first and the
-/// two that know least come after. So they do not overwrite it. A permission
-/// event about the tool that draws a [`menu`] is the vendor asking itself for
-/// leave to draw one, and a notification arriving while a call is still
-/// outstanding is about that menu, because a modal choice and a permission box
-/// are mutually exclusive states of the one program — the second could only be
-/// up if a [`Calling`](Moment::Calling) for its own tool had already retired
-/// the call. Both say the agent has stopped and neither says what for, so both
-/// leave the question where the call put it. This is 02BQ6442: with a menu on
-/// the pane the card offered a permission box's grammar, because the box the
-/// vendor asked itself about arrived last and won.
-///
-/// Read in the words of the record's own vendor, and nobody else's.
+/// The call knows the question best and arrives first, so the later two must
+/// not overwrite it: a permission event for the menu tool, and a notification
+/// while a call is pending, leave the question as the call set it. A permission box cannot be up over a menu: the box's own tool call
+/// would have retired the menu's call first.
 pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     apply_in(&hooks(meta)?, payload, state, meta)
 }
 
-/// [`apply`], in `hooks`' words.
+/// [`apply`], read through `hooks`.
 fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if !payload["agent_id"].is_null() || state.state.is_terminal() {
         return None;
     }
-    // The stamp `amx interrupt` leaves says amx cut a turn short and the
-    // vendor has not spoken since — see [`crate::derive::cut_short`]. This is
-    // the vendor speaking, so it comes off, whatever the event says and
-    // whatever second it landed in. Weighing the two stamps against each other
-    // was the other way to say it and it could not: both are whole seconds,
-    // and a key pressed in the second the last hook landed in tied.
+    // The vendor spoke, so the interrupt stamp comes off regardless of the
+    // event (see [`crate::derive::cut_short`]). Comparing timestamps does not
+    // work: both are whole seconds and tie often.
     state.interrupted_at = 0;
-    // The stamp `_park` leaves says amx let the pane go. A vendor that speaks
-    // has a pane, whoever gave it one, and `send` refuses a record that still
-    // reads parked.
+    // A vendor that speaks has a pane; `send` refuses a record still marked
+    // parked.
     state.parked_at = 0;
 
-    // An adopted agent's record was written with its session and nothing
-    // about the transcript: the vendor announced that session's start before
-    // there was a record to hear it, and does not announce it again. Every
-    // report carries the path beside the session it is about, so a record
-    // with no transcript takes it from the first report about its own session
-    // — its own, because a report about another session names a conversation
-    // that is not this agent's.
+    // An adopted record has the session but not the transcript, whose path
+    // was announced before the record existed. Take it from the first report
+    // about the record's own session.
     if meta.transcript.is_none()
         && let Some(session) = meta.session.as_deref()
         && payload["session_id"].as_str() == Some(session)
@@ -738,8 +611,8 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
     let screen = match moment(hooks, payload)? {
         Moment::Started => {
-            // `/clear` opens a new session in the same pane, at the prompt it
-            // was typed at, and nothing the old session said is its answer.
+            // `/clear` starts a new session in the same pane; nothing from the
+            // old one is its answer.
             if payload["source"] == "clear"
                 && let Some(session) = payload["session_id"].as_str()
                 && meta.session.as_deref() != Some(session)
@@ -756,13 +629,10 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             if let Some(transcript) = payload["transcript_path"].as_str() {
                 meta.transcript = Some(transcript.into());
             }
-            // The one session opening that is also the whole of the news: an
-            // `amx resume` with no message, where the vendor restores the
-            // conversation, draws its prompt and waits for somebody. No turn
-            // is coming to move this on, so the record would sit at `starting`
-            // until a reader recognised the pane — and a prompt screen is the
-            // one screen a person's own footer can hide. `resume` wrote down
-            // that nothing is coming; this is where it is spent.
+            // `amx resume` with no message: the vendor restores the session and
+            // waits at its prompt, and no turn will follow. Without this the
+            // record would sit at `starting` until a reader recognised the
+            // prompt, which a custom footer can hide.
             if std::mem::take(&mut state.opens_idle) {
                 state.state = Phase::Idle;
             }
@@ -772,19 +642,16 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         Moment::Prompted => {
             state.state = Phase::Working;
             state.turn_open = true;
-            // Whatever an interrupt put back in the composer went out with
-            // this prompt, or was cleared before it.
+            // Anything an interrupt put back in the composer went out with this
+            // prompt or was cleared.
             state.composer_holds.clear();
             state.summary = None;
             state.asks(None);
-            // A count of shells was about the turn that ended, and this is the
-            // next one.
+            // The shell count belonged to the previous turn.
             state.background = 0;
-            // A new turn retires the last one's answer. A turn that ends
-            // without one would otherwise leave the previous answer on the
-            // record, and `result` would hand it to a caller as this turn's.
-            // Unless nobody asked for this one: the vendor typed it into the
-            // session itself, and the answer stands.
+            // A new turn clears the last answer, so a turn that ends without
+            // one does not hand the old answer to `result`. A prompt the vendor
+            // injected itself keeps it.
             if !injected(hooks, payload) {
                 state.result = None;
                 state.source = None;
@@ -796,14 +663,13 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Calling if menu(hooks, payload) => {
             state.state = Phase::Waiting;
-            // Not running anything: the menu is what it is doing.
+            // The menu is what it is doing.
             state.summary = None;
             state.background = 0;
             state.asks_all(asked(&payload["tool_input"]));
             state.kind = Some(Kind::Question);
-            // Nothing else will say this agent is waiting. The vendor notifies
-            // about an idle session only when nothing is open on it, and a
-            // menu is open on this one.
+            // Nothing else will report the wait: the vendor sends its idle
+            // notice only when nothing is open, and a menu is.
             Screen::Fresh
         }
 
@@ -817,43 +683,34 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             Screen::Clear
         }
 
-        // The vendor asking itself for leave to draw a menu. There is no box:
-        // the screen is the menu, drawn by the tool call 10 to 30 ms earlier,
-        // and that call carried every question on it. So this says the agent
-        // has stopped and nothing else — the sentence it would otherwise write
-        // is about a tool nobody is being asked to allow, and writing it took
-        // the whole call off the record with it.
+        // The vendor asking itself to draw the menu. There is no box: the
+        // screen is the menu, drawn by the call 10 to 30 ms earlier, which
+        // carried every question. So this only says the agent stopped;
+        // writing the permission sentence would have dropped the call.
         //
-        // It carries the call as well, byte for byte: measured at 2.1.240 on
-        // 2026-08-25, its `tool_input` is the tool call's own. That is worth
-        // nothing on the usual turn and everything on the one where amx missed
-        // the tool call — a hook wired mid-turn, a hook process that died —
-        // because it is the only other place the questions are ever sent. So a
-        // record with a call on it keeps the one it has, and a record with none
-        // takes this.
+        // Its `tool_input` is the call's own (claude 2.1.240). When amx missed
+        // the call (a hook wired mid-turn, a hook process that died), this is
+        // the only other copy of the questions, so a record without a call
+        // takes it.
         Moment::Asked if menu(hooks, payload) => {
             state.state = Phase::Waiting;
             state.summary = None;
             if state.pending().is_none() {
                 state.asks_all(asked(&payload["tool_input"]));
             }
-            // A screen this tool drew is a question whatever amx missed of the
-            // call behind it, and what kind of thing is being asked is what
+            // Whatever amx missed, this screen is a question, and the kind
             // decides what may be sent back.
             state.kind = Some(Kind::Question);
-            // Not `Fresh`, which the call itself is: this is the same menu
-            // named a second time, 10 ms behind the event that drew it. It is
-            // news only to a record that was not already waiting, which is the
-            // record that missed the call.
+            // `Waiting`, not `Fresh`: this is the same menu, announced again
+            // right after the call. It is news only to a record that missed the
+            // call.
             Screen::Waiting
         }
 
-        // Fired as the permission box goes up — six seconds before the
-        // notification that repeats it, which was the whole of what said so
-        // before this event was wired. The payload carries the tool and not
-        // the vendor's sentence, so the vendor is asked for the sentence it
-        // will write, and a box with no tool named waits for a reader to quote
-        // the pane.
+        // Fired as the box goes up, about six seconds before the notification
+        // that repeats it. The payload names the tool but not the sentence, so
+        // the vendor's sentence is built from the tool name; with no tool
+        // named, a reader quotes the pane later.
         Moment::Asked => {
             state.state = Phase::Waiting;
             state.summary = None;
@@ -866,12 +723,10 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             Screen::Waiting
         }
 
-        // The one hook that says the box closed without the tool running:
-        // nothing announces a tool that finished when it never ran. The turn
-        // goes on with the refusal in it, and the next tool call will say what
-        // the agent is doing now. A prompt raised with no turn open — pi draws
-        // one for an extension whenever it is asked — closes onto the idle
-        // session it went up over.
+        // The only hook saying the box closed without the tool running. The
+        // turn continues, and the next call will say what it is doing. A
+        // prompt raised outside a turn (pi does this for extensions) closes
+        // back to idle.
         Moment::Refused => {
             state.state = match state.turn_open {
                 true => Phase::Working,
@@ -882,19 +737,13 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             Screen::Clear
         }
 
-        // The vendor nudges about an idle session only when nothing is open on
-        // it: no permission box, no menu, nobody being asked for anything. It
-        // is the turn being over, said a minute late, and the record has often
-        // said so already with the answer on it. Its words are about the
-        // session rather than about anything to answer, so they are not the
-        // question, and whatever amx thought was outstanding is not on that
-        // screen either.
+        // The vendor's idle nudge comes only when nothing is open: the turn
+        // ended, said again later. Its words are not a question, and nothing
+        // amx thought was outstanding is on screen.
         //
-        // Over a turn that left shells running it is none of that. The vendor
-        // is saying its own side is idle, which the stop it repeats already
-        // said and which is not the whole of what this agent is doing. So
-        // nothing on the record moves — this is the nudge that put the record
-        // back to idle a minute after the count said otherwise.
+        // After a turn that left shells running, the nudge only means the
+        // model is idle, so nothing moves; otherwise it would flip the record
+        // to idle while the shells still run.
         Moment::Notified if typed(payload, hooks.idle_notice) && state.background > 0 => {
             return None;
         }
@@ -906,30 +755,22 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             Screen::Clear
         }
 
-        // A call the vendor has not finished is the screen the agent is
-        // stopped on, and this notice says less about it than the call does:
-        // measured at 2.1.240 on 2026-08-25, the whole of its message is
-        // "Claude needs your permission". A permission box cannot be up over
-        // the menu — they are two states of the one program, and a box would
-        // have had a call of its own tool in front of it, which retires the
-        // call. So the agent has stopped, and what it stopped on is what the
-        // call already says.
+        // With a call pending, the menu is what is on screen, and this notice
+        // says less about it (claude 2.1.240 sends only "Claude needs your
+        // permission"). A box cannot be up over the menu, so keep the call's
+        // question.
         Moment::Notified if state.pending().is_some() => {
             state.state = Phase::Waiting;
             Screen::Waiting
         }
 
         Moment::Notified => {
-            // An untyped notification about a turn that already ended with an
-            // answer can only be an older vendor's idle nudge wearing no
-            // name: a vendor notifies about an idle session when nothing is
-            // open on it, and an answered turn has nothing open. Its words
-            // are not a question, and taking them as one would put the record
-            // back to waiting in front of the answer it holds.
+            // An untyped notification after a turn that ended with an answer
+            // can only be an older vendor's idle nudge: nothing is open after
+            // an answered turn. Taking its words as a question would flip the
+            // record back to waiting.
             //
-            // Unless the vendor said what it is waiting on beside the notice,
-            // and that is something the person answers: a question, however
-            // the turn before it ended.
+            // Unless the vendor names a question kind beside the notice.
             let question = payload["kind"]
                 .as_str()
                 .is_some_and(|kind| hooks.question_kinds.contains(&kind));
@@ -955,12 +796,10 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.asks(None);
             let (shells, agents) = running(payload);
             state.background = shells + agents;
-            // The model has finished and the tasks it started have not, and
-            // the payload says so. A turn is what a caller waits on and what
-            // the park timer ends, and both are about the agent rather than
-            // about the model: `_park` took the pane off an agent whose shells
-            // were still going, twice on 2026-09-18, ten minutes after a stop.
-            // So the count stands in the phase.
+            // The model finished but its tasks have not. Callers wait on the
+            // turn and the park timer ends it, and both are about the agent:
+            // `_park` once took a pane whose shells were still running ten
+            // minutes after the stop. So the agent stays working.
             if state.background > 0 {
                 state.state = Phase::Working;
                 state.summary = Some(still_running(shells, agents));
@@ -968,10 +807,8 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
                 state.state = Phase::Idle;
                 state.summary = None;
             }
-            // The answer is what the model said, running tasks or not. Not one
-            // it was cut off in the middle of, nor one whose provider failed,
-            // and not over an answer a turn the vendor typed itself kept: every
-            // other turn took the last one off as it started.
+            // Keep the answer whether or not tasks remain, but not a cut-off
+            // or failed one, and not over an answer an injected turn kept.
             if let Some(answer) = payload["last_assistant_message"].as_str()
                 && !matches!(payload["stop_reason"].as_str(), Some("aborted" | "error"))
                 && state.result.is_none()
@@ -983,10 +820,8 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         }
     };
 
-    // One stop, one interruption. An agent that was already waiting when a box
-    // or a notification arrived is one somebody has been told about, whatever
-    // this event calls the thing it is waiting on — and a menu is a stop
-    // nobody has been told about however the record reads.
+    // One stop, one notice. A box or notification arriving while already
+    // waiting has been reported; a menu is always a new stop.
     let told = match screen {
         Screen::Fresh => true,
         Screen::Waiting => !was_waiting,
@@ -995,35 +830,26 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
     told.then(|| Notice::waiting(&meta.id, state.question.as_deref()))
 }
 
-/// What one event leaves on the agent's pane.
+/// What an event leaves on the agent's pane.
 enum Screen {
-    /// Nothing to answer: the agent is working, or the event moved nothing.
+    /// Nothing to answer: the agent is working, or nothing changed.
     Clear,
-    /// Something to answer, which may well be what was already there — the box
-    /// over a call amx has seen, or the notification that repeats the box.
-    /// Whether this is the first anybody has heard of it is the record's own
-    /// phase to say.
+    /// Something to answer, possibly already on screen (the box over a known
+    /// call, or the notification repeating a box). The previous phase says
+    /// whether it is news.
     Waiting,
-    /// Something to answer that was not there a moment ago. A menu is this
-    /// wherever it lands: a tool call fires before the vendor has asked
-    /// anybody whether it may run at all, so the call it names has not
-    /// been on the pane before, and whatever the record was waiting on is
-    /// behind it — answered, approved, or gone with the tool that ran.
+    /// Something new to answer. A menu is always this: its call fires before
+    /// anything asks permission, so whatever the record was waiting on before
+    /// is behind it.
     Fresh,
 }
 
-/// Every question a [`menu`] call is about to put on the pane.
+/// Every question a [`menu`] call is about to show.
 ///
-/// The tool takes up to four and draws them as tabs on one screen, asking them
-/// one at a time, so the first is the one showing and the rest are a keystroke
-/// behind it. All of them are taken: what they are called, the sentences under
-/// their choices, the previews that turn the notes field on and the flag that
-/// says how many choices each takes are in the payload and nowhere else, and a
-/// pane narrow enough to elide the tab strip does not even say how many there
-/// are.
-///
-/// A question with no words is not one anybody can be asked, so it is left
-/// out rather than written down empty.
+/// The tool takes up to four questions, shown as tabs one at a time. Headers,
+/// descriptions, previews and multi-select flags exist only in the payload,
+/// and a narrow pane elides even the tab count. Questions with no text are
+/// skipped.
 fn asked(input: &Value) -> Vec<Ask> {
     let Some(questions) = input["questions"].as_array() else {
         return Vec::new();
@@ -1042,9 +868,8 @@ fn asked(input: &Value) -> Vec<Ask> {
         .collect()
 }
 
-/// The choices under one question. A choice is its label: the sentence beside
-/// it explains it to whoever is reading, but the label is what an answer names
-/// and what comes back when it is chosen.
+/// The choices under one question. The label is what an answer names and
+/// returns; the description only explains it.
 fn choices(options: &Value) -> Vec<Choice> {
     let Some(options) = options.as_array() else {
         return Vec::new();
@@ -1094,9 +919,8 @@ mod tests {
         }
     }
 
-    /// A config that neither interrupts anybody nor sets a timer. The key is
-    /// off because a timer is a tmux call on the machine running the suite,
-    /// against whichever server the record it was written for happens to name.
+    /// A config that sends no notices and sets no timers. A timer would be a
+    /// real tmux call against whatever server the record names.
     fn quiet() -> Config {
         Config {
             notifications: crate::config::Delivery::Off,
@@ -1105,7 +929,7 @@ mod tests {
         }
     }
 
-    /// The vendor's name for a moment, which is what a payload arrives under.
+    /// claude's event name for a moment.
     fn named(moment: Moment) -> &'static str {
         claude::HOOKS
             .events
@@ -1115,7 +939,7 @@ mod tests {
             .event
     }
 
-    /// Fold a payload into a fresh record and answer with what came of it.
+    /// Fold a payload into a fresh record and return the result.
     fn fold(payload: Value) -> (State, Meta, Option<Notice>) {
         let mut state = State::default();
         let mut meta = meta();
@@ -1125,10 +949,8 @@ mod tests {
 
     #[test]
     fn hook_a_payload_is_read_by_the_moment_the_vendor_named_it() {
-        // The names in a payload are the vendor's own, and they are in the
-        // vendor's entry. A name this file spelled for itself would go on being
-        // read after the vendor renamed it, and nothing would say so: the
-        // record would simply stop moving.
+        // Event names come from the vendor's entry, never spelled here, so a
+        // vendor rename cannot leave this file silently reading the old name.
         for wiring in claude::HOOKS.events {
             assert_eq!(
                 moment(&claude::HOOKS, &json!({ "hook_event_name": wiring.event })),
@@ -1146,9 +968,8 @@ mod tests {
 
     #[test]
     fn hook_the_menu_is_the_tool_the_vendor_says_draws_one() {
-        // Which tool that is, is the vendor's word and nowhere else. Every
-        // other tool is work, and the difference is a card that says the agent
-        // is waiting against one that says it is running something.
+        // Which tool draws the menu is the vendor's word; every other tool is
+        // work.
         let (state, _, _) = fold(json!({
             "hook_event_name": named(Moment::Calling),
             "tool_name": claude::HOOKS.question_tool,
@@ -1161,9 +982,8 @@ mod tests {
 
     #[test]
     fn hook_a_notification_means_what_the_vendor_typed_it() {
-        // Two of the vendor's own words, and the whole difference between a
-        // turn that is over and a question somebody has to answer. Neither is
-        // spelled here.
+        // The notification types that tell an ended turn from a question come
+        // from the vendor's entry.
         let (idle, _, _) = fold(json!({
             "hook_event_name": named(Moment::Notified),
             "message": "Claude is waiting for your input",
@@ -1181,14 +1001,14 @@ mod tests {
         assert_eq!(box_.kind, Some(Kind::Permission));
     }
 
-    /// Fold a payload into a fresh record, read in `hooks`' words.
+    /// Fold a payload into a fresh record, read through `hooks`.
     fn fold_in(hooks: &Hooks, payload: Value) -> State {
         let mut state = State::default();
         apply_in(hooks, &payload, &mut state, &mut meta());
         state
     }
 
-    /// `hooks`' name for a moment.
+    /// `hooks`' event name for a moment.
     fn named_in(hooks: &Hooks, moment: Moment) -> &'static str {
         hooks
             .events
@@ -1200,9 +1020,8 @@ mod tests {
 
     #[test]
     fn hook_under_another_vendors_words_claudes_notice_types_are_only_notices() {
-        // A type is a word of the vendor that sent it. Under the second
-        // vendor, claude's idle type is a notice like any other, and the
-        // second vendor's own is the one that says nothing is open.
+        // Notification types belong to the vendor that sent them. Under the
+        // second vendor, claude's idle type is an ordinary notice.
         let second = &crate::vendor::second::HOOKS;
         let idle = fold_in(
             second,
@@ -1272,8 +1091,8 @@ mod tests {
 
     #[test]
     fn hook_a_pi_input_notice_is_a_question_from_the_hook_alone() {
-        // pi says what it drew beside the notice, and every one of those is
-        // something the person answers: no screen has to be read to say so.
+        // pi names what it drew beside the notice, and each kind is something
+        // the person answers, so no screen reading is needed.
         let mut state = State::default();
         let mut meta = Meta {
             agent: Some("pi".to_string()),
@@ -1296,7 +1115,7 @@ mod tests {
 
     #[test]
     fn hook_a_pi_record_hears_nothing_in_claudes_words() {
-        // Every word claude spells is nobody's moment on a pi record.
+        // claude's event names mean nothing on a pi record.
         let mut meta = Meta {
             agent: Some("pi".to_string()),
             ..meta()
@@ -1311,9 +1130,8 @@ mod tests {
 
     #[test]
     fn hook_a_fresh_start_is_the_vendors_own_word_for_one() {
-        // claude says `startup` for a new conversation, and another session's
-        // startup on a claude record is another process's. pi says no such
-        // thing, so no word of claude's makes a pi opening someone else's.
+        // claude's `startup` under another session is another process. pi has
+        // no such word, so no pi session start is foreign.
         let payload = json!({
             "session_id": "nested",
             "hook_event_name": "SessionStart",
@@ -1351,9 +1169,8 @@ mod tests {
 
     #[test]
     fn hook_a_prompt_empties_the_composer_an_interrupt_filled() {
-        // pi put its queued sends back in its composer when the turn was cut
-        // short, and `send` refuses while they sit there. A prompt is that
-        // composer submitted, so the refusal comes off with it.
+        // pi put queued sends back in its composer on interrupt, and `send`
+        // refuses while they sit there. A prompt submits the composer.
         let mut state = State {
             state: Phase::Idle,
             composer_holds: vec!["and the linter".to_string()],
@@ -1375,8 +1192,8 @@ mod tests {
 
     #[test]
     fn hook_a_new_turn_retires_the_last_turns_answer() {
-        // A turn that ends with nothing to say leaves whatever the last one
-        // said on the record, and `result` reads that record.
+        // Otherwise a turn that ends without an answer would leave the last
+        // one on the record for `result`.
         let mut state = State {
             state: Phase::Idle,
             result: Some("the tests pass now".to_string()),
@@ -1423,9 +1240,8 @@ mod tests {
 
     #[test]
     fn hook_the_choices_go_wherever_the_question_they_answer_goes() {
-        // The options were read under one particular question. Under the next
-        // one they are somebody else's answers, and offering them to a caller
-        // would be offering it the wrong keys to press.
+        // Options belong to the question they were read under; under the next
+        // question they would be the wrong keys.
         let asked = State {
             state: Phase::Waiting,
             question: Some("Do you want to proceed?".to_string()),
@@ -1447,11 +1263,9 @@ mod tests {
 
     #[test]
     fn hook_the_vendor_names_the_kind_of_prompt_it_is_notifying_about() {
-        // Measured against claude 2.1.237: the notification that a permission
-        // box is up carries notification_type `permission_prompt` beside the
-        // message. The words alone would not do. They are one sentence about
-        // one tool, and every other notice the vendor sends is a sentence in
-        // the same shape.
+        // claude 2.1.237's permission notification carries
+        // `notification_type: permission_prompt`. The message alone reads like
+        // any other notice.
         let (state, _, notice) = fold(json!({
             "hook_event_name": "Notification",
             "message": "Claude needs your permission to use Bash",
@@ -1468,10 +1282,9 @@ mod tests {
 
     #[test]
     fn hook_a_permission_request_is_the_box_the_instant_it_goes_up() {
-        // Measured at 2.1.237: PermissionRequest fires as the box goes up,
-        // six seconds before the notification that repeats it. The payload
-        // carries the tool and not the vendor's sentence, so the sentence is
-        // written the way the vendor will write it.
+        // In claude 2.1.237, PermissionRequest fires as the box goes up, about
+        // six seconds before the notification. It names the tool but not the
+        // sentence, so the sentence is built as the vendor builds it.
         let (state, _, notice) = fold(json!({
             "hook_event_name": "PermissionRequest",
             "tool_name": "Bash",
@@ -1490,8 +1303,8 @@ mod tests {
             "the six-second blind window was the point"
         );
 
-        // A box amx cannot name is still a permission box somebody has to
-        // answer, and the pane's own words reach the record from a reader.
+        // A box with no tool named is still a permission box; a reader fills
+        // in the pane's words.
         let (state, _, _) = fold(json!({ "hook_event_name": "PermissionRequest" }));
         assert_eq!(state.state, Phase::Waiting);
         assert_eq!(state.kind, Some(Kind::Permission));
@@ -1525,16 +1338,12 @@ mod tests {
 
     #[test]
     fn hook_the_menu_decides_what_answers_it() {
-        // 02BQ6442, driven against a real claude 2.1.240 on 2026-08-25 in
-        // manual mode and again in auto: one AskUserQuestion fires three
-        // events, and the two that know least about the screen arrive last.
-        // The tool call carries every question the menu will ask; the
-        // permission box the vendor asks itself for over that same tool
-        // carries a tool name; the notification six seconds later carries
-        // "Claude needs your permission" and nothing else. Each of the last
-        // two used to write its own account over the call's, so an agent
-        // standing at a menu read `permission` with no choices on it, and the
-        // card offered "press 1-5, y or n".
+        // claude 2.1.240, manual and auto mode: one AskUserQuestion fires three
+        // events, and the two knowing least arrive last. The call carries every
+        // question, the permission event only the tool name, and the
+        // notification six seconds later only "Claude needs your permission".
+        // Each used to overwrite the call's question, so the card offered a
+        // permission box's keys over a menu.
         let mut state = State::default();
         let mut meta = meta();
 
@@ -1592,12 +1401,9 @@ mod tests {
 
     #[test]
     fn hook_the_permission_box_over_a_menu_carries_the_menu() {
-        // Measured at 2.1.240 on 2026-08-25: the permission event the vendor
-        // fires over its own question tool carries that tool's `tool_input`
-        // byte for byte. On the usual turn that is worth nothing, because the
-        // call arrived 10 ms earlier and the record already has it. On the
-        // turn where amx missed the tool call it is the only other place the
-        // questions are ever sent.
+        // In claude 2.1.240 the permission event for the question tool carries
+        // the call's `tool_input` verbatim. Usually the call arrived 10 ms
+        // earlier; when amx missed it, this is the only other copy.
         let (state, _, _) = fold(json!({
             "hook_event_name": "PermissionRequest",
             "tool_name": "AskUserQuestion",
@@ -1617,8 +1423,7 @@ mod tests {
         );
         assert_eq!(state.options, ["SQLite", "Docker"]);
 
-        // And a record that has the call keeps the one it has: this event is
-        // about the same menu, so there is nothing here it does not know.
+        // A record that has the call keeps it.
         let mut state = State::default();
         let mut meta = meta();
         apply(
@@ -1647,13 +1452,10 @@ mod tests {
 
     #[test]
     fn hook_the_leave_to_draw_a_menu_is_a_stop_nobody_has_heard_of_yet() {
-        // The permission event the vendor fires over its own question tool is
-        // the second of three about one screen. On the ordinary turn the call
-        // 10 ms in front of it has already told somebody, and it says nothing
-        // — that is what the three-event replays check. On the turn amx missed
-        // that call, a hook wired mid-turn or a hook process that died, this
-        // is the first anybody hears of the menu, and the questions it carries
-        // are what there is to tell them.
+        // Normally the call 10 ms earlier already raised the notice and this
+        // event adds none. When amx missed the call (a hook wired mid-turn, a
+        // hook process that died), this is the first word of the menu, and its
+        // questions are the notice.
         let mut state = State::default();
         let mut meta = meta();
         let told = apply(
@@ -1673,8 +1475,7 @@ mod tests {
         .expect("a menu nothing has mentioned is a stop somebody has to hear about");
         assert_eq!(told.body, "Which fixture should the port keep?");
 
-        // And the notification six seconds behind it is that same screen said
-        // a second time, to somebody who has already been told.
+        // The notification six seconds later repeats the same screen.
         let again = apply(
             &json!({
                 "hook_event_name": "Notification",
@@ -1691,11 +1492,8 @@ mod tests {
 
     #[test]
     fn hook_a_box_over_another_tool_is_still_a_box() {
-        // The menu does not shelter the next prompt. A permission box is about
-        // a tool the agent is trying to call, and the vendor fires that tool's
-        // own `PreToolUse` in front of it — which retires the call, so the
-        // box arrives at a record with nothing outstanding and says what it
-        // has always said.
+        // A permission box after a menu is a new stop: the box's own tool call
+        // comes first and retires the menu's call.
         let mut state = State::default();
         let mut meta = meta();
 
@@ -1730,13 +1528,9 @@ mod tests {
 
     #[test]
     fn hook_one_stop_interrupts_once_however_many_events_say_so() {
-        // Filed on 2026-08-24 off the first run of the wall: one
-        // AskUserQuestion put three notifications on the desktop. The tool
-        // call that draws the menu, the permission box over that same tool
-        // and the notification that repeats the box a few seconds later are
-        // three different sentences, so matching the words catches none of
-        // them. What they have in common is that the agent had already
-        // stopped when they arrived.
+        // One AskUserQuestion used to raise three desktop notifications. The
+        // three events carry different sentences, so matching words cannot
+        // dedupe them; what they share is that the agent had already stopped.
         let mut state = State::default();
         let mut meta = meta();
 
@@ -1778,21 +1572,14 @@ mod tests {
 
     #[test]
     fn hook_coherence_the_question_that_notified_three_times() {
-        // The payloads themselves, captured on 2026-08-24 from a claude
-        // 2.1.240 in a tmux session of its own, in default permission mode,
-        // with a hook on every event appending its stdin to a file. One
-        // AskUserQuestion fired the tool call, the permission box over that
-        // same tool and the notification that repeats it, in this order, and
-        // all three end in waiting.
+        // Payloads captured from claude 2.1.240 in default permission mode,
+        // with a hook on every event logging its stdin. One AskUserQuestion
+        // fired the call, the permission event for the same tool, and the
+        // notification, in that order.
         //
-        // The notification's message names no tool: it is "Claude needs your
-        // permission" and nothing more, against the box's own sentence and
-        // the menu's question. No reading of the words could have told one
-        // stop from three.
-        //
-        // What the last two do to the question on the record is the kind
-        // precedence 02BQ6442 is about: they do nothing to it, which is what
-        // the assertions at the end of this check on the vendor's own bytes.
+        // The notification names no tool, so no reading of the words tells one
+        // stop from three. The last two must also leave the call's question
+        // alone.
         let asking = json!({ "questions": [{
             "question": "Which fixture should the port keep?",
             "header": "Fixture choice",
@@ -1839,8 +1626,7 @@ mod tests {
         );
         assert_eq!(state.state, Phase::Waiting, "and it is still waiting");
 
-        // And waiting on the menu, not on a box. The same event that knew the
-        // question is the only one of the three that knew anything about it.
+        // Waiting on the menu, not a box: only the call knew the question.
         assert_eq!(state.kind, Some(Kind::Question));
         assert_eq!(
             state.question.as_deref(),
@@ -1851,17 +1637,13 @@ mod tests {
 
     #[test]
     fn hook_coherence_the_menu_behind_an_answered_box_is_its_own_stop() {
-        // One turn, two stops, captured on 2026-08-25 from a claude 2.1.240 in
-        // a tmux pane in default permission mode. The box over a Bash command
-        // went up, was answered with 1, and the menu was on the pane a moment
-        // later. Between them the vendor fired PostToolUse(Bash) — not one of
-        // the seven events amx installs, so it is left out here as it is left
-        // out there. Nothing that does reach this function said the box had
-        // closed, and the record still read waiting when the menu went up.
+        // One turn, two stops, captured from claude 2.1.240: a Bash box
+        // answered with 1, then a menu. In between claude fired
+        // PostToolUse(Bash), which amx does not install, so it is omitted here
+        // too. Nothing that reaches this function said the box closed, so the
+        // record still read waiting when the menu went up.
         //
-        // Two screens is two people have to be interrupted. The box's notice
-        // is spent by the time the menu arrives, and the menu is what is on
-        // the pane now.
+        // Two screens need two notices.
         let asking = json!({ "questions": [{
             "question": "Which fixture should the port keep?",
             "header": "Fixture",
@@ -1930,12 +1712,9 @@ mod tests {
 
     #[test]
     fn hook_coherence_the_second_menu_of_one_turn_is_a_second_stop() {
-        // The same claude and the same pane, asked for two questions in one
-        // turn: menu, answer, menu. Answering the first fired PostToolUse,
-        // which amx does not install, so the record reads waiting from the
-        // first menu straight through to the second. Two questions is two
-        // things somebody has to answer, and the second is the one on the
-        // pane.
+        // Two menus in one turn. Answering the first fired PostToolUse, which
+        // amx does not install, so the record reads waiting throughout. Each
+        // menu is a separate stop.
         let fixture = json!({ "questions": [{
             "question": "Which fixture should the port keep?",
             "header": "Fixture",
@@ -1996,10 +1775,9 @@ mod tests {
         .filter_map(|payload| apply(payload, &mut state, &mut meta))
         .collect();
 
-        // Each notice went out on the menu going up, which is the event that
-        // knew what it was asking. What the box and the notification behind
-        // each menu then do to the question on the record is the kind
-        // precedence 02BQ6442 is about, and nothing here says it is right.
+        // Each notice went out when its menu appeared. This test does not
+        // check what the box and notification after each menu do to the
+        // question.
         assert_eq!(told.len(), 2, "two menus, two notices: {told:?}");
         assert_eq!(told[0].body, "Which fixture should the port keep?");
         assert_eq!(
@@ -2010,10 +1788,8 @@ mod tests {
 
     #[test]
     fn hook_a_stop_amx_cannot_name_is_still_one_interruption() {
-        // A permission box whose payload names no tool goes up with nothing
-        // amx can quote, so the notice says what it can. The words arrive six
-        // seconds later with the notification and they reach the record,
-        // which is where a reader looks; nobody is told a second time.
+        // A box naming no tool gets a generic notice. The notification's words
+        // six seconds later reach the record without a second notice.
         let mut state = State::default();
         let mut meta = meta();
 
@@ -2044,9 +1820,8 @@ mod tests {
 
     #[test]
     fn hook_the_stop_after_the_agent_went_back_to_work_is_told() {
-        // One notice per stop, not one per agent. Whatever put the agent back
-        // to work — a box refused, a menu answered, a new prompt — the next
-        // thing it stops on is news.
+        // One notice per stop: once the agent is back at work, the next stop
+        // is news.
         let mut state = State {
             turn_open: true,
             ..State::default()
@@ -2081,12 +1856,9 @@ mod tests {
 
     #[test]
     fn hook_an_mcp_tools_box_is_worded_the_vendors_way_and_said_once() {
-        // The payload names the tool `mcp__<server>__<tool>`; the vendor's
-        // sentence — on the box, and in the notification that repeats it —
-        // renders the last `__` segment with underscores as spaces and each
-        // word's first letter raised. A sentence written any other way is
-        // what every reader quotes while the box is up, against a pane that
-        // says something else.
+        // For `mcp__<server>__<tool>`, the vendor's sentence uses the last
+        // segment with underscores as spaces and each word capitalised. It
+        // must match the pane's sentence.
         let mut state = State::default();
         let mut meta = meta();
         let told = apply(
@@ -2118,9 +1890,8 @@ mod tests {
 
     #[test]
     fn hook_a_denied_permission_puts_the_agent_back_to_work() {
-        // The one hook that says a box has closed without the tool running:
-        // no PostToolUse follows a tool that never ran, so without this the
-        // record would say waiting for as long as the turn went on.
+        // No PostToolUse follows a tool that never ran, so without this the
+        // record would read waiting for the rest of the turn.
         let mut state = State {
             state: Phase::Waiting,
             question: Some("Claude needs your permission to use Bash".to_string()),
@@ -2152,9 +1923,8 @@ mod tests {
 
     #[test]
     fn hook_a_prompt_closed_outside_a_turn_leaves_it_idle() {
-        // pi raises a dialog for an extension whether a turn is running or
-        // not, and closing it says only that the dialog went. Outside a turn
-        // there is nothing to go back to work on.
+        // pi raises extension dialogs in or out of a turn. Closed outside a
+        // turn, there is no work to return to.
         let pi = &crate::vendor::pi::HOOKS;
         let raised = json!({ "hook_event_name": "ui_prompt_start", "kind": "confirm", "message": "Trust this folder?" });
         let closed = json!({ "hook_event_name": "ui_prompt_end", "kind": "confirm" });
@@ -2190,9 +1960,8 @@ mod tests {
 
     #[test]
     fn hook_a_notification_of_no_named_kind_leaves_the_kind_where_it_was() {
-        // Every notification amx saw before this carried no type at all, and
-        // it still means what it always meant: this agent has stopped, and
-        // here are the words it stopped on.
+        // Untyped notifications keep their original meaning: stopped on these
+        // words.
         let mut state = State {
             state: Phase::Waiting,
             kind: Some(Kind::Permission),
@@ -2211,11 +1980,9 @@ mod tests {
 
     #[test]
     fn hook_coherence_a_nudge_about_an_idle_session_is_not_a_question() {
-        // The vendor only nudges about an idle session when nothing is open on
-        // it: no permission box, no menu. Nobody is being asked for anything;
-        // the turn is over. Taking the nudge's own words as the question would
-        // leave "Claude is waiting for your input" on the record as the thing
-        // to answer, and every reader would say the agent was waiting.
+        // The idle nudge comes only when nothing is open, so its words are not
+        // a question. Taking them as one would leave "Claude is waiting for
+        // your input" as the thing to answer.
         let mut state = State {
             state: Phase::Waiting,
             summary: Some("Running Bash".to_string()),
@@ -2266,12 +2033,9 @@ mod tests {
 
     #[test]
     fn hook_coherence_an_untyped_nudge_never_undoes_an_answered_turn() {
-        // An older vendor types nothing on its notifications, and its idle
-        // nudge arrives with no name. One arriving after the turn ended with
-        // an answer on the record can only be that nudge: the vendor notifies
-        // about an idle session when nothing is open on it, and an answered
-        // turn has nothing open. Taking its words as a question would flip
-        // the record back to waiting in front of the answer it holds.
+        // Older vendors send the idle nudge untyped. After a turn ended with
+        // an answer it can only be that nudge, and taking it as a question
+        // would flip the record back to waiting.
         let mut state = State {
             state: Phase::Idle,
             result: Some("I fixed the login bug.".to_string()),
@@ -2294,10 +2058,8 @@ mod tests {
 
     #[test]
     fn hook_a_question_the_vendor_asks_is_a_kind_of_its_own() {
-        // AskUserQuestion is a tool call, so the only hook it fires is the one
-        // that says a tool is about to run. It never runs in the sense the
-        // others do: it draws a menu and waits. The question and the choices
-        // are in the payload, which is earlier and surer than the pane.
+        // AskUserQuestion fires only the pre-tool hook. It draws a menu and
+        // waits, and its payload carries the questions before the pane does.
         let (state, _, notice) = fold(json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
@@ -2329,11 +2091,9 @@ mod tests {
 
     #[test]
     fn hook_a_call_that_asks_several_questions_reaches_the_record_whole() {
-        // The payload measured against 2.1.240 on 2026-08-24 and recorded in
-        // docs/question-shapes.md: three questions in one call, drawn as tabs,
-        // with multiSelect per question rather than per call. Only the first
-        // is on the screen; the rest are one keystroke behind it, and the
-        // payload is the only place they are ever written down.
+        // Three questions in one call, as claude 2.1.240 sends it (see
+        // docs/question-shapes.md), with multiSelect per question. Only the
+        // first is on screen; the payload is the only record of the rest.
         let (state, _, notice) = fold(json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
@@ -2375,14 +2135,14 @@ mod tests {
         assert_eq!(state.kind, Some(Kind::Question));
         assert!(notice.is_some(), "no notification follows this one");
 
-        // The question on the screen, where every reader looks for it.
+        // The question on screen, where readers look for it.
         assert_eq!(
             state.question.as_deref(),
             Some("Which runtime should the service target?")
         );
         assert_eq!(state.options, ["Node", "Deno"]);
 
-        // And the two behind it, with what no screen carries.
+        // The two behind it, with what no screen shows.
         assert_eq!(state.asking.len(), 3);
         assert_eq!(state.asking[1].header.as_deref(), Some("Storage"));
         assert_eq!(state.asking[1].text, "Which store should hold sessions?");
@@ -2399,10 +2159,8 @@ mod tests {
 
     #[test]
     fn hook_a_question_that_takes_more_than_one_choice_says_so() {
-        // Nothing else does. The screen draws `[ ]` boxes and a Submit row,
-        // and a reader that took the labels off it would come back with
-        // `[ ] Logging` for a label and no way to tell the shape apart from a
-        // plain menu at the moment the record is written.
+        // Only the payload says so. The screen draws `[ ]` boxes and a Submit
+        // row, which a screen reading would mistake for labels.
         let (state, _, _) = fold(json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
@@ -2425,10 +2183,9 @@ mod tests {
 
     #[test]
     fn hook_a_choices_preview_is_what_puts_a_notes_field_on_a_question() {
-        // Measured against 2.1.240: `preview` on any choice is what draws the
-        // notes field, and `n` on a menu without one does nothing at all. The
-        // previewed screen also drops the free-text row and the number on
-        // `Chat about this`, so nothing on the pane tells the two apart.
+        // In claude 2.1.240 a `preview` on any choice draws the notes field,
+        // and `n` does nothing without one. The previewed screen also drops the
+        // free-text row, so the pane cannot tell them apart.
         let (state, _, _) = fold(json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
@@ -2458,7 +2215,7 @@ mod tests {
 
     #[test]
     fn hook_a_question_amx_cannot_read_is_still_a_question_of_that_kind() {
-        // A menu amx cannot quote is still a menu somebody has to answer.
+        // An unreadable menu is still a question to answer.
         for input in [
             json!({ "questions": [] }),
             json!({ "questions": "malformed" }),
@@ -2520,10 +2277,9 @@ mod tests {
 
     #[test]
     fn hook_a_turn_that_left_shells_running_is_still_a_turn() {
-        // claude ends a turn with the shells it started still going, and lists
-        // them on the payload that says so. Reading that as an idle agent set
-        // the park timer, and `_park` took the pane off a run whose shells
-        // were still going ten minutes later, twice on 2026-09-18.
+        // claude lists shells still running in its turn-end payload. Reading
+        // that as idle once set the park timer, and `_park` took the pane
+        // while the shells still ran.
         let (state, _, notice) = fold(json!({
             "hook_event_name": "Stop",
             "stop_hook_active": false,
@@ -2546,7 +2302,7 @@ mod tests {
         assert_eq!(parks_in(&state, 3_600), None, "and nothing takes its pane");
         assert_eq!(notice, None, "a working agent is on the wall already");
 
-        // One of them is one shell, not one shells.
+        // Singular for one.
         let (one, _, _) = fold(json!({
             "hook_event_name": "Stop",
             "background_tasks": [{ "id": "bash_1", "type": "shell", "status": "running" }]
@@ -2556,9 +2312,7 @@ mod tests {
 
     #[test]
     fn hook_a_turn_that_left_agents_running_names_them_apart_from_shells() {
-        // Anything the vendor lists that is not typed a shell is an agent it
-        // started, and a row saying "3 shells running" over two subagents
-        // sends somebody looking for shells that are not there.
+        // Tasks not typed `shell` are agents, and the summary names them so.
         let (state, _, _) = fold(json!({
             "hook_event_name": "Stop",
             "last_assistant_message": "Two reviewers are reading the diff.",
@@ -2589,9 +2343,8 @@ mod tests {
 
     #[test]
     fn hook_a_prompt_the_vendor_typed_itself_keeps_the_answer_before_it() {
-        // A background task finishing, or another agent's message, arrives as
-        // a prompt nobody typed. What the agent says to it is a note about
-        // that, not the answer to the task, which is already on the record.
+        // A finished background task or another agent's message arrives as a
+        // prompt nobody typed. The reply to it is not the task's answer.
         let mut state = State {
             state: Phase::Working,
             summary: Some("1 shell running".to_string()),
@@ -2628,7 +2381,7 @@ mod tests {
             );
         }
 
-        // A tag somewhere past the start is somebody's prompt about one.
+        // A tag past the start is a person's prompt.
         apply(
             &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "what is a <task-notification>?" }),
             &mut state,
@@ -2639,8 +2392,8 @@ mod tests {
 
     #[test]
     fn hook_an_aborted_or_failed_turn_has_no_answer() {
-        // pi ends a turn cut short, or one its provider failed, with whatever
-        // text the assistant had got to, and says why on the payload.
+        // pi ends an aborted or failed turn with whatever partial text it had,
+        // and says why in the payload.
         for reason in ["aborted", "error"] {
             let (state, _, _) = fold(json!({
                 "hook_event_name": "Stop",
@@ -2662,9 +2415,7 @@ mod tests {
 
     #[test]
     fn hook_the_idle_nudge_over_a_running_shell_moves_nothing() {
-        // The nudge is the vendor saying its own side is idle, which the stop
-        // it repeats already said. Taking it as the turn being over is how the
-        // record went idle a minute after the count said otherwise.
+        // With shells running, the idle nudge only means the model is idle.
         let mut state = State {
             state: Phase::Working,
             summary: Some("2 shells running".to_string()),
@@ -2687,9 +2438,8 @@ mod tests {
 
     #[test]
     fn hook_the_next_thing_the_agent_does_retires_the_shell_count() {
-        // The count is about the turn that ended. A prompt or a tool call is
-        // the agent working again, and what it is doing now is what the row
-        // says.
+        // The count belongs to the ended turn; the next prompt or tool call
+        // clears it.
         let ended = State {
             state: Phase::Working,
             summary: Some("2 shells running".to_string()),
@@ -2723,7 +2473,7 @@ mod tests {
         );
         assert_eq!(state.state, Phase::Starting, "and it moves nothing");
 
-        // Every payload carries a session id; only this event may set it.
+        // Every payload carries a session id, but only a session start sets it.
         let mut meta = meta.clone();
         let mut state = State::default();
         apply(
@@ -2749,18 +2499,15 @@ mod tests {
 
     #[test]
     fn hook_an_adopted_agent_learns_its_transcript_from_its_own_reports() {
-        // adopt wrote the session off the pane's environment and nothing
-        // about the transcript: the vendor announced that session's start
-        // before there was a record to hear it, and does not announce it
-        // again. Driven on 2026-09-06 against a pi adopted mid-session, whose
-        // record never learned its conversation.
+        // `adopt` takes the session from the pane's environment but cannot
+        // know the transcript: the vendor announced it before the record
+        // existed. Seen with a pi adopted mid-session.
         let mut meta = meta();
         meta.session = Some("01a0-adopted".to_string());
         meta.transcript = None;
         let mut state = State::default();
 
-        // A report about another session names a conversation that is not
-        // this agent's.
+        // A report about another session is not this agent's conversation.
         apply(
             &json!({
                 "session_id": "another",
@@ -2772,7 +2519,7 @@ mod tests {
         );
         assert_eq!(meta.transcript, None);
 
-        // The first report about its own session names the one it keeps.
+        // The first report about its own session sets the transcript.
         apply(
             &json!({
                 "session_id": "01a0-adopted",
@@ -2788,7 +2535,7 @@ mod tests {
             Some(PathBuf::from("/t/01a0-adopted.jsonl"))
         );
 
-        // And a later report does not move it.
+        // A later report does not move it.
         apply(
             &json!({
                 "session_id": "01a0-adopted",
@@ -2826,11 +2573,10 @@ mod tests {
 
     #[test]
     fn hook_a_word_from_the_vendor_takes_an_interrupt_stamp_off_the_record() {
-        // The stamp says amx cut a turn short and the vendor has not spoken
-        // since. So the vendor speaking is what takes it down, whatever second
-        // the event lands in: weighing the two stamps against each other left
-        // an interrupt that tied with the last hook reading as no interrupt at
-        // all, which on a tool-heavy turn is most of them — ruling #M9DAPT6P.
+        // Any word from the vendor clears the interrupt stamp, whatever second
+        // it lands in. Comparing timestamps instead let an interrupt in the
+        // same second as the last hook read as none, which on a tool-heavy
+        // turn is most of them.
         for payload in [
             json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
             json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
@@ -2844,8 +2590,7 @@ mod tests {
             assert_eq!(state.interrupted_at, 0, "{payload}");
         }
 
-        // A subagent's event is not the agent speaking, and the turn amx cut
-        // short is the agent's.
+        // A subagent's event is not the agent speaking.
         let mut state = State {
             state: Phase::Working,
             interrupted_at: 1_000,
@@ -2861,9 +2606,8 @@ mod tests {
 
     #[test]
     fn hook_a_word_from_the_vendor_takes_a_park_stamp_off_the_record() {
-        // The stamp says amx let the pane go and the agent comes back on the
-        // next enter. An agent that speaks has a pane, whoever put it there,
-        // and a stamp left standing would have `send` refuse it as parked.
+        // An agent that speaks has a pane; a stamp left standing would have
+        // `send` refuse it as parked.
         for payload in [
             json!({ "hook_event_name": "SessionStart", "session_id": "s-1" }),
             json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
@@ -2925,7 +2669,7 @@ mod tests {
         }
     }
 
-    // ── The commands themselves ──────────────────────────────────────────────
+    // The commands themselves.
 
     fn an_agent(root: &Path) -> Agent {
         Agent::create(root, &meta()).unwrap()
@@ -2942,7 +2686,7 @@ mod tests {
         )
     }
 
-    /// The document on disk, as a caller that is not amx would find it.
+    /// The state document on disk, parsed as plain JSON.
     fn written(agent: &Agent) -> Value {
         let text = std::fs::read_to_string(agent.dir().join("state.json")).unwrap();
         serde_json::from_str(&text).unwrap()
@@ -3010,8 +2754,7 @@ mod tests {
 
     #[test]
     fn hook_a_moment_is_a_phase_the_agent_had_not_reached() {
-        // Waiting is the notice's to say: one screen fires three events, and
-        // the notice is the only thing that tells one stop from three.
+        // Waiting counts only with a notice: one screen fires three events.
         assert_eq!(
             reached(Phase::Waiting, Phase::Working, true),
             Some(Phase::Waiting)
@@ -3022,16 +2765,16 @@ mod tests {
             "a box answered by the notification repeating it"
         );
 
-        // Idle is the phase before it: the vendor nudges about an idle session
-        // a minute after the turn ended, and that is the same turn still over.
+        // Idle counts only from another phase: the idle nudge repeats an
+        // ended turn.
         assert_eq!(
             reached(Phase::Idle, Phase::Working, false),
             Some(Phase::Idle)
         );
         assert_eq!(reached(Phase::Idle, Phase::Idle, false), None);
 
-        // Everything else is the agent on its way somewhere, or the end of the
-        // command, which `record_exit` writes and this never sees.
+        // Other phases are transitions, or the command ending, which
+        // `record_exit` handles.
         for phase in [
             Phase::Starting,
             Phase::Working,
@@ -3046,10 +2789,8 @@ mod tests {
 
     #[test]
     fn hook_only_an_idle_turn_is_worth_a_timer() {
-        // The pane amx would take is the one a vendor is sitting at its prompt
-        // in, holding what the turn left in it. Every other phase is an agent
-        // doing something with that pane, and a timer set over one is a timer
-        // `_park` reads the record and refuses.
+        // Only an agent idle at its prompt gets a timer; `_park` would refuse
+        // any other phase.
         let idle = State {
             state: Phase::Idle,
             ..State::default()
@@ -3076,18 +2817,16 @@ mod tests {
 
     #[test]
     fn hook_a_person_who_turned_parking_off_is_not_asked_a_second_time() {
-        // Their machine and their panes: a project's file cannot start taking
-        // them. Nothing is read off the disk to find that out either, on a
-        // path that runs on every event the vendor sends.
+        // A project cannot re-enable parking the person turned off, and the
+        // check reads no files.
         assert_eq!(park_after(&quiet(), &meta()), 0);
     }
 
     #[test]
     fn hook_the_timer_names_the_root_this_hook_is_writing_to() {
-        // A tmux server runs `run-shell` in the environment it was started in,
-        // which is somebody's login shell from Monday. The root this hook is
-        // writing to is in this process's, so a timer that did not carry it
-        // would fire over the records in the default root.
+        // `run-shell` runs in the tmux server's environment, not this
+        // process's, so the timer must carry the state root or it would park
+        // records in the default root.
         let exe = std::env::current_exe().expect("a binary to name");
         assert_eq!(
             park_command(Path::new("/state/amx/agents"), "fix-login-a1b").expect("a command"),
@@ -3098,21 +2837,18 @@ mod tests {
             "the variable names the directory the agents live under"
         );
 
-        // Whatever is in it, each of them is one word to the shell that reads
-        // the line.
+        // Each argument is one shell word, whatever it contains.
         let odd = park_command(Path::new("/it's/agents"), "fix-login-a1b").expect("a command");
         assert!(odd.contains(r"'/it'\''s'"), "{odd}");
 
-        // And a root with nothing above it names no state directory at all.
+        // A root with no parent names no state directory.
         assert_eq!(park_command(Path::new("agents"), "fix-login-a1b"), None);
     }
 
     #[test]
     fn hook_a_timer_it_cannot_set_ends_the_way_everything_else_here_does() {
-        // The server holding the pane is the one asked to hold the timer, and
-        // a server that has gone cannot be asked. Nobody is told: this process
-        // is standing between the vendor and its next token, and what it costs
-        // is a pane that keeps its memory.
+        // The timer is set on the pane's server; if that server is gone, the
+        // failure is silent and the pane simply keeps its memory.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3148,9 +2884,8 @@ mod tests {
 
     #[test]
     fn hook_an_adopted_claude_is_found_by_the_session_its_payload_names() {
-        // A claude amx did not start has no `AMX_ID` in its pane, so the only
-        // thing in the payload that says whose it is is the session — which is
-        // what `adopt` wrote down.
+        // A claude amx did not start has no `AMX_ID`, so the session `adopt`
+        // recorded is what identifies it.
         let root = TempDir::new().unwrap();
         let adopted = Agent::create(
             root.path(),
@@ -3180,7 +2915,7 @@ mod tests {
         assert_eq!(state.summary.as_deref(), Some("Running Bash"));
         assert_eq!(adopted.events().unwrap().len(), 1, "and it is written down");
 
-        // A session amx has no record of is a claude that is nobody's.
+        // A session with no record belongs to nobody.
         assert_eq!(
             run(
                 None,
@@ -3198,10 +2933,8 @@ mod tests {
 
     #[test]
     fn hook_the_nested_variable_is_read_off_the_process_environment() {
-        // The variable belongs to the process, so a test cannot set it for one
-        // call without setting it for every other thread in the suite. What is
-        // held here is that a process without it is nobody's nested claude,
-        // and `from_env` asks this before it reads a byte of stdin.
+        // Setting the variable would affect every thread in the suite, so this
+        // only checks that its absence means not nested.
         assert!(!nested());
     }
 
@@ -3218,26 +2951,23 @@ mod tests {
         }
 
         for payload in [
-            // The agent's own session changing, which is the vendor's word and
-            // not amx's to second-guess.
+            // The agent's own session changing.
             json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "resume" }),
             json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "clear" }),
             json!({ "session_id": "def-456", "hook_event_name": "SessionStart", "source": "compact" }),
-            // A start that says nothing about where it came from is the
-            // agent's own: a vendor amx has not measured is not a nested one.
+            // A start with no source is the agent's own.
             json!({ "session_id": "def-456", "hook_event_name": "SessionStart" }),
-            // Nothing that says otherwise leaves the payload the agent's, the
-            // way it always was.
+            // Payloads that say nothing to the contrary are the agent's.
             json!({ "hook_event_name": "Stop", "last_assistant_message": "done" }),
             json!({ "session_id": "", "hook_event_name": "Stop" }),
-            // A subagent reports under the agent's own session, and `apply`
-            // has always been what leaves its work off the state.
+            // A subagent reports under the agent's session; `apply` ignores its
+            // work.
             json!({ "session_id": "abc-123", "hook_event_name": "Stop", "agent_id": "sub-1" }),
         ] {
             assert!(!anothers(&ours, &payload), "{payload}");
         }
 
-        // A record with no session of its own has nothing to compare against.
+        // A record with no session has nothing to compare against.
         assert!(!anothers(
             &meta(),
             &json!({ "session_id": "nested", "hook_event_name": "Stop" })
@@ -3246,10 +2976,9 @@ mod tests {
 
     #[test]
     fn hook_a_nested_claude_reporting_under_the_agents_id_is_dropped_whole() {
-        // A claude the agent launches from its own shell inherits `AMX_ID`, so
-        // its reports arrive saying they are this agent's. They are not: its
-        // start would put its session on the record and its stop would end the
-        // agent's turn. The session it stamps on every payload is what says so.
+        // A claude launched from the agent's shell inherits `AMX_ID`. Its start
+        // would overwrite the session and its stop would end the agent's turn;
+        // its session id gives it away.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3280,9 +3009,7 @@ mod tests {
                 "{payload}"
             );
         }
-        // The log as well as the state: a reader takes turn ends off the log,
-        // so a stop written down and then not folded in would still end the
-        // turn.
+        // Nothing is logged either: readers take turn ends off the log.
         assert!(
             agent.events().unwrap().is_empty(),
             "nothing is written down"
@@ -3292,7 +3019,7 @@ mod tests {
         assert_eq!(meta.session.as_deref(), Some("abc-123"));
         assert_eq!(meta.transcript, None);
 
-        // The agent's own report under the same id is recorded as ever.
+        // The agent's own report under the same id is recorded.
         assert_eq!(
             run(
                 Some(agent.id()),
@@ -3314,10 +3041,10 @@ mod tests {
 
     #[test]
     fn hook_the_agents_own_start_marks_its_shells_nested() {
-        // claude sources the file it hands a session-start hook into every
-        // shell it runs, and not into its own later hooks (measured on 2.1.283,
-        // 2026-09-26). So a claude the agent starts from one of those shells
-        // knows it is nested before it says a word, `claude -c` included.
+        // claude sources the session-start env file into every shell it runs,
+        // but not into its own later hooks (claude 2.1.283). So a claude
+        // started from one of those shells, `claude -c` included, knows it is
+        // nested.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3340,8 +3067,8 @@ mod tests {
             )
         };
 
-        // Another process's start, a subagent's and a turn are not the agent's
-        // session opening.
+        // Another process's start, a subagent's, and a prompt are not the
+        // agent's session start.
         hear(r#"{"session_id":"nested","hook_event_name":"SessionStart","source":"startup"}"#);
         hear(r#"{"session_id":"abc-123","hook_event_name":"SessionStart","agent_id":"sub-1"}"#);
         hear(r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit","prompt":"go"}"#);
@@ -3360,8 +3087,8 @@ mod tests {
 
     #[test]
     fn hook_a_cleared_session_carries_nothing_over() {
-        // `/clear` is a new session in the same pane, and nothing the old one
-        // said is its answer. What stays is what `resume` keeps.
+        // `/clear` starts a new session in the same pane and drops the old
+        // answer; what `resume` keeps stays.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3420,9 +3147,9 @@ mod tests {
 
     #[test]
     fn hook_a_prompt_after_an_interrupt_closes_the_cut_turn() {
-        // claude says nothing when a turn is cut short, so the record is still
-        // working when the next prompt comes. The cut turn ended at the stamp,
-        // and the hour between it and this prompt was nobody's work.
+        // claude says nothing when a turn is interrupted, so the record still
+        // reads working at the next prompt. The cut turn ends at the stamp, and
+        // the hour until this prompt is not work.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(root.path(), &meta()).unwrap();
         let cut = crate::store::now() - 3_600;
@@ -3462,10 +3189,10 @@ mod tests {
 
     #[test]
     fn hook_a_message_steered_into_a_codex_turn_keeps_it_working() {
-        // codex hears a message steered into a running turn as a second
-        // UserPromptSubmit under the same turn_id (Ruling 6): a prompt, which
-        // clears what a prompt clears, and leaves the turn it went into open
-        // and its span unbroken. Both payloads off codex 0.157.1, 2026-09-28.
+        // codex reports a message steered into a running turn as a second
+        // UserPromptSubmit with the same turn_id. It clears what a prompt
+        // clears but keeps the turn open and its span unbroken. Payloads from
+        // codex 0.157.1.
         let mut lines = include_str!("../tests/codex/hooks/UserPromptSubmit.jsonl").lines();
         let (first, steer) = (lines.next().unwrap(), lines.next().unwrap());
         let turn = |line: &str| serde_json::from_str::<Value>(line).unwrap()["turn_id"].clone();
@@ -3522,9 +3249,8 @@ mod tests {
 
     #[test]
     fn hook_an_opencode_turn_reads_each_plugin_name_as_its_moment() {
-        // Every name the plugin reports under (plan opencode-lands Ruling 4),
-        // as its payload arrives from assets/opencode/tui.js, folded into an
-        // opencode record in the order a turn sends them.
+        // Every event name the plugin (assets/opencode/tui.js) reports,
+        // folded into an opencode record in the order a turn sends them.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3670,7 +3396,7 @@ mod tests {
         );
         assert_eq!((state.state, state.result), (Phase::Idle, None));
 
-        // A session the pane was resumed onto is the agent's own, not another.
+        // A session the pane was resumed onto is the agent's own.
         let ours = Meta {
             session: Some("ses_ours".to_string()),
             ..meta.clone()
@@ -3688,9 +3414,8 @@ mod tests {
 
     #[test]
     fn hook_an_adopted_session_reaches_the_record_that_is_still_running() {
-        // One conversation can be on two records: an agent amx started and
-        // stopped, and the claude somebody resumed it in by hand and adopted.
-        // The payload is about the one that has not ended.
+        // One conversation on two records: a stopped agent and the adopted
+        // claude resumed from it. The payload goes to the one still running.
         let root = TempDir::new().unwrap();
         let stopped = Agent::create(
             root.path(),
@@ -3740,10 +3465,9 @@ mod tests {
 
     #[test]
     fn hook_tells_a_listening_wire_where_the_record_is() {
-        // pi's extension hears what `_hook` prints, and an adopted pi has no
-        // `AMX_DIR` in its pane to stream to. The answer is the record's
-        // directory, one line, on every report about a record whose wire is
-        // amx's own file.
+        // pi's extension reads what `_hook` prints, and an adopted pi has no
+        // `AMX_DIR`. Every report on a record with a listening wire gets the
+        // record's directory, one line.
         let root = TempDir::new().unwrap();
         let pi = Agent::create(
             root.path(),
@@ -3772,8 +3496,8 @@ mod tests {
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
-        // A pane amx started is answered the same way: one law, and the
-        // extension has the variable to prefer.
+        // A pane amx started gets the same answer; the extension prefers its
+        // own variable.
         let mut out = Vec::new();
         run(
             Some("their-pi-a1b"),
@@ -3785,9 +3509,8 @@ mod tests {
         );
         assert_eq!(String::from_utf8(out).unwrap(), where_it_is);
 
-        // claude runs the hook itself and shows what it prints to the person
-        // — a UserPromptSubmit hook's stdout goes into the conversation — so
-        // a claude record is answered with nothing.
+        // claude shows hook output to the person (a UserPromptSubmit hook's
+        // stdout joins the conversation), so a claude record gets nothing.
         Agent::create(
             root.path(),
             &Meta {
@@ -3814,7 +3537,7 @@ mod tests {
         );
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 
-        // And a report that is nobody's gets nothing either.
+        // A report belonging to no record gets nothing.
         let mut out = Vec::new();
         run(
             None,
@@ -3863,7 +3586,7 @@ mod tests {
     #[test]
     fn hook_never_takes_the_vendors_note_about_a_turn_for_its_answer() {
         // claude ends a turn that never reached the model with a synthetic
-        // entry, and hands that entry's words to the Stop as the answer.
+        // entry and passes its text to the Stop hook as the answer.
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
         let transcript = root.path().join("session.jsonl");
@@ -3900,8 +3623,8 @@ mod tests {
 
     #[test]
     fn hook_never_takes_an_aborted_answer_from_the_transcript_either() {
-        // The payload's answer refused, the transcript is asked, and pi wrote
-        // the same half-sentence there.
+        // With the payload's answer refused, the transcript is asked, and pi
+        // wrote the same partial sentence there.
         let root = TempDir::new().unwrap();
         let agent = Agent::create(
             root.path(),
@@ -3941,10 +3664,8 @@ mod tests {
 
     #[test]
     fn hook_takes_the_sessions_title_from_the_transcript() {
-        // The transcript is the only place the vendor writes the name of the
-        // session down, and the payload that ends a turn carries the answer,
-        // so the title has to be read whether or not the answer was wanted
-        // from the same file.
+        // The title lives only in the transcript, and the turn-end payload
+        // carries the answer, so the title must be read regardless.
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
         let transcript = root.path().join("session.jsonl");
@@ -3954,9 +3675,8 @@ mod tests {
         );
         std::fs::write(&transcript, titled).unwrap();
 
-        // The first event that names the transcript is enough: the name is on
-        // the record before a turn has ended, so a row goes under it from the
-        // first tool call rather than from the first answer.
+        // The first event naming the transcript is enough, so the row shows the
+        // title from the first tool call.
         hook(
             root.path(),
             agent.id(),
@@ -3973,8 +3693,8 @@ mod tests {
             "read before any turn has ended"
         );
 
-        // And a newer name in the file reaches the record on whatever event
-        // comes next, mid-turn included.
+        // A newer title reaches the record on the next event, mid-turn
+        // included.
         std::fs::write(
             &transcript,
             concat!(
@@ -3993,7 +3713,7 @@ mod tests {
             Some("auth"),
             "the name a person typed, taken mid-turn"
         );
-        // Back to the one the rest of the test reads.
+        // Restore the title the rest of the test expects.
         std::fs::write(&transcript, titled).unwrap();
         hook(
             root.path(),
@@ -4005,9 +3725,7 @@ mod tests {
             Some("Fix the login bug")
         );
 
-        // A turn that ends over a transcript with no name in it leaves the
-        // name the record has. The vendor writes one when it has one, and
-        // nothing takes it back.
+        // A transcript with no title leaves the recorded one.
         std::fs::write(&transcript, "{\"type\":\"attachment\"}\n").unwrap();
         hook(
             root.path(),
@@ -4022,12 +3740,10 @@ mod tests {
 
     #[test]
     fn hook_coherence_the_turn_that_ended_and_then_read_as_waiting() {
-        // Recorded on 2026-08-20 from the agent read-readme-md-and-799, hook
-        // for hook: a turn ended with an answer, the vendor nudged about the
-        // idle session a minute later, and the command exited a minute after
-        // that. What was left on disk said `done` with an answer on it and
-        // "Claude is waiting for your input" as the question, so `ls` called
-        // the agent done while the line beside it said it was waiting.
+        // A recorded session, hook by hook: a turn ended with an answer, the
+        // idle nudge came a minute later, and the command exited after that.
+        // The record ended up `done` with "Claude is waiting for your input"
+        // as its question, so `ls` showed done beside a waiting line.
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
         let answer = "Three that made me stop and re-read:";
@@ -4065,9 +3781,8 @@ mod tests {
 
     #[test]
     fn hook_coherence_a_command_that_has_ended_is_asking_nobody_anything() {
-        // The pane is gone with the command, so there is nothing left to
-        // answer and nowhere to send an answer. A question left here outlives
-        // every turn, and `line` puts it in front of the result for good.
+        // The pane is gone with the command, so a question left here could
+        // never be answered and would stand in front of the result for good.
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
         agent
@@ -4094,7 +3809,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
 
-        // No agent named at all: this claude is not one of amx's.
+        // No agent named: this claude is not amx's.
         assert_eq!(
             run(
                 None,
@@ -4106,11 +3821,11 @@ mod tests {
             ),
             exit::OK
         );
-        // An id with no record behind it.
+        // An id with no record.
         assert_eq!(hook(root.path(), "never-made-abc", "{}"), exit::OK);
-        // An id that could not be one.
+        // An id with illegal characters.
         assert_eq!(hook(root.path(), "../elsewhere", "{}"), exit::OK);
-        // Payloads that are not payloads.
+        // Payloads that are not JSON objects.
         assert_eq!(hook(root.path(), agent.id(), "not json at all"), exit::OK);
         assert_eq!(hook(root.path(), agent.id(), ""), exit::OK);
         assert_eq!(hook(root.path(), agent.id(), "[1, 2, 3]"), exit::OK);
@@ -4150,8 +3865,8 @@ mod tests {
 
     #[test]
     fn hook_exit_does_not_relabel_an_agent_somebody_stopped() {
-        // `stop` signals the pane, so the command exits with a signal's code
-        // moments later. It was not a failure; it was stopped.
+        // `stop` signals the pane, so the command exits with a signal's code;
+        // it stays stopped, not failed.
         let root = TempDir::new().unwrap();
         let agent = an_agent(root.path());
         agent
