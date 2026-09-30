@@ -28,7 +28,7 @@ use crate::verbs::{new, send};
 use crate::{complain, derive, exit, paths, store, warn, worktree};
 
 /// Event kind logged when an agent is resumed.
-const RESUMED: &str = "resume";
+pub(crate) const RESUMED: &str = "resume";
 
 /// Outcome of a resume started from `amx attach` or the view.
 pub enum Comeback {

@@ -24,6 +24,7 @@ use crate::store::{Agent, Event, Phase};
 use crate::vendor::{Hooks, Moment};
 use crate::verbs::interrupt::INTERRUPT;
 use crate::verbs::park::PARKED;
+use crate::verbs::resume::RESUMED;
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
 use crate::{complain, exit, paths, store};
 
@@ -248,9 +249,6 @@ pub(crate) fn pace(evidence: &Evidence) -> Duration {
         Evidence::Record | Evidence::Gone | Evidence::LetGo | Evidence::Hooks => POLL,
     }
 }
-
-/// The event `amx resume` logs; must match `crate::verbs::resume`.
-const RESUMED: &str = "resume";
 
 /// A [`Fold`] over one agent's event log that reads only what was appended
 /// since the previous call, so polling does not reparse the whole log.
