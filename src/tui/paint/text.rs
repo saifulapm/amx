@@ -27,38 +27,39 @@ pub(super) fn inert(text: &str) -> String {
 }
 
 /// The columns `text` takes, measured the way ratatui draws it.
-pub(super) fn width_of(text: &str) -> usize {
+pub(in crate::tui) fn width_of(text: &str) -> usize {
     Span::raw(text).width()
 }
 
 /// The columns one character takes.
-pub(super) fn char_width(c: char) -> usize {
+pub(in crate::tui) fn char_width(c: char) -> usize {
     width_of(c.encode_utf8(&mut [0; 4]))
 }
 
 /// `text` cut to `width` columns, with an ellipsis where it was cut.
-pub(super) fn fit(text: &str, width: usize) -> String {
+pub(in crate::tui) fn fit(text: &str, width: usize) -> String {
     if width_of(text) <= width {
         return text.to_string();
     }
     match width {
         0 => String::new(),
-        1 => "…".to_string(),
-        _ => {
-            let mut kept = String::new();
-            let mut used = 0;
-            for one in text.chars() {
-                let wide = char_width(one);
-                if used + wide > width - 1 {
-                    break;
-                }
-                used += wide;
-                kept.push(one);
-            }
-            kept.push('…');
-            kept
-        }
+        width => format!("{}…", head(text, width - 1)),
     }
+}
+
+/// The longest prefix of `text` that fits in `width` columns.
+pub(in crate::tui) fn head(text: &str, width: usize) -> String {
+    let mut kept = String::new();
+    let mut used = 0;
+    for one in text.chars() {
+        let wide = char_width(one);
+        if used + wide > width {
+            break;
+        }
+        used += wide;
+        kept.push(one);
+    }
+    kept
 }
 
 #[cfg(test)]

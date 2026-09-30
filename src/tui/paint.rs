@@ -23,7 +23,7 @@ mod help;
 mod input;
 mod prose;
 mod style;
-mod text;
+pub(super) mod text;
 mod wall;
 
 use ratatui::Frame;

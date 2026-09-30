@@ -4,8 +4,7 @@
 //! cannot drift apart and the geometry is testable without a terminal.
 //! Nothing here draws. All widths are in terminal cells, not chars.
 
-use ratatui::text::Span;
-
+use super::paint::text::{char_width, fit, head, width_of};
 use super::rows::Axis;
 
 /// Screens at least this wide get the wide name column.
@@ -114,10 +113,7 @@ pub(super) fn path_room(width: usize, suffix: &str) -> usize {
 /// Left-aligns `text` in `width` cells, padding with spaces or cutting with
 /// an ellipsis.
 pub(super) fn pad(text: &str, width: usize) -> String {
-    let shown = match width_of(text) > width {
-        true => cut(text, width),
-        false => text.to_string(),
-    };
+    let shown = fit(text, width);
     let short = " ".repeat(width.saturating_sub(width_of(&shown)));
     format!("{shown}{short}")
 }
@@ -163,33 +159,12 @@ pub(super) fn elide(path: &str, room: usize) -> String {
     }
 }
 
-/// Display width of `text` in cells, which differs from its char count for
-/// wide characters. Uses ratatui's measure so fitting and drawing agree.
-fn width_of(text: &str) -> usize {
-    Span::raw(text).width()
-}
-
-/// The longest prefix of `text` that fits in `width` cells.
-fn head(text: &str, width: usize) -> String {
-    let mut kept = String::new();
-    let mut used = 0;
-    for one in text.chars() {
-        let wide = width_of(one.encode_utf8(&mut [0; 4]));
-        if used + wide > width {
-            break;
-        }
-        used += wide;
-        kept.push(one);
-    }
-    kept
-}
-
 /// The longest suffix of `text` that fits in `width` cells.
 fn tail(text: &str, width: usize) -> String {
     let mut kept = String::new();
     let mut used = 0;
     for one in text.chars().rev() {
-        let wide = width_of(one.encode_utf8(&mut [0; 4]));
+        let wide = char_width(one);
         if used + wide > width {
             break;
         }
@@ -197,14 +172,6 @@ fn tail(text: &str, width: usize) -> String {
         kept.insert(0, one);
     }
     kept
-}
-
-/// `text` cut to `width` cells, ending in `…`.
-fn cut(text: &str, width: usize) -> String {
-    match width {
-        0 => String::new(),
-        width => format!("{}…", head(text, width - 1)),
-    }
 }
 
 #[cfg(test)]
