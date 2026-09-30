@@ -236,11 +236,10 @@ or question), or with `--json` one object keyed by child id, each with
 is the most urgent outcome: 3 timed out, 2 a child is asking, 1 a child
 failed, 0 every child answered. A parent with no children exits 1.
 
-`sub --bg` prints the child's id to stderr. Use `--bg --json` to get it on
-stdout:
+`sub --bg` prints the child's id on stdout, like `amx new`:
 
 ```sh
-child=$(amx sub --bg --json "run the slow check" | jq -r .id)
+child=$(amx sub --bg "run the slow check")
 ```
 
 ### Giving a child context

@@ -18,7 +18,7 @@ driving agents is ordinary shell scripting.
 | `amx new --exec "<command>"` | Run a shell command as a row of its own. It ends `done` or `failed` by its exit code. |
 | `amx result <id> [--timeout N]` | Block until the turn ends, then print the answer. |
 | `amx result --children <id> [--json]` | Collect the answers of every child of that agent. |
-| `amx sub "<task>" [--bg] [--json] [--timeout N]` | `new` plus `result` in one call. The child's record names your pane's agent as its parent (`--parent <id>` names another). It runs in the parent's directory unless given `--worktree` or `--dir`. Prints the id on stderr and the answer on stdout; `--json` prints one object with both. `--bg` returns once the child exists. |
+| `amx sub "<task>" [--bg] [--json] [--timeout N]` | `new` plus `result` in one call. The child's record names your pane's agent as its parent (`--parent <id>` names another). It runs in the parent's directory unless given `--worktree` or `--dir`. Prints the id on stderr and the answer on stdout; `--json` prints one object with both. `--bg` returns once the child exists and prints its id on stdout. |
 | `amx wait <id>... [--any] [--for STATE] [--timeout N]` | Block until each agent has settled, printing `<id> <state>` as each does. `--any` returns at the first; `--children <id>` waits on every child of that agent. |
 | `amx answer <id> <key>` | Answer the question the agent stopped on. See below. |
 | `amx send <id> "<text>"` | Give a working or idle agent its next turn. `--file <path>` (or `-`) for long text. |
@@ -203,7 +203,7 @@ needs an answer; `done`, `failed`, `stopped` and `idle` are ready to read.
 working` confirms a fleet started. `wait` only says who is ready; `result`
 returns the answer.
 
-From inside an agent, fan out with `amx sub --bg --json "<task>"` per task,
+From inside an agent, fan out with `amx sub --bg "<task>"` per task,
 then collect with `amx wait --children "$AMX_ID"` and
 `amx result --children "$AMX_ID" --json`.
 
