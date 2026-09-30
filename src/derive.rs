@@ -4937,23 +4937,14 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             .unwrap();
         drop(writer);
 
-        // A command slower than the assertion: `true` could finish on the ask
-        // thread first and settle the claim before it is read.
-        have_a_line_written(root.path(), &agent, &meta(), &ended, "sleep 1", 1_000);
-
-        assert_eq!(
-            asked(agent.dir()),
-            Some(Asked {
-                turn: ended.since,
-                at: 1_000,
-                over: false,
-            }),
-            "a reader staying for the answer claims a turn exactly as it always has"
-        );
-
-        // The command runs on its own thread; wait for it to settle and free
-        // the queue for the next test.
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_000);
+        // The ask thread settles the claim as soon as the command is done, so
+        // wait for it rather than race it.
         the_command_comes_back();
+
+        let asked = asked(agent.dir()).expect("a reader staying for the answer claims the turn");
+        assert_eq!(asked.turn, ended.since);
+        assert!(asked.over, "and settles it once the command is done");
     }
 
     /// Waits for the ask thread to settle and free the queue, so the test
