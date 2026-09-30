@@ -35,7 +35,9 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+use std::time::SystemTime;
 
 use crate::rules::{Claim, Ruleset, SETTLED_LOOKS};
 use crate::store::{Agent, Edge, Event, Meta, Phase, Question, Source, State, Still};
@@ -625,17 +627,53 @@ pub fn worked_off_the_log(agent: &Agent, meta: &Meta) -> Option<u64> {
     })
 }
 
+/// How many logs [`logged_work`] remembers before it starts over.
+const LOGGED: usize = 1024;
+
+/// [`worked_off_the_log`], parsed again only when the log's size or mtime has
+/// changed since the last call in this process.
+///
+/// An ended record with no spans would otherwise have its whole log parsed on
+/// every refresh of a view. Emptied once it holds [`LOGGED`] logs, so records
+/// removed while a view is open cannot grow it for good.
+fn logged_work(agent: &Agent, meta: &Meta) -> Option<u64> {
+    type Logs = std::collections::HashMap<PathBuf, (u64, SystemTime, Option<u64>)>;
+    static LOGS: std::sync::LazyLock<Mutex<Logs>> = std::sync::LazyLock::new(Mutex::default);
+
+    let path = agent.events_path();
+    // Taken before the log is read, so an append in between reads as a change
+    // next time rather than being cached under the newer stamp.
+    let Ok((len, modified)) =
+        std::fs::metadata(&path).and_then(|file| Ok((file.len(), file.modified()?)))
+    else {
+        return worked_off_the_log(agent, meta);
+    };
+    let mut logs = LOGS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(&(was, then, worked)) = logs.get(&path)
+        && (was, then) == (len, modified)
+    {
+        return worked;
+    }
+    let worked = worked_off_the_log(agent, meta);
+    if logs.len() >= LOGGED {
+        logs.clear();
+    }
+    logs.insert(path, (len, modified, worked));
+    worked
+}
+
 /// Replaces an ended run's clock with the event log's count, where the record
 /// has no spans and [`worked`] fell back to the whole run.
 ///
 /// A record whose spans were lost can still have every turn edge in its log,
 /// and a minute's turn in a day's run is not a day's work. The log is read only
-/// when the fallback applied.
+/// when the fallback applied, and then only when it changed; see
+/// [`logged_work`].
 fn off_the_log(agent: &Agent, meta: &Meta, state: &State, verdict: &mut Verdict) {
     if !verdict.phase.is_terminal() || state.worked_by(ended_at(state, agent.heartbeat())) > 0 {
         return;
     }
-    if let Some(worked) = worked_off_the_log(agent, meta) {
+    if let Some(worked) = logged_work(agent, meta) {
         verdict.worked = worked;
         verdict.age = worked;
     }
@@ -3546,6 +3584,55 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         std::fs::write(agent.events_path(), "").unwrap();
         let spanless = &recorded(root.path(), 99_000).unwrap()[0];
         assert_eq!(spanless.verdict.worked, 89_100);
+    }
+
+    #[test]
+    fn reader_parses_an_ended_runs_log_again_only_when_it_changes() {
+        let root = TempDir::new().unwrap();
+        let mut done = state(Phase::Done, 90_000);
+        done.ended = 90_000;
+        let turned = Meta {
+            parent: None,
+            depth: 0,
+            id: "logged-l0g".to_string(),
+            agent: Some("claude".to_string()),
+            created: 900,
+            ..meta()
+        };
+        a_record(root.path(), &turned, &done);
+        let agent = Agent::open(root.path(), &turned.id).unwrap();
+        let turn = |writer: &crate::store::Writer<'_>, opens: u64, closes: u64| {
+            for (at, kind) in [(opens, "UserPromptSubmit"), (closes, "Stop")] {
+                writer
+                    .append(&crate::store::Event {
+                        at,
+                        kind: kind.to_string(),
+                        payload: serde_json::json!({"hook_event_name": kind}),
+                    })
+                    .unwrap();
+            }
+        };
+        turn(&agent.writer().unwrap(), 1_010, 1_070);
+        let worked = || recorded(root.path(), 99_000).unwrap()[0].verdict.worked;
+        assert_eq!(worked(), 60);
+
+        // Rewritten to the same size with its mtime put back: the cached count
+        // stands, so the log was not parsed again.
+        let log = agent.events_path();
+        let modified = std::fs::metadata(&log).unwrap().modified().unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        std::fs::write(&log, text.replace("1070", "1130")).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(worked(), 60);
+
+        // An append changes the size, and the whole log is counted again.
+        turn(&agent.writer().unwrap(), 2_000, 2_030);
+        assert_eq!(worked(), 120 + 30);
     }
 
     #[test]
