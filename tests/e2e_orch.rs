@@ -400,7 +400,7 @@ fn parked_on_a_menu(amx: &Harness, id: &str) {
 }
 
 #[test]
-fn surfaces_result_prints_the_question_with_the_choices_under_it() {
+fn result_prints_the_question_with_the_choices_under_it() {
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -417,7 +417,7 @@ fn surfaces_result_prints_the_question_with_the_choices_under_it() {
 }
 
 #[test]
-fn surfaces_send_says_a_question_of_the_vendors_own_will_take_words() {
+fn send_says_a_question_of_the_vendors_own_will_take_words() {
     let amx = Harness::new();
     parked_on_a_menu(&amx, "pick-a1b");
 
@@ -441,7 +441,7 @@ fn surfaces_send_says_a_question_of_the_vendors_own_will_take_words() {
 }
 
 #[test]
-fn surfaces_status_prints_the_question_with_the_choices_under_it() {
+fn status_prints_the_question_with_the_choices_under_it() {
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -462,7 +462,7 @@ fn surfaces_status_prints_the_question_with_the_choices_under_it() {
 }
 
 #[test]
-fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
+fn the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
     // A box with two choices read off the screen ignores `7`, so the offer is
     // `1-2`, not `1-9`.
     let amx = Harness::new();
@@ -485,7 +485,7 @@ fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
 }
 
 #[test]
-fn surfaces_status_neutralises_the_task_it_quotes() {
+fn status_neutralises_the_task_it_quotes() {
     // The task is untrusted text printed to a terminal, so escapes and bidi
     // overrides in it must be neutralised.
     let amx = Harness::new();
@@ -510,7 +510,7 @@ fn surfaces_status_neutralises_the_task_it_quotes() {
 }
 
 #[test]
-fn surfaces_the_table_carries_the_choices_beside_the_question() {
+fn the_table_carries_the_choices_beside_the_question() {
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -540,7 +540,7 @@ fn parked_on_the_gate(amx: &Harness, id: &str) -> String {
 }
 
 #[test]
-fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
+fn a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
     // Per docs/claude-screens.md (claude 2.1.259): `1`, `2` and `y` do nothing
     // at this gate, `n` and `enter` exit, and only `down` then `enter` reaches
     // `Yes, I trust this folder`.
@@ -562,7 +562,7 @@ fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
 }
 
 #[test]
-fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
+fn the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
     // The cursor opens on `No, exit`, so `enter` here exits. Where the vendor
     // numbers no row, amx refuses `enter` and offers the two rows it numbered
     // from the cursor glyph.
@@ -590,7 +590,7 @@ fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numb
 }
 
 #[test]
-fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
+fn a_walk_leaves_the_screen_it_walked_answerable_again() {
     // amx cannot tell which row a walk selected, and no hook fires on this
     // screen to say. Moving the record to `working` on the keystroke would make
     // `answer` refuse the next caller while `status` still reads the gate as
@@ -614,7 +614,7 @@ fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
 }
 
 #[test]
-fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_amx_counted() {
+fn a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_amx_counted() {
     // amx numbers the gate's two rows itself from the cursor glyph, each digit
     // standing for the walk to its row. An offer of `y|n|1-9|enter|esc` would
     // list keys that do nothing here and one that exits.
@@ -638,7 +638,7 @@ fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_a
 }
 
 #[test]
-fn surfaces_answer_takes_words_where_the_vendor_asks_a_question_of_its_own() {
+fn answer_takes_words_where_the_vendor_asks_a_question_of_its_own() {
     let amx = Harness::new();
     parked_on_a_menu(&amx, "pick-a1b");
 
@@ -664,7 +664,7 @@ fn surfaces_answer_takes_words_where_the_vendor_asks_a_question_of_its_own() {
 }
 
 #[test]
-fn surfaces_answer_refuses_words_at_a_prompt_that_takes_a_key() {
+fn answer_refuses_words_at_a_prompt_that_takes_a_key() {
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -679,7 +679,7 @@ fn surfaces_answer_refuses_words_at_a_prompt_that_takes_a_key() {
 }
 
 #[test]
-fn surfaces_a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
+fn a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
     // amx cannot confirm what `y` did at a box: claude fires no hook when a
     // prompt is dismissed, and a screen where `y` did nothing looks the same.
     // So the record keeps the key and stays `waiting`.
@@ -711,7 +711,7 @@ fn surfaces_a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
 }
 
 #[test]
-fn surfaces_an_empty_answer_is_not_an_answer_to_anything() {
+fn an_empty_answer_is_not_an_answer_to_anything() {
     let amx = Harness::new();
     parked_on_a_menu(&amx, "pick-a1b");
 
