@@ -334,8 +334,7 @@ code {
   margin: 0;
 }
 
-.demo video,
-.screen {
+.demo video {
   display: block;
   width: 100%;
   height: auto;
@@ -419,85 +418,6 @@ code {
 
 .term .c {
   color: var(--ink);
-}
-
-/* The view, drawn as text until the demo video is in place. Its colours are
-   amx's default theme, on a terminal, whatever this page's scheme is. */
-
-.screen {
-  container-type: inline-size;
-  display: flex;
-  flex-direction: column;
-  padding: 2.6% 3%;
-  overflow: hidden;
-  color: #d6d5d0;
-}
-
-.screen pre {
-  margin: 0;
-  font: 400 2.07cqi/1.42 var(--mono);
-}
-
-.screen .keys {
-  margin-top: auto;
-}
-
-.screen b {
-  font-weight: 500;
-}
-
-.screen .d {
-  color: #85868b;
-}
-
-.screen .s {
-  color: #b9b8b3;
-}
-
-.screen .w {
-  color: #ffc107;
-}
-
-.screen .ok {
-  color: #4eba65;
-}
-
-.screen .ac {
-  color: #56b6c2;
-}
-
-.screen .badge {
-  background: #ffc107;
-  color: #141518;
-  font-weight: 500;
-}
-
-.screen .cur {
-  display: block;
-  background: #373737;
-}
-
-/* The glyphs are outside the latin subset, so they come from whichever font
-   has them; a fixed cell keeps the columns straight whatever that font is. */
-.screen .g {
-  display: inline-block;
-  width: 1ch;
-  font-family: "Zapf Dingbats", "Apple Symbols", "Segoe UI Symbol", "DejaVu Sans Mono", "Noto Sans Symbols 2", var(--mono);
-  line-height: 1;
-  text-align: center;
-}
-
-.screen .br {
-  animation: breathe 1.4s steps(5, jump-none) infinite alternate;
-}
-
-@keyframes breathe {
-  from {
-    transform: scale(0.5);
-  }
-  to {
-    transform: scale(1.05);
-  }
 }
 
 /* Docs */
@@ -796,11 +716,5 @@ code {
     border-top: 1px solid var(--rule);
     border-left: 0;
     border-radius: 0 0 7px 7px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .screen .br {
-    animation: none;
   }
 }

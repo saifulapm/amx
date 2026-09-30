@@ -72,15 +72,9 @@ pages.forEach((page, i) => {
 writeFileSync(join(dist, 'docs', 'index.html'), redirect(`${pages[0].slug}/`));
 console.log(`built dist/ with ${pages.length} docs pages`);
 
-// The homepage as written, with the demo video in place once its files exist
-// and the placeholder frame standing in for it until then.
+// The homepage as written.
 function homepage() {
-  const html = readFileSync(join(site, 'index.html'), 'utf8');
-  const video = ['amx-demo.mp4', 'poster.png'].every((file) => existsSync(join(site, 'assets', file)));
-  const drop = video ? 'placeholder' : 'video';
-  return html
-    .replace(new RegExp(`[ \\t]*<!-- demo:${drop} -->[\\s\\S]*?<!-- /demo:${drop} -->\\n`), '')
-    .replace(/[ \t]*<!-- \/?demo:\w+ -->\n/g, '');
+  return readFileSync(join(site, 'index.html'), 'utf8');
 }
 
 // One Markdown page as HTML, with the ids its headings got and every relative

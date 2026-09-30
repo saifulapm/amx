@@ -50,32 +50,10 @@
 
     <section class="demo wrap" aria-label="Demo">
       <figure>
-        <!-- demo:video -->
-        <video controls muted playsinline preload="none" poster="assets/poster.png" width="1920" height="1080">
+        <video controls playsinline preload="none" poster="assets/poster.png" width="1920" height="1080">
           <source src="assets/amx-demo.mp4" type="video/mp4">
         </video>
-        <!-- /demo:video -->
-        <!-- demo:placeholder -->
-        <div class="screen" role="img" aria-label="The amx view: agents grouped under Pinned, Ready for review, Needs input, Working and Completed, with one agent waiting on a question.">
-<pre><b>AMX</b>          <span class="d">1 pinned   1 review   1 working   27 done   3 running</span>   <span class="badge"> 1 WAITING </span>
-<span class="d"><span class="g">└</span> next</span>  <span class="ac">claude</span>   <span class="d">model</span>  <span class="ac">default</span>   <span class="d">permission</span>  <span class="ac">default</span>   <span class="d">worktree</span>  <span class="ac">new</span>
-
-<span class="d"> Pinned</span>
-  <span class="g br">✻</span> <span class="d">bump-deps-e5f</span>          <span class="s">Running Bash</span>                                      <span class="d">12s</span>
-
-<span class="d"> Ready for review</span>
-  <span class="g ok">∙</span> <span class="d">fix-login-a1b</span>     <span class="ok">#12</span>  <span class="s">the login bug is fixed</span>                             <span class="d">4m</span>
-
-<span class="w"> Needs input</span>
-<span class="cur">  <span class="g w">✻</span> <b class="w">port-import-b2c</b>        <span class="s">Which fixture should the port keep?</span>               <span class="d">29s</span></span>
-<span class="d"> Working</span>
-  <span class="g br">✻</span> <span class="d">ship-docs-a7d</span>          <span class="s">Running cargo test</span>                                 <span class="d">3s</span>
-
-<span class="d"> Completed 27</span></pre>
-<pre class="keys">space <span class="d">card</span>   enter <span class="d">attach</span>   ctrl+x <span class="d">stop</span>   ctrl+t <span class="d">pin</span>   ctrl+s <span class="d">axis</span>   ? <span class="d">keys</span></pre>
-        </div>
-        <!-- /demo:placeholder -->
-        <figcaption>The view, opened by typing <code>amx</code>. Agents are grouped by what they need from you, and the block at the top right counts the ones waiting on you.</figcaption>
+        <figcaption>Three agents on one repository: a permission prompt answered from the view, a diff reviewed and replied to from its card, and <code>amx result</code> in a script.</figcaption>
       </figure>
     </section>
 
