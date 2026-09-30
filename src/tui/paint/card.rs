@@ -1,28 +1,15 @@
-//! A closer look at one agent, as the band at the foot of the list.
+//! The card: a detailed look at one agent, drawn over the foot of the list.
 //!
-//! Not a box, and not a thing hung among the rows. It is drawn the way the
-//! band a line is typed in is drawn, because it stands where that band stands:
-//! a rule, and rows under it. The rule carries what the card is a look at —
-//! the agent's own name, in the colour its row says its state in — and the
-//! rows stand two cells in, under the chevron the card's line begins with.
+//! A card is a rule naming the agent, then the pull requests, question,
+//! choices, body and queued messages, then the answer line. It covers the
+//! last rows of the list band instead of taking rows from it, so opening,
+//! closing or walking a card never moves a list row.
 //!
-//! At the foot rather than under the row it came off, because the list is what
-//! somebody with a card open is walking: a card among the rows moves every row
-//! below it down, and walking the cursor with one open shakes the wall it is
-//! being read against. It covers the last rows of the list rather than taking
-//! them, and the wall is laid out as if no card were up, so opening one,
-//! closing it or walking the cursor with it up moves nothing. A cursor row the
-//! card is standing over is said by the card's own rule.
-//!
-//! How tall it is is worked out here as well, because that is an answer about
-//! the list above: never so much of the band that the wall it was opened from
-//! is gone.
-//!
-//! A card carries its body in one of two states. It is *built* from text — a
-//! pane capture, a recorded answer, a patch — and it is *drawn* from [`Body`],
-//! that text already walked out of its escapes. Everything the paint takes is
-//! the second: the walk happens once, where the card is made, and no frame
-//! pays for it again.
+//! - A card is built from text (a pane capture, a recorded answer, a patch)
+//!   and drawn from a [`Body`]: the text is parsed once when the card is
+//!   built, and frames only window the prepared rows.
+//! - Scroll offsets are clamped by the paint, which is the only place that
+//!   knows how many rows the body gets; see [`Scroll`].
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -49,74 +36,56 @@ use crate::tui::act::{self, Composer};
 use crate::tui::rows::Showing;
 use crate::verbs::send::numbered;
 
-/// A closer look at one agent, as the band at the foot of the list.
+/// A card: one agent's question, choices and body.
 ///
-/// A card carries its body in one of two states, which is what `B` says. A
-/// card is *built* from text — a pane capture, a recorded answer, a patch —
-/// and it is *drawn* from [`Body`], that text already walked out of its
-/// escapes. Everything the paint takes is the second: the walk happens once,
-/// where the card is made, and no frame pays for it again.
+/// `B` is the body's form: text when built, [`Body`] when drawn.
 pub struct Card<B = String> {
     pub id: String,
     pub phase: Phase,
-    /// What it is waiting to be told, when it is waiting to be told anything.
+    /// The pending question, if any.
     pub question: Option<String>,
-    /// The choices that question offers, in the order the screen lists them.
+    /// The question's choices, in screen order.
     pub options: Vec<String>,
-    /// Whether those choices are amx's own numbering of a list the vendor put
-    /// no numbers on — see [`crate::store::State::walked`]. The numbers are
-    /// still what the card offers, but a walk is what the verb sends to reach
-    /// the one somebody names.
+    /// Whether the choices are amx's numbering of an unnumbered vendor list
+    /// (see [`crate::store::State::walked`]); answering sends a walk.
     pub walked: bool,
-    /// What kind of question it is, which is what decides the answers it will
-    /// take.
+    /// The question's kind, which decides what answers it takes.
     pub kind: Option<Kind>,
-    /// The screen it is sitting on, the answer it left behind, or what it has
-    /// changed.
+    /// The pane capture, recorded answer or conversation, or the patch.
     pub body: B,
-    /// Whether the body is that diff, which is read from the top down rather
-    /// than from the bottom up.
+    /// Whether the body is a patch.
     pub changes: bool,
-    /// Whether the body is the agent's own words read forward — the answer
-    /// the record holds, or the whole conversation of an agent whose turn is
-    /// over — rather than a picture of a pane, or a conversation still being
-    /// added to, both of which are read up from their bottom.
+    /// Whether the body is the agent's own words read from the top (a
+    /// recorded answer, or a finished agent's conversation). Pane captures
+    /// and live conversations are read up from the bottom.
     pub answer: bool,
-    /// Whether a line typed here would reach the agent at all: an agent in a
-    /// pane takes what is typed, and one whose pane has gone takes it by being
-    /// brought back on it. Only the agent that can be neither sent to nor
-    /// started again is past listening.
+    /// Whether a typed line reaches the agent: sent to its pane, or used to
+    /// resume it when the pane is gone.
     pub listening: bool,
-    /// What was sent to it and not yet taken, oldest first — see
-    /// [`crate::verbs::send::queued`]. Only a working agent holds any: the
-    /// vendor keeps a message behind the turn under way and draws it in the
-    /// composer band the card cuts off, so this is the one place it shows.
+    /// Messages sent but not yet taken, oldest first (see
+    /// [`crate::verbs::send::queued`]). Only a working agent has any; the
+    /// vendor draws them in its composer, which the card cuts off, so they are
+    /// shown here.
     pub queued: Vec<String>,
 }
 
 impl<B> Card<B> {
-    /// Whether this card is one somebody can answer. A patch is not a
-    /// question, and neither is a look at an agent that is getting on with it.
+    /// Whether the card is a question that can be answered.
     pub fn asks(&self) -> bool {
         !self.changes && self.phase == Phase::Waiting
     }
 
-    /// Whether the body reads forward, from its top: a patch does, and so
-    /// does a recorded answer. Only a live screen is read up from its
-    /// bottom, where the newest of it is.
+    /// Whether the body reads from its top (a patch or a recorded answer).
     pub fn forward(&self) -> bool {
         self.changes || self.answer
     }
 }
 
 impl Card<Body> {
-    /// Where the card opens, as rows from its natural edge: a card read
-    /// forward opens on its anchor — the end of a conversation — and
-    /// everything else at its edge.
+    /// The initial scroll offset from the natural edge: the body's anchor for
+    /// a forward card, else 0.
     ///
-    /// That anchor is past the body's last row, and the paint clamps both it
-    /// and the offset to the last page the card had room for; where it opened
-    /// is where it is held from.
+    /// The anchor may lie past the last row; the paint clamps it.
     pub fn opens_at(&self) -> usize {
         match self.forward() {
             true => self.body.anchor(),
@@ -126,20 +95,15 @@ impl Card<Body> {
 }
 
 impl Card<String> {
-    /// The same card with its body read, which is the form the paint draws.
+    /// Parse the body text into a [`Body`].
     ///
-    /// For a card built out of text somebody already holds, which is what a
-    /// patch is. A card built from a record or a pane walks the words where it
-    /// takes them, and never makes the copy this one is handed.
+    /// For cards built from text already in hand, such as a patch. Cards built
+    /// from a record or a pane construct their [`Body`] directly.
     pub fn read(self) -> Card<Body> {
         Card {
-            // A patch is amx's own reading of a repository, not a pane; a
-            // recorded answer and a finished agent's last words are whole,
-            // with no vendor furniture under them; and what is left is a
-            // picture of a pane somebody is still working in — one whose
-            // vendor nothing here names, so the walk is handed the document
-            // amx falls back to. The card the view opens on a live agent is
-            // built where the record says whose pane it is.
+            // A live pane here has no known vendor, so it is cut with the
+            // fallback vendor's furniture. The view builds live cards with the
+            // right vendor elsewhere.
             body: match (self.changes, self.answer || self.phase.is_terminal()) {
                 (true, _) => Body::patch(&self.body),
                 (_, true) => Body::said(&self.body),
@@ -159,74 +123,50 @@ impl Card<String> {
     }
 }
 
-/// A card's body, walked out of its escapes once — when the card was built.
+/// A card's body, parsed once when the card is built.
 ///
-/// The rows are ready to draw: neutralised, in the paint the vendor drew them
-/// in, with amx's own text dimmed. A frame windows them and nothing else, so
-/// an open card costs a redraw the same whether it is holding four rows of
-/// answer or four thousand of patch.
+/// The rows are ready to draw (made inert, styled), so a frame only takes a
+/// window of them, whatever the body's length.
 pub struct Body {
-    /// Every row of it, in order.
     rows: Vec<Line<'static>>,
-    /// How many of them the card reads from its natural edge: the vendor's
-    /// own furniture is off the end of a live capture, and the blank rows a
-    /// pane is padded out with are off the end of everything.
+    /// How many rows the card shows: trailing vendor furniture and blank rows
+    /// are excluded.
     kept: usize,
-    /// Whether the cut took furniture off. A pane holding nothing but the
-    /// vendor's own chrome is a different fact from an agent that has said
-    /// nothing yet, and the card says the first out loud.
+    /// Whether vendor furniture was cut off. A pane of nothing but furniture
+    /// is shown as [`ALL_CHROME`], not as an empty body.
     chrome: bool,
-    /// The row a card read forward opens on: the end of a conversation, past
-    /// its last row, and the top of everything else. Past the end because the
-    /// paint owns the clamp — see [`Scroll::kept`] — and only the paint knows
-    /// how many rows the card had to give.
+    /// The row a forward card opens on: past the last row for a conversation
+    /// (the paint clamps it, see [`Scroll::kept`]), 0 otherwise.
     anchor: usize,
-    /// The hunks of it, where it is a patch, in the order the patch writes
-    /// them. Every other body has none: a pane and an answer are prose, and
-    /// nothing in them is a change to a file.
+    /// A patch's hunks in patch order; empty for any other body.
     hunks: Vec<Hunk>,
 }
 
-/// One hunk of a patch, as the card holds it: where it stands on the card, and
-/// what a comment on it would have to name.
-///
-/// Read off the same pass that makes the rows, because both are readings of one
-/// text and a second walk could disagree with the first about where a hunk
-/// begins.
-///
-/// The cursor steps by the row, and what it is standing on is what a comment
-/// off the card names.
+/// One hunk of a patch body, found in the same pass that builds the rows so
+/// the two agree on where it starts.
 pub struct Hunk {
-    /// The file it changes, on the new side — the old side where the file is
-    /// being deleted and there is no new one.
+    /// The file on the new side, or the old side for a deleted file.
     pub path: String,
-    /// The line its header names on that side.
+    /// The start line the header names on that side.
     pub line: usize,
-    /// Which of the body's rows its `@@` header is.
+    /// The body row holding the `@@` header.
     pub row: usize,
-    /// Its rows, from that header to the last of them, as git wrote them.
+    /// The hunk's text from its header on, as git wrote it.
     pub text: String,
 }
 
-/// The glyph a prompt wears in the conversation, which is the composer's own.
+/// The glyph before a prompt, as in the composer.
 const PROMPT: &str = "❯ ";
-/// And the one a tool call wears: a smaller mark of the same family, from a
-/// block no font maps to an emoji. The hammer this used to be (U+2692) is in
-/// the emoji set, and a terminal with a colour-emoji fallback drew it in
-/// orange, two cells wide, over the space after it.
+/// The glyph before a tool call. Not U+2692 (hammer): with a colour-emoji
+/// font fallback it drew two cells wide over the following space.
 const TOOL: &str = "› ";
-/// How much of the tail the card keeps: the last rows of what is streaming,
-/// and few enough that a row of the record stays above it on the card — at
-/// its tallest, and on a card half a small screen tall. A body is built before
-/// the frame that draws it says how tall the card is, which is why this is a
-/// number rather than a share of the card. Eight since 2026-09-06, when a tail
-/// that was a whole chrome-cut pane pushed the record off the top of the
-/// card's window and the card read as the pane it came off.
+/// Rows of the live stream kept under the conversation. Small enough that
+/// some of the record stays visible on the tallest card; a fixed count because
+/// the body is built before the card's height is known.
 const TAIL: usize = 8;
 
 impl Body {
-    /// Nothing under everything else, which is what a card holding a question
-    /// has.
+    /// An empty body, for a card showing a question.
     pub(in crate::tui) fn none() -> Body {
         Body {
             rows: Vec::new(),
@@ -237,33 +177,17 @@ impl Body {
         }
     }
 
-    /// The whole conversation, drawn the way the agent meant it, with what
-    /// the agent is saying now under it where a turn is still running.
+    /// A conversation from the transcript, with the vendor's live stream
+    /// (`live`, the last [`TAIL`] rows of it) underneath while a turn runs.
     ///
-    /// What it is saying now is what its vendor streams, and nothing else. A
-    /// vendor that streams nothing has a card that is the record alone until
-    /// its next message lands — its calls as they are issued, its answers as
-    /// each message ends — with the row over the card saying what it is doing
-    /// meanwhile. The pane used to stand under the record where nothing
-    /// streamed, cut of its furniture, and was a second copy of the same turn
-    /// in the vendor's dress: boxes with rows of nothing between them, a
-    /// banner, a spinner line, a hint about a key. Saiful took it off on
-    /// 2026-09-11, and a pane is read for a card only where there is no
-    /// record to draw — see [`Body::screen`].
+    /// A vendor that streams nothing shows the record alone; the pane is not
+    /// shown under a record (it duplicated the turn with the vendor's chrome).
     ///
-    /// A prompt stands behind the composer's own glyph, an answer is its
-    /// markdown drawn into rows, and a tool call is one row: the tool at the
-    /// terminal's own weight and the argument worth a row dim behind it. A
-    /// blank row stands between one thing said and the next, except between
-    /// one call and the call after it: a run of calls is one block, read as
-    /// a column of names. Every row is wrapped to `width` here, because a
-    /// card windows its rows and does not reflow them.
-    ///
-    /// The anchor is the end of it. A card read forward opens on the last
-    /// rows of the last answer, where the conclusion of it is, with the rest
-    /// of the turn and every turn before it a page up: an answer of any
-    /// length runs off the bottom of a card, and its first rows are the ones
-    /// a reader can guess.
+    /// Prompts get the [`PROMPT`] glyph, text is rendered as markdown, and a
+    /// tool call is one row: the name, then its argument dim. Items are
+    /// separated by a blank row, except consecutive tool calls. Rows are
+    /// wrapped to `width` here since a card never reflows. The anchor is the
+    /// end, so a finished conversation opens on the end of its last answer.
     pub(in crate::tui) fn conversation(
         said: &[Said],
         live: Option<&str>,
@@ -318,12 +242,8 @@ impl Body {
         // pushed here.
         if let Some(live) = live {
             let tail = prose::render(live, width, theme);
-            // The end of it, where what is landing is — see [`TAIL`].
             let skipped = tail.len().saturating_sub(TAIL);
-            // The blank row that stands the tail off the record above it, only
-            // where there are rows under it: a stream the vendor has opened
-            // and said nothing into yet is no tail, and a blank row over it
-            // would stand the record off nothing.
+            // No separator row over an empty stream.
             let tail: Vec<Line<'static>> = tail.into_iter().skip(skipped).collect();
             if !tail.is_empty() {
                 if !rows.is_empty() {
@@ -342,52 +262,38 @@ impl Body {
         }
     }
 
-    /// The row a card read forward opens on.
+    /// The row a forward card opens on.
     pub(in crate::tui) fn anchor(&self) -> usize {
         self.anchor
     }
 
-    /// A patch: amx's own reading of a repository rather than a pane, so there
-    /// is no paint on it to keep and no furniture under it to cut.
+    /// A `git diff` patch.
     ///
-    /// Read the way git writes it. The block of headers over each file — the
-    /// `diff --git` row, the blob it was, the two sides, a mode, a rename, a
-    /// binary row — is six or seven rows saying one thing, and on a card
-    /// fourteen rows tall that is a file whose changes are off the bottom
-    /// before they begin. All of it becomes one heading: what the file is
-    /// called and what it gained and lost. What is under the heading is
-    /// coloured by what it is, the way git colours a patch at a terminal, and
-    /// kept whole: `+after` is a row that says `+after`, and a card that
-    /// dropped the mark would have it read as the line that was already there.
-    ///
-    /// The hunks come off the same pass, because both are readings of one text
-    /// and a second walk could disagree with the first about where a hunk
-    /// begins.
+    /// Each file's header block (`diff --git`, `index`, `---`/`+++`, mode and
+    /// rename lines) collapses into one heading row: the path and its added
+    /// and removed counts. Other rows keep their `+`/`-` marks and are coloured
+    /// as git colours them. Hunks are recorded in the same pass.
     pub(in crate::tui) fn patch(text: &str) -> Body {
         let mut rows: Vec<Line<'static>> = Vec::new();
         let mut hunks: Vec<Hunk> = Vec::new();
-        // The headers of the file being opened, held until the first row
-        // under them: the counts the heading carries are not known until that
-        // file's hunks have been read, so the row goes down blank and is
-        // written when the file closes.
+        // The current file's header block. Its heading row is pushed blank and
+        // filled in once the file's counts are known.
         let mut headers: Vec<&str> = Vec::new();
         let mut file: Option<Reading> = None;
-        // And the rows of the hunk being read, from its header down.
+        // The current hunk's rows, from its `@@` header on.
         let mut held: Vec<&str> = Vec::new();
 
         for row in text.lines() {
             if row.starts_with(FILE) {
                 shut(&mut hunks, &mut held);
-                // A file whose headers had nothing under them at all — a mode
-                // change, a rename, a binary file — is its heading and no
-                // more.
+                // A file with headers only (mode change, rename, binary) is
+                // just its heading.
                 file = open(&mut rows, &mut headers).or(file);
                 close(&mut rows, file.take());
                 headers.push(row);
                 continue;
             }
-            // The first row that is not one of those headers closes the block:
-            // the heading stands where the whole of it stood.
+            // The first non-header row ends the block.
             if !headers.is_empty() {
                 if header(row) {
                     headers.push(row);
@@ -438,49 +344,40 @@ impl Body {
         }
     }
 
-    /// The hunks of the patch it is holding, in the order the patch writes
-    /// them.
+    /// The patch's hunks, in patch order.
     pub(in crate::tui) fn hunks(&self) -> &[Hunk] {
         &self.hunks
     }
 
-    /// A live pane, in the paint the vendor drew it in, with that vendor's own
+    /// A live pane capture with its ANSI styling kept and the vendor's
     /// furniture cut off the bottom.
     ///
-    /// Whose furniture is the caller's to say, because every anchor the walk
-    /// steps on is one vendor's own: the anchors that find claude's composer
-    /// are absent from a pi pane, and a walk given the wrong ones leaves the
-    /// chrome where it is.
+    /// `chrome` must be the pane's own vendor's: another vendor's anchors
+    /// match nothing and leave the furniture in.
     pub(in crate::tui) fn screen(chrome: &Furniture, text: &str) -> Body {
         Body::walk(text, Some(chrome))
     }
 
-    /// What an agent said: a recorded answer, or whatever an agent whose
-    /// command has ended left behind. Nothing is cut off it — there is no
-    /// pane under it to hold furniture.
+    /// Text that came from no live pane (a recorded answer, or an ended
+    /// agent's output), with nothing cut.
     pub(in crate::tui) fn said(text: &str) -> Body {
         Body::walk(text, None)
     }
 
-    /// The walk itself. The furniture is the vendor's whose pane this came
-    /// off, and `None` is text that came off no pane at all — the only body
-    /// the cut is not taken off.
+    /// Parse ANSI `text` into rows, cutting `chrome` furniture if given.
     fn walk(text: &str, chrome: Option<&Furniture>) -> Body {
         #[cfg(test)]
         WALKS.with(|walks| walks.set(walks.get() + 1));
-        // The escapes are walked into styling here and nowhere else, so
-        // nothing downstream of this line is holding a control sequence.
+        // The only place escape sequences are parsed; nothing downstream holds
+        // a control sequence.
         let read = ansi::painted(text);
         let said: Vec<String> = read.iter().map(|row| words(row)).collect();
         let plain: Vec<&str> = said.iter().map(String::as_str).collect();
-        // What the vendor drew on, with its own furniture off the bottom.
         let drawn = match chrome {
             Some(chrome) => cut(chrome, &plain).len(),
             None => plain.len(),
         };
-        // The blank rows a pane is padded out with go the same way, so what
-        // is left ends on the last row anybody wrote on: the edge both ends
-        // of the body are measured from.
+        // Trailing blank rows (pane padding) are dropped too.
         let mut kept = drawn;
         while kept > 0 && plain[kept - 1].trim().is_empty() {
             kept -= 1;
@@ -494,14 +391,12 @@ impl Body {
         }
     }
 
-    /// How many rows it has to give a card, which is what the last page is
-    /// measured against. The one row the card says it found nothing but
-    /// furniture on counts: it is a row, and a card of one row does not page.
+    /// Rows the body shows, counting the [`ALL_CHROME`] row as one.
     fn length(&self) -> usize {
         self.kept.max(usize::from(self.chrome))
     }
 
-    /// What the body says, for the tests that ask a card what it is holding.
+    /// The body's text, one line per row.
     #[cfg(test)]
     pub(in crate::tui) fn says(&self) -> String {
         self.rows
@@ -517,19 +412,16 @@ impl Body {
     }
 }
 
-/// The row git opens a file with, which is where one file's part of a patch
-/// begins.
+/// The prefix of the row that starts a file in a patch.
 const FILE: &str = "diff --git ";
 
-/// And the row it opens a hunk with.
+/// The prefix of a hunk header.
 const HUNK: &str = "@@";
 
-/// The side of a hunk that is not there at all, on a file being added or
-/// deleted.
+/// The missing side of an added or deleted file.
 const NOWHERE: &str = "/dev/null";
 
-/// A file of the patch as it is being read: which row its heading is, what it
-/// is called, and what its hunks have added and taken away so far.
+/// A patch file being read: its heading row, path, and counts so far.
 struct Reading {
     at: usize,
     path: String,
@@ -537,8 +429,8 @@ struct Reading {
     removed: usize,
 }
 
-/// Put a heading where the block of headers stood, blank for now: what the
-/// file gained and lost is not known until its hunks have been read.
+/// Replace the header block with a blank heading row, to be filled by
+/// [`close`] once the counts are known.
 fn open(rows: &mut Vec<Line<'static>>, headers: &mut Vec<&str>) -> Option<Reading> {
     if headers.is_empty() {
         return None;
@@ -554,8 +446,7 @@ fn open(rows: &mut Vec<Line<'static>>, headers: &mut Vec<&str>) -> Option<Readin
     Some(file)
 }
 
-/// And write it, now that the file is over: what it is called and what it
-/// gained and lost.
+/// Fill in a finished file's heading: path and counts.
 fn close(rows: &mut [Line<'static>], file: Option<Reading>) {
     let Some(file) = file else {
         return;
@@ -564,7 +455,7 @@ fn close(rows: &mut [Line<'static>], file: Option<Reading>) {
     rows[file.at] = Line::styled(said, Style::default());
 }
 
-/// Hand the hunk that was being read the rows it was given.
+/// Store the gathered rows as the last hunk's text.
 fn shut(hunks: &mut [Hunk], held: &mut Vec<&str>) {
     if held.is_empty() {
         return;
@@ -575,8 +466,7 @@ fn shut(hunks: &mut [Hunk], held: &mut Vec<&str>) {
     held.clear();
 }
 
-/// Whether a row is one of the headers git writes between `diff --git` and the
-/// first hunk of a file.
+/// Whether a row is a git file header between `diff --git` and the first hunk.
 fn header(row: &str) -> bool {
     const HEADERS: [&str; 13] = [
         "index ",
@@ -596,13 +486,9 @@ fn header(row: &str) -> bool {
     HEADERS.iter().any(|header| row.starts_with(header))
 }
 
-/// What the file those headers open is called: the path on the new side, and
-/// the old one's where there is no new side — a file being deleted is named by
-/// what it was.
-///
-/// Off the two sides where they are there at all. A mode change, a rename with
-/// nothing in it and a binary file have neither, and the row the block opens
-/// with names both.
+/// The file's path from its headers: the `+++` side, else the `---` side (a
+/// deleted file), else the `b/` path on the `diff --git` row (mode changes,
+/// pure renames and binary files have no `---`/`+++`).
 fn named(headers: &[&str]) -> String {
     let side = |mark: &str| {
         headers
@@ -625,9 +511,8 @@ fn named(headers: &[&str]) -> String {
     })
 }
 
-/// What a hunk's header says it starts at: the line on the new side, and the
-/// old side's where the new side holds no rows at all — a hunk that only takes
-/// rows away names no line of the file as it now stands.
+/// A hunk header's start line: the new side's, or the old side's when the new
+/// side is empty (a pure deletion).
 fn starts(row: &str) -> usize {
     let mut sides = row.trim_start_matches('@').trim_start().split(' ');
     let old = counted(sides.next().unwrap_or_default());
@@ -638,67 +523,44 @@ fn starts(row: &str) -> usize {
     }
 }
 
-/// One side of that header, as the line it starts at and the rows it holds. A
-/// side with no count holds one row, which is how git writes it.
+/// One side of a hunk header as (start, count). A missing count means 1.
 fn counted(side: &str) -> (usize, usize) {
     let side = side.trim_start_matches(['-', '+']);
     let (start, rows) = side.split_once(',').unwrap_or((side, "1"));
     (start.parse().unwrap_or(0), rows.parse().unwrap_or(1))
 }
 
-/// Where the card's body stands against its natural edge — the bottom of a
-/// screen or an answer, the top of a patch — and how far one page is.
+/// The card's scroll position, hunk cursor and review notes.
 ///
-/// The keys add and subtract; the paint owns the clamp, because only the
-/// paint knows how many rows the body was given. Cells, so a draw that is
-/// otherwise a pure reading of the view can write back what it kept: a body
-/// that fits is pinned to its edge, and a press past the end lands on the
-/// last page rather than beyond it.
+/// Offsets count rows from the body's natural edge (the bottom of a pane or
+/// live conversation, the top of a forward body). Keys only add and subtract;
+/// the paint clamps in [`Scroll::kept`], since only it knows the window
+/// height. `Cell`s so the draw can write the clamp back.
 #[derive(Default)]
 pub struct Scroll {
-    /// Rows between what the card shows and the body's natural edge.
+    /// Rows between the window and the natural edge.
     pub away: Cell<usize>,
-    /// The rows the body had last frame, which is what one press moves by.
+    /// Window height last frame; one page key moves by this.
     pub page: Cell<usize>,
-    /// Where the card opened, in the same rows: its edge for a conversation
-    /// that opens on its end rather than at its top. A card standing anywhere
-    /// else has been paged by hand, and holds.
+    /// Where the card opened, clamped. `away != opened` means the user paged.
     pub opened: Cell<usize>,
-    /// Where the card was asked to open, in rows nobody has clamped: past the
-    /// end of a conversation. Kept whole so that a window that shrinks under
-    /// a card nobody has paged — the line at its foot growing a row — puts
-    /// the card back on the page it opened on, which is the end, rather than
-    /// leaving it standing a row short of the end it was opened to show.
+    /// Where the card was asked to open, unclamped (past the end of a
+    /// conversation). An unpaged card is re-clamped from this every frame so
+    /// it stays on its last page when the window shrinks.
     anchor: Cell<usize>,
-    /// Which hunk of the patch the card is standing on, where somebody has
-    /// stepped to one. A patch is read a hunk at a time, and this is the one
-    /// the rule counts, the paint marks, and a message off the card is about.
+    /// The patch hunk under the cursor, if the user stepped to one.
     hunk: Cell<Option<usize>>,
-    /// What has been written about the patch so far, a hunk at a time: the
-    /// words the line was holding when the cursor stepped off each one, under
-    /// that hunk's own index, and the words typed at the top of the patch
-    /// under no hunk at all.
-    ///
-    /// Here rather than on the line because the line holds one hunk's words at
-    /// a time and a review is about several: the line is what is being written
-    /// now, and this is what has been written already. In patch order, because
-    /// that is the order the message is built in — a review reads the way the
-    /// diff does.
+    /// Review notes so far: keyed by hunk index, with `None` for text at the
+    /// top of the patch. A `BTreeMap` so iteration is in patch order, which is
+    /// the order the review message is built in.
     remarks: RefCell<BTreeMap<Option<usize>, String>>,
 }
 
 impl Scroll {
-    /// Open a card `away` rows from its natural edge, and remember that this
-    /// is where it opened.
+    /// Open a card `away` rows from its natural edge.
     ///
-    /// The one door a card comes up through, which is why the hunk cursor is
-    /// put back to none here: taking the diff again and walking the list onto
-    /// another agent both open a card, and a card that was closed comes back
-    /// this way too. A hunk of the patch before it is no place to open on.
-    ///
-    /// The remarks go with it, for the same reason and one more: they are a
-    /// review of the patch this card was showing, and the next card through
-    /// this door is showing something else.
+    /// Every card opens through here, so this also resets the hunk cursor and
+    /// drops the notes, which belonged to the previous card's patch.
     pub fn open_at(&self, away: usize) {
         self.away.set(away);
         self.opened.set(away);
@@ -707,12 +569,9 @@ impl Scroll {
         self.remarks.borrow_mut().clear();
     }
 
-    /// Keep `words` as the remark on `at` — a hunk, or the top of the patch —
-    /// or drop what was there when they are blank.
-    ///
-    /// Blank is dropped rather than kept as an empty string so that everything
-    /// counting remarks can count entries: a line stepped off with nothing on
-    /// it is not a note on that hunk, and neither is one cleared by hand.
+    /// Store `words` as the note on hunk `at` (`None` for the top of the
+    /// patch), or remove the note when `words` is blank, so the map's length is
+    /// the note count.
     pub fn remark(&self, at: Option<usize>, words: &str) {
         match words.trim().is_empty() {
             true => self.remarks.borrow_mut().remove(&at),
@@ -720,21 +579,18 @@ impl Scroll {
         };
     }
 
-    /// What was written about `at`, which is empty where nothing was.
+    /// The note on `at`, or an empty string.
     pub fn remarked(&self, at: Option<usize>) -> String {
         self.remarks.borrow().get(&at).cloned().unwrap_or_default()
     }
 
-    /// The hunks something has been written about, in patch order, which is
-    /// what the rule counts, the body marks and the row under the line offers
-    /// to send. The words at the top of the patch are on no hunk, and are no
-    /// note.
+    /// Hunks with a note, in patch order. Text at the top of the patch is not
+    /// a note on any hunk and is not counted.
     pub fn noted(&self) -> Vec<usize> {
         self.remarks.borrow().keys().copied().flatten().collect()
     }
 
-    /// Everything written so far, the opening first and the hunks after it in
-    /// the order the patch writes them, which is the order a review reads in.
+    /// Every note: the top of the patch first, then hunks in patch order.
     pub fn remarks(&self) -> Vec<(Option<usize>, String)> {
         self.remarks
             .borrow()
@@ -743,24 +599,13 @@ impl Scroll {
             .collect()
     }
 
-    /// Step to the next hunk of the patch the card is holding, or the one
-    /// before it, or the top of the patch above them all, and stand the card
-    /// on that row.
+    /// Step the hunk cursor forward or back and scroll to that hunk's header.
     ///
-    /// Before the first hunk is the top of the patch itself, where no hunk is
-    /// under the cursor: a review opens there, and that is where its opening
-    /// words are written. Forward from there is the first hunk; back from
-    /// there stays, because there is nothing above the top. The last hunk
-    /// holds the same way, because a key that came back round to the other end
-    /// would read as a key that had lost its place.
-    ///
-    /// Opened rather than paged, so the frame that draws it puts the header
-    /// row at the top of the window and every frame after it holds the card
-    /// there — clamped, on a hunk near the end of a patch, to the last page
-    /// the card has rows for. The offsets are moved here rather than through
-    /// [`Scroll::open_at`]: stepping through a patch is reading the card that
-    /// is open, not opening another one, and the remarks written so far are
-    /// what the step is carrying.
+    /// Before the first hunk is the top of the patch (no hunk), where a
+    /// review's opening words go. Stepping stops at both ends rather than
+    /// wrapping. The offsets are set as if opened (not paged) so the header
+    /// stays at the top of the window, but unlike [`Scroll::open_at`] the notes
+    /// are kept.
     pub fn to_hunk(&self, hunks: &[Hunk], forward: bool) {
         let Some(last) = hunks.len().checked_sub(1) else {
             return;
@@ -779,36 +624,24 @@ impl Scroll {
         self.hunk.set(at);
     }
 
-    /// Which hunk the card is standing on, where somebody has stepped to one.
+    /// The hunk under the cursor, if any.
     pub fn at_hunk(&self) -> Option<usize> {
         self.hunk.get()
     }
 
-    /// Whether somebody has paged the card away from where it opened.
+    /// Whether the user has paged away from where the card opened.
     pub fn paged(&self) -> bool {
         self.away.get() != self.opened.get()
     }
 
-    /// Clamp the offset to the last page this body and window allow, remember
-    /// what a page is, and say where the card now stands.
+    /// Clamp the offset for a body of `length` rows in a `window`-row window,
+    /// record the page size, and return the offset.
     ///
-    /// `window` is the rows the body has this frame, which is what one press
-    /// moves by as well: the card spends the same rows on its rule and its
-    /// line whether or not it has been paged, so the way out and the way home
-    /// are the same distance.
-    ///
-    /// Where it opened is clamped to that same last page, because a card is
-    /// opened past its end — a conversation is anchored on its end and no
-    /// body knows how tall a card is. Left where it was asked for, it would
-    /// never equal the offset again, [`Scroll::paged`] would read true on
-    /// every frame, and a card nobody touched would hold still forever
-    /// instead of following its agent back to work.
-    ///
-    /// A card nobody has paged is put back on the page it was asked to open
-    /// on every frame, clamped afresh: the last page moves when the window
-    /// does, and a card opened on its end stays on its end when the line
-    /// under it grows a row rather than standing one row short of it. A card
-    /// somebody has paged is clamped where it stands, and holds.
+    /// `opened` is clamped too: a conversation opens past its end, and an
+    /// unclamped `opened` would never equal `away` again, making
+    /// [`Scroll::paged`] true forever. An unpaged card is re-clamped from
+    /// `anchor` so it stays on its last page as the window changes; a paged
+    /// card is clamped where it is.
     fn kept(&self, length: usize, window: usize) -> usize {
         let last = length.saturating_sub(window);
         let away = match self.paged() {
@@ -828,13 +661,9 @@ impl Scroll {
     }
 }
 
-/// How much of the screen the card takes: what it has to show, up to about
-/// half, and never so much that the list it was opened from is gone.
-///
-/// What it has to show comes into it because a card is over a wall somebody is
-/// reading: an agent whose answer is one line does not need seven rows to say
-/// it in, and every row the card does not take is a row of the list still on
-/// the screen. Below one row there is no card at all.
+/// The card's height: the rows it `wanted`, capped at half the terminal
+/// (within [`CARD_SHORT`]..=[`CARD_TALL`]) and always leaving the list band a
+/// row. Zero when not even [`CARD_SHORT`] fits.
 pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     let room = (total / 2)
         .clamp(CARD_SHORT, CARD_TALL)
@@ -846,15 +675,9 @@ pub(super) fn card_height(total: u16, band: u16, wanted: u16) -> u16 {
     }
 }
 
-/// How many rows the card would take to say everything it has: its own rule,
-/// what its branch has open, which question of the call this is, what the
-/// agent is asking, the choices under that, the row the vendor adds under
-/// them, the line the answer goes on, and the screen it is all happening on.
-///
-/// The rule, the line and the blank row the line stands off the rest by are
-/// rows of the card like any other, so a card that says one thing in one row
-/// asks for four; and the line asks for as many rows as it has grown to, up to
-/// the cap the task line grows to.
+/// The rows the card would need to show everything: rule, pull requests,
+/// tab strip, question, choices, the vendor's extra row, queued messages,
+/// body, and the answer line with the blank row above it.
 pub(super) fn card_rows(
     card: &Card<Body>,
     showing: Option<Showing>,
@@ -866,8 +689,7 @@ pub(super) fn card_rows(
         asked_rows(question, width).len().min(ASKED_TALL)
     });
     let listed = choices(&card.options, width as usize, boxed(showing)).len();
-    // Counted no further than the card could ever grow: the body can be a
-    // patch of thousands of rows, and this runs on every frame.
+    // Capped: runs every frame, and a patch body can be thousands of rows.
     let shown = length(card).min(CARD_TALL as usize);
 
     let rows = RULE_ROW
@@ -882,23 +704,19 @@ pub(super) fn card_rows(
     rows.min(u16::MAX as usize) as u16
 }
 
-/// How many rows the card spends on what was sent and not yet taken: one per
-/// message, and no more than the newest few, because they are a note about
-/// the turn and not the turn.
+/// Rows for queued messages: one each, at most [`QUEUED_TALL`].
 fn queued_rows(card: &Card<Body>) -> usize {
     card.queued.len().min(QUEUED_TALL)
 }
 
-/// The most queued messages the card will list.
+/// The most queued messages the card lists.
 const QUEUED_TALL: usize = 3;
 
-/// The word a queued row ends on, dim, after the message itself.
+/// The dim suffix on a queued message's row.
 const QUEUED: &str = " · queued";
 
-/// The newest rows of what was sent and not yet taken, each the first line of
-/// the message behind the composer's own glyph, in the colour a question
-/// wears — a thing the agent has not read yet — and the word that says why
-/// it is here after it.
+/// The newest queued messages, one row each: the [`PROMPT`] glyph and the
+/// message's first line in the waiting colour, then [`QUEUED`].
 fn queued(card: &Card<Body>, width: usize, theme: Theme) -> Vec<Line<'static>> {
     let newest = card.queued.len().saturating_sub(QUEUED_TALL);
     card.queued[newest..]
@@ -915,39 +733,32 @@ fn queued(card: &Card<Body>, width: usize, theme: Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the line at the foot of the card takes: as many as it has
-/// grown to, the way the task line grows, and no more than that line may.
+/// Rows of the answer line, grown like the task line and capped the same.
 fn line_rows(line: &Composer, width: u16) -> usize {
     rows_of(line, width).min(COMPOSER_CAP)
 }
 
-/// One row, which is the least a card is: the rule, which names the agent the
-/// card is a look at and says how far a paged body has been read.
+/// The smallest card: just the rule.
 const CARD_SHORT: u16 = 1;
 
-/// And the most of a screen it will take, however tall the terminal is.
+/// The tallest card, whatever the terminal height.
 const CARD_TALL: u16 = 14;
 
-/// The card's own row, which it holds whatever it is a look at: the rule.
+/// The rule's row.
 const RULE_ROW: usize = 1;
 
-/// And the blank row its line stands off the rest of it by, so what the card
-/// says and what somebody is saying back to it do not run together. The one
-/// row the card gives up first when the band is short.
+/// The blank row above the answer line; the first row given up when short.
 const GAP_ROW: usize = 1;
 
-/// What a card holding a patch says it is, which is the one thing the row it
-/// came off cannot: the row says what the agent is doing, and this card is
-/// not a look at that at all.
+/// What the rule says of a patch card.
 const CHANGED: &str = "what it has changed";
 
-/// What the rule says a turn nothing has been heard from yet is doing. A turn
-/// under way is doing something whether or not anything has said what, and the
-/// far end of the rule going bare would read as an agent that had stopped.
+/// What the rule says of a running turn that has reported nothing yet, so
+/// the rule never looks like the agent stopped.
 const THINKING: &str = "thinking…";
 
-/// What the rule says of a turn the vendor ended with shells still running:
-/// the record's own count, in the record's own words.
+/// What the rule says of a turn the vendor ended with background shells still
+/// running.
 fn shells_running(n: u32) -> String {
     match n {
         1 => "1 shell running".to_string(),
@@ -955,31 +766,18 @@ fn shells_running(n: u32) -> String {
     }
 }
 
-/// How many rows of a wrapped question the card gives before it stops: the
-/// words of it a person needs to decide, with the pane underneath for the rest.
+/// The most rows a wrapped question gets.
 const ASKED_TALL: usize = 3;
 
-/// The card: its rule, what its branch has open, which question of the call
-/// this is, what one agent is asking, the choices it offers, the row the vendor
-/// adds under them, the screen it is all happening on — or, when that is what
-/// was asked for, what it has changed — and the line at its foot.
+/// Draw the card into `area`, over the foot of the list.
 ///
-/// Full width, because the bottom of it is a picture of a terminal and a
-/// terminal cut down the middle is a picture of nothing. The rule and the line
-/// stand in the band's own columns and everything between them is indented
-/// under the chevron, so the card reads as one block rather than as rows of a
-/// second list.
+/// Top to bottom: the rule, pull requests, tab strip, question, choices, the
+/// vendor's extra row, the body, queued messages, a blank row and the answer
+/// line. Full width, since the body may be a pane capture.
 ///
-/// `called` is what the list calls the agent, which is what the rule says: the
-/// card is no longer touching that row, so its name is the one thing it has to
-/// carry for itself. `runs` is what that row runs, in the same case: already
-/// spelled the way the rule says it, because the words are the wall's and the
-/// card is only reading them out.
-///
-/// `on` is the reading the row was drawn from and `beat` the frame the wall is
-/// pulsing on, for the mark at the front of the rule and the words at the end
-/// of it: both are about the agent rather than about the card, so both are read
-/// off the list the same way the row above them is.
+/// `called` is the agent's name as the list shows it and `runs` its vendor
+/// words, both for the rule. `on` (the list's reading of the agent) and
+/// `beat` give the rule its state glyph and activity text.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float(
     frame: &mut Frame,
@@ -995,26 +793,14 @@ pub(super) fn float(
     area: Rect,
     theme: Theme,
 ) {
-    // The band is the last rows of the list, so the rows already drawn there
-    // come off before anything of the card goes down: what the card says
-    // covers the wall rather than showing through it.
+    // Clear the list rows the card covers.
     frame.render_widget(Clear, area);
-    // A card is a modal the way a line being typed is: for as long as it is
-    // up every letter is its line's, and the wall above says so the way it
-    // does under a task line, by going quiet to its last cell.
+    // The card is modal like a typed line, so the list above dims.
     behind(frame, area.y);
-    // The rule opens the band and the line closes it; what the card says
-    // stands between them, in under the line's own chevron, with one blank
-    // row between it and the line. The line takes the rows it has grown to
-    // off the band before anything else — it is what somebody is typing into,
-    // and it is nowhere else at all — and the blank row stands only where a
-    // row of what the card says is still left under it. A band with room for
-    // nothing but the rule draws the rule.
+    // The answer line takes its rows first, but leaves at least one row for
+    // the card's content, unless the rule leaves only one row. The blank row
+    // above the line is only kept when content still fits above it.
     let spare = area.height.saturating_sub(RULE_ROW as u16);
-    // Never the last row of what the card says, though: a line that had
-    // grown over the whole card would be a line nobody could see what they
-    // were answering from. Only a band with one row under its rule gives that
-    // row to the line, because there the line is what the row is for.
     let wanted = answering.map_or(0, |line| line_rows(line, area.width) as u16);
     let typing = wanted
         .min(spare.saturating_sub(1))
@@ -1027,31 +813,22 @@ pub(super) fn float(
         Constraint::Length(typing),
     ])
     .areas(area);
-    // Everything between the rule and the line stands in the band's own
-    // columns, which is where the rule's mark and the line's chevron stand.
-    // The body is a photograph of a terminal, and a photograph held two cells
-    // in from the edge is one whose own left margin is amx's rather than the
-    // vendor's: every chevron the captured screen draws stood two columns off
-    // the chevron of the line being typed under it.
+    // Not indented: an indented pane capture puts the vendor's own chevrons
+    // two columns off the answer line's chevron.
     let said = between;
 
-    // What the card is for comes first and the pane takes what is left.
+    // Everything but the body takes its rows first; the body gets the rest.
     let mut room = said.height;
     let mut take = |wanted: u16| {
         let taken = wanted.min(room);
         room -= taken;
         taken
     };
-    // Every request this branch has, above everything the card says about the
-    // turn: what happened to the work after the turn ended is the question
-    // somebody opening a finished agent's card came with.
     let open = requests(prs, theme);
     let opened = take(u16::from(!open.is_empty()));
-    // The question and the choices are the agent's own words, and the choices
-    // are the keys a person is about to press: both go through `inert` before
-    // anything draws them. ratatui would *delete* the invisible format
-    // characters on its own, which is exactly the wrong treatment — deleting
-    // a zero-width lets one choice wear another's spelling.
+    // The question and choices are made inert first. ratatui on its own would
+    // delete invisible format characters, which lets one choice spoof
+    // another's spelling; replacing them with spaces does not.
     let question = card
         .question
         .as_deref()
@@ -1062,29 +839,20 @@ pub(super) fn float(
             .as_ref()
             .map_or(0, |rows| rows.len().min(ASKED_TALL) as u16),
     );
-    // Which question of the call this is comes before the choices, because it
-    // decides what the choices mean: the tab behind this one asks something
-    // else and offers somebody else's answers.
+    // Which tab of a multi-question call this is, above its choices.
     let strip = tab(showing);
     let tabbed = take(u16::from(strip.is_some()));
     let choices = choices(&options, said.width as usize, boxed(showing));
     let listed = take(choices.len() as u16);
     let added = added(card, showing);
     let adding = take(u16::from(added.is_some()));
-    // What was sent and not yet taken, under everything else the card says
-    // and above the line: the last thing that happened to this agent, held
-    // where the eye lands before typing the next.
+    // Queued messages sit just above the answer line.
     let waiting = take(queued_rows(card) as u16);
 
-    // What is left is the body's window, which is what the offset is clamped
-    // against and what one press moves by.
+    // What is left is the body's window.
     let held = scroll.kept(length(card), room as usize);
-    // And where the hunk cursor is standing, which the rule counts and the
-    // body marks. A patch shorter than the one the cursor was stepped through
-    // has no such hunk, and nothing is marked.
+    // Ignore a hunk cursor left over from a longer patch.
     let at = scroll.at_hunk().filter(|at| *at < card.body.hunks().len());
-    // And which hunks a note has been written on, which the rule counts and
-    // the body marks.
     let notes = scroll.noted();
 
     frame.render_widget(
@@ -1153,24 +921,12 @@ pub(super) fn float(
     }
 }
 
-/// The card's rule: the edge the band hangs off, and the things said on it.
+/// The card's top row.
 ///
-/// At its front, the mark the agent's own row wears and what the list calls the
-/// agent, in the colour that row says its state in — the card stands away from
-/// its row now, so the mark and the name are what say which agent this is a
-/// look at and how it is going. The mark pulses on the wall's own beat, so a
-/// card over a turn under way breathes with the row it came off.
-///
-/// After the name, what that agent runs, in the words the wall's own column
-/// says them in. After that, on a card that is a reading of a patch, that it is
-/// one: the row says what the agent is doing, and this is not that, and which
-/// hunk of it is under the cursor where somebody has stepped to one. And at the
-/// far end, what the agent is doing while it is doing anything, and how far a
-/// paged body stands from its natural edge. All of those are dim, because they
-/// are facts about what the card is showing rather than about the agent.
-///
-/// The same rule the band a line is typed in draws, in the same character and
-/// the same dim, because the card is that band with something else in it.
+/// The agent's glyph (pulsing like its row) and name in its state colour;
+/// then, dim: its vendor words, for a patch [`CHANGED`] with the hunk
+/// position and note count, a dashed [`RULE`], what a running turn is doing,
+/// and how many rows a paged body has beyond the window.
 #[allow(clippy::too_many_arguments)]
 fn rule(
     card: &Card<Body>,
@@ -1184,10 +940,8 @@ fn rule(
     width: usize,
     theme: Theme,
 ) -> Line<'static> {
-    // What the row this card was opened from is marked with. The card's own
-    // phase, because that is what the name beside it is painted for; the rest
-    // is the record's, and a list that has lost the row has neither — so the
-    // mark falls back to the shape a state rests on.
+    // The card's phase; evidence and kind come from the list's reading, with
+    // fallbacks when the list has lost the agent.
     let mark = format!(
         "{} ",
         icon(
@@ -1202,8 +956,6 @@ fn rule(
         Some(at) => format!("{SEPARATOR}hunk {} of {}", at + 1, card.body.hunks().len()),
         None => String::new(),
     };
-    // After the hunk, because the hunk is where the next note is about to be
-    // written: what is on the line, and then what is behind it.
     let noted = match kept {
         0 => String::new(),
         kept => format!("{SEPARATOR}{}", notes(kept)),
@@ -1225,12 +977,9 @@ fn rule(
             format!(" {edge} {held} more")
         }
     };
-    // How the turn is going, before the count, and never the row's summary:
-    // the card under this rule is what the agent is doing, at length, and the
-    // summary said again at the far end of the rule was a second row (Saiful,
-    // 2026-09-18). The vendor's own spinner line where a reader found one on
-    // the pane, the shells the vendor is holding the turn open for where it
-    // is, and thinking where neither has anything to say.
+    // Not the row's summary, which the card body already shows at length.
+    // The vendor's spinner line if one was read, else the background shells
+    // count, else `THINKING`.
     let doing = match card.phase {
         Phase::Starting | Phase::Working => format!(
             " {}",
@@ -1245,10 +994,7 @@ fn rule(
         ),
         _ => String::new(),
     };
-    // One cell of the rule itself is kept back from both of the things that
-    // give way, because the rule is what says this line is the card's edge and
-    // words long enough to reach the last cell would take that away with the
-    // dashes.
+    // Reserve one dash so the rule never disappears entirely.
     let edge = width_of(&mark)
         + width_of(&named)
         + width_of(&changed)
@@ -1256,14 +1002,8 @@ fn rule(
         + width_of(&more)
         + width_of(RULE);
     let doing = fit(&doing, width.saturating_sub(edge));
-    // What the agent runs stands between its name and what the card is
-    // showing, and takes the room the rest of the rule has left: a launch
-    // command is a path as often as a word, and a rule that let one of those
-    // crowd out what the card is showing would be saying the least useful
-    // thing on it at the cost of the most. What the agent is doing is served
-    // before it for the same reason — how a turn is going is what somebody
-    // opened the card to read, and how it was started is the quietest fact on
-    // the line.
+    // The vendor words get only the room left after everything else: a long
+    // launch command must not crowd out what the turn is doing.
     let runs = match runs.is_empty() {
         true => String::new(),
         false => fit(
@@ -1271,8 +1011,7 @@ fn rule(
             width.saturating_sub(edge + width_of(&doing)),
         ),
     };
-    // A cell of wall between the label and the rule, so the words are not
-    // running into the dashes.
+    // Includes the space between the label and the dashes.
     let said = width_of(&mark)
         + width_of(&named)
         + width_of(&runs)
@@ -1291,8 +1030,7 @@ fn rule(
     ])
 }
 
-/// How many notes, in the words the rule over the card and the row under the
-/// line both say them in: a review is counted the same wherever it is counted.
+/// "1 note" or "N notes", shared by the rule and the keys row.
 pub(super) fn notes(kept: usize) -> String {
     match kept {
         1 => "1 note".to_string(),
@@ -1300,19 +1038,13 @@ pub(super) fn notes(kept: usize) -> String {
     }
 }
 
-/// Whether the body holds more than the card is showing, which is what makes
-/// the page keys worth naming in the row under it.
-///
-/// Measured against what the last frame gave the body, which is the number one
-/// press of those keys moves by: the row under the card is drawn after the
-/// card itself, so within a frame this is what that frame left behind.
+/// Whether the body is longer than the window, so the page key is worth
+/// naming. Uses this frame's window: the keys row is drawn after the card.
 pub(super) fn pages(card: &Card<Body>, scroll: &Scroll) -> bool {
     length(card) > scroll.page.get()
 }
 
-/// How many rows the body could give a card, which is what the last page is
-/// measured against. Asked of the body itself rather than of a window of it,
-/// so measuring a patch of thousands of rows does not build them.
+/// Rows the card's body has; zero for a card showing a question.
 fn length(card: &Card<Body>) -> usize {
     match card.asks() && card.question.is_some() {
         true => 0,
@@ -1320,17 +1052,11 @@ fn length(card: &Card<Body>) -> usize {
     }
 }
 
-/// Every pull request the agent's branch has, as the one row the card gives
-/// them.
+/// Every pull request on the agent's branch, on one row: the number and its
+/// standing in words, in the standing's colour (two standings share a colour,
+/// hence the words).
 ///
-/// The row says the number in its own colour and then, in words, which of the
-/// four questions that colour came from — a row has only the colour, and two
-/// standings share one. All of them and not the first: a branch that has been
-/// through this twice is a branch where the second attempt is the news and the
-/// first is the reason there was a second.
-///
-/// Nothing here comes off a pane, so nothing here is neutralised: the numbers
-/// are amx's own formatting of an integer, and the words are this file's.
+/// Not made inert: the text is amx's own.
 fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for pr in prs {
@@ -1345,34 +1071,15 @@ fn requests(prs: &[Pr], theme: Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// What the card has under everything else, in the paint it was drawn in and
-/// cut to the rows the card has for it.
+/// The body's visible window, `rows` tall and `away` rows from its natural
+/// edge: the bottom for a pane, the top for a forward body.
 ///
-/// A screen is read from the bottom, where the newest of it is; a diff from
-/// the top, where the first file it touched is; and a recorded answer from
-/// its top too, because an answer reads forward.
+/// Empty for a card showing a recorded question: the pane under it only
+/// repeats the question in the vendor's chrome. A waiting card whose question
+/// amx has not read keeps its capture, the only place the question appears.
 ///
-/// A card holding a question has nothing under everything else at all. The
-/// question block — the tab strip, the question, the choices and the rows
-/// under them — is the whole of what that card is for, and the pane beneath
-/// it is the vendor's drawing of the same box behind an echo of the prompt:
-/// every row of it is noise below the answer line. Only the waiting card
-/// whose question amx has not read keeps its capture, because the pane is
-/// the one place that question is written at all.
-///
-/// The vendor's own furniture came off the screen before it was ever counted,
-/// in [`Body::screen`]. After would be worse than not at all: the card would
-/// spend its window on the vendor's composer and then have nothing left for
-/// the work.
-///
-/// `at` is the hunk the cursor is standing on, whose header row is drawn on
-/// the cursor's own background — the same mark the list puts under the row a
-/// person is on, because it is the same fact: this is where they are.
-///
-/// `notes` are the hunks something has been written about, whose header rows
-/// are drawn in the colour a waiting agent's row wears: the review is held off
-/// the card until enter sends it, and this is the only place paging the patch
-/// shows where it has been.
+/// The header row of hunk `at` gets the cursor background; headers of hunks
+/// in `notes` get the waiting colour.
 pub(super) fn body(
     card: &Card<Body>,
     rows: usize,
@@ -1385,8 +1092,6 @@ pub(super) fn body(
         return Vec::new();
     }
 
-    // A patch and a recorded answer both read forward, so both are windowed
-    // from their top; a screen from its bottom, where the newest of it is.
     let window = match card.forward() {
         true => head(card.body.kept, rows, away),
         false => tail(card.body.kept, rows, away),
@@ -1394,10 +1099,7 @@ pub(super) fn body(
     let start = window.start;
     let mut shown = card.body.rows[window].to_vec();
 
-    // The header row of every hunk a note is on, where the window has it.
-    // Before the cursor's own mark, so a hunk that is both wears both: the
-    // colour says a note is kept there, the background says this is where the
-    // reader is.
+    // Notes first, so a hunk with a note under the cursor gets both styles.
     for at in notes {
         if let Some(row) = card
             .body
@@ -1410,9 +1112,8 @@ pub(super) fn body(
         }
     }
 
-    // The header row of that hunk, where the window has it: a hunk stepped to
-    // is at the top of the window, and one the clamp pulled up from the end of
-    // a patch is further down it.
+    // Usually the top row, but lower when the clamp pulled the window up at
+    // the end of the patch.
     if let Some(row) = at
         .and_then(|at| card.body.hunks.get(at))
         .and_then(|hunk| hunk.row.checked_sub(start))
@@ -1421,10 +1122,8 @@ pub(super) fn body(
         line.style = line.style.bg(theme.cursor);
     }
 
-    // Said only where the walk actually cut. An agent that has said nothing
-    // yet is a different fact from a pane holding nothing but furniture, and
-    // a card that answered both with the same sentence would be lying about
-    // one of them.
+    // Only when furniture was cut: an agent that has printed nothing yet is
+    // a different case.
     match shown.is_empty() && card.body.chrome {
         true => vec![Line::styled(ALL_CHROME, dim())],
         false => shown,
@@ -1433,31 +1132,25 @@ pub(super) fn body(
 
 #[cfg(test)]
 thread_local! {
-    /// How many bodies this thread has walked out of ANSI, which is the whole
-    /// cost of a card: a pane capture is a few thousand bytes of escape
-    /// sequences, and walking them is the one piece of work a card does that
-    /// grows with what the agent wrote. Counted so a test can say where the
-    /// walk happens and not only what it produces.
-    ///
-    /// Per thread, because the tests run side by side in one process and a
-    /// count they shared would be a count none of them could assert on.
+    /// How many bodies this thread has parsed from ANSI, the expensive part of
+    /// building a card, so tests can assert when parsing happens. Per thread
+    /// because tests run in parallel.
     static WALKS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// How many walks this thread has paid for so far.
+/// How many ANSI bodies this thread has parsed.
 #[cfg(test)]
 pub(in crate::tui) fn walks() -> usize {
     WALKS.with(Cell::get)
 }
 
-/// What a captured row says, which is what the cut reads it for. The runs of
-/// one row joined, so the words and the paint can never disagree about where a
-/// row begins or what is on it.
+/// A captured row's plain text, for the furniture cut. Built from the same
+/// runs as the styled row, so the two cannot disagree.
 fn words(row: &[Painted]) -> String {
     row.iter().map(|run| run.text.as_str()).collect()
 }
 
-/// One captured row, drawn the way the vendor drew it.
+/// A captured row with the vendor's styling.
 fn as_painted(row: &[Painted]) -> Line<'static> {
     let spans: Vec<Span<'static>> = row
         .iter()
@@ -1466,7 +1159,7 @@ fn as_painted(row: &[Painted]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The paint one run was written in, as the renderer's own styling.
+/// A run's SGR attributes as a ratatui style.
 fn paint(run: &Painted) -> Style {
     let mut style = Style::new();
     for (on, modifier) in [
@@ -1489,9 +1182,8 @@ fn paint(run: &Painted) -> Style {
     style
 }
 
-/// A colour the vendor named, as the renderer names it. The first sixteen are
-/// named rather than numbered, so a person's own palette decides what red
-/// looks like on their terminal, the way it does in the pane itself.
+/// An SGR colour as a ratatui colour. The 16 basic colours map to named
+/// colours so the terminal's own palette applies, as it does in the pane.
 fn shade(colour: Colour) -> Color {
     match colour {
         Colour::Ansi(n) => ANSI[usize::from(n) & 0x0f],
@@ -1500,7 +1192,7 @@ fn shade(colour: Colour) -> Color {
     }
 }
 
-/// The sixteen SGR names them, in the order ANSI numbers them.
+/// The 16 basic colours in ANSI order.
 const ANSI: [Color; 16] = [
     Color::Black,
     Color::Red,
@@ -1520,19 +1212,15 @@ const ANSI: [Color; 16] = [
     Color::White,
 ];
 
-/// What the card says where the walk finds nothing underneath the chrome.
-///
-/// Whichever vendor drew it: the walk holds that agent's own anchors, so the
-/// row this stands in for is the composer of whatever is running in the pane.
+/// The body shown when the capture was nothing but vendor furniture.
 pub(super) const ALL_CHROME: &str = "amx captured nothing but the vendor's own chrome";
 
-/// Which question of the call the card is showing, and how many there are.
+/// The tab strip for a multi-question call: the current tab's header and
+/// "N of M". `None` for a single question.
 ///
-/// The one thing on the card that is nowhere on the pane under it. Measured
-/// against claude 2.1.240, the vendor's tab strip elides its own headers as
-/// the pane narrows and at 24 columns draws the showing tab's name as an
-/// ellipsis and nothing else, so no reader can count or name the tabs from a
-/// screen. A call of one question is not a strip and says nothing here.
+/// claude 2.1.240 elides its own tab headers as the pane narrows (at 24
+/// columns the current tab is just an ellipsis), so the pane cannot be relied
+/// on for this.
 fn tab(showing: Option<Showing>) -> Option<String> {
     let showing = showing.filter(|showing| showing.of > 1)?;
     let counted = format!("{} of {}", showing.at, showing.of);
@@ -1542,27 +1230,19 @@ fn tab(showing: Option<Showing>) -> Option<String> {
     })
 }
 
-/// Whether the choices are boxes to check rather than a choice to make.
+/// Whether the question takes several choices (checkboxes).
 fn boxed(showing: Option<Showing>) -> bool {
     showing.is_some_and(|showing| showing.ask.multi)
 }
 
-/// The vendor's own empty box, drawn between the number and the label the way
-/// 2.1.240 draws it, so the row on the card reads as the row on the pane.
-///
-/// Empty, always. What amx holds is the payload, and the payload names the
-/// choices and never says which of them are checked — the boxes themselves are
-/// on the pane at the bottom of the card, where they are being checked.
+/// The checkbox claude 2.1.240 draws between number and label. Always empty:
+/// the payload does not say which boxes are checked.
 const BOX: &str = "[ ]";
 
-/// The row the vendor draws under the choices that no payload accounts for.
-///
-/// Every menu the tool draws carries one free-text row as its last choice, and
-/// a question whose choices carry a preview draws a notes field in its place
-/// and no free-text row at all — neither is in the payload, and both are what
-/// somebody about to answer needs to know is there. A permission box and the
-/// trust screen have neither, and choices amx has not read yet have nothing
-/// for this to stand under.
+/// A note on the extra row the vendor draws under a question's choices, which
+/// the payload does not include: a free-text row, or a notes field when the
+/// choices carry previews. `None` for permission prompts, the trust screen,
+/// and unread choices.
 fn added(card: &Card<Body>, showing: Option<Showing>) -> Option<&'static str> {
     if card.options.is_empty() || card.kind != Some(Kind::Question) {
         return None;
@@ -1573,28 +1253,18 @@ fn added(card: &Card<Body>, showing: Option<Showing>) -> Option<&'static str> {
     }
 }
 
-/// The free-text row, named as the vendor's rather than the agent's: the
-/// payload does not carry it, so the pane below the card has a numbered row
-/// the choices above it do not.
+/// The note for the vendor's free-text row.
 const OTHER: &str = "and under them, the vendor's row for words of your own";
 
-/// And the field the vendor draws where a choice carries a preview, which is
-/// the one layout that has no free-text row at all.
+/// The note for the vendor's notes field (choices with previews).
 const NOTES: &str = "and beside them, the vendor's field for a note";
 
-/// The choices under the question, numbered the way every surface numbers them
-/// and packed onto as few rows as the card is wide.
+/// The choices, numbered by [`numbered`] (as `amx answer` and `ls` number
+/// them) and packed onto as few rows as fit in `width`. A choice too wide
+/// for a row is cut; its number stays visible.
 ///
-/// From [`numbered`] like the rest of them, so the number a person presses on
-/// the card is the number `amx answer` takes and the number `ls` printed. One
-/// too wide for the card is cut with the ellipsis that says it was: a choice
-/// nobody can read is still a choice they can press, and its number is at the
-/// front where the cut cannot reach it.
-///
-/// `boxed` puts the vendor's box between the number and the label, on the
-/// question that takes more than one choice. A number pressed there checks a
-/// box and submits nothing, and a row that looked the same either way would be
-/// a screen telling somebody they had answered.
+/// `boxed` adds [`BOX`] after the number, so a multi-select question does not
+/// look like one that submits on a number.
 pub(super) fn choices(options: &[String], width: usize, boxed: bool) -> Vec<String> {
     let labels: Vec<String> = match boxed {
         true => options
@@ -1618,25 +1288,12 @@ pub(super) fn choices(options: &[String], width: usize, boxed: bool) -> Vec<Stri
     rows
 }
 
-/// What stands between two choices sitting on one row.
+/// Gap between choices on one row.
 const BETWEEN: &str = "   ";
 
-/// The line at the foot of the card, with the block on the cell the cursor is
-/// standing in.
-///
-/// The composer's own line, drawn by the composer's own hand: the chevron,
-/// what has been typed on as many rows as it has grown to, and the one cell
-/// the cursor stands in turned over. Past the cap it is the rows around the
-/// cursor that are drawn, exactly as under the task line.
-///
-/// Every card has one, because every agent can be said something to. Empty, it
-/// says what this one will take, and the block stands on the first cell of
-/// that, where what is typed will begin.
-///
-/// The chevron carries the waiting colour at a question and nothing but the
-/// dim elsewhere: a prompt in front of somebody is the one thing on this
-/// screen that is waiting on them, and a line they may type at if they feel
-/// like it is not.
+/// The answer line at the card's foot, drawn by [`typed_rows`] with
+/// [`invites`] as its placeholder. The chevron wears the waiting colour at a
+/// question, dim otherwise.
 fn answer_row(
     frame: &mut Frame,
     card: &Card<Body>,
@@ -1660,17 +1317,10 @@ fn answer_row(
     );
 }
 
-/// What the empty line says it will take.
-///
-/// At a question, what that question will take — which is the one thing
-/// somebody looking at a prompt they did not draw cannot work out for
-/// themselves, and it is said from the same place the refusal is written. On
-/// an agent something will come of it on, the word for what the line is:
-/// whatever is typed there reaches the agent, by being sent to its pane or by
-/// bringing it back on those words. And on one nothing will come of it on,
-/// that — in the words [`act::reply`] refuses it in, because a
-/// line that invited a reply nobody would receive would be the card telling
-/// somebody to type into the dark.
+/// The answer line's placeholder: what a question accepts (from
+/// [`act::invitation`], which also words the refusal), else [`REPLY`],
+/// [`RESUME`] for an ended agent, or [`NOBODY`] when nothing would receive it
+/// (as [`act::reply`] refuses).
 fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
     match (card.asks(), card.listening) {
         (true, _) => act::invitation(card.kind, &card.options, asked, card.walked),
@@ -1680,40 +1330,31 @@ fn invites(card: &Card<Body>, asked: Option<&Ask>) -> String {
     }
 }
 
-/// What the line says on an agent that will do something with it, which is
-/// what it is.
+/// Placeholder on a live agent's card.
 const REPLY: &str = "reply";
 
-/// And on one whose turn is over: a line typed here starts the agent again
-/// on those words, which is a vendor brought back and a turn paid for, so the
-/// line says so before the keystroke rather than after it (Saiful,
-/// 2026-09-15, off a stopped agent woken by a line typed at its card).
+/// Placeholder on an ended agent's card: sending resumes the vendor, which
+/// costs a turn, so the line says so before anything is typed.
 const RESUME: &str = "resume";
 
-/// And on one past listening, which is the whole of what would come of it.
+/// Placeholder when no one would receive the line.
 const NOBODY: &str = "nothing is listening";
 
-/// The question, made inert and wrapped at its words into rows `width` cells
-/// wide. Both the row count and the drawing come from this, so they agree.
+/// The question made inert and word-wrapped to `width`. Used for both the
+/// row count and the drawing, so they agree.
 fn asked_rows(question: &str, width: u16) -> Vec<String> {
     composer_lines(&inert(question), width.max(1) as usize)
 }
 
-/// Which rows of a screen the card shows: the last of the `end` rows the body
-/// kept, which is where the newest of a pane is.
-///
-/// A window rather than the rows themselves, because a body carries the words
-/// its rows say and the paint they say them in, and a reading that cut one
-/// without the other would have them disagree.
+/// The window over a bottom-anchored body: `wanted` rows ending `back` rows
+/// above row `end`.
 pub(super) fn tail(end: usize, wanted: usize, back: usize) -> Range<usize> {
-    // A paged card stands that many rows above the bottom it is read from.
     let end = end.saturating_sub(back);
     end.saturating_sub(wanted)..end
 }
 
-/// And which rows of a patch or a recorded answer: the first of them, because
-/// both read forward from their top. A paged card starts that many rows below
-/// it.
+/// The window over a top-anchored body: `wanted` rows starting `away` rows
+/// down, within `end`.
 fn head(end: usize, wanted: usize, away: usize) -> Range<usize> {
     let start = away.min(end);
     start..end.min(start.saturating_add(wanted))
@@ -1733,11 +1374,8 @@ mod tests {
     use crate::tui::rows::FOLD_AT;
     use crate::tui::{Mode, Screen};
 
-    /// The card as it stands on the screen, top to bottom: the band at the
-    /// foot of the list, which opens on its rule and runs to the keys.
-    ///
-    /// The keys are never the card's, and on a screen tall enough for it
-    /// neither is the blank row standing them off what is above them.
+    /// The card's rows: from its rule down to (not including) the blank row
+    /// and the keys row.
     fn card_lines(screen: &[String]) -> Vec<&str> {
         let Some(top) = screen.iter().position(|line| line.contains(RULE)) else {
             return Vec::new();
@@ -1746,8 +1384,7 @@ mod tests {
         screen[top..foot].iter().map(String::as_str).collect()
     }
 
-    /// Which column of a drawn line a word starts in, counted in cells rather
-    /// than bytes: the glyph a row wears is not one byte.
+    /// The column `word` starts at in a drawn row (in chars, not bytes).
     fn column_of(line: &str, word: &str) -> usize {
         let at = line
             .find(word)
@@ -1755,7 +1392,7 @@ mod tests {
         line[..at].chars().count()
     }
 
-    /// The colour a word on a row was painted in.
+    /// The foreground colour of `word`'s first cell on a row.
     fn word_colour(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Color {
         let buffer = cells(screen, size);
         let line: String = (0..size.0)
@@ -1797,8 +1434,8 @@ mod tests {
         );
         assert!(!body.chrome);
 
-        // The glyph wears the accent; on a call the glyph and the argument
-        // are dim and the tool's name is not; the words are not.
+        // The prompt glyph is in the accent; a call's glyph and argument are
+        // dim, its name is not.
         let prompt = &body.rows[6].spans[0];
         assert_eq!(prompt.content.as_ref(), PROMPT);
         assert_eq!(prompt.style.fg, Some(theme().accent));
@@ -1824,7 +1461,6 @@ mod tests {
                     && span.style.add_modifier.contains(Modifier::BOLD))
         );
 
-        // Nothing said is no rows and no anchor.
         let empty = Body::conversation(&[], None, 40, theme());
         assert_eq!(empty.kept, 0);
         assert_eq!(empty.anchor(), 0);
@@ -1850,8 +1486,7 @@ mod tests {
             "no blank row inside the run, one on either side of it"
         );
 
-        // A row is one row: the argument is cut to what is left beside the
-        // name, and a name that fills the row leaves it no room at all.
+        // One row per call: the argument is cut to fit, or dropped.
         let body = Body::conversation(&[call("Bash", Some("cargo test --all"))], None, 14, theme());
         assert_eq!(body.says(), "› Bash cargo …");
         let body = Body::conversation(&[call("Bash", Some("cargo test"))], None, 6, theme());
@@ -1867,8 +1502,7 @@ mod tests {
             "❯ port it\n\n› Bash cargo test\n\non it\n\nstill going",
             "the vendor's own stream one blank row under the record"
         );
-        // And nothing where the vendor streams nothing: the record is the
-        // whole of the card, with no pane under it.
+        // No stream: the record alone, with no pane under it.
         let quiet = Body::conversation(&told, None, 30, theme());
         assert_eq!(quiet.says(), "❯ port it\n\n› Bash cargo test\n\non it");
         assert_eq!(quiet.anchor(), quiet.kept, "and reads up from its end");
@@ -1877,8 +1511,7 @@ mod tests {
     #[test]
     fn card_keeps_the_last_rows_of_a_long_live_tail() {
         let told = a_talk("port it", "on it");
-        // Everything under the record's last row and the blank row that stands
-        // the tail off it.
+        // The rows after the record and its separator.
         let after_the_record = |body: &Body| -> Vec<String> {
             let said = body.says();
             let (_, tail) = said
@@ -1887,7 +1520,7 @@ mod tests {
             tail.lines().map(str::to_string).collect()
         };
 
-        // A stream longer than the card: the last rows of it.
+        // A long stream keeps its last rows.
         let streamed = (1..=20)
             .map(|n| format!("{n}. reason {n}\n"))
             .collect::<String>();
@@ -1897,18 +1530,13 @@ mod tests {
         assert!(tail[TAIL - 1].ends_with("reason 20"), "{tail:?}");
         assert!(tail[0].ends_with("reason 13"), "{tail:?}");
 
-        // A short one is whole.
         let short = Body::conversation(&told, Some("one\n\ntwo"), 30, theme());
         assert_eq!(after_the_record(&short), ["one", "", "two"]);
     }
 
     #[test]
     fn card_stands_no_blank_row_over_a_stream_with_nothing_in_it() {
-        // The seconds between a turn starting and its first word landing: a
-        // stream the vendor has opened and written nothing to, or nothing but
-        // blank rows. The record is the whole of what the card has, so a blank
-        // row over the tail would be a row spent standing the record off
-        // nothing.
+        // A stream that is open but empty, or only blank rows.
         let told = a_talk("port it", "on it");
         let said = "❯ port it\n\n› Bash cargo test\n\non it";
         for streamed in ["", "\n\n\n"] {
@@ -1917,7 +1545,7 @@ mod tests {
             assert_eq!(body.kept, 5);
         }
 
-        // One row streamed is a tail, and stands off the record.
+        // One streamed row gets the separator.
         let landing = Body::conversation(&told, Some("reading the importer\n"), 30, theme());
         assert_eq!(
             landing.says(),
@@ -1926,8 +1554,7 @@ mod tests {
         );
     }
 
-    /// A patch as git writes one: a file changed and a file deleted, with the
-    /// whole block of headers over each of them.
+    /// A `git diff` with one changed file and one deleted file.
     const A_PATCH: &str = "\
 diff --git a/src/foo.rs b/src/foo.rs
 index 1234567..89abcde 100644
@@ -1976,9 +1603,7 @@ index e69de29..0000000
              headers"
         );
 
-        // The colours are git's own at a terminal, and the heading is in no
-        // colour at all: it is amx's own row, and the one row of a file a
-        // reader walking the patch is looking for.
+        // git's colours; the heading row is unstyled.
         let paint: Vec<Style> = body.rows.iter().map(|row| row.style).collect();
         assert_eq!(paint[0], Style::default());
         assert_eq!(paint[7], Style::default());
@@ -2016,7 +1641,6 @@ index e69de29..0000000
             hunks[1].text
         );
 
-        // A body that is not a patch has no hunks to step through.
         assert!(Body::said("nothing to review here").hunks().is_empty());
     }
 
@@ -2026,9 +1650,7 @@ index e69de29..0000000
         let scroll = Scroll::default();
         assert_eq!(scroll.at_hunk(), None, "a card opens on no hunk at all");
 
-        // The first hunk from none, with the card opened on its header row:
-        // opened rather than paged, so the frame that draws it puts it back
-        // there rather than holding it wherever it stood.
+        // Stepping sets the offsets as opened, not paged.
         scroll.to_hunk(body.hunks(), true);
         assert_eq!(scroll.at_hunk(), Some(0));
         assert_eq!(scroll.away.get(), body.hunks()[0].row);
@@ -2044,8 +1666,7 @@ index e69de29..0000000
         assert_eq!(scroll.at_hunk(), Some(0), "and back the way it came");
         assert_eq!(scroll.away.get(), body.hunks()[0].row);
 
-        // Before the first hunk is the top of the patch, which is a place of
-        // its own: no hunk under the cursor, and the window on the first row.
+        // Before the first hunk: the top of the patch, no hunk selected.
         scroll.to_hunk(body.hunks(), false);
         assert_eq!(scroll.at_hunk(), None, "the top of the patch itself");
         assert_eq!(scroll.away.get(), 0);
@@ -2054,13 +1675,12 @@ index e69de29..0000000
         assert_eq!(scroll.at_hunk(), None, "and the top stays");
         assert_eq!(scroll.away.get(), 0);
 
-        // Whatever puts a card where it opens puts the cursor back to none:
-        // taking the diff again, and the cursor landing on another agent.
+        // Opening a card resets the hunk cursor.
         scroll.to_hunk(body.hunks(), true);
         scroll.open_at(0);
         assert_eq!(scroll.at_hunk(), None);
 
-        // A card that is not a patch has no hunk to step to.
+        // Not a patch: nothing to step to.
         scroll.to_hunk(Body::said("nothing to review here").hunks(), true);
         assert_eq!(scroll.at_hunk(), None);
         assert_eq!(scroll.away.get(), 0, "and the card was left where it was");
@@ -2087,21 +1707,17 @@ index e69de29..0000000
             "the opening first and the hunks in the order the patch writes them"
         );
 
-        // A line with nothing on it keeps nothing: stepping off a hunk nobody
-        // wrote on is the common way through here, and clearing what was
-        // written on one is how a remark is taken back.
+        // A blank remark removes the note.
         scroll.remark(Some(0), " \n ");
         assert_eq!(scroll.remarked(Some(0)), "");
         assert_eq!(scroll.remarks().len(), 2);
 
-        // Stepping through the patch leaves every one of them where it is:
-        // that is the whole of what they are for.
+        // Stepping keeps the notes.
         scroll.to_hunk(body.hunks(), true);
         scroll.to_hunk(body.hunks(), false);
         assert_eq!(scroll.remarks().len(), 2, "the step kept them");
 
-        // And whatever opens a card drops them along with the cursor, because
-        // a review is about the patch the card was showing.
+        // Opening a card drops them.
         scroll.open_at(0);
         assert!(scroll.remarks().is_empty());
         assert_eq!(scroll.at_hunk(), None);
@@ -2127,7 +1743,7 @@ index e69de29..0000000
         );
         let size = (60, 24);
 
-        // Nothing is counted until somebody steps to a hunk.
+        // No hunk count until a hunk is selected.
         let all = painted(&screen, size).join("\n");
         assert!(all.contains("what it has changed"), "{all}");
         assert!(!all.contains("hunk"), "no hunk is under the cursor: {all}");
@@ -2188,12 +1804,10 @@ index e69de29..0000000
             vec![view("fix-login-a1b", Phase::Working, None, 3)],
             Some(patch()),
         );
-        // Wide enough for the whole rule: the name, what the agent runs, and
-        // the count after the hunk, which is what is being read here.
+        // Wide enough for the whole rule.
         let size = (76, 24);
 
-        // The words a review opens with are not a note on anything, so the
-        // rule has nothing to count yet.
+        // Text at the top of the patch is not counted as a note.
         screen.scroll.remark(None, "the whole of it reads well");
         let all = painted(&screen, size).join("\n");
         assert!(!all.contains("note"), "the opening is no note: {all}");
@@ -2205,8 +1819,7 @@ index e69de29..0000000
             "one note kept: {all}"
         );
 
-        // And the count stands after the hunk the cursor is on, because the
-        // hunk is where the next one is about to be written.
+        // The note count follows the hunk position.
         screen.scroll.remark(Some(0), "the name reads backwards");
         let hunks = screen.card.as_ref().expect("the card").body.hunks();
         screen.scroll.to_hunk(hunks, true);
@@ -2216,9 +1829,8 @@ index e69de29..0000000
             "both of them, after the hunk: {all}"
         );
 
-        // Every hunk a note is on says so on its header row, so paging the
-        // patch shows where the review has been. The hunk under the cursor
-        // wears the cursor's own background as well.
+        // Noted hunk headers wear the waiting colour; the selected one also
+        // gets the cursor background.
         let rows = body(&patch().read(), 12, 0, Some(0), &[0, 1], theme());
         assert_eq!(
             rows[1].style.fg,
@@ -2237,7 +1849,7 @@ index e69de29..0000000
         );
         assert_ne!(rows[8].style.bg, Some(theme().cursor));
 
-        // A hunk nobody has written on keeps git's own colour.
+        // An unnoted hunk header keeps git's colour.
         let rows = body(&patch().read(), 12, 0, None, &[1], theme());
         assert_eq!(rows[1].style.fg, Some(Color::Cyan));
         assert_eq!(rows[8].style.fg, Some(theme().waiting));
@@ -2258,9 +1870,7 @@ index e69de29..0000000
             listening: true,
             queued: Vec::new(),
         };
-        // Wide enough for the whole rule: the mark, the name, what the agent
-        // runs, what the card is showing, and what the agent is doing at the
-        // far end, which is the one of them that gives way last.
+        // Wide enough for the whole rule.
         let size = (80, 24);
         let ruled = |screen: &Screen| {
             let drawn = painted(screen, size);
@@ -2292,8 +1902,7 @@ index e69de29..0000000
              than about the agent, so it is dim like the rest of them: {rule:?}"
         );
 
-        // Only the parts the record holds: a dial nobody turned is the
-        // vendor's own and amx never saw it.
+        // Unset dials are not shown.
         let plain = view("fix-login-a1b", Phase::Working, None, 3);
         let (_, rule) = ruled(&showing(vec![plain], Some(patch())));
         assert!(
@@ -2304,8 +1913,7 @@ index e69de29..0000000
             "{rule:?}"
         );
 
-        // And a row no vendor runs says what it is instead, in the words its
-        // column on the wall says them in.
+        // A shell command shows `$` and `sh`, as on the wall.
         let (_, rule) = ruled(&showing(
             vec![command("fix-login-a1b", Phase::Working)],
             Some(patch()),
@@ -2334,8 +1942,6 @@ index e69de29..0000000
                 queued: Vec::new(),
             };
             let mut screen = showing(vec![agent], Some(card));
-            // The frame the pulse is largest at, so the glyph on the rule is
-            // the one a reader would see on the row beside it.
             screen.beat = LIVE;
             painted(&screen, size)
                 .into_iter()
@@ -2343,8 +1949,7 @@ index e69de29..0000000
                 .expect("the card's rule")
         };
 
-        // A turn under way: the row's own mark in front of the name, and what
-        // the wall says the agent is doing at the far end of the rule.
+        // A running turn: the row's pulse glyph, and activity at the far end.
         let working = looked(view(
             "fix-login-a1b",
             Phase::Working,
@@ -2361,8 +1966,7 @@ index e69de29..0000000
              card under the rule is what the agent is doing: {working:?}"
         );
 
-        // The vendor's own line about the turn, where a reader found one
-        // spinning on the pane, whether or not the record names a tool.
+        // The vendor's spinner line, when one was read off the pane.
         let mut spinning = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
         spinning.doing = Some("Nesting… (15s · ↓ 1.3k tokens)".to_string());
         let spinning = looked(spinning);
@@ -2371,8 +1975,7 @@ index e69de29..0000000
             "the spinner line whole, at the far end: {spinning:?}"
         );
 
-        // A turn the vendor ended with shells still running says so, since
-        // that is the one thing about it the card cannot show.
+        // Background shells still running.
         let mut held = view("fix-login-a1b", Phase::Working, Some("2 shells running"), 3);
         held.state.background = 2;
         let held = looked(held);
@@ -2381,16 +1984,13 @@ index e69de29..0000000
             "the shells the turn is held open for: {held:?}"
         );
 
-        // A turn that has said nothing yet is still a turn, and the rule says
-        // so rather than leaving the far end of it bare.
         let quiet = looked(view("fix-login-a1b", Phase::Working, None, 3));
         assert!(
             quiet.ends_with("thinking…"),
             "a working agent with nothing to say is thinking: {quiet:?}"
         );
 
-        // And a turn that is over has the ended mark and nothing at that end:
-        // what it said is on the card, and the rule is not a second row.
+        // An ended turn: the ended glyph and nothing at the far end.
         let done = looked(view(
             "old-job-b2c",
             Phase::Done,
@@ -2409,9 +2009,8 @@ index e69de29..0000000
 
     #[test]
     fn card_rule_keeps_a_dash_however_long_the_launch_command_is() {
-        // A launch command is a path as often as a word, and a path can be
-        // longer than the rule. The rule is what says the line is the card's
-        // edge, so the path gives way before the last dash does.
+        // A launch command path longer than the rule is cut before the last
+        // dash is.
         let size = (60, 20);
         let mut agent = view("fix-login-a1b", Phase::Working, None, 3);
         agent.meta.agent = Some(
@@ -2449,10 +2048,7 @@ index e69de29..0000000
 
     #[test]
     fn card_takes_the_strength_off_the_wall_it_is_drawn_over() {
-        // A card is a modal the way a line being typed is, and the wall says
-        // so the same way under both: everything above the rule goes dim to
-        // its last cell, the row under the cursor with the rest, and what is
-        // left undimmed is the card.
+        // Like a typed line, a card dims everything above its rule.
         let size = (60, 20);
         let modifier = |screen: &Screen, word: &str| {
             let lines = painted(screen, size);
@@ -2496,9 +2092,6 @@ index e69de29..0000000
 
     #[test]
     fn card_stands_a_blank_row_between_what_it_says_and_its_line() {
-        // What the card says and what somebody is saying back to it do not
-        // run together: one blank row stands between the card's last row and
-        // the chevron, and it is the first row to go where the band is short.
         let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
         let roomy = painted(&answering(question(), ""), (60, 20));
         let line = roomy
@@ -2511,8 +2104,8 @@ index e69de29..0000000
             "and the card's last row over that: {roomy:?}"
         );
 
-        // On a band with room for the rule, one row of the card and the line,
-        // the gap is what goes.
+        // With room for only the rule, one content row and the line, the gap
+        // goes.
         let tight = painted(
             &answering(asking(&["the sqlite one"], Some(Kind::Question)), ""),
             (60, 7),
@@ -2529,10 +2122,7 @@ index e69de29..0000000
 
     #[test]
     fn card_line_grows_a_row_at_a_time_as_the_task_line_does() {
-        // A newline in the line is a row of the card's line, drawn the way
-        // the task line draws it: the chevron on the first row, the indent
-        // under it on the next, and the block on the cell the cursor stands
-        // in, which is the end of the second row.
+        // Two rows, drawn like the task line, with the block at the end.
         let question = || asking(&["the sqlite one", "the docker one"], Some(Kind::Question));
         let screen = answering(question(), "one\ntwo");
         let drawn = painted(&screen, (60, 20));
@@ -2552,9 +2142,8 @@ index e69de29..0000000
             "and the blank row still over it: {drawn:?}"
         );
 
-        // A line taller than the card has room for takes rows off what the
-        // card says, up to the task line's own cap, and never the rule or the
-        // card's last row.
+        // A tall line is capped like the task line and never takes the rule
+        // or the card's last content row.
         let tall = (1..=12)
             .map(|n| format!("row {n}"))
             .collect::<Vec<String>>()
@@ -2583,10 +2172,8 @@ index e69de29..0000000
 
     #[test]
     fn card_line_offers_its_words_under_the_card() {
-        // The words the line under the cursor could be stand in a band under
-        // the card and over the keys, exactly where the task line's stand:
-        // the card's line offers the same words, and the band is the same
-        // band.
+        // Completions go under the card and over the keys, as for the task
+        // line.
         let question = || asking(&["the sqlite one"], Some(Kind::Question));
         let mut screen = answering(question(), "/rev");
         if let Mode::Typing(line) = &mut screen.mode {
@@ -2671,9 +2258,6 @@ index e69de29..0000000
 
     #[test]
     fn card_moves_no_row_of_the_list_when_it_opens() {
-        // The wall is what somebody with a card open is walking, so opening
-        // one leaves every row of it where it stood: the card takes its rows
-        // off the foot of the screen rather than out of the middle of the list.
         let group = || {
             vec![
                 view("ask-a1b", Phase::Waiting, None, 29),
@@ -2698,9 +2282,7 @@ index e69de29..0000000
             "the row under the one the card came off included: {screen:?}"
         );
 
-        // On a screen with nearly no room the card is cut to what half of it
-        // allows, because the rows it would take next are the last rows of the
-        // list.
+        // A very short screen cuts the card and keeps a list row.
         let tight = drawn(group(), Some(question()), (60, 5));
         assert_eq!(
             card_lines(&tight).len(),
@@ -2713,13 +2295,12 @@ index e69de29..0000000
         );
     }
 
-    /// The view drawn at a size a test picks: what a person sees there.
+    /// The rows drawn for these readings and card.
     fn settled(views: Vec<View>, card: Option<Card>, size: (u16, u16)) -> Vec<String> {
         painted(&showing(views, card), size)
     }
 
-    /// The card a finished row opens: the answer it left behind, long enough
-    /// that the card asks for every row it is allowed.
+    /// A finished agent's card with an answer long enough to fill the card.
     fn ending(id: &str) -> Card {
         Card {
             id: id.to_string(),
@@ -2736,9 +2317,8 @@ index e69de29..0000000
         }
     }
 
-    /// Six waiting agents and six finished ones, which with a heading over
-    /// each group and the blank row between them is fifteen rows of list —
-    /// exactly the band a twenty-row screen has for it.
+    /// Six waiting and six finished agents: with two headings and a blank
+    /// row, fifteen list rows, exactly the band of a 20-row screen.
     fn fifteen_rows() -> Vec<View> {
         (0..6)
             .map(|n| view(&format!("ask-{n:02}"), Phase::Waiting, None, 29))
@@ -2750,10 +2330,7 @@ index e69de29..0000000
 
     #[test]
     fn card_draws_over_the_foot_and_moves_no_row_under_a_walked_cursor() {
-        // Fifteen rows on a twenty-row screen: the header takes two, the rows
-        // of air at either end of the list one each, and the keys the last.
-        // The cursor is on the last of the fifteen, which is the case the card
-        // used to scroll the wall for.
+        // The cursor on the last of fifteen rows, under where the card goes.
         let size = (60, 20);
         let mut screen = showing(fifteen_rows(), None);
         let last = screen.list.items().len() - 1;
@@ -2792,8 +2369,7 @@ index e69de29..0000000
             "the row under the card is said by the card's rule alone: {carded:?}"
         );
 
-        // Walking the list with the card open moves no row either: the wall is
-        // laid out as if no card were up, so the offset cannot change under it.
+        // Walking the cursor with the card up moves no row either.
         for at in (0..last).rev() {
             if !screen.list.land(at) {
                 continue;
@@ -2809,9 +2385,8 @@ index e69de29..0000000
 
     #[test]
     fn a_click_reads_the_row_the_card_left_where_it_was_and_none_under_the_card() {
-        // The same fifteen rows with the cursor on the last of them, read the
-        // way the mouse reads them: a point above the card names the row it
-        // named with no card up, and a point on the card names nothing at all.
+        // Above the card, a point maps to the same item as without a card; on
+        // the card it maps to none.
         let size = (60, 20);
         let mut screen = showing(fifteen_rows(), None);
         let last = screen.list.items().len() - 1;
@@ -2855,12 +2430,7 @@ index e69de29..0000000
 
     #[test]
     fn card_stands_over_the_list_and_folds_nothing_when_it_opens() {
-        // Ten finished agents more than the fold holds, so the completed
-        // group folds behind a count. The card covers the foot of the band
-        // rather than taking it, so the wall above the card is laid out
-        // exactly as it was with no card up — the fold is not cut again for
-        // the rows the card left, and no row that stood above the card's rule
-        // is a different row afterwards.
+        // A folded completed group: opening a card does not refold it.
         let fleet = || {
             (0..FOLD_AT + 10)
                 .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
@@ -2915,8 +2485,7 @@ index e69de29..0000000
             0,
             "and so does the line at its foot: {line:?}"
         );
-        // And so does everything between them. Bar the blank row the line
-        // stands off the rest by, which says nothing and stands nowhere.
+        // So does every non-blank row between them.
         for row in said.iter().filter(|row| !row.is_empty()) {
             assert!(
                 !row.starts_with(' '),
@@ -2950,19 +2519,18 @@ index e69de29..0000000
         );
     }
 
-    /// The same card, with somebody part way through typing the answer to it.
+    /// The view with `card` up and `typed` on its answer line.
     fn answering(card: Card, typed: &str) -> Screen {
         let mut screen = showing(a_fleet(), Some(card));
         let mut composer = Composer::new(Asking::Reply);
         composer.text = typed.to_string();
-        // Where somebody typing it would have left the cursor, which is what
-        // the block on the line stands on.
+        // Cursor at the end, as after typing.
         composer.at = composer.text.chars().count();
         screen.mode = Mode::Typing(composer);
         screen
     }
 
-    /// The row of the card the answer is typed on.
+    /// The card's answer line.
     fn answer_row(screen: &[String]) -> String {
         screen
             .iter()
@@ -2971,7 +2539,7 @@ index e69de29..0000000
             .clone()
     }
 
-    /// Which row of the screen the card's line is standing on.
+    /// The screen row of the card's answer line.
     fn line_row(screen: &[String]) -> u16 {
         screen
             .iter()
@@ -3033,9 +2601,7 @@ index e69de29..0000000
              which is where the answer will begin"
         );
 
-        // Where the cursor has been walked back into what was typed, the block
-        // is on the cell it is standing in: that is where the next character
-        // lands, and the end of the line is not.
+        // With the cursor moved back, the block follows it.
         let mut walked = answering(question(), "the docker one");
         if let Mode::Typing(composer) = &mut walked.mode {
             composer.at = 4;
@@ -3043,8 +2609,7 @@ index e69de29..0000000
         assert_eq!(block(&walked, size, line_row(&typed)), Some(6));
     }
 
-    /// The weight the chevron on the card's line was drawn at, which is how
-    /// the dim is told from the colour.
+    /// The colour and modifiers of the answer line's chevron.
     fn chevron(screen: &Screen, size: (u16, u16)) -> (Color, Modifier) {
         let row = line_row(&painted(screen, size));
         let cell = cells(screen, size);
@@ -3055,8 +2620,7 @@ index e69de29..0000000
     fn card_line_says_what_it_will_take_on_every_kind_of_card() {
         let size = (60, 14);
 
-        // At a question, what that question will take, with the chevron in
-        // the colour of a thing waiting on a person.
+        // A question: what it accepts, chevron in the waiting colour.
         let question = answering(
             asking(&["the sqlite one", "the docker one"], Some(Kind::Question)),
             "",
@@ -3068,8 +2632,7 @@ index e69de29..0000000
         );
         assert_eq!(chevron(&question, size).0, theme().waiting);
 
-        // On an agent still at work, the word for what the line is: what is
-        // typed there goes to it as it stands.
+        // A working agent: "reply".
         let busy = answering(
             Card {
                 phase: Phase::Working,
@@ -3089,10 +2652,7 @@ index e69de29..0000000
              waiting on them"
         );
 
-        // An agent whose command has ended still takes a line, because a line
-        // typed there brings it back on those words — and the line says so,
-        // since a resume is a vendor started again on the words, which is
-        // more than a working agent's line costs.
+        // An ended agent that can be resumed: "resume".
         let ended = |listening| Card {
             phase: Phase::Done,
             question: None,
@@ -3106,9 +2666,7 @@ index e69de29..0000000
         let comes_back = answer_row(&painted(&back, size));
         assert!(comes_back.contains("❯ resume"), "{comes_back:?}");
 
-        // And on the one there is nothing to bring back, what would come of
-        // it — in the words the reply itself is refused in, because it is the
-        // same fact said before rather than after the keystroke.
+        // One that cannot: the words the reply would be refused in.
         let over = answering(ended(false), "");
         let past = answer_row(&painted(&over, size));
         assert!(past.contains("❯ nothing is listening"), "{past:?}");
@@ -3117,8 +2675,6 @@ index e69de29..0000000
 
     #[test]
     fn card_is_no_taller_than_what_it_has_to_show() {
-        // An agent whose answer is one line does not want seven rows of box to
-        // say it in, and every row the card leaves is a row of the wall.
         let brief = Card {
             phase: Phase::Done,
             question: None,
@@ -3150,9 +2706,7 @@ index e69de29..0000000
 
     #[test]
     fn card_keeps_the_row_being_typed_on_when_there_is_room_for_little_else() {
-        // A card with room for one row under its rule. What somebody is typing
-        // is what that row is for: the question is on the agent's row above,
-        // and the line is nowhere else at all.
+        // One row under the rule goes to the answer line.
         let screen = painted(
             &answering(asking(&["the sqlite one"], Some(Kind::Question)), "the sq"),
             (60, 6),
@@ -3167,8 +2721,8 @@ index e69de29..0000000
 
     #[test]
     fn card_invites_only_the_answers_the_question_will_take() {
-        // A permission box has no field for words: they would land on whatever
-        // is highlighted, which is an answer nobody chose.
+        // A permission prompt takes no free text: typed words would land on
+        // the highlighted choice.
         let box_office = Card {
             kind: Some(Kind::Permission),
             question: Some("Claude needs your permission to use Bash".to_string()),
@@ -3182,7 +2736,7 @@ index e69de29..0000000
              lies: {asked:?}"
         );
 
-        // And a card nobody is answering has the list's own keys under it.
+        // With no answer line open, the list's keys show.
         let looking = painted(&showing(a_fleet(), Some(asking(&[], None))), (60, 14));
         assert_eq!(
             looking[13],
@@ -3216,8 +2770,7 @@ index e69de29..0000000
 
     #[test]
     fn card_gives_the_question_every_row_its_words_wrap_to() {
-        // 37 characters are two rows of 20 cut anywhere, and three cut at
-        // the spaces.
+        // 37 chars: two rows of 20 when cut anywhere, three at the spaces.
         let mut card = asking(&[], None);
         card.question = Some("reconciliation authentication tokens?".to_string());
         let screen = drawn(a_fleet(), Some(card), (20, 24));
@@ -3260,11 +2813,9 @@ index e69de29..0000000
 
     #[test]
     fn card_neutralises_the_question_and_the_choices_it_quotes() {
-        // The question is the agent's own words, and a bidirectional override
-        // written into them can visually reorder the choices underneath —
-        // which are the keys a person is about to press. ratatui drops the
-        // control characters on its own; the invisible format characters it
-        // keeps have to be neutralised before anything draws them.
+        // A bidi override in the question could visually reorder the choices.
+        // ratatui drops control characters itself but keeps format characters,
+        // so those must be made inert first.
         let mut card = asking(&["yes\u{200b}really", "no\u{ad}pe"], Some(Kind::Question));
         card.question = Some("pro\u{ad}ceed\u{202e}?".to_string());
         let screen = drawn(a_fleet(), Some(card), (60, 14)).join("\n");
@@ -3284,9 +2835,7 @@ index e69de29..0000000
 
     #[test]
     fn card_shows_the_question_alone_and_none_of_the_pane_it_is_asked_on() {
-        // The pane under a question is the vendor's drawing of the same box
-        // the card already says in rows of its own, behind an echo of the
-        // prompt: everything on it is noise below the answer line.
+        // The pane only repeats the question in the vendor's chrome.
         let screen = drawn(
             vec![view("ask-a1b", Phase::Waiting, None, 30)],
             Some(Card {
@@ -3361,8 +2910,7 @@ index e69de29..0000000
         assert!(!all.contains("+ line 39"), "{all}");
     }
 
-    /// The card over a patch of this many lines, which can be more than any
-    /// card has rows for.
+    /// A patch card with `lines` added lines.
     fn a_long_patch(lines: usize) -> Card {
         Card {
             id: "fix-login-a1b".to_string(),
@@ -3454,12 +3002,12 @@ index e69de29..0000000
             )
         };
 
-        // An answer reads forward, so the card opens on its first words.
+        // Opens at the top.
         let opened = painted(&answered(), (60, 14)).join("\n");
         assert!(opened.contains("said 0"), "{opened}");
         assert!(!opened.contains("said 39"), "{opened}");
 
-        // And paged, it stands that many rows below the top.
+        // Paged, it is `away` rows below the top.
         let screen = answered();
         screen.scroll.away.set(7);
         let all = painted(&screen, (60, 14)).join("\n");
@@ -3474,9 +3022,8 @@ index e69de29..0000000
 
     #[test]
     fn card_gives_a_long_answer_its_whole_allowance() {
-        // Forty rows of answer on a twenty-row screen: the card grows to
-        // everything the height allows rather than the few lines a capture
-        // used to fill, and the rest is there to page onto.
+        // 40 rows of answer on a 20-row screen: the card takes its full
+        // allowance and pages the rest.
         let long: String = (0..40).map(|n| format!("said {n}\n")).collect();
         let card = Card {
             phase: Phase::Done,
@@ -3516,20 +3063,19 @@ index e69de29..0000000
 
     #[test]
     fn wide_text_in_a_question_gets_every_row_it_needs() {
-        // Forty-two characters two cells each: fewer chars than the card is
-        // wide, and more cells than one row of it holds.
+        // 42 wide chars: fewer chars than the card's width, more cells than
+        // one row.
         let question = format!("{}終わり", "日本語".repeat(13));
         let mut card = asking(&["1. Yes", "2. No"], None);
         card.question = Some(question.clone());
 
         let screen = painted(&showing(a_fleet(), Some(card)), (60, 30));
-        // A wide character's second cell reads back as a space.
+        // A wide char's second cell reads back as a space.
         let all: String = screen.concat().replace(' ', "");
         assert!(all.contains(&question), "{screen:#?}");
     }
 
-    /// A capture with the vendor's paint on it, which is what costs something
-    /// to read: the escapes are what the walk is for.
+    /// A capture with ANSI styling, so building a body has to parse it.
     const PAINTED: &str = "\u{1b}[1mwrote the parser\u{1b}[0m\n\u{1b}[32m+ done\u{1b}[0m";
 
     #[test]
@@ -3547,8 +3093,7 @@ index e69de29..0000000
             "the body is walked out of its escapes where the card is built"
         );
 
-        // A view redraws on every key, every tick and every mouse move. None
-        // of them is a reason to read the same capture again.
+        // Redraws do not parse again.
         for _ in 0..3 {
             let drawn = painted(&screen, (60, 14)).join("\n");
             assert!(drawn.contains("wrote the parser"), "{drawn}");
@@ -3563,9 +3108,8 @@ index e69de29..0000000
     #[test]
     fn view_reads_the_bottom_of_a_screen_and_drops_what_is_blank() {
         let shown = |text: &'static str, wanted: usize, back: usize| {
-            // The blank rows at the bottom are dropped where the body is
-            // built, so what `tail` is handed is already the last row anybody
-            // wrote on.
+            // Trailing blank rows are dropped when the body is built, before
+            // `tail` sees it.
             let rows: Vec<&str> = text.lines().collect();
             let mut kept = rows.len();
             while kept > 0 && rows[kept - 1].trim().is_empty() {
@@ -3576,16 +3120,15 @@ index e69de29..0000000
         assert_eq!(shown("a\nb\nc\n\n\n", 2, 0), ["b", "c"]);
         assert_eq!(shown("a\nb", 5, 0), ["a", "b"]);
         assert!(shown("", 3, 0).is_empty());
-        // Paged back, the window stands above the bottom it is read from.
+        // Paged back, the window moves up from the bottom.
         assert_eq!(shown("a\nb\nc\nd\n\n", 2, 1), ["b", "c"]);
         assert!(shown("a\nb", 2, 5).is_empty());
     }
 
-    /// The five rows claude draws at the bottom of every pane it has the room
-    /// for, in the vendor's own order: the composer's top border with its
-    /// right-anchored label, whatever is staged in the box, the composer's
-    /// bottom border, the statusline, and the mode footer. Transcribed from a
-    /// live 2.1.237 at 100 columns on 2026-08-21.
+    /// The five rows claude draws at the bottom of a pane: the composer's top
+    /// border with its right-anchored label, the staged text, the bottom
+    /// border, the statusline, and the mode footer. Transcribed from claude
+    /// 2.1.237 at 100 columns.
     const CHROME: [&str; 5] = [
         "───────────────────────────── execute amx-v2 tail ─",
         "❯ ",
@@ -3594,17 +3137,15 @@ index e69de29..0000000
         "  ⏵⏵ accept edits on (shift+tab to cycle) · ← 3 agents",
     ];
 
-    /// A row of the agent's own work, which is the one thing no step may take.
+    /// A row of the agent's output, which the cut must never take.
     const SAID: &str = "what the agent said";
 
-    /// claude's own anchors, which the rows above were measured off. The walk
-    /// is handed the furniture of the vendor whose pane it is reading, and
-    /// none of this chrome is findable without them.
+    /// claude's furniture anchors, which [`CHROME`] matches.
     fn chrome() -> &'static Furniture {
         crate::rules::of("claude").furniture()
     }
 
-    /// That screen with `typed` staged in the composer, under a row of work.
+    /// [`CHROME`] with `typed` staged in the composer, under a row of output.
     fn staged(typed: &[&'static str]) -> Vec<&'static str> {
         let mut screen = vec![SAID, CHROME[0]];
         screen.extend_from_slice(typed);
@@ -3625,10 +3166,8 @@ index e69de29..0000000
 
     #[test]
     fn view_tail_cuts_a_composer_whatever_is_staged_in_it() {
-        // A composer with one row of text in it is the state that let a walk
-        // cutting exactly one input row pass for a working rule, so neither
-        // fixture here has one: a task wrapped over three rows, and a message
-        // typed over four lines.
+        // Multi-row staged text only: a one-row composer would also pass a cut
+        // that removes exactly one input row.
         let wrapped = staged(&[
             "❯ port the importer and then check every",
             "  call site that used to take the old",
@@ -3642,8 +3181,8 @@ index e69de29..0000000
 
     #[test]
     fn view_tail_leaves_a_screen_the_vendor_drew_no_footer_under_alone() {
-        // A permission prompt, which ends at its own confirm row: cutting
-        // upward from there would take the question the card was opened for.
+        // A permission prompt ends at its confirm row; cutting it would take
+        // the question.
         let prompt = [
             "───────────────────────────────────",
             " Bash command",
@@ -3655,17 +3194,15 @@ index e69de29..0000000
         ];
         assert_eq!(cut(chrome(), &prompt), prompt.as_slice());
 
-        // And a pane too short for the vendor to draw its chrome in, whose
-        // last row is the composer's own bottom border.
+        // A pane too short for the footer, ending on the composer's border.
         let short = [SAID, CHROME[0], CHROME[1], CHROME[2]];
         assert_eq!(cut(chrome(), &short), short.as_slice());
     }
 
     #[test]
     fn view_tail_gives_back_by_position_what_it_cannot_place() {
-        // A statusline is whatever somebody's command prints, and claude
-        // 2.1.263 draws up to eight rows of it: four of four and eight of ten,
-        // measured 2026-09-11. Every row within that is stepped over.
+        // claude 2.1.263 draws up to eight statusline rows (all four of four,
+        // eight of ten). Any count within that is stepped over.
         for rows in [4, 8] {
             let mut tall = vec![SAID, CHROME[2]];
             tall.extend((0..rows).map(|_| "  status"));
@@ -3673,17 +3210,15 @@ index e69de29..0000000
             assert_eq!(cut(chrome(), &tall), &tall[..1], "{rows} rows");
         }
 
-        // Nine rows between the footer and the nearest rule: not a shape the
-        // vendor draws, so the statusline step abandons and only the footer —
-        // matched by its own opener — stays cut.
+        // Nine rows is not a shape claude draws: the statusline step gives up
+        // and only the footer, matched by its own opener, is cut.
         let mut odd = vec![SAID, CHROME[2]];
         odd.extend((0..9).map(|_| "  status"));
         odd.push(CHROME[4]);
         assert_eq!(cut(chrome(), &odd), &odd[..odd.len() - 1]);
 
-        // A composer whose staged text is taller than half the capture: the
-        // scan runs past its cap without meeting a top border, so it gives
-        // back every row it took and the box survives on screen.
+        // Staged text taller than half the capture: the scan hits its cap
+        // before a top border and gives the composer rows back.
         let mut runaway = vec![SAID];
         runaway.extend((0..8).map(|_| "  typed"));
         runaway.extend_from_slice(&CHROME[2..]);
@@ -3694,11 +3229,10 @@ index e69de29..0000000
         );
     }
 
-    /// `capture-pane -p -J` of a live claude 2.1.237 at 72 columns on
-    /// 2026-08-21, with a task typed into the composer and wrapped over three
-    /// rows. Verbatim, trailing spaces and the no-break space after the
-    /// chevron included: the rows above are transcriptions, and what a
-    /// transcription cannot carry is exactly what these predicates walk over.
+    /// `capture-pane -p -J` of claude 2.1.237 at 72 columns with a task
+    /// wrapped over three composer rows. Verbatim, including trailing spaces
+    /// and the no-break space after the chevron, which a transcription would
+    /// lose.
     const CAPTURED: [&str; 9] = [
         "what the agent said",
         "  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to…",
@@ -3713,22 +3247,19 @@ index e69de29..0000000
 
     #[test]
     fn view_tail_cuts_what_a_live_vendor_actually_drew() {
-        // The pane's own padding under the last row the vendor drew on.
+        // Pane padding under the last drawn row.
         let mut screen = CAPTURED.to_vec();
         screen.push("");
 
-        // The warning claude renders flush against the composer's top border
-        // with no blank row between them stays: it is above the box, and a
-        // walk that ran upward until a blank row would have eaten it.
+        // The warning flush against the composer's top border stays; a cut
+        // that ran up to the nearest blank row would have taken it.
         assert_eq!(cut(chrome(), &screen), &CAPTURED[..2]);
     }
 
     #[test]
     fn view_tail_cuts_the_spinner_however_much_of_it_the_vendor_drew() {
-        // The row claude spins while a turn runs, as it read for the 65
-        // seconds before the first token at `--effort low` on 2026-09-06:
-        // glyph, gerund, ellipsis and nothing after them. And as it reads on
-        // a wide pane mid-turn, with the elapsed time and a detail behind.
+        // claude's spinner row: bare before the first token (seen at
+        // `--effort low`), and with elapsed time and detail mid-turn.
         for spinner in [
             "● Actioning…",
             "✶ Forging… (9s · thinking with xhigh effort)",
@@ -3744,12 +3275,11 @@ index e69de29..0000000
                 "  Opus 5 (1M context) │ ◖ low",
                 "  ⏵⏵ auto mode on (shift+tab to cycle)",
             ];
-            // The blank row over the spinner is left, as the blank rows a
-            // pane is padded out with are: the walk trims both.
+            // The blank row above the spinner is left; the body trims it.
             assert_eq!(cut(chrome(), &screen), &screen[..2], "{spinner}");
         }
 
-        // The line a finished turn leaves behind is the agent's, and stays.
+        // A finished turn's summary line is output, and stays.
         let screen = [
             "what the agent said",
             "",
@@ -3764,7 +3294,7 @@ index e69de29..0000000
         assert_eq!(cut(chrome(), &screen), &screen[..4]);
     }
 
-    /// What a card's body says, with the paint it says it in set aside.
+    /// The text of a card body's first `rows` rows.
     fn said(card: Card, rows: usize) -> Vec<String> {
         body(&card.read(), rows, 0, None, &[], theme())
             .iter()
@@ -3786,17 +3316,14 @@ index e69de29..0000000
             card
         };
 
-        // The one asking card that still shows its pane: amx missed the call
-        // that drew the menu, so the pane is the only place the question is
-        // written at all.
+        // No recorded question: the pane is the only place it appears.
         let kept = said(asked(None), 24);
         assert!(
             kept.contains(&"Which features should be enabled?".to_string()),
             "{kept:?}"
         );
 
-        // And with the question on it, the card is the question block alone:
-        // the pane under it is the same box behind an echo of the prompt.
+        // With the question recorded, no pane.
         let block = said(asked(Some("Which features should be enabled?")), 24);
         assert!(block.is_empty(), "{block:?}");
     }
@@ -3844,8 +3371,7 @@ index e69de29..0000000
         };
         assert_eq!(said(captured(CHROME.join("\n")), 8), [ALL_CHROME]);
 
-        // Which is not what an agent with nothing to say gets: no capture was
-        // cut there, and "the pane held only furniture" is a different fact.
+        // An empty capture is not the same case.
         assert!(said(captured(String::new()), 8).is_empty());
     }
 
@@ -3858,9 +3384,7 @@ index e69de29..0000000
         screen.extend_from_slice(&CHROME);
         card.body = screen.join("\n");
 
-        // The one row left after the cut, not the six rows the capture has: a
-        // card that measured before it cut would spend its height on the
-        // vendor's furniture. Two with the rule over it.
+        // One body row after the cut, plus the rule; not the six captured.
         assert_eq!(card_rows(&card.read(), None, &[], None, 60), 2);
     }
 
@@ -3874,7 +3398,7 @@ index e69de29..0000000
             card.queued = queued;
             card.read()
         };
-        // The rule, the one row said, and one per message.
+        // The rule, one body row, and one per message.
         let two = with(vec![
             "and the linter".to_string(),
             "then the docs".to_string(),
@@ -3883,8 +3407,7 @@ index e69de29..0000000
 
         let five = with((1..=5).map(|n| format!("message {n}")).collect());
         assert_eq!(card_rows(&five, None, &[], None, 60), 5);
-        // And the rows are the newest, each behind the prompt's glyph with the
-        // word that says why it is on the card.
+        // The newest three.
         let rows: Vec<String> = queued(&five, 60, Theme::default())
             .iter()
             .map(|line| line.to_string())
