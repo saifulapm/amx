@@ -22,7 +22,7 @@ use crate::derive::{self, View};
 use crate::store::{Agent, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::vendor::{Capability, Hooks, Moment};
-use crate::verbs::answer;
+use crate::verbs::{answer, print_question};
 use crate::{complain, exit, paths, registry, spawn, store, warn};
 
 /// The event amx records for a message it sent.
@@ -400,10 +400,7 @@ fn unanswered<'a>(
 pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let id = view.id();
     if let Some(question) = &view.state.question {
-        line(&rendered(question, to_terminal), out)?;
-        for choice in numbered(&view.state.options) {
-            line(&rendered(&choice, to_terminal), out)?;
-        }
+        print_question(question, &view.state.options, to_terminal, out)?;
     }
     warn!(
         "amx: {id} is waiting on a question. answer it with `{}`",
