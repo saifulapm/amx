@@ -1,5 +1,7 @@
 # A turn, then a message typed at the idle composer, which opens a second turn:
-# a UserPromptSubmit with the typed text, and a Stop.
+# a UserPromptSubmit with the typed text, and a Stop. The first turn's Stop is
+# delivered before its closing screen is drawn, so a test that waits for that
+# screen knows the turn has ended.
 screen idle
 sleep 50
 hook SessionStart {}
@@ -10,8 +12,8 @@ screen working
 sleep 300
 transcript {"timestamp":"2026-09-28T02:36:53.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the tests pass now"}],"phase":"final_answer"}}
 transcript {"timestamp":"2026-09-28T02:36:53.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"the tests pass now"}}
-screen idle-after
 hook Stop {"stop_hook_active":false,"last_assistant_message":"the tests pass now"}
+screen idle-after
 await line
 hook UserPromptSubmit {}
 transcript {"timestamp":"2026-09-28T02:37:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}

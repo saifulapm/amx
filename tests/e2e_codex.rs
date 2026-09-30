@@ -473,7 +473,9 @@ fn a_codex_started_by_hand(amx: &Harness, scenario_name: &str, up: &str) -> Stri
 #[test]
 fn adopt_takes_over_a_codex_by_the_session_its_tool_shell_names() {
     let amx = Harness::new();
-    let pane = a_codex_started_by_hand(&amx, "takes-a-message", "? for shortcuts");
+    // The screen codex draws once its first turn is over: a message sent
+    // during that turn would be answered by it.
+    let pane = a_codex_started_by_hand(&amx, "takes-a-message", "steered");
     let session = amx.until("the session codex minted", || {
         said_in(&amx, &pane)
             .lines()
