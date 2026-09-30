@@ -1,28 +1,11 @@
-//! Telling the person when an agent needs them.
+//! Notices to the person when an agent stops on a question or finishes, and the
+//! moment commands ([`Errand`]) that run at the same points.
 //!
-//! Two moments are worth interrupting somebody for: an agent that has stopped
-//! on a question, and one that has finished. Everything else is on the wall
-//! and in `ls`.
-//!
-//! A notice goes by the roads the `notifications` key names: the desktop's own
-//! notifier, the terminals the person is sitting at, both of them or neither.
-//! The second road is for a person over SSH, who has a terminal there and a
-//! desktop somewhere else entirely.
-//!
-//! Posting is best effort by design. The hook path is measured in fractions of
-//! a millisecond and runs while an agent waits on it, so a desktop with no
-//! notifier — or one that is slow to answer — costs nothing: the notifier is
-//! started and never waited for, and any failure is silence.
-//!
-//! One notice is not worth posting at all: the one about a pane its person is
-//! already looking at. Who is looking is a question for tmux, and the hook
-//! makes no tmux calls, so the notifier forks away from the hook first and
-//! asks on its own time.
-//!
-//! That fork is also what starts an [`Errand`] — the command somebody asked to
-//! have run when an agent reaches a moment. The two go together because they
-//! want the same things: to be off the hook path, to know whether anybody was
-//! looking, and to be left alone once started.
+//! A notice goes where the `notifications` key says: the desktop notifier, the
+//! terminals of attached tmux clients (for a person over SSH), both, or
+//! neither. Delivery is best effort. The hook forks a notifier and returns at
+//! once; the notifier asks tmux whether the pane is being watched, skips the
+//! notice if so, and starts the errand. Failures are silent.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -32,10 +15,8 @@ use crate::config::Delivery;
 use crate::store::Phase;
 use crate::tmux::{PaneId, Server};
 
-/// What tmux writes into the environment of every pane it makes: the server,
-/// and which pane this is. An agent's hook runs inside the agent's own pane,
-/// so these two name the pane a notice is about, and reading them is not a
-/// tmux call.
+/// The variables tmux sets in every pane: its server and the pane's id. A hook
+/// runs in the agent's pane, so these name the pane without a tmux call.
 const SERVER_ENV: &str = "TMUX";
 const PANE_ENV: &str = "TMUX_PANE";
 
@@ -55,14 +36,14 @@ impl Notice {
         }
     }
 
-    /// An agent's command has finished, well or badly.
+    /// An agent's command has finished, or `None` for a phase not worth a
+    /// notice.
     pub fn finished(id: &str, phase: Phase, exit: Option<i32>) -> Option<Notice> {
         let body = match (phase, exit) {
             (Phase::Done, _) => "finished".to_string(),
             (Phase::Failed, Some(code)) => format!("failed, exit {code}"),
             (Phase::Failed, None) => "failed".to_string(),
-            // Nothing else is worth an interruption: a person who stopped an
-            // agent knows it stopped.
+            // Whoever stopped an agent already knows.
             _ => return None,
         };
         Some(Notice {
@@ -72,41 +53,29 @@ impl Notice {
     }
 }
 
-/// A command a moment is worth running, ready to start — see
-/// [`crate::errand`], which is what decides there is one and fills this in.
+/// A moment command ready to start, assembled by [`crate::errand`].
 ///
-/// It travels this far rather than being read here because the fork that
-/// starts it is the fork the notice already pays for: the hook gets one child
-/// for both, and everything it needs was worked out on the near side of it.
+/// Passed to [`post`] so the one fork that delivers the notice also starts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Errand {
-    /// The command line, as the config file holds it, for `sh -c`.
+    /// The command line from the config, run with `sh -c`.
     pub command: String,
     /// Where it runs: the agent's tree, or the directory it was started in.
     pub dir: PathBuf,
-    /// What it is told, beyond whatever this process inherited.
+    /// Variables set on top of the inherited environment.
     pub env: Vec<(String, String)>,
     /// The event that moved the agent, as one JSON line.
     pub stdin: Vec<u8>,
 }
 
-/// Tell the person what happened, and run what they asked to have run.
+/// Deliver a notice and start an errand, off the hook path.
 ///
-/// The deciding is a child's work. Whether somebody is already looking at the
-/// agent's pane is a question for tmux, and this runs on the hook path, where
-/// the pane being asked about is the one waiting for the hook to return. So
-/// the notifier forks away first and the hook comes straight back.
-///
-/// Asked once on the far side of the fork and spent on both: a notice is not
-/// posted about a screen its person is looking at, and an errand is told what
-/// the answer was rather than asking again.
-///
-/// A machine that cannot fork does the same inline. Whoever called this is
-/// then waiting on somebody's desktop, which is the cost of the fork not being
-/// there; one notification too many is the cheap way to be wrong.
+/// Forks a notifier and returns at once, since the hook's caller is waiting.
+/// The notifier asks tmux once whether the pane is watched: a watched pane gets
+/// no notice, and the errand is told the answer. Without fork the work runs
+/// inline, where an extra notification is the cheaper error.
 pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
-    // A notice nothing will deliver is not a reason to fork, and neither is a
-    // moment nobody wrote a command for.
+    // Nothing to deliver and nothing to run is no reason to fork.
     let notice = notice.filter(|_| delivery.tells());
     if notice.is_none() && errand.is_none() {
         return;
@@ -116,15 +85,15 @@ pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>
         Fork::Hook => (),
         Fork::Notifier => {
             deliver(notice, delivery, errand);
-            // This process is a copy of the hook, and the hook's work is
-            // already done. Leaving by any other door would do it twice.
+            // The child is a copy of the hook, whose work is done; returning
+            // would run the rest of it twice.
             unsafe { nix::libc::_exit(crate::exit::OK) };
         }
         Fork::Neither => deliver(notice, delivery, errand),
     }
 }
 
-/// Both roads, in the one process that has time for them.
+/// Deliver the notice, unless the pane is watched, and start the errand.
 fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
     let watched = watched(var(SERVER_ENV).as_deref(), var(PANE_ENV).as_deref());
     if let Some(notice) = notice.filter(|_| !watched) {
@@ -140,21 +109,15 @@ fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>)
     }
 }
 
-/// Run an errand and leave it to it.
+/// Start an errand with `sh -c` and return without waiting for it.
 ///
-/// Through `sh`, because the key holds a command line. The event goes in on
-/// stdin whole: it is the vendor's own JSON and an argv is the one place it
-/// could be read as syntax. What it says goes nowhere — somebody who wants a
-/// log of it redirects in the command they wrote.
+/// The event goes in on stdin, never in argv, where it could be read as
+/// syntax. Output is discarded. The line is small enough that the write never
+/// blocks, and closing stdin afterwards marks its end. A detached thread reaps
+/// the child.
 ///
-/// The caller does not wait on it; a detached thread reaps it. The line is a
-/// few hundred bytes against a pipe that holds pages of them, so writing it
-/// cannot block, and the handle goes at the end of this, which is what tells
-/// the command the line is all of it.
-///
-/// `watched` is what the pane was doing when the moment arrived, where
-/// anybody asked. `None` from a caller with no pane to ask about leaves the
-/// variable off rather than guessing at it.
+/// `watched` sets [`crate::errand::WATCHED_ENV`]; `None`, from a caller with no
+/// pane to ask about, leaves it unset.
 pub fn start(errand: &Errand, watched: Option<bool>) {
     let mut command = Command::new("sh");
     command
@@ -171,16 +134,16 @@ pub fn start(errand: &Errand, watched: Option<bool>) {
         command.env(crate::errand::WATCHED_ENV, if watched { "1" } else { "0" });
     }
 
-    // A command that is not there, or a fork this machine cannot spare, is
-    // silence: this is somebody's errand, not the agent's work.
+    // A command that cannot be started is ignored: it is the person's errand,
+    // not the agent's work.
     let Ok(mut child) = command.spawn() else {
         return;
     };
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(&errand.stdin);
     }
-    // The view and `stop` call this from a process that lives on, where an
-    // exited child nobody waits for stays a zombie until the view exits.
+    // The view and `stop` call this from long-lived processes, where an
+    // unwaited child stays a zombie.
     let _ = std::thread::Builder::new()
         .name("amx-errand".to_string())
         .spawn(move || child.wait());
@@ -188,31 +151,30 @@ pub fn start(errand: &Errand, watched: Option<bool>) {
 
 /// Which side of the fork a process is on.
 enum Fork {
-    /// The hook, whose part in this is over.
+    /// The hook, whose part is over.
     Hook,
-    /// The notifier, on its own from here.
+    /// The forked notifier.
     Notifier,
-    /// Neither: this machine could not fork, and the caller is still the hook.
+    /// Fork failed; the caller is still the hook.
     Neither,
 }
 
-/// Put a notifier behind the hook and come straight back.
+/// Fork a notifier and return at once in the hook.
 ///
-/// The child gives up two things it inherited, and both of them matter:
+/// The child drops two things it inherited:
 ///
-/// * **The hook's stdio.** The vendor reads what a hook writes, and a reader
-///   waiting for end of input waits for every process holding the pipe. A
-///   notifier still holding it would hand the agent back the delay this fork
-///   exists to take away — measured at about 2ms of it.
-/// * **The pane's session.** Stopping an agent signals the pane's process
-///   group, and telling somebody about the agent is not part of the agent.
+/// - The hook's stdio. The vendor reads the hook's output until every holder of
+///   the pipe closes it, so keeping it would add the notifier's time (about
+///   2ms) back to the hook.
+/// - The pane's session, via `setsid`. Stopping an agent signals the pane's
+///   process group, which the notifier is not part of.
 fn detach() -> Fork {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 
     // SIGHUP is ignored across the fork. After `_exit` the pane's shell exits
-    // at once, and the kernel hangs up its foreground process group, which the
-    // child is still in until `setsid`. An ignored signal is discarded rather
-    // than left pending, so the child cannot die in that window.
+    // at once and the kernel hangs up its foreground process group, which the
+    // child is in until `setsid`. An ignored signal is discarded, not left
+    // pending, so the child cannot die in that window.
     let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
     // SAFETY: installing SIG_IGN runs no handler code.
     let before = unsafe { sigaction(Signal::SIGHUP, &ignore) }.ok();
@@ -243,8 +205,8 @@ fn detach() -> Fork {
     }
 }
 
-/// Point this process's three standard streams at nothing, so whoever is
-/// reading them sees the end of them.
+/// Point stdin, stdout and stderr at `/dev/null`, so readers of the old ones
+/// see EOF.
 fn hand_back_stdio() {
     let Ok(null) = std::fs::OpenOptions::new()
         .read(true)
@@ -259,27 +221,24 @@ fn hand_back_stdio() {
     let _ = nix::unistd::dup2_stderr(null);
 }
 
-/// Whether the notice would be telling somebody what is already on their
-/// screen.
+/// Whether someone is already looking at the pane named by these variables.
 fn watched(server: Option<&str>, pane: Option<&str>) -> bool {
     pane_here(server, pane).is_some_and(|(server, pane)| server.pane_watched(&pane))
 }
 
-/// The pane this process is running in, as tmux named it in the environment.
+/// The server and pane named by `$TMUX` and `$TMUX_PANE`, if both are set.
 ///
-/// Outside tmux there is no pane, and a pane nobody can name is a pane nobody
-/// is looking at.
+/// Outside tmux there is no pane, and nobody is watching it.
 fn pane_here(server: Option<&str>, pane: Option<&str>) -> Option<(Server, PaneId)> {
     Some((Server::from_tmux_env(server?)?, PaneId::new(pane?).ok()?))
 }
 
-/// One variable of the environment, empty read as absent.
+/// An environment variable, with an empty value read as unset.
 fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-/// Start the notifier and do not wait for it: a desktop that is slow to
-/// answer, or that answers with an error, is nobody's business here.
+/// Start the desktop notifier without waiting for it or checking its result.
 fn raise(notice: &Notice) {
     let Some(mut command) = notifier(notice) else {
         return;
@@ -291,7 +250,7 @@ fn raise(notice: &Notice) {
         .spawn();
 }
 
-/// How this machine posts a notification.
+/// The desktop notification command: `osascript` on macOS, else `notify-send`.
 fn notifier(notice: &Notice) -> Option<Command> {
     if cfg!(target_os = "macos") {
         let mut command = Command::new("osascript");
@@ -312,22 +271,15 @@ fn notifier(notice: &Notice) -> Option<Command> {
     Some(command)
 }
 
-/// A string as AppleScript will read it.
+/// Escape a string for an AppleScript string literal.
 fn applescript(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Write the notice to every terminal the person is sitting at.
+/// Write the notice to the tty of every client of every tmux server here.
 ///
-/// A desktop is not always there to post to: somebody working over SSH has a
-/// terminal and nothing behind it, and the notifier on the machine amx is
-/// running on would be raising notices on a screen nobody is at. What that
-/// person does have is a tmux around the view, and a tmux client is a terminal
-/// amx can write to.
-///
-/// Every client of every server of theirs, because the view is on one server
-/// and the agents may be on another, and each terminal once: two servers
-/// listing the same one is one person, who does not want the sentence twice.
+/// For a person over SSH, whose desktop is on another machine. Every server,
+/// since the view and the agents may be on different ones; each tty once.
 fn tell_terminals(notice: &Notice) {
     let bytes = osc_notice(notice);
     for tty in terminals(crate::tmux::servers_here()) {
@@ -335,7 +287,7 @@ fn tell_terminals(notice: &Notice) {
     }
 }
 
-/// The terminals of everybody sitting at one of these servers, each named once.
+/// The client ttys of these servers, without duplicates.
 fn terminals(servers: Vec<Server>) -> Vec<PathBuf> {
     let mut ttys: Vec<PathBuf> = Vec::new();
     for server in servers {
@@ -348,16 +300,12 @@ fn terminals(servers: Vec<Server>) -> Vec<PathBuf> {
     ttys
 }
 
-/// The notice as the escape sequence a terminal reads as a notification: OSC
-/// 777, which is what tmux, foot, wezterm and the rest took from urxvt.
+/// The notice as an OSC 777 notification, the urxvt sequence tmux, foot,
+/// wezterm and others support.
 ///
-/// Both fields are made inert first. The title and the body are an agent's own
-/// text — a question it printed, a command line somebody wrote — and they are
-/// travelling inside an escape sequence, where a stray escape would start
-/// another and a stray bell would end this one early. Every control goes, C0,
-/// the delete and the eight-bit C1 set a terminal may read as escapes of its
-/// own; the semicolon of the title becomes a comma, because it is what
-/// tells the title from the body.
+/// The title and body are agent text inside an escape sequence, so every
+/// control character (C0, DEL and C1) is removed from both, and the title's
+/// semicolons become commas, since `;` separates title from body.
 pub fn osc_notice(notice: &Notice) -> Vec<u8> {
     let mut bytes = b"\x1b]777;notify;".to_vec();
     bytes.extend(inert(&notice.title.replace(';', ",")));
@@ -367,8 +315,7 @@ pub fn osc_notice(notice: &Notice) -> Vec<u8> {
     bytes
 }
 
-/// One field of that sequence: the bytes a terminal would read as instruction
-/// taken out, and whatever the text is spelled in left alone.
+/// `text` without control characters, as bytes.
 fn inert(text: &str) -> Vec<u8> {
     text.chars()
         .filter(|c| !c.is_control())
@@ -376,12 +323,11 @@ fn inert(text: &str) -> Vec<u8> {
         .into_bytes()
 }
 
-/// Write the sequence to one terminal, and say nothing about it either way.
+/// Write `bytes` to one tty, ignoring any failure.
 ///
-/// Write only, because nothing here reads what the person is typing. No
-/// controlling terminal, because the notifier is a session leader by then and
-/// opening a tty would otherwise hand it one. Non-blocking, because a terminal
-/// whose reader has stopped must not hold the notifier open on it.
+/// `O_NOCTTY` because the notifier is a session leader and would otherwise
+/// acquire the tty as its controlling terminal. `O_NONBLOCK` so a tty nobody
+/// reads cannot hold the notifier open.
 pub fn tell(tty: &Path, bytes: &[u8]) {
     use std::os::unix::fs::OpenOptionsExt;
     let Ok(mut terminal) = std::fs::OpenOptions::new()
@@ -403,7 +349,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    /// A private tmux server that goes when the test does.
+    /// A private tmux server, killed on drop.
     struct TestServer {
         socket: String,
         server: Server,
@@ -417,14 +363,14 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             );
-            // An empty conf, so nothing in the developer's ~/.tmux.conf can
-            // change what these tests measure.
+            // An empty conf, so the developer's ~/.tmux.conf cannot affect
+            // the tests.
             let server = Server::named(&socket).with_conf("/dev/null");
             Self { socket, server }
         }
 
-        /// `$TMUX` as tmux writes it into a pane of this server: the socket's
-        /// path, then two fields nothing here reads.
+        /// `$TMUX` as tmux sets it in a pane of this server: the socket path,
+        /// then two fields nothing here reads.
         fn tmux_env(&self) -> String {
             let path = self
                 .server
@@ -440,7 +386,7 @@ mod tests {
         }
     }
 
-    /// A shell that sits there without exiting, so a pane stays a pane.
+    /// A command that runs until killed, so the pane stays.
     fn idle() -> Spawn<'static> {
         Spawn {
             command: &["sh", "-c", "while :; do sleep 0.05; done"],
@@ -448,7 +394,7 @@ mod tests {
         }
     }
 
-    /// Poll until `f` is happy: no fixed sleep stands in for a state change.
+    /// Poll `f` until it returns true, failing after ten seconds.
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -462,9 +408,8 @@ mod tests {
 
     #[test]
     fn notify_names_the_pane_it_is_in_without_asking_tmux() {
-        // tmux writes both of these into every pane it makes, and an agent's
-        // hook runs inside the agent's own pane. Reading them is why the hook
-        // can pose the question at all: it costs no tmux call.
+        // tmux sets both in every pane, and the hook runs in the agent's pane,
+        // so naming the pane costs no tmux call.
         let (server, pane) = pane_here(Some("/tmp/tmux-test/amx,4242,0"), Some("%7")).unwrap();
         assert_eq!(
             server.socket(),
@@ -472,8 +417,7 @@ mod tests {
         );
         assert_eq!(pane.as_str(), "%7");
 
-        // Nothing to suppress against, and nothing asked of tmux either: there
-        // is no pane, so nobody is looking at one and the notice goes out.
+        // No pane named, so nothing is asked of tmux and the notice goes out.
         assert!(!watched(None, Some("%7")));
         assert!(!watched(Some("/tmp/tmux-test/amx,4242,0"), None));
         assert!(!watched(Some(""), Some("%7")));
@@ -494,8 +438,8 @@ mod tests {
             "an agent nobody is attached to is worth being told about"
         );
 
-        // A client on a terminal of its own, which is what `session_attached`
-        // counts: a pane on another server, running a client of this one.
+        // `session_attached` counts clients, so attach one from a pane on
+        // another server.
         let watcher = TestServer::new();
         let attach = [
             "tmux",
@@ -522,9 +466,8 @@ mod tests {
 
     #[test]
     fn notify_an_errand_is_handed_the_event_and_left_to_run() {
-        // The starter does not wait for what it starts, and this command
-        // cannot finish until the test makes the file it is watching for —
-        // which the test only reaches once `start` has returned to it.
+        // The command cannot finish until the test creates `go`, which it only
+        // does after `start` returns, so `start` must not wait for it.
         let dir = TempDir::new().unwrap();
         let errand = Errand {
             command: "{ cat; until [ -e go ]; do sleep 0.02; done; \
@@ -574,8 +517,8 @@ mod tests {
 
     #[test]
     fn notify_an_errand_off_the_hook_path_is_told_nothing_about_the_pane() {
-        // `stop` runs in a terminal of its own and asks tmux nothing about the
-        // agent's pane, so the variable is absent rather than answered `0`.
+        // `stop` asks tmux nothing about the pane, so the variable is unset
+        // instead of `0`.
         let dir = TempDir::new().unwrap();
         let errand = Errand {
             command: "cat > /dev/null; echo \"[${AMX_WATCHED-unset}]\" > said".to_string(),
@@ -602,8 +545,8 @@ mod tests {
             b"\x1b]777;notify;fix-login-a1b needs an answer;Run the migration?\x07".to_vec()
         );
 
-        // A question is the agent's own text, and it travels inside an escape
-        // sequence: nothing in it may end that sequence or start another.
+        // Agent text inside an escape sequence must not end it or start
+        // another.
         let notice = Notice {
             title: "a;b\u{1b}]0;stolen\u{7}".to_string(),
             body: "line\nand\u{7}more\u{7f}".to_string(),
@@ -614,8 +557,8 @@ mod tests {
             "the semicolons of the title are the fields, and the controls go"
         );
 
-        // An eight-bit control is one char in the text and two bytes in UTF-8,
-        // and a terminal reading C1 takes U+009D for OSC and U+009C for its end.
+        // C1 controls are two bytes in UTF-8, and a terminal reading C1 takes
+        // U+009D as OSC and U+009C as its terminator.
         let notice = Notice {
             title: "a\u{9d}0;stolen\u{9c}b".to_string(),
             body: "c\u{9b}31md\u{85}e".to_string(),
@@ -626,7 +569,7 @@ mod tests {
             "the C1 controls go with the C0 ones"
         );
 
-        // What is not a control character is left as it was written.
+        // Everything else is left as written.
         let notice = Notice {
             title: "héllo".to_string(),
             body: "naïve".to_string(),
@@ -646,8 +589,7 @@ mod tests {
         tell(&tty, b"\x1b]777;notify;one;two\x07");
         assert_eq!(std::fs::read(&tty).unwrap(), b"\x1b]777;notify;one;two\x07");
 
-        // A terminal that has gone since it was listed is nothing to report
-        // and nothing to create in its place.
+        // A tty gone since it was listed is ignored, and no file is created.
         let gone = dir.path().join("gone");
         tell(&gone, b"x");
         assert!(!gone.exists());
@@ -706,8 +648,8 @@ mod tests {
 
     #[test]
     fn hook_notices_are_not_posted_for_what_a_person_already_knows() {
-        // Somebody who stopped an agent does not need telling that it stopped,
-        // and a turn ending is what the wall is for.
+        // Stopping is the person's own act, and an idle turn is shown on the
+        // wall.
         assert_eq!(
             Notice::finished("fix-login-a1b", Phase::Stopped, None),
             None
@@ -721,8 +663,7 @@ mod tests {
 
     #[test]
     fn hook_notices_go_out_as_arguments_and_never_as_script() {
-        // A question is the agent's text; it must not be able to end the
-        // command line it travels on.
+        // Agent text must reach the notifier as one argument.
         let notice = Notice::waiting("fix-login-a1b", Some("$(rm -rf ~); \"quoted\""));
         let command = notifier(&notice).unwrap();
         let args: Vec<String> = command

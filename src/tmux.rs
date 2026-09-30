@@ -1,46 +1,24 @@
 //! The tmux command line, wrapped.
 //!
-//! amx is never in the byte path: an agent is a real tmux pane, and everything
-//! amx does to it is a `tmux(1)` invocation. The laws this module keeps, each
-//! one paid for:
+//! amx is never in the byte path: an agent is a tmux pane, and everything amx
+//! does to it is a `tmux(1)` invocation. Invariants:
 //!
-//! * **Ids, never names.** `%pane`, `@window`, `$session` are what get stored
-//!   and targeted. A window named `build: api` can never be addressed at all —
-//!   tmux target syntax splits at the colon — and `new-window -t 0` reads the
-//!   target as an index, so a session named `0` collides with itself.
-//! * **A value read is not a liveness check.** `display -p -t <gone>` answers
-//!   emptily and happily. Liveness is the pane appearing in `list-panes`.
-//! * **A pane number is not an identity.** tmux numbers panes from `%0` per
-//!   server, and a server that died and started again hands the numbers out
-//!   afresh, so `%3` is whoever is standing there now. A record that outlived
-//!   its server and asked only whether `%3` was listed read another agent's
-//!   pane as its own: its phase, its screen, and the verbs aimed at it. So a
-//!   pane answers for the agent written on it, else for the agent its session
-//!   is named for, else for nobody — see [`Server::pane_owners`]. Every pane
-//!   amx places sits in a session called [`SESSION_PREFIX`]`<id>`, and a pane
-//!   amx adopts sits in somebody else's session and carries the id in
-//!   [`ID_OPTION`]. Whether an agent still has its pane is
-//!   [`Server::pane_answers_for`]; [`Server::pane_alive`] is for the questions
-//!   that are about a pane and not about an agent.
-//! * **Pane options are read with `show-options -p`,** never through a
-//!   `#{@option}` format: format lookup walks up to the global scope, so one
-//!   `set -g` would answer for every pane on the server. The one exception is
-//!   the listing above, which reads [`ID_OPTION`] as a format because it wants
-//!   every pane's in one call: amx sets that option at pane scope and nowhere
-//!   else, so it has no global of its own for the walk to find.
-//! * **A capture is sanitized.** Control characters — including the 8-bit CSI
-//!   at U+009B, which `capture-pane` passes through verbatim — become spaces,
-//!   and so do the invisible format characters. Replaced, never deleted:
-//!   deleting a zero-width space is how `ad\u{200b}min` reads as `admin`. The
-//!   one exception says so in its own name: `capture_painted` keeps the
-//!   escapes because they are what it was called for, and hands the reader the
-//!   job of walking them.
-//! * **A conf, where one is asked for, rides every call.** tmux reads a config
-//!   file when it starts a server and on no later call, and the server is born
-//!   by whichever call arrives first. amx asks for none: an agent's session
-//!   goes on the person's own server, under the file they wrote for it. It is
-//!   the tests that ask, so that nothing in a developer's `~/.tmux.conf` can
-//!   change what they measure.
+//! - Ids, never names. `%pane`, `@window` and `$session` ids are stored and
+//!   targeted: target syntax splits a name at `:`, and `-t 0` reads as an index.
+//! - A value read is no liveness check: `display -p -t <gone>` prints nothing
+//!   and succeeds. A pane is alive while `list-panes` lists it.
+//! - A pane number is no identity: tmux numbers panes from `%0` per server, so a
+//!   restarted server reuses them. A pane answers for the id stamped in
+//!   [`ID_OPTION`], else for the id its [`SESSION_PREFIX`] session is named
+//!   for; see [`Server::pane_owners`].
+//! - Pane options are read with `show-options -p`, since a `#{@option}` format
+//!   falls back to the global scope. [`Server::pane_owners`] reads
+//!   [`ID_OPTION`] as a format anyway, because amx only sets it per pane.
+//! - Captures are sanitized: control characters (including the 8-bit CSI
+//!   U+009B, which `capture-pane` passes through) and invisible format
+//!   characters become spaces. `capture_painted` is the one raw capture.
+//! - A conf, when set, rides every call, because whichever call starts the
+//!   server decides the file it reads. amx sets none; the tests do.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -49,26 +27,24 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// The oldest tmux amx runs against.
+/// The oldest tmux amx supports.
 pub const MINIMUM_VERSION: (u32, u32) = (3, 2);
 
-/// The pane option carrying the id of the agent a pane answers for.
+/// The pane option holding the id of the agent a pane answers for.
 ///
-/// Written on the panes amx did not open, which sit in somebody else's session
-/// and have no other way of saying whose they are — see
-/// [`crate::verbs::adopt`]. Pane-scoped options are tmux 3.0, which is under
-/// the floor above.
+/// Set on adopted panes, which sit in someone else's session; see
+/// [`crate::verbs::adopt`]. Pane-scoped options need tmux 3.0.
 pub const ID_OPTION: &str = "@amx-id";
 
-/// What the session holding an agent amx placed is called, before its id — see
+/// The prefix of the session name a placed agent gets; see
 /// [`crate::spawn::place`].
 pub const SESSION_PREFIX: &str = "amx-";
 
 /// Where a tmux server listens.
 ///
-/// `-L <name>` for servers amx starts: tmux creates the socket's directory for
-/// a named socket and, after a reboot, `-S <path>` will not. `-S <path>` is for
-/// the server amx was handed by `$TMUX`, which names its socket by path.
+/// `-L <name>` for servers amx starts, because tmux recreates a named socket's
+/// directory after a reboot and does not for `-S <path>`. `-S <path>` is for
+/// the server named by `$TMUX`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Socket {
@@ -83,20 +59,17 @@ pub struct Server {
     conf: Option<PathBuf>,
 }
 
-/// Where a tmux server's own process is standing.
+/// The working directory of a tmux server's process.
 ///
-/// A server holds the working directory it was started in for as long as it
-/// lives, and a directory can be deleted out from under it. Every pane it
-/// forks afterwards inherits a place that is not there, and the command in
-/// that pane dies before it draws anything — which is what makes this worth
-/// asking about rather than an idle curiosity.
+/// A server keeps the directory it started in. Once that directory is deleted,
+/// every pane it forks starts somewhere that does not exist and its command
+/// dies before drawing anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerCwd {
     pub pid: i32,
-    /// The directory it is standing in, named the way the kernel names it and
-    /// without the marker below.
+    /// The directory, without the kernel's ` (deleted)` suffix.
     pub path: PathBuf,
-    /// Whether that directory has been deleted.
+    /// Whether the directory has been deleted.
     pub stale: bool,
 }
 
@@ -107,9 +80,8 @@ macro_rules! tmux_id {
         pub struct $name(String);
 
         impl $name {
-            /// Take an id as tmux printed it, refusing anything that is not
-            /// one — a name that slipped in where an id belongs is a bug that
-            /// surfaces only when the name turns out to be unaddressable.
+            /// Take an id as tmux printed it. A name in its place is refused
+            /// here instead of failing later as an unaddressable target.
             pub fn new(id: impl Into<String>) -> Result<Self> {
                 let id = id.into();
                 if !id.starts_with($sigil) || id.len() < 2 {
@@ -135,20 +107,15 @@ tmux_id!(SessionId, '$', "session");
 tmux_id!(WindowId, '@', "window");
 tmux_id!(PaneId, '%', "pane");
 
-/// Which agent each pane on a server answers for, as one listing said.
-///
-/// Read once and asked many times: a wall of agents on one server costs that
-/// server's [`Server::pane_owners`] and a lookup apiece.
+/// Which agent each pane on a server answers for, from one listing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneOwners(HashMap<PaneId, String>);
 
 impl PaneOwners {
-    /// Whether this pane answers for that agent.
+    /// Whether `pane` answers for agent `id`.
     ///
-    /// Three things answer no, and they are one answer: a pane the server does
-    /// not list, a pane with somebody else's id written on it, and a pane in a
-    /// session named for somebody else. An agent whose pane answers for
-    /// somebody else has lost its pane as surely as one whose pane is gone.
+    /// False for a pane the server does not list, one stamped with another id,
+    /// and one in a session named for another agent.
     pub fn pane_answers_for(&self, pane: &PaneId, id: &str) -> bool {
         self.0.get(pane).is_some_and(|owner| owner == id)
     }
@@ -157,15 +124,14 @@ impl PaneOwners {
 /// What to create, and where.
 #[derive(Debug, Default, Clone)]
 pub struct Spawn<'a> {
-    /// A name for the session or window: convenience for a person reading the
-    /// status line, never how amx addresses the thing afterwards.
+    /// A session or window name for display. amx never targets by it.
     pub name: Option<&'a str>,
-    /// A name for the window a new session brings with it. Unnamed, tmux calls
-    /// it after whatever the pane is running, which changes under it.
+    /// A name for a new session's first window. Unnamed, tmux names it after
+    /// the running command, which changes.
     pub window: Option<&'a str>,
-    /// The working directory the new pane starts in.
+    /// The new pane's working directory.
     pub cwd: Option<&'a Path>,
-    /// The command the pane runs. Empty means the user's shell.
+    /// The pane's argv. Empty runs the user's shell.
     pub command: &'a [&'a str],
 }
 
@@ -186,31 +152,31 @@ impl Server {
         }
     }
 
-    /// The server this process is already inside, read from `$TMUX`, whose
-    /// value is `<socket path>,<pid>,<session index>`.
+    /// The server named by `$TMUX`, whose value is
+    /// `<socket path>,<pid>,<session index>`.
     pub fn from_tmux_env(value: &str) -> Option<Self> {
         let path = value.split(',').next().filter(|p| !p.is_empty())?;
         Some(Self::at(path))
     }
 
-    /// The server as it was recorded.
+    /// The server at a recorded socket.
     pub fn from_socket(socket: Socket) -> Self {
         Self { socket, conf: None }
     }
 
-    /// Ride this conf on every call, so whichever one starts the server reads
-    /// it rather than `~/.tmux.conf`.
+    /// Pass `-f conf` on every call, so whichever call starts the server reads
+    /// it instead of `~/.tmux.conf`.
     pub fn with_conf(mut self, conf: impl Into<PathBuf>) -> Self {
         self.conf = Some(conf.into());
         self
     }
 
-    /// How to address this server again, for the record on disk.
+    /// The socket, for recording.
     pub fn socket(&self) -> &Socket {
         &self.socket
     }
 
-    /// A `tmux` command line for this server, before its subcommand.
+    /// A `tmux` command for this server, before its subcommand.
     pub fn command(&self) -> Command {
         let mut cmd = Command::new("tmux");
         if let Some(conf) = &self.conf {
@@ -223,13 +189,13 @@ impl Server {
         cmd
     }
 
-    /// Run one tmux command line and answer with its stdout, trailing
-    /// whitespace trimmed.
+    /// Run one tmux command and return its stdout, trailing whitespace
+    /// trimmed.
     pub fn run(&self, args: &[&str]) -> Result<String> {
         self.run_with_stdin(args, None)
     }
 
-    /// The same, with bytes on the command's stdin.
+    /// [`Server::run`], with `stdin` written to the command's input.
     pub fn run_with_stdin(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<String> {
         let mut cmd = self.command();
         cmd.args(args)
@@ -244,14 +210,14 @@ impl Server {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("running `tmux {}`", args.join(" ")))?;
-        // Dropping the pipe is the end-of-input tmux waits for.
+        // The pipe is dropped after the write, which is the EOF tmux waits for.
         let wrote = match (stdin, child.stdin.take()) {
             (Some(bytes), Some(mut pipe)) => pipe.write_all(bytes),
             _ => Ok(()),
         };
 
-        // Waited for whether or not the write went through: a tmux that exited
-        // without reading its input would otherwise stay a zombie.
+        // Wait even if the write failed, or a tmux that exited without reading
+        // stays a zombie.
         let out = child
             .wait_with_output()
             .with_context(|| format!("waiting for `tmux {}`", args.join(" ")))?;
@@ -263,20 +229,16 @@ impl Server {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     }
 
-    /// Whether a server is listening on this socket at all.
+    /// Whether a server is listening on this socket.
     pub fn is_alive(&self) -> bool {
         self.run(&["list-sessions", "-F", "#{session_id}"]).is_ok()
     }
 
-    /// Where this server is standing, when that can be known.
+    /// Where this server's process is standing, if that can be read.
     ///
-    /// `None` three ways, none of them a fault to report: no server is
-    /// listening on the socket, this is not a platform where one process can
-    /// read another's working directory, or `/proc` would not answer. Only a
-    /// server amx can see standing somewhere is worth judging.
-    ///
-    /// `list-sessions` is what asks, because it fails on a socket with no
-    /// server rather than starting one.
+    /// `None` when no server is listening, off Linux, or when `/proc` cannot be
+    /// read. Asked with `list-sessions`, which fails on a dead socket instead
+    /// of starting a server.
     pub fn cwd(&self) -> Option<ServerCwd> {
         let printed = self.run(&["list-sessions", "-F", "#{pid}"]).ok()?;
         let pid: i32 = printed.lines().next()?.trim().parse().ok()?;
@@ -284,23 +246,18 @@ impl Server {
         Some(ServerCwd { pid, path, stale })
     }
 
-    /// End the server and everything on it. A server that is already gone is
-    /// the outcome asked for, not a failure.
+    /// Kill the server and everything on it. A server already gone is success.
     ///
-    /// The socket file goes too. tmux keeps it after a `kill-server`
-    /// — measured on 3.7 — and a crate whose every test server ends here left
-    /// one file per server behind: fifteen thousand of them in one socket
-    /// directory by 2026-09-14. Only a socket nobody answers at is taken:
-    /// whoever is listening at this path is somebody's server, whatever
-    /// `kill-server` said about it.
+    /// The socket file is removed too: tmux 3.7 leaves it after `kill-server`,
+    /// and test servers would pile up files. A socket that something still
+    /// answers at is left alone.
     pub fn kill(&self) -> Result<()> {
         let going = match self.run(&["kill-server"]) {
-            // The server took the order, so it is going: the file is dead
-            // whether or not the process has let go of it yet.
+            // The server took the order, so its socket is dead even if it is
+            // still open.
             Ok(_) => true,
-            // Nobody was there to take it. The file is dead unless something
-            // that is not a tmux server is listening at it, which the probe
-            // says.
+            // No server. The file is dead unless something else is listening
+            // at it, which the probe checks.
             Err(e) if is_no_server(&e) => false,
             Err(e) => return Err(e),
         };
@@ -309,14 +266,13 @@ impl Server {
             Socket::Path(path) => path.clone(),
         };
         if going || nobody_answers(&path) {
-            // A file that is already gone, or was never ours to take, is the
-            // outcome asked for either way.
+            // Already gone is fine.
             let _ = std::fs::remove_file(&path);
         }
         Ok(())
     }
 
-    /// Create a detached session, and answer with it and its first pane.
+    /// Create a detached session and return it with its first pane.
     pub fn new_session(&self, spawn: &Spawn<'_>) -> Result<(SessionId, PaneId)> {
         let mut args = vec![
             "new-session".to_string(),
@@ -342,7 +298,7 @@ impl Server {
         Ok((SessionId::new(session)?, PaneId::new(pane)?))
     }
 
-    /// Create a window in `session`, and answer with it and its first pane.
+    /// Create a window in `session` and return it with its first pane.
     pub fn new_window(&self, session: &SessionId, spawn: &Spawn<'_>) -> Result<(WindowId, PaneId)> {
         let mut args = vec![
             "new-window".to_string(),
@@ -365,7 +321,7 @@ impl Server {
         Ok((WindowId::new(window)?, PaneId::new(pane)?))
     }
 
-    /// Split `window`'s current pane, and answer with the pane that appeared.
+    /// Split `window`'s active pane and return the new pane.
     pub fn split_window(&self, window: &WindowId, spawn: &Spawn<'_>) -> Result<PaneId> {
         let mut args = vec![
             "split-window".to_string(),
@@ -379,14 +335,10 @@ impl Server {
         PaneId::new(self.run(&borrow(&args))?)
     }
 
-    /// The session with this name, or `None`.
+    /// The session named `name`, if any.
     ///
-    /// A server nothing is listening on is a server with no sessions in it,
-    /// which is that same `None` and not a failure.
-    ///
-    /// Names are listed and looked through rather than targeted: a name is
-    /// what a person reads on a status line, and the id beside it is the only
-    /// thing that addresses the session again.
+    /// No server listening is `None`. Sessions are listed and matched by name
+    /// because only the id addresses one reliably.
     pub fn session_named(&self, name: &str) -> Result<Option<SessionId>> {
         let listed = match self.run(&["list-sessions", "-F", "#{session_id} #{session_name}"]) {
             Ok(listed) => listed,
@@ -396,7 +348,7 @@ impl Server {
         named(&listed, name).map(SessionId::new).transpose()
     }
 
-    /// The window with this name in `session`, or `None`.
+    /// The window named `name` in `session`, if any.
     pub fn window_named(&self, session: &SessionId, name: &str) -> Result<Option<WindowId>> {
         let listed = self.run(&[
             "list-windows",
@@ -408,7 +360,7 @@ impl Server {
         named(&listed, name).map(WindowId::new).transpose()
     }
 
-    /// Re-lay a window's panes — `tiled` is the wall's layout.
+    /// Apply a layout, such as `tiled`, to a window's panes.
     pub fn select_layout(&self, window: &WindowId, layout: &str) -> Result<()> {
         self.run(&["select-layout", "-t", window.as_str(), layout])?;
         Ok(())
@@ -422,53 +374,43 @@ impl Server {
             .collect()
     }
 
-    /// Whether the pane is still there — asked of `list-panes`, because a
-    /// value read answers for a gone pane as happily as for a live one.
+    /// Whether `list-panes` lists `pane`.
     ///
-    /// About a pane and not about an agent: pane numbers are handed out again,
-    /// so a record asking this of the number it holds is answered by whoever
-    /// is standing there now. [`Server::pane_answers_for`] is that question.
+    /// About the pane number only, which tmux reuses. Whether an agent still
+    /// has its pane is [`Server::pane_answers_for`].
     pub fn pane_alive(&self, pane: &PaneId) -> bool {
         self.panes().is_ok_and(|panes| panes.contains(pane))
     }
 
-    /// Which agent each pane on this server answers for.
+    /// Which agent each pane on this server answers for, in one `list-panes`.
     ///
-    /// The one call a wall makes about a server, which is why the id is asked
-    /// for alongside the pane rather than read off each pane in turn.
-    ///
-    /// The stamp goes ahead of the session name in the format, because an id
-    /// carries no space and a session name may: two splits from the left read
-    /// the line whatever anybody called their session. A pane setting no
-    /// option prints an empty field, which is a second space rather than a
-    /// missing one.
+    /// The stamp comes before the session name in the format, because a
+    /// session name may contain spaces and an id may not. An unset option
+    /// prints as an empty field.
     pub fn pane_owners(&self) -> Result<PaneOwners> {
         let format = format!("#{{pane_id}} #{{{ID_OPTION}}} #{{session_name}}");
         Ok(owners(&self.run(&["list-panes", "-a", "-F", &format])?))
     }
 
-    /// Whether this pane answers for that agent — see [`PaneOwners`].
+    /// Whether `pane` answers for agent `id`; see [`PaneOwners`].
     ///
-    /// A server that will not answer is a server on which nothing can be shown
-    /// to be anybody's, and that reads as a pane an agent has lost.
+    /// A server that cannot be asked reads as the pane being lost.
     pub fn pane_answers_for(&self, pane: &PaneId, id: &str) -> bool {
         self.pane_owners()
             .is_ok_and(|owners| owners.pane_answers_for(pane, id))
     }
 
-    /// The same question, for whoever is about to act on the answer.
+    /// [`Server::pane_answers_for`], for callers about to act on the answer.
     ///
-    /// A server with nothing listening is an answer — nothing on it is
-    /// anybody's — but a tmux that failed some other way, or never ran, said
-    /// nothing about the pane at all. That is an error rather than a no: a
-    /// verb that read it as a gone pane would delete a live tree or start a
-    /// second pane beside the first.
+    /// No server listening is `false`, but any other tmux failure is an error:
+    /// reading it as a lost pane could delete a live tree or start a second
+    /// pane beside the first.
     pub fn answers_for_now(&self, pane: &PaneId, id: &str) -> Result<bool> {
         Ok(self.owners_for_now()?.pane_answers_for(pane, id))
     }
 
-    /// [`Server::pane_owners`], with nothing listening read as nobody's panes
-    /// and every other failure as a tmux that could not be asked.
+    /// [`Server::pane_owners`], with no server listening read as no owners and
+    /// any other failure as an error.
     pub fn owners_for_now(&self) -> Result<PaneOwners> {
         match self.pane_owners() {
             Ok(owners) => Ok(owners),
@@ -477,14 +419,15 @@ impl Server {
         }
     }
 
-    /// Read one format from a pane. A **value read**: an empty answer means
-    /// the format was empty *or* the pane is gone, and this cannot tell you
-    /// which. Ask [`Server::pane_alive`] for that.
+    /// Read one format from a pane.
+    ///
+    /// A value read: a gone pane prints an empty string, the same as an empty
+    /// format. Use [`Server::pane_alive`] for liveness.
     pub fn pane_field(&self, pane: &PaneId, format: &str) -> Result<String> {
         self.run(&["display-message", "-p", "-t", pane.as_str(), format])
     }
 
-    /// The process id of the pane's process group leader.
+    /// The pid of the pane's process group leader.
     pub fn pane_pid(&self, pane: &PaneId) -> Result<i32> {
         let printed = self.pane_field(pane, "#{pane_pid}")?;
         printed
@@ -493,63 +436,42 @@ impl Server {
             .with_context(|| format!("pane {pane} reported pid {printed:?}"))
     }
 
-    /// Whether somebody is looking at this pane right now.
+    /// Whether someone is looking at this pane: it is the active pane of the
+    /// active window of a session with a client attached.
     ///
-    /// Three flags, read together, and every one of them has to be set: the
-    /// pane is the active one in its window, the window is the one its session
-    /// is showing, and a client is attached to that session. Being active is
-    /// not enough — a session nobody has ever attached to has an active pane
-    /// too, and it is on nobody's screen.
-    ///
-    /// A **value read**, so a pane that has gone answers emptily and reads as
-    /// unwatched. Whatever asks this is deciding whether to interrupt
-    /// somebody, and that is the direction worth being wrong in: a
-    /// notification nobody needed beats a question nobody was told about.
+    /// A value read, so a gone pane reads as unwatched. Callers use this to
+    /// decide whether to notify, where an extra notice is the safer error.
     pub fn pane_watched(&self, pane: &PaneId) -> bool {
         self.pane_field(pane, "#{pane_active} #{window_active} #{session_attached}")
             .is_ok_and(|printed| watched_flags(&printed))
     }
 
-    /// The terminals of everybody attached to this server, one per client.
+    /// The tty of every client attached to this server.
     ///
-    /// `list-clients` starts no server of its own, so a socket with nothing
-    /// behind it answers with a failure rather than with a fresh and empty
-    /// server. That failure is no clients, the same as a server sitting there
-    /// with nobody attached: whoever asks this is looking for somebody to talk
-    /// to, and both answers are that there is nobody here.
+    /// `list-clients` does not start a server, so a dead socket fails, which
+    /// reads as no clients.
     pub fn client_ttys(&self) -> Vec<PathBuf> {
         self.run(&["list-clients", "-F", "#{client_tty}"])
             .map(|listed| listed.lines().map(PathBuf::from).collect())
             .unwrap_or_default()
     }
 
-    /// What is on the pane's screen now, sanitized.
+    /// The pane's visible screen, sanitized.
     pub fn capture(&self, pane: &PaneId) -> Result<String> {
         let raw = self.run(&["capture-pane", "-p", "-J", "-t", pane.as_str()])?;
         Ok(sanitize(&raw))
     }
 
-    /// What is on each of these panes' screens now, sanitized, in the order
-    /// they were asked about.
+    /// The screens of `panes`, sanitized and in order, from one invocation.
     ///
-    /// One invocation for the lot of them. A capture is a fork, an exec and a
-    /// round trip to the server — a millisecond and a half of it — and a
-    /// reading of a wall takes one per agent it cannot account for from the
-    /// record: twenty agents is twenty of them, in a row, on the thread
-    /// somebody is waiting at. tmux takes a sequence of commands in one
-    /// invocation, so the wall costs the one.
+    /// Each capture is a fork and a round trip, so a wall of twenty agents
+    /// would otherwise cost twenty. Screens are split at a per-call
+    /// [`marker`] printed before each capture, since pane text can contain
+    /// any fixed string.
     ///
-    /// The screens are told apart by a marker printed in front of each, and
-    /// the marker is this call's own — see [`marker`] — because what is on a
-    /// pane is somebody else's text and a word it happened to be showing
-    /// would cut the batch in the wrong place.
-    ///
-    /// A pane that has gone since the list was taken answers with `None`. It
-    /// ends the invocation where it stands, because a sequence runs until one
-    /// command fails and stops there, so the panes behind it are asked again
-    /// without it rather than going with it. A server that answers nothing at
-    /// all is not asked again: that is about the server, and the panes on it
-    /// have nothing to say either way.
+    /// A pane gone since the listing is `None`. tmux stops a command sequence
+    /// at the first failure, so the panes after it are asked again in a new
+    /// invocation. A server that prints nothing at all is not asked again.
     pub fn captures(&self, panes: &[PaneId]) -> Vec<Option<String>> {
         let mut screens: Vec<Option<String>> = vec![None; panes.len()];
         let mut from = 0;
@@ -565,19 +487,16 @@ impl Server {
             if ended_well {
                 break;
             }
-            // Past the pane the sequence stopped at, which has answered.
+            // Resume after the pane the sequence failed on.
             from += answered.len() + 1;
         }
         screens
     }
 
-    /// Run one tmux command line and answer with whether it ended well and
-    /// what it printed.
+    /// Run one tmux command and return whether it succeeded, with its stdout.
     ///
-    /// The one call that wants a failure's output rather than a sentence about
-    /// it: a sequence stops at the first command that fails, and everything
-    /// the commands before it printed is on stdout and is what the caller came
-    /// for.
+    /// For [`Server::captures`], which needs what a sequence printed before
+    /// the command that failed.
     fn printed(&self, args: &[&str]) -> (bool, String) {
         match self.command().args(args).output() {
             Ok(out) => (
@@ -588,29 +507,26 @@ impl Server {
         }
     }
 
-    /// The same screen with the paint the pane was drawn in kept.
+    /// The pane's screen with its escape sequences kept.
     ///
-    /// The one capture that is not sanitized here, because the escapes are
-    /// what it is for. Whatever reads it has to walk them: [`crate::ansi`]
-    /// consumes every escape sequence and answers with runs of text and the
-    /// style each was drawn in, and it is that text — never this string — that
-    /// is made inert and handed to a terminal.
+    /// The one unsanitized capture. Callers parse it with [`crate::ansi`],
+    /// which yields text runs and their styles; only that text is sanitized
+    /// and drawn.
     pub fn capture_painted(&self, pane: &PaneId) -> Result<String> {
         self.run(&["capture-pane", "-p", "-e", "-J", "-t", pane.as_str()])
     }
 
-    /// Put `text` into the pane as a bracketed paste.
+    /// Paste `text` into the pane as a bracketed paste.
     ///
-    /// The text travels through a buffer on stdin, never in the argv: it is
-    /// arbitrary, and an argv is the one place it could be read as tmux
-    /// syntax.
+    /// The text goes through a buffer loaded from stdin, never through argv,
+    /// where tmux could parse it.
     pub fn paste(&self, pane: &PaneId, text: &str) -> Result<()> {
         let buffer = format!("amx-{}", pane.as_str().trim_start_matches('%'));
         self.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], Some(text.as_bytes()))?;
         self.run(&[
             "paste-buffer",
-            "-d", // the buffer is this paste's, and goes with it
-            "-p", // bracketed, so the agent reads it as a paste and not as keys
+            "-d", // delete the buffer afterwards
+            "-p", // bracketed, so the agent sees a paste, not keystrokes
             "-b",
             &buffer,
             "-t",
@@ -619,7 +535,7 @@ impl Server {
         Ok(())
     }
 
-    /// Send keys to the pane by tmux key name (`Enter`, `Escape`, `C-c`, …).
+    /// Send keys to the pane by tmux key name (`Enter`, `Escape`, `C-c`, ...).
     pub fn send_keys(&self, pane: &PaneId, keys: &[&str]) -> Result<()> {
         let mut args = vec!["send-keys", "-t", pane.as_str()];
         args.extend_from_slice(keys);
@@ -627,33 +543,22 @@ impl Server {
         Ok(())
     }
 
-    /// Send everything the pane prints from here on to `command`'s standard
-    /// input.
+    /// Pipe everything the pane prints from now on into `command`'s stdin.
     ///
-    /// `command` is a shell command line the tmux server runs, not the pane:
-    /// whatever is in it is spelled for `sh`, never for tmux, and reads the
-    /// server's own environment, never the pane's.
-    ///
-    /// `-o`, which is tmux's toggle: a pane that is already being piped has
-    /// that pipe closed and nothing opened in its place. So this attaches a
-    /// pipe to a pane that has none, and never quietly moves one pane's output
-    /// from whatever was reading it to something else.
+    /// `command` is run by `sh` in the tmux server's environment, not the
+    /// pane's. `-o` makes this a toggle: on a pane already piped it closes
+    /// that pipe and opens nothing, so it never replaces an existing pipe.
     pub fn pipe_pane(&self, pane: &PaneId, command: &str) -> Result<()> {
         self.run(&["pipe-pane", "-o", "-t", pane.as_str(), &literal(command)])?;
         Ok(())
     }
 
-    /// Run a shell command on this server once `delay` seconds have passed.
+    /// Run a shell command on this server after `delay` seconds.
     ///
-    /// amx has no daemon of its own, and the server hosting an agent's pane
-    /// outlives every amx that touched it, so a timer the server holds is the
-    /// one timer there is to hold. `-b` so the server carries on serving its
-    /// clients instead of waiting for the command, `-d` for the delay.
-    ///
-    /// `command` is spelled for `sh` and reads the server's own environment
-    /// rather than any pane's, the same as [`Server::pipe_pane`]. A server
-    /// that goes before the delay is up takes the timer with it, which is the
-    /// end a timer about a pane on that server wants.
+    /// amx has no daemon and the server outlives every amx process, so the
+    /// server holds the timer, and the timer dies with it. `-b` runs it in the
+    /// background, `-d` delays it. As with [`Server::pipe_pane`], `command`
+    /// runs under `sh` in the server's environment.
     pub fn run_after(&self, delay: u64, command: &str) -> Result<()> {
         let command = literal(command);
         self.run(&["run-shell", "-b", "-d", &delay.to_string(), &command])?;
@@ -666,11 +571,10 @@ impl Server {
         Ok(())
     }
 
-    /// Read a pane-scoped option, or `None` when this pane does not set it.
+    /// A pane-scoped option's value, or `None` when this pane does not set it.
     ///
-    /// The whole pane-scoped set is listed and looked through rather than
-    /// asked for by name: `show-options -p` answers for this pane only, while
-    /// a `#{@name}` format would walk up and hand back a global.
+    /// Read from `show-options -p`, since a `#{@name}` format falls back to a
+    /// global value.
     pub fn pane_option(&self, pane: &PaneId, name: &str) -> Result<Option<String>> {
         let listed = self.run(&["show-options", "-p", "-t", pane.as_str()])?;
         Ok(listed.lines().find_map(|line| {
@@ -679,19 +583,19 @@ impl Server {
         }))
     }
 
-    /// Unset a pane-scoped option, so nothing amx set outlives the agent.
+    /// Unset a pane-scoped option.
     pub fn unset_pane_option(&self, pane: &PaneId, name: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-u", "-t", pane.as_str(), name])?;
         Ok(())
     }
 
-    /// Set a session-scoped option (`destroy-unattached`, and the rest).
+    /// Set a session-scoped option.
     pub fn set_session_option(&self, session: &SessionId, name: &str, value: &str) -> Result<()> {
         self.run(&["set-option", "-t", session.as_str(), name, value])?;
         Ok(())
     }
 
-    /// Kill one pane. A window and a session go when their last pane does.
+    /// Kill one pane. Its window and session go with their last pane.
     pub fn kill_pane(&self, pane: &PaneId) -> Result<()> {
         self.run(&["kill-pane", "-t", pane.as_str()])?;
         Ok(())
@@ -703,33 +607,24 @@ impl Server {
         Ok(())
     }
 
-    /// The command that hands this terminal to a session, for a caller that
-    /// means to exec it.
+    /// The command that attaches this terminal to `session`, for the caller to
+    /// exec.
     pub fn attach_command(&self, session: &SessionId) -> Command {
         let mut cmd = self.command();
         cmd.arg("attach-session").arg("-t").arg(session.as_str());
         cmd
     }
 
-    /// Bind `ctrl+z`, in the root key table, as the way back out of an agent's
-    /// session.
+    /// Bind root-table `C-z` as the way out of an agent's session.
     ///
-    /// amx is never in the agent's byte path, so the key is tmux's, and it is
-    /// read only in a session amx named. There the client goes back to the
-    /// session it came from — the view's, inside tmux — and detaches when it
-    /// came from nowhere, which is what gives a view that lent the terminal
-    /// out its terminal back, and lands `amx attach` at the shell it was
-    /// typed at. In every other session on the server the key is sent on to
-    /// the pane, and is whatever it was there. A last session that has since
-    /// gone reads as none, so a view closed behind an agent detaches rather
-    /// than failing to switch. The comparison, rather than a bare `-F`, is
-    /// because tmux reads a bare `0` as false, and `0` is the name a bare
-    /// `tmux` gives its first session.
+    /// In a session named with [`SESSION_PREFIX`] the client switches back to
+    /// its last session (the view's, inside tmux), or detaches when that is
+    /// gone or there was none. In any other session the key goes to the pane.
+    /// The explicit comparison is needed because tmux reads a bare `0`, the
+    /// name of a default first session, as false.
     ///
-    /// Bound again on every hand-over, which is one command, so a server that
-    /// started after the agent did is bound the first time anybody goes in.
-    /// Nothing was lost under it: claude binds the same key to suspend itself
-    /// to a shell, and an agent's pane has no shell under it to come back to.
+    /// Rebound on every hand-over, since the server may have restarted. claude
+    /// binds `C-z` to suspend itself, which is useless in a pane with no shell.
     pub fn bind_way_back(&self) -> Result<()> {
         self.run(&[
             "bind-key",
@@ -745,20 +640,12 @@ impl Server {
     }
 }
 
-/// Every tmux server of this person's, addressed by the socket it listens on.
+/// Every listening tmux server of this user, by socket path.
 ///
-/// tmux keeps one socket directory per person — `$TMUX_TMPDIR`, else `/tmp`,
-/// and `tmux-<uid>` under it — and a person may have several servers in there
-/// at once: the one their terminal is in, one an SSH session started, the ones
-/// amx names. Whoever calls this has something to say to whoever is sitting at
-/// any of them.
-///
-/// A socket file is not a server. It outlives the server that made it where
-/// one was killed outright, so only the sockets somebody answers at are
-/// servers here: a connect that is refused costs a system call, where asking
-/// tmux about the file would cost a process to be told the same. Measured
-/// 2026-09-14 on this machine: fifteen thousand such files in one socket
-/// directory, every one of them a test's, and no server behind any.
+/// tmux keeps one socket directory per user (`$TMUX_TMPDIR`, else `/tmp`, then
+/// `tmux-<uid>`), and it may hold several servers. Socket files outlive killed
+/// servers, so only sockets that accept a connection count; a refused connect
+/// costs a syscall where asking tmux would cost a process.
 pub fn servers_here() -> Vec<Server> {
     listening_in(&socket_dir())
         .into_iter()
@@ -766,19 +653,16 @@ pub fn servers_here() -> Vec<Server> {
         .collect()
 }
 
-/// Whether nobody is answering at this socket.
+/// Whether nothing accepts connections at this socket.
 ///
-/// Asked only when `kill-server` found no server to kill, so a socket still
-/// answering here is something that is not a tmux server and not ours to
-/// take. A server that took the order is going and is never asked: it holds
-/// its socket open a little past its answer — measured on tmux 3.7 at about
-/// fifteen milliseconds, and longer under a parallel suite — and a probe that
-/// read that as somebody home left one file per test behind.
+/// Only asked when `kill-server` found no server. A server that took the order
+/// keeps its socket open for a moment (about 15ms on tmux 3.7), so probing it
+/// then would leave the file behind.
 fn nobody_answers(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_err()
 }
 
-/// The sockets in a directory that somebody is listening at.
+/// The sockets in `dir` that accept a connection.
 fn listening_in(dir: &Path) -> Vec<PathBuf> {
     sockets_in(dir)
         .into_iter()
@@ -786,8 +670,8 @@ fn listening_in(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The directory tmux keeps this person's sockets in. An empty `$TMUX_TMPDIR`
-/// is no directory named, which is what tmux itself reads it as.
+/// This user's tmux socket directory. An empty `$TMUX_TMPDIR` counts as unset,
+/// as it does for tmux.
 fn socket_dir() -> PathBuf {
     let tmp = std::env::var_os("TMUX_TMPDIR")
         .filter(|dir| !dir.is_empty())
@@ -795,8 +679,7 @@ fn socket_dir() -> PathBuf {
     tmp.join(format!("tmux-{}", nix::unistd::Uid::current()))
 }
 
-/// The socket files in a directory, and nothing else that is sitting in it: a
-/// person's own files land there too, and tmux is addressed at sockets.
+/// The socket files in `dir`, skipping anything else stored there.
 fn sockets_in(dir: &Path) -> Vec<PathBuf> {
     use std::os::unix::fs::FileTypeExt;
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -809,22 +692,20 @@ fn sockets_in(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The directory and command shared by every creating verb.
+/// Append the `-c` directory and the command shared by the creating commands.
 fn push_spawn(args: &mut Vec<String>, spawn: &Spawn<'_>) {
     if let Some(cwd) = spawn.cwd {
         args.push("-c".to_string());
         args.push(literal(&cwd.to_string_lossy()));
     }
     if !spawn.command.is_empty() {
-        // Everything past this is the pane's argv, not tmux's.
+        // Everything after `--` is the pane's argv, not tmux's.
         args.push("--".to_string());
         args.extend(spawn.command.iter().map(|arg| arg.to_string()));
     }
 }
 
-/// A string tmux reads as a format, spelled so it reads back as written: a
-/// `#` in a path or a command line is the path's, not the start of a
-/// `#{...}` tmux would expand.
+/// Escape `#` so tmux reads `text` as written instead of as a `#{...}` format.
 fn literal(text: &str) -> String {
     text.replace('#', "##")
 }
@@ -833,12 +714,11 @@ fn borrow(args: &[String]) -> Vec<&str> {
     args.iter().map(String::as_str).collect()
 }
 
-/// The one command line that captures every one of these panes: a marker and
-/// a capture apiece, with the semicolons tmux reads a sequence by.
+/// One command sequence capturing every pane, each capture preceded by a
+/// `display-message` of `marker`.
 ///
-/// The marker goes in front of its capture rather than after it, so that a
-/// capture that never happened is a marker with nothing under it rather than
-/// a gap with nothing to name it.
+/// The marker goes first so a capture that never ran is a marker with nothing
+/// after it.
 fn batch(panes: &[PaneId], marker: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     for pane in panes {
@@ -851,14 +731,9 @@ fn batch(panes: &[PaneId], marker: &str) -> Vec<String> {
     args
 }
 
-/// A line to tell one pane's screen from the next one's in a batch.
+/// A line separating one pane's screen from the next in a batch.
 ///
-/// Made here rather than written down, because a marker is only a marker
-/// while no pane is showing it: whatever is on a screen is somebody else's
-/// text, and an agent that had printed the word amx cuts at would have its
-/// screen cut in two. The process and a count that never repeats in it are
-/// enough — nothing outside this call ever sees one, so no pane can be
-/// showing it.
+/// Built from the pid and a counter, so no pane can already be showing it.
 fn marker() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     format!(
@@ -868,18 +743,11 @@ fn marker() -> String {
     )
 }
 
-/// The screens one invocation answered for, in the order the panes were asked
-/// about: all of them where the sequence ran to the end, and the ones before
-/// the failure where it did not.
+/// Split a batch's output at `marker` into screens, in the order asked.
 ///
-/// The output is cut at the markers, and anything printed before the first of
-/// them is nobody's screen — that is the server talking about itself. Not one
-/// marker coming back is that same server saying nothing at all, which is what
-/// `None` is for: it is about the server rather than about any of these panes.
-///
-/// Nothing is answered for past the panes that were asked about. A pane
-/// showing this call's own marker would cut its own screen into two sections,
-/// and a wall going up is not worth a panic over a coincidence.
+/// Output before the first marker is ignored, and no marker at all is `None`:
+/// the server said nothing about any pane. At most `asked` screens are
+/// returned, in case a pane was showing the marker itself.
 fn answered(printed: &str, marker: &str, ended_well: bool, asked: usize) -> Option<Vec<String>> {
     let mut screens: Vec<String> = Vec::new();
     for line in printed.lines() {
@@ -893,8 +761,7 @@ fn answered(printed: &str, marker: &str, ended_well: bool, asked: usize) -> Opti
     if screens.is_empty() {
         return None;
     }
-    // The last marker of a sequence that failed is the pane it failed on: the
-    // marker went out and the capture under it never did.
+    // In a failed sequence the last marker's capture is the one that failed.
     if !ended_well {
         screens.pop();
     }
@@ -902,12 +769,10 @@ fn answered(printed: &str, marker: &str, ended_well: bool, asked: usize) -> Opti
     Some(screens)
 }
 
-/// Who each pane in a `<pane id> <stamp> <session name>` listing answers for:
-/// the id written on it, else the id its session is named for.
+/// Parse `<pane id> <stamp> <session name>` lines: each pane answers for its
+/// stamped id, else the id its session is named for.
 ///
-/// A pane neither says anything about is left out, which is the answer for a
-/// pane in somebody's own session that amx never took over. So is a line in
-/// any other shape: this reads one format and no other.
+/// Panes with neither, and lines in any other shape, are left out.
 fn owners(listed: &str) -> PaneOwners {
     let mut owners = HashMap::new();
     for line in listed.lines() {
@@ -932,7 +797,7 @@ fn owners(listed: &str) -> PaneOwners {
     PaneOwners(owners)
 }
 
-/// The id tmux listed beside `name`, in a listing of `<id> <name>` lines.
+/// The id listed beside `name` in `<id> <name>` lines.
 fn named<'a>(listed: &'a str, name: &str) -> Option<&'a str> {
     listed.lines().find_map(|line| {
         let (id, listed) = line.split_once(' ')?;
@@ -940,10 +805,9 @@ fn named<'a>(listed: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// The three flags [`Server::pane_watched`] asks for, all of them set.
+/// Whether all three flags [`Server::pane_watched`] reads are set.
 ///
-/// `session_attached` is a count of clients rather than a flag, and any of
-/// them is somebody.
+/// `session_attached` is a client count, so any value above zero counts.
 fn watched_flags(printed: &str) -> bool {
     let flags: Vec<&str> = printed.split_whitespace().collect();
     flags.len() == 3
@@ -952,7 +816,7 @@ fn watched_flags(printed: &str) -> bool {
             .all(|flag| flag.parse::<u32>().is_ok_and(|set| set > 0))
 }
 
-/// tmux quotes an option value when it has to; take the quotes back off.
+/// Strip the quotes tmux puts around some option values.
 fn unquote(value: &str) -> String {
     value
         .strip_prefix('"')
@@ -961,9 +825,8 @@ fn unquote(value: &str) -> String {
         .to_string()
 }
 
-/// Whether tmux is saying nothing is listening, which it says three ways: a
-/// socket that was never there at all, one with no server behind it any more,
-/// and a server that went while it was being asked.
+/// Whether a tmux error means no server is listening: a socket that never
+/// existed, one with no server behind it, or a server that exited mid-call.
 fn is_no_server(err: &anyhow::Error) -> bool {
     let said = format!("{err:#}");
     said.contains("error connecting to")
@@ -971,24 +834,19 @@ fn is_no_server(err: &anyhow::Error) -> bool {
         || said.contains("server exited")
 }
 
-/// A socket no tmux can be started against, for a test that wants a tmux that
-/// cannot be asked: the name carries a NUL, so the command fails before it
-/// runs, the way it does with no tmux on the path.
+/// A socket no tmux can be started against, for tests: the NUL in the name
+/// makes the command fail before it runs, as it does with no tmux installed.
 #[cfg(test)]
 pub(crate) fn unaskable() -> Socket {
     Socket::Name("amx\0unaskable".to_string())
 }
 
-/// Ask once more when the first answer was that nothing was listening.
+/// Retry once when the first attempt found no server.
 ///
-/// A server shutting down after its last session ended still holds its socket
-/// for a moment, and a client that arrives inside that moment is told the
-/// server exited. Nothing was half-done — a server that went changed nothing
-/// — and the next client on that socket starts a fresh one, so the question
-/// is simply worth asking again.
-///
-/// Once, and no further. Two servers going under one caller is not a race any
-/// more, and a loop would sit forever on a socket nobody is going to answer.
+/// A server exiting after its last session holds its socket for a moment, and
+/// a client arriving then is told the server exited. Nothing was changed, and
+/// the next client starts a fresh server. Only once: a second failure is not
+/// that race, and a loop could spin on a socket nobody will answer.
 fn again_if_the_server_went<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
     match attempt() {
         Err(e) if is_no_server(&e) => attempt(),
@@ -996,20 +854,16 @@ fn again_if_the_server_went<T>(mut attempt: impl FnMut() -> Result<T>) -> Result
     }
 }
 
-/// Where process `pid` is standing, and whether that place still exists.
+/// Process `pid`'s working directory, and whether it has been deleted.
 ///
-/// Linux only. `/proc/<pid>/cwd` is the one place a process's working
-/// directory is readable from outside it, and there is no equivalent elsewhere
-/// that does not cost a dependency. Off Linux amx says nothing rather than
-/// guessing.
+/// Linux only, through `/proc/<pid>/cwd`; elsewhere there is no way to read it
+/// without another dependency.
 #[cfg(target_os = "linux")]
 fn standing(pid: i32) -> Option<(PathBuf, bool)> {
     let link = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
-    // The kernel marks a deleted directory by suffixing the link it answers
-    // with. Stat cannot confirm it — /proc/<pid>/cwd still resolves, because
-    // the process holds the unlinked inode open — so the marker is the only
-    // signal there is. A directory genuinely named `x (deleted)` wears the
-    // same suffix, and is told apart by still being there.
+    // The kernel marks a deleted directory with a ` (deleted)` suffix, and stat
+    // cannot tell because the process still holds the inode. A directory
+    // really named `x (deleted)` still exists, which tells the two apart.
     match unlinked(&link) {
         Some(path) if !link.exists() => Some((path, true)),
         _ => Some((link, false)),
@@ -1021,15 +875,14 @@ fn standing(_pid: i32) -> Option<(PathBuf, bool)> {
     None
 }
 
-/// A cwd link with the kernel's `(deleted)` marker taken off, when it wore
-/// one.
+/// The link without the kernel's ` (deleted)` suffix, if it had one.
 fn unlinked(link: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(
         link.as_os_str().to_str()?.strip_suffix(" (deleted)")?,
     ))
 }
 
-/// The installed tmux's version, as major and minor.
+/// The installed tmux's major and minor version.
 pub fn version() -> Result<(u32, u32)> {
     let out = Command::new("tmux")
         .arg("-V")
@@ -1039,9 +892,8 @@ pub fn version() -> Result<(u32, u32)> {
     parse_version(&text).with_context(|| format!("cannot read a version from {text:?}"))
 }
 
-/// Read `tmux 3.4a` and friends. tmux ships letters after the minor version,
-/// and pre-releases call themselves `next-3.5`; neither changes the number amx
-/// compares against its floor.
+/// Parse `tmux 3.4a` and similar. The letter suffix, and the `next-` prefix of
+/// a pre-release, do not change the number compared against the floor.
 pub fn parse_version(text: &str) -> Option<(u32, u32)> {
     let token = text.split_whitespace().nth(1)?;
     let token = token.rsplit('-').next()?;
@@ -1055,11 +907,10 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 
 /// Make a capture safe to match rules against and to print.
 ///
-/// Every control character other than the newline becomes a space — including
-/// U+0080–U+009F, where the 8-bit CSI lives that `capture-pane` passes through
-/// verbatim. Invisible format characters become spaces too. Both are
-/// *replaced*: deleting a zero-width space would let one identifier wear
-/// another's spelling.
+/// Control characters other than newline, including U+0080 to U+009F where
+/// the 8-bit CSI lives, become spaces, and so do invisible format characters.
+/// They are replaced with spaces: deleting a zero-width space would let
+/// `ad\u{200b}min` read as `admin`.
 pub fn sanitize(raw: &str) -> String {
     raw.chars()
         .map(|c| match c {
@@ -1070,9 +921,9 @@ pub fn sanitize(raw: &str) -> String {
         .collect()
 }
 
-/// The invisible format characters (Unicode `Cf`) worth neutralising: the
-/// bidirectional overrides, the zero-width joiners and spaces, the byte order
-/// mark, and the tag characters that can spell out a hidden line.
+/// The invisible format characters (Unicode `Cf`) to neutralise: bidi
+/// overrides, zero-width joiners and spaces, the byte order mark, and the tag
+/// characters that can spell hidden text.
 fn is_format(c: char) -> bool {
     matches!(c,
         '\u{00ad}'
@@ -1099,7 +950,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    /// A private server of this test's own, gone when the test is.
+    /// A private server for one test, killed on drop.
     struct TestServer(Server);
 
     impl TestServer {
@@ -1110,8 +961,8 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             );
-            // An empty conf, so nothing in the developer's ~/.tmux.conf can
-            // change what these tests measure.
+            // An empty conf, so the developer's ~/.tmux.conf cannot affect
+            // the tests.
             Self(Server::named(tag).with_conf("/dev/null"))
         }
     }
@@ -1129,7 +980,7 @@ mod tests {
         }
     }
 
-    /// A shell that sits there without exiting, so a pane stays a pane.
+    /// A command that runs until killed, so the pane stays.
     const IDLE: &[&str] = &["sh", "-c", "while :; do sleep 0.05; done"];
 
     fn idle() -> Spawn<'static> {
@@ -1139,8 +990,7 @@ mod tests {
         }
     }
 
-    /// Poll until `f` is happy, the way the code polls: no fixed sleep stands
-    /// in for a state change.
+    /// Poll `f` until it returns true, failing after ten seconds.
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -1152,11 +1002,10 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
-    /// Start a server on this socket from a client standing in `cwd`.
+    /// Start a server on this socket from a client whose cwd is `cwd`.
     ///
-    /// A server takes its working directory from whichever client started it,
-    /// not from the `-c` a session was asked for: measured, and the whole
-    /// reason this is not `new_session`.
+    /// A server takes its working directory from the client that started it,
+    /// not from a session's `-c`, which is why this is not `new_session`.
     fn serve_from(server: &Server, cwd: &Path) {
         let out = server
             .command()
@@ -1175,15 +1024,14 @@ mod tests {
             Some(PathBuf::from("/tmp/gone"))
         );
         assert_eq!(unlinked(Path::new("/srv/app")), None);
-        // The marker is a suffix, not a word that appears anywhere.
+        // Only a suffix counts.
         assert_eq!(unlinked(Path::new("/tmp/(deleted)/app")), None);
     }
 
     #[test]
     fn a_server_says_where_it_is_standing() {
         let dir = tempfile::TempDir::new().unwrap();
-        // The kernel answers with the path it resolved, so compare against
-        // that rather than the tempdir's name: /tmp is a symlink on some
+        // The kernel reports the resolved path, and /tmp is a symlink on some
         // machines.
         let want = dir.path().canonicalize().unwrap();
         let server = TestServer::new();
@@ -1205,8 +1053,7 @@ mod tests {
         let server = TestServer::new();
         serve_from(&server, dir.path());
 
-        // What poisons a server: the directory it is standing in goes, and it
-        // carries on holding a place that is not there any more.
+        // Delete the directory the server is standing in.
         std::fs::remove_dir_all(dir.path()).unwrap();
 
         let standing = server.cwd().expect("it is still running");
@@ -1223,8 +1070,8 @@ mod tests {
         assert_eq!(server.cwd(), None, "nothing is listening on it");
     }
 
-    /// What tmux says to a client that reached a server on its way out, in
-    /// the shape `run` hands it on: measured against tmux 3.5a.
+    /// The error `run` reports for a client that reached an exiting server
+    /// (tmux 3.5a).
     fn the_server_went() -> anyhow::Error {
         anyhow::anyhow!("tmux new-session -d: server exited unexpectedly")
     }
@@ -1298,13 +1145,13 @@ mod tests {
 
     #[test]
     fn tmux_sanitizing_replaces_control_and_invisible_characters() {
-        // Newlines are the capture's structure and survive; the rest of the
-        // control range becomes spaces, U+009B included.
+        // Newlines survive; the rest of the control range, U+009B included,
+        // becomes spaces.
         assert_eq!(sanitize("a\nb"), "a\nb");
         assert_eq!(sanitize("a\u{1b}[2Jb"), "a [2Jb");
         assert_eq!(sanitize("a\u{9b}2Jb"), "a 2Jb");
         assert_eq!(sanitize("a\tb\u{7}"), "a b ");
-        // Replaced, never deleted: the halves must not close up.
+        // Replaced, so the halves do not join.
         assert_eq!(sanitize("ad\u{200b}min"), "ad min");
         assert_eq!(sanitize("a\u{202e}b\u{feff}c"), "a b c");
         assert_eq!(sanitize("plain text"), "plain text");
@@ -1340,8 +1187,7 @@ mod tests {
 
     #[test]
     fn tmux_a_recorded_socket_addresses_the_same_server_again() {
-        // meta.json carries the socket, so a later verb reaches the server the
-        // agent is actually on.
+        // meta.json records the socket, so later verbs reach the same server.
         for socket in [
             Socket::Name("amx".to_string()),
             Socket::Path(PathBuf::from("/tmp/tmux-1000/default")),
@@ -1363,8 +1209,7 @@ mod tests {
 
     #[test]
     fn tmux_a_detached_session_can_be_told_to_outlive_its_last_client() {
-        // What every agent rests on: without this, tmux destroys a session the
-        // moment nobody is attached to it.
+        // Without this, tmux destroys a session once no client is attached.
         let server = TestServer::new();
         let (session, pane) = server.new_session(&idle()).unwrap();
 
@@ -1389,10 +1234,9 @@ mod tests {
     #[test]
     fn tmux_finds_a_session_and_a_window_by_the_name_they_wear() {
         let server = TestServer::new();
-        // A socket nothing has ever listened on holds no sessions, and saying
-        // so is not a failure. Nor is a server that has gone since — tmux has
-        // a different sentence for each, and neither is an error to a question
-        // about what sessions there are.
+        // A socket nothing has listened on has no sessions, and neither does
+        // a server that has gone. tmux words the two differently; neither is
+        // an error.
         assert_eq!(server.session_named("amx").unwrap(), None);
 
         let (session, _) = server
@@ -1456,8 +1300,8 @@ mod tests {
         let server = TestServer::new();
         let (session, _) = server.new_session(&idle()).unwrap();
 
-        // A colon in a name splits tmux's target syntax, so the id is the only
-        // way back to this window.
+        // A colon splits tmux's target syntax, so only the id reaches this
+        // window.
         let (window, pane) = server
             .new_window(
                 &session,
@@ -1599,8 +1443,8 @@ mod tests {
         let (first_word, last_word) = (dir.path().join("go"), dir.path().join("go-again"));
         let server = TestServer::new();
 
-        // The pane says nothing until it is told to, so the pipe is attached
-        // before its first word and that word lands in the file with the rest.
+        // The pane prints nothing until told to, so the pipe is attached before
+        // its first line.
         let script = format!(
             "while [ ! -f '{first}' ]; do sleep 0.02; done; printf 'one\\ntwo\\n'; \
              while [ ! -f '{last}' ]; do sleep 0.02; done; printf 'three\\n'; \
@@ -1630,9 +1474,8 @@ mod tests {
             ["one", "two"]
         );
 
-        // `-o` is a toggle: asking a second time takes the pipe the pane has
-        // away and opens nothing in its place. So the second command is never
-        // started, and what the pane says afterwards is kept nowhere.
+        // `-o` is a toggle: a second call closes the pipe and opens nothing,
+        // so the second command never starts.
         server
             .pipe_pane(&pane, &format!("cat >> '{}'", second.display()))
             .unwrap();
@@ -1663,16 +1506,15 @@ mod tests {
         server
             .run_after(1, &format!("touch '{}'", fired.display()))
             .unwrap();
-        // The delay is counted from the call, and a loaded machine can only
-        // make the command later, so a file that is there already is a delay
-        // nothing waited out.
+        // The delay counts from the call and load can only make the command
+        // later, so a file already there means the delay was skipped.
         std::thread::sleep(Duration::from_millis(500));
         assert!(!fired.exists(), "it ran before its delay was up");
 
         until("the delayed command to run", || fired.exists());
     }
 
-    /// A pane with one word printed on it and nothing else happening.
+    /// A pane that prints `word` once and then idles.
     fn a_pane_saying(server: &Server, word: &str) -> PaneId {
         let script = format!("printf '{word}\\n'; while :; do sleep 0.05; done");
         let (_, pane) = server
@@ -1699,17 +1541,15 @@ mod tests {
         for (at, word) in ["FIRST", "SECOND", "THIRD"].iter().enumerate() {
             let screen = screens[at].as_deref().expect("every pane answered");
             assert!(screen.contains(word), "{at}: {screen:?}");
-            // Each pane's own screen and nobody else's: the batch is cut at
-            // markers, and a cut in the wrong place is one pane wearing the
-            // next one's words.
+            // Only this pane's words: a cut in the wrong place would mix
+            // screens.
             for other in ["FIRST", "SECOND", "THIRD"].iter().filter(|w| *w != word) {
                 assert!(!screen.contains(other), "{at}: {screen:?}");
             }
         }
 
-        // The same screen a single capture gives, sieve and all: a batch that
-        // read differently would have every rule matched against something
-        // else than what `capture` was measured on.
+        // The same text a single capture gives, sanitizing included, so rules
+        // match what they were written against.
         assert_eq!(
             screens[1].as_deref(),
             Some(server.capture(&panes[1]).unwrap().as_str())
@@ -1719,9 +1559,8 @@ mod tests {
 
     #[test]
     fn tmux_a_pane_that_went_costs_its_own_screen_and_no_others() {
-        // tmux runs a sequence of commands until one of them fails and stops
-        // there, so a pane that went between the listing and the capture would
-        // otherwise take every pane behind it in the batch with it.
+        // tmux stops a sequence at the first failure, so a pane gone since the
+        // listing would otherwise cost every pane after it.
         let server = TestServer::new();
         let first = a_pane_saying(&server, "FIRST");
         let second = a_pane_saying(&server, "SECOND");
@@ -1744,18 +1583,16 @@ mod tests {
             screens("M\nfirst\nM\nsecond\n", true, 2),
             said(&["first\n", "second\n"])
         );
-        // The sequence stopped at the third pane, which answered nothing. The
-        // two before it did, and are worth keeping.
+        // The sequence stopped at the third pane; the first two are kept.
         assert_eq!(
             screens("M\nfirst\nM\nsecond\nM\n", false, 3),
             said(&["first\n", "second\n"])
         );
-        // Not one marker: the server said nothing, and that is about the
-        // server rather than about any of these panes.
+        // No marker: the server said nothing about any pane.
         assert_eq!(screens("", false, 3), None);
         assert_eq!(screens("no server running\n", false, 3), None);
-        // A pane showing the marker itself cuts its own screen in two. Nobody
-        // is answered for who was not asked about.
+        // A pane showing the marker splits its own screen; nothing past the
+        // panes asked about is returned.
         assert_eq!(
             screens("M\nfirst\nM\nsecond\nM\nand the rest of second\n", true, 2),
             said(&["first\n", "second\n"])
@@ -1764,9 +1601,8 @@ mod tests {
 
     #[test]
     fn tmux_a_server_that_is_not_there_answers_for_none_of_its_panes() {
-        // Nothing is listening, so not one marker comes back. That is about
-        // the server rather than about any of these panes, and asking again
-        // pane by pane would be a fork each for the same silence.
+        // No server, so no marker comes back, and asking pane by pane would
+        // get the same silence.
         let server = TestServer::new();
         let panes: Vec<PaneId> = (1..=3)
             .map(|n| PaneId::new(format!("%{n}")).unwrap())
@@ -1788,7 +1624,7 @@ mod tests {
             })
             .unwrap();
 
-        // Text carrying the characters that would bite in an argv.
+        // Characters that would be interpreted in an argv.
         let text = "fix the $PATH; rm -rf \"quoted\"";
         server.paste(&pane, text).unwrap();
         server.send_keys(&pane, &["Enter"]).unwrap();
@@ -1814,7 +1650,7 @@ mod tests {
             Some("fix-login-a1b")
         );
 
-        // A global of the same name must not be mistaken for this pane's.
+        // A global of the same name is not this pane's.
         server
             .run(&["set-option", "-g", "@amx-elsewhere", "global"])
             .unwrap();
@@ -1827,16 +1663,15 @@ mod tests {
     #[test]
     fn tmux_a_pane_answers_for_the_agent_written_on_it_or_the_one_its_session_names() {
         let server = TestServer::new();
-        // A pane amx placed: its session is named for the agent, and there is
-        // nothing written on the pane itself.
+        // A placed pane: its session is named for the agent, nothing stamped.
         let (_, placed) = server
             .new_session(&Spawn {
                 name: Some(&format!("{SESSION_PREFIX}fix-login-a1b")),
                 ..idle()
             })
             .unwrap();
-        // And one amx adopted: somebody else's session, under a name with a
-        // space in it, with the id stamped on the pane.
+        // An adopted pane: someone else's session, with a space in its name,
+        // and the id stamped on the pane.
         let (_, adopted) = server
             .new_session(&Spawn {
                 name: Some("my work"),
@@ -1850,15 +1685,13 @@ mod tests {
         let owners = server.pane_owners().unwrap();
         assert!(owners.pane_answers_for(&placed, "fix-login-a1b"));
         assert!(owners.pane_answers_for(&adopted, "port-importer-c3d"));
-        // The half a pane number cannot answer: neither pane is the other
-        // agent's, and a record naming one of them holds nothing.
+        // Neither pane answers for the other agent.
         assert!(!owners.pane_answers_for(&placed, "port-importer-c3d"));
         assert!(!owners.pane_answers_for(&adopted, "fix-login-a1b"));
         assert!(!owners.pane_answers_for(&PaneId::new("%404").unwrap(), "fix-login-a1b"));
 
-        // What is written on a pane outranks the session it is sitting in:
-        // an adoption is somebody taking over a pane amx placed for somebody
-        // else.
+        // A stamp outranks the session name: adopting can take over a pane
+        // amx placed for another agent.
         server
             .set_pane_option(&placed, ID_OPTION, "port-importer-c3d")
             .unwrap();
@@ -1866,20 +1699,19 @@ mod tests {
         assert!(!owners.pane_answers_for(&placed, "fix-login-a1b"));
         assert!(owners.pane_answers_for(&placed, "port-importer-c3d"));
 
-        // The whole question, asked of the server in one call.
+        // The same question through the server.
         assert!(server.pane_answers_for(&adopted, "port-importer-c3d"));
         assert!(!server.pane_answers_for(&adopted, "fix-login-a1b"));
     }
 
     #[test]
     fn tmux_a_tmux_that_cannot_be_asked_is_not_an_answer() {
-        // A server that is not there is an answer: nothing on it is anybody's.
+        // No server listening is an answer: nothing on it is anyone's.
         let gone = Server::named(format!("amx-no-such-server-{}", std::process::id()));
         let pane = PaneId::new("%0").unwrap();
         assert!(!gone.answers_for_now(&pane, "fix-login-a1b").unwrap());
 
-        // A tmux that never ran is not one: nobody said anything about the
-        // pane, and the reason goes to whoever asked.
+        // A tmux that never ran said nothing, so the caller gets the error.
         let unasked = Server::from_socket(unaskable());
         let why = unasked.answers_for_now(&pane, "fix-login-a1b").unwrap_err();
         assert!(
@@ -1890,18 +1722,15 @@ mod tests {
 
     #[test]
     fn tmux_a_listing_of_owners_reads_the_stamp_before_the_session_name() {
-        // The lines tmux 3.7c prints for a pane amx placed and a pane amx
-        // adopted. An unset option is an empty field, so the pane amx placed
-        // has two spaces in a row, and a session name may hold spaces of its
-        // own: the stamp is ahead of it so that two splits from the left read
-        // the line either way.
+        // Lines as tmux 3.7c prints them for a placed and an adopted pane. An
+        // unset option is an empty field, hence the double space; the stamp
+        // comes before the session name, which may contain spaces.
         let read = owners("%0  amx-fix-login-a1b\n%1 port-importer-c3d my work\n");
         assert!(read.pane_answers_for(&PaneId::new("%0").unwrap(), "fix-login-a1b"));
         assert!(read.pane_answers_for(&PaneId::new("%1").unwrap(), "port-importer-c3d"));
 
-        // A pane in somebody's own session with nothing written on it is
-        // nobody's agent, and neither is a session whose name merely starts
-        // the way amx's do.
+        // No stamp in someone's own session is no agent, and neither is a
+        // session whose name is the bare prefix.
         let read = owners("%2  my work\n%3  amx\n");
         for nobody in ["", "my work", "amx", "work"] {
             assert!(!read.pane_answers_for(&PaneId::new("%2").unwrap(), nobody));
@@ -1919,7 +1748,7 @@ mod tests {
         server.kill_pane(&second).unwrap();
         until("the pane to leave the list", || !server.pane_alive(&second));
 
-        // The gotcha the law exists for: the value read is happy either way.
+        // The value read still succeeds on a gone pane.
         let answer = server.pane_field(&second, "#{pane_pid}");
         assert!(
             answer.as_deref().map(str::trim).unwrap_or("").is_empty(),
@@ -1942,18 +1771,16 @@ mod tests {
         let server = TestServer::new();
         let (_, first) = server.new_session(&idle()).unwrap();
 
-        // `new-session -d` leaves an active pane in an active window that no
-        // client is attached to, which is the whole reason all three flags are
-        // asked for.
+        // `new-session -d` leaves an active pane in an active window with no
+        // client attached, which is why all three flags are checked.
         assert!(!server.pane_watched(&first), "nobody is attached");
 
         let window = WindowId::new(server.pane_field(&first, "#{window_id}").unwrap()).unwrap();
         let second = server.split_window(&window, &idle()).unwrap();
         assert!(!server.pane_watched(&second), "and it is not even active");
 
-        // A pane that has gone answers emptily, and that reads as unwatched:
-        // this question decides whether to interrupt somebody, and the wrong
-        // direction to be wrong in is the silent one.
+        // A gone pane reads as unwatched: a missed notification is the worse
+        // error.
         server.kill_pane(&second).unwrap();
         until("the pane to leave the list", || !server.pane_alive(&second));
         assert!(!server.pane_watched(&second));
@@ -1962,7 +1789,7 @@ mod tests {
     #[test]
     fn tmux_identifies_a_pane_by_the_command_it_was_started_with() {
         // Between fork and exec a pane reports `tmux` as its current command,
-        // so what it was *started* with is the only stable identity.
+        // so the start command is the stable identity.
         let server = TestServer::new();
         let (_, pane) = server.new_session(&idle()).unwrap();
         let started = server.pane_field(&pane, "#{pane_start_command}").unwrap();
@@ -2002,10 +1829,9 @@ mod tests {
         assert!(message.contains("kill-pane"), "{message}");
     }
 
-    /// A client of this server, in a pane on it: the terminal a person is at,
-    /// for a test that has none. The pane runs the very command a lend runs,
-    /// with `$TMUX` taken away first, because a tmux started inside a pane
-    /// would otherwise take it as a client already being here.
+    /// A client attached to `session`, running in a pane of the same server.
+    ///
+    /// `$TMUX` is unset first, since tmux refuses to attach from inside a pane.
     fn a_client_on(server: &Server, session: &SessionId) -> PaneId {
         let attach = server.attach_command(session);
         let mut argv: Vec<String> = ["env", "-u", "TMUX", "-u", "TMUX_PANE"]
@@ -2027,7 +1853,7 @@ mod tests {
         pane
     }
 
-    /// The terminal of whoever is looking at a session, or nothing.
+    /// The tty of the client on `session`, or empty.
     fn client_on(server: &Server, session: &SessionId) -> String {
         server
             .run(&[
@@ -2061,8 +1887,7 @@ mod tests {
 
     #[test]
     fn tmux_a_server_that_will_not_answer_lists_no_terminals() {
-        // Nothing is listening on the socket, and asking must neither fail
-        // loudly nor start a server to be told there is nobody on it.
+        // No server: asking must neither fail nor start one.
         let server = TestServer::new();
         assert!(server.client_ttys().is_empty());
         assert!(!server.is_alive(), "the question started nothing");
@@ -2088,8 +1913,7 @@ mod tests {
 
     #[test]
     fn tmux_only_a_socket_in_the_socket_directory_is_a_server() {
-        // Whatever else is sitting in the directory — a log somebody left, a
-        // directory of their own — is not something to address tmux at.
+        // Other files and directories in the socket directory are skipped.
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("notes"), "").unwrap();
         std::fs::create_dir(dir.path().join("inner")).unwrap();
@@ -2123,8 +1947,7 @@ mod tests {
     fn tmux_a_killed_server_takes_its_socket_file_with_it() {
         let server = TestServer::new();
         server.new_session(&idle()).unwrap();
-        // Ask tmux where it is listening rather than working the path out
-        // the way kill does.
+        // Ask tmux for the socket path instead of deriving it as kill does.
         let socket = PathBuf::from(
             server
                 .run(&["display-message", "-p", "#{socket_path}"])
@@ -2156,9 +1979,8 @@ mod tests {
 
     #[test]
     fn tmux_kill_leaves_a_socket_somebody_answers_at_alone() {
-        // Whoever is bound here is not this call's to clear away, whatever
-        // kill-server made of them. The thread is what keeps the test
-        // moving: a tmux client waits on a reply until the peer hangs up.
+        // Whatever is bound here is not ours to remove. The thread hangs up on
+        // each connection, since a tmux client waits for a reply until then.
         let dir = tempfile::TempDir::new().unwrap();
         let socket = dir.path().join("listening");
         let listening = std::os::unix::net::UnixListener::bind(&socket).unwrap();
@@ -2175,11 +1997,9 @@ mod tests {
     #[test]
     fn tmux_ctrl_z_in_an_agents_session_goes_back_the_way_the_client_came() {
         let server = TestServer::new();
-        // The session a view draws in, the session of an agent amx placed,
-        // and one of the person's own. That one writes down every byte it is
-        // sent, with the terminal's own reading of ctrl+z and of lines turned
-        // off, so what arrives is the byte, at once, rather than a stop signal
-        // or a line held back for its newline.
+        // A view's session, a placed agent's session, and one of the person's
+        // own. The last records every byte it receives, with the tty's signal
+        // and line handling off, so C-z arrives at once as a byte.
         let (view, _) = server.new_session(&idle()).unwrap();
         let (agent, _) = server
             .new_session(&Spawn {
@@ -2200,8 +2020,8 @@ mod tests {
 
         server.bind_way_back().unwrap();
 
-        // Inside tmux: enter on a row moves the client from the view's session
-        // to the agent's, and ctrl+z moves it back.
+        // Inside tmux: the client moves from the view to the agent, and C-z
+        // moves it back.
         let pane = a_client_on(&server, &view);
         until("a client on the view", || {
             !client_on(&server, &view).is_empty()
@@ -2220,8 +2040,8 @@ mod tests {
             client_on(&server, &view) == tty
         });
 
-        // In a session amx did not name the key is the pane's: the byte lands
-        // and the client stays where it is.
+        // In a session amx did not name, C-z reaches the pane and the client
+        // stays.
         server
             .run(&["switch-client", "-c", &tty, "-t", theirs.as_str()])
             .unwrap();
@@ -2237,9 +2057,8 @@ mod tests {
         assert_eq!(client_on(&server, &theirs), tty, "the client did not move");
         server.kill_pane(&pane).unwrap();
 
-        // Outside tmux: the view lent the terminal to a client attached straight
-        // to the agent's session, with nowhere to switch back to, and ctrl+z
-        // detaches it — which is what gives the view its terminal back.
+        // Outside tmux: a client attached straight to the agent's session has
+        // nowhere to switch back to, so C-z detaches it.
         let lent = a_client_on(&server, &agent);
         until("a client on the agent", || {
             !client_on(&server, &agent).is_empty()
