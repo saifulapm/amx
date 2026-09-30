@@ -1,4 +1,7 @@
-//! Bringing an agent back: the pane goes, the session does not.
+//! Tests for bringing an agent back after its pane is gone: `amx resume`,
+//! `amx attach` and Enter in the view start a new pane that continues the
+//! agent's recorded vendor session. Also covers the refusals for agents with
+//! nothing to continue, and how `amx adopt` reads a pane it takes over.
 
 mod common;
 
@@ -7,17 +10,17 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-/// The id the vendor's stand-in announces for a session it was asked to
-/// continue. A resume changes exactly this about an agent, so it is what the
-/// tests watch for.
+/// The session id mock-claude announces when it continues a session. Tests
+/// wait for it in the agent's meta to know a resume took effect.
 const CONTINUED: &str = "b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42";
 
-/// An agent started the way a person starts one, playing `scenario`.
+/// Start mock-claude as agent `id` in `dir` with `amx new`, playing
+/// `scenario`.
 fn start(amx: &Harness, id: &str, dir: &Path, scenario: &str) {
     start_with(amx, id, dir, scenario, &[]);
 }
 
-/// The same, with arguments of the vendor's own after the separator.
+/// [`start`], with `vendor` appended to the `amx new` arguments.
 fn start_with(amx: &Harness, id: &str, dir: &Path, scenario: &str, vendor: &[&str]) {
     let out = amx
         .amx_command(
@@ -46,7 +49,7 @@ fn start_with(amx: &Harness, id: &str, dir: &Path, scenario: &str, vendor: &[&st
     );
 }
 
-/// `amx resume`, with the stand-in ready to play a continued session.
+/// Run `amx resume` with mock-claude set up to continue a session.
 fn resume(amx: &Harness, args: &[&str]) -> Output {
     amx.amx_command(&[&["resume"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
@@ -64,19 +67,18 @@ fn said(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Wait for the vendor's stand-in to announce the session it was given.
+/// Wait until the agent's meta records [`CONTINUED`] as its session.
 fn until_continued(amx: &Harness, id: &str) {
     amx.until(&format!("{id} to be on its continued session"), || {
         (amx.meta(id)["session"] == CONTINUED).then_some(())
     });
 }
 
-/// A terminal of somebody's own, running `amx` with `args`, with the stand-in
-/// ready to play a continued session.
+/// Run amx with `args` in a new terminal outside tmux, with mock-claude set up
+/// to continue a session, and answer with the terminal's pane.
 ///
-/// Outside tmux as far as amx can tell, which is what tmux's own two variables
-/// say and the only thing that says it: a terminal with nothing else on it is
-/// the one that shows what attaching came to.
+/// Clearing `TMUX` and `TMUX_PANE` puts it outside tmux, where attaching takes
+/// over the terminal itself, so its screen shows the result.
 fn a_terminal(amx: &Harness, args: &[&str]) -> String {
     let scenario = amx.scenario("continues-a-session");
     amx.in_a_terminal(
@@ -90,11 +92,10 @@ fn a_terminal(amx: &Harness, args: &[&str]) -> String {
     )
 }
 
-/// The same terminal, inside tmux, which is where most people type `amx`.
+/// [`a_terminal`] with `TMUX` and `TMUX_PANE` left set, so amx sees a terminal
+/// inside tmux.
 ///
-/// A pane is inside tmux by birth, so this is [`a_terminal`] with tmux's own
-/// two variables left where tmux put them. The view answers to them: inside
-/// one it has a client to move and outside one it has the terminal itself.
+/// Inside tmux the view switches a client instead of taking over the terminal.
 fn a_terminal_inside_tmux(amx: &Harness, args: &[&str]) -> String {
     let scenario = amx.scenario("continues-a-session");
     amx.in_a_terminal(
@@ -106,21 +107,20 @@ fn a_terminal_inside_tmux(amx: &Harness, args: &[&str]) -> String {
     )
 }
 
-/// Wait until a terminal has been handed to this agent's session.
+/// Wait until a client is attached to the agent's session.
 ///
-/// A client on it is the one thing that says the attach got as far as tmux,
-/// which is where it writes down that somebody was here.
+/// Attach writes the `--last` trail just before it hands over to tmux, so a
+/// client on the session means the trail is written.
 fn until_attached(amx: &Harness, id: &str) {
     amx.until(&format!("a terminal on {id}"), || {
         (!clients_on(amx, &format!("amx-{id}")).is_empty()).then_some(())
     });
 }
 
-/// Wait until this terminal's own client is the one looking at `id`.
+/// Wait until `terminal`'s own client is attached to `id`'s session.
 ///
-/// By the terminal's tty rather than by there being a client at all: the
-/// session may have somebody else on it already, and which terminal landed
-/// where is the whole question.
+/// Matches on the terminal's tty, since the session may already have other
+/// clients.
 fn until_the_terminal_is_on(amx: &Harness, terminal: &str, id: &str) {
     let tty = amx.tmux(&["display-message", "-p", "-t", terminal, "#{pane_tty}"]);
     amx.until(&format!("this terminal on {id}"), || {
@@ -131,7 +131,7 @@ fn until_the_terminal_is_on(amx: &Harness, terminal: &str, id: &str) {
     });
 }
 
-/// Wait for the continued session to be drawing on this terminal.
+/// Wait until the continued session is drawn on `terminal`.
 fn until_looking_at_it(amx: &Harness, terminal: &str) {
     amx.until("the agent on the screen", || {
         amx.capture(terminal)
@@ -140,8 +140,8 @@ fn until_looking_at_it(amx: &Harness, terminal: &str) {
     });
 }
 
-/// An agent that ran, and whose pane is gone: what somebody comes back to in
-/// the morning. Answers with the pane it used to be in.
+/// Start an agent, let it go idle and stop it, and answer with the pane it
+/// had.
 fn ran_and_stopped(amx: &Harness, id: &str) -> String {
     something_else_on_the_server(amx);
     start(amx, id, amx.home(), "happy-turn");
@@ -153,14 +153,12 @@ fn ran_and_stopped(amx: &Harness, id: &str) -> String {
     gone
 }
 
-/// An agent whose record names a pane that is another agent's now, answering
-/// with that pane.
+/// Leave agent `id` idle with its record naming another agent's live pane, and
+/// answer with that pane.
 ///
-/// The morning after a reboot, in the order it happens. The pane went with the
-/// server that died, and nothing recorded the agent's ending, so its record
-/// still says idle. tmux numbers panes from `%0` per server, so the server
-/// that started afterwards handed the same number out again — and the agent
-/// standing at it is somebody else.
+/// This is the state after a reboot: the pane died with the server and no exit
+/// was recorded, so the record still says idle, and tmux, which numbers panes
+/// from `%0` per server, has given the same pane id to another agent.
 fn taken_over(amx: &Harness, id: &str) -> String {
     something_else_on_the_server(amx);
     start(amx, id, amx.home(), "happy-turn");
@@ -172,9 +170,7 @@ fn taken_over(amx: &Harness, id: &str) -> String {
         "a pane that goes without amx being told leaves the record where it was"
     );
 
-    // The other agent's pane, in the session amx names for the agent it holds:
-    // every pane amx places sits in one called `amx-<id>`, and that name is
-    // what says whose pane it is.
+    // amx tells whose pane it is by the `amx-<id>` session it sits in.
     let theirs = amx.tmux(&[
         "new-session",
         "-d",
@@ -192,10 +188,10 @@ fn taken_over(amx: &Harness, id: &str) -> String {
     theirs
 }
 
-/// A claude somebody started themselves, taken onto the wall by `amx adopt`.
+/// Adopt a claude started by hand as agent `id`, and answer with its pane.
 ///
-/// The one shape of agent amx has a session for and no command: that claude
-/// was run by hand, in a pane amx never opened. Answers with its pane.
+/// An adopted agent has a session but no recorded command, so amx cannot
+/// start it again.
 fn adopted(amx: &Harness, id: &str) -> String {
     something_else_on_the_server(amx);
     let pane = amx.tmux(&[
@@ -211,8 +207,7 @@ fn adopted(amx: &Harness, id: &str) -> String {
     ]);
     let out = amx
         .amx_command(&["adopt", "--name", id, "--task", "fix the login bug"])
-        // The two variables the verb reads: tmux says which pane the command
-        // was typed in, and the vendor says which conversation typed it.
+        // adopt reads the pane from tmux and the session from the vendor.
         .env("TMUX_PANE", &pane)
         .env("CLAUDE_CODE_SESSION_ID", ADOPTED)
         .output()
@@ -225,16 +220,14 @@ fn adopted(amx: &Harness, id: &str) -> String {
     pane
 }
 
-/// The conversation the adopted agent says it is.
+/// The session id the adopted agent reports.
 const ADOPTED: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
 
-/// A pi somebody started themselves, stopped on the dialog it raises, in a
-/// pane amx never opened. Answers with that pane, once the dialog is on it.
+/// Start mock pi on its question dialog in a pane amx did not open, and answer
+/// with the pane once the dialog is drawn.
 ///
-/// The stand-in next door to mock-claude, started here by hand: what makes a
-/// pane pi's is the program running in it, and adoption is about a pane that
-/// was running before amx was asked about it. Nothing here goes through the
-/// PATH the way `amx new --agent pi` has to.
+/// The fixture runs by path, as a pi started by hand would, so it needs no
+/// PATH setup the way `amx new --agent pi` does.
 fn a_pi_on_its_dialog(amx: &Harness) -> String {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_pi");
     let scenario = format!(
@@ -256,21 +249,19 @@ fn a_pi_on_its_dialog(amx: &Harness) -> String {
         &pi,
     ]);
 
-    // The hint row pi draws under every dialog, which is the anchor its own
-    // document reads the screen by. A capture taken before it is painted is a
-    // different screen, and adoption reads the pane once.
+    // Wait for the hint row pi draws under every dialog, which its screen
+    // document anchors on. Adoption reads the pane only once.
     amx.until("pi's dialog on the pane", || {
         amx.capture(&pane).contains("↑↓ navigate").then_some(())
     });
     pane
 }
 
-/// `amx adopt`, typed in a pane by the vendor that names `session`.
+/// Run `amx adopt` for `pane` with the vendor session variable `session` set.
 ///
-/// The suite is run from inside somebody's own agent often enough that a
-/// vendor's session variable is already in this process's environment. claude
-/// is the first entry in the table, so a stray copy of its variable would
-/// answer for every adoption here before the vendor under test was reached.
+/// `CLAUDE_CODE_SESSION_ID` is removed first: the suite often runs inside a
+/// claude, and claude is first in the vendor table, so a leaked copy would win
+/// over the vendor under test.
 fn adopt_as(amx: &Harness, id: &str, pane: &str, session: (&str, &str)) {
     let out = amx
         .amx_command(&["adopt", "--name", id, "--task", "fix the login bug"])
@@ -286,12 +277,11 @@ fn adopt_as(amx: &Harness, id: &str, pane: &str, session: (&str, &str)) {
     );
 }
 
-/// Wait until the pane is gone, however it went.
 fn until_pane_gone(amx: &Harness, pane: &str) {
     amx.until("the pane to go", || (!amx.pane_alive(pane)).then_some(()));
 }
 
-/// Take the pane away, and wait until it has gone.
+/// Kill `pane` and wait until it is gone.
 fn kill_pane(amx: &Harness, pane: &str) {
     amx.tmux(&["kill-pane", "-t", pane]);
     until_pane_gone(amx, pane);
@@ -314,8 +304,7 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
     let out = resume(&amx, &[id]);
     assert!(said(&out).contains(id), "it says what came back");
 
-    // The vendor was handed the session the agent already had, and not the
-    // task it was started on: that work was asked for once.
+    // The original task is already in the session, so it is not passed again.
     let pane = amx.pane_of(id);
     let called = amx.until("the vendor to say how it was called", || {
         let screen = amx.capture(&pane);
@@ -324,7 +313,6 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
     assert!(called.contains(&format!("--resume={session}")), "{called}");
     assert!(!called.contains("fix the login bug"), "{called}");
 
-    // And the record is the same agent, back at the beginning of a turn.
     until_continued(&amx, id);
     assert!(amx.pane_alive(&pane));
     assert_ne!(amx.state(id)["state"], "stopped");
@@ -333,13 +321,9 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
 
 #[test]
 fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
-    // Nobody asked the resumed session for anything, so no turn is coming to
-    // move the record off `starting`: the vendor restores the conversation,
-    // draws its prompt and waits. Left there, the pane is the only witness —
-    // and a prompt screen is the one screen a person's own footer can hide,
-    // which is how four pi agents sat in `starting` for good (#62TPETHQ). The
-    // session opening is the whole of the news, so it is where the record
-    // says the agent is there.
+    // With no message no turn follows, so only the session opening can move
+    // the record off `starting`. The pane is no fallback: a custom footer can
+    // hide the prompt screen, which left pi agents stuck in `starting`.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -354,10 +338,9 @@ fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
         "at its prompt, with no reading of the pane in it"
     );
 
-    // A resume carrying a message is the other case: the message is a first
-    // turn riding the argv, and the record is that turn's until the vendor
-    // says otherwise. The stand-in announces the session and works on
-    // nothing, which is a turn amx is still waiting on.
+    // With a message, the message is the first turn and the record stays
+    // `starting` until the vendor reports on it. The mock announces the session
+    // and never starts the turn.
     amx.amx(&["stop", id, "--force"]);
     resume(&amx, &[id, "and now the linter"]);
     until_continued(&amx, id);
@@ -370,10 +353,9 @@ fn resume_with_no_message_is_idle_the_moment_the_session_opens() {
 
 #[test]
 fn resume_keeps_what_the_agent_worked_and_what_it_was_called() {
-    // A parked agent that worked six hours read `6h` on the wall, and `0s`
-    // the moment it was opened: the resume that brought it back wrote a fresh
-    // record and the hours went with the answer and the exit code. It is the
-    // same agent on the same session, and what it worked is still its own.
+    // A resume continues the same agent, so the state's `worked` time and a
+    // name set on the wall carry over instead of being reset with the answer
+    // and exit code.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -389,16 +371,13 @@ fn resume_keeps_what_the_agent_worked_and_what_it_was_called() {
     resume(&amx, &[id]);
     until_continued(&amx, id);
     assert_eq!(amx.state(id)["worked"], 22_178);
-    // And what somebody renamed it to on the wall is still what it is called.
     assert_eq!(amx.state(id)["name"], "billing");
 }
 
 #[test]
 fn resume_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
-    // A record that has lost its pane is a record to bring back, and one that
-    // lost it to another agent has lost it as surely as one whose pane is
-    // gone. Read as the agent still being in that pane, the resume is refused
-    // and the agent nobody can see stays where nobody can see it.
+    // A pane now held by another agent counts as gone. Treating the agent as
+    // still running there would refuse the resume.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let theirs = taken_over(&amx, id);
@@ -414,17 +393,13 @@ fn resume_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
 
 #[test]
 fn logs_of_an_agent_whose_pane_answers_for_somebody_else_read_the_record() {
-    // A reading is what has been going on over there, and over there is
-    // whichever pane the record names — so an agent whose number another agent
-    // is standing at read that agent's screen back under its own name. What is
-    // left of this one is the answer on its record.
+    // The pane the record names shows another agent, so logs must not read it
+    // and falls back to the answer on the record.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     taken_over(&amx, id);
-    // A vendor that announced no transcript, which is the shape where the pane
-    // is the only other account there is: with one, a reading opens that file
-    // whatever pane the record names, and which pane it reaches for is the
-    // question here.
+    // With a transcript, logs reads that file whatever the pane, so drop it to
+    // exercise the pane path.
     amx.set_meta(id, json!({ "transcript": null }));
 
     let out = amx.amx(&["logs", id]);
@@ -461,10 +436,8 @@ fn resume_refuses_an_agent_that_has_not_ended() {
 
 #[test]
 fn resume_two_racers_bring_back_one_agent_and_not_two() {
-    // Two `amx resume <id>` in flight at once. One session may only be
-    // continued once: two panes both running `--resume=<same session>` would
-    // fight over one record, so the loser has to hear that the agent is
-    // already going again.
+    // Two panes resuming the same session would share one record, so of two
+    // concurrent resumes exactly one may win.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -477,8 +450,8 @@ fn resume_two_racers_bring_back_one_agent_and_not_two() {
         .parent()
         .expect("the state root has a parent")
         .to_path_buf();
-    // Both racers are up and spinning before the starting gun fires, so they
-    // reach the has-it-ended gate together instead of one whole run apart.
+    // Both racers spin on the `go` file, so they reach the has-it-ended check
+    // together instead of one process start apart.
     let go = state_dir.join("go");
     let racers: Vec<_> = (0..2)
         .map(|_| {
@@ -533,9 +506,8 @@ fn resume_two_racers_bring_back_one_agent_and_not_two() {
 
 #[test]
 fn resume_puts_a_message_to_the_agent_it_brings_back() {
-    // A resume with a message is a resume and a first turn in one command. The
-    // message rides the vendor's argv, where `new` puts a task, so it is in
-    // front of the agent the moment the pane exists.
+    // The message goes on the vendor's argv, where `new` puts a task, so the
+    // agent has it as soon as the pane starts.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -556,17 +528,16 @@ fn resume_puts_a_message_to_the_agent_it_brings_back() {
         "the work asked for once: {called}"
     );
 
-    // And the handoff says the message is what this agent was asked for, so
-    // the next resume carries it no further.
+    // The message becomes the handoff's task, which a later resume does not
+    // pass again.
     assert_eq!(amx.handoff(id)["task"], "and now the linter");
 }
 
 #[test]
 fn resume_records_the_message_as_a_send_before_the_vendor_speaks() {
-    // `result` hands back the turn after the last message amx sent, so a send
-    // written once the vendor was up would leave a window in which `result`
-    // answered with the turn before. The record is written under the writer's
-    // lock, which the new pane's hooks wait at.
+    // `result` returns the turn after the last send, so a send recorded after
+    // the vendor starts would let `result` return the previous turn. Resume
+    // writes it under the writer lock, which the new pane's hooks wait on.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -591,16 +562,13 @@ fn resume_records_the_message_as_a_send_before_the_vendor_speaks() {
         "and now the linter"
     );
 
-    // And it is the vendor's first word that follows, which only arrives once
-    // the pane is there.
     until_continued(&amx, id);
     assert!(
         amx.event_kinds(id)[sent + 1..].contains(&"SessionStart".to_string()),
         "{written:?}"
     );
 
-    // A resume with nothing to say records no send: an agent that comes back
-    // to its own prompt was told nothing.
+    // A resume without a message records no send.
     amx.amx(&["stop", id, "--force"]);
     let before = amx.event_kinds(id).len();
     said(&resume(&amx, &[id]));
@@ -613,9 +581,8 @@ fn resume_records_the_message_as_a_send_before_the_vendor_speaks() {
 
 #[test]
 fn resume_that_cannot_place_a_pane_leaves_the_record_as_it_was() {
-    // tmux refuses a second session under a name it already has, and every
-    // pane amx places sits in one called `amx-<id>`: a squatter on the name is
-    // a place that fails after every check in front of it passed.
+    // tmux refuses a duplicate session name, so a session squatting on
+    // `amx-<id>` makes placing the pane fail after every earlier check passed.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     ran_and_stopped(&amx, id);
@@ -663,10 +630,9 @@ fn resume_that_cannot_place_a_pane_leaves_the_record_as_it_was() {
 
 #[test]
 fn resume_never_shows_a_reader_a_fresh_record_naming_the_old_pane() {
-    // A record back at `starting` over a pane that is gone reads as an agent
-    // that died starting. The pane is placed before the record is touched, and
-    // the record learns the pane before it is reset, so a reader that takes the
-    // state first and then the pane never finds the two apart.
+    // A record at `starting` over a gone pane reads as an agent that died
+    // starting. Resume places the pane first and records it before resetting
+    // the state, so a reader never sees the reset state with the old pane.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gone = ran_and_stopped(&amx, id);
@@ -696,10 +662,9 @@ fn resume_never_shows_a_reader_a_fresh_record_naming_the_old_pane() {
 
 #[test]
 fn boot_keeps_what_its_own_pane_prints_and_not_the_recorded_one() {
-    // A resume writes the new pane on the record only once tmux has made it,
-    // so the boot in that pane can start while the record still names the
-    // pane before. Here the record names another pane outright, and what is
-    // kept has to be what the boot's own pane printed.
+    // Resume records the new pane only after tmux makes it, so `_boot` can
+    // start while the record still names the old pane. The output kept must
+    // come from the boot's own pane, not the one the record names.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let elsewhere = amx.tmux(&[
@@ -737,9 +702,8 @@ fn boot_keeps_what_its_own_pane_prints_and_not_the_recorded_one() {
 
 #[test]
 fn resume_says_a_command_row_has_no_vendor_to_take_a_message() {
-    // A command is not a conversation. There is nothing in that pane to read a
-    // prompt, so the message is refused before anything is written, and what
-    // is named is the verb that runs the command again.
+    // An `--exec` row has no vendor to read a message, so resume refuses
+    // before writing anything and points at `amx new --exec` instead.
     let amx = Harness::new();
     let id = "run-tests-a1b";
     something_else_on_the_server(&amx);
@@ -767,9 +731,7 @@ fn resume_says_a_command_row_has_no_vendor_to_take_a_message() {
 
 #[test]
 fn resume_takes_no_message_for_every_agent_at_once() {
-    // `--all` is the morning after a server death, and a message is for the
-    // one agent somebody has in mind. The command line is wrong rather than
-    // the state being wrong, so it is 64 and nothing is brought back.
+    // A message with `--all` is a usage error (64), and nothing is resumed.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gone = ran_and_stopped(&amx, id);
@@ -781,9 +743,7 @@ fn resume_takes_no_message_for_every_agent_at_once() {
 
 #[test]
 fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
-    // How an agent ended is not whether there is a session behind it. One that
-    // finished has an answer and a session, and picking that session up is how
-    // somebody carries on from it.
+    // An agent that finished still has a session to continue.
     let amx = Harness::new();
     let id = "say-hello-b2c";
     start(&amx, id, amx.home(), "finishes");
@@ -791,16 +751,14 @@ fn resume_picks_up_an_agent_whose_command_ran_to_the_end() {
 
     said(&resume(&amx, &[id]));
     until_continued(&amx, id);
-    // Nobody asked the session it picked up for anything, so it is sitting at
-    // its prompt rather than on its way to work.
+    // Resumed without a message, so it waits at its prompt.
     assert_eq!(amx.state(id)["state"], "idle");
 }
 
 #[test]
 fn resume_puts_the_agent_back_in_a_session_of_its_own() {
-    // The pane the agent had went with the session that held it, and a resume
-    // makes both again under the same name: an id is what addresses an agent,
-    // whichever pane it is in this time.
+    // The old session went with the pane, and resume makes a new one under
+    // the same `amx-<id>` name.
     let amx = Harness::new();
     let id = "quiet-fix-a1b";
     let out = amx
@@ -844,9 +802,8 @@ fn resume_puts_the_agent_back_in_a_session_of_its_own() {
 
 #[test]
 fn resume_from_inside_tmux_leaves_the_window_where_it_was() {
-    // The second door that starts a pane, held to what the first one promises:
-    // whoever typed the command is looking at a window they chose, and nothing
-    // amx does may take it from them.
+    // Like `new`, resume run inside tmux must not switch the caller's window
+    // or add one to their session.
     let amx = Harness::new();
     let id = "quiet-fix-a1b";
     start(&amx, id, amx.home(), "happy-turn");
@@ -861,8 +818,7 @@ fn resume_from_inside_tmux_leaves_the_window_where_it_was() {
         .expect("the pane the terminal is in");
     let watching = amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"]);
 
-    // A second window, so the one being looked at is a choice and not the only
-    // thing there is to look at.
+    // With a second window, a switch of the current window would show.
     amx.tmux(&[
         "new-window",
         "-d",
@@ -919,7 +875,6 @@ fn resume_all_brings_back_everything_a_dead_server_took() {
         amx.until_state(id, "idle");
     }
 
-    // The server dies, and every pane on it goes with it.
     amx.tmux(&["kill-server"]);
 
     let out = resume(&amx, &["--all"]);
@@ -1001,9 +956,9 @@ fn clibatch_resume_hands_the_vendor_what_the_agent_was_started_with() {
 
 #[test]
 fn clibatch_resuming_twice_over_asks_for_one_session_and_not_two() {
-    // Each resume records what it launched, so the second one reads a command
-    // that already names a session. Two of them would leave which session the
-    // vendor opens up to the vendor.
+    // Each resume records the command it launched, so the second one reads a
+    // command that already has `--resume`. With two, the vendor would pick
+    // which session to open.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start_with(
@@ -1038,8 +993,7 @@ fn clibatch_resuming_twice_over_asks_for_one_session_and_not_two() {
 fn resume_says_so_when_there_is_no_session_to_continue() {
     let amx = Harness::new();
     let id = "never-hooked-a1b";
-    // A record whose agent never announced a session: nothing was ever
-    // started that could be picked up again.
+    // The agent never announced a session.
     amx.record(id, "%99");
     amx.set_state(id, json!({ "state": "stopped" }));
 
@@ -1061,14 +1015,15 @@ fn resume_will_not_take_the_machine_past_max_agents() {
     amx.record(id, "%99");
     amx.set_state(id, json!({ "state": "stopped" }));
 
-    // The cap is about what the machine is already running, so it is answered
-    // before anything about this agent is.
+    // The cap is checked before anything about this agent, so its missing
+    // session never comes up.
     let out = resume(&amx, &[id]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("max_agents"));
 }
 
-/// An agent of `project` that ran and stopped, with its place given up.
+/// Start an agent in `project` and stop it, so it holds no place under the
+/// caps.
 fn stopped_in(amx: &Harness, id: &str, project: &Path) {
     start(amx, id, project, "happy-turn");
     amx.until_state(id, "idle");
@@ -1078,9 +1033,8 @@ fn stopped_in(amx: &Harness, id: &str, project: &Path) {
 
 #[test]
 fn resume_counts_the_cap_against_the_project_the_agent_ran_in() {
-    // An agent comes back where it was, so the cap it answers to is the one
-    // that project's own file sets. Two projects allowed one agent each: what
-    // one of them is running is nothing the other answers for.
+    // A resumed agent comes back in its own project, so that project's
+    // `max_agents` applies. Each project here allows one agent.
     let amx = Harness::new();
     let alpha = a_project(&amx, "alpha", "max_agents = 1\n");
     let beta = a_project(&amx, "beta", "max_agents = 1\n");
@@ -1099,8 +1053,8 @@ fn resume_counts_the_cap_against_the_project_the_agent_ran_in() {
         "the project it counted: {why}"
     );
 
-    // The same agent, recorded in the other project: alpha's afternoon is
-    // nothing beta is asked about.
+    // Recorded under beta instead, it resumes: alpha's agent does not count
+    // there.
     amx.set_meta(id, json!({ "dir": beta.to_string_lossy() }));
     let out = resume(&amx, &[id]);
     assert!(
@@ -1113,9 +1067,8 @@ fn resume_counts_the_cap_against_the_project_the_agent_ran_in() {
 
 #[test]
 fn resume_will_not_take_the_machine_past_max_total() {
-    // The ceiling is the machine's rather than any project's: an agent of one
-    // project holds the last place on it, and another project's cannot come
-    // back under it however much room that project has.
+    // `max_total` is machine-wide: with alpha's agent in the last place,
+    // beta's agent cannot resume, whatever room beta's own cap leaves.
     let amx = Harness::new();
     amx.config("max_total = 1\n");
     let alpha = a_project(&amx, "alpha", "max_agents = 5\n");
@@ -1142,9 +1095,8 @@ fn resume_says_so_when_there_is_no_such_agent() {
 
 #[test]
 fn attach_brings_back_an_agent_whose_pane_is_gone() {
-    // What somebody asked for is to look at this agent, and a pane that is
-    // gone is not an answer to that. The session behind it is, so attaching
-    // picks it up and hands the terminal over exactly as it always did.
+    // Attach resumes the agent's session in a new pane, then hands the
+    // terminal over as usual.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gone = ran_and_stopped(&amx, id);
@@ -1172,9 +1124,8 @@ fn attach_brings_back_an_agent_whose_pane_is_gone() {
 
 #[test]
 fn attach_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
-    // What somebody asked for is to look at this agent. The pane its record
-    // names belongs to another agent now, and handing that over would show
-    // them somebody else's work under this agent's name.
+    // The recorded pane belongs to another agent now. Attaching to it would
+    // show that agent's work under this one's name.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let theirs = taken_over(&amx, id);
@@ -1192,8 +1143,8 @@ fn attach_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
 
 #[test]
 fn attach_says_so_when_there_is_nothing_to_bring_back() {
-    // A record whose agent never announced a session: there is nothing to pick
-    // up, and saying which is missing beats saying that the pane is.
+    // The agent never announced a session. The error names the missing
+    // session, not the missing pane.
     let amx = Harness::new();
     let id = "never-hooked-a1b";
     amx.record(id, "%99");
@@ -1212,10 +1163,9 @@ fn attach_says_so_when_there_is_nothing_to_bring_back() {
 
 #[test]
 fn attach_says_so_when_amx_never_started_the_agent() {
-    // An adopted claude is the one agent with a session behind it that amx
-    // still cannot bring back: it was started by hand, and amx wrote down no
-    // command to start a second time. That is the reason, and a complaint
-    // about a file amx keeps for itself is not.
+    // An adopted claude has a session but no recorded command, since it was
+    // started by hand. The error says that, not that the handoff file is
+    // missing.
     let amx = Harness::new();
     let id = "their-own-a1b";
     let pane = adopted(&amx, id);
@@ -1243,8 +1193,8 @@ fn attach_says_so_when_amx_never_started_the_agent() {
 
 #[test]
 fn resume_says_so_when_amx_never_started_the_agent() {
-    // The same refusal at a shell prompt, in the same words: the verb and the
-    // door that becomes it read the record the same way.
+    // Attach on a gone pane goes through resume, so both refuse in the same
+    // words.
     let amx = Harness::new();
     let id = "their-own-a1b";
     let pane = adopted(&amx, id);
@@ -1259,12 +1209,9 @@ fn resume_says_so_when_amx_never_started_the_agent() {
 
 #[test]
 fn adopt_reads_the_pane_by_the_document_of_the_vendor_it_took_over() {
-    // What is in a pane amx did not open is whatever somebody started, so the
-    // screens the record's first reading is made against are that vendor's.
-    // This pane is pi blocked on a dialog: pi's document claims that screen,
-    // and the difference between reading it with that document and with the
-    // one at the head of the table is a record that says somebody is wanted
-    // here against a record that says amx cannot tell.
+    // Adoption reads the pane with the adopted vendor's screen document. On
+    // pi's dialog, pi's document gives `waiting`; claude's, first in the
+    // vendor table, cannot read that screen.
     let amx = Harness::new();
     let theirs = "their-own-pi-a1b";
     adopt_as(
@@ -1285,9 +1232,8 @@ fn adopt_reads_the_pane_by_the_document_of_the_vendor_it_took_over() {
          screen"
     );
 
-    // The same screen taken over as claude, which is what makes the reading
-    // above evidence about the document and not about the screen. A second
-    // pane and a second conversation, because one of either is one record's.
+    // The same screen adopted as claude shows the result depends on the
+    // document. It needs its own pane and session: each belongs to one record.
     let mistaken = "read-as-claude-c3d";
     adopt_as(
         &amx,
@@ -1309,9 +1255,8 @@ fn adopt_reads_the_pane_by_the_document_of_the_vendor_it_took_over() {
 
 #[test]
 fn attach_says_so_when_the_row_is_a_command_and_not_an_agent() {
-    // The other shape with nothing to continue. A command has no conversation
-    // to pick up wherever it got to, and the answer says which is missing
-    // rather than that the pane has gone.
+    // A command has no session to continue. The error says so, not that the
+    // pane is gone.
     let amx = Harness::new();
     let id = "run-tests-a1b";
     something_else_on_the_server(&amx);
@@ -1339,10 +1284,8 @@ fn attach_says_so_when_the_row_is_a_command_and_not_an_agent() {
 
 #[test]
 fn attach_with_no_id_takes_the_agent_the_wall_names() {
-    // What a tmux key presses: one keystroke, no room for an id, and the wall
-    // saying which agent instead. The order is the view's own, so a question
-    // comes before a turn that has ended and the foot of the wall is where
-    // `--prev` lands when the key was pressed nowhere in particular.
+    // For tmux key bindings, which cannot pass an id, the wall picks the agent
+    // in the view's order: a waiting agent sorts above one that has ended.
     let amx = Harness::new();
     let stopped = "fix-login-a1b";
     ran_and_stopped(&amx, stopped);
@@ -1356,9 +1299,8 @@ fn attach_with_no_id_takes_the_agent_the_wall_names() {
             .then_some(())
     });
 
-    // Stepping backwards from a terminal standing in no agent starts at the
-    // end it is heading away from, which is the agent that ended. Its pane is
-    // gone, so attaching brings it back exactly as `attach <id>` would.
+    // `--prev` from outside any agent starts at the bottom of the wall, the
+    // stopped agent. Its pane is gone, so it is resumed as `attach <id>` would.
     let terminal = a_terminal(&amx, &["attach", "--prev"]);
     until_continued(&amx, stopped);
     until_looking_at_it(&amx, &terminal);
@@ -1368,13 +1310,11 @@ fn attach_with_no_id_takes_the_agent_the_wall_names() {
 fn attach_by_the_wall_says_so_when_there_is_no_wall_and_when_there_is_an_id() {
     let amx = Harness::new();
 
-    // Which agent is either said or asked for, and saying it twice says
-    // neither: the command line refuses it before anything is read.
+    // An id with `--next` is a usage error, refused before anything is read.
     let out = amx.amx(&["attach", "fix-login-a1b", "--next"]);
     assert_eq!(out.status.code(), Some(64));
 
-    // A wall with nobody on it has no next agent, and the refusal says that
-    // rather than complaining about a record that was never named.
+    // On an empty wall the error says so instead of naming a missing record.
     let out = amx.amx(&["attach", "--next"]);
     assert_eq!(out.status.code(), Some(1));
     let why = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -1383,8 +1323,8 @@ fn attach_by_the_wall_says_so_when_there_is_no_wall_and_when_there_is_an_id() {
 
 #[test]
 fn attach_last_goes_back_to_the_agent_this_terminal_came_from() {
-    // Where somebody has been is the one thing the wall cannot say, so it is
-    // written down as each terminal is handed over, and going back reads that.
+    // Attach records each agent it hands a terminal to on a trail, newest
+    // first, and `--last` reads it.
     let amx = Harness::new();
     let first = "fix-login-a1b";
     let second = "port-import-b2c";
@@ -1394,29 +1334,24 @@ fn attach_last_goes_back_to_the_agent_this_terminal_came_from() {
     start(&amx, second, amx.home(), "happy-turn");
     amx.until_state(second, "idle");
 
-    // A wall with agents on it and nobody yet been anywhere: going back has
-    // nowhere to go, and says so rather than landing on whatever is nearest.
+    // With an empty trail `--last` fails instead of picking some agent.
     let out = amx.amx(&["attach", "--last"]);
     assert_eq!(out.status.code(), Some(1));
     let why = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(why.contains("no agent to go back to"), "{why}");
 
-    // One agent and then the other: this terminal has been in both, and was
-    // in the second of them last.
     a_terminal(&amx, &["attach", first]);
     until_attached(&amx, first);
     a_terminal(&amx, &["attach", second]);
     until_attached(&amx, second);
 
-    // Typed at a shell, standing in no agent at all: that last one is where
-    // going back goes, and this terminal is the client that proves it.
+    // From a shell outside any agent, `--last` goes to the newest entry.
     let terminal = a_terminal(&amx, &["attach", "--last"]);
     until_the_terminal_is_on(&amx, &terminal, second);
 
-    // Pressed inside the second agent's own session, which is where a tmux key
-    // is pressed: going back is the agent before it rather than the one it was
-    // pressed in. That agent's pane has gone since, so it is picked up on the
-    // way, exactly as `attach <id>` would pick it up.
+    // Run from inside `second`'s pane, as a tmux key binding is, `--last`
+    // skips the current agent and goes to `first`. `first`'s pane is gone by
+    // then, so it is resumed as `attach <id>` would.
     kill_pane(&amx, &amx.pane_of(first));
     let pane = amx.pane_of(second);
     let scenario = amx.scenario("continues-a-session");
@@ -1442,8 +1377,8 @@ fn attach_last_goes_back_to_the_agent_this_terminal_came_from() {
 
 #[test]
 fn enter_on_a_dead_agent_brings_it_back() {
-    // The wall's own door to the same thing. Outside tmux the view is the
-    // terminal, so what it has to give the agent is the terminal itself.
+    // Outside tmux the view owns the terminal, so Enter hands the terminal
+    // itself to the resumed agent.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gone = ran_and_stopped(&amx, id);
@@ -1458,16 +1393,15 @@ fn enter_on_a_dead_agent_brings_it_back() {
     assert!(amx.pane_alive(&pane));
     until_looking_at_it(&amx, &view);
 
-    // The trail is the view's as much as the verb's: somebody who pressed
-    // enter on a row is in that agent, and going back at a shell goes there.
+    // Enter in the view also goes on the attach trail.
     let terminal = a_terminal(&amx, &["attach", "--last"]);
     until_the_terminal_is_on(&amx, &terminal, id);
 }
 
 #[test]
 fn enter_on_an_agent_whose_pane_answers_for_somebody_else_brings_it_back() {
-    // The wall's door to the same thing: enter on a row reaches for a pane the
-    // way `amx attach` does, and reaches for the agent's own or none.
+    // Enter resolves the pane like `amx attach`: the agent's own pane or none,
+    // never another agent's.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let theirs = taken_over(&amx, id);
@@ -1508,11 +1442,9 @@ fn enter_on_an_agent_with_nothing_to_resume_says_why() {
 
 #[test]
 fn enter_from_inside_tmux_moves_the_client_to_the_session_it_brought_back() {
-    // The view's other way through, and the one most people are on. Inside
-    // tmux the terminal is not the view's to lend: there is a client on it
-    // already, and that client is what moves. What it moves to is the session
-    // the resume has just made, which is not the session the row named when
-    // the key went down.
+    // Inside tmux, Enter switches the existing client. The target is the
+    // session the resume just made, not the one the row named when Enter was
+    // pressed.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gone = ran_and_stopped(&amx, id);
@@ -1520,8 +1452,7 @@ fn enter_from_inside_tmux_moves_the_client_to_the_session_it_brought_back() {
     let view = a_terminal_inside_tmux(&amx, &[]);
     let holding = amx.tmux(&["display-message", "-p", "-t", &view, "#{session_name}"]);
 
-    // Without a client there is nothing for enter to move, and a view nobody
-    // has attached to is not a view anybody is reading.
+    // Attach a client to the view's session for Enter to switch.
     let terminal = watching(&amx, &holding);
     let tty = amx.until("a client on the view", || {
         let clients = clients_on(&amx, &holding);
@@ -1546,9 +1477,8 @@ fn enter_from_inside_tmux_moves_the_client_to_the_session_it_brought_back() {
 
 #[test]
 fn enter_on_a_claude_started_by_hand_says_which_half_is_missing() {
-    // The other thing that can be missing, at the view's door rather than the
-    // shell's. There is a session here and no command to carry it, and what
-    // the row says is that, not the name of a file amx keeps for itself.
+    // The adopted-claude refusal, from the view: the row says the command is
+    // missing, not that the handoff file is.
     let amx = Harness::new();
     let id = "their-own-a1b";
     let pane = adopted(&amx, id);
