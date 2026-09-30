@@ -1385,8 +1385,13 @@ fn the_composer_drops_the_suggestions_before_the_line_they_stand_under() {
     });
 
     // Esc closes the list and leaves the line open, so Enter sends the word
-    // as typed, not the selected suggestion.
+    // as typed, not the selected suggestion. Wait for the list to go: an Esc
+    // and an Enter read together are alt+enter.
     press(&amx, &view, "Escape");
+    amx.until("the list closed over the line", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("❯ /rev") && !drawn.contains("Read the diff.")).then_some(())
+    });
     press(&amx, &view, "Enter");
 
     let id = composed(&amx);
