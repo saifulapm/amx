@@ -1,9 +1,12 @@
-# A running turn that takes a queued message only when it finishes: the second
-# UserPromptSubmit, four seconds on, marks the message going in.
+# A running turn that takes a queued message into itself, as claude does:
+# UserPromptSubmit fires when the message is typed, and the transcript's
+# queue-operation line is the only record of the turn taking it.
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "run the tests"}
 print working on it
-sleep 4000
+await Enter
 hook UserPromptSubmit {"prompt": "and the linter"}
+sleep 3000
+transcript {"type":"queue-operation","operation":"remove","timestamp":"@NOW@","content":"and the linter","reason":"absorbed_mid_turn"}
 print on the linter
 sleep 600000

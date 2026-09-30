@@ -13,8 +13,8 @@
 #                         added unless it names them.
 #   print <text>          print a line, with backslash escapes.
 #   sleep <ms>            wait. A long trailing sleep keeps the agent alive.
-#   await <Key>           block until the key is typed at the pane. Only
-#                         `Escape` (byte 27) is known.
+#   await <Key>           block until the key is typed at the pane: `Escape`
+#                         (byte 27) or `Enter` (byte 13).
 #   transcript <json>     append a line to the transcript the hooks named.
 #   ignore <signal>       ignore this signal, for an agent that will not stop.
 #   exit <code>           exit with this code.
@@ -87,6 +87,7 @@ nap() {
 byte_of() {
 	case "$1" in
 	Escape) printf '27' ;;
+	Enter) printf '13' ;;
 	*) return 1 ;;
 	esac
 }
@@ -104,7 +105,7 @@ await() {
 
 	if [ -t 0 ]; then
 		before=$(stty -g)
-		stty -icanon -echo min 1 time 0
+		stty -icanon -icrnl -echo min 1 time 0
 	fi
 	while :; do
 		typed=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
