@@ -2523,9 +2523,8 @@ index e69de29..0000000
     fn answering(card: Card, typed: &str) -> Screen {
         let mut screen = showing(a_fleet(), Some(card));
         let mut composer = Composer::new(Asking::Reply);
-        composer.text = typed.to_string();
         // Cursor at the end, as after typing.
-        composer.at = composer.text.chars().count();
+        composer.set_text(typed.to_string());
         screen.mode = Mode::Typing(composer);
         screen
     }

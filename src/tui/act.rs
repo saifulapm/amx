@@ -203,10 +203,15 @@ impl Composer {
                 });
             }
         }
-        self.text = line.clone();
-        self.at = line.chars().count();
-        self.pastes.clear();
+        self.set_text(line.clone());
         true
+    }
+
+    /// Replaces the line with plain `text`, the cursor at its end.
+    pub fn set_text(&mut self, text: String) {
+        self.at = text.chars().count();
+        self.text = text;
+        self.pastes.clear();
     }
 
     /// Inserts text at the cursor and moves the cursor past it.

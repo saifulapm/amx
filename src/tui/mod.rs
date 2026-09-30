@@ -1160,9 +1160,7 @@ where
         Ok(Edited::Line(text)) => {
             if let Mode::Typing(composer) = &mut screen.mode {
                 // Cursor at the end, where the editor left off.
-                composer.at = text.chars().count();
-                composer.text = text;
-                composer.pastes.clear();
+                composer.set_text(text);
             }
             // The text changed wholesale, so look the suggestions up again.
             screen.suggesting(config);
@@ -2895,10 +2893,8 @@ impl Screen {
         if words.is_some() {
             let words = self.scroll.remarked(self.noting());
             if let Mode::Typing(composer) = &mut self.mode {
-                composer.at = words.chars().count();
-                composer.text = words;
                 // The stored note is plain text, so no paste markers apply.
-                composer.pastes.clear();
+                composer.set_text(words);
             }
         }
     }
