@@ -876,7 +876,7 @@ pub fn now() -> u64 {
 }
 
 /// A file's mtime in epoch seconds, or `None` if there is no file.
-fn modified_at(path: &Path) -> Option<u64> {
+pub(crate) fn modified_at(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .and_then(|file| file.modified())
         .ok()?

@@ -1271,12 +1271,7 @@ fn a_rewrite_stands(agent: &Agent, meta: &Meta, state: &State) -> bool {
 
 /// When the record's transcript was last written, in epoch seconds.
 fn written_at(meta: &Meta) -> Option<u64> {
-    std::fs::metadata(meta.transcript.as_ref()?)
-        .and_then(|file| file.modified())
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|since| since.as_secs())
+    crate::store::modified_at(meta.transcript.as_ref()?)
 }
 
 /// The first non-blank line of what an agent is saying.

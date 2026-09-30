@@ -834,15 +834,10 @@ fn orphan_ids(root: &Path, now: u64) -> Vec<(PathBuf, u64)> {
         .flatten()
         .filter(|entry| entry.file_name().to_str().is_some_and(crate::ids::is_valid))
         .map(|entry| entry.path())
-        .filter(|dir| dir.is_dir() && !dir.join("meta.json").exists())
+        .filter(|dir| dir.is_dir() && !dir.join(crate::store::META).exists())
         .map(|dir| {
-            let made = std::fs::metadata(&dir)
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(now, |at| at.as_secs());
-            let age = now.saturating_sub(made);
-            (dir, age)
+            let made = crate::store::modified_at(&dir).unwrap_or(now);
+            (dir, now.saturating_sub(made))
         })
         .collect();
     found.sort();
