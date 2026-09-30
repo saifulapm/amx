@@ -1,9 +1,7 @@
-//! `amx ls` — every agent, and what it is doing.
+//! `amx ls`: every agent and what it is doing.
 //!
-//! Two audiences read this. A person wants a short table they can take in at a
-//! glance; a program wants a shape it can branch on without parsing English,
-//! which is what `--json` is for. Both answer from the same reading, so they
-//! can never disagree.
+//! A table for a person, or with `--json` a stable shape for a program. Both
+//! come from the same reading. `ls` is also where finished records are swept.
 
 use anyhow::Result;
 use std::io::Write;
@@ -24,13 +22,8 @@ pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Write) -> Result<i32> {
-    // Every record on the machine, read once and handed to both halves of the
-    // listing. Listing is the moment amx tidies up after itself: it is run
-    // often, and nobody is waiting on its answer the way a caller waits on
-    // `result`. The sweep decides from these records what to forget, and what
-    // is left is what the reading concludes about — so a record on its way out
-    // costs no screen and no summary, and nothing parses a state document
-    // twice.
+    // Read once: the sweep drops what it forgets, and the reading takes the
+    // rest, so no state document is parsed twice.
     let records = gc::sweep(derive::records(root)?, now);
 
     // Narrowed before the reading, so an agent outside the scope costs no
@@ -49,39 +42,30 @@ pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Writ
     Ok(exit::OK)
 }
 
-/// Which agents a reading is about.
+/// Which agents a reading is about: every agent, or with `--dir` those under
+/// one directory.
 ///
-/// Every agent on the machine is the answer amx has always given, and from a
-/// terminal that is not anywhere in particular it is the right one. From
-/// inside a project it is not: the agents of the repository in front of you
-/// are a handful of the rows and the rest is somebody else's afternoon, read
-/// past every time. `--dir` says which directory the question is about, and
-/// the reading answers about that directory alone.
-///
-/// It narrows the reading rather than the record. Nothing is written down, no
-/// agent is hidden from any other surface, and the same agent is in two
-/// readings at once when the directories nest.
+/// Only the reading is narrowed. Nothing is written to any record.
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
-    /// The directory the reading is about, `None` being the whole machine.
+    /// `None` for the whole machine.
     under: Option<PathBuf>,
 }
 
 impl Scope {
-    /// The scope a command line named, or every agent when it named none.
+    /// The scope of `--dir`, or every agent without it.
     pub fn of(dir: Option<&Path>) -> Result<Scope> {
         Ok(Scope {
             under: dir.map(named).transpose()?,
         })
     }
 
-    /// The directory the reading is about, where one was named.
     pub fn under(&self) -> Option<&Path> {
         self.under.as_deref()
     }
 
-    /// Whether the reading is about this agent: it runs under the directory,
-    /// or the repository its worktree was cut from is under it.
+    /// Whether this agent runs under the directory, or its worktree was cut
+    /// from a repository under it.
     pub fn covers(&self, meta: &Meta) -> bool {
         let Some(under) = self.under.as_deref() else {
             return true;
@@ -89,7 +73,7 @@ impl Scope {
         sits_under(&meta.dir, under) || sits_under(&spawn::project_dir(meta), under)
     }
 
-    /// A reading with only the agents the scope is about left in it.
+    /// Keep only the views this scope covers.
     pub fn narrow(&self, views: Vec<View>) -> Vec<View> {
         match self.under {
             None => views,
@@ -101,32 +85,23 @@ impl Scope {
     }
 }
 
-/// A directory as it was typed, read as amx will compare it: absolute, and
-/// through whatever links the shell reached it by.
+/// The typed directory, made absolute.
 ///
-/// A directory that is not there is not an error. Records outlive the trees
-/// they name — a repository moved or deleted leaves its agents behind — and
-/// `amx ls --dir` on one of those is a fair question with an answer. What it
-/// cannot be is relative to nowhere, so the path is anchored on the working
-/// directory whether or not the disk knows it.
+/// A directory that does not exist is not an error: records outlive the trees
+/// they name.
 fn named(dir: &Path) -> Result<PathBuf> {
     paths::anchored(dir)
 }
 
-/// Whether a directory is the one named or inside it.
+/// Whether `dir` is `under` or inside it.
 ///
-/// Compared as paths first, which asks no disk and is the answer for the
-/// records amx writes: the directory in a record is the one the agent was
-/// started in, spelled out from the root. A shell that reached the same
-/// directory another way — a link into a checkout, `/tmp` where `/tmp` is a
-/// link — is asked of the disk instead, once, and only after the plain
-/// comparison has already said no.
+/// Compared as paths first, then canonicalized, for a directory reached
+/// through a symlink.
 fn sits_under(dir: &Path, under: &Path) -> bool {
     dir.starts_with(under)
         || std::fs::canonicalize(dir).is_ok_and(|reached| reached.starts_with(under))
 }
 
-/// The table a person reads.
 fn table(views: &[View], out: &mut impl Write) -> Result<()> {
     if views.is_empty() {
         writeln!(out, "no agents")?;
@@ -147,13 +122,8 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// What this agent is up to, as a row can carry it: what it is waiting to be
-/// told, with the choices it is waiting to be told from, else what it is doing.
-///
-/// The choices ride the row because they are short, they are numbered, and the
-/// number is the whole of the answer — a person scanning a wall for the agent
-/// that is blocked can answer it without opening anything. There are none to
-/// carry unless a question is outstanding: they are cleared with it.
+/// The row's last column: the agent's line on one line, followed by the
+/// numbered choices of a pending question.
 fn doing(view: &View) -> String {
     let mut said = super::inert_line(view.line().unwrap_or(""));
     for choice in send::numbered(&view.state.options) {
@@ -163,13 +133,7 @@ fn doing(view: &View) -> String {
     said
 }
 
-/// The reading's own number, in the shortest form that says it: the seconds
-/// this agent has worked, ticking while it works, standing still while it
-/// waits or sits idle, and frozen for good at the end.
-///
-/// Both the number and the units are the reading's, and this table only asks
-/// for them. The view asks the same reading the same way, so a person who has
-/// both open is never told two things about one agent.
+/// The seconds this agent has worked, in the view's own units.
 fn worked(view: &View) -> String {
     derive::in_words(view.verdict.worked)
 }
@@ -225,9 +189,7 @@ mod tests {
         }
     }
 
-    /// A row worked out from a record the way `ls` works one out, rather than
-    /// written by hand: the last column is the reader's number, and this is
-    /// the surface a person reads it off.
+    /// A view read from `state` the way `ls` reads one.
     fn reading(id: &str, state: State, created: u64, now: u64) -> View {
         let verdict = derive::read(
             &state,
@@ -266,7 +228,6 @@ mod tests {
 
     #[test]
     fn reader_the_table_keeps_one_row_to_one_line() {
-        // An answer is a paragraph and a row is a row.
         let text = printed(&[view(
             "fix-login-a1b",
             Phase::Idle,
@@ -293,15 +254,13 @@ mod tests {
             ..State::default()
         };
 
-        // Working: the spans of work added up so far, the open one included,
-        // moving with the clock.
+        // Working: the open span counts and grows with the clock.
         for (now, said) in [(1_004, "4s"), (1_008, "8s")] {
             let text = printed(&[reading("fix-login-a1b", record.clone(), 1_000, now)]);
             assert!(text.contains(said), "{text}");
         }
 
-        // Stopped on a question: the column freezes where the work stopped,
-        // and an agent standing at a question is not clocking up anything.
+        // Waiting on a question: the clock stops.
         record.state = Phase::Waiting;
         record.since = 1_010;
         record.last_event = 1_010;
@@ -315,8 +274,7 @@ mod tests {
         )]);
         assert!(text.contains("10s"), "{text}");
 
-        // Ended: what it worked, for good. Read an hour later and a day
-        // later, it is the run it was both times.
+        // Ended: the total stays fixed however late it is read.
         record.state = Phase::Done;
         record.since = 4_610;
         record.last_event = 4_610;
@@ -332,18 +290,15 @@ mod tests {
             "a row of a run that worked ten seconds says ten seconds"
         );
 
-        // The row is the reading's own number in the reading's own units, and
-        // not a second number this table worked out for itself in units of its
-        // own. It is what the view reads and how the view says it, so the two
-        // surfaces cannot disagree.
+        // The column is the reading's number in the reading's units, so `ls`
+        // and the view agree.
         let read = reading("fix-login-a1b", record, 1_000, 90_000);
         assert_eq!(read.verdict.worked, 10);
         assert_eq!(worked(&read), derive::in_words(read.verdict.worked));
         assert!(hour.contains(&worked(&read)), "{hour}");
     }
 
-    /// An agent of a directory, with the worktree amx cut for it if it has
-    /// one.
+    /// A view of an agent in `dir`, with its worktree if it has one.
     fn ran_in(id: &str, dir: &str, worktree: Option<&str>) -> View {
         let mut view = view(id, Phase::Working, 1, None);
         view.meta.dir = PathBuf::from(dir);
@@ -360,7 +315,7 @@ mod tests {
         let views = vec![
             ran_in("here-a1b", "/srv/app", None),
             ran_in("deeper-b2c", "/srv/app/importer", None),
-            // The one a comparison of strings would have taken with it.
+            // A string prefix match would wrongly include this one.
             ran_in("alike-c3d", "/srv/app2", None),
             ran_in("elsewhere-d4e", "/srv/other", None),
         ];
@@ -368,20 +323,17 @@ mod tests {
         let scope = Scope::of(Some(Path::new("/srv/app"))).unwrap();
         assert_eq!(ids(scope.narrow(views.clone())), ["here-a1b", "deeper-b2c"]);
 
-        // The directory itself is under itself, and nothing else is.
         let one = Scope::of(Some(Path::new("/srv/app/importer"))).unwrap();
         assert_eq!(ids(one.narrow(views.clone())), ["deeper-b2c"]);
 
-        // A reading that names no directory is the machine, which is what
-        // `amx ls` has always answered.
+        // No directory is the whole machine.
         assert_eq!(ids(Scope::of(None).unwrap().narrow(views.clone())).len(), 4);
         assert_eq!(ids(Scope::default().narrow(views)).len(), 4);
     }
 
     #[test]
     fn ls_an_agent_in_a_worktree_belongs_to_the_repository_it_was_cut_from() {
-        // What it runs in is `<repo>/.amx/worktrees/<id>`, and what a person
-        // means by it is the repository.
+        // It runs in `<repo>/.amx/worktrees/<id>` and belongs to `<repo>`.
         let tree = "/srv/app/.amx/worktrees/fix-login-a1b";
         let cut = ran_in("fix-login-a1b", tree, Some(tree));
         let elsewhere = ran_in(
@@ -394,8 +346,7 @@ mod tests {
         let scope = Scope::of(Some(Path::new("/srv/app"))).unwrap();
         assert_eq!(ids(scope.narrow(views.clone())), ["fix-login-a1b"]);
 
-        // And the tree it runs in is under the directory it runs in, so
-        // naming that reaches it too.
+        // Naming the tree itself covers it too.
         let inside = Scope::of(Some(Path::new(tree))).unwrap();
         assert_eq!(ids(inside.narrow(views)), ["fix-login-a1b"]);
     }
@@ -415,8 +366,7 @@ mod tests {
             ran_in("elsewhere-b2c", "/srv/other", None),
         ];
 
-        // The link and the tree are the same directory, and an agent started
-        // through either is an agent of it.
+        // A symlink and its target name the same directory.
         for named in [&real, &link] {
             let scope = Scope::of(Some(named)).unwrap();
             assert_eq!(ids(scope.narrow(views.clone())), ["here-a1b"], "{named:?}");
@@ -430,8 +380,7 @@ mod tests {
         let scope = Scope::of(Some(&real)).unwrap();
         assert_eq!(ids(scope.narrow(through)), ["here-a1b"]);
 
-        // `--dir .` is the directory the shell is in, which is the whole
-        // reason a relative path is worth taking at all.
+        // A relative path is taken from the working directory.
         let here = std::env::current_dir().unwrap();
         assert_eq!(
             named(Path::new("src")).unwrap(),
@@ -441,8 +390,8 @@ mod tests {
 
     #[test]
     fn ls_a_directory_that_is_not_there_answers_rather_than_fails() {
-        // A record outlives the tree it names: a repository somebody deleted
-        // leaves its agents behind, and asking after them is a fair question.
+        // Records outlive the trees they name, so a missing directory still
+        // has agents under it.
         let scope = Scope::of(Some(Path::new("/srv/gone"))).unwrap();
         let views = vec![
             ran_in("left-a1b", "/srv/gone/api", None),
@@ -451,8 +400,8 @@ mod tests {
         assert_eq!(ids(scope.narrow(views)), ["left-a1b"]);
     }
 
-    /// A record on disk, with the state a test says it has rather than the one
-    /// a writer would stamp with now.
+    /// A record on disk with the given state, written directly so nothing
+    /// stamps the current time.
     fn on_disk(root: &Path, id: &str, phase: Phase, last_event: u64) {
         let agent = crate::store::Agent::create(root, &meta(id, 1)).expect("a record");
         let state = State {
@@ -481,8 +430,8 @@ mod tests {
             exit::OK
         );
 
-        // The rows are what the sweep left, and the record it forgot is off
-        // the disk: one pass over the records answers both.
+        // The table shows what the sweep kept, and the forgotten record is
+        // gone from disk.
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.lines().count(), 1, "{text}");
         assert!(text.contains("just-done-c3d"), "{text}");

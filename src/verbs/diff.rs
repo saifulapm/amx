@@ -1,26 +1,14 @@
-//! `amx diff` — what an agent has done to its tree, while it is still doing it,
-//! or with `--stat` the shape of it: a file per line and the totals under them,
-//! which is what somebody wants when the question is how far along it is.
+//! `amx diff`: an agent's work so far, as a patch or with `--stat` a summary.
 //!
-//! The work is measured from the commit the tree was cut from, recorded when it
-//! was cut, or from the commit a directory amx was pointed at was standing on
-//! when the session started. Not from the repository's HEAD, which has moved on
-//! since, and not from the agent's own HEAD, which would hide everything it has
-//! committed — what a person wants to see is the whole of this agent's work. A
-//! tree whose history has moved off that commit is measured from the last
-//! commit the two still share, which is [`worktree::diff`]'s own business.
+//! The work is measured from the base on the record: the commit the tree was
+//! cut from, or the commit the directory was on when the session started. That
+//! includes everything the agent has committed. A record with no base (an
+//! adopted agent, or an older record) is measured from where its branch left
+//! the main line. A directory outside a repository and a removed tree are
+//! reported as errors naming the reason.
 //!
-//! A record that carries no base — an adopted agent, or one written before amx
-//! recorded one for a tree it did not cut — is measured from where the tree's
-//! branch left the repository's main line, read at the moment it is asked. A
-//! directory in no repository has nothing to compare, and a tree somebody has
-//! removed is not there to read. All are ordinary answers to an ordinary
-//! question, so they say what happened rather than failing at git.
-//!
-//! A patch is also something a person reads, and the `diff` key names what they
-//! read it with. At a terminal that command gets git's patch and the screen;
-//! down a pipe, and under `--stat`, the patch is git's own, because a caller
-//! processing one is not somebody looking at one.
+//! At a terminal the patch goes through the `diff` viewer from the config, if
+//! one is set. Down a pipe, and with `--stat`, git's output is printed as is.
 
 use anyhow::{Context, Result, bail};
 use std::io::{IsTerminal, Write};
@@ -30,13 +18,8 @@ use std::process::{Command, Stdio};
 use crate::store::{Agent, Meta};
 use crate::{complain, exit, paths, worktree};
 
-/// Run the verb against the machine.
-///
-/// A patch on a terminal is something to read, and a patch down a pipe is
-/// something to process: the viewer the config names is for the first of them
-/// alone, so `amx diff fix-login-a1b | head` is the same patch it always was.
-/// `--stat` is not a patch at all, and a viewer handed one has nothing to
-/// colour.
+/// Run the verb against the machine, through the configured viewer when
+/// stdout is a terminal and `--stat` is not set.
 pub fn from_env(id: &str, stat: bool, from: Option<&str>) -> Result<i32> {
     let root = paths::state_root()?;
     let reading = !stat && std::io::stdout().is_terminal();
@@ -46,26 +29,20 @@ pub fn from_env(id: &str, stat: bool, from: Option<&str>) -> Result<i32> {
     }
 }
 
-/// What the config names to read this agent's patch with, if anything.
+/// The `diff` viewer configured for this agent's project, if any.
 ///
-/// Read under the project the agent works in, so a repository whose patches
-/// want a viewer of their own says so in its own file, over whatever the person
-/// set. An id naming no record answers nothing here and is refused below in the
-/// verb's own words.
+/// An unknown id returns `None` here and is refused later by the verb.
 fn viewer(root: &Path, id: &str) -> Option<String> {
     let meta = Agent::open(root, id).ok()?.meta().ok()?;
     crate::config::for_project(&meta.dir).diff.clone()
 }
 
-/// The verb, with the state directory named.
-///
-/// The recorded base, or the one the tree's history gives up: the patch the
-/// view's own key reads, which never names a ref of its own.
+/// The verb, with the state directory named, measured from the record's base.
 pub fn run(root: &Path, id: &str, stat: bool, out: &mut impl Write) -> Result<i32> {
     run_with(root, id, stat, None, out)
 }
 
-/// The same, measuring from a ref somebody named rather than the record.
+/// [`run`], measured from `from` when given.
 fn run_with(
     root: &Path,
     id: &str,
@@ -80,21 +57,15 @@ fn run_with(
     Ok(exit::OK)
 }
 
-/// The patch through the viewer the config names, on the terminal amx was
-/// asked from.
+/// Pipe the patch into `viewer` on this terminal.
 ///
-/// `sh -c`, because what the key holds is a command line a person wrote — a
-/// pager on the end of it, flags, a pipe — and not a program and its argv. It
-/// runs in the tree, so a viewer that opens a file it was shown, or reads the
-/// repository's own configuration, finds them where the work is.
-///
-/// The terminal is the viewer's own: whatever it draws, pages and asks is
-/// between it and the person, and amx is done when it is.
+/// The viewer is a shell command line, run with `sh -c` in the agent's tree so
+/// it can read the repository's files and config.
 pub fn in_viewer(root: &Path, id: &str, viewer: &str) -> Result<i32> {
     in_viewer_with(root, id, viewer, None)
 }
 
-/// The same, measuring from a ref somebody named rather than the record.
+/// [`in_viewer`], measured from `from` when given.
 fn in_viewer_with(root: &Path, id: &str, viewer: &str, from: Option<&str>) -> Result<i32> {
     let meta = Agent::open(root, id)?.meta()?;
     let (tree, base) = work_of(&meta, id, from)?;
@@ -109,39 +80,31 @@ fn in_viewer_with(root: &Path, id: &str, viewer: &str, from: Option<&str>) -> Re
 
     let mut stdin = child.stdin.take().expect("stdin was asked for");
     let handed = worktree::diff(tree, &base, false, &mut stdin);
-    // The write end goes before the wait, or a viewer reading to the end of the
-    // patch would wait for an end that never comes.
+    // Close stdin before waiting, or a viewer reading to EOF never finishes.
     drop(stdin);
     let ended = child.wait().context("waiting for the viewer")?;
 
     match ended.code() {
         Some(exit::OK) => {
-            // Only now: a viewer quit halfway through is a write that failed
-            // on a pipe nobody is reading, which is the reader having what it
-            // came for rather than anything to report.
+            // A write error only matters if the viewer succeeded: one that
+            // quit early closed the pipe on purpose.
             handed?;
             Ok(exit::OK)
         }
-        // What went wrong the viewer has already said on the terminal it was
-        // given, so what is left is which command it was.
+        // The viewer has reported its own error on the terminal.
         Some(code) => {
             complain!("amx diff: {viewer} exited {code}");
             Ok(exit::FAILURE)
         }
-        // A signal took the viewer down, and a signal is not a code to report
-        // as one.
+        // Killed by a signal.
         None => Ok(exit::FAILURE),
     }
 }
 
-/// The tree an agent's work is in and the commit it is measured from, or the
-/// ordinary answer to why there is neither.
+/// The tree the agent works in and the commit to measure from.
 ///
-/// The tree is the one amx cut, or the directory the agent runs in when amx
-/// cut none. The base is the ref a caller named, else the commit the record
-/// keeps — the commit the tree was cut from, or the commit the directory was
-/// standing on when the session started — and where a record carries none, the
-/// commit the tree's own history says its branch left the main line.
+/// The base is `from` if given, else the record's base, else the fork point of
+/// the tree's branch from the main line.
 fn work_of<'a>(meta: &'a Meta, id: &str, from: Option<&str>) -> Result<(&'a Path, String)> {
     let tree = meta.worktree.as_deref().unwrap_or(&meta.dir);
 
@@ -178,7 +141,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// A record of an agent, with its tree wherever the test wants it.
+    /// A record of an agent with its worktree at `worktree`.
     fn record(root: &Path, id: &str, worktree: Option<&Path>) -> Agent {
         Agent::create(
             root,
@@ -208,10 +171,8 @@ mod tests {
         .expect("the record")
     }
 
-    /// A record of an agent amx cut no tree for: it runs in a directory of
-    /// somebody else's, with no branch, no worktree and no base written down.
-    /// What an adopted agent, or one recorded before amx wrote a base for a
-    /// tree it did not cut, carries.
+    /// A record of an agent running in `dir` with no worktree, branch or base,
+    /// as an adopted agent has.
     fn record_in(root: &Path, id: &str, dir: &Path) -> Agent {
         Agent::create(
             root,
@@ -239,8 +200,7 @@ mod tests {
         .expect("the record")
     }
 
-    /// git as these tests run it: none of the developer's own configuration,
-    /// and an identity of its own.
+    /// git with no user or system config and a fixed identity.
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .current_dir(dir)
@@ -261,8 +221,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim_end().to_string()
     }
 
-    /// An agent whose tree has a commit behind it and a change on top of it,
-    /// which is everything `git diff` needs to have something to say.
+    /// An agent whose tree has one commit and an uncommitted change on it.
     fn a_tree_with_work(root: &Path, id: &str) -> TempDir {
         let tree = TempDir::new().unwrap();
         git(tree.path(), &["init", "-b", "main"]);
@@ -280,9 +239,8 @@ mod tests {
         tree
     }
 
-    /// A record of an agent in a checkout whose branch carries a commit the
-    /// main line does not, and no base written down: the fork point is the
-    /// only thing `diff` has to measure from.
+    /// A record with no base, in a checkout whose branch has one commit past
+    /// main, so the fork point is the base.
     fn a_record_with_no_base(root: &Path, id: &str) -> TempDir {
         let dir = TempDir::new().unwrap();
         git(dir.path(), &["init", "-b", "main"]);
@@ -374,8 +332,6 @@ mod tests {
 
     #[test]
     fn a_viewer_that_failed_is_a_failure_of_its_own() {
-        // The viewer has said whatever it had to say on the terminal it was
-        // given, and what is left for amx is which command it was.
         let root = TempDir::new().unwrap();
         let _tree = a_tree_with_work(root.path(), "fix-login-a1b");
 
@@ -385,8 +341,7 @@ mod tests {
 
     #[test]
     fn nothing_is_run_for_an_agent_there_is_no_patch_of() {
-        // The same refusals the patch itself gets: a viewer started for a row
-        // with nothing to compare would take the terminal to show nothing.
+        // The viewer gets the same refusals as the patch.
         let root = TempDir::new().unwrap();
         let plain = TempDir::new().unwrap();
         record_in(root.path(), "no-repo-b2c", plain.path());
@@ -405,8 +360,7 @@ mod tests {
 
     #[test]
     fn diff_is_never_taken_through_something_that_is_not_an_id() {
-        // `root.join(id)` is not a lookup: an id shaped like a path would name
-        // a record anywhere on the machine, and then a tree to run git in.
+        // An id shaped like a path must not reach a record outside the root.
         let root = TempDir::new().unwrap();
         assert!(refused(root.path(), "../elsewhere").contains("no agent"));
         assert!(refused(root.path(), "never-made-abc").contains("no agent"));
