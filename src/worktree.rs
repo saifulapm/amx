@@ -1,26 +1,20 @@
-//! A tree of the repository for the agent to work in.
+//! Git worktrees for agents, and the git calls amx makes against them.
 //!
-//! An agent gets its own worktree by default: `<repo>/.amx/worktrees/<id>` on
-//! branch `amx/<id>`, cut from the commit that was checked out when it
-//! started, or from whatever ref `--base` names instead. Two consequences
-//! that shape the rest of amx: several agents can work in one repository
-//! without treading on each other, and `diff` has something exact to measure
-//! from — the base the tree was cut from, not whatever HEAD has since become.
-//!
-//! The worktrees live inside the repository so they are easy to find, and are
-//! kept out of its status through `.git/info/exclude` rather than
-//! `.gitignore`: the ignore is amx's business and does not belong in a file
-//! the repository's own commits carry.
+//! An agent gets its own tree by default: `<repo>/.amx/worktrees/<id>` on
+//! branch `amx/<id>`, cut from the checked-out commit or from `--base`. The
+//! recorded base is what `diff` measures from. The trees live inside the
+//! repository and are hidden from its status through `.git/info/exclude`, so
+//! nothing is written to the versioned `.gitignore`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Where amx puts an agent's tree, relative to the repository root.
+/// Where agent trees go, relative to the repository root.
 const WORKTREES: &str = ".amx/worktrees";
 
-/// The line that keeps all of it out of the repository's status.
+/// The exclude line that hides amx's directory from the repository's status.
 const EXCLUDE_LINE: &str = "/.amx/";
 
 /// One agent's tree.
@@ -28,29 +22,23 @@ const EXCLUDE_LINE: &str = "/.amx/";
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
-    /// The commit it was cut from, recorded at creation and never re-read.
-    /// What `diff` measures from, through the last commit it and the tree's own
-    /// history still share.
+    /// The commit the tree was cut from, recorded once and never re-read.
     pub base: String,
 }
 
-/// The root of the repository `dir` is in, or `None` when it is in none.
+/// The root of the repository `dir` is in, or `None` outside any repository.
 pub fn repo_root(dir: &Path) -> Result<Option<PathBuf>> {
-    // Not being in a repository is an ordinary answer — `new` falls back to
-    // running the agent in the directory as it is — so it is not an error.
+    // Outside a repository `new` runs the agent in the directory as it is.
     match git(dir, &["rev-parse", "--show-toplevel"]) {
         Ok(path) => Ok(Some(PathBuf::from(path))),
         Err(_) => Ok(None),
     }
 }
 
-/// The commit `dir` is standing on, or `None` where it is in no repository.
+/// The commit `dir` has checked out, or `None` outside a repository or before
+/// its first commit.
 ///
-/// What a session in a worktree amx did not cut is measured from: its work is
-/// the whole of what the directory has changed since the agent started, so the
-/// base is the commit that was checked out then. A directory git has never
-/// heard of, and a repository whose first commit has not landed, are both
-/// nothing to measure from.
+/// The diff base for a session in a tree amx did not cut.
 pub fn head_commit(dir: &Path) -> Result<Option<String>> {
     match git(dir, &["rev-parse", "--verify", "HEAD^{commit}"]) {
         Ok(commit) if !commit.is_empty() => Ok(Some(commit)),
@@ -58,15 +46,11 @@ pub fn head_commit(dir: &Path) -> Result<Option<String>> {
     }
 }
 
-/// Where a directory's work began, read off its own history: the last commit
-/// its branch and the repository's main line still share.
+/// The merge base of `dir`'s HEAD and the repository's main line.
 ///
-/// The base for a session in a worktree amx did not cut when the record has
-/// none — an adopted agent, or one written before amx recorded a base for a
-/// tree it did not cut. It is branch-shaped rather than session-shaped: commits
-/// the branch already carried show up too, and `--from` is how a caller asks
-/// for something narrower. A directory in no repository, or one whose branch
-/// shares no history with the main line, is nothing to measure from.
+/// The fallback diff base for a tree amx did not cut when the record has none,
+/// such as an adopted agent. It includes commits the branch already carried.
+/// `None` outside a repository or when the histories share nothing.
 pub fn fork_point(dir: &Path) -> Result<Option<String>> {
     let Some(repo) = repo_root(dir)? else {
         return Ok(None);
@@ -78,12 +62,10 @@ pub fn fork_point(dir: &Path) -> Result<Option<String>> {
     }
 }
 
-/// The repository a worktree belongs to.
+/// The main repository a worktree belongs to.
 ///
-/// Not the same question as [`repo_root`], which answers with the tree it was
-/// asked in — for a linked worktree that is the worktree itself. What a branch
-/// is deleted from, and what a tree is removed from, is the repository they
-/// share, and it outlives both.
+/// [`repo_root`] answers with the linked tree itself; branches are deleted
+/// and trees removed from the repository they share.
 pub fn main_repo(worktree: &Path) -> Result<PathBuf> {
     let common = git(
         worktree,
@@ -95,33 +77,22 @@ pub fn main_repo(worktree: &Path) -> Result<PathBuf> {
         .with_context(|| format!("{common} is not inside a repository"))
 }
 
-/// The same question as [`main_repo`], answered off the path alone.
+/// The repository of a tree amx cut, read off the path alone.
 ///
-/// [`main_repo`] asks git, from inside the tree — which answers nothing once
-/// somebody has deleted the directory, and that is exactly when the repository
-/// still has to be named: a tree git is holding a record of, and a branch, both
-/// outlive it. The layout [`path_for`] lays down is the other way to the same
-/// answer, and it needs nothing on disk. Only for a tree amx cut, since the
-/// layout is the whole of the reasoning.
+/// Works after the tree's directory is gone, when [`main_repo`] has nowhere
+/// to ask git from.
 pub fn repo_of(worktree: &Path) -> Option<PathBuf> {
-    // <repo>/.amx/worktrees/<id>: three steps back up from the id.
+    // <repo>/.amx/worktrees/<id>
     is_amx_tree(worktree).then(|| worktree.ancestors().nth(3).map(Path::to_path_buf))?
 }
 
-/// The repository a linked worktree belongs to, read off the tree's own
-/// `.git` rather than asked of git.
+/// The repository a linked worktree belongs to, read from the tree's `.git`
+/// file instead of asking git.
 ///
-/// [`main_repo`] is this question wherever a subprocess is affordable, and
-/// [`repo_of`] is it for a tree amx laid down itself. Neither serves the wall,
-/// which works out the project behind every agent on every reading: a `git
-/// rev-parse` a row a second is not a reading. git writes a linked worktree's
-/// `.git` as a file holding `gitdir: <repo>/.git/worktrees/<name>`, so the
-/// repository is three components back up that path, and a checkout's `.git`
-/// is a directory this never opens.
-///
-/// Only an absolute `gitdir`, which is what git writes unless somebody turns
-/// `worktree.useRelativePaths` on. A relative one is a repository this cannot
-/// name, and naming none is what the caller already handles.
+/// The view resolves every agent's project on every reading and cannot afford
+/// a subprocess per row. git writes a linked tree's `.git` as
+/// `gitdir: <repo>/.git/worktrees/<name>`. Only an absolute `gitdir` is read;
+/// `worktree.useRelativePaths` makes it relative, and that yields `None`.
 pub fn repo_of_linked(dir: &Path) -> Option<PathBuf> {
     let pointer = dir.join(".git");
     if !pointer.is_file() {
@@ -129,8 +100,7 @@ pub fn repo_of_linked(dir: &Path) -> Option<PathBuf> {
     }
     let said = std::fs::read_to_string(&pointer).ok()?;
     let gitdir = Path::new(said.trim().strip_prefix("gitdir:")?.trim());
-    // `<repo>/.git/worktrees/<name>`, read back up: the tree's own name, the
-    // directory holding every tree's, and the repository's git directory.
+    // `<repo>/.git/worktrees/<name>`, walked back up.
     let holds = gitdir.parent()?;
     let git_dir = holds.parent()?;
     (gitdir.is_absolute()
@@ -141,21 +111,19 @@ pub fn repo_of_linked(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// What git calls the directory it keeps one record a linked worktree in.
+/// The directory under `.git` where git records linked worktrees.
 const WORKTREES_IN_GIT: &str = "worktrees";
 
-/// The branch amx gives an agent's tree.
+/// The branch amx creates for an agent's tree.
 pub fn branch_for(id: &str) -> String {
     format!("amx/{id}")
 }
 
-/// Whether `branch` is one amx named for the agent `id`: the branch it cuts
-/// for an agent's tree, or the `pr-<N>` it cuts for a request whose head it
-/// would not name after.
+/// Whether `branch` is a name amx chose for agent `id`: `amx/<id>`, or the
+/// `pr-<N>` used when a request's head name is taken.
 ///
-/// What a cleanup nobody asked about branch by branch — a sweep, a clear, a
-/// spawn taking back its own tree — may delete. Any other name is one a
-/// person chose, and whatever amx did on it, the branch is theirs.
+/// Only these may be deleted by a cleanup nobody confirmed branch by branch.
+/// Any other name is the person's.
 pub fn named_by_amx(id: &str, branch: &str) -> bool {
     branch == branch_for(id)
         || branch
@@ -168,12 +136,9 @@ pub fn path_for(repo: &Path, id: &str) -> PathBuf {
     repo.join(WORKTREES).join(id)
 }
 
-/// Whether `path` is a tree amx made: `<repo>/.amx/worktrees/<id>`, spelled
-/// out from the root.
+/// Whether `path` is an absolute `<repo>/.amx/worktrees/<id>` with a valid id.
 ///
-/// The question anything acting on a tree's behalf has to answer first. amx
-/// speaks for the trees it cut and for nothing else — not for the repository
-/// they sit in, and not for a directory somebody happened to point it at.
+/// amx acts on behalf of the trees it cut and nothing else.
 pub fn is_amx_tree(path: &Path) -> bool {
     path.is_absolute()
         && path
@@ -185,14 +150,11 @@ pub fn is_amx_tree(path: &Path) -> bool {
             .is_some_and(|holds| holds.ends_with(WORKTREES))
 }
 
-/// Whether `dir` is a linked worktree: a tree git derived from a repository
-/// kept somewhere else, whoever cut it and wherever they put it.
+/// Whether `dir` is a linked worktree, whoever cut it and wherever it is.
 ///
-/// Asked of git rather than read off the path, because the layout amx lays
-/// down is only amx's own and `workflow run` cuts trees of its own in a layout
-/// of its own. git keeps two directories for any tree, the tree's and the one
-/// the repository shares, and they are one directory only in the checkout the
-/// trees belong to. A directory in no repository has neither.
+/// Asked of git, since other tools (`workflow run`) use their own layouts. A
+/// linked tree's git dir differs from the common dir; in the main checkout
+/// they are the same.
 pub fn is_linked(dir: &Path) -> bool {
     let Ok(both) = git(
         dir,
@@ -209,11 +171,10 @@ pub fn is_linked(dir: &Path) -> bool {
     matches!((lines.next(), lines.next()), (Some(own), Some(shared)) if own != shared)
 }
 
-/// Cut a tree for `id` from the commit `from` names, or from the repository's
-/// current commit when it names nothing.
+/// Cut a tree for `id` from the commit `from` names, or from HEAD.
 ///
-/// The ref is resolved before anything is made, so a name this repository does
-/// not know is a refusal rather than a tree on the wrong commit.
+/// The ref is resolved first, so an unknown name fails before anything is
+/// created.
 pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
     let base = match from {
         Some(named) => commit_of(repo, named)?,
@@ -239,22 +200,12 @@ pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
     Ok(Worktree { path, branch, base })
 }
 
-/// Cut a tree for `id` on `branch`, which the ref `fetch` names in the origin
-/// and this checkout may not have at all.
+/// Cut a tree for `id` on `branch`, fetched from the origin ref `fetch`.
 ///
-/// What a pull request is: work that lives on the forge. There is no local
-/// branch to cut from until one is fetched, and the fetch is what makes the
-/// name a branch rather than a commit nobody can push from — so this is
-/// [`create`]'s shape with the branch arriving instead of being made. The
-/// caller picks the name, because the head ref's own name is sometimes taken.
-///
-/// No `+` on the refspec: a branch fetched once and fetched again moves on to
-/// the commit the request is at now only where that is a fast-forward. A
-/// branch somebody committed to since — a first agent on the same request, a
-/// person — is refused rather than moved, and the refusal names it. No `-b`
-/// on the add, since after the fetch the branch is already there. The base is
-/// read back off the branch rather than taken from the caller's answer about
-/// it: what the tree actually holds is what `diff` has to measure from.
+/// Used for pull requests, whose head may not exist locally. The caller picks
+/// `branch` because the head's own name can be taken. The refspec has no `+`,
+/// so an existing local branch only fast-forwards; one with commits the
+/// request lacks is refused. The base is read back off the fetched branch.
 pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Worktree> {
     ensure_excluded(repo)?;
     if let Err(e) = git(
@@ -278,17 +229,10 @@ pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Wor
     })
 }
 
-/// Cut a tree for `id` on `branch`, which this checkout already has.
+/// Cut a tree for `id` on an existing local `branch`.
 ///
-/// [`create_on`] without the fetch: a branch that is here is a branch there is
-/// nothing to bring, and fetching one anyway would move it to whatever the
-/// origin has rather than leaving the commits somebody made locally alone.
-/// [`create`]'s other half is missing too — no `-b`, since the branch exists
-/// and the point is to land on it rather than beside it.
-///
-/// The base is read off the branch, which is where `diff` measures the agent's
-/// work from: everything that was already on the branch is history, and what
-/// the agent does to it is the answer.
+/// No fetch, so local commits stay where they are. The base is the branch's
+/// current commit, so `diff` shows only what the agent adds.
 pub fn create_on_local(repo: &Path, id: &str, branch: &str) -> Result<Worktree> {
     ensure_excluded(repo)?;
 
@@ -303,16 +247,11 @@ pub fn create_on_local(repo: &Path, id: &str, branch: &str) -> Result<Worktree> 
     })
 }
 
-/// Whether git last recorded `branch`'s upstream as deleted.
+/// Whether git records `branch`'s upstream as deleted.
 ///
-/// The third way an agent's work can be finished with, and the only one that
-/// sees a squash merge: the forge took the work under a commit this branch
-/// does not hold, so [`is_merged`] says no, and then it deleted the branch.
-///
-/// What git recorded, not what the origin holds now — `%(upstream:track)` is
-/// read off the remote-tracking ref, and that moves only when somebody
-/// fetches. A branch with no upstream at all, and one git does not have, both
-/// answer no: neither is an upstream that has gone.
+/// The one signal that catches a squash merge, where [`is_merged`] says no.
+/// `%(upstream:track)` reads the remote-tracking ref, which only changes on a
+/// fetch (see [`prune_origin`]). No upstream, or no such branch, is `false`.
 pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
     let track = git(
         repo,
@@ -325,13 +264,9 @@ pub fn upstream_gone(repo: &Path, branch: &str) -> Result<bool> {
     Ok(track.trim() == "[gone]")
 }
 
-/// Bring the origin's branches up to date, and drop the records of the ones it
-/// no longer has.
+/// Fetch from the origin, pruning branches it no longer has.
 ///
-/// The fetch [`upstream_gone`] reads after: without it a branch deleted on the
-/// forge a week ago still reads as one somebody may be reviewing. A repository
-/// with no origin has nothing to fetch and no upstream to have gone, and that
-/// is not a failure: nothing is run there and nothing is said.
+/// A repository with no origin is left alone and is not an error.
 pub fn prune_origin(repo: &Path) -> Result<()> {
     if git(repo, &["remote", "get-url", "origin"]).is_err() {
         return Ok(());
@@ -340,40 +275,28 @@ pub fn prune_origin(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether some tree in this repository already has `branch` checked out.
+/// Whether some tree of this repository has `branch` checked out.
 ///
-/// git allows one tree per branch, so the question a name has to answer before
-/// it is used: an agent already working on a request's branch is a reason to
-/// cut the next tree under another name, not a reason to refuse the spawn.
+/// git allows one tree per branch, so a taken name means cutting under
+/// another.
 pub fn checked_out(repo: &Path, branch: &str) -> Result<bool> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let named = format!("branch refs/heads/{branch}");
     Ok(listed.lines().any(|line| line.trim_end() == named))
 }
 
-/// Whether every commit on `branch` is already in the repository's main line.
+/// Whether every commit on `branch` is in the repository's main line.
 ///
-/// The other way an agent's work can be finished with. A request that was
-/// merged says so on the forge, but plenty of work goes in without one — a
-/// person pulling the branch and merging it themselves — and afterwards the
-/// branch and the tree are a copy of history nobody needs. A branch git does
-/// not have is in nothing, which is what `--list` answering with nothing says.
+/// A branch git does not have is `false`.
 pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
     let main = main_branch(repo);
     Ok(!git(repo, &["branch", "--merged", &main, "--list", branch])?.is_empty())
 }
 
-/// What this repository calls its main line.
+/// The repository's main line: `origin/HEAD` when set, else `main` if it
+/// exists, else `master`.
 ///
-/// The origin's own answer first, since that is the branch the forge merges
-/// into and the only one of the three that is a fact rather than a convention.
-/// Then `main` where there is one, then `master`. A repository with neither is
-/// one git has no main line to be asked about, and the question above hands
-/// that back as the failure git called it.
-///
-/// Public because a sweep says why it is about to take an agent, and the name
-/// is half of that sentence: `merged into main` is a reason somebody can check,
-/// and `merged` on its own is amx asking to be trusted.
+/// Public so a sweep can name the branch in its reason ("merged into main").
 pub fn main_branch(repo: &Path) -> String {
     if let Ok(named) = git(
         repo,
@@ -390,31 +313,19 @@ pub fn main_branch(repo: &Path) -> String {
     }
 }
 
-/// What a directory has checked out, where that is a branch.
+/// The branch `repo` has checked out, for a repository heading in the view.
 ///
-/// Not the same question as [`main_branch`], which answers what the repository
-/// merges into. This one is what a heading over a repository says it is on
-/// right now, which is the half of `~/Sites/github/abc (main)` a path cannot
-/// give.
-///
-/// A tree in the middle of a rebase, or sat on a commit, is on no branch and
-/// has no name to say; `symbolic-ref` failing is how git says so, and so is a
-/// directory that is no repository at all — which is what a root the repository
-/// axis fell back to can be.
+/// `None` on a detached HEAD, mid-rebase, or outside a repository.
 pub fn branch_at(repo: &Path) -> Option<String> {
     git(repo, &["symbolic-ref", "--short", "HEAD"])
         .ok()
         .filter(|branch| !branch.is_empty())
 }
 
-/// The commit a ref names, whatever kind of ref it is: a branch, a tag, a
-/// remote-tracking name, or a commit written out.
+/// The commit any ref names: branch, tag, remote-tracking name or hash.
 ///
-/// `^{commit}` is what makes a tag answer with the commit it points at rather
-/// than with the tag object, and `--verify` is what makes a name git cannot
-/// resolve a failure rather than the word itself handed back. git's own
-/// sentence about it says nothing a person typing a branch name needs, so the
-/// refusal is amx's own and names what was typed.
+/// `^{commit}` peels a tag to its commit, and `--verify` makes an unknown name
+/// an error. The error names what was typed; git's own message does not help.
 fn commit_of(repo: &Path, named: &str) -> Result<String> {
     git(
         repo,
@@ -423,34 +334,28 @@ fn commit_of(repo: &Path, named: &str) -> Result<String> {
     .map_err(|_| anyhow!("{named} is no commit to cut a worktree from"))
 }
 
-/// The tree a setup command is run in.
+/// The tree a setup command runs in.
 pub const WORKTREE_ENV: &str = "AMX_WORKTREE";
 
 /// The repository that tree was cut from.
 pub const REPO_ENV: &str = "AMX_REPO";
 
-/// Furnish a tree that has just been cut: the files `copy` names taken from
-/// the repository, the directories `link` names pointed at the repository's
-/// own, and then `setup`, command by command, in the tree.
+/// Furnish a freshly cut tree: copy the `copy` files from the repository,
+/// symlink the `link` directories to the repository's own, then run each
+/// `setup` command in the tree.
 ///
-/// What a fresh checkout is missing is exactly what git is right not to carry —
-/// the `.env` nobody commits, the install that takes four minutes — so without
-/// this an agent's first turn goes on an install or on a failed test rather
-/// than on the task.
+/// Returns notes for entries that were skipped: a path the repository does
+/// not have, or a copy the tree already has a file for (kept, never
+/// overwritten).
 ///
-/// The answer is the paths that were not in the repository, said by name: a key
-/// naming a file this repository does not have is a config file outliving one
-/// of somebody's projects, not a reason to refuse them an agent. So is a copy
-/// the tree already has a file for, which is kept rather than written over. A
-/// setup command that fails is the other way round and is an error carrying
-/// what it said, because the tree is what the agent was going to work in and
-/// one that is half furnished is worse than none. So is an entry that is not a
-/// path inside the repository — absolute, or climbing out through `..` — named
-/// before anything is copied.
+/// # Errors
 ///
-/// `env` is what the caller knows and this does not: which agent this is, and
-/// where it may scribble. The tree and the repository are set from the
-/// arguments themselves.
+/// An entry that is absolute or climbs out through `..` is refused before
+/// anything is copied. A failing setup command is an error carrying its
+/// stderr, and later commands do not run.
+///
+/// `env` supplies the agent's own variables; [`WORKTREE_ENV`] and
+/// [`REPO_ENV`] are set from the arguments.
 pub fn furnish(
     repo: &Path,
     tree: &Path,
@@ -461,8 +366,7 @@ pub fn furnish(
 ) -> Result<Vec<String>> {
     let mut missing = Vec::new();
 
-    // Every entry is proved a path inside the repository before any is acted
-    // on, so a refused one leaves the tree as it was cut.
+    // Validate every entry first, so a refusal leaves the tree untouched.
     for path in copy.iter().chain(link) {
         let inside = Path::new(path).components().all(|part| {
             matches!(
@@ -481,8 +385,7 @@ pub fn furnish(
             missing.push(format!("{path} is not in {}", repo.display()));
             continue;
         }
-        // What the tree already has is the tree's: a tracked file, or a
-        // tracked link whose target a copy would write straight through.
+        // A tracked file, or a tracked symlink a copy would write through.
         let to = tree.join(path);
         if to.symlink_metadata().is_ok() {
             missing.push(format!("kept {path}: already in the tree"));
@@ -512,8 +415,7 @@ pub fn furnish(
     Ok(missing)
 }
 
-/// The directory a copy or a link is about to go in, since a path is exact and
-/// `config/local.toml` names one the tree may not have.
+/// Create the parent directory of a copy or link target.
 fn make_way_for(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -521,11 +423,10 @@ fn make_way_for(path: &Path) -> Result<()> {
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))
 }
 
-/// One setup command, run in the tree through `sh -c`.
+/// Run one setup command in the tree through `sh -c`.
 ///
-/// What it prints goes nowhere: `new` prints the id and nothing else, and an
-/// install's progress is not the id. Its stderr is kept for the refusal, which
-/// is the only place any of it is ever said.
+/// stdout is discarded (`new` prints only the id); stderr is kept for the
+/// error message.
 fn run_setup(repo: &Path, tree: &Path, command: &str, env: &[(String, String)]) -> Result<()> {
     let out = Command::new("sh")
         .current_dir(tree)
@@ -548,16 +449,10 @@ fn run_setup(repo: &Path, tree: &Path, command: &str, env: &[(String, String)]) 
     Ok(())
 }
 
-/// Whether `dir` holds work to move into a tree: what is staged, what is not,
-/// and the files git has never heard of, against the commit it has checked out.
+/// Whether `dir` has uncommitted work to move into a tree: staged, unstaged or
+/// untracked, excluding what `.gitignore` names.
 ///
-/// [`is_dirty`]'s question, asked of the directory the command was typed in
-/// rather than of a tree. What `.gitignore` names is not work, so it is not
-/// counted: a directory holding nothing but a build's output is a directory
-/// with nothing to move.
-///
-/// Somewhere that is not a repository has nothing to move, which is the answer
-/// a directory whose work is all committed gives too.
+/// Outside a repository there is nothing to move.
 pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
     if repo_root(dir)?.is_none() {
         return Ok(false);
@@ -565,36 +460,21 @@ pub fn has_changes_to_carry(dir: &Path) -> Result<bool> {
     Ok(!git(dir, &["status", "--porcelain"])?.is_empty())
 }
 
-/// Move the work no commit holds out of `from` and into `tree`, answering
-/// with the stash commit that carried it, or nothing where there was none.
+/// Move uncommitted work from `from` into `tree`, returning the stash commit
+/// that carried it, or `None` when there was nothing to move.
 ///
-/// The half hour you had already spent when you thought to start an agent on
-/// it: without this it stays in the directory you typed the command in, where
-/// the agent working in the tree cannot see it.
-///
-/// The work is put in the tree before it is taken out of `from`, so the moment
-/// where it is in neither never happens. A stash that will not apply — onto a
-/// base the work was not written against, over a file furnishing copied in —
-/// leaves every file where it was, unstaged.
-///
-/// The new file goes too, and what `.gitignore` names does not: the source
-/// file you had just started is most of that half hour, and git already draws
-/// the line amx would otherwise be guessing at, since telling a build's output
-/// from work is what the ignore file is for.
-///
-/// The stash commit is the way back: a spawn that fails after the work moved
-/// hands it to [`give_back`] rather than leaving it in a tree about to go.
+/// Untracked files move too; ignored files stay. The work is applied to the
+/// tree before it is removed from `from`, so it is never in neither place. If
+/// the apply fails, `from` keeps every file, unstaged. The returned commit is
+/// what [`give_back`] uses to undo the move if the spawn fails later.
 pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
-    // `add -A` is how the new file gets into the commit at all: `stash create`
-    // records the index and the tracked files, so a file git has never heard
-    // of is in neither until the index holds it. It is also where the ignore
-    // is honoured, so nothing amx has to decide about is ever carried.
+    // `stash create` only records the index and tracked files, so untracked
+    // files are staged first. `add -A` also honours `.gitignore`.
     git(from, &["add", "-A"])?;
 
-    // `stash create` writes the commit and nothing else: no entry on the stack
-    // for another spawn to pop by mistake, and an empty answer where there is
-    // nothing to move. The tree reads the commit out of the object store the
-    // two of them share.
+    // `stash create` writes a commit without touching the stash stack, and
+    // prints nothing when there is nothing to stash. The tree reads the commit
+    // from the object store it shares with `from`.
     let stashed = match git(from, &["stash", "create"]) {
         Ok(stashed) => stashed,
         Err(e) => {
@@ -603,8 +483,7 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
         }
     };
     if stashed.is_empty() {
-        // The index is put back whatever happens next: staging was this
-        // function's doing, and `from` is somebody's working directory.
+        // Undo the staging above; `from` is the person's working directory.
         git(from, &["reset", "-q"])?;
         return Ok(None);
     }
@@ -618,18 +497,15 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
             )
         });
     }
-    // Unstaged in the tree, which is how the work was held: the apply stages a
-    // file that is new, and the agent opening the tree should find the work as
-    // you left it rather than half committed.
+    // The apply stages new files; leave the work unstaged, as it was.
     git(tree, &["reset", "-q"])?;
-    // `--hard` rather than the plain reset, since the new files are in this
-    // index and in no commit, and it is what takes them off the disk.
+    // `--hard` because the new files are only in the index and a plain reset
+    // would leave them on disk.
     git(from, &["reset", "--hard", "HEAD"])?;
     Ok(Some(stashed))
 }
 
-/// Put work [`carry_changes`] moved back where it was typed, unstaged, the way
-/// it was held.
+/// Put work moved by [`carry_changes`] back into `from`, unstaged.
 pub fn give_back(from: &Path, stash: &str) -> Result<()> {
     git(from, &["stash", "apply", stash])
         .with_context(|| format!("putting the work back in {}", from.display()))?;
@@ -637,14 +513,10 @@ pub fn give_back(from: &Path, stash: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether the tree holds work that no commit has: changes to tracked files,
-/// and files git has never heard of alike. Untracked files count — an agent's
-/// first act is usually a new file, and deleting one because git did not know
-/// about it is the kind of loss amx cannot undo.
+/// Whether the tree has uncommitted changes, untracked files included.
 ///
-/// It reads the tree, so it runs with [`nothing_to_run`] too: git refreshes
-/// the index to answer this, and a refresh runs a hook and hashes what it
-/// cannot vouch for through whatever filter an attribute names.
+/// Runs with [`nothing_to_run`], since `status` refreshes the index, which can
+/// run a hook and clean filters.
 pub fn is_dirty(worktree: &Path) -> Result<bool> {
     let safe = nothing_to_run(worktree);
     Ok(!git_with(worktree, &safe, &["status", "--porcelain"])?.is_empty())
@@ -653,8 +525,7 @@ pub fn is_dirty(worktree: &Path) -> Result<bool> {
 /// Remove the tree, refusing while it holds uncommitted work.
 pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     if !worktree.exists() {
-        // Somebody has already deleted it; all that is left is git's own
-        // record of a tree that is not there.
+        // Already deleted: only git's record of it is left.
         git(repo, &["worktree", "prune"])?;
         return Ok(());
     }
@@ -666,17 +537,11 @@ pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Take a tree back out, whatever is in it, and the branch it was cut on
-/// where one is named.
+/// Force-remove a tree nobody has worked in, and its branch if one is named.
 ///
-/// The undo for a tree nobody has worked in yet: [`furnish`] failed in it, so
-/// everything it holds amx put there and there is nothing to lose. [`remove`]'s
-/// refusal is for the other tree, the one with an agent's afternoon in it. A
-/// branch amx cut a moment ago goes too, because it holds no commit of its own
-/// and leaving it behind would refuse the next spawn under the same name; the
-/// caller names none where the branch is somebody's own — see
-/// [`named_by_amx`] — and [`delete_branch`] still keeps one holding commits no
-/// other branch has.
+/// The undo for a spawn whose [`furnish`] failed. The caller passes a branch
+/// only when [`named_by_amx`] allows it, and [`delete_branch`] still refuses
+/// one with unshared commits.
 pub fn discard(repo: &Path, worktree: &Path, branch: Option<&str>) -> Result<()> {
     git(
         repo,
@@ -688,15 +553,11 @@ pub fn discard(repo: &Path, worktree: &Path, branch: Option<&str>) -> Result<()>
     }
 }
 
-/// Put a tree back where it was, on the branch it already had.
+/// Recreate a removed tree on its existing branch, for a resumed agent.
 ///
-/// What `remove` took away, for the agent that is being started again. The
-/// branch is not created: this is a tree for work that already exists, and a
-/// branch that has gone with it is a reason to say so rather than to make a
-/// new one.
+/// The branch is never created: if it is gone, that is an error.
 pub fn restore(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
-    // git keeps its own record of a tree until somebody tells it the tree is
-    // gone, and it refuses to add a tree it believes is already there.
+    // git refuses to add a tree it still has a record of.
     git(repo, &["worktree", "prune"])?;
     git(
         repo,
@@ -705,13 +566,9 @@ pub fn restore(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete a branch, but never one whose going would lose commits.
+/// Delete a branch with `-D`, refusing when that would lose commits.
 ///
-/// `-D` is what deletes an unmerged branch, and an unmerged branch is exactly
-/// the one whose commits may be nowhere else: an agent that went on committing
-/// after its request merged, or a person's own branch nobody pushed. So what
-/// it would lose is asked first — see [`loses`] — and a branch that would take
-/// commits with it is refused, saying how many. Only ever on request.
+/// See [`loses`] for what counts as lost.
 pub fn delete_branch(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<()> {
     match loses(repo, branch, merged_heads)? {
         0 => {}
@@ -724,11 +581,9 @@ pub fn delete_branch(repo: &Path, branch: &str, merged_heads: &[String]) -> Resu
 
 /// How many commits deleting `branch` would lose.
 ///
-/// Those no other branch has — see [`unshared_commits`] — unless the branch is
-/// exactly where a request the forge merged was: a squash or a rebase put that
-/// work into main under commits of its own, so the branch's commits are on no
-/// other branch and lost nothing. `merged_heads` is what the forge said was
-/// merged, and a branch that moved on past it has commits nobody merged.
+/// Zero when the tip is one of `merged_heads`, the heads the forge reports as
+/// merged: a squash or rebase merge leaves the branch's commits on no other
+/// branch without losing the work. Otherwise [`unshared_commits`].
 pub fn loses(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<usize> {
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
     if merged_heads.iter().any(|head| head == tip.trim()) {
@@ -737,11 +592,9 @@ pub fn loses(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<usize
     unshared_commits(repo, branch)
 }
 
-/// How many commits on `branch` no other branch has, local or remote.
+/// How many commits on `branch` no other local or remote branch reaches.
 ///
-/// What deleting the branch would lose: a commit another branch or a remote
-/// still reaches survives the branch going, and one nothing else reaches is
-/// left to the reflog. A branch git does not have is an error, as git says.
+/// A branch git does not have is an error.
 pub fn unshared_commits(repo: &Path, branch: &str) -> Result<usize> {
     let exclude = format!("--exclude={branch}");
     let count = git(
@@ -762,38 +615,26 @@ pub fn unshared_commits(repo: &Path, branch: &str) -> Result<usize> {
         .with_context(|| format!("counting the commits on {branch}"))
 }
 
-/// Write what the agent has done to its tree, since the commit it started
-/// from, while it is still doing it. With `stat`, the shape of that work
-/// rather than the work: a file per line and the totals under them.
+/// Write the agent's work since its base to `out`, or a `--stat` summary with
+/// `stat`.
 ///
-/// Measured from [`work_began_at`] rather than from `base` itself, so a tree
-/// whose history has moved off the recorded commit still reads as the agent's
-/// work.
-///
-/// The `add -N` is the trick: an agent's first act is usually a *new* file,
-/// and `git diff` alone says nothing about a file git has never heard of.
-/// Recording the intent to add it makes it a diff against nothing, and records
-/// nothing else — the agent's own staged work is left as it is. It is done for
-/// the summary too, since a summary that leaves out the new files is a summary
-/// of the wrong afternoon.
-///
-/// Both halves run with [`nothing_to_run`]: reading an agent's work must not
-/// run the agent's work.
+/// Measured from [`work_began_at`], so a rebased tree still shows only the
+/// agent's work. `add -N` first records intent-to-add for untracked files so
+/// the diff includes them; it stages nothing else. Both git calls run with
+/// [`nothing_to_run`].
 pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Result<()> {
     let safe = nothing_to_run(worktree);
     git_with(worktree, &safe, &["add", "-N", "."])?;
     let from = work_began_at(worktree, base, &safe);
 
-    // `--no-ext-diff` and `--no-textconv` are the same refusal as the
-    // overrides, in the form git offers for the two of them it has a flag for.
+    // The flag forms of the diff.external and textconv overrides.
     let mut args = vec!["diff", "--no-ext-diff", "--no-textconv"];
     if stat {
         args.push("--stat");
     }
     args.push(&from);
 
-    // A day's work is a long patch, so it is copied out as git writes it
-    // rather than held whole.
+    // Streamed, since a patch can be large.
     let mut child = command(worktree, &safe, &args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -801,9 +642,8 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
         .context("running `git diff`")?;
     let mut printed = child.stdout.take().expect("stdout was asked for");
     let copied = std::io::copy(&mut printed, out);
-    // Waited for even when the reader stopped early (a viewer quit halfway):
-    // closing the pipe ends a git still writing, and the view is a process
-    // that lives on, where an unwaited child stays a zombie.
+    // Wait even when the reader stopped early (a viewer quit): closing the
+    // pipe ends git, and an unwaited child stays a zombie in the view.
     drop(printed);
     let finished = child.wait_with_output().context("waiting for `git diff`")?;
     copied.context("reading the diff")?;
@@ -816,24 +656,13 @@ pub fn diff(worktree: &Path, base: &str, stat: bool, out: &mut impl Write) -> Re
     Ok(())
 }
 
-/// Where the agent's work began: the last commit its tree and the base it was
-/// cut from still share.
+/// The merge base of `base` and the tree's HEAD, where the agent's work
+/// starts.
 ///
-/// The base is written down when the tree is cut and never re-read, and a tree
-/// whose history has since moved off that commit — rebased onto another line,
-/// or onto a base somebody rewrote underneath it — is not a tree that commit
-/// describes any more. Measured from it, an answer then carries the base's own
-/// work backwards: a file it added deleted, a line it changed changed back,
-/// none of it the agent's. The commit the two histories still share is where
-/// the agent's work actually starts, and for the tree that has stayed on top of
-/// its base — which is most of them — that commit is the base itself.
-///
-/// Read every time rather than recorded, because it is the tree's own history
-/// that moves and the record is of the commit it was cut from.
-///
-/// A base this tree shares no history with is measured from as it was recorded,
-/// which leaves what git says about it to git: an answer taken from somewhere
-/// else instead would be a patch that looks right and is not.
+/// Usually `base` itself. After a rebase onto another line, diffing against
+/// the recorded base would show the base's own changes reversed. Computed on
+/// each call because the tree's history moves. With no shared history, `base`
+/// is used as recorded and git reports the error.
 fn work_began_at(worktree: &Path, base: &str, safe: &[String]) -> String {
     match git_with(worktree, safe, &["merge-base", base, "HEAD"]) {
         Ok(shared) if !shared.is_empty() => shared,
@@ -841,13 +670,10 @@ fn work_began_at(worktree: &Path, base: &str, safe: &[String]) -> String {
     }
 }
 
-/// Keep amx's own directory out of the repository's status.
-///
-/// `.git/info/exclude` rather than `.gitignore`: the repository's ignore file
-/// is versioned and shared, and where amx keeps its trees is neither.
+/// Add [`EXCLUDE_LINE`] to the repository's `info/exclude` once.
 fn ensure_excluded(repo: &Path) -> Result<()> {
-    // The common directory, because a linked worktree's own `.git` is a file
-    // and the exclude file belongs to the repository they all share.
+    // The common dir: in a linked tree `.git` is a file, and the exclude file
+    // belongs to the shared repository.
     let common = git(
         repo,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -877,23 +703,15 @@ fn ensure_excluded(repo: &Path) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// The overrides that leave a tree amx is only reading with nothing to run.
+/// `-c` overrides that stop git from running programs named by the tree's
+/// config while amx reads it.
 ///
-/// A repository's config is a list of programs: `diff.external` for the patch
-/// itself, a `textconv` or a `clean` filter for whichever paths an attribute
-/// picks out, a hook for the index git refreshes on its way past. Every
-/// one of them can be written by the agent whose work is about to be read,
-/// from inside the tree it works in, and every one of them then runs as the
-/// person reading it. `-c` beats every config file, so each key goes there
-/// with nothing in it.
-///
-/// The filter drivers have to be named one at a time, since there is no
-/// wildcard to blank them with, and `required` goes with them: a required
-/// filter that has been blanked is a fatal error rather than a plain diff.
-/// What that costs is a filtered file compared as git stored it rather than as
-/// the filter would have rendered it, and git only hashes a file whose stat
-/// data moved — so the files this can read differently are the ones the agent
-/// touched, which are the ones the answer was going to name anyway.
+/// The agent can write the tree's config, so hooks, clean/smudge/process
+/// filters and (via flags in [`diff`]) external diff and textconv are blanked.
+/// `-c` beats every config file. Filter drivers have no wildcard and are
+/// blanked one at a time, with `required=false` so a blanked required filter
+/// is not a fatal error. The cost is that a filtered file the agent touched is
+/// compared as stored rather than as filtered.
 fn nothing_to_run(dir: &Path) -> Vec<String> {
     let mut safe = vec!["-c".to_string(), "core.hooksPath=/dev/null".to_string()];
     for driver in filter_drivers(dir) {
@@ -907,11 +725,9 @@ fn nothing_to_run(dir: &Path) -> Vec<String> {
     safe
 }
 
-/// The filter drivers this repository's config declares, once each.
+/// The filter drivers the repository's config declares.
 ///
-/// A value read: `--get-regexp` exits as a failure when nothing matches, which
-/// is what most repositories answer, and a config git will not list is a
-/// config amx has nothing to blank.
+/// `--get-regexp` exits non-zero when nothing matches, which reads as none.
 fn filter_drivers(dir: &Path) -> Vec<String> {
     let listed = git(
         dir,
@@ -921,11 +737,10 @@ fn filter_drivers(dir: &Path) -> Vec<String> {
     drivers_in(&listed)
 }
 
-/// The driver out of each `filter.<driver>.<key>` line, once each.
+/// The driver names in `filter.<driver>.<key>` lines, sorted and deduplicated.
 ///
-/// The name is what lies between the two ends, dots and all: a driver may be
-/// called `git-lfs.2` and the key after it is what says where it stops. The
-/// same driver arrives once per key and once per file that declares it.
+/// A driver name may contain dots (`git-lfs.2`), so the key is split off the
+/// right.
 fn drivers_in(listed: &str) -> Vec<String> {
     let mut drivers: Vec<String> = listed
         .lines()
@@ -939,12 +754,12 @@ fn drivers_in(listed: &str) -> Vec<String> {
     drivers
 }
 
-/// One git command, with its output as the answer.
+/// Run git in `dir` and return its trimmed stdout.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     git_with(dir, &[], args)
 }
 
-/// The same, with config overrides in front of the subcommand.
+/// [`git`] with config overrides before the subcommand.
 fn git_with(dir: &Path, overrides: &[String], args: &[&str]) -> Result<String> {
     let out = command(dir, overrides, args)
         .output()
@@ -959,12 +774,10 @@ fn git_with(dir: &Path, overrides: &[String], args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// git, pointed at `dir` and ready to run.
+/// A git command in `dir`, hardened for every call.
 ///
-/// `core.fsmonitor` is blanked on every command, not only the reading ones: it
-/// names a program git starts before it will so much as look at a file, and a
-/// repository amx is asking a question of does not get to start one. It is a
-/// cache and nothing amx asks for depends on it.
+/// `core.fsmonitor` is disabled everywhere: it names a program git starts
+/// before reading any file, and amx never needs the cache.
 fn command(dir: &Path, overrides: &[String], args: &[&str]) -> Command {
     let mut git = Command::new("git");
     git.current_dir(dir)
@@ -972,13 +785,9 @@ fn command(dir: &Path, overrides: &[String], args: &[&str]) -> Command {
         .args(overrides)
         .args(args)
         .stdin(Stdio::null())
-        // The overrides blank the keys amx knows to blank; the machine's own
-        // /etc/gitconfig can name programs under keys nobody thought of, and
-        // nothing amx asks git for depends on it.
+        // /etc/gitconfig can name programs under keys the overrides miss.
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        // Nobody is at a terminal for git to ask. A fetch through a forge that
-        // wants a password is a failure said on stderr, not a prompt a cron
-        // line hangs on.
+        // Fail instead of prompting for credentials.
         .env("GIT_TERMINAL_PROMPT", "0");
     git
 }
@@ -990,8 +799,8 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// git as the tests run it: none of the developer's own configuration,
-    /// nothing to sign with, and an identity of its own.
+    /// Run git for test setup, isolated from the developer's config and with
+    /// a fixed identity.
     fn setup(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .current_dir(dir)
@@ -1027,8 +836,7 @@ mod tests {
         dir
     }
 
-    /// A bare repository beside this one, added as its `origin`, standing in
-    /// for the forge a request would be fetched from.
+    /// A bare repository added as `repo`'s `origin`, standing in for the forge.
     fn an_origin(repo: &Path) -> TempDir {
         let bare = TempDir::new().unwrap();
         setup(bare.path(), &["init", "--bare", "-b", "main"]);
@@ -1040,8 +848,7 @@ mod tests {
         bare
     }
 
-    /// A committed `.gitignore` naming the build's output, which is the line
-    /// `--with-changes` tells work apart from.
+    /// Commit a `.gitignore` that ignores `/build/`.
     fn an_ignore(repo: &Path) {
         std::fs::write(repo.join(".gitignore"), "/build/\n").unwrap();
         setup(repo, &["add", ".gitignore"]);
@@ -1076,8 +883,7 @@ mod tests {
         let head = setup(repo.path(), &["rev-parse", "HEAD"]);
         assert_eq!(head_commit(repo.path()).unwrap(), Some(head));
 
-        // A directory git has never heard of is on no commit, and a repository
-        // whose first commit has not landed has none to name either.
+        // Outside a repository there is no commit.
         let plain = TempDir::new().unwrap();
         assert_eq!(head_commit(plain.path()).unwrap(), None);
     }
@@ -1086,10 +892,10 @@ mod tests {
     fn worktree_finds_where_a_branch_left_the_main_line() {
         let repo = a_repo();
         let fork = setup(repo.path(), &["rev-parse", "HEAD"]);
-        // On the main line itself the fork point is HEAD: nothing has parted.
+        // On the main line the fork point is HEAD.
         assert_eq!(fork_point(repo.path()).unwrap(), Some(fork.clone()));
 
-        // A branch's work begins where it left: the commit main stayed on.
+        // On a branch it is where the branch left main.
         setup(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
         setup(repo.path(), &["commit", "-am", "second"]);
@@ -1121,9 +927,8 @@ mod tests {
 
     #[test]
     fn worktree_is_cut_from_the_ref_it_was_given() {
-        // Whatever kind of ref it is: a branch, a tag and a commit written out
-        // are three spellings of one commit, and the tree holds that commit's
-        // work rather than whatever HEAD has become.
+        // A branch, a tag and an abbreviated hash naming one commit, with HEAD
+        // moved past it.
         let repo = a_repo();
         let first = setup(repo.path(), &["rev-parse", "HEAD"]);
         setup(repo.path(), &["tag", "v1"]);
@@ -1148,9 +953,8 @@ mod tests {
 
     #[test]
     fn worktree_is_cut_on_a_branch_fetched_from_a_ref_nobody_has_locally() {
-        // A pull request's head is a ref in the origin and nothing in this
-        // checkout, so the branch has to be fetched into existence before
-        // there is anything to cut a tree on.
+        // A pull request head exists only as a ref in the origin, so the branch
+        // is fetched before the tree is cut on it.
         let repo = a_repo();
         let _origin = an_origin(repo.path());
         setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
@@ -1190,9 +994,8 @@ mod tests {
 
     #[test]
     fn worktree_is_cut_on_a_branch_this_checkout_already_has() {
-        // Nothing is fetched and no origin is needed: the branch is here, and
-        // the commits the agent makes have to land on it rather than on a
-        // fresh `amx/<id>` beside it.
+        // No origin needed: the tree is cut on the existing branch instead of a
+        // new `amx/<id>`.
         let repo = a_repo();
         setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
         std::fs::write(repo.path().join("login.rs"), "fn login() {}\n").unwrap();
@@ -1225,9 +1028,8 @@ mod tests {
 
     #[test]
     fn worktree_says_a_branchs_upstream_has_gone_once_a_fetch_has_pruned_it() {
-        // What a squash merge leaves behind: the forge took the work and
-        // deleted the branch, and this checkout knows nothing about it until
-        // somebody fetches.
+        // After a squash merge the forge deletes the branch, and the checkout
+        // only learns of it on a fetch.
         let repo = a_repo();
         let origin = an_origin(repo.path());
         setup(repo.path(), &["checkout", "-q", "-b", "feature"]);
@@ -1263,9 +1065,7 @@ mod tests {
 
     #[test]
     fn worktree_fetches_nothing_and_says_nothing_where_there_is_no_origin() {
-        // A checkout that has never had a remote is most of the test suite
-        // and plenty of scratch work: a sweep over it fetches nothing, and
-        // fetching nothing is not a failure to warn about.
+        // With no remote there is nothing to fetch, and that is no error.
         let repo = a_repo();
         prune_origin(repo.path()).unwrap();
         assert!(!upstream_gone(repo.path(), "main").unwrap());
@@ -1295,8 +1095,7 @@ mod tests {
 
     #[test]
     fn worktree_says_which_branches_some_tree_already_holds() {
-        // Two trees cannot hold one branch, so a name that is taken is a name
-        // a request has to be cut under some other one.
+        // git allows one tree per branch.
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         setup(repo.path(), &["branch", "release"]);
@@ -1343,9 +1142,8 @@ mod tests {
 
     #[test]
     fn worktree_asks_the_origin_what_the_main_line_is_before_it_guesses() {
-        // The name is the forge's to say: a repository whose default branch is
-        // `trunk` would otherwise have every branch read as unmerged, and a
-        // sweep that believes that never sweeps anything.
+        // origin/HEAD wins; otherwise a `trunk` default would make every branch
+        // read as unmerged.
         let repo = a_repo();
         assert_eq!(main_branch(repo.path()), "main");
 
@@ -1364,8 +1162,7 @@ mod tests {
         );
         assert_eq!(main_branch(repo.path()), "trunk");
 
-        // And where the origin says nothing, whichever of the two names this
-        // repository actually has.
+        // Without origin/HEAD, whichever of main and master exists.
         let old = a_repo();
         setup(old.path(), &["branch", "-m", "master"]);
         assert_eq!(main_branch(old.path()), "master");
@@ -1376,8 +1173,7 @@ mod tests {
         let repo = a_repo();
         assert_eq!(branch_at(repo.path()), Some("main".to_string()));
 
-        // A heading has a path to fall back on, so a root with no branch to
-        // name says nothing rather than something that is not a branch.
+        // A detached HEAD names no branch.
         setup(repo.path(), &["checkout", "-q", "--detach"]);
         assert_eq!(branch_at(repo.path()), None, "a detached HEAD is on none");
 
@@ -1407,8 +1203,7 @@ mod tests {
             "nor a branch"
         );
 
-        // A ref git resolves to something that is not a commit is no base
-        // either: `^{commit}` is what asks that question of it.
+        // A ref resolving to a non-commit object is refused too (`^{commit}`).
         assert!(create(repo.path(), "fix-login-a1b", Some("HEAD:README.md")).is_err());
     }
 
@@ -1445,7 +1240,7 @@ mod tests {
             "and the layout answers without it"
         );
 
-        // The same refusal is_amx_tree makes: amx speaks for the trees it cut.
+        // Only paths in amx's own layout are read.
         assert_eq!(repo_of(Path::new("/src/app/worktrees/fix-a1b")), None);
         assert_eq!(repo_of(Path::new(".amx/worktrees/fix-a1b")), None);
     }
@@ -1482,7 +1277,7 @@ mod tests {
             "the repository's own ignore file is not amx's to write"
         );
 
-        // A second tree must not write the line again.
+        // A second tree does not add the line again.
         create(repo.path(), "port-importer-c3d", None).unwrap();
         let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
         assert_eq!(exclude.matches(EXCLUDE_LINE).count(), 1, "{exclude}");
@@ -1523,11 +1318,9 @@ mod tests {
 
     #[test]
     fn worktree_diff_is_taken_from_the_last_commit_the_base_and_the_tree_share() {
-        // The tree was cut from `second`, and the agent's commit then went on
-        // the release line, which `second` is not on. Measured from `second`
-        // itself the answer would carry that commit's own work backwards -- the
-        // file it added deleted, the line it changed changed back -- all of it
-        // reading as the agent's.
+        // The tree is cut from `second`, then its commit is rebased onto
+        // `release`, which lacks `second`. Diffing against `second` itself would
+        // show `second`'s changes reversed as the agent's.
         let repo = a_repo();
         setup(repo.path(), &["branch", "release"]);
         std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
@@ -1559,9 +1352,7 @@ mod tests {
 
     #[test]
     fn worktree_diff_says_what_git_says_about_a_base_that_is_not_in_the_tree() {
-        // Nothing shares a commit with a base this tree has never held, and an
-        // answer measured from somewhere else instead would be a patch that
-        // looks right and is not.
+        // A base the tree shares no history with fails with git's error.
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
@@ -1631,9 +1422,8 @@ mod tests {
 
     #[test]
     fn hardening_every_git_is_run_with_the_system_config_shut_out() {
-        // The per-key overrides blank what amx knows to blank; the machine's
-        // own /etc/gitconfig can name programs under keys nobody thought of.
-        // GIT_CONFIG_NOSYSTEM is the guard for the whole file at once.
+        // /etc/gitconfig can name programs under keys the overrides miss, so
+        // every git runs with GIT_CONFIG_NOSYSTEM.
         let dir = TempDir::new().unwrap();
         let git = command(dir.path(), &[], &["status"]);
         let guard = git
@@ -1649,11 +1439,8 @@ mod tests {
 
     #[test]
     fn hardening_a_diff_runs_nothing_the_tree_it_reads_names() {
-        // Every one of these is a config key naming a program, and every one
-        // of them can be written from inside the tree by the agent whose work
-        // is about to be read. The attributes that pick a driver go in
-        // `.git/info/attributes`, which is the copy no attribute source can be
-        // pointed away from.
+        // Each key names a program and can be set from inside the tree. The
+        // attributes go in `.git/info/attributes`, which config cannot redirect.
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
 
@@ -1794,9 +1581,7 @@ mod tests {
 
     #[test]
     fn worktree_furnish_says_what_is_not_in_the_repository_and_goes_on() {
-        // A key naming a file this repository does not have is a config file
-        // outliving one of somebody's projects, not a reason to refuse them an
-        // agent.
+        // Entries the repository lacks are reported and skipped.
         let repo = a_repo();
         std::fs::write(repo.path().join(".env"), "TOKEN=hunter2\n").unwrap();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
@@ -1854,8 +1639,8 @@ mod tests {
 
     #[test]
     fn furnish_never_copies_over_a_file_the_tree_already_has() {
-        // An absolute entry was the path onto itself; a tracked symlink in the
-        // tree is the other way the destination is a file somebody has.
+        // A copy onto a tracked symlink would write through to its target, and
+        // one onto a tracked file would overwrite it.
         let repo = a_repo();
         let outside = TempDir::new().unwrap();
         let target = outside.path().join("settings.toml");
@@ -2020,8 +1805,7 @@ mod tests {
         std::fs::create_dir(repo.path().join("build")).unwrap();
         std::fs::write(repo.path().join("build/out"), "compiled\n").unwrap();
 
-        // Ignored and nothing else is nothing to move, which is the answer a
-        // directory with no changes at all gives.
+        // Ignored files alone are nothing to move.
         assert!(!has_changes_to_carry(repo.path()).unwrap());
         assert!(carry_changes(repo.path(), &tree.path).unwrap().is_none());
         assert_eq!(
@@ -2044,9 +1828,8 @@ mod tests {
 
     #[test]
     fn worktree_carrying_work_that_will_not_apply_leaves_the_directory_as_it_was() {
-        // A tree cut from a commit the work was not written against: the stash
-        // does not apply, and what it was going to move is still where it was
-        // typed rather than in neither place.
+        // The tree is cut from an older commit, so the stash does not apply and
+        // the work stays in the original directory.
         let repo = a_repo();
         std::fs::write(repo.path().join("README.md"), "second\n").unwrap();
         setup(repo.path(), &["commit", "-am", "second"]);
@@ -2092,16 +1875,16 @@ mod tests {
         remove(repo.path(), &tree.path).unwrap();
         assert!(!tree.path.exists());
 
-        // The work lives on the branch, which is not removed with the tree.
+        // The branch outlives the tree.
         let branches = setup(repo.path(), &["branch", "--list", &tree.branch]);
         assert!(branches.contains(&tree.branch), "{branches}");
 
-        // And it is not deleted while that commit is on no other branch.
+        // It cannot be deleted while its commit is on no other branch.
         let refused = delete_branch(repo.path(), &tree.branch, &[]).unwrap_err();
         assert_eq!(format!("{refused:#}"), "1 commit is on no other branch");
         assert!(setup(repo.path(), &["branch", "--list", &tree.branch]).contains(&tree.branch));
 
-        // Once main has it, the branch holds nothing of its own.
+        // Once main has the commit, deleting the branch loses nothing.
         setup(repo.path(), &["merge", "--ff-only", &tree.branch]);
         delete_branch(repo.path(), &tree.branch, &[]).unwrap();
         assert_eq!(setup(repo.path(), &["branch", "--list", &tree.branch]), "");
@@ -2120,15 +1903,15 @@ mod tests {
         }
         assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 2);
 
-        // Another branch holding them is enough: the branch going loses nothing.
+        // Another branch holding the commits is enough.
         setup(repo.path(), &["branch", "keep-it", &tree.branch]);
         assert_eq!(unshared_commits(repo.path(), &tree.branch).unwrap(), 0);
     }
 
     #[test]
     fn unshared_a_branch_at_the_head_a_forge_merged_loses_nothing() {
-        // A squash merge: the work is in main under a commit of its own, and
-        // the branch's commit is on no other branch.
+        // Squash merge: main holds the work under its own commit, so the
+        // branch's commit is on no other branch.
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         std::fs::write(tree.path.join("login.rs"), "fixed\n").unwrap();
@@ -2141,7 +1924,7 @@ mod tests {
             0
         );
 
-        // Two more commits after the merge are commits nobody merged.
+        // Commits after the merged head count as lost.
         for n in 1..=2 {
             std::fs::write(tree.path.join("login.rs"), format!("{n}\n")).unwrap();
             setup(&tree.path, &["add", "login.rs"]);
@@ -2152,8 +1935,7 @@ mod tests {
 
     #[test]
     fn unshared_a_fresh_tree_cut_from_unpushed_work_holds_nothing_of_its_own() {
-        // Cut from a branch whose commits went nowhere yet, the tree's branch
-        // reaches them too; they are the other branch's, not the tree's.
+        // Unpushed commits the tree was cut on belong to the other branch.
         let repo = a_repo();
         setup(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("wip.rs"), "wip\n").unwrap();
@@ -2227,9 +2009,7 @@ mod tests {
 
     #[test]
     fn worktree_tells_a_linked_tree_from_the_checkout_it_belongs_to() {
-        // Asked of git and not read off the path: a tree somebody else cut,
-        // wherever they put it, is as much a linked worktree as one amx laid
-        // down in its own layout.
+        // A tree cut elsewhere, in another layout, is linked too.
         let repo = a_repo();
         let tree = create(repo.path(), "fix-login-a1b", None).unwrap();
         assert!(is_linked(&tree.path), "{}", tree.path.display());

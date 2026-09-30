@@ -1,18 +1,15 @@
-//! Where amx keeps things.
+//! Where amx keeps its files.
 //!
-//! * **state** — `~/.local/state/amx/agents/<id>/`, durable, survives reboots.
-//!   `$AMX_STATE_DIR` (tests) replaces the `amx` root, so agent directories
-//!   land at `$AMX_STATE_DIR/agents/<id>/`.
-//! * **config** — `$XDG_CONFIG_HOME/amx/config.toml`, else
+//! - State: `~/.local/state/amx/agents/<id>/`. `$AMX_STATE_DIR` replaces the
+//!   `~/.local/state/amx` root, for tests.
+//! - Config: `$XDG_CONFIG_HOME/amx/config.toml`, else
 //!   `~/.config/amx/config.toml`.
-//! * **a project's config** — `<project>/.amx/config.toml`, where the project
-//!   is the repository a directory belongs to rather than the tree of it
-//!   somebody happens to be standing in.
+//! - Project config: `<project>/.amx/config.toml`, where the project is the
+//!   repository, never a worktree of it.
 //!
-//! The environment is read only by the wrappers; the layout rules themselves
-//! are pure functions over their inputs, and that is what the tests drive.
-//! Mutating environment variables is process-global and `unsafe` in edition
-//! 2024 — not something a parallel test suite may do.
+//! Only the public wrappers read the environment; the layout rules are pure
+//! functions the tests call directly, since setting environment variables is
+//! process-global and `unsafe` in edition 2024.
 
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
@@ -22,19 +19,15 @@ use std::path::{Path, PathBuf};
 /// Test-only override of the state root.
 const STATE_DIR_ENV: &str = "AMX_STATE_DIR";
 
-/// What a directory amx makes is kept at, and what a file it writes is kept
-/// at: an agent's task, the answers a person gave it and the path to the
-/// transcript of the whole conversation are the owner's business alone.
+/// Modes for the directories and files amx writes: owner only, since they hold
+/// tasks, answers and transcript paths.
 pub const DIR_MODE: u32 = 0o700;
 pub const FILE_MODE: u32 = 0o600;
 
 /// Set `path` to `mode`.
 ///
-/// The mode is asked for at creation *and* set here, because neither creation
-/// call keeps the promise on its own: a mode handed to `open` is a request the
-/// umask may take bits out of, and it is ignored outright for a file that is
-/// already there — a state file amx wrote before this law existed, or a log an
-/// agent's own shell left lying about.
+/// Needed on top of the mode passed at creation: the umask can clear bits from
+/// that, and it does not apply at all to a file that already exists.
 pub fn keep_to_the_owner(path: &Path, mode: u32) -> Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("keeping {} to its owner", path.display()))
@@ -49,72 +42,50 @@ pub fn state_root() -> Result<PathBuf> {
     }
 }
 
-/// `<id>`'s state directory.
+/// The state directory of agent `id`.
 pub fn agent_dir(id: &str) -> Result<PathBuf> {
     agent_dir_in(&state_root()?, id)
 }
 
-/// What the view keeps between runs: the way it was gathered, the agents held
-/// at the top of their groups, the order somebody put a group in, and whether
-/// the status line has been offered.
+/// The view's persisted settings: grouping, held agents, group order, and
+/// whether the status line was offered.
 ///
-/// Beside the agents rather than among them. Nothing in it belongs to an agent
-/// — it is the reader's own — and a file inside the agents directory would be
-/// an entry every walk of that directory has to know is not an agent.
+/// Kept beside the agents directory so walks of it see only agents.
 pub fn view_file(state_root: &Path) -> Option<PathBuf> {
     beside_the_agents(state_root, VIEW)
 }
 
-/// What that file is called.
 const VIEW: &str = "view.json";
 
-/// The agents a terminal has been handed to, newest first.
-///
-/// Beside the agents for the same reason the view's file is: where somebody
-/// has been is theirs rather than any agent's. What reads it is `amx attach
-/// --last`, which asks a question about the trail and not about the wall.
+/// The agents a terminal was handed to, newest first, for `amx attach --last`.
 pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
     beside_the_agents(state_root, VISITED)
 }
 
-/// What that file is called.
 const VISITED: &str = "visited.json";
 
-/// The colours the view last read off its terminal, as the tmux style
-/// `fg=#rrggbb,bg=#rrggbb` (or `bg=#rrggbb` alone), for the panes amx starts
-/// to wear.
-///
-/// Beside the agents for the same reason the view's file is, and beside them
-/// the way the spawn lock is: every caller has a root with a parent.
+/// The terminal colours the view last read, as a tmux style
+/// (`fg=#rrggbb,bg=#rrggbb` or `bg=#rrggbb`) for new agent panes.
 pub fn background_file(state_root: &Path) -> PathBuf {
     state_root.parent().unwrap_or(state_root).join(BACKGROUND)
 }
 
-/// What that file is called.
 const BACKGROUND: &str = "background";
 
-/// A file amx keeps for itself, at the state root rather than among the
-/// agents.
+/// A file of amx's own in the parent of the agents directory.
 fn beside_the_agents(state_root: &Path, name: &str) -> Option<PathBuf> {
     state_root
         .parent()
-        // A relative root has an empty parent, which names wherever the
-        // process happens to be running rather than anywhere amx keeps things.
+        // A relative root has an empty parent, meaning the current directory.
         .filter(|root| !root.as_os_str().is_empty())
         .map(|root| root.join(name))
 }
 
-/// Where a listing amx read out of a vendor is kept between runs.
-///
-/// Beside the agents for the same reason the view's file is: nothing in it
-/// belongs to an agent. What a vendor offers is the vendor's, one file per
-/// harness, and a spawn that has to know which harness runs a model reads it
-/// rather than starting the vendor again.
+/// Where cached vendor model listings are kept, one file per harness.
 pub fn models_dir() -> Result<PathBuf> {
     beside_the_agents(&state_root()?, MODELS).context("no state root to keep a model listing under")
 }
 
-/// What that directory is called.
 const MODELS: &str = "models";
 
 /// The config file amx reads, whether or not it exists.
@@ -123,50 +94,34 @@ pub fn config_file() -> Result<PathBuf> {
     Ok(config_file_from(xdg.as_deref(), &home()?))
 }
 
-/// What a project's own config file is called, under the project's root.
+/// A project's config file, relative to the project root.
 const PROJECT_CONFIG: &str = ".amx/config.toml";
 
-/// The config file the project holding `dir` keeps, whether or not it exists.
+/// The config file of the project holding `dir`, whether or not it exists.
 ///
-/// The project is the repository, not the tree of it somebody is working in,
-/// so several agents on one repository read one file. A tree amx cut answers
-/// with the repository it was cut from, off the layout alone — the answer holds
-/// once the tree has gone, and amx speaks for its own trees and no others. Any
-/// other linked worktree answers with the repository it belongs to, and a
-/// checkout with the toplevel that holds its own git directory, which are the
-/// same question and so the same call.
-///
-/// Unlike the layout above, this one asks git: which repository a directory
-/// belongs to is not something a path can be read for.
+/// The project is the repository, so every tree of it shares one file. A tree
+/// amx cut is resolved from its path, which works after the tree is gone; any
+/// other directory asks git for its main repository.
 pub fn project_config(dir: &Path) -> Option<PathBuf> {
-    // Anchored before anything is decided. Inside a repository git answers
-    // with a path spelled out from the root whatever it was asked with, but
-    // outside one the directory is the whole of the project, and a relative
-    // one would be a project no record names: every record holds its
-    // directory spelled out from the root, and a cap counted against
-    // `../scratch` would count nobody.
+    // Made absolute first: outside a repository the directory is the project,
+    // and records hold absolute directories, so a relative one would match no
+    // agent when counting caps.
     let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let project = if crate::worktree::is_amx_tree(&dir) {
         crate::worktree::repo_of(&dir)?
     } else {
-        // Outside a repository there is nothing above the directory, and the
-        // directory is the whole of the project.
+        // Outside a repository the directory itself is the project.
         crate::worktree::main_repo(&dir).unwrap_or_else(|_| dir.clone())
     };
     Some(project.join(PROJECT_CONFIG))
 }
 
-/// `dir` spelled out from the root: anchored on the working directory where
-/// it was relative, and read off the disk where the disk knows it, so that two
-/// spellings of one directory are one path.
+/// `dir` made absolute and, where it exists, canonicalized, so two spellings
+/// of one directory compare equal.
 ///
-/// What every record holds, and so what a directory has to be before it is
-/// compared with one. `../scratch` is what somebody typed and
-/// `/home/dev/scratch` is where they meant; anchoring alone keeps the `..`,
-/// and a record started from inside the directory says the second. A
-/// directory that is not there is anchored and no more — whether that is an
-/// error is the caller's question, and `ls --dir` on a tree that has gone is a
-/// fair one.
+/// Records hold canonical absolute directories. A directory that does not
+/// exist is only made absolute, and the caller decides whether that is an
+/// error.
 pub fn anchored(dir: &Path) -> Result<PathBuf> {
     let anchored = std::path::absolute(dir)
         .with_context(|| format!("reading the directory `{}`", dir.display()))?;
@@ -177,14 +132,13 @@ fn home() -> Result<PathBuf> {
     std::env::home_dir().context("no home directory: set $HOME, or $AMX_STATE_DIR in tests")
 }
 
-/// An environment variable's value as a path — an unset variable and an empty
-/// one mean the same thing, which is what XDG says and what a shell that
-/// exports `FOO=` produces.
+/// An environment variable as a path, with empty treated as unset (as XDG
+/// specifies).
 fn env_path(value: Option<OsString>) -> Option<PathBuf> {
     value.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The state layout, with its two inputs as parameters.
+/// The state layout, with its inputs as parameters.
 fn state_root_from(state_dir_override: Option<&Path>, home: &Path) -> PathBuf {
     let root = match state_dir_override {
         Some(dir) => dir.to_path_buf(),
@@ -193,7 +147,7 @@ fn state_root_from(state_dir_override: Option<&Path>, home: &Path) -> PathBuf {
     root.join("agents")
 }
 
-/// The config layout, with its two inputs as parameters.
+/// The config layout, with its inputs as parameters.
 fn config_file_from(xdg_config_home: Option<&Path>, home: &Path) -> PathBuf {
     let root = match xdg_config_home {
         Some(dir) => dir.to_path_buf(),
@@ -202,10 +156,10 @@ fn config_file_from(xdg_config_home: Option<&Path>, home: &Path) -> PathBuf {
     root.join("amx/config.toml")
 }
 
-/// The join itself — and the id law checked *here*, where an id becomes a
-/// path, rather than only where one is minted. `state_root.join(id)` is not a
-/// lookup: an id of `../../elsewhere` addresses any directory on the machine,
-/// and an absolute one replaces the root outright.
+/// The state directory of `id` under `state_root`.
+///
+/// The id is validated here, where it becomes a path: `join` with
+/// `../../elsewhere` or an absolute id would escape the root.
 pub(crate) fn agent_dir_in(state_root: &Path, id: &str) -> Result<PathBuf> {
     if !crate::ids::is_valid(id) {
         bail!("no agent `{id}`");
@@ -292,9 +246,7 @@ mod tests {
 
     #[test]
     fn a_vendors_model_listing_is_kept_beside_the_agents() {
-        // Reads the ambient environment and never touches it, the way the
-        // other wrapper does: whichever branch it takes, the answer is the
-        // models directory at the state root.
+        // Reads the real environment without changing it.
         let (Ok(agents), Ok(models)) = (state_root(), models_dir()) else {
             return;
         };
@@ -304,8 +256,7 @@ mod tests {
 
     #[test]
     fn the_project_config_of_a_tree_amx_cut_is_the_repositorys_own() {
-        // Read off the layout, so it holds for a tree git can no longer be
-        // asked from, and never mistakes the tree for a project of its own.
+        // Resolved from the layout alone, with no git and no directory needed.
         assert_eq!(
             project_config(Path::new("/src/app/.amx/worktrees/fix-login-a1b")),
             Some(PathBuf::from("/src/app/.amx/config.toml"))
@@ -314,10 +265,8 @@ mod tests {
 
     #[test]
     fn the_project_config_of_a_relative_directory_is_anchored_on_the_working_directory() {
-        // `amx new --dir ../scratch` hands the directory over as it was typed.
-        // Outside a repository that directory is the whole of the project, and
-        // the file it keeps has to be the one every record's absolute directory
-        // finds, or the cap counted against it counts nobody.
+        // `--dir ../scratch` arrives as typed. Outside a repository the project
+        // must be the absolute directory the records hold.
         let found = project_config(Path::new("scratch")).expect("a project");
         assert!(found.is_absolute(), "{}", found.display());
         assert!(
@@ -337,8 +286,7 @@ mod tests {
             "a directory that is not there is anchored and no more"
         );
 
-        // One the disk knows is spelled the way the disk spells it, whichever
-        // way it was reached: `..` and links go.
+        // An existing directory is canonicalized: `..` and symlinks resolve.
         let dir = tempfile::TempDir::new().unwrap();
         let real = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(anchored(dir.path()).unwrap(), real);
@@ -372,8 +320,7 @@ mod tests {
 
     #[test]
     fn the_wrappers_root_the_layout_at_the_agents_directory() {
-        // Reads the ambient environment and never touches it: whichever branch
-        // it takes, the answer is the agents directory with the id under it.
+        // Reads the real environment without changing it.
         let Ok(root) = state_root() else { return };
         assert!(root.ends_with("agents"), "{}", root.display());
         assert_eq!(
@@ -395,7 +342,7 @@ mod tests {
         assert_eq!(mode_of(&path), FILE_MODE, "a file that was already there");
         assert_eq!(mode_of(dir.path()), DIR_MODE);
 
-        // And a path that is not there is a failure with the path in it.
+        // A missing path fails with the path in the message.
         let missing = dir.path().join("never-written");
         let said = format!("{:#}", keep_to_the_owner(&missing, FILE_MODE).unwrap_err());
         assert!(said.contains("never-written"), "{said}");
