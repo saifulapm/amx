@@ -30,7 +30,8 @@ Exit 2 means something stands in the way:
 | `sub` | The parent already has `max_children` live children, or `--permission` was given without `subagents_may_escalate`. |
 | `resume` | The agent is still running. |
 
-Errors and advice go to stderr, one line each.
+Errors and advice go to stderr. stdout holds what the verb returns: an id, an
+answer, or a question.
 
 ## One agent, start to finish
 

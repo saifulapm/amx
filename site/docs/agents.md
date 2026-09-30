@@ -151,8 +151,9 @@ no notification hook, so amx reads its approval box off the screen, and it
 sends nothing for an interrupted or failed turn, so amx reads those endings
 from the screen and the rollout file. Skills are `$name` on the task line.
 
-`setup codex` never passes `--dangerously-bypass-hook-trust`; it writes the
-same trust hash codex would write if you approved the hooks yourself.
+amx never passes `--dangerously-bypass-hook-trust`. `setup codex` writes the
+same trust hash codex would write if you approved the hooks yourself, for
+amx's own hooks only.
 
 ### opencode
 
