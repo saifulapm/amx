@@ -1,30 +1,20 @@
-//! Driving the suite against a pi that is not pi.
+//! End-to-end tests for amx's pi entry, driven against the stand-in
+//! `tests/mock_pi/pi`.
 //!
-//! pi is the first entry in the table to declare a start flag, so it is the
-//! first vendor amx hands a session id of its own choosing instead of waiting
-//! to be told one. That id is what everything here is about: that it reaches
-//! the argv a real pane runs, that the record holds it from the moment the
-//! pane exists, that a resume comes back onto the same one, and that a branch
-//! asks for it beside a new one in the same argv.
+//! pi is the first vendor with a start flag, so amx mints its session id and
+//! passes it on the argv. The tests check that the id reaches the pane's argv,
+//! is recorded as soon as the pane exists, is reused on resume, and sits
+//! beside a new id on a fork.
 //!
-//! The vendor is `tests/mock_pi/pi`, reached through the PATH. amx keys its
-//! table by the program an agent command runs, so `--agent pi` with that
-//! directory in front of the PATH is the whole of what makes these agents pi's
-//! — and the only way to drive its entry on a machine with no pi on it.
-//!
-//! pi reports through an extension amx writes where pi loads one from, one
-//! `amx _hook` per moment, and the stand-in delivers the same reports out of
-//! a scenario — see `tests/mock_pi/pi`. What it says is what the record
-//! moves by; the screens are still read where the report has gone quiet,
-//! which is every gate pi draws before a turn and every pi whose extension is
-//! not installed.
-//!
-//! Which is why the stand-in paints a screen in one write, and why no test
-//! below waits for two halves of one to arrive. Half a repaint is a pane pi
-//! never drew, and a test that polled until the other half landed would be
-//! agreeing with the screen it wanted instead of asserting the screen there
-//! is: every wait here settles on one anchor, and the rest of the screen is
-//! read off that same capture.
+//! - amx keys its vendor table by the program an agent command runs, so
+//!   `--agent pi` with `tests/mock_pi` at the front of `PATH` makes an agent
+//!   pi's on a machine without pi.
+//! - pi reports through an extension amx installs, one `amx _hook` per event,
+//!   and the stand-in delivers the same reports from a scenario. Screens are
+//!   still read where no report comes: the gates pi draws before a turn, and
+//!   a pi without the extension.
+//! - The stand-in paints each screen in one write. Every wait settles on one
+//!   anchor, and the rest of the screen is read from that same capture.
 
 mod common;
 
@@ -33,10 +23,10 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The task every agent here is started on.
+/// The task every agent here is started with.
 const TASK: &str = "fix the login bug";
 
-/// Where the stand-in and its scenarios live.
+/// The directory holding the stand-in and its scenarios.
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mock_pi")
 }
@@ -47,8 +37,7 @@ fn scenario(name: &str) -> PathBuf {
         .join(format!("{name}.scenario"))
 }
 
-/// A PATH with the stand-in's directory in front of it, which is what makes
-/// `pi` a program this machine has at all.
+/// `PATH` with the stand-in's directory in front, so `pi` resolves to it.
 fn path_to_pi() -> String {
     let ours = fixtures().to_string_lossy().into_owned();
     match std::env::var("PATH") {
@@ -57,17 +46,15 @@ fn path_to_pi() -> String {
     }
 }
 
-/// Run amx with pi on its PATH and the stand-in ready to play `scenario`.
+/// Run amx with the stand-in on `PATH`, set to play `scenario_name`.
 ///
-/// Both ride the environment rather than the command line because that is how
-/// they reach the pane: a spawn snapshots the environment it was run with, and
-/// the pane is started from that snapshot.
+/// Both are passed in the environment because a spawn snapshots its
+/// environment and the pane starts from that snapshot.
 fn amx_with_pi(amx: &Harness, scenario_name: &str, args: &[&str]) -> std::process::Output {
     amx_playing(amx, &scenario(scenario_name), args)
 }
 
-/// The same, against a timeline written somewhere other than beside the
-/// stand-in — see [`timeline`].
+/// [`amx_with_pi`] with a scenario at any path, such as a [`timeline`].
 fn amx_playing(amx: &Harness, scenario: &Path, args: &[&str]) -> std::process::Output {
     amx.amx_command(args)
         .env("PATH", path_to_pi())
@@ -76,25 +63,22 @@ fn amx_playing(amx: &Harness, scenario: &Path, args: &[&str]) -> std::process::O
         .expect("running amx")
 }
 
-/// A timeline of pi's own screens, written for the one test that drives it.
+/// Write a scenario of the test's own under home, and answer with its path.
 ///
-/// The scenarios beside the stand-in each walk to the screen a test is reading
-/// and hold there, which is what a test of a reader wants. What a test of the
-/// question on a record wants is the walk itself — one pane going from one
-/// stop to the next with nothing said about either — so the test that drives
-/// one writes the order it drives.
+/// The shared scenarios each walk to one screen and hold there. A test that
+/// follows one pane through several screens writes its own sequence.
 fn timeline(amx: &Harness, name: &str, steps: &str) -> PathBuf {
     let path = amx.home().join(format!("{name}.scenario"));
     std::fs::write(&path, steps).expect("writing a scenario");
     path
 }
 
-/// Start an agent the way a person starts one, on the vendor amx knows as pi.
+/// Run `amx new --agent pi` for `id` in home, playing `scenario_name`.
 fn start(amx: &Harness, id: &str, scenario_name: &str) {
     start_playing(amx, id, &scenario(scenario_name));
 }
 
-/// The same, on a timeline of one test's own.
+/// [`start`] with a scenario at any path.
 fn start_playing(amx: &Harness, id: &str, scenario: &Path) {
     let out = amx_playing(
         amx,
@@ -117,15 +101,12 @@ fn start_playing(amx: &Harness, id: &str, scenario: &Path) {
     );
 }
 
-/// A machine that has both harnesses on it: pi through the stand-in beside
-/// this file, and claude through a copy of the other stand-in under the name
-/// the table knows that harness by, in a directory of this harness's own at the
-/// front of the PATH — `new_as_claude` in tests/e2e_spawn.rs installs it the
-/// same way and for the same reason.
+/// `PATH` with both stand-ins on it: pi, and mock-claude copied in as
+/// `claude`.
 ///
-/// A typed model picks the harness that offers it, and a choice between two
-/// harnesses can only be read off a machine where both of them are programs
-/// that exist.
+/// A typed model picks the harness that offers it, so testing that choice
+/// needs both programs on `PATH`. `new_as_claude` in tests/e2e_spawn.rs
+/// installs mock-claude the same way.
 fn path_to_both(amx: &Harness) -> String {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
@@ -133,20 +114,17 @@ fn path_to_both(amx: &Harness) -> String {
     format!("{}:{}", bin.display(), path_to_pi())
 }
 
-/// The file somebody who runs pi writes on a machine that still has claude on
-/// it: pi is the agent, and each harness carries words of its own.
+/// A config with pi as the default agent and extra args for each harness.
 ///
-/// pi's word is the same `--approve` its folder-trust screen is answered with,
-/// which is what a person who trusts every tree they spawn into would write
-/// here. No test below sets the `trust` key, so an `--approve` on a pi's argv
-/// under this file came from the table and from nowhere else.
+/// pi's extra arg is `--approve`, the flag that answers its folder-trust
+/// screen. No test here sets `trust`, so an `--approve` on pi's argv under
+/// this config came from the `[pi]` table.
 const BOTH_HARNESSES: &str = "agent = \"pi\"\n\n\
      [claude]\nargs = [\"--add-dir\", \"/srv/shared\"]\n\n\
      [pi]\nargs = [\"--approve\"]\n";
 
-/// `amx new` on that machine, with both stand-ins pointed at a scenario of
-/// their own, so whichever harness the model picks is a program that will say
-/// how it was called.
+/// Run `amx new` with both stand-ins on `PATH`, each given a scenario, so
+/// whichever harness is picked prints how it was called.
 fn new_on_either(amx: &Harness, id: &str, dials: &[&str]) -> std::process::Output {
     let dir = amx.home().to_string_lossy().into_owned();
     let mut line = vec!["new", "--name", id, "--dir", &dir];
@@ -161,27 +139,20 @@ fn new_on_either(amx: &Harness, id: &str, dials: &[&str]) -> std::process::Outpu
         .expect("running amx new")
 }
 
-/// The conversations the two vendors name in the terminal an adoption is
-/// typed in: the claude somebody is working in, and the pi they started from
-/// inside it.
+/// Session ids in the terminal where `amx adopt` runs: the claude session it
+/// is typed in, and a pi started from inside that claude.
 const A_CLAUDE: &str = "4c1e8b73-2f60-4a15-9d38-7e2b6c0f9a54";
 const THEIR_PI: &str = "9f3c1d20-5a44-4e7b-8c19-6d0a2b5f7e31";
 
-/// A pi somebody started themselves, in a pane amx never opened, playing
-/// `scenario_name` on the session `session`. Answers with that pane once the
-/// screen the scenario stops on is up — `up` is a row only that screen has: a
-/// capture taken before it is painted is a different screen, and adoption
-/// reads the pane once.
+/// Start pi by hand in a pane amx did not open, playing `scenario_name` on
+/// session `session`, and answer with the pane once it shows `up`.
 ///
-/// Started under the name that makes it pi: tmux answers for a pane with the
-/// program its process was started as, and a script's is the shell named on
-/// its shebang line, so the shell that reads the stand-in is reached through a
-/// link called `pi`. Nothing here goes through the PATH the way `amx new
-/// --agent pi` has to, because what is in a pane amx did not open is whatever
-/// somebody ran. What the pane does carry is what a real one would: amx on it
-/// for the extension to report to, and this harness's state and home, and
-/// nothing naming an agent — `AMX_ID` and `AMX_DIR` are a spawn's to set, and
-/// are taken out in case this suite is itself running inside one.
+/// `up` must be a row only the final screen has, since adopt reads the pane
+/// once. tmux names a pane's command after the program its process started
+/// as, which for a script is its shebang shell, so the stand-in runs under a
+/// `/bin/sh` symlink called `pi`. The pane gets `AMX_BIN` for the extension,
+/// this harness's state and home, and no `AMX_ID` or `AMX_DIR`: a spawn sets
+/// those, and the suite may itself be running inside one.
 fn a_pi_started_by_hand(amx: &Harness, scenario_name: &str, session: &str, up: &str) -> String {
     let named_pi = amx.home().join("pi");
     std::os::unix::fs::symlink("/bin/sh", &named_pi).expect("a shell called pi");
@@ -227,12 +198,11 @@ fn a_pi_started_by_hand(amx: &Harness, scenario_name: &str, session: &str, up: &
     pane
 }
 
-/// `amx adopt`, typed in that pane by a command the vendors have told what
-/// they told it.
+/// Run `amx adopt` as if typed in `pane`, with the vendor session variables
+/// in `named`.
 ///
-/// The suite is run from inside somebody's own agent often enough that a
-/// vendor's session variable is already in this process's environment, so both
-/// of them are cleared and only what a caller names is put back.
+/// The suite often runs inside a real agent, so inherited
+/// `CLAUDE_CODE_SESSION_ID` and `PI_SESSION_ID` are cleared first.
 fn adopt(amx: &Harness, id: &str, pane: &str, named: &[(&str, &str)]) -> std::process::Output {
     amx.amx_command(&["adopt", "--name", id, "--task", TASK])
         .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -243,12 +213,10 @@ fn adopt(amx: &Harness, id: &str, pane: &str, named: &[(&str, &str)]) -> std::pr
         .expect("running amx adopt")
 }
 
-/// Run the stand-in itself, with the home a pi would keep its sessions under
-/// pinned to this harness.
+/// Run the stand-in directly, with `HOME` set to this harness's home.
 ///
-/// For the one argv amx will not build. `--no-session` is on pi's conflicts
-/// list, so amx never mints an id beside it, and what pi does when somebody
-/// else writes both is still the fixture's to get right.
+/// For an argv amx never builds: `--no-session` is on pi's conflicts list, so
+/// amx never mints an id beside it, but the fixture must still handle both.
 fn stand_in(amx: &Harness, args: &[&str]) -> std::process::Output {
     std::process::Command::new(fixtures().join("pi"))
         .args(args)
@@ -258,8 +226,7 @@ fn stand_in(amx: &Harness, args: &[&str]) -> std::process::Output {
         .expect("running the stand-in")
 }
 
-/// The stand-in asked which models it can reach, the way amx asks: the one
-/// question that reaches pi with no scenario named anywhere near it.
+/// Run the stand-in's `--list-models` as amx does, with no scenario set.
 fn listing(amx: &Harness) -> std::process::Output {
     std::process::Command::new(fixtures().join("pi"))
         .arg("--list-models")
@@ -269,8 +236,8 @@ fn listing(amx: &Harness) -> std::process::Output {
         .expect("running the stand-in")
 }
 
-/// The same agent as a listing has it, which is one look taken by a process
-/// that prints its table and exits.
+/// The agent's row in `amx ls --json`, one look by a process that then
+/// exits.
 fn listed(amx: &Harness, id: &str) -> Value {
     ls(amx)
         .into_iter()
@@ -278,45 +245,36 @@ fn listed(amx: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("a row for {id}"))
 }
 
-/// How long a screen must hold still before a quiescent rule may end a turn
-/// that is on the record as running: `rules::SETTLED_LOOKS` seconds, which is
-/// what that many looks at a look a second always meant.
+/// Seconds a screen must hold still before a quiescent rule may end a turn
+/// the record has as running: `rules::SETTLED_LOOKS`.
 const SETTLED: u64 = 30;
 
-/// How long what a vendor reported is believed before a reader looks at the
-/// pane instead: `derive::FRESH` seconds. Spelled here for the same reason
-/// [`SETTLED`] is, and because what a beat buys is a turn still read as
-/// running long after its last hook.
+/// Seconds a vendor report is trusted before a reader looks at the pane:
+/// `derive::FRESH`. Until then a turn reads as running after its last hook.
 const FRESH: u64 = 8;
 
-/// amx's own names for the two edges of a turn a reading places.
+/// amx's event names for the prompt and turn-end edges a pane reading places.
 ///
-/// Spelled here rather than read out of the binary: the event log is a
-/// contract a caller reads with `jq`, and a test that asked amx what it calls
-/// its own events would agree with whatever anybody renamed them to.
+/// Hard-coded because the event log is a contract callers read with `jq`, so
+/// a rename in amx must fail these tests.
 const READ_PROMPT: &str = "read.prompt";
 const READ_TURN_END: &str = "read.turn-end";
 
-/// And amx's word for a message it sent, which is `send::SEND`. Spelled here
-/// for the same reason: what places a turn against a message is the order of
-/// these three words in a log a caller reads with `jq`.
+/// amx's event name for a sent message, `send::SEND`, hard-coded for the same
+/// reason.
 const SENT: &str = "send";
 
-/// How long a send waits for the word that its message was taken, in seconds,
-/// which is `send::CONFIRM`. Spelled here for the same reason the two names
-/// above are: what a caller is promised is a wait that ends.
+/// Seconds a send waits for its message to be taken: `send::CONFIRM`.
 const CONFIRM: u64 = 5;
 
-/// pi's own words for the two edges of a turn, which are the events its
-/// extension reports them under. Spelled here for the same reason the two
-/// names above are: a caller reads the log with `jq`.
+/// The event names pi's extension reports a turn's start and end under.
 const PIS_WORDS: [&str; 2] = ["agent_start", "agent_settled"];
 
-/// What a turn answered, as pi reports it when the turn settles and as the
-/// scenarios that report one write it.
+/// A turn's answer, as pi reports it when the turn settles and as the
+/// reporting scenarios write it.
 const ANSWERED: &str = "I moved the timeout into the config, and the tests pass.";
 
-/// Wait for the line the stand-in opens with, whichever of the two it is.
+/// Wait for the stand-in's line starting with `opening`, and answer with it.
 fn until_said(amx: &Harness, id: &str, opening: &str) -> String {
     let pane = amx.pane_of(id);
     amx.until(&format!("the vendor to say {opening}"), || {
@@ -327,26 +285,24 @@ fn until_said(amx: &Harness, id: &str, opening: &str) -> String {
     })
 }
 
-/// How the vendor was called, once it has said so.
+/// The `argv:` line the stand-in prints.
 fn argv_of(amx: &Harness, id: &str) -> String {
     until_said(amx, id, "argv:")
 }
 
-/// What the vendor did with the session it was handed, once it has said so.
+/// The `session:` line the stand-in prints: what it did with the session id.
 fn session_of(amx: &Harness, id: &str) -> String {
     until_said(amx, id, "session:")
 }
 
-/// The file the stand-in keeps a session in, where pi keeps one under the
-/// person's home.
+/// The stand-in's file for `session` under home.
 fn session_file(amx: &Harness, session: &str) -> PathBuf {
     amx.home()
         .join(".pi/sessions")
         .join(format!("{session}.jsonl"))
 }
 
-/// What is on the pane now, with the blank rows a screen is padded out with
-/// taken off the bottom.
+/// The pane's rows, right-trimmed, with trailing blank rows dropped.
 fn drawn(amx: &Harness, pane: &str) -> Vec<String> {
     let mut rows: Vec<String> = amx
         .capture(pane)
@@ -359,11 +315,10 @@ fn drawn(amx: &Harness, pane: &str) -> Vec<String> {
     rows
 }
 
-/// The rows pi's composer border is drawn on, topmost first.
+/// Indexes of the rows that are pi's composer border, topmost first.
 ///
-/// A row of nothing but the glyph the box is drawn with, twenty columns of it
-/// or more, which is the anchor every rule in `assets/screen-rules-pi.toml`
-/// stands on.
+/// A border row is 20 or more `─` and nothing else, the anchor every rule in
+/// `assets/screen-rules-pi.toml` uses.
 fn borders(rows: &[String]) -> Vec<usize> {
     rows.iter()
         .enumerate()
@@ -375,34 +330,34 @@ fn borders(rows: &[String]) -> Vec<usize> {
         .collect()
 }
 
-/// Where a row carrying `text` is, when one is.
+/// Index of the first row containing `text`.
 fn row_of(rows: &[String], text: &str) -> Option<usize> {
     rows.iter().position(|row| row.contains(text))
 }
 
-/// Whether a row opens with one of the frames pi spins a status line with.
+/// Whether a row starts with a frame of pi's status-line spinner.
 ///
-/// Ten glyphs out of Unicode's braille block, cycled at eight a second, and
-/// the one thing every status line pi draws carries whatever its message says
-/// — which is why `assets/screen-rules-pi.toml` anchors its spinner rule on
-/// them rather than on the word one of the four happens to use.
+/// The frames are ten braille glyphs cycled eight times a second. Every
+/// status line carries one whatever its message, so
+/// `assets/screen-rules-pi.toml` anchors its spinner rule on them.
 fn spins(row: &str) -> bool {
     row.trim_start()
         .starts_with(|glyph: char| ('\u{2800}'..='\u{28ff}').contains(&glyph))
 }
 
 /// Whether a row is the composer's top border with the working indicator in
-/// it, the way pi 0.85.1 draws one: `── `, a frame, the message, and the rule
-/// out to the pane's edge.
+/// it, as pi 0.85.1 draws it: `── `, a spinner frame, the message, then `─`
+/// to the pane's edge.
 fn framed_border(row: &str) -> bool {
     row.strip_prefix("── ")
         .is_some_and(|rest| spins(rest) && row.trim_end().ends_with('─'))
 }
 
-/// The three status lines pi draws that do not say `Working`, the scenario
-/// that puts each on a pane, and whether 0.85.1 draws it in the composer's top
-/// border. Compaction and a retry keep the row above the box; an extension's
-/// own message replaces the vendor's word, and goes where the word went.
+/// pi's status lines other than `Working`: a label, the scenario that shows
+/// it, its text, and whether pi 0.85.1 draws it in the composer's top border.
+///
+/// Compaction and retry stay on the row above the box. An extension's own
+/// working message replaces `Working` and is drawn where it would be.
 const OTHER_STATUS_LINES: [(&str, &str, &str, bool); 3] = [
     (
         "a compacting turn",
@@ -419,13 +374,12 @@ const OTHER_STATUS_LINES: [(&str, &str, &str, bool); 3] = [
     ),
 ];
 
-/// The two panes one of pi's own selectors makes, and how far the topmost
-/// border a rule can see is from the stats line on each.
+/// Two panes showing one of pi's selectors: a label, the scenario, and the
+/// distance from the topmost border a rule can see to the stats line.
 ///
-/// The widget is the same widget and its box is the same three rows. What
-/// differs is what else is on the screen: a transcript above it leaves the
-/// bottom border of `!cmd`'s own box on the pane, and a rule reading the
-/// topmost border it can find starts from that one instead.
+/// The selector's box is three rows in both. With a transcript above it, the
+/// bottom border of `!cmd`'s box is also on the pane, and a rule that reads
+/// the topmost border starts from that one.
 const SELECTORS: [(&str, &str, usize); 2] = [
     ("a selector with nothing above it", "opens-a-selector", 5),
     (
@@ -435,10 +389,8 @@ const SELECTORS: [(&str, &str, usize); 2] = [
     ),
 ];
 
-/// `amx doctor --fix`, with a yes ready for the repair it asks about.
-///
-/// The yes is the point of the test that types it: a vendor with no hooks is
-/// never asked, so the answer is never read and the file is never written.
+/// Run `amx doctor --fix` with pi on `PATH` and `typed` on stdin, and answer
+/// with its stdout.
 fn doctor_fix(amx: &Harness, typed: &str) -> String {
     use std::io::Write;
     use std::process::Stdio;
@@ -480,12 +432,10 @@ fn everything_under(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every rule `assets/screen-rules-pi.toml` declares, in the order it declares
-/// them.
+/// The rule names in `assets/screen-rules-pi.toml`, in file order.
 ///
-/// Read off the file rather than out of the binary: the document is one rule
-/// per `[[rule]]` table and each opens on its own name, so the names are a
-/// line-scan away and the test needs no parser of its own.
+/// Each `[[rule]]` table opens with its `name = "..."` line, so a line scan
+/// finds them without a TOML parser.
 fn rules_declared() -> Vec<String> {
     let doc = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/screen-rules-pi.toml"),
@@ -498,12 +448,11 @@ fn rules_declared() -> Vec<String> {
         .collect()
 }
 
-/// Every rule the inventory says it measured a screen reading as.
+/// Every rule `docs/pi-screens.md` records a screen as reading as.
 ///
-/// The Reads column is the last cell of every table row in
-/// `docs/pi-screens.md`, and a rule that claimed a screen is written in bold
-/// there — `**`dialog`**` — which is what tells a verdict from the other
-/// backticked words in the same cell.
+/// The Reads column is the last cell of each table row. A rule that claimed
+/// the screen is in bold code there (`**`dialog`**`), which tells it apart
+/// from other code spans in the cell.
 fn rules_read() -> Vec<String> {
     let inventory =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/pi-screens.md"))
@@ -528,21 +477,16 @@ fn rules_read() -> Vec<String> {
     found
 }
 
-/// What `docs/vendors.md`'s *What the dogfood saw* found, one string per
-/// finding.
-///
-/// A finding is a bullet of the list that section ends on, gathered with the
-/// rows it runs onto. Read off the file rather than kept here, because the file
-/// is where somebody looks and a test carrying its own copy would be agreeing
-/// with itself.
-fn dogfood_findings() -> Vec<String> {
+/// The bullets of pi's field-test section in `docs/vendors.md`, one string
+/// each with its continuation lines joined.
+fn field_test_findings() -> Vec<String> {
     let vendors =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/vendors.md"))
             .expect("the vendors document");
     let section = vendors
         .split("\n## What the dogfood saw\n")
         .nth(1)
-        .expect("what the dogfood saw")
+        .expect("the field-test section")
         .split("\n## ")
         .next()
         .expect("everything under that heading");
@@ -551,7 +495,7 @@ fn dogfood_findings() -> Vec<String> {
     for row in section.lines() {
         match (row.strip_prefix("- **"), found.last_mut()) {
             (Some(opening), _) => found.push(opening.to_string()),
-            // A bullet's own continuation, which is indented under it.
+            // A continuation line, indented under its bullet.
             (None, Some(last)) if row.starts_with("  ") => {
                 last.push(' ');
                 last.push_str(row.trim());
@@ -563,19 +507,11 @@ fn dogfood_findings() -> Vec<String> {
 }
 
 #[test]
-fn the_dogfood_says_what_closed_each_of_its_findings() {
-    // *What the dogfood saw* is where what a partial entry cost is written
-    // down, and the pass left five verbs on it that were each waiting on a word
-    // this vendor never says. A finding somebody has answered since is worth
-    // exactly as much as what answered it: a list saying what broke and not what
-    // closed it sends the next reader out to drive pi again for an answer that
-    // is already in the tree.
-    let findings = dogfood_findings();
-    assert_eq!(
-        findings.len(),
-        5,
-        "the findings the dogfood left: {findings:#?}"
-    );
+fn the_field_test_says_what_closed_each_of_its_findings() {
+    // Five verbs broke on a word pi never reports. Each bullet must say what
+    // fixed it, so a reader does not have to drive pi again to find out.
+    let findings = field_test_findings();
+    assert_eq!(findings.len(), 5, "the findings left: {findings:#?}");
     for finding in &findings {
         assert!(
             finding.contains("Closed:"),
@@ -583,16 +519,13 @@ fn the_dogfood_says_what_closed_each_of_its_findings() {
         );
     }
 
-    // And in whose words. Three of the five turn on the edges of a turn, and on
-    // a vendor that reports nothing a reading of the pane is the only thing that
-    // will ever place one, so what the log carries there is amx's own name for
-    // it and never the vendor's. A document spelling a word the log does not
-    // carry sends a caller to `jq` for nothing.
+    // Without hooks only a pane reading places a turn's edges, so the log
+    // carries amx's event names there and the doc must use them.
     let closed = findings.concat();
     for word in [READ_PROMPT, READ_TURN_END] {
         assert!(
             closed.contains(word),
-            "the dogfood names `{word}`, which is the word a reader of the log \
+            "the section names `{word}`, which is the word a reader of the log \
              finds: {closed}"
         );
     }
@@ -600,17 +533,10 @@ fn the_dogfood_says_what_closed_each_of_its_findings() {
 
 #[test]
 fn the_inventory_measured_a_screen_for_every_rule_pi_has() {
-    // `docs/pi-screens.md` is the coverage half of pi's document: the whole
-    // list of screens the vendor can put on a pane, and what each one reads as.
-    // What it is for is knowing which screens the rules cover and which they
-    // walk past, and that only holds while the two are read together — a rule
-    // landing with no row against it is a rule whose coverage nobody measured,
-    // and a row naming a rule the document dropped is a verdict nobody can get
-    // any more.
-    //
-    // Which rules those are, and in which order they sit, is asserted in
-    // `src/rules.rs` and only there. This is the other question: that every one
-    // of them was measured against a screen somebody drove.
+    // `docs/pi-screens.md` lists every screen pi can draw and what it reads
+    // as. A rule with no row there has unmeasured coverage, and a row naming a
+    // removed rule is stale. The rules and their order are asserted in
+    // `src/rules.rs`.
     let mut declared = rules_declared();
     let mut read = rules_read();
     assert!(!declared.is_empty(), "pi's document declares rules");
@@ -625,10 +551,8 @@ fn the_inventory_measured_a_screen_for_every_rule_pi_has() {
 
 #[test]
 fn spawn_hands_pi_the_start_flag_and_the_id_amx_minted_for_the_agent() {
-    // The flag was built against a table where no entry declared one, so
-    // nothing could say the flag and the id reach a pane rather than only the
-    // argv a unit test builds. pi declares one, and this is that proof: the
-    // words are read off the vendor that really ran.
+    // pi is the first vendor with a start flag, so this is the check that the
+    // flag and id reach a real pane, beyond the argv unit tests build.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
@@ -651,9 +575,9 @@ fn spawn_hands_pi_the_start_flag_and_the_id_amx_minted_for_the_agent() {
 
 #[test]
 fn spawn_hands_pi_a_task_opening_with_an_at_sign_as_words() {
-    // `--` ends pi's flags and not its file arguments, so a task opening with
-    // `@` after it still names a file, and a file that is not there ends pi
-    // before its session opens (2026-09-27, against pi 0.87.1).
+    // In pi 0.87.1 `--` ends flags but not file arguments: a task starting
+    // with `@` still names a file, and a missing file makes pi exit before
+    // its session opens.
     let amx = Harness::new();
     let id = "at-sign-a1b";
     let out = amx_with_pi(
@@ -685,8 +609,8 @@ fn spawn_hands_pi_a_task_opening_with_an_at_sign_as_words() {
 
 #[test]
 fn spawn_asks_pi_to_create_the_session_when_there_is_no_file_under_that_id() {
-    // `--session-id` is mint-or-open, and this is the mint: nothing on disk
-    // answers to the id amx has just minted, so the vendor makes it.
+    // `--session-id` opens the session if it exists and creates it otherwise.
+    // Nothing exists yet under a fresh id.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
@@ -700,11 +624,9 @@ fn spawn_asks_pi_to_create_the_session_when_there_is_no_file_under_that_id() {
 
 #[test]
 fn a_spawn_told_to_keep_no_session_is_minted_no_id_to_offer_back() {
-    // `--no-session` is the one flag on pi's conflicts list that is not a
-    // refusal. The vendor takes it, runs the turn and keeps the conversation
-    // in memory, so what amx owes a person who typed it is silence: no minted
-    // id beside it, and no record offering back a conversation that was never
-    // written down.
+    // `--no-session` is the one flag on pi's conflicts list that pi does not
+    // refuse: it runs the turn and keeps the conversation in memory. amx must
+    // mint no id beside it and record no session.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let out = amx_with_pi(
@@ -751,12 +673,9 @@ fn a_spawn_told_to_keep_no_session_is_minted_no_id_to_offer_back() {
 
 #[test]
 fn a_pi_under_the_trust_key_is_answered_on_its_argv_and_in_nobodys_file() {
-    // pi's folder-trust screen is answered with a word on the argv of the pane
-    // rather than an entry in a file, so the proof is read off the vendor that
-    // really ran. Into a repository rather than a bare directory, because that
-    // is what cuts a worktree and so reaches the other half of the same config
-    // key: the store that half writes is claude's own file, and a pi agent is
-    // not something to write it for.
+    // pi's folder-trust screen is answered by `--approve` on the argv. The
+    // spawn goes into a repository so it cuts a worktree, where `trust` also
+    // writes claude's `.claude.json`; that must not happen for a pi agent.
     let amx = Harness::new();
     amx.config("trust = true\n");
     let repo = amx.a_repo();
@@ -804,9 +723,8 @@ fn a_pi_under_the_trust_key_is_answered_on_its_argv_and_in_nobodys_file() {
 
 #[test]
 fn a_pi_spawned_without_the_trust_key_is_left_to_answer_its_own_screen() {
-    // The key is the whole of the consent. Without it the flag is one nobody
-    // asked for, and what pi loads out of the repository it was pointed at is
-    // still pi's own question to put to whoever is at the keyboard.
+    // `trust` is the only consent for `--approve`. Without it, pi asks the
+    // person at the keyboard whether to trust the directory.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
@@ -817,10 +735,9 @@ fn a_pi_spawned_without_the_trust_key_is_left_to_answer_its_own_screen() {
 
 #[test]
 fn a_model_only_claude_offers_starts_claude_under_an_amx_configured_for_pi() {
-    // The whole of the choice: nobody named an agent, the file says pi, and
-    // `opus` is a word pi's listing does not hold and claude's cycle does. So
-    // the harness that runs is the other one, carrying the words its own table
-    // gives it.
+    // No agent is named and the config says pi, but `opus` is in claude's
+    // models and not in pi's listing, so claude starts with its `[claude]`
+    // args.
     let amx = Harness::new();
     amx.config(BOTH_HARNESSES);
     let id = "fix-login-a1b";
@@ -850,10 +767,8 @@ fn a_model_only_claude_offers_starts_claude_under_an_amx_configured_for_pi() {
 
 #[test]
 fn a_model_pis_own_listing_holds_starts_pi_with_the_words_its_table_carries() {
-    // The same command line with the other harness's word on it.
-    // `gpt-5-mini` is the id half of `github-copilot/gpt-5-mini`, which is what
-    // somebody types, and pi is asked first because it is the harness the file
-    // names.
+    // `gpt-5-mini` is the model half of `github-copilot/gpt-5-mini`, as a
+    // person would type it. pi is asked first because the config names it.
     let amx = Harness::new();
     amx.config(BOTH_HARNESSES);
     let id = "fix-login-a1b";
@@ -911,10 +826,8 @@ fn a_model_neither_harness_offers_is_refused_naming_what_each_takes() {
 
 #[test]
 fn an_agent_somebody_named_runs_the_model_typed_beside_it() {
-    // `--agent pi --model opus` asks nothing about harnesses: the harness was
-    // named, so the word is a dial and nothing else, and pi's dial takes
-    // whatever pattern it is handed. Looking up who offers `opus` here would
-    // send somebody's pi spawn to claude.
+    // With the harness named, `--model` is only pi's dial, and pi takes any
+    // pattern. Looking up who offers `opus` would send this spawn to claude.
     let amx = Harness::new();
     amx.config(BOTH_HARNESSES);
     let id = "fix-login-a1b";
@@ -937,10 +850,9 @@ fn an_agent_somebody_named_runs_the_model_typed_beside_it() {
 
 #[test]
 fn the_stand_in_prints_its_listing_before_it_looks_for_a_scenario() {
-    // amx asks a harness what it offers before it starts anything, so the
-    // question reaches a pi with no scenario named anywhere near it. A fixture
-    // that read its scenario first would answer with a screen, or hold the
-    // spawn open for the length of a timeline nobody is driving.
+    // amx lists a harness's models before starting anything, with no scenario
+    // set. A fixture that read its scenario first would print a screen, or
+    // hold the spawn open for a whole timeline.
     let amx = Harness::new();
 
     let out = listing(&amx);
@@ -975,13 +887,10 @@ fn the_stand_in_prints_its_listing_before_it_looks_for_a_scenario() {
 
 #[test]
 fn the_stand_in_parts_the_flags_pi_refuses_from_the_one_it_throws_away() {
-    // The stand-in is asked directly here, because amx will not build this
-    // argv: `--no-session` is on the conflicts list, so no id is ever minted
-    // beside it. What the fixture has to get right is the difference between
-    // the six. Five are an exit. The sixth takes the id and drops it, and a
-    // fixture that exited on it too would turn the one failure this flag
-    // causes on the real vendor — a conversation amx records that was never on
-    // disk — into a loud one no test could ever reach.
+    // Of the six flags that conflict with `--session-id`, five make pi exit
+    // and `--no-session` takes the id and drops it. A fixture that exited on
+    // all six would hide the real failure: a session recorded but never
+    // written.
     let amx = Harness::new();
     let id = "fix-login-a1b";
 
@@ -1014,10 +923,8 @@ fn the_stand_in_parts_the_flags_pi_refuses_from_the_one_it_throws_away() {
 
 #[test]
 fn resume_brings_the_agent_back_onto_the_id_it_was_started_under() {
-    // The other half of mint-or-open, and the whole reason a vendor with no
-    // hooks can be resumed at all: the same flag carries the same id, and the
-    // vendor opens what is already there rather than starting a second
-    // conversation nobody asked for.
+    // The same flag with the same id opens the existing session. This is how
+    // amx resumes a vendor that reports nothing.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
@@ -1053,9 +960,8 @@ fn resume_brings_the_agent_back_onto_the_id_it_was_started_under() {
 
 #[test]
 fn fork_asks_pi_for_the_origin_id_and_a_new_one_in_the_same_argv() {
-    // pi branches by naming the session to copy on a flag of its own, which
-    // leaves the start flag free to carry the copy's own minted id. Both in
-    // one argv is what makes a forked pi an agent amx can name afterwards.
+    // pi names the session to copy with `--fork`, which leaves the start flag
+    // free for the copy's minted id, so amx knows the fork's session.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
@@ -1090,22 +996,17 @@ fn fork_asks_pi_for_the_origin_id_and_a_new_one_in_the_same_argv() {
 
 #[test]
 fn the_stand_in_spins_pis_line_in_pis_own_top_border() {
-    // The screen `assets/screen-rules-pi.toml` names `spinner`, drawn the way
-    // pi 0.85.1 draws it: the frame and the word in the composer's top border
-    // — `── `, the frame, `Working`, and the rule out to the edge — with no
-    // status row above the box. Two rows under it is the bottom border, the
-    // one row of rule twenty columns wide that the rule stands on.
+    // The `spinner` screen as pi 0.85.1 draws it: `── `, the frame, `Working`
+    // and `─` to the edge in the composer's top border, with no status row
+    // above the box. The bottom border, which the rule anchors on, is two
+    // rows below.
     let amx = Harness::new();
     let id = "watch-log-c3d";
     start(&amx, id, "works-without-end");
     let pane = amx.pane_of(id);
 
-    // One anchor is waited for and the rest of the screen is read off the same
-    // capture. The stand-in paints a screen in one write, so a capture with
-    // the spinner on it is a capture with the whole screen on it, and the box
-    // below is an assertion rather than a second thing to wait for. Waiting
-    // for both would be waiting for a pane that was never drawn to turn into
-    // one that was, which is the reading this whole file exists to rule out.
+    // The stand-in paints the whole screen in one write, so the box is
+    // asserted from the capture that shows the spinner.
     let rows = amx.until("the turn to be under way", || {
         let rows = drawn(&amx, &pane);
         row_of(&rows, "Working").is_some().then_some(rows)
@@ -1131,12 +1032,11 @@ fn the_stand_in_spins_pis_line_in_pis_own_top_border() {
 
 #[test]
 fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
-    // pi has one status indicator and swaps out which of its four kinds is
-    // up. Compaction and a retry each take the working indicator down and put
-    // their own on the row above the box, so `Working` is off the pane for
-    // the whole of either; `ctx.ui.setWorkingMessage` rewrites the message on
-    // the kind that is left, which 0.85.1 draws in the composer's top border.
-    // What all three keep is the frame, which is what the spinner rule reads.
+    // pi shows one status indicator of four kinds at a time. Compaction and
+    // retry replace the working indicator with their own on the row above the
+    // box, so `Working` is gone. `ctx.ui.setWorkingMessage` rewrites the
+    // working indicator's message, which 0.85.1 draws in the top border. All
+    // three keep the spinner frame, which is what the spinner rule reads.
     for (what, scenario, message, embedded) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "watch-log-c3d";
@@ -1191,12 +1091,9 @@ fn the_stand_in_spins_the_status_lines_that_do_not_say_working() {
 
 #[test]
 fn a_pi_whose_status_line_stopped_saying_working_is_still_working() {
-    // Three ways a turn can be under way with the word `Working` nowhere on
-    // the pane, and all three read `unknown` under a rule that stands on that
-    // word: a compacting pi is doing work nobody can interrupt usefully, a
-    // retrying one is between two provider calls, and a turn under an
-    // extension's own message is an ordinary turn with the message rewritten.
-    // The frame is what says a turn is running on all three.
+    // Compacting, retrying, and a turn under an extension's working message
+    // all run with no `Working` on the pane, and a rule anchored on that word
+    // read them `unknown`. The spinner frame is present on all three.
     for (what, scenario, message, _) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "watch-log-c3d";
@@ -1207,9 +1104,8 @@ fn a_pi_whose_status_line_stopped_saying_working_is_still_working() {
             row_of(&drawn(&amx, &pane), message).is_some().then_some(())
         });
 
-        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-        // nothing outstanding, which is where the screen is the only witness
-        // there is on this vendor.
+        // Silent for an hour with nothing outstanding, so only the screen is
+        // read.
         amx.set_state(
             id,
             json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1227,17 +1123,15 @@ fn a_pi_whose_status_line_stopped_saying_working_is_still_working() {
 
 #[test]
 fn the_stand_in_draws_the_box_and_the_footer_pi_keeps_under_every_screen() {
-    // The chrome the other two rules stand on and `src/furniture.rs` walks up
-    // over: the box's two borders, and under them the working directory and
-    // the stats line, always both and never anything between them and the box.
+    // The chrome the other rules anchor on and `src/furniture.rs` skips: the
+    // box's two borders, then the working directory and the stats line
+    // directly below.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
     let pane = amx.pane_of(id);
 
-    // The row a finished turn leaves and no other screen carries, waited for
-    // on its own: which screen is up is what a wait is for, and how much of it
-    // has been painted is not a question this fixture leaves open.
+    // Only a finished turn shows `Took`.
     let rows = amx.until("the turn to be over", || {
         let rows = drawn(&amx, &pane);
         row_of(&rows, "Took").is_some().then_some(rows)
@@ -1264,13 +1158,10 @@ fn the_stand_in_draws_the_box_and_the_footer_pi_keeps_under_every_screen() {
 
 #[test]
 fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
-    // The screen `assets/screen-rules-pi.toml` names `dialog`, and it is drawn
-    // the way it was measured: inside the composer box rather than above it,
-    // with the same footer under it as every other screen carries, and with
-    // the turn that raised it still running over the top. The rule's own
-    // anchor is the hint row this stops on, `↑↓ navigate …`, so this is what
-    // proves the stand-in draws the shape the rule was measured against rather
-    // than only the words.
+    // The `dialog` screen as measured: inside the composer box, with the usual
+    // footer below and the turn that raised it still running. The rule
+    // anchors on the `↑↓ navigate` hint row, so this checks the layout as well
+    // as the words.
     let amx = Harness::new();
     let id = "watch-log-c3d";
     start(&amx, id, "asks-a-question");
@@ -1288,11 +1179,9 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
         top < hint && hint < bottom,
         "the hint row sits inside the box, where the editor usually is: {rows:?}"
     );
-    // And nothing spins over it. pi raises this dialog from a tool call while
-    // the turn is running, and 0.85.1 keeps the working indicator in the
-    // editor the dialog replaced, so a turn is under way on this pane with no
-    // frame on it anywhere. Order still keeps the spinner rule off the screen
-    // a compaction row would share with it; the anchors alone never did.
+    // pi 0.85.1 keeps the working indicator in the editor the dialog
+    // replaces, so no frame shows though the turn is running. With a
+    // compaction row also on screen, rule order keeps the spinner rule off it.
     assert!(
         !rows.iter().any(|row| spins(row) || framed_border(row)),
         "no frame anywhere on a dialog raised mid-turn: {rows:?}"
@@ -1311,12 +1200,10 @@ fn the_stand_in_draws_the_dialog_in_pis_box_with_the_turn_still_over_it() {
 
 #[test]
 fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
-    // The screens `assets/screen-rules-pi.toml` names `input` and `editor`,
-    // drawn the way they were measured: the caller's title two rows under the
-    // top of the composer box, what pi is waiting to be typed into below it,
-    // and a hint row opening on `enter submit` where the dialog's opens on
-    // `↑↓ navigate`. The editor draws a second box for the block it wants,
-    // which is the shape that told the two rules apart.
+    // The `input` and `editor` screens as measured: the caller's title two rows
+    // below the box's top border, the text field below it, and a hint row
+    // starting `enter submit` (the dialog's starts `↑↓ navigate`). The editor
+    // draws a second box for its text block, which tells the two rules apart.
     for (what, scenario, title, boxes) in [
         (
             "a line",
@@ -1331,9 +1218,6 @@ fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
         start(&amx, id, scenario);
         let pane = amx.pane_of(id);
 
-        // The title this scenario asks for and no earlier screen in it
-        // carries, waited for on its own, with the rest of the screen read off
-        // that same capture.
         let rows = amx.until("the caller's question to be drawn", || {
             let rows = drawn(&amx, &pane);
             row_of(&rows, title).is_some().then_some(rows)
@@ -1355,9 +1239,8 @@ fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
             row_of(&rows, "enter submit").is_some_and(|hint| top < hint && hint < bottom),
             "the hint row sits inside the box, where the editor usually is: {rows:?}"
         );
-        // And nothing is running over it. A caller raises either of these from
-        // a turn or between two of them; the fixture draws them the way they
-        // were measured, which was with no turn under way.
+        // Either can be raised mid-turn or between turns. Both were measured
+        // with no turn running.
         assert!(
             row_of(&rows, "Working").is_none(),
             "no turn is under way behind this question: {rows:?}"
@@ -1373,12 +1256,9 @@ fn the_stand_in_draws_the_two_screens_a_caller_asks_for_words_on() {
 
 #[test]
 fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
-    // An extension stops pi three ways and two of them read `unknown`, so a
-    // permission gate written with `ctx.ui.input` was a pane amx said nothing
-    // about while somebody waited to be typed at. All three block, all three
-    // put the caller's own sentence at the top of pi's box, and the row is
-    // where a person reads it: the vendor reports through no hooks, so there
-    // is no payload the question could arrive in.
+    // An extension can block pi three ways, and two of them used to read
+    // `unknown`. All three put the caller's sentence at the top of pi's box,
+    // and no hook carries it, so the question is read from that row.
     for (what, scenario, rule, question, options) in [
         (
             "a choice",
@@ -1413,9 +1293,8 @@ fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
                 .then_some(())
         });
 
-        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-        // nothing outstanding, which is where the screen is the only witness
-        // there is on this vendor.
+        // Silent for an hour with nothing outstanding, so only the screen is
+        // read.
         amx.set_state(
             id,
             json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1449,19 +1328,15 @@ fn a_pi_stopped_by_a_caller_carries_the_question_that_caller_asked() {
 
 #[test]
 fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
-    // pi draws this in the same box a gated tool call's dialog is drawn in and
-    // ends it in the same `↑↓ navigate` hint row, so the dialog rule claimed
-    // it and the record said a tool call was waiting on an answer. What kind
-    // of thing is being asked is what decides what may be sent back, and this
-    // one takes a decision about the tree amx cut rather than a choice off a
-    // caller's own menu.
+    // pi draws this in the same box as a gated tool call's dialog, with the
+    // same `↑↓ navigate` hint row, so the dialog rule used to claim it. The
+    // kind decides what may be sent back: this one takes a trust decision
+    // about the directory, not a choice from a caller's menu.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "stops-on-trust");
     let pane = amx.pane_of(id);
 
-    // The title pi draws on this screen and on no other, waited for on its
-    // own, with the rest of the screen read off that same capture.
     let rows = amx.until("the trust question to be drawn", || {
         let rows = drawn(&amx, &pane);
         row_of(&rows, "Project trust").is_some().then_some(rows)
@@ -1475,17 +1350,14 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
         2,
         "the border, one blank row, and then the title: {rows:?}"
     );
-    // The hint row this screen ends in, which is the one the dialog rule
-    // stands on and the one this rule must not: it says `enter save` where a
-    // tool call's says `enter select`, and it is inside the box exactly where
-    // the other one is.
+    // The hint row sits where a tool call's does, which the dialog rule
+    // anchors on, but says `enter save` where a tool call's says `enter
+    // select`.
     assert!(
         row_of(&rows, "enter save").is_some_and(|hint| top < hint && hint < bottom),
         "the hint row sits inside the box, where the editor usually is: {rows:?}"
     );
-    // And nothing is running over it. A person raises this screen before a
-    // turn rather than a tool call raising it inside one, so the line pi spins
-    // is not on the pane the way it is over a dialog.
+    // pi shows this before a turn starts, so no turn is running behind it.
     assert!(
         row_of(&rows, "Working").is_none(),
         "no turn is under way behind this question: {rows:?}"
@@ -1497,9 +1369,8 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
          screen: {rows:?}"
     );
 
-    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-    // nothing outstanding, which is where the screen is the only witness there
-    // is on this vendor.
+    // Silent for an hour with nothing outstanding, so only the screen is
+    // read.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1520,17 +1391,14 @@ fn a_pi_on_the_folder_trust_question_reads_trust_and_not_a_tool_call() {
 
 #[test]
 fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
-    // The whole chain on the screen a person meets it on. pi draws this
-    // selector with an arrow in front of the row under its cursor and a number
-    // on none of them, so the numbers a caller reads here are amx's own: what
-    // `status` prints has to be what `answer` takes, or the offer is a sentence
-    // that lies to whoever is about to type.
+    // pi draws this selector with an arrow on the cursor row and no numbers,
+    // so the numbers `status` prints are amx's own and `answer` must take the
+    // same ones.
     //
-    // Measured on pi 0.85.1 on 2026-09-14 at 100 columns: `1`, `2`, `y` and `n`
-    // do nothing whatever to the selector, and `enter` takes whichever row the
-    // cursor is standing on, which is the first until somebody moves it. A
-    // `Trust` nobody meant cannot be taken back, so that key is refused here
-    // and the digit is what reaches a row.
+    // Measured on pi 0.85.1 at 100 columns: `1`, `2`, `y` and `n` do nothing
+    // to the selector, and `enter` takes the cursor row, the first until it
+    // moves. An unintended `Trust` cannot be undone, so amx refuses `enter`
+    // and a digit selects a row.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "stops-on-trust");
@@ -1539,15 +1407,14 @@ fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
     amx.until("the trust question to be drawn", || {
         row_of(&drawn(&amx, &pane), "Project trust")
     });
-    // Nothing heard for an hour and nothing outstanding, which is where the
-    // screen is the only witness there is on a vendor that reports nothing.
+    // Silent for an hour with nothing outstanding, so only the screen is
+    // read.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
     );
 
-    // The look that finds the question is the look that writes it down, so the
-    // report a person reads is also what puts the choices on the record.
+    // The `status` look that finds the question also records its choices.
     let printed = amx.until("the trust question to reach the record", || {
         let out = amx.amx(&["status", id]);
         assert!(
@@ -1575,9 +1442,7 @@ fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
          cancels, and offers no key this screen swallows: {printed}"
     );
 
-    // The key that takes the row the cursor is on is not one of them: it
-    // answers whichever row pi happens to be standing on rather than the one
-    // that was meant.
+    // `enter` takes whatever row the cursor is on, so it is refused.
     let out = amx.amx(&["answer", id, "enter"]);
     assert_eq!(
         out.status.code(),
@@ -1595,8 +1460,8 @@ fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
         "and nothing was answered on the way to refusing it"
     );
 
-    // The digit, which is the walk that reaches the second row and the key
-    // that takes it, with the row itself on the record.
+    // A digit walks to its row and selects it. The event records the row's
+    // text.
     let out = amx.amx(&["answer", id, "2"]);
     assert_eq!(
         out.status.code(),
@@ -1619,11 +1484,9 @@ fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
 
 #[test]
 fn the_stand_in_draws_the_gate_pi_puts_in_front_of_a_first_run() {
-    // The screen `assets/screen-rules-pi.toml` names `first_time_setup`, and
-    // it is the one screen in that document with none of pi's chrome under it:
-    // the vendor asks for a theme before it will draw a pane at all, so what
-    // is on this one is a box, the vendor's own banner inside it, and nothing
-    // else whatsoever.
+    // The `first_time_setup` screen is the only one in pi's rules with none of
+    // pi's chrome below it: pi asks for a theme before it draws a session, so
+    // the pane holds a box with pi's banner and nothing else.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "stops-at-setup");
@@ -1658,11 +1521,9 @@ fn the_stand_in_draws_the_gate_pi_puts_in_front_of_a_first_run() {
 
 #[test]
 fn the_stand_in_draws_the_login_dialog_in_the_slot_pis_composer_had() {
-    // The screen `assets/screen-rules-pi.toml` names `login`, drawn the way it
-    // was measured: the box where the composer was, the footer under it as on
-    // any other screen, and the vendor's title on the row directly under the
-    // top border rather than a blank row below it, which is the one way this
-    // box is drawn differently from the dialogs a caller raises.
+    // The `login` screen as measured: the box where the composer was, the
+    // usual footer, and the title on the row directly under the top border.
+    // The missing blank row is its one difference from a caller's dialogs.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "stops-on-login");
@@ -1697,12 +1558,9 @@ fn the_stand_in_draws_the_login_dialog_in_the_slot_pis_composer_had() {
 
 #[test]
 fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
-    // Neither of these is a turn and neither is a prompt, and both were read
-    // as one or the other: the setup gate carries the dialog rule's own hint
-    // row, so it was reported as a tool call waiting on an answer, and the
-    // login dialog is short enough that the box and the stats line under it
-    // added up to `prompt` — a card saying idle over a pi that cannot take a
-    // turn until somebody types a key into it.
+    // Both used to read wrong. The setup gate has the dialog rule's hint row,
+    // so it read as a tool call. The login box is short enough that it and
+    // the stats line matched `prompt`, so a pi waiting for a key read idle.
     for (what, scenario, drawn_row, rule, question, options) in [
         (
             "the gate a first run stops at",
@@ -1726,17 +1584,14 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
         start(&amx, id, scenario);
         let pane = amx.pane_of(id);
 
-        // The row the vendor draws on this screen and on no other, waited for
-        // on its own, with the rest of the screen read off that same capture.
         amx.until("the screen to be drawn", || {
             row_of(&drawn(&amx, &pane), drawn_row)
                 .is_some()
                 .then_some(())
         });
 
-        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-        // nothing outstanding, which is where the screen is the only witness
-        // there is on this vendor.
+        // Silent for an hour with nothing outstanding, so only the screen is
+        // read.
         amx.set_state(
             id,
             json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1771,17 +1626,14 @@ fn the_two_screens_a_fresh_pi_stops_on_each_read_waiting() {
 
 #[test]
 fn the_stand_in_draws_a_selector_in_the_slot_pis_composer_had() {
-    // The screen no rule in `assets/screen-rules-pi.toml` is named for, and
-    // `docs/pi-screens.md` counts fourteen of them: a widget a person opened,
-    // drawn between the composer's own two borders with the working directory
-    // and the stats line under them. There is no hint row on it that any rule
-    // knows and no title, which is the whole reason it reaches the last rule in
-    // the document at all.
+    // No rule is named for this screen, and `docs/pi-screens.md` counts
+    // fourteen like it: a widget the person opened, drawn between the
+    // composer's borders above the usual footer. It has no hint row or title
+    // any rule knows, so it reaches the last rule.
     //
-    // The distance is what this fixture is for. Five rows separate the topmost
-    // border a rule can see from the stats line with nothing above the box, and
-    // seven with a transcript above it, because `!cmd` leaves the bottom border
-    // of its own box on the pane. The widget did not move.
+    // The topmost border a rule can see is five rows above the stats line
+    // with nothing above the box, and seven under a transcript, because `!cmd`
+    // leaves its box's bottom border on the pane.
     for (what, scenario, span) in SELECTORS {
         let amx = Harness::new();
         let id = "fix-login-a1b";
@@ -1820,9 +1672,7 @@ fn the_stand_in_draws_a_selector_in_the_slot_pis_composer_had() {
             "{what}: the working directory and the stats line under it, same \
              as any other screen: {rows:?}"
         );
-        // And nothing on it that a rule above the last one would stop at: pi
-        // spells this widget's keys nowhere on the pane, so the screen falls
-        // past every rule that reads a hint row.
+        // pi shows no key hints for this widget, so no hint-row rule matches.
         for hint in ["navigate", "enter submit", "escape/ctrl+c"] {
             assert!(
                 row_of(&rows, hint).is_none(),
@@ -1834,16 +1684,14 @@ fn the_stand_in_draws_a_selector_in_the_slot_pis_composer_had() {
 
 #[test]
 fn a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
-    // The last rule in pi's document was counted off a composer: an empty box,
-    // the working directory and the stats line, four rows. A selector is the
-    // same two borders with somebody's list between them, and at five rows and
-    // at seven it fell inside a window of eight — so a card said idle over a pi
-    // that would take the next keystroke as a menu choice, and `send` would
-    // have typed into the widget.
+    // `prompt`, the last rule, was measured on an empty composer: box, working
+    // directory and stats line, four rows. A selector has the same borders
+    // with a list between them, and at five or seven rows it fit the old
+    // window of eight, so a pi that would take the next key as a menu choice
+    // read idle and `send` would have typed into the widget.
     //
-    // The second half is that it said it differently on the same widget. What
-    // is above the box is not a fact about the box, and a verdict that turns on
-    // how much output has scrolled by is not a reading of the screen at all.
+    // The verdict must also not depend on how much transcript is above the
+    // box.
     let mut verdicts = Vec::new();
     for (what, scenario, _) in SELECTORS {
         let amx = Harness::new();
@@ -1851,18 +1699,14 @@ fn a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
         start(&amx, id, scenario);
         let pane = amx.pane_of(id);
 
-        // The row this widget draws and no earlier screen in the scenario
-        // carries, waited for on its own, with the rest of the screen read off
-        // that same capture.
         amx.until("the selector to be drawn", || {
             row_of(&drawn(&amx, &pane), "Show images inline")
                 .is_some()
                 .then_some(())
         });
 
-        // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-        // nothing outstanding, which is where the screen is the only witness
-        // there is on this vendor.
+        // Silent for an hour with nothing outstanding, so only the screen is
+        // read.
         amx.set_state(
             id,
             json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1889,26 +1733,21 @@ fn a_widget_in_the_slot_pis_composer_had_is_not_pis_prompt() {
 
 #[test]
 fn a_quiet_pi_is_read_against_pis_own_document() {
-    // Every reader held one document against whatever pane it was handed, and
-    // that document was claude's. pi draws not one of claude's anchors, so a pi
-    // that had gone quiet read `unknown` with its own prompt plainly on the
-    // screen. What picks the document is the command the record kept at the
-    // spawn.
+    // Readers used to apply claude's rules to every pane. pi draws none of
+    // claude's anchors, so an idle pi read `unknown` with its prompt on
+    // screen. The command recorded at spawn now picks the rules.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
     assert_eq!(amx.meta(id)["agent"], "pi", "the record says which vendor");
     let pane = amx.pane_of(id);
 
-    // The prompt a finished turn leaves, stopped on the row no earlier screen
-    // in this scenario carries.
     amx.until("the turn to be over", || {
         row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
     });
 
-    // Aged the way `e2e_reader` ages one: nothing heard for an hour, with
-    // nothing outstanding, which is the state a quiescent rule decides from at
-    // once.
+    // Silent for an hour with nothing outstanding, so a quiescent rule
+    // decides at once.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1925,11 +1764,10 @@ fn a_quiet_pi_is_read_against_pis_own_document() {
 
 #[test]
 fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
-    // pi draws an Update Available box above its composer whenever a newer pi
-    // exists. Its borders are the composer's own, and a rule that read its
-    // rows from the topmost border anchored on the notice and lost its
-    // window, so a fresh pi read `unknown` idle and mid-turn until the
-    // transcript pushed the box off. A rule stands on the rows that fit now.
+    // pi draws an Update Available box, with the composer's borders, above the
+    // composer whenever a newer pi exists. Rules counting from the topmost
+    // border anchored on the notice, so a fresh pi read `unknown` idle and
+    // mid-turn until the transcript scrolled the box away.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "boots-under-the-notice");
@@ -1940,8 +1778,7 @@ fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
             .is_some()
             .then_some(())
     });
-    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, with
-    // nothing outstanding, so the screen is the witness.
+    // Silent for an hour with nothing outstanding, so only the screen is read.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -1953,8 +1790,8 @@ fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
         "the composer under the box: {agent}"
     );
 
-    // The same box with a turn running under it, the frame in the composer's
-    // top border where 0.85.1 draws it.
+    // Then a turn under the same notice, with the frame in the composer's top
+    // border as 0.85.1 draws it.
     amx.until("the turn under the notice", || {
         let rows = drawn(&amx, &pane);
         (row_of(&rows, "Update Available").is_some() && rows.iter().any(|row| framed_border(row)))
@@ -1967,29 +1804,22 @@ fn a_fresh_pi_under_its_update_notice_still_reads_idle_and_working() {
 
 #[test]
 fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
-    // How long a screen had held still was a run of consecutive looks counted
-    // in one process's memory, and every verb but the view is a process that
-    // prints a line and exits. So `amx ls` and `amx status` counted one look,
-    // every time, and pi's quiescent `prompt` rule could never end a turn for
-    // either of them: a pi whose turn ended, on a vendor that sends no hook to
-    // say so, read `working` for as long as anybody cared to ask.
-    //
-    // What a look found and when it first found it goes on the record now, so
-    // the stillness one process watched is there for the next one to read.
+    // Stillness used to be counted as consecutive looks in one process's
+    // memory, and every verb but the view looks once and exits. So `ls` and
+    // `status` never let the quiescent `prompt` rule end a turn, and a pi
+    // whose turn ended without a hook read `working` indefinitely. The screen
+    // and when it was first seen now live on the record.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
     let pane = amx.pane_of(id);
 
-    // The prompt a finished turn leaves, stopped on the row no earlier screen
-    // in this scenario carries.
     amx.until("the turn to be over", || {
         row_of(&drawn(&amx, &pane), "Took").is_some().then_some(())
     });
 
-    // A turn on the record as running, with nothing heard for an hour: the
-    // state the `prompt` rule may not decide from until the screen has held
-    // still.
+    // Running on the record and silent for an hour: `prompt` may end the turn
+    // only once the screen has held still.
     amx.set_state(
         id,
         json!({ "state": "working", "since": 1, "last_event": 1 }),
@@ -2004,8 +1834,7 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // What that wait wrote down: the screen it was reading, and when it first
-    // saw it.
+    // The wait recorded the screen's hash and when it first saw it.
     let state = amx.state(id);
     let seen = state["still"]["screen"].clone();
     assert!(seen.is_u64(), "the screen it saw, hashed: {state}");
@@ -2018,14 +1847,12 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
         "and the record is no fresher for having been looked at: {state}"
     );
 
-    // The same screen, first seen `SETTLED` seconds ago — aged on the record
-    // the way everything about a clock is aged here, rather than waited for.
+    // Backdate the first sighting by `SETTLED` seconds instead of waiting.
     let mut aged = state.clone();
     aged["still"]["since"] = json!(since - SETTLED);
     amx.set_state(id, aged);
 
-    // One look, in a process of its own, and it is the look that ends the
-    // turn: what the wait before it watched is on the record to be read.
+    // One look from a new process ends the turn from the recorded stillness.
     let row = listed(&amx, id);
     assert_eq!(row["state"], "idle", "{row}");
     assert_eq!(row["evidence"], "screen", "{row}");
@@ -2034,9 +1861,8 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
         "pi's own rule, out of pi's own document: {row}"
     );
 
-    // And a screen that changes starts the clock again. The record remembers a
-    // screen that is not the one on the pane, so the one on the pane has been
-    // there no time at all whatever the stamp beside it says.
+    // A changed screen restarts the clock: the recorded hash does not match
+    // the pane, so its old stamp does not count.
     amx.set_state(
         id,
         json!({
@@ -2064,18 +1890,15 @@ fn a_pi_that_has_held_still_settles_for_whichever_process_looks_next() {
 
 #[test]
 fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
-    // The finding at the end of `docs/vendors.md`: `adopt` read the
-    // environment in table order, so a pi started from a terminal that already
-    // had claude's session id in it was adopted as claude — claude's id on a
-    // record no pi will ever report under, and claude's document reading a
-    // pane pi drew.
+    // `adopt` used to check vendor session variables in table order, so a pi
+    // started from a terminal holding claude's session id was adopted as
+    // claude, with claude's id on the record and claude's rules on pi's pane.
     let amx = Harness::new();
-    // The hint row pi draws under every dialog, which is the anchor its own
-    // document reads that screen by.
+    // The dialog's hint row, which pi's rules anchor that screen on.
     let pane = a_pi_started_by_hand(&amx, "asks-a-question", THEIR_PI, "↑↓ navigate");
 
-    // Claude's variable alone first, which is the terminal's own and says
-    // nothing about what is running in this pane.
+    // claude's variable alone comes from the terminal and says nothing about
+    // what runs in this pane.
     let out = adopt(
         &amx,
         "read-as-claude-c3d",
@@ -2097,8 +1920,8 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
         "and the variable that would have said which pi conversation: {why}"
     );
 
-    // Both variables, which is what a pi started from that terminal really
-    // carries: its own session id, and the one it inherited.
+    // A pi started from that terminal has both: its own id and the inherited
+    // one.
     let id = "their-own-pi-a1b";
     let out = adopt(
         &amx,
@@ -2144,13 +1967,12 @@ fn adopt_takes_the_pi_in_the_pane_over_and_not_the_claude_in_the_terminal() {
 
 #[test]
 fn an_adopted_pi_streams_what_it_is_saying_to_the_record_the_hook_named() {
-    // A pane amx did not start carries no `AMX_DIR`, so the extension had
-    // nowhere to stream to and a working adopted pi's row was blank for the
-    // whole turn. The hook answers every report with the record's directory
-    // now; the stand-in keeps the answer the way the extension does and
-    // streams there.
+    // A pane amx did not start has no `AMX_DIR`, so the extension had nowhere
+    // to stream and an adopted pi's row stayed blank all turn. The hook now
+    // answers each report with the record's directory, and the stand-in, like
+    // the extension, streams there.
     let amx = Harness::new();
-    // The stats line under the box, which the idle screen ends on.
+    // `(auto)` is on the stats line, which the idle screen ends on.
     let pane = a_pi_started_by_hand(&amx, "streams-an-answer", THEIR_PI, "(auto)");
     let id = "their-own-pi-a1b";
     let out = adopt(&amx, id, &pane, &[("PI_SESSION_ID", THEIR_PI)]);
@@ -2189,23 +2011,17 @@ fn an_adopted_pi_streams_what_it_is_saying_to_the_record_the_hook_named() {
 
 #[test]
 fn a_beating_pi_is_working_past_the_window_and_unknown_once_the_beating_stops() {
-    // What a vendor reported is believed for `FRESH` seconds and then the pane
-    // is read instead. A turn sends nothing between its tool calls, so a
-    // forty-second call leaves the record quiet for forty seconds — and the
-    // screen under it is not always one a rule claims, because the two things
-    // a mid-turn pi is recognised by, the braille frames and the stats line,
-    // are both an extension's to redraw. A turn that was plainly still going
-    // read `unknown` from ten seconds in.
+    // A vendor report is trusted for `FRESH` seconds, then the pane is read.
+    // A turn is silent during a tool call, and an extension can redraw both
+    // mid-turn markers (the braille frames and the stats line), so a long
+    // call read `unknown` after ten seconds.
     //
-    // The extension is alive for as long as the turn is, so it beats beside
-    // the record to say so, and a reader told the turn goes on does not ask
-    // the pane. Neither pane below is asked anything it can answer: with no
-    // screen step in either timeline the stand-in draws not one of pi's
-    // screens, and what is on both panes is the line it opens with.
+    // The extension beats beside the record while the turn runs, and a reader
+    // that sees the beat skips the pane. Neither timeline has a screen step,
+    // so both panes show only the stand-in's opening line and no rule matches.
     let amx = Harness::new();
 
-    // One pi beating for longer than this test can take to read it, so what it
-    // reads is never a beat that stopped while it was looking.
+    // Beats for about 20 seconds, longer than the test needs.
     let beating = "fix-login-a1b";
     let mut steps = String::from("hook session_start {}\nhook agent_start {}\n");
     for _ in 0..50 {
@@ -2214,8 +2030,7 @@ fn a_beating_pi_is_working_past_the_window_and_unknown_once_the_beating_stops() 
     steps.push_str("sleep 600000\n");
     start_playing(&amx, beating, &timeline(&amx, beating, &steps));
 
-    // And one whose beating stopped mid-turn with nothing else said, which is
-    // a record no side is speaking for any more.
+    // Stops beating mid-turn without reporting anything else.
     let stopped = "fix-logout-c3d";
     let ended = timeline(
         &amx,
@@ -2228,16 +2043,14 @@ fn a_beating_pi_is_working_past_the_window_and_unknown_once_the_beating_stops() 
     for id in [beating, stopped] {
         amx.until_state(id, "working");
     }
-    // Beating and then stopped, watched in that order: a file that is not
-    // there yet and one that has been taken away are the same empty directory,
-    // and only the second of them is what this half is about.
+    // Wait for the beat file to appear before waiting for it to go: before
+    // the first beat it is just as absent.
     let beat = amx.agent_dir(stopped).join("heartbeat");
     amx.until("the second pi to beat", || beat.exists().then_some(()));
     amx.until("and to stop beating", || (!beat.exists()).then_some(()));
 
-    // Both records now say a turn is running and that nothing has been heard
-    // for an hour, which is far outside the window a report is believed in.
-    // Whatever still speaks for one of them is the beat and nothing else.
+    // Both records: running, and silent for an hour, far past `FRESH`. Only
+    // the beat can keep either one working.
     for id in [beating, stopped] {
         amx.set_state(
             id,
@@ -2279,16 +2092,15 @@ fn a_beating_pi_is_working_past_the_window_and_unknown_once_the_beating_stops() 
 
 #[test]
 fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
-    // What pi says through its extension is what the record moves by, the way
-    // claude's hooks move a claude record: the session it opened and the file
-    // it keeps it in, the turn beginning, the tool it is running, and the
-    // turn settling with the answer on it. Nothing here is read off the pane.
+    // pi's extension moves the record the way claude's hooks do: the session
+    // and its file, turn start, the running tool, and turn end with the
+    // answer. Nothing is read from the pane.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "reports-a-turn");
 
-    // The row says the call with its command, off the transcript pi is
-    // writing as it goes, where the hook alone could only name the tool.
+    // The command comes from pi's transcript; the hook alone names only the
+    // tool.
     let agent = amx.until("the call to be on the row", || {
         let agent = status(&amx, id);
         (agent["summary"] == json!("bash cargo test")).then_some(agent)
@@ -2309,8 +2121,8 @@ fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
         "the answer came with the report: {agent}"
     );
 
-    // The session the report named is the record's, and so is the file pi
-    // keeps it in, which is the conversation amx reads back.
+    // The reported session and its file go on the record; `logs` reads that
+    // file back.
     let meta = amx.meta(id);
     let session = meta["session"]
         .as_str()
@@ -2332,8 +2144,7 @@ fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
         );
     }
 
-    // Which is what the verbs stand on: the answer comes back, the row
-    // carries its first sentence, and the conversation reads back whole.
+    // `result` and `logs` work from those reports.
     let out = amx.amx(&["result", id, "--timeout", "30"]);
     assert!(
         out.status.success(),
@@ -2355,10 +2166,9 @@ fn a_pi_reports_its_turn_and_the_record_moves_by_its_word() {
 
 #[test]
 fn a_pi_stopped_on_a_question_it_asked_reads_waiting_by_its_own_word() {
-    // An extension's prompt is the one stop pi reports: the prompt going up
-    // says the agent is waiting and what on, and the prompt closing says the
-    // turn goes on. The choices under the question are on the pane and
-    // nowhere else, and a reading fills them in beside the vendor's word.
+    // An extension's prompt is the one stop pi reports: opening it reports
+    // the question, closing it resumes the turn. The choices are only on the
+    // pane, and a reading adds them beside the reported question.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "reports-a-question");
@@ -2391,37 +2201,30 @@ fn a_pi_stopped_on_a_question_it_asked_reads_waiting_by_its_own_word() {
 
 #[test]
 fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
-    // #SX6QK58A. pi draws four screens it fires no event for — `/login`,
-    // `/trust`, `/model` and the startup trust gate — so what is on them
-    // reaches a record from the pane and from nowhere else. While which law a
-    // reading was under followed the vendor's `Hooks`, a reporting pi's every
-    // question counted as pi's own word, and the first of these to be read
-    // stood on the record for the rest of the run: driven live on 0.85.1, an
-    // agent stopped on the login box was still offering the startup gate's
-    // sentence, and `state` and `rule` moved under it with each screen.
+    // pi fires no event for four screens (`/login`, `/trust`, `/model` and
+    // the startup trust gate), so their questions reach the record only from
+    // the pane. When the vendor's `Hooks` decided whether a reading may
+    // replace a question, every question on a pi counted as reported and the
+    // first one read stuck: on pi 0.85.1 an agent on the login box still
+    // offered the startup gate's question while `state` and `rule` moved on.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let gates = timeline(
         &amx,
         "walks-its-own-gates",
-        // Three of pi's own screens, one pane, and not one word from the
-        // extension about any of them.
+        // Three of pi's screens on one pane, with no hook for any of them.
         "screen login\nsleep 8000\nscreen trust\nsleep 8000\nscreen dialog\nsleep 600000\n",
     );
     start_playing(&amx, id, &gates);
 
-    // Aged the way `a_quiet_pi` ages one: nothing heard for an hour, which is
-    // where the screen is the only witness there is. Nothing moves those
-    // stamps again — a reading writes with the observing hand — so every look
-    // below reads the pane.
+    // Silent for an hour, so only the screen is read. A reading does not
+    // refresh these stamps, so every look below reads the pane.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
     );
 
-    // The first question this agent was ever read on. Looked for rather than
-    // waited out, because a look is what puts a question on a record at all:
-    // the poll that finds it is the one that wrote it.
+    // Poll `status`: a look is what writes the question to the record.
     let agent = amx.until("the login box to reach the record", || {
         let agent = status(&amx, id);
         (agent["question"] == json!("Enter Cerebras API key")).then_some(agent)
@@ -2432,9 +2235,8 @@ fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
         "pi's own rule, out of pi's own document: {agent}"
     );
 
-    // The trust selector asks about the tree amx cut rather than anything a
-    // caller passed, and it asks it in its own title with the folder under it.
-    // This is the finding: the login box's sentence stood here.
+    // The trust selector's question is its title plus the directory. The
+    // login box's question used to stay on the record here.
     let dir = amx.home().to_string_lossy().to_string();
     let parent = dir.rsplit_once('/').expect("a parent folder").0.to_string();
     let agent = amx.until("the trust selector to take the pane", || {
@@ -2462,8 +2264,7 @@ fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
         "written down, rather than concluded and forgotten"
     );
 
-    // And a screen that does ask something puts what it asks where the
-    // question goes, however many screens this pane has held before it.
+    // Each later question replaces the one before.
     let agent = amx.until("the dialog to replace it", || {
         let agent = status(&amx, id);
         (agent["question"] == json!("Run echo hi?")).then_some(agent)
@@ -2478,19 +2279,16 @@ fn a_pi_driven_through_its_own_gates_offers_the_question_it_is_on() {
 
 #[test]
 fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
-    // The other half of the same law, and the reason it is not simply that the
-    // screen wins: what pi reports through `ui_prompt_start` is the title the
-    // caller passed, and what the pane carries is whatever pi drew of it. A
-    // reader that corrected one from the other would put amx's reading of a
-    // picture where the vendor's own account of itself was.
+    // The screen does not always win: `ui_prompt_start` carries the title the
+    // caller passed, while the pane shows whatever pi drew of it. A reading
+    // must not replace the reported words.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let reported = timeline(
         &amx,
         "reports-then-holds",
-        // The dialog on the pane says `Run echo hi?`; the extension reports
-        // the sentence the caller wrote. One screen, two accounts of it, and
-        // only one of them is the vendor's.
+        // The pane says `Run echo hi?` while the hook reports a different
+        // sentence.
         "screen boot\nhook session_start {}\nsleep 50\nhook agent_start {}\nscreen dialog\n\
          hook ui_prompt_start {\"kind\":\"confirm\",\"message\":\"Allow the bash tool?\"}\n\
          sleep 600000\n",
@@ -2503,9 +2301,8 @@ fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
     });
     assert_eq!(agent["state"], "waiting", "{agent}");
 
-    // Aged past the freshness window with the vendor's words on it, which is
-    // when a reader goes to the pane at all. The words are left exactly as the
-    // hook wrote them; what the reading adds is the choices under them.
+    // Age the record past `FRESH` so a reader looks at the pane. The reading
+    // keeps the hook's words and adds the choices.
     let mut aged = amx.state(id);
     aged["since"] = json!(1);
     aged["last_event"] = json!(1);
@@ -2539,9 +2336,8 @@ fn a_pi_that_reported_its_question_keeps_its_own_words_over_a_reading() {
 
 #[test]
 fn a_message_a_pi_takes_is_confirmed_by_its_own_word() {
-    // send waits for the vendor to say the text arrived, and pi says so with
-    // the agent_start its extension reports when the turn the message starts
-    // begins.
+    // send waits for the vendor to confirm the message. pi confirms with the
+    // `agent_start` its extension reports when the message's turn begins.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "reports-a-message");
@@ -2581,10 +2377,9 @@ fn a_message_a_pi_takes_is_confirmed_by_its_own_word() {
 
 #[test]
 fn a_message_a_pi_holds_behind_its_turn_is_queued_until_it_goes_in() {
-    // A message sent to a pi mid-turn is steered: held until the turn gets to
-    // it, and delivered with no new agent_start. The user message pi then
-    // starts is its one word that the text went in, and it is what takes the
-    // queued line off amx status (Saiful, 2026-09-18: the row never cleared).
+    // A message sent to pi mid-turn is steered: held until the turn reaches
+    // it and delivered with no new `agent_start`. pi's `message_start` is the
+    // only sign it went in, and must clear the queued line in `amx status`.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-message-mid-turn");
@@ -2622,11 +2417,9 @@ fn a_message_a_pi_holds_behind_its_turn_is_queued_until_it_goes_in() {
 
 #[test]
 fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
-    // The other half of the same word. A pi that never reports a turn
-    // beginning is a message amx cannot say arrived, and a caller told that
-    // it did would go on to wait out its own deadline on a turn nobody is
-    // taking. The pane here never leaves the prompt the last turn left it at,
-    // and nothing reports.
+    // With no turn start reported, amx cannot confirm delivery, and a caller
+    // told it succeeded would wait out its deadline for nothing. Here the
+    // pane stays at its prompt and nothing reports.
     let amx = Harness::new();
     let id = "fix-login-c3d";
     start(&amx, id, "takes-a-turn");
@@ -2661,8 +2454,8 @@ fn a_message_that_starts_no_turn_on_a_pi_is_a_send_that_says_so() {
 
 #[test]
 fn a_result_after_a_message_ends_on_the_turn_pi_reports_ending() {
-    // result waits for a turn that ended after the last message, and pi says
-    // one did with the agent_settled its extension reports, the answer on it.
+    // result waits for a turn that ended after the last message. pi reports
+    // one with `agent_settled`, which carries the answer.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "reports-a-message");
@@ -2710,11 +2503,9 @@ fn a_result_after_a_message_ends_on_the_turn_pi_reports_ending() {
 
 #[test]
 fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
-    // The half this verb must never get wrong. The answer on the record is the
-    // turn before the message's, and the turn `result` waits for after a
-    // message is the one after it. Nothing here reports a turn ending, so the
-    // wait ends on the caller's own deadline rather than on an answer that
-    // belongs to the turn before.
+    // The recorded answer belongs to the turn before the message, and after a
+    // message `result` must wait for the next turn. Nothing here reports a
+    // turn ending, so the wait ends on the caller's deadline.
     let amx = Harness::new();
     let id = "fix-login-c3d";
     start(&amx, id, "takes-a-turn");
@@ -2735,7 +2526,6 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
         }),
     );
 
-    // Before the message, the record's answer is the answer.
     let out = amx.amx(&["result", id, "--timeout", "30"]);
     assert!(
         out.status.success(),
@@ -2744,8 +2534,8 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ANSWERED);
 
-    // The message goes in front of the agent and is recorded before it is
-    // typed. The stand-in takes it and reports nothing.
+    // send records the message before typing it. The stand-in reports
+    // nothing.
     amx.amx(&["send", id, "and the tests?"]);
 
     let out = amx.amx(&["result", id, "--timeout", "1"]);
@@ -2770,27 +2560,21 @@ fn a_message_leaves_result_waiting_beside_the_answer_it_will_not_serve() {
 
 #[test]
 fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
-    // The walk that takes a vendor's chrome off a reading held claude's
-    // anchors against whatever pane it was handed, and pi's box, working
-    // directory and stats line carry not one of them: `amx logs` printed the
-    // vendor's own furniture back at somebody asking what the agent had been up
-    // to. Which anchors the walk holds is the record's to say, the same way the
-    // rules are.
+    // The walk that strips vendor chrome used claude's anchors on every pane,
+    // and pi's box, working directory and stats line match none of them, so
+    // `amx logs` printed pi's chrome. The record's vendor now picks the
+    // anchors, as it picks the rules.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-turn");
     let pane = amx.pane_of(id);
 
-    // The row a finished turn leaves and no earlier screen in this scenario
-    // carries, waited for on its own, with the rest of the screen read off that
-    // same capture.
     let rows = amx.until("the turn to be over", || {
         let rows = drawn(&amx, &pane);
         row_of(&rows, "Took").is_some().then_some(rows)
     });
 
-    // Everything above pi's own box, which is the whole of what the agent
-    // earned on this screen.
+    // The agent's output is everything above pi's box.
     let top = *borders(&rows)
         .first()
         .unwrap_or_else(|| panic!("pi's composer box: {rows:?}"));
@@ -2799,9 +2583,8 @@ fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
         work.pop();
     }
 
-    // Asked for exactly those rows: pi repaints its pane rather than appending
-    // to it, so a longer reading is the screens before this one, which tmux
-    // keeps in the pane's history.
+    // Ask for exactly those rows: pi repaints its pane, so any more would come
+    // from earlier screens in tmux's history.
     let out = amx.amx(&["logs", id, "--lines", &work.len().to_string()]);
     assert!(
         out.status.success(),
@@ -2821,12 +2604,10 @@ fn logs_cut_the_furniture_pi_drew_and_print_the_work_above_it() {
 
 #[test]
 fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
-    // The row pi spins is the vendor's, and which of its four messages is on
-    // it is not the agent's business either. The walk held the one message,
-    // so it cut that row while `Working...` was on it and printed it back at
-    // somebody the other three times: `amx logs` on a compacting turn opened
-    // with the vendor telling them it was compacting. On 0.85.1 an extension's
-    // message is in the top border, and goes with the box.
+    // The status line is pi's chrome whatever its message. The walk matched
+    // only `Working...`, so `amx logs` on a compacting turn printed pi's
+    // compaction line. On 0.85.1 an extension's message is in the top border
+    // and is cut with the box.
     for (what, scenario, message, _) in OTHER_STATUS_LINES {
         let amx = Harness::new();
         let id = "fix-login-a1b";
@@ -2838,8 +2619,7 @@ fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
             row_of(&rows, message).is_some().then_some(rows)
         });
 
-        // Everything above the row pi spins, which is the whole of what the
-        // agent earned on this screen.
+        // The agent's output is everything above the status line.
         let line = row_of(&rows, message).expect("the status line");
         let mut work: Vec<String> = rows[..line].to_vec();
         while work.last().is_some_and(String::is_empty) {
@@ -2866,10 +2646,9 @@ fn logs_cut_the_status_line_pi_spins_whatever_it_says_on_it() {
 
 #[test]
 fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
-    // The other half of the same key, from the other side: an agent already
-    // sitting on the screen. doctor asks whether amx could have answered the
-    // gate at all, which is now true of pi, so the remedy names the key that
-    // makes it never happen again rather than leaving it at attach and look.
+    // doctor checks whether amx could have answered the gate, which it now
+    // can for pi, so the remedy names the `trust` key instead of only saying
+    // to attach and look.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "stops-on-trust");
@@ -2878,8 +2657,7 @@ fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
     amx.until("the trust question to be drawn", || {
         row_of(&drawn(&amx, &pane), "Project trust")
     });
-    // Nothing heard for an hour and nothing outstanding, which is where the
-    // screen is the only witness there is on a vendor that reports nothing.
+    // Silent for an hour with nothing outstanding, so only the screen is read.
     amx.set_state(
         id,
         json!({ "state": "starting", "since": 1, "last_event": 1 }),
@@ -2895,16 +2673,15 @@ fn doctor_offers_the_trust_key_to_a_pi_stopped_on_its_folder_trust_screen() {
     );
 }
 
-/// Where the two files pi loads sit under this harness's home.
+/// The path of pi's opt-in subagent tool extension under home.
 fn pi_tool(amx: &Harness) -> PathBuf {
     amx.home().join(".pi/agent/extensions/amx-subagent.ts")
 }
 
-/// Doctor's lines about pi's hooks, in the order they were printed: whether
-/// each passed, and what it said.
+/// doctor's `hooks pi:` lines in print order, each with whether it passed.
 ///
-/// More than one now that pi can carry an opt-in wire, so a test about the
-/// tool reads the line naming the tool's own file rather than the first.
+/// There can be one per extension file, so a test picks the line naming its
+/// file.
 fn pi_hooks_lines(printed: &str) -> Vec<(bool, String)> {
     printed
         .lines()
@@ -2919,10 +2696,8 @@ fn pi_hooks_lines(printed: &str) -> Vec<(bool, String)> {
 
 #[test]
 fn setup_writes_pis_subagent_tool_only_when_it_is_asked_for() {
-    // The tool is a capability, not plumbing: `amx setup pi` wires what amx
-    // reads and stops there. `--subagent` is a person saying they want the
-    // agent to have it, and it lands as a file of its own so pi loads it on
-    // its own.
+    // `amx setup pi` installs only the reporting extension. `--subagent` opts
+    // into the tool, written as a separate file that pi loads on its own.
     let amx = Harness::new();
     let hook = amx.home().join(".pi/agent/extensions/amx.ts");
     let tool = pi_tool(&amx);
@@ -2958,13 +2733,11 @@ fn setup_writes_pis_subagent_tool_only_when_it_is_asked_for() {
         "the tool reports nothing itself: {written}"
     );
 
-    // Asked again, nothing is written and it says so.
     let out = amx.amx(&["setup", "pi", "--subagent"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{printed}");
     assert!(printed.contains("nothing to do"), "{printed}");
 
-    // Uninstall takes both back out, and names them.
     let out = amx.amx(&["uninstall"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{printed}");
@@ -2974,9 +2747,8 @@ fn setup_writes_pis_subagent_tool_only_when_it_is_asked_for() {
 
 #[test]
 fn setup_refuses_the_subagent_flag_for_a_vendor_that_carries_none() {
-    // The flag is the same on every vendor, so the one that has no such wire
-    // says so — and writes nothing at all, rather than wiring what was not
-    // asked for.
+    // The flag is accepted for every vendor, so one without a subagent tool
+    // refuses it and writes nothing.
     let amx = Harness::new();
 
     let out = amx.amx(&["setup", "claude", "--subagent"]);
@@ -2996,9 +2768,8 @@ fn setup_refuses_the_subagent_flag_for_a_vendor_that_carries_none() {
 
 #[test]
 fn doctor_judges_the_opt_in_wire_only_where_it_stands() {
-    // An absent tool file is a machine that never asked, which is not a fault
-    // and not something to send anybody to fix. One that is there and stale
-    // is: amx wrote it, and the verb it calls has moved on.
+    // A missing tool file means nobody opted in, which is not a fault. A
+    // stale one is: amx wrote it, and the verb it calls has changed.
     let amx = Harness::new();
     amx.config("agent = \"pi\"\n");
     let tool = pi_tool(&amx);
@@ -3016,8 +2787,8 @@ fn doctor_judges_the_opt_in_wire_only_where_it_stands() {
         .unwrap_or_else(|| panic!("doctor said nothing about the tool:\n{printed}"));
     assert!(named.0, "the tool this amx ships is green: {}", named.1);
 
-    // An older amx's file is amx's, and doctor says so with the verb that
-    // writes it again.
+    // A file from an older amx fails, and the remedy is the command that
+    // rewrites it.
     std::fs::write(&tool, "// installed by amx\n// an older one\n").unwrap();
     let printed = String::from_utf8_lossy(&amx.amx(&["doctor"]).stdout).into_owned();
     let named = pi_hooks_lines(&printed)
@@ -3030,7 +2801,6 @@ fn doctor_judges_the_opt_in_wire_only_where_it_stands() {
         "and the remedy names the flag: {printed}"
     );
 
-    // With the file gone, doctor says nothing about it at all.
     std::fs::remove_file(&tool).unwrap();
     let printed = String::from_utf8_lossy(&amx.amx(&["doctor"]).stdout).into_owned();
     assert!(
