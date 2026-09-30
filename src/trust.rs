@@ -1,70 +1,34 @@
 //! Answering a vendor's folder-trust screen for a linked worktree.
 //!
-//! A vendor asks once per folder it has never worked in — claude's wording is
-//! "Is this a project you created or one you trust?" — and it draws that
-//! question in front of the session every hook comes from, so no hook can
-//! report it. An agent that meets the screen sits on it until somebody
-//! attaches and answers.
+//! A vendor asks once per new folder whether it is trusted, and draws that
+//! question before any hook fires, so an agent that meets it waits until
+//! somebody attaches. A linked worktree cut from a repository the person
+//! already works in needs no decision, so amx answers for it. [`answers_for`]
+//! names each vendor's answer:
 //!
-//! A linked worktree, cut a second ago by amx or by whatever pointed amx at
-//! it, inside a repository the person is already working in, is the one case
-//! where there is nothing to decide. So amx answers it, and [`answers_for`]
-//! is where each vendor's answer is written
-//! down — because the two amx has measured are not the same act:
+//! - [`Answer::Store`]: an entry in the vendor's own trust file, written by
+//!   [`seed`] and kept after the run (claude).
+//! - [`Answer::Flag`]: a flag on the vendor's argv that lasts one run and
+//!   writes nothing (pi's `--approve`, added by `spawn`).
 //!
-//! * [`Answer::Store`] is an entry in the vendor's own file, written by this
-//!   module and still there long after the run. claude's, measured below.
-//! * [`Answer::Flag`] is a word on the argv of the process amx was starting
-//!   anyway, spent the moment that process exits and writing nothing of
-//!   anybody's. pi's `--approve`, put on the command line by `spawn`.
+//! Both need the config's `trust` key. The store is written only for a linked
+//! worktree, whether amx cut it or something else did (`workflow run` passes
+//! its own trees with `--no-worktree`). The repository itself and plain
+//! directories are refused.
 //!
-//! Both stand behind the same consent, given once in the config's `trust` key,
-//! because both say the same thing to the vendor: load what this repository
-//! keeps in it without asking. Which is also why neither is offered for a
-//! vendor whose answer nobody has measured — [`answers_for`] names the vendors
-//! it has, and a law in the tests keeps the table from growing one it has not.
+//! The store, as of claude 2.1.237 (re-check on every vendor bump):
 //!
-//! The store write answers for a linked worktree and nothing else: the tree
-//! amx cut, or one somebody else cut and pointed amx at with `--no-worktree`,
-//! which is how `workflow run` dispatches every worker and reader. Either is
-//! by construction derived from a repository, and that provenance is the whole
-//! of the argument for answering: a tree that exists only because a repository
-//! does is not a folder anybody chose to trust or distrust on its own. What
-//! stays refused is the repository itself, whose entry is the person's own
-//! consent to their own checkout, and a plain directory, which is derived from
-//! nothing and could hold anything.
+//! - It is `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`.
+//! - The entry is `projects["<dir>"].hasTrustDialogAccepted: true`.
+//! - A linked worktree inherits the trust of its repository, so [`seed`] writes
+//!   nothing when the repository is already trusted.
+//! - With an untrusted repository, a tree carrying a `.claude/settings.json`
+//!   that pre-approves tools still gets a permissions prompt; only the
+//!   repository's own entry silences it, and amx does not write that.
 //!
-//! Whether the agent being launched asks the question at all is the table's to
-//! say, and it is asked before any of this: a vendor with no folder-trust
-//! screen would get an entry written in somebody's file for a screen that is
-//! never drawn.
-//!
-//! Everything from here down is the store, measured on claude 2.1.237, and is
-//! the vendor's own file, so re-measure it at every vendor bump:
-//!
-//! * The store is `$CLAUDE_CONFIG_DIR/.claude.json`, and `~/.claude.json`
-//!   when that variable is unset. Both were watched being written.
-//! * The entry is `projects["<dir>"].hasTrustDialogAccepted: true`. That is
-//!   the vendor's own instruction, printed verbatim when it drops
-//!   project-scoped settings from a workspace nobody has trusted.
-//! * A linked worktree also inherits the trust of the repository it belongs
-//!   to, so a tree in a repository the person has already trusted needs no
-//!   entry at all — which is why [`seed`] looks before it writes, and why
-//!   the store does not grow an entry per agent on the usual day.
-//!
-//! One measured limit stays: where the tree carries a `.claude/settings.json`
-//! that pre-approves tool permissions, and the *repository* has never been
-//! trusted, the vendor still asks about those permissions. Only the
-//! repository's own entry silences that, and pre-approving somebody else's
-//! tool permissions in a repository they have never opened is not a decision
-//! amx makes for them. The trust screen itself is gone either way.
-//!
-//! The three rules `install` holds over settings.json hold here too: nothing
-//! is touched without a copy of the file as it was, foreign keys are carried
-//! through untouched, and a file amx cannot parse is a file amx does not
-//! write. The round trip costs key order — this file is re-printed the way
-//! serde prints it — which is what the copy is for, and what the vendor
-//! undoes on its own next write.
+//! Like `install`, edits keep a backup of the file as it was, carry foreign
+//! keys through, and refuse a file that does not parse. Key order is lost in
+//! the round trip; the vendor restores its own order on its next write.
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -77,101 +41,68 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::vendor::{Capability, Vendor};
 use crate::{install, registry, worktree};
 
-/// The vendor the store was measured off: its file, its two keys, and the lock
-/// it takes while it writes.
-///
-/// Which vendors have a folder-trust screen at all is the table's to say, and
-/// [`answers_for`] asks it. This name is the other half of the question — the
-/// one vendor whose store amx has watched being written — and a law in the
-/// tests keeps the two from drifting apart.
+/// The vendor whose trust store amx writes.
 const CLAUDE: &str = "claude";
 
-/// The vendor whose screen amx answers on the argv instead of in a file.
+/// The vendor whose trust screen amx answers with a flag.
 const PI: &str = "pi";
 
-/// The flag pi answers it with, and every spelling that already settles the
-/// question for a run.
+/// pi's answering flag, and every spelling that already settles trust for a
+/// run.
 ///
-/// Measured at pi 0.84.4 on 2026-09-05, in the vendor's own words, and read
-/// again at 0.85.1 on 2026-09-06 where only a line number moved. `--help`
-/// documents `--approve, -a` as "Trust project-local files for this run" and
-/// `--no-approve, -na` as ignoring them; `dist/cli/args.js:205-209` reads all
-/// four into `projectTrustOverride`, and `dist/main.js:575` (574 at 0.84.4)
-/// takes an override as the whole answer, so the screen is never drawn. Nothing is written for
-/// it: pi keeps its saved decisions in `~/.pi/agent/trust.json`, which
-/// docs/security.md names and an override never reaches.
-///
-/// Both spellings of both flags, because whichever of the four somebody wrote
-/// has already said what this run does about the folder.
+/// pi 0.84.4 and 0.85.1 document `--approve, -a` ("Trust project-local files
+/// for this run") and `--no-approve, -na`. Any of the four overrides the
+/// screen, and none of them writes pi's saved decisions in
+/// `~/.pi/agent/trust.json`.
 const APPROVE: &str = "--approve";
 const AS_GOOD_AS: &[&str] = &[APPROVE, "-a", "--no-approve", "-na"];
 
-/// How amx answers a folder-trust screen, for the vendors whose answer it has
-/// measured.
-///
-/// Two acts that are not interchangeable, which is why the shape says which
-/// one this is rather than a bare yes: one leaves an entry in a file of the
-/// person's, the other is spent on the run it was written for.
+/// How amx answers a vendor's folder-trust screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
-    /// An entry in the vendor's own trust store, which [`seed`] writes.
+    /// An entry in the vendor's trust store, written by [`seed`].
     Store,
-    /// A flag on the argv of the process amx is starting anyway.
+    /// A flag on the argv of the process amx starts.
     Flag(Flag),
 }
 
 /// A folder-trust screen answered on the command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flag {
-    /// What amx writes to answer it.
+    /// The flag amx adds.
     pub send: &'static str,
-    /// Every spelling that already settles project trust for this run, this
-    /// flag's own included. An argv carrying one of them has said what to do
-    /// about the folder, and amx is not the one to say it a second time — a
-    /// `--approve` written after somebody's own `--no-approve` would overrule
-    /// them rather than answer anything.
+    /// Every spelling that already settles trust for the run, `send`
+    /// included. When the argv carries one, amx adds nothing.
     pub settled: &'static [&'static str],
 }
 
-/// How long amx waits for the vendor's lock before leaving the file alone,
-/// and how often it looks again while it waits.
+/// How long to wait for the vendor's lock, and how often to retry.
 const PATIENCE: Duration = Duration::from_secs(2);
 const RETRY: Duration = Duration::from_millis(20);
 
-/// When a lock nobody has refreshed counts as abandoned. The vendor's own
-/// threshold, so that amx judges an orphan the way the vendor judges one.
+/// Age at which an untouched lock counts as abandoned; the vendor's own
+/// threshold.
 const STALE: Duration = Duration::from_secs(10);
 
-/// The vendor's config file, and the two keys inside it that decide the
-/// screen.
+/// The store's file name and the two keys that decide the screen.
 const STORE: &str = ".claude.json";
 const PROJECTS: &str = "projects";
 const ACCEPTED: &str = "hasTrustDialogAccepted";
 
-/// The variable that moves the whole file somewhere else.
+/// Moves the store to another directory.
 const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
-/// Whether the agent about to be launched is one amx can answer for, however
-/// it answers.
-///
-/// The question `doctor` asks, because what it offers on a folder-trust gate
-/// is the config key, and the key covers both answers. Whether answering means
-/// writing anything is [`writes_a_store`], and the two are separate questions:
-/// a caller that asks this one before it writes claude's file would write it
-/// for every vendor amx can answer for.
+/// Whether amx can answer the trust screen of `agent`, by either answer.
 pub fn is_vendor(agent: &str) -> bool {
     answer_for(agent).is_some()
 }
 
-/// Whether answering this agent's screen means writing the vendor's own trust
-/// store — the one answer that leaves something behind in the person's files,
-/// and so the only one [`seed`] is about.
+/// Whether answering `agent`'s screen means writing the vendor's trust store.
 pub fn writes_a_store(agent: &str) -> bool {
     matches!(answer_for(agent), Some(Answer::Store))
 }
 
-/// The flag that answers this agent's screen on the argv of the process amx is
-/// starting anyway, for an agent answered that way and `None` for any other.
+/// The argv flag that answers `agent`'s screen, if it is answered that way.
 pub fn flag_for(agent: &str) -> Option<Flag> {
     match answer_for(agent)? {
         Answer::Flag(flag) => Some(flag),
@@ -179,16 +110,10 @@ pub fn flag_for(agent: &str) -> Option<Flag> {
     }
 }
 
-/// How amx answers this vendor's folder-trust screen, and `None` where it
-/// cannot.
+/// How amx answers `vendor`'s folder-trust screen, or `None`.
 ///
-/// Two questions, in this order. The table says whether the vendor draws the
-/// screen at all, and a vendor that does not is one amx would be answering
-/// nothing for. Then the name says which answer amx measured off it, because
-/// the answer is the vendor's own and there is no answering a screen in
-/// general: a vendor that claims the capability and is not named here is one
-/// amx would leave sitting on the question, and the law in the tests is what
-/// says so on the day one arrives in the table.
+/// The vendor must declare [`Capability::Trust`] and be one whose answer amx
+/// knows; a test fails when a vendor claims the capability without one.
 pub fn answers_for(vendor: &Vendor) -> Option<Answer> {
     if !vendor.can(Capability::Trust) {
         return None;
@@ -203,16 +128,14 @@ pub fn answers_for(vendor: &Vendor) -> Option<Answer> {
     }
 }
 
-/// The same, for the command an agent runs rather than the entry behind it.
 fn answer_for(agent: &str) -> Option<Answer> {
     registry::entry(agent).and_then(answers_for)
 }
 
-/// Where the store is for an agent that will run with `env`.
+/// The store path for an agent that will run with `env`.
 ///
-/// The agent's own environment rather than amx's, because it is the agent
-/// that will read the file. An empty variable reads as unset, which is what a
-/// shell that exports `FOO=` produces.
+/// Read from the agent's environment, since the agent reads the file. An empty
+/// variable counts as unset.
 pub fn store_in(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     let set = |key: &str| env.get(key).filter(|value| !value.is_empty());
     set(CONFIG_DIR)
@@ -220,12 +143,8 @@ pub fn store_in(env: &BTreeMap<String, String>) -> Option<PathBuf> {
         .map(|dir| Path::new(dir).join(STORE))
 }
 
-/// The key the vendor looks a folder up by.
-///
-/// It asks the operating system where it is running and gets a path with
-/// every symlink already resolved, so amx resolves the same way or writes an
-/// entry nothing will ever match. A path that will not resolve is used as it
-/// stands.
+/// The key the vendor looks `dir` up by: the path with symlinks resolved, or
+/// `dir` as given when it does not resolve.
 pub fn key_for(dir: &Path) -> String {
     std::fs::canonicalize(dir)
         .unwrap_or_else(|_| dir.to_path_buf())
@@ -233,13 +152,13 @@ pub fn key_for(dir: &Path) -> String {
         .into_owned()
 }
 
-/// Whether the store already lets an agent work in `dir` without asking.
+/// Whether `store` already trusts `dir`.
 pub fn trusted(store: &Value, dir: &Path) -> bool {
     store[PROJECTS][key_for(dir)][ACCEPTED] == Value::Bool(true)
 }
 
-/// Say that `dir` is trusted, leaving every other key exactly as it was, and
-/// answer whether anything needed saying.
+/// Mark `dir` trusted, leaving every other key as it was. Returns whether
+/// anything changed.
 pub fn merge(store: &mut Value, dir: &Path) -> bool {
     if !readable(store, dir) || trusted(store, dir) {
         return false;
@@ -258,16 +177,14 @@ pub fn merge(store: &mut Value, dir: &Path) -> bool {
     true
 }
 
-/// Answer the screen for `tree`, and say whether that took writing anything.
+/// Answer the trust screen for `tree`. Returns whether the store was written.
 ///
-/// `inherits` is the repository the tree belongs to: the vendor resolves a
-/// linked worktree to it, so a repository somebody has already trusted covers
-/// every tree amx cuts inside it and there is nothing to write.
+/// `inherits` is the repository the tree belongs to; when it is already
+/// trusted, the tree is covered and nothing is written.
 pub fn seed(store: &Path, tree: &Path, inherits: Option<&Path>, now: u64) -> Result<bool> {
     seed_within(store, tree, inherits, now, PATIENCE)
 }
 
-/// The same, with the wait for the vendor's lock named.
 fn seed_within(
     store: &Path,
     tree: &Path,
@@ -275,7 +192,7 @@ fn seed_within(
     now: u64,
     patience: Duration,
 ) -> Result<bool> {
-    // A tree amx cut is known by its path alone; any other is asked of git.
+    // An amx tree is known by its path; any other is asked of git.
     if !worktree::is_amx_tree(tree) && !worktree::is_linked(tree) {
         bail!(
             "{} is not a linked worktree, so its trust is not amx's to answer",
@@ -283,9 +200,8 @@ fn seed_within(
         );
     }
 
-    // Looked at before the lock is asked for: the ordinary spawn is into a
-    // repository somebody has trusted already, and standing in the vendor's
-    // way to find out there is nothing to do would be a poor trade.
+    // Checked before taking the lock: usually the repository is trusted and
+    // there is nothing to write.
     if covers(store, tree, inherits)? {
         return Ok(false);
     }
@@ -297,8 +213,7 @@ fn seed_within(
         );
     };
 
-    // Read again inside the lock: what was looked at a moment ago is what the
-    // vendor may have been in the middle of replacing.
+    // Re-read under the lock: the vendor may have rewritten it meanwhile.
     let existing = read(store)?;
     let mut document = existing.clone().unwrap_or_else(|| json!({}));
     if covered(&document, tree, inherits) {
@@ -308,9 +223,8 @@ fn seed_within(
         bail!("{} is not a trust store amx can read", store.display());
     }
 
-    // A taker preempted between judging some earlier lock abandoned and
-    // sweeping it can have caught this one and conceded it to a third; a
-    // store rewritten on a lock no longer held loses that holder's changes.
+    // A preempted sweep can hand this lock to another taker; writing on a lock
+    // no longer held would lose that holder's changes.
     if !held.holds() {
         bail!(
             "{} is being written by {CLAUDE}, so amx left it alone",
@@ -323,16 +237,11 @@ fn seed_within(
     Ok(true)
 }
 
-/// Take `tree`'s entry back out of the store, and say whether there was one.
+/// Remove `tree`'s entry from the store. Returns whether there was one.
 ///
-/// [`seed`] run backwards, and under the same lock, for the same reason: the
-/// vendor writes a project entry for every directory it is ever started in,
-/// and amx cuts a tree per agent, so a store nobody prunes grows a key for
-/// each one and keeps it long after the tree it names has gone.
-///
-/// Only ever the tree's own key. The repository's entry is the person's own
-/// consent to their own checkout, given whether or not amx ever wrote it, and
-/// it covers every tree amx has yet to cut in there.
+/// The vendor adds an entry for every directory it starts in, so without this
+/// the store keeps a key for every tree amx ever cut. Only the tree's own key
+/// is removed; the repository's entry is the person's.
 pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     if !worktree::is_amx_tree(tree) {
         bail!(
@@ -342,9 +251,7 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     }
     let key = key_for(tree);
 
-    // Looked at before the lock is asked for, the way seeding does: the usual
-    // stop has nothing to remove, and standing in the vendor's way to find
-    // that out would be a poor trade.
+    // Checked before taking the lock: usually there is nothing to remove.
     if !read(store)?.is_some_and(|looked| names(&looked, &key)) {
         return Ok(false);
     }
@@ -356,8 +263,7 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
         );
     };
 
-    // Read again inside the lock: what was looked at a moment ago is what the
-    // vendor may have been in the middle of replacing.
+    // Re-read under the lock: the vendor may have rewritten it meanwhile.
     let Some(mut document) = read(store)? else {
         return Ok(false);
     };
@@ -369,9 +275,8 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
         .expect("an object")
         .remove(&key);
 
-    // A taker preempted between judging some earlier lock abandoned and
-    // sweeping it can have caught this one and conceded it to a third; a
-    // store rewritten on a lock no longer held loses that holder's changes.
+    // A preempted sweep can hand this lock to another taker; writing on a lock
+    // no longer held would lose that holder's changes.
     if !held.holds() {
         bail!(
             "{} is being written by {CLAUDE}, so amx left it alone",
@@ -384,18 +289,10 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     Ok(true)
 }
 
-/// The trees amx cut that the store still names and the disk no longer has.
+/// The amx trees the store still names that no longer exist on disk, sorted.
 ///
-/// What [`forget_tree`] is for, read off a store that has been growing since
-/// before anything pruned it: a key per tree, each one a directory that went
-/// when the agent was stopped. Only keys shaped like a tree amx made are ever
-/// counted, and only where the path is not there any more — a tree still on
-/// disk is an agent still running, and every other key in the file is
-/// somebody's own.
-///
-/// A store the vendor has not written yet names nothing. One amx cannot read
-/// is an error rather than an empty list, because the two mean different
-/// things to whoever is about to be told there is nothing to prune.
+/// Only keys shaped like an amx tree count. A missing store names nothing; an
+/// unreadable one is an error.
 pub fn stale_trees(store: &Path) -> Result<Vec<PathBuf>> {
     let Some(document) = read(store)? else {
         return Ok(Vec::new());
@@ -412,24 +309,18 @@ pub fn stale_trees(store: &Path) -> Result<Vec<PathBuf>> {
     Ok(gone)
 }
 
-/// Whether a store amx has read carries a project entry under `key`. One that
-/// is not shaped the way the vendor writes one names nothing.
+/// Whether `store` has a project entry under `key`.
 fn names(store: &Value, key: &str) -> bool {
     store[PROJECTS]
         .as_object()
         .is_some_and(|projects| projects.contains_key(key))
 }
 
-/// Whether the vendor would let an agent into `dir` as the store stands,
-/// either by the directory's own entry or by that of the repository
+/// Whether the store trusts `dir`, directly or through the repository
 /// `inherits` names.
 ///
-/// A look and not a write, so it takes no lock and makes no file: `doctor`
-/// asks it about a directory before a caller starts a reader there, and what
-/// it answers is worth what the store said at the moment of reading, which is
-/// all a pre-flight can be worth. A store the vendor has not written yet
-/// covers nothing; one amx cannot read is an error rather than a no, because
-/// the two mean different things to whoever is deciding whether to start.
+/// Read-only: takes no lock and creates no file. A missing store covers
+/// nothing; an unreadable one is an error.
 pub fn covers(store: &Path, dir: &Path, inherits: Option<&Path>) -> Result<bool> {
     Ok(covered(
         &read(store)?.unwrap_or_else(|| json!({})),
@@ -438,45 +329,38 @@ pub fn covers(store: &Path, dir: &Path, inherits: Option<&Path>) -> Result<bool>
     ))
 }
 
-/// The same, off a store already read.
 fn covered(store: &Value, tree: &Path, inherits: Option<&Path>) -> bool {
     trusted(store, tree) || inherits.is_some_and(|repo| trusted(store, repo))
 }
 
-/// The lock the vendor holds while it writes, taken the vendor's own way.
+/// The vendor's write lock on the store, taken the way the vendor takes it.
 ///
-/// claude guards every write to this file with a directory beside it: whoever
-/// manages to make `<store>.lock` holds it, and one nobody has touched for
-/// [`STALE`] was left behind by a claude that died. amx takes the same lock
-/// the same way rather than writing behind the vendor's back — a claude in
-/// another pane saving its own session rewrites this whole document, and two
-/// writers who do not agree on a lock lose one of the two sets of changes.
+/// claude guards each write with a `<store>.lock` directory: whoever creates
+/// it holds it, and one untouched for [`STALE`] was left by a claude that
+/// died. amx takes the same lock, since another claude rewrites the whole
+/// document when it saves.
 struct Held {
     path: PathBuf,
     token: String,
 }
 
-/// The file inside the lock directory that names whose it is. Contents the
-/// vendor never looks at: it only ever asks whether the directory exists.
+/// The file in the lock directory naming its holder. The vendor only checks
+/// that the directory exists.
 const OWNER: &str = "owner";
 
-/// What came of naming the directory at a lock path.
+/// The outcome of marking a lock directory.
 enum Marked {
-    /// The marker landed, and the lock is this taker's.
+    /// The marker landed; the lock is this taker's.
     Held(Held),
-    /// There is no directory at the path to put a marker in. A sweep has one
-    /// aside for the moment it takes to judge it, and hands back what it
-    /// finds live, so this taker has a directory coming back to it.
+    /// No directory at the path: a sweep has it aside and will put back a live
+    /// one.
     Aside,
-    /// The directory there carries a marker already, so the lock is somebody
-    /// else's. A directory that will not take a marker for any other reason
-    /// reads the same way, that being the safe way to read it.
+    /// The directory already has a marker, or would not take one.
     Theirs,
 }
 
 impl Held {
-    /// Take it, or answer `None` when somebody else has it and will not let go
-    /// inside `patience`.
+    /// Take the lock, or `None` when someone else holds it past `patience`.
     fn take(store: &Path, patience: Duration, stale: Duration) -> Result<Option<Held>> {
         let path = lock_beside(store);
         if let Some(parent) = path.parent() {
@@ -485,11 +369,9 @@ impl Held {
         }
 
         let waiting = Instant::now();
-        // Set from the moment this taker makes a directory until a marker
-        // settles who the path belongs to. A directory made and not yet named
-        // is one nobody else will ever name, so it is not a thing to walk
-        // away from: whoever gave up on one left a lock at the vendor's own
-        // path that nobody holds and only the stale rule can clear.
+        // Set once this taker creates the directory and until a marker lands.
+        // Giving up then would leave a lock at the vendor's path that nobody
+        // holds and only the stale rule can clear.
         let mut unnamed = false;
         loop {
             match std::fs::create_dir(&path) {
@@ -500,14 +382,11 @@ impl Held {
             if unnamed {
                 match Held::mark(&path) {
                     Marked::Held(held) => return Ok(Some(held)),
-                    // A sweep has this taker's own directory aside while it
-                    // judges it. Look again at once rather than counting the
-                    // wait: what a sweep finds live it puts straight back,
-                    // and nobody but this taker is waiting to name it.
+                    // A sweep has our directory aside and will put it back;
+                    // retry at once without counting the wait.
                     Marked::Aside => continue,
-                    // A preempted sweep put the lock it had caught back over
-                    // this create before the marker landed. The path is that
-                    // holder's; wait for it like any other taker.
+                    // A preempted sweep restored its caught lock over our
+                    // create. That holder owns the path; wait like any taker.
                     Marked::Theirs => unnamed = false,
                 }
             }
@@ -522,16 +401,12 @@ impl Held {
         }
     }
 
-    /// Name the directory at `path` as this taker's, and say what was there to
-    /// name.
+    /// Mark the directory at `path` as this taker's.
     ///
-    /// The marker goes in with `create_new`, so of the two directories a
-    /// putback can interleave here — this taker's create, the caught lock a
-    /// sweep restores over it — exactly one ends up named, whichever won the
-    /// path. Making the directory alone proves nothing.
+    /// The marker is created with `create_new`, so when a sweep's putback races
+    /// this taker's create, exactly one directory ends up marked.
     fn mark(path: &Path) -> Marked {
-        // Unique among every taker there could be: two processes differ by
-        // pid, two takes within one process by the count.
+        // Unique per process by pid and within it by count.
         static TAKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nth = TAKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let token = format!("{}-{nth}", std::process::id());
@@ -547,8 +422,8 @@ impl Held {
             Err(_) => return Marked::Theirs,
         };
         if file.write_all(token.as_bytes()).is_err() {
-            // Half a marker would wedge every later taker until the stale
-            // sweep; better to stand aside whole.
+            // A partial marker would block every later taker until the stale
+            // sweep; remove it and stand aside.
             drop(file);
             let _ = std::fs::remove_file(&marker);
             return Marked::Theirs;
@@ -559,9 +434,8 @@ impl Held {
         })
     }
 
-    /// Whether the path is still this taker's: the sweep a preempted taker
-    /// runs can concede a live lock to a third in a narrow window, and the
-    /// marker is how the one conceded finds out before it writes the store.
+    /// Whether the lock is still this taker's. A preempted sweep can concede a
+    /// live lock to a third taker; the marker shows that before the write.
     fn holds(&self) -> bool {
         std::fs::read_to_string(self.path.join(OWNER)).is_ok_and(|named| named == self.token)
     }
@@ -569,7 +443,7 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        // Only a lock still this taker's is this taker's to give back.
+        // Release only a lock this taker still holds.
         if self.holds() {
             let _ = std::fs::remove_file(self.path.join(OWNER));
             let _ = std::fs::remove_dir(&self.path);
@@ -577,45 +451,38 @@ impl Drop for Held {
     }
 }
 
-/// Clear away a lock that reads as abandoned, without ever taking a live one.
+/// Remove a lock that looks abandoned without ever removing a live one.
 ///
-/// Judged stale and then removed are two acts, and the lock a plain remove
-/// meets may not be the lock the judgement was about: another taker can sweep
-/// and make a fresh lock of its own in between, and removing *that* leaves
-/// two writers each believing the store is theirs. So the lock is renamed
-/// aside first — to a name only this process uses, making whatever was caught
-/// this process's alone — and only then looked at. A catch that really is
-/// abandoned goes away; a live lock caught in the window between somebody's
-/// create and this rename goes straight back where it was, to the taker still
-/// waiting to name it.
+/// Between judging a lock stale and removing it, another taker can sweep it
+/// and create a fresh one. So the lock is first renamed aside to a name unique
+/// to this sweep and judged there: an abandoned one is deleted, a live one is
+/// renamed back for the taker waiting to mark it.
 fn sweep(path: &Path, stale: Duration) {
-    // Unique among every taker there could be: two processes differ by pid,
-    // two sweeps within one process by the count.
+    // Unique per process by pid and within it by count.
     static SWEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nth = SWEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let aside = path.with_file_name(format!("{name}.stale-{}-{nth}", std::process::id()));
     if std::fs::rename(path, &aside).is_err() {
-        // Somebody else swept or released it first; the path is theirs to
-        // have cleared, and the next create will find out.
+        // Someone else swept or released it first.
         return;
     }
     if !abandoned(&aside, stale) && std::fs::rename(&aside, path).is_ok() {
         return;
     }
-    // Truly abandoned — or a putback that lost its place, in which case the
-    // lock it held is already gone to whoever created meanwhile.
+    // Abandoned, or a putback that lost the path to a newer create; either way
+    // what is aside is nobody's.
     let _ = std::fs::remove_dir_all(&aside);
 }
 
-/// Where the vendor's lock for `store` goes.
+/// The vendor's lock path for `store`.
 fn lock_beside(store: &Path) -> PathBuf {
     let name = store.file_name().unwrap_or_default().to_string_lossy();
     store.with_file_name(format!("{name}.lock"))
 }
 
-/// Whether a lock has gone unrefreshed long enough to be nobody's. The vendor
-/// touches its own while it holds it, so age is the whole of the question.
+/// Whether `lock` has gone unmodified for `stale`. The vendor touches its lock
+/// while it holds it, so age is enough.
 fn abandoned(lock: &Path, stale: Duration) -> bool {
     std::fs::metadata(lock)
         .and_then(|found| found.modified())
@@ -626,9 +493,8 @@ fn abandoned(lock: &Path, stale: Duration) -> bool {
         })
 }
 
-/// Whether this document is shaped the way the vendor writes one, as far as
-/// the one entry amx is about to touch. Anything else is somebody's own file
-/// that happens to share a name.
+/// Whether `store` has the vendor's shape as far as `dir`'s entry: an object
+/// whose `projects` and entry, where present, are objects.
 fn readable(store: &Value, dir: &Path) -> bool {
     store.is_object()
         && store.get(PROJECTS).is_none_or(Value::is_object)
@@ -637,17 +503,15 @@ fn readable(store: &Value, dir: &Path) -> bool {
             .is_none_or(Value::is_object)
 }
 
-/// Copy the file aside before changing it, once.
+/// Copy the store aside before the first change amx ever makes to it.
 ///
-/// Once, and not once per spawn: the copy worth keeping is the file as it was
-/// before amx ever wrote in it, and a run of agents in a repository nobody has
-/// trusted would otherwise leave a copy of a large file behind for each one.
+/// One backup in total, since the copy worth keeping is the file before amx
+/// touched it.
 fn back_up(store: &Path, now: u64, exists: bool) -> Result<()> {
     if !exists || install::latest_backup(store)?.is_some() {
         return Ok(());
     }
-    // The name `install` reads back, so both of amx's edits to the vendor's
-    // files leave their copies the same way.
+    // The backup name `install` reads back.
     let name = store.file_name().unwrap_or_default().to_string_lossy();
     let backup = store.with_file_name(format!("{name}.amx-backup-{now}"));
     std::fs::copy(store, &backup)
@@ -655,7 +519,8 @@ fn back_up(store: &Path, now: u64, exists: bool) -> Result<()> {
     Ok(())
 }
 
-/// Read the store, telling "not there" from "not readable".
+/// Read the store: `None` when missing, an error when unreadable. An empty
+/// file reads as `{}`.
 fn read(path: &Path) -> Result<Option<Value>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -670,10 +535,9 @@ fn read(path: &Path) -> Result<Option<Value>> {
     Ok(Some(parsed))
 }
 
-/// Put the store back: readable by nobody else, and in one move.
+/// Write the store atomically with owner-only permissions.
 ///
-/// The vendor reads this file whenever it likes, including from another
-/// agent's pane, so it must never catch a half-written one.
+/// The vendor may read it at any moment, so it must never see a partial file.
 fn write(path: &Path, store: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -695,7 +559,7 @@ fn write(path: &Path, store: &Value) -> Result<()> {
     }
 }
 
-/// The half of the write that happens beside the file rather than to it.
+/// Write the temporary file beside the store.
 fn staged(part: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -714,8 +578,8 @@ mod tests {
     use crate::vendor::second::SECOND;
     use tempfile::TempDir;
 
-    /// A repository with a tree of amx's own in it, neither of them a real
-    /// git repository: what this module knows about a tree is its shape.
+    /// A repository path with an amx tree under it; neither is a git
+    /// repository.
     fn a_tree(dir: &TempDir) -> (PathBuf, PathBuf) {
         let repo = dir.path().join("app");
         let tree = repo.join(".amx/worktrees/fix-login-a1b");
@@ -734,8 +598,7 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(store).unwrap()).unwrap()
     }
 
-    /// git as the tests run it: none of the developer's own configuration,
-    /// and an identity of its own.
+    /// Run git with no user or system config and a fixed identity.
     fn git(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .current_dir(dir)
@@ -755,7 +618,7 @@ mod tests {
         );
     }
 
-    /// Somebody's own store, with two repositories and an account in it.
+    /// A person's store, with an account and another project in it.
     fn a_persons_store() -> Value {
         json!({
             "oauthAccount": { "accountUuid": "9a1e" },
@@ -780,11 +643,8 @@ mod tests {
 
     #[test]
     fn trust_tells_the_store_write_apart_from_the_screen_it_can_answer() {
-        // Two questions with one predicate between them until a second vendor
-        // answered its screen some other way. `new` asks which vendor's own
-        // file to write, and writing claude's for a pi agent is a file amx has
-        // no business touching; `doctor` asks whether amx could have answered
-        // the gate at all, which is what the config key it offers is about.
+        // `new` asks whether to write claude's file; `doctor` asks whether amx
+        // can answer the screen at all. pi answers yes to the second only.
         assert!(writes_a_store("claude") && is_vendor("claude"));
         assert!(!writes_a_store("pi") && is_vendor("pi"));
         assert!(!writes_a_store("mock-claude") && !is_vendor("mock-claude"));
@@ -796,9 +656,7 @@ mod tests {
 
     #[test]
     fn trust_answers_for_a_vendor_that_says_it_has_a_screen_and_no_other() {
-        // Whether there is a screen to answer is the table's to say, not a
-        // name's. A vendor that has none is one amx would be writing an entry
-        // for a question nobody asked it.
+        // The capability decides, not the vendor's name.
         let measured = registry::entry(CLAUDE).expect("the vendor amx measured");
         assert_eq!(answers_for(measured), Some(Answer::Store));
         assert_eq!(
@@ -813,11 +671,8 @@ mod tests {
 
     #[test]
     fn trust_names_an_answer_for_every_vendor_that_claims_the_screen() {
-        // The two answers are different acts on somebody's machine, so which
-        // one a vendor gets is measured off that vendor and written here by
-        // name. A vendor that claims the capability and is not named is an
-        // agent amx would leave sitting on the screen it said it could answer,
-        // and this is what says so on the day one arrives in the table.
+        // A vendor that claims the capability needs a known answer, or its
+        // agents sit on the screen. This fails when one is added without one.
         let answered: Vec<(&str, Option<Answer>)> = registry::entries()
             .iter()
             .filter(|vendor| vendor.can(Capability::Trust))
@@ -943,10 +798,8 @@ mod tests {
 
     #[test]
     fn trust_is_written_for_a_linked_worktree_somebody_else_cut() {
-        // The provenance the write stands behind is the tree's, not the
-        // layout's: a linked worktree is derived from a repository whoever
-        // cut it, and `workflow run` cuts its own and points amx at them. The
-        // checkout it belongs to is still the person's own to answer.
+        // Any linked worktree qualifies, whoever cut it (`workflow run` cuts
+        // its own). The checkout it belongs to is still refused.
         let dir = TempDir::new().unwrap();
         let repo = dir.path().join("app");
         std::fs::create_dir_all(&repo).unwrap();
@@ -985,7 +838,7 @@ mod tests {
         let (repo, tree) = a_tree(&dir);
         let store = dir.path().join(".claude.json");
         let mut before = a_persons_store();
-        // The tree already has an entry of the vendor's own making.
+        // The tree already has an entry the vendor wrote.
         before[PROJECTS][key_for(&tree)] = json!({ "lastSessionId": "2f7d", "allowedTools": [] });
         std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).unwrap();
 
@@ -1116,7 +969,7 @@ mod tests {
         let older = repo.join(".amx/worktrees/fix-auth-b2c");
         let mut before = a_persons_store();
         before[PROJECTS][key_for(&repo)] = json!({ ACCEPTED: true });
-        // The tree is still on disk, so its agent may still be running.
+        // Still on disk, so its agent may be running.
         before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true });
         for stopped in [&gone, &older] {
             before[PROJECTS][stopped.to_string_lossy().into_owned()] = json!({ ACCEPTED: true });
@@ -1164,7 +1017,7 @@ mod tests {
         before[PROJECTS][key_for(&tree)] = json!({ ACCEPTED: true });
         std::fs::write(&store, serde_json::to_string_pretty(&before).unwrap()).unwrap();
 
-        // Held by a claude that is saving its own session.
+        // A claude holding the lock while it saves.
         let lock = lock_beside(&store);
         std::fs::create_dir_all(&lock).unwrap();
 
@@ -1190,7 +1043,7 @@ mod tests {
         assert!(seed(&store, &tree, Some(&repo), 1).unwrap());
         assert!(!lock.exists(), "the vendor is left free to write again");
 
-        // Held by a claude that is saving its own session.
+        // A claude holding the lock while it saves.
         std::fs::create_dir_all(&lock).unwrap();
         let second = repo.join(".amx/worktrees/port-importer-c3d");
         std::fs::create_dir_all(&second).unwrap();
@@ -1230,7 +1083,7 @@ mod tests {
         assert!(!lock.exists());
     }
 
-    /// The lock a claude that died long ago left behind: present, and old.
+    /// Create `lock` with an old timestamp, as a claude that died leaves it.
     fn left_behind(lock: &Path) {
         std::fs::create_dir_all(lock).unwrap();
         let past = nix::sys::time::TimeSpec::new(1, 0);
@@ -1246,11 +1099,9 @@ mod tests {
 
     #[test]
     fn trust_two_sweeps_of_one_stale_lock_never_both_hold() {
-        // A lock left by a dead claude, and two spawns arriving at once.
-        // Judged stale and then swept are two acts, and the lock the sweep
-        // met was sometimes the fresh one the other taker had just made —
-        // after which both takers held, and two whole-document rewrites of
-        // the store lost one writer's changes.
+        // A stale lock and two takers at once. Judging a lock stale and
+        // sweeping it are separate steps, and a sweep could remove the fresh
+        // lock the other taker had just made, leaving both holding it.
         let dir = TempDir::new().unwrap();
         let store = dir.path().join(".claude.json");
         let lock = lock_beside(&store);
@@ -1281,13 +1132,11 @@ mod tests {
 
     #[test]
     fn trust_a_sweep_preempted_over_a_live_lock_never_makes_two_holders() {
-        // B holds a fresh lock. A judged the stale lock B has since replaced
-        // abandoned, was preempted, and its sweep now runs against what is
-        // really B's live lock — rename aside, look, put back. C is a third
-        // taker spinning at the take loop. C's create can land in A's aside
-        // window, and A's putback then replaces what C made: without an owner
-        // marker both B and C believe the store is theirs, and one of the two
-        // whole-document rewrites is lost.
+        // B holds a fresh lock. A judged the lock B replaced abandoned, was
+        // preempted, and now sweeps B's live lock (rename aside, check, put
+        // back). C spins on take. C's create can land while B's lock is aside,
+        // and A's putback then replaces C's directory. Without the owner
+        // marker both B and C would believe they hold the lock.
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let dir = TempDir::new().unwrap();
@@ -1326,22 +1175,16 @@ mod tests {
 
     #[test]
     fn trust_a_marker_that_cannot_land_says_which_of_the_two_it_met() {
-        // The marker fails to land for two unlike reasons, and a taker that
-        // cannot tell them apart leaves a lock at the vendor's path that
-        // nobody holds: a sweep judging some earlier lock stale catches this
-        // taker's fresh directory instead, and while it is aside the marker
-        // has nowhere to go. Read that as somebody else's path and the taker
-        // walks away from the one directory only it could ever name — and
-        // what the sweep hands back wears a timestamp too fresh for the stale
-        // rule to reach for another ten seconds, so every taker after it is
-        // told the vendor is writing.
+        // A marker can fail to land because a sweep has this taker's fresh
+        // directory aside, or because someone else marked it. Reading the
+        // first as the second would abandon a directory only this taker can
+        // mark, and its fresh timestamp keeps the stale rule off it for 10 s.
         let dir = TempDir::new().unwrap();
         let store = dir.path().join(".claude.json");
         let lock = lock_beside(&store);
         let aside = lock.with_file_name(".claude.json.lock.swept");
 
-        // Where a taker stands with its marker in hand: the directory made,
-        // and a sweep holding it aside to judge it.
+        // The directory created, and a sweep holding it aside.
         std::fs::create_dir_all(&lock).unwrap();
         std::fs::rename(&lock, &aside).unwrap();
         assert!(
@@ -1350,7 +1193,7 @@ mod tests {
              somebody else took"
         );
 
-        // Handed back, and still this taker's to name.
+        // Put back, and still this taker's to mark.
         std::fs::rename(&aside, &lock).unwrap();
         let held = Held::mark(&lock);
         assert!(
@@ -1358,7 +1201,7 @@ mod tests {
             "a directory nobody has named is there to be named"
         );
 
-        // And while that marker is in it, the directory is its taker's.
+        // Once marked, the directory is its taker's.
         assert!(
             matches!(Held::mark(&lock), Marked::Theirs),
             "the path is whoever's marker is in it"

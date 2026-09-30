@@ -1,31 +1,17 @@
-//! Whether the terminal amx is drawn on is a light one or a dark one.
+//! Whether the terminal the view is drawn on is light or dark.
 //!
-//! One question, asked once, so that `theme = "auto"` can name the palette
-//! that will be legible rather than the one somebody happened to configure on
-//! another machine. It exists because of a real screen: amx over ssh from a
-//! phone in light mode, painted in the dark palette, with the row under the
-//! cursor unreadable — an off-black bar under the terminal's own near-black
-//! text.
+//! Asked once at startup so `theme = "auto"` can pick a legible palette.
+//! Sources, in order:
 //!
-//! Two answers are asked for, in the order of how much they know:
+//! 1. The terminal's answer to xterm's OSC 10/11 colour queries. Terminals
+//!    that do not support them stay silent.
+//! 2. `COLORFGBG`, exported by a few terminals; it can be stale over ssh.
+//! 3. Otherwise dark.
 //!
-//! 1. **The terminal itself**, through the escape xterm answers its background
-//!    colour with. It is the only source that is about the terminal in front of
-//!    the person rather than about something they once set, and every terminal
-//!    that does not know the escape says nothing rather than something wrong.
-//! 2. **`COLORFGBG`**, which a handful of terminals export and the rest do not.
-//!    It is a fact about the shell's environment and may be a machine or two
-//!    stale over ssh, so it answers only where the terminal would not.
-//!
-//! And where neither says anything, dark — which is what amx painted for
-//! everybody before this file, and the background nearly every terminal opens
-//! on.
-//!
-//! The terminal is asked whatever the theme, because the colour it answers
-//! with is kept too — see [`remember`] — for the panes amx starts, which sit in
-//! detached tmux sessions no terminal answers. The shade still picks a palette
-//! only under `auto`: a theme named by hand is a decision already made, and
-//! this is not amx overruling it. See [`crate::theme::AUTO`].
+//! The terminal is asked whatever the theme, because its colours are also kept
+//! (see [`remember`]) for the panes amx starts in detached sessions, which no
+//! terminal answers for. The shade picks a palette only under
+//! [`crate::theme::AUTO`].
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -34,43 +20,34 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// What the terminal's background is, as far as anything could tell.
+/// Whether the terminal background is light or dark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shade {
     Light,
     Dark,
 }
 
-/// The escapes that ask a terminal what its foreground and background colours
-/// are: xterm's `OSC 10 ; ? ST` and `OSC 11 ; ? ST`, in one write, which every
-/// terminal amx has been drawn on either answers or ignores.
+/// xterm's `OSC 10 ; ? ST` and `OSC 11 ; ? ST`, asking for the foreground and
+/// background colours in one write.
 ///
-/// Both, because the panes amx starts are painted with both: codex asks the
-/// two together and tints nothing unless both are answered, and tmux answers
-/// the foreground only from a `window-style` that carries one.
+/// Both are asked because agent panes need both: codex tints nothing unless
+/// both are answered, and tmux answers the foreground only from a
+/// `window-style` that sets one.
 const ASK: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
 
-/// How long an answer is waited for.
+/// How long to wait for the answer.
 ///
-/// Long enough for a terminal at the far end of an ssh session on a phone, and
-/// short enough that a terminal which will never answer costs a fifth of a
-/// second once, at the moment the view is already clearing the screen. The
-/// wait ends the instant an answer lands, so the terminals that do answer pay
-/// none of it.
-///
-/// It is also how long somebody's own typing would be read by this rather than
-/// by the view, which is why the wait ends on the first byte that cannot be an
-/// answer as well: whatever a terminal sends back opens with an escape, and a
-/// letter arriving instead is a person at the keyboard and not a reply.
+/// Long enough for a slow ssh link; a terminal that never answers costs this
+/// once at startup. The wait ends as soon as the answer is complete, or on the
+/// first byte that is not an escape, since that is the person typing.
 const PATIENCE: Duration = Duration::from_millis(200);
 
-/// What one read waits, in tenths of a second, which is the unit a terminal
-/// measures `VTIME` in. Shorter than [`PATIENCE`] so the loop gets more than
-/// one look before it gives up.
+/// The `VTIME` of each read, in tenths of a second. Shorter than [`PATIENCE`]
+/// so the loop reads more than once.
 const TICK: u8 = 1;
 
-/// Whether this terminal is a light one, by what it answered [`asked`] with
-/// and then by its environment.
+/// The shade from the terminal's answer to [`asked`], else `COLORFGBG`, else
+/// dark.
 pub fn of_the_answer(answer: Option<&str>) -> Shade {
     answer
         .and_then(said)
@@ -78,32 +55,27 @@ pub fn of_the_answer(answer: Option<&str>) -> Shade {
         .unwrap_or(Shade::Dark)
 }
 
-/// The terminal's own answer, as the bytes it sent back.
+/// Ask the terminal for its colours and return what it sent back.
 ///
-/// Reads from the terminal, so it is called once, from the one place that has
-/// already taken the terminal into raw mode and has not yet started reading
-/// keys off it — see [`crate::tui::run`]. Anywhere else, the answer lands in
-/// the middle of somebody's typing.
+/// Call once, after the terminal is in raw mode and before keys are read (see
+/// [`crate::tui::run`]); otherwise the answer mixes with typed keys.
 ///
-/// `None` from a terminal that did not answer, one that is not a terminal at
-/// all, and one whose settings could not be read or put back — the last
-/// because a shade is not worth a terminal left in a state amx changed.
+/// `None` when stdin is not a terminal, keys are already waiting, or its
+/// settings could not be read or restored.
 pub fn asked() -> Option<String> {
     let input = std::io::stdin();
     let fd = input.as_fd();
     if !std::io::IsTerminal::is_terminal(&input) {
         return None;
     }
-    // Keys already waiting are somebody who started typing before the view
-    // was up. Asking now would read them as the answer and lose them, so the
-    // terminal goes unasked and the keys are left for the view.
+    // Keys typed before the view was up would be read as the answer and lost,
+    // so leave them for the view and do not ask.
     if pending(fd) {
         return None;
     }
 
-    // A read that comes back empty rather than waiting for a key. Raw mode
-    // leaves stdin blocking on one byte, and a terminal that never answers
-    // would hold the view at a blank screen until somebody pressed something.
+    // VMIN 0 with a VTIME timeout: raw mode blocks for one byte, and a
+    // terminal that never answers would hang the view.
     let settled = nix::sys::termios::tcgetattr(fd).ok()?;
     let mut timed = settled.clone();
     timed.control_chars[nix::sys::termios::SpecialCharacterIndices::VMIN as usize] = 0;
@@ -119,32 +91,28 @@ pub fn asked() -> Option<String> {
     answer
 }
 
-/// Whether anything is waiting to be read, without reading it.
+/// Whether input is waiting on `fd`, without reading it.
 fn pending(fd: BorrowedFd<'_>) -> bool {
     let mut waiting = nix::libc::pollfd {
         fd: std::os::fd::AsRawFd::as_raw_fd(&fd),
         events: nix::libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: one pollfd, owned here, and a timeout of nothing.
+    // SAFETY: one pollfd owned here, and a zero timeout.
     let ready = unsafe { nix::libc::poll(&mut waiting, 1, 0) };
     ready > 0 && waiting.revents & nix::libc::POLLIN != 0
 }
 
-/// Put the terminal's settings where they are asked for, saying whether it
-/// took.
+/// Apply terminal settings now. `None` on failure.
 fn set(fd: BorrowedFd<'_>, how: &nix::sys::termios::Termios) -> Option<()> {
     nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSANOW, how).ok()
 }
 
-/// Read until both answers are whole or the patience runs out.
+/// Read until two replies have ended or [`PATIENCE`] runs out.
 ///
-/// Whole is two terminators, one a reply, which is the one thing that says the
-/// rest is not still arriving: a colour is sent in one write by every terminal
-/// measured, and an answer cut in half reads as a darker colour than it is.
-/// Either terminator, because the two spellings are the same escape — see
-/// [`crate::ansi`], which reads them the same way. A terminal that answers the
-/// background alone is waited out, and its background is still what it said.
+/// A reply ends in BEL or ST (`ESC \`); [`crate::ansi`] treats them alike. A
+/// reply cut short would read as a darker colour. A terminal that answers only
+/// the background is waited out, and that answer is still returned.
 fn listen(input: &mut impl Read) -> Option<String> {
     let deadline = Instant::now() + PATIENCE;
     let mut heard = Vec::new();
@@ -155,9 +123,8 @@ fn listen(input: &mut impl Read) -> Option<String> {
             Ok(n) => heard.extend_from_slice(&bytes[..n]),
             Err(_) => return None,
         }
-        // Whatever a terminal sends back opens with an escape. Anything else
-        // is somebody at the keyboard, and going on reading would be this
-        // eating the keys they pressed while the view was still opening.
+        // A reply starts with ESC; anything else is the person typing, so stop
+        // before eating their keys.
         if heard.first() != Some(&b'\x1b') {
             break;
         }
@@ -170,18 +137,17 @@ fn listen(input: &mut impl Read) -> Option<String> {
     Some(String::from_utf8_lossy(&heard).into_owned())
 }
 
-/// What a terminal's answer says its background is.
+/// The shade of the background in a terminal's answer.
 pub fn said(answer: &str) -> Option<Shade> {
     let (red, green, blue) = colours_of(answer).1?;
     Some(shade_of(red.into(), green.into(), blue.into()))
 }
 
-/// A colour, a byte a channel.
+/// An RGB colour, one byte per channel.
 pub type Rgb = (u8, u8, u8);
 
-/// The foreground and the background a terminal's answer names, a byte a
-/// channel: the reply to `10` and the reply to `11`, in whichever order they
-/// arrived, and nothing for one that did not.
+/// The foreground (reply to `10`) and background (reply to `11`) in a
+/// terminal's answer, in either order. `None` for a reply that is missing.
 pub fn colours_of(answer: &str) -> (Option<Rgb>, Option<Rgb>) {
     let (mut foreground, mut background) = (None, None);
     for reply in answer.split("\x1b]") {
@@ -194,16 +160,10 @@ pub fn colours_of(answer: &str) -> (Option<Rgb>, Option<Rgb>) {
     (foreground, background)
 }
 
-/// The colour one reply names.
+/// The colour in one reply: `rgb:R/G/B`, each channel one to four hex digits,
+/// read as its top eight bits.
 ///
-/// The colour is written `rgb:` and then the three channels in hex, separated
-/// by slashes, each of them one to four digits wide — a terminal answering in
-/// 16 bits a channel and one answering in 8 are saying the same colour, so
-/// what is read is the top eight bits of whatever width arrived.
-///
-/// Anything else is nothing rather than a guess. An answer amx cannot read is
-/// a terminal amx has not measured, and painting a light palette onto a dark
-/// screen is worse than painting the one everybody had before.
+/// Any other format is `None`, so an unknown terminal falls back to dark.
 fn colour_of(reply: &str) -> Option<Rgb> {
     let channels: Vec<&str> = reply
         .strip_prefix("rgb:")?
@@ -217,11 +177,9 @@ fn colour_of(reply: &str) -> Option<Rgb> {
     Some((top(red)?, top(green)?, top(blue)?))
 }
 
-/// The top eight bits of one channel, however many digits it was written in.
+/// The top eight bits of a channel written in one to four hex digits.
 ///
-/// One digit is the odd one: `f` means the whole of the channel rather than
-/// the bottom sixteenth of it, so it is repeated into both nibbles the way X's
-/// own parser does, and `f` comes out 255 rather than 240.
+/// A single digit is repeated into both nibbles, as X parses it, so `f` is 255.
 fn top(digits: &str) -> Option<u8> {
     let value = u32::from_str_radix(digits, 16).ok()?;
     let top = match digits.len() {
@@ -234,12 +192,9 @@ fn top(digits: &str) -> Option<u8> {
     u8::try_from(top).ok()
 }
 
-/// Keep the colours the terminal answered with, for the panes amx starts, as
-/// the tmux style they are painted with: `fg=#rrggbb,bg=#rrggbb`, or
-/// `bg=#rrggbb` from a terminal that answered the background alone.
-///
-/// Written whole or not at all: a spawn reading it mid-write would paint a
-/// pane with half a colour.
+/// Save the terminal's colours as the tmux style for agent panes:
+/// `fg=#rrggbb,bg=#rrggbb`, or `bg=#rrggbb` when only the background was
+/// answered. Written atomically, since spawns read it.
 pub fn remember(state_root: &Path, foreground: Option<Rgb>, background: Rgb) -> Result<()> {
     let style = match foreground {
         Some(foreground) => format!("fg={},bg={}", hex(foreground), hex(background)),
@@ -256,11 +211,10 @@ fn hex((red, green, blue): Rgb) -> String {
     format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
-/// The tmux style last kept, `bg=#rrggbb` or `fg=#rrggbb,bg=#rrggbb`, or
-/// nothing where the file is missing or holds anything else.
+/// The saved tmux style, `bg=#rrggbb` or `fg=#rrggbb,bg=#rrggbb`, or `None`
+/// when the file is missing or malformed.
 ///
-/// A bare `#rrggbb` is what the view kept before it kept the foreground too,
-/// and is the background alone.
+/// A bare `#rrggbb` from older versions is read as the background.
 pub fn remembered(state_root: &Path) -> Option<String> {
     let kept = std::fs::read_to_string(crate::paths::background_file(state_root)).ok()?;
     let kept = kept.trim();
@@ -276,19 +230,17 @@ pub fn remembered(state_root: &Path) -> Option<String> {
     is_hex(background.strip_prefix("bg=")?).then(|| kept.to_string())
 }
 
-/// Whether text is one colour, `#` and six hex digits.
+/// Whether `text` is `#` and six hex digits.
 fn is_hex(text: &str) -> bool {
     text.strip_prefix('#')
         .is_some_and(|hex| hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// What `COLORFGBG` says the background is.
+/// The background shade `COLORFGBG` gives.
 ///
-/// Two or three fields, the background last: `0;15` is white behind black and
-/// `15;0` the other way about, and rxvt writes `0;default;15` with the cursor
-/// between them. The value is an ANSI index, and the light half of the sixteen
-/// is 7 and 9 through 15 — 8 is the bright black a dark scheme is built on and
-/// belongs with the dark ones.
+/// The background is the last field: `0;15` (light), `15;0` (dark), or rxvt's
+/// `0;default;15`. It is an ANSI index; 7 and 9 to 15 are light, and 8 (bright
+/// black) counts as dark.
 pub fn told(said: &str) -> Option<Shade> {
     let background: u8 = said.rsplit(';').next()?.trim().parse().ok()?;
     match background {
@@ -298,26 +250,24 @@ pub fn told(said: &str) -> Option<Shade> {
     }
 }
 
-/// The terminal's answer arriving after the wait, as the key loop reads it.
+/// Filters a terminal answer that arrives after [`PATIENCE`] out of the key
+/// stream.
 ///
-/// A terminal slower than [`PATIENCE`] still answers, and by then the view is
-/// reading keys: the escape that opens the answer comes through as alt and
-/// `]`, the rest as a key a character, and `:` and `/` among them would open a
-/// line on the list. This holds on to a run of keys for as long as it could
-/// still be an answer, drops it whole when it is one, and hands it back in
-/// order when it turns out to be somebody typing.
+/// A late answer reaches the key loop as alt-`]` followed by one key per
+/// character, and its `:` and `/` would trigger view commands. Keys are held
+/// while they could still be an answer, dropped when they are one, and handed
+/// back in order otherwise.
 #[derive(Default)]
 pub struct Late {
     held: Vec<KeyEvent>,
 }
 
-/// What an answer spells between the escape that opens it and its colour: the
-/// foreground's reply or the background's.
+/// The text between the opening escape and the colour, for each reply.
 const SPELT: [&str; 2] = ["10;rgb:", "11;rgb:"];
 
 impl Late {
-    /// The keys to act on now that this one has arrived, which is none while
-    /// a run is held and none when the run was an answer.
+    /// Feed one key and return the keys to act on now: none while a run is
+    /// held or when it turned out to be an answer.
     pub fn hear(&mut self, key: KeyEvent) -> Vec<KeyEvent> {
         if self.held.is_empty() {
             return match opens(&key) {
@@ -330,7 +280,7 @@ impl Late {
         }
         let spelt = self.spelt();
         if closes(&key) {
-            // Read the way a colour from the wait is read.
+            // Parsed the same way as an answer read during the wait.
             return match colours_of(&format!("\x1b]{spelt}\x07")) {
                 (Some(_), _) | (_, Some(_)) => {
                     self.held.clear();
@@ -348,23 +298,23 @@ impl Late {
         }
     }
 
-    /// Whether a run is held, waiting to see whether it is an answer.
+    /// Whether keys are being held.
     pub fn holding(&self) -> bool {
         !self.held.is_empty()
     }
 
-    /// The keys held, handed back because nothing more is coming: a run that
-    /// stops short of a terminator is somebody's typing.
+    /// Release the held keys when no more input is coming; a run without a
+    /// terminator was typed.
     pub fn let_go(&mut self) -> Vec<KeyEvent> {
         std::mem::take(&mut self.held)
     }
 
-    /// What the held run spells after the escape that opened it.
+    /// The characters held after the opening escape.
     fn spelt(&self) -> String {
         self.held[1..].iter().filter_map(plain).collect()
     }
 
-    /// The held run and this key after it, all of it somebody's typing.
+    /// Release the held keys followed by `key`.
     fn with(&mut self, key: KeyEvent) -> Vec<KeyEvent> {
         let mut keys = self.let_go();
         keys.push(key);
@@ -372,12 +322,12 @@ impl Late {
     }
 }
 
-/// Alt and `]`, which is how the escape opening an answer is read.
+/// Alt-`]`, the key the opening `ESC ]` of an answer reads as.
 fn opens(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char(']') && key.modifiers == KeyModifiers::ALT
 }
 
-/// Control and `g` for a bell, or alt and `\` for the other terminator.
+/// Ctrl-`g` (BEL) or alt-`\` (ST), the keys a terminator reads as.
 fn closes(key: &KeyEvent) -> bool {
     matches!(
         (key.code, key.modifiers),
@@ -385,7 +335,7 @@ fn closes(key: &KeyEvent) -> bool {
     )
 }
 
-/// The character a key is, when it is one typed with no chord.
+/// The character of a key pressed with no modifier other than shift.
 fn plain(key: &KeyEvent) -> Option<char> {
     match key.code {
         KeyCode::Char(c) if (key.modifiers - KeyModifiers::SHIFT).is_empty() => Some(c),
@@ -393,7 +343,7 @@ fn plain(key: &KeyEvent) -> Option<char> {
     }
 }
 
-/// Whether text could still grow into an answer's body.
+/// Whether `text` could still grow into a reply.
 fn could_be(text: &str) -> bool {
     SPELT.iter().any(|spelt| match text.strip_prefix(spelt) {
         Some(colour) => colour.chars().all(|c| c.is_ascii_hexdigit() || c == '/'),
@@ -401,12 +351,7 @@ fn could_be(text: &str) -> bool {
     })
 }
 
-/// Whether a colour is one to paint dark words on.
-///
-/// Rec. 709 luminance, which is the weighting that says green carries most of
-/// what an eye reads as brightness and blue almost none of it. Halfway is the
-/// cut: there is no third answer, and a terminal sitting exactly on the line is
-/// one either palette reads on.
+/// Light when the colour's Rec. 709 luminance is at least half.
 fn shade_of(red: u32, green: u32, blue: u32) -> Shade {
     let light = 2126 * red + 7152 * green + 722 * blue;
     match light >= 10_000 * 128 {
@@ -421,8 +366,7 @@ mod tests {
 
     #[test]
     fn a_terminal_answers_its_background_in_whatever_width_it_keeps_it() {
-        // The same white in the three widths terminals answer in, and the same
-        // answer from each: what is read is the top eight bits.
+        // White in every channel width reads the same: the top eight bits.
         for answer in [
             "\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
             "\x1b]11;rgb:ff/ff/ff\x07",
@@ -554,16 +498,14 @@ mod tests {
 
     #[test]
     fn a_green_terminal_is_lighter_than_a_blue_one_of_the_same_numbers() {
-        // Rec. 709, which is the whole reason the three channels are not
-        // averaged: green carries most of what an eye reads as brightness.
+        // Rec. 709 weights green far above blue.
         assert_eq!(said("\x1b]11;rgb:00/c0/00\x07"), Some(Shade::Light));
         assert_eq!(said("\x1b]11;rgb:00/00/c0\x07"), Some(Shade::Dark));
     }
 
     #[test]
     fn an_answer_nothing_can_read_is_nothing_rather_than_a_guess() {
-        // Painting a light palette onto a dark screen is worse than painting
-        // the one everybody had before this file.
+        // An answer that cannot be parsed gives no shade.
         for answer in ["", "\x1b]11;?\x1b\\", "\x1b]11;rgb:ff/ff\x07", "ok"] {
             assert_eq!(said(answer), None, "{answer:?}");
         }
@@ -587,9 +529,8 @@ mod tests {
 
     #[test]
     fn the_answer_is_read_to_both_terminators_and_no_further() {
-        // Colours arrive in one write from every terminal measured, but the
-        // read stops on the second terminator either way: an answer cut in
-        // half reads as a darker colour than it is.
+        // The read stops at the second terminator; a truncated answer would
+        // read darker.
         let mut sent: &[u8] = b"\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x07";
         let began = Instant::now();
         let heard = listen(&mut sent).expect("the answer");
@@ -615,9 +556,7 @@ mod tests {
 
     #[test]
     fn a_key_pressed_while_the_view_opens_ends_the_wait_rather_than_feeding_it() {
-        // The whole of what this costs somebody is the window between the ask
-        // and the answer, and a letter arriving in it is not a terminal
-        // replying. It ends the wait on the spot.
+        // A typed letter ends the wait at once.
         let mut typing: &[u8] = b"j";
         let began = Instant::now();
         let heard = listen(&mut typing).expect("the letter");
@@ -627,10 +566,10 @@ mod tests {
 
     #[test]
     fn a_key_already_waiting_is_left_for_the_view() {
-        // Somebody typing before the view is up: asking then would read their
-        // keys as the answer, so the terminal is not asked and they stay put.
+        // Keys typed before the view is up must stay unread, so the terminal
+        // is not asked.
         let pty = nix::pty::openpty(None, None).expect("a pty");
-        // Raw, as the view has it by the time it asks.
+        // Raw mode, as the view has it when it asks.
         let mut raw = nix::sys::termios::tcgetattr(&pty.slave).expect("its settings");
         nix::sys::termios::cfmakeraw(&mut raw);
         set(pty.slave.as_fd(), &raw).expect("raw");
@@ -646,8 +585,8 @@ mod tests {
         assert_eq!(&kept, b"j");
     }
 
-    /// A reply as the key loop reads it: alt and `]` for the escape that
-    /// opens it, a key a character, and the terminator either way it is spelt.
+    /// A reply as the key loop sees it: alt-`]`, one key per character, then
+    /// the terminator as BEL or ST.
     fn as_keys(answer: &str, bell: bool) -> Vec<KeyEvent> {
         let mut keys = vec![KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT)];
         keys.extend(answer.chars().map(|c| KeyEvent::from(KeyCode::Char(c))));
@@ -658,8 +597,8 @@ mod tests {
         keys
     }
 
-    /// What comes out of the recogniser for a run of keys, and then whatever
-    /// it was still holding when the keys stopped.
+    /// The keys [`Late`] passes through for `keys`, plus what it still held
+    /// at the end.
     fn through(keys: &[KeyEvent]) -> Vec<KeyEvent> {
         let mut late = Late::default();
         let mut out: Vec<KeyEvent> = keys.iter().flat_map(|key| late.hear(*key)).collect();
@@ -669,8 +608,7 @@ mod tests {
 
     #[test]
     fn a_reply_arriving_after_the_wait_is_dropped_whole() {
-        // Past the wait, the answer reaches the key loop as keys, and `:` and
-        // `/` in it would open a line. None of it gets through.
+        // None of a late answer reaches the key loop.
         for bell in [true, false] {
             let reply = as_keys("11;rgb:ffff/ffff/ffff", bell);
             let mut late = Late::default();
@@ -714,22 +652,22 @@ mod tests {
         let slash = KeyEvent::from(KeyCode::Char('/'));
         assert_eq!(through(&[colon, slash]), vec![colon, slash]);
 
-        // Alt and `]` alone is held only until the keys stop.
+        // Alt-`]` alone is held only until the keys stop.
         let bracket = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT);
         let mut late = Late::default();
         assert!(late.hear(bracket).is_empty());
         assert!(late.holding());
         assert_eq!(late.let_go(), vec![bracket]);
 
-        // And one followed by something no reply spells gives both back, in
-        // the order they were typed.
+        // Followed by something no reply starts with, both are handed back in
+        // order.
         let j = KeyEvent::from(KeyCode::Char('j'));
         assert_eq!(through(&[bracket, j, slash]), vec![bracket, j, slash]);
     }
 
     #[test]
     fn a_terminal_that_says_nothing_leaves_everything_as_it_was() {
-        // The wait is what it costs, and the answer is the dark everybody had.
+        // Silence costs the wait and gives no shade.
         let mut silence: &[u8] = b"";
         let heard = listen(&mut silence).expect("the wait, and nothing in it");
         assert_eq!(said(&heard), None);
