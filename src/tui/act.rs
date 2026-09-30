@@ -1021,22 +1021,13 @@ fn dialled(agent: &str, typed: &str, config: &Config) -> Option<Vec<Entry>> {
 
 /// `on:` completions from the local branches of the checkout at `here`.
 ///
-/// Local refs only: listing the origin's would mean a network call. A
-/// directory outside a repository, or a failing git, offers nothing.
+/// A directory outside a repository, or a failing git, offers nothing.
 pub fn branches_here(here: &Path, typed: &str) -> Vec<Entry> {
-    let read = std::process::Command::new("git")
-        .current_dir(here)
-        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-        .stdin(std::process::Stdio::null())
-        .output();
-    let Ok(read) = read else {
+    let Ok(branches) = worktree::local_branches(here) else {
         return Vec::new();
     };
-    if !read.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&read.stdout)
-        .lines()
+    branches
+        .into_iter()
         .map(|branch| worded(format!("{BRANCH}{branch}")))
         .filter(|entry| entry.spelled.starts_with(typed))
         .collect()

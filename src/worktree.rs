@@ -275,6 +275,17 @@ pub fn prune_origin(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The local branch names of the repository at `dir`.
+///
+/// Local refs only: listing the origin's would mean a network call.
+pub fn local_branches(dir: &Path) -> Result<Vec<String>> {
+    let listed = git(
+        dir,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?;
+    Ok(listed.lines().map(str::to_string).collect())
+}
+
 /// Whether some tree of this repository has `branch` checked out.
 ///
 /// git allows one tree per branch, so a taken name means cutting under
