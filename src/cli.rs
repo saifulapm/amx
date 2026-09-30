@@ -1619,8 +1619,18 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// The documents that describe the command line.
-    const README: &str = include_str!("../README.md");
+    /// The documents that describe the command line: the website's docs,
+    /// which the README points to.
+    const DOCS: &str = concat!(
+        include_str!("../site/docs/quick-start.md"),
+        include_str!("../site/docs/view.md"),
+        include_str!("../site/docs/commands.md"),
+        include_str!("../site/docs/scripting.md"),
+        include_str!("../site/docs/worktrees.md"),
+        include_str!("../site/docs/agents.md"),
+        include_str!("../site/docs/configuration.md"),
+        include_str!("../site/docs/how-it-works.md"),
+    );
     const SKILL: &str = include_str!("../skill/amx/SKILL.md");
 
     /// Every verb `amx --help` lists, with its long flags.
@@ -1686,7 +1696,20 @@ mod tests {
             for line in code.iter().flat_map(|code| code.lines()) {
                 // A shell comment inside a fence is prose.
                 let line = line.split('#').next().unwrap_or_default();
-                for after in line.split("amx ").skip(1) {
+                let mut parts = line.split("amx ");
+                let mut before = parts.next().unwrap_or_default();
+                for after in parts {
+                    // Only where a command starts: doctor's output says
+                    // "the only amx on the PATH".
+                    let starts = before.trim_end();
+                    let command = starts.is_empty()
+                        || ["$", "(", "|", ";", "&&", "!", "="]
+                            .iter()
+                            .any(|opener| starts.ends_with(opener));
+                    before = after;
+                    if !command {
+                        continue;
+                    }
                     let verb: String = after
                         .chars()
                         .take_while(|c| c.is_ascii_lowercase() || *c == '_')
@@ -1701,38 +1724,38 @@ mod tests {
     }
 
     #[test]
-    fn docs_the_readme_names_every_verb_and_the_flags_it_takes() {
+    fn docs_the_docs_names_every_verb_and_the_flags_it_takes() {
         for (verb, flags) in listed_verbs() {
             assert!(
-                README.contains(&format!("amx {verb}")),
-                "the README says nothing about `amx {verb}`"
+                DOCS.contains(&format!("amx {verb}")),
+                "the docs say nothing about `amx {verb}`"
             );
             for flag in flags {
                 assert!(
-                    README.contains(&flag),
-                    "the README says nothing about `amx {verb} {flag}`"
+                    DOCS.contains(&flag),
+                    "the docs say nothing about `amx {verb} {flag}`"
                 );
             }
         }
     }
 
     #[test]
-    fn docs_the_readme_names_every_key_the_view_binds() {
+    fn docs_the_docs_names_every_key_the_view_binds() {
         // A key column may name two keys; each must be documented.
         for key in keys_the_view_binds().iter().flat_map(|key| key.split(' ')) {
             assert!(
-                README.contains(&format!("`{key}`")),
-                "the README names no key `{key}`"
+                DOCS.contains(&format!("`{key}`")),
+                "the docs name no key `{key}`"
             );
         }
     }
 
     #[test]
-    fn docs_the_readme_names_every_config_key() {
+    fn docs_the_docs_names_every_config_key() {
         for key in crate::config::KNOWN_KEYS {
             assert!(
-                README.contains(&format!("\n{key} = ")),
-                "the README's config file has no `{key}` in it"
+                DOCS.contains(&format!("`{key}`")),
+                "the docs never name the config key `{key}`"
             );
         }
     }
@@ -1780,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn docs_the_help_and_the_readme_count_the_checks_doctor_makes() {
+    fn docs_the_help_and_the_docs_count_the_checks_doctor_makes() {
         // Both spell the number out, so both go stale without this.
         let checks = crate::verbs::doctor::report(&crate::verbs::doctor::Findings {
             tmux: None,
@@ -1833,8 +1856,8 @@ mod tests {
             kinds.len()
         );
         assert!(
-            README.contains(&format!("the {counted} things")),
-            "doctor asks {} kinds of check and the README says otherwise",
+            DOCS.contains(&format!("the {counted} things")),
+            "doctor asks {} kinds of check and the docs say otherwise",
             kinds.len()
         );
     }
@@ -1843,7 +1866,7 @@ mod tests {
     fn docs_neither_document_names_a_verb_amx_does_not_have() {
         // A command copied from either document must name a real verb.
         let verbs = every_verb();
-        for (document, text) in [("README", README), ("skill", SKILL)] {
+        for (document, text) in [("DOCS", DOCS), ("skill", SKILL)] {
             for named in verbs_named_in(text) {
                 assert!(
                     verbs.contains(&named),
@@ -1941,34 +1964,34 @@ mod tests {
     }
 
     #[test]
-    fn docs_the_readme_listing_says_the_words_ls_prints() {
-        // Every row of the README's sample listing uses a word `ls` prints.
-        let (_, listing) = README.split_once("$ amx ls\n").expect("a listing");
+    fn docs_the_docs_listing_says_the_words_ls_prints() {
+        // Every row of the docs' sample listing uses a word `ls` prints.
+        let (_, listing) = DOCS.split_once("$ amx ls\n").expect("a listing");
         let (listing, _) = listing.split_once("```").expect("the end of it");
         let printed: Vec<&str> = every_phase().into_iter().map(Phase::word).collect();
         for row in listing.lines() {
             let word = row.split_whitespace().next().unwrap_or_default();
             assert!(
                 printed.contains(&word),
-                "the README lists a row as `{word}`, which ls never prints: {row}"
+                "the docs list a row as `{word}`, which ls never prints: {row}"
             );
         }
     }
 
     #[test]
-    fn docs_the_readme_names_every_state_and_the_word_the_table_says_for_it() {
-        let said = paragraph(README, "`state` is one of");
+    fn docs_the_docs_names_every_state_and_the_word_the_table_says_for_it() {
+        let said = paragraph(DOCS, "`state` is one of");
         for phase in every_phase() {
             assert!(
                 said.contains(&format!("`{}`", phase.as_str())),
-                "the README's states leave out `{}`",
+                "the docs' states leave out `{}`",
                 phase.as_str()
             );
-            // Where the table's word differs from the JSON state, the README says so.
+            // Where the table's word differs from the JSON state, the docs say so.
             if phase.word() != phase.as_str() {
                 assert!(
                     said.contains(&format!("`{}` as `{}`", phase.as_str(), phase.word())),
-                    "the README never says the table prints `{}` as `{}`",
+                    "the docs never say the table prints `{}` as `{}`",
                     phase.as_str(),
                     phase.word()
                 );
@@ -1989,18 +2012,18 @@ mod tests {
             "send",
             "sub",
         ];
-        let (_, readme) = README
-            .split_once("\n| `2`  |")
-            .expect("the README's row for 2");
-        let readme = readme.lines().next().unwrap_or_default();
+        // The row for 2 and what the section says under it, up to the next
+        // heading.
+        let (_, docs) = DOCS.split_once("\n| `2` |").expect("the docs' row for 2");
+        let (docs, _) = docs.split_once("\n## ").unwrap_or((docs, ""));
         let (_, skill) = SKILL
             .split_once("## Exit codes")
             .expect("the skill's exit codes");
         let (skill, _) = skill.split_once("\n## ").expect("the end of them");
         for verb in blocking {
             assert!(
-                readme.contains(&format!("`{verb}`")),
-                "the README's exit table never says `{verb}` exits 2: {readme}"
+                docs.contains(&format!("`{verb}`")),
+                "the docs never say `{verb}` exits 2: {docs}"
             );
             assert!(
                 skill.contains(&format!("`{verb}`")),
@@ -2049,13 +2072,10 @@ mod tests {
             .and_then(|dir| dir.get_help().map(ToString::to_string))
             .expect("ls --dir help");
         assert!(dir.contains("directory filter"), "{dir}");
+        assert!(DOCS.contains("directory filter"), "the docs never say so");
         assert!(
-            README.contains("directory filter"),
-            "the README never says so"
-        );
-        assert!(
-            !README.contains("no other run's"),
-            "the README says ls --dir keeps runs apart"
+            !DOCS.contains("no other run's"),
+            "the docs say ls --dir keeps runs apart"
         );
     }
 }

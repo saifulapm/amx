@@ -143,7 +143,7 @@ amx ls [--json] [--dir <PATH>]
 | Flag | Does |
 | --- | --- |
 | `--json` | Print the stable JSON array. See [Scripting](scripting.md#json-output). |
-| `--dir <PATH>` | Only agents working under this directory. A worktree agent counts as its repository's. |
+| `--dir <PATH>` | A directory filter: only agents working under this directory. A worktree agent counts as its repository's. |
 
 ```
 $ amx ls

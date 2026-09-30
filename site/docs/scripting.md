@@ -164,8 +164,9 @@ ever added, never renamed or removed.
 | `pane`, `socket`, `session` | tmux pane, tmux socket, vendor session id. |
 | `queued` | `status --json` only: messages sent and not yet taken, oldest first. |
 
-`done`, `failed` and `stopped` are endings. The other states can still change.
-The `ls` table prints `idle` as `done`; the JSON keeps `idle`.
+`state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
+`stopped` and `unknown`. `done`, `failed` and `stopped` are endings; the others
+can still change. The `ls` table prints `idle` as `done`; the JSON keeps `idle`.
 
 ```sh
 amx ls --json | jq -r '.[] | select(.state == "waiting") | .id'

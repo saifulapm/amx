@@ -77,9 +77,11 @@ screen to know its state, and it cannot hand you the agent's answer. What each
 amx doctor
 ```
 
-`doctor` checks tmux, the agent command, the config file, each agent's wiring,
-the PATH, the state directory, leftover files from crashed spawns, and agents
-stuck on a vendor's startup screen. Every failed line says how to fix it:
+`doctor` checks the ten things an agent needs before it can run: tmux, the
+agent command, the config file, each agent's wiring, a single amx on the PATH,
+the state directory, handoff files from older versions, agents stuck on a
+vendor's startup screen, trust entries left for removed worktrees, and leftovers
+from crashed spawns. Every failed line says how to fix it:
 
 ```
   ok  tmux    3.5a
