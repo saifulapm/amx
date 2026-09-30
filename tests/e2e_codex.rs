@@ -193,12 +193,24 @@ fn held_still(amx: &Harness, id: &str) -> Value {
     status(amx, id)
 }
 
+/// Waits until the scenario's tool call is on the record. Reading `working`
+/// is not enough: under load the PreToolUse hook can land after the Esc, and
+/// the reader then trusts that fresh call over the interrupted screen.
+fn until_calling(amx: &Harness, id: &str) {
+    amx.until(&format!("{id} to record its tool call"), || {
+        amx.event_kinds(id)
+            .iter()
+            .any(|kind| kind == "PreToolUse")
+            .then_some(())
+    });
+}
+
 #[test]
 fn an_esc_amx_types_ends_a_codex_turn_that_sends_no_stop() {
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "is-interrupted", Some(TASK));
-    until_read(&amx, id, "working");
+    until_calling(&amx, id);
 
     let out = amx.amx(&["interrupt", id]);
     assert!(
@@ -227,7 +239,7 @@ fn an_esc_somebody_types_at_codex_is_read_off_the_pane_once_it_holds_still() {
     let amx = Harness::new();
     let id = "fix-login-a1b";
     start(&amx, id, "is-interrupted", Some(TASK));
-    until_read(&amx, id, "working");
+    until_calling(&amx, id);
 
     amx.tmux(&["send-keys", "-t", &amx.pane_of(id), "Escape"]);
     amx.until_shown(id, "Conversation interrupted");
