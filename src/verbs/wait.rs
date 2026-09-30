@@ -1,21 +1,10 @@
-//! `amx wait` — one clock over several agents.
+//! `amx wait`: wait on several agents at once and print each as it settles.
 //!
-//! `amx result <id>` blocks on one agent, so a caller holding five of them runs
-//! five background subshells or polls `ls --json` on a loop of its own. This is
-//! the one wait a coordinator wants: name the agents, and it says which of them
-//! is ready as each becomes ready.
-//!
-//! Settled is a turn that is over or an agent stopped on a question — done,
-//! failed, stopped, idle (a parked agent reads idle and counts here) or waiting.
-//! A question counts because a wait that went through one would be the wait
-//! [`crate::verbs::result`] refuses to be: the question arrives during the wait,
-//! and a caller that cannot see it cannot answer it. `--for <state>` waits for
-//! one named phase instead, so `--for working` is how a caller confirms a fleet
-//! started.
-//!
-//! It says whose answer is ready and nothing about what the answer is: `amx
-//! result <id>` is still what hands one back, and it returns at once for an
-//! agent that has ended.
+//! An agent settles when its turn is over (done, failed, stopped, idle, which
+//! includes parked) or when it is waiting on a question, for the same reason
+//! [`crate::verbs::result`] never waits through one. `--for <state>` waits for
+//! that phase instead, e.g. `--for working` to confirm a fleet started. Only
+//! ids and phases are printed; `amx result <id>` hands back the answer.
 
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -50,10 +39,8 @@ pub fn from_env(
 
 /// The verb, with the state directory named.
 ///
-/// Every id is opened before the first sweep, so an id nobody knows is a
-/// refusal rather than a wait that could never end — and it is refused before
-/// anything at all has been printed, while the caller can still fix what it
-/// typed.
+/// Every id is opened before the first sweep, so an unknown id fails before
+/// anything is printed.
 pub fn run(
     root: &Path,
     ids: &[String],
@@ -67,7 +54,7 @@ pub fn run(
         Some(parent) => children_of(root, parent)?,
         None => taken(ids),
     };
-    // A family of none would settle at once and print nothing, which reads as
+    // An empty family would settle at once and print nothing, which reads as
     // every child having settled.
     if let (Some(parent), true) = (children, named.is_empty()) {
         complain!("amx wait: {parent} has no children");
@@ -80,9 +67,8 @@ pub fn run(
 
     let deadline = timeout.map(|patience| Instant::now() + patience);
     loop {
-        // The slowest pace among the agents still being waited on: one sleep
-        // covers the whole sweep, and an agent whose reading costs a screen
-        // must not have every other agent's record poll it.
+        // One sleep per sweep, at the slowest pace any pending agent needs, so
+        // an agent whose reading takes a screen capture sets the rate.
         let mut slowest = POLL;
         let ids: Vec<&str> = pending.iter().map(|(_, id)| id.as_str()).collect();
         let views = readings(root, &ids)?;
@@ -93,9 +79,7 @@ pub fn run(
                 still.push((turns, id));
                 continue;
             }
-            // Flushed a line at a time: a caller reading this as it comes is
-            // the point, and a line held in a buffer until the last agent
-            // settles says nothing sooner than `result` would have.
+            // Flushed per line: callers read these as they arrive.
             writeln!(out, "{id} {}", view.phase())?;
             out.flush()?;
             if any {
@@ -107,9 +91,8 @@ pub fn run(
         if pending.is_empty() {
             return Ok(exit::OK);
         }
-        // After the sweep, so an agent that settled in the same beat the
-        // patience ran out in is one that settled: what has been printed
-        // stands whichever ending this is.
+        // Checked after the sweep, so an agent that settled at the deadline is
+        // still reported.
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(exit::TIMEOUT);
         }
@@ -117,10 +100,10 @@ pub fn run(
     }
 }
 
-/// Read these agents in one pass, in the order given.
+/// Read these agents in one pass, returned in the order given.
 ///
-/// Through [`derive::views_of`], so tmux is asked once per server per sweep
-/// rather than once per agent.
+/// Uses [`derive::views_of`], so tmux is asked once per server rather than once
+/// per agent.
 fn readings(root: &Path, ids: &[&str]) -> Result<Vec<View>> {
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
@@ -141,10 +124,7 @@ fn readings(root: &Path, ids: &[&str]) -> Result<Vec<View>> {
         .collect()
 }
 
-/// The agents to wait on, in the order they were named, each one once.
-///
-/// A caller assembling a command line from a list of its own has no reason to
-/// have deduplicated it, and an id named twice is one agent, not two waits.
+/// The ids in the order named, without duplicates.
 fn taken(ids: &[String]) -> Vec<String> {
     let mut taken: Vec<String> = Vec::with_capacity(ids.len());
     for id in ids {
@@ -155,13 +135,10 @@ fn taken(ids: &[String]) -> Vec<String> {
     taken
 }
 
-/// The ids of every agent whose record names `parent`, in the order they
-/// were created.
+/// The ids of every agent whose record names `parent`, oldest first.
 ///
-/// The parent itself is opened first, so an id nobody knows is refused the
-/// way a named id is rather than reading as a family of none. A child whose
-/// record has been removed is simply not here: the records are the list, and
-/// nothing keeps a second one.
+/// Errors if `parent` names no agent, so a typo is not read as an empty
+/// family. Records that cannot be read are skipped.
 pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
     Agent::open(root, parent)?;
     let mut children: Vec<(u64, String)> = Vec::new();
@@ -178,8 +155,8 @@ pub fn children_of(root: &Path, parent: &str) -> Result<Vec<String>> {
     Ok(children.into_iter().map(|(_, id)| id).collect())
 }
 
-/// Whether this agent's reading is what the wait was for, reading its log
-/// only where the answer turns on it.
+/// Whether this reading is what the wait is for. The log is read only when the
+/// phase needs it.
 fn ready(turns: &mut Turns, phase: Phase, wanted: Option<Phase>) -> bool {
     let ended = match wanted {
         Some(_) => Ended::NotYet,
@@ -188,13 +165,11 @@ fn ready(turns: &mut Turns, phase: Phase, wanted: Option<Phase>) -> bool {
     settled(phase, wanted, ended)
 }
 
-/// Whether this reading is what the wait was for.
+/// Whether this reading is what the wait is for.
 ///
-/// With no `--for`, whatever `result` would stop waiting on: a turn that is
-/// over, or an agent stopped on a question. `Starting` and `Working` are
-/// agents still going, `Unknown` is amx not knowing — a reading nobody can act
-/// on is not an agent that is ready — and an idle agent with a message still
-/// in front of it has a turn to come.
+/// With no `--for`, anything `result` would stop on: a finished turn or a
+/// question. `Unknown` does not count, and neither does an idle agent with an
+/// unanswered message still queued.
 fn settled(phase: Phase, wanted: Option<Phase>, ended: Ended) -> bool {
     match wanted {
         Some(wanted) => phase == wanted,
@@ -220,8 +195,7 @@ mod tests {
         ] {
             assert!(settled(phase, None, Ended::Turn), "{phase}");
         }
-        // Still going, or amx not knowing: neither is an agent whose answer a
-        // caller can go and take.
+        // Still running, or unknown: no answer to take yet.
         for phase in [Phase::Starting, Phase::Working, Phase::Unknown] {
             assert!(!settled(phase, None, Ended::Turn), "{phase}");
         }
@@ -229,8 +203,8 @@ mod tests {
 
     #[test]
     fn a_message_nothing_has_answered_keeps_an_idle_agent_from_settling() {
-        // Idle after a turn cut short by hand, with the message amx sent still
-        // in front of it: the answer on the record is the turn before's.
+        // Idle after a turn cut short by hand, with the sent message still
+        // queued: the recorded answer belongs to the previous turn.
         let root = tempfile::TempDir::new().unwrap();
         record(root.path(), "a", Phase::Idle);
         let said = |kind: &str| {
@@ -251,7 +225,7 @@ mod tests {
         assert_eq!(code, exit::TIMEOUT);
         assert_eq!(printed, "");
 
-        // A resume ends the turn the message asked for, and the wait with it.
+        // A resume ends that turn, and the wait with it.
         said("resume");
         let (code, printed) = waited(root.path(), &["a"], false, None, patience);
         assert_eq!(code, exit::OK);
@@ -260,8 +234,7 @@ mod tests {
 
     #[test]
     fn for_a_named_phase_waits_for_that_one_and_no_other() {
-        // `--for working` is how a caller confirms a fleet started, so the
-        // phases the plain wait ends on are no longer endings.
+        // With `--for`, only the named phase ends the wait.
         assert!(settled(Phase::Working, Some(Phase::Working), Ended::NotYet));
         assert!(!settled(Phase::Done, Some(Phase::Working), Ended::NotYet));
         assert!(!settled(
@@ -303,7 +276,7 @@ mod tests {
         assert_eq!(code, exit::OK);
         assert_eq!(said, "a done\nb idle\n");
 
-        // In the order named, whatever order the records are read in.
+        // Printed in the order named, whatever order the records are read in.
         let (code, said) = waited(root.path(), &["b", "a"], false, None, None);
         assert_eq!(code, exit::OK);
         assert_eq!(said, "b idle\na done\n");
@@ -325,8 +298,7 @@ mod tests {
 
     #[test]
     fn a_wait_that_runs_out_of_patience_keeps_what_settled() {
-        // Exit 3 is the caller's own deadline, and the agents that did settle
-        // before it are ready whatever this exits with: their lines stand.
+        // A timeout still prints the agents that settled before it.
         let root = tempfile::TempDir::new().unwrap();
         record(root.path(), "a", Phase::Working);
         record(root.path(), "b", Phase::Done);
@@ -347,8 +319,7 @@ mod tests {
         assert_eq!(code, exit::OK);
         assert_eq!(said, "a working\n");
 
-        // And an agent at work is not one whose turn is over, however long
-        // anybody waits for it.
+        // Without `--for`, a working agent never settles.
         let patience = Some(Duration::ZERO);
         let (code, said) = waited(root.path(), &["a"], false, None, patience);
         assert_eq!(code, exit::TIMEOUT);
@@ -357,9 +328,7 @@ mod tests {
 
     #[test]
     fn an_id_that_names_no_agent_is_refused_before_anything_is_waited_on() {
-        // A wait on an agent that does not exist could never end, and the
-        // caller can still fix what it typed: nothing is printed, and the
-        // refusal names the id it could not find.
+        // Refused before anything is printed, naming the unknown id.
         let root = tempfile::TempDir::new().unwrap();
         record(root.path(), "a", Phase::Done);
 
@@ -380,8 +349,7 @@ mod tests {
 
     #[test]
     fn children_of_a_childless_parent_is_a_failure() {
-        // A wait on a family of none would end at once and say nothing, which
-        // reads as every child having settled.
+        // An empty family would otherwise end at once with nothing printed.
         let root = tempfile::TempDir::new().unwrap();
         record(root.path(), "lonely-a1b", Phase::Idle);
 
@@ -404,7 +372,7 @@ mod tests {
         ids.iter().map(ToString::to_string).collect()
     }
 
-    /// One wait, and what it printed.
+    /// Run one wait; return its exit code and what it printed.
     fn waited(
         root: &Path,
         named: &[&str],
@@ -417,10 +385,7 @@ mod tests {
         (code, String::from_utf8(out).unwrap())
     }
 
-    /// An agent whose record says this phase and whose pane is gone.
-    ///
-    /// Parked, so a reading with no pane to look at hands back the phase on the
-    /// record — which is what lets one test name a phase and get it.
+    /// A parked agent in `phase`, so a reading with no pane returns that phase.
     fn record(root: &Path, id: &str, phase: Phase) {
         let meta = Meta {
             role: None,

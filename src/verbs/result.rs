@@ -1,24 +1,18 @@
-//! `amx result` — wait for the turn to end, and say how it ended.
+//! `amx result`: wait for the current turn to end and report how it ended.
 //!
-//! This is the verb the machine-facing half of amx exists for: a caller waits
-//! here instead of polling a state file, reading a transcript or scraping a
-//! screen. Four endings, and the exit code is which one happened:
+//! The exit code says which ending happened:
 //!
-//! * `0` — the agent's answer is on stdout.
-//! * `1` — nothing is coming: the agent failed, was stopped, had its turn cut
-//!   short by `amx interrupt`, or ended its turn without an answer amx could
-//!   capture.
-//! * `2` — it is asking a question, which is on stdout with the choices under
-//!   it. **A wait never goes through a question**: the question usually
-//!   arrives *during* the wait, and a caller that cannot see it cannot answer
-//!   it.
-//! * `3` — the caller's own deadline.
+//! * `0`: the answer is on stdout.
+//! * `1`: no answer is coming. The agent failed, was stopped, was interrupted,
+//!   or ended its turn without an answer amx could capture.
+//! * `2`: the agent is asking a question, printed on stdout with its choices. A
+//!   wait never continues past a question, since the caller has to answer it.
+//! * `3`: the caller's timeout.
 //!
-//! **The turn it waits for is the one after the last message.** `send` records
-//! itself before it types, so the event log says whether the turn amx can see
-//! ended before or after that message — and an answer from before it belongs to
-//! the turn before it. Serving that one as this turn's is the mistake nothing
-//! downstream can undo.
+//! The turn waited for is the one after the last message sent. `send` logs the
+//! message before typing it, so the event log orders it against turn endings;
+//! an answer from before the message belongs to the previous turn and must
+//! never be returned for this one.
 
 use anyhow::Result;
 use std::io::Write;
@@ -33,22 +27,18 @@ use crate::verbs::park::PARKED;
 use crate::verbs::send::{self, nothing_more_is_coming, waiting_on_a_question};
 use crate::{complain, exit, paths, store};
 
-/// How often the record is read while waiting. Short enough that a caller
-/// chaining turns is not waiting on amx, long enough to cost nothing.
+/// How often the record is read while waiting.
 pub(crate) const POLL: Duration = Duration::from_millis(200);
 
-/// How often the *pane* is read, once the record has gone quiet enough that a
-/// reading needs one. Reading two small files five times a second is free;
-/// asking tmux for a screen five times a second is not.
+/// How often to read when the reading needs a screen capture, which costs a
+/// tmux call where the record costs two small file reads.
 pub(crate) const LOOK: Duration = Duration::from_secs(1);
 
-/// The moment `hooks` call this event, from a record whose vendor has any.
 fn moment(hooks: Option<&Hooks>, event: &Event) -> Option<Moment> {
     hooks?.moment(&event.kind)
 }
 
-/// Whether this event is the record's vendor saying a turn ended: the moment
-/// its entry calls `Ended`, in its own word for it.
+/// Whether this event is the vendor's own turn-end hook.
 fn turn_end(hooks: Option<&Hooks>, event: &Event) -> bool {
     moment(hooks, event) == Some(Moment::Ended)
 }
@@ -84,13 +74,12 @@ pub fn run(
         match settled(phase, turns.ended(phase)) {
             Settled::Answer => return answer(&view, to_terminal, out),
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
-            // The command ended, and the message it was sent went with it.
+            // A command exited before answering the last message.
             Settled::Unanswered => {
                 complain!("amx: {id} ended without answering");
                 return Ok(exit::FAILURE);
             }
-            // Somebody stopped the turn this wait was for. Whatever is on the
-            // record answers the turn before the message.
+            // The recorded answer belongs to the turn before the message.
             Settled::Interrupted => {
                 complain!("amx: {id} was interrupted; the turn ended with no answer");
                 return Ok(exit::FAILURE);
@@ -106,7 +95,7 @@ pub fn run(
     }
 }
 
-/// Run the verb over a parent's whole family, against the machine.
+/// Run the verb over a parent's children, against the machine.
 pub fn family_from_env(parent: &str, timeout: Option<u64>, json: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -121,14 +110,12 @@ pub fn family_from_env(parent: &str, timeout: Option<u64>, json: bool) -> Result
     )
 }
 
-/// `result` over a parent's children: wait for the family the way `wait`
-/// does, then hand each answer back.
+/// `result` over a parent's children: wait as `amx wait` does, then report
+/// every child.
 ///
-/// The whole family is read once it has settled, so a child that failed or
-/// stopped is in the answer as itself rather than as an empty line. The code
-/// is the most actionable ending found — `3` the call did not finish, `2` a
-/// child is on a question, `1` a child failed, `0` every child answered —
-/// and the answers are printed whatever the number says.
+/// Every child is reported, failed ones included. The exit code is the most
+/// actionable one found: `3` timed out, `2` a child is asking, `1` a child
+/// failed, `0` every child answered.
 pub fn run_family(
     root: &Path,
     parent: &str,
@@ -138,8 +125,7 @@ pub fn run_family(
     out: &mut impl Write,
 ) -> Result<i32> {
     let children = crate::verbs::wait::children_of(root, parent)?;
-    // No children is no answers, and an empty reading that exits zero says
-    // every child answered.
+    // An empty family must not exit 0, which would say every child answered.
     if children.is_empty() {
         complain!("amx result: {parent} has no children");
         return Ok(exit::FAILURE);
@@ -162,8 +148,8 @@ pub fn run_family(
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
         let settled = settled(phase, Turns::of(root, id)?.ended(phase));
-        // What is on the record of a turn cut short, or of a command that
-        // ended on a message, answers the turn before: not this child's.
+        // After an interrupt or an unanswered message the recorded answer is
+        // the previous turn's.
         let answer = match settled {
             Settled::Interrupted | Settled::Unanswered => None,
             _ => view.state.result.clone().or_else(|| transcript(&view)),
@@ -212,45 +198,42 @@ pub(crate) fn answer_json(view: &View, answer: Option<String>) -> serde_json::Va
     })
 }
 
-/// What one reading means to a caller waiting on an answer.
+/// What one reading means to a caller waiting for an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Settled {
-    /// The turn is over; whatever was captured is the answer.
+    /// The turn is over; the captured answer, if any, is the result.
     Answer,
-    /// It is asking, and the wait ends here rather than behind the question.
+    /// Waiting on a question; the wait ends here.
     Question,
-    /// The command ended before the last message was answered.
+    /// A command ended before the last message was answered.
     Unanswered,
-    /// The turn was cut short: there is no answer to it and never will be.
+    /// The turn was cut short and has no answer.
     Interrupted,
-    /// It failed or was stopped: no answer is coming.
+    /// Failed or stopped; no answer is coming.
     Nothing,
     /// Still going.
     NotYet,
 }
 
-/// Whether the turn amx is waiting for has ended, and what ended it.
+/// Whether the turn after the last message has ended, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ended {
-    /// Nothing since the last message says a turn is over.
+    /// Nothing since the last message ends a turn.
     NotYet,
-    /// A turn of the agent's own ended, and whatever it left is its answer.
+    /// The agent's turn ended; what it left is the answer.
     Turn,
-    /// `amx interrupt` ended it — see [`crate::verbs::interrupt`]. A turn
-    /// nobody let finish leaves no answer, and the one on the record belongs
-    /// to the turn before the message.
+    /// amx cut the turn short (interrupt, resume or park). There is no answer,
+    /// and the recorded one belongs to the previous turn.
     Interrupted,
 }
 
-/// Weigh one reading. `ended` is how the turn after the last message ended, if
-/// it has.
+/// Classify one reading, given how the turn after the last message ended.
 pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
     match (phase, ended) {
         (Phase::Waiting, _) => Settled::Question,
         (Phase::Idle | Phase::Done, Ended::Interrupted) => Settled::Interrupted,
         (Phase::Idle | Phase::Done, Ended::Turn) => Settled::Answer,
-        // Idle, but the last thing amx did was hand it a message it has not
-        // finished with. That turn is still to come.
+        // Idle with a message not yet taken: its turn is still to come.
         (Phase::Idle, Ended::NotYet) => Settled::NotYet,
         (Phase::Done, Ended::NotYet) => Settled::Unanswered,
         (Phase::Failed | Phase::Stopped, _) => Settled::Nothing,
@@ -266,12 +249,11 @@ pub(crate) fn pace(evidence: &Evidence) -> Duration {
     }
 }
 
-/// What `amx resume` records when it brings an agent back, as
-/// `crate::verbs::resume` spells it.
+/// The event `amx resume` logs; must match `crate::verbs::resume`.
 const RESUMED: &str = "resume";
 
-/// A [`Fold`] over one agent's log, kept current across polls: each look
-/// folds in only what the log grew since the last one.
+/// A [`Fold`] over one agent's event log that reads only what was appended
+/// since the previous call, so polling does not reparse the whole log.
 pub(crate) struct Turns {
     log: PathBuf,
     hooks: Option<Hooks>,
@@ -291,16 +273,15 @@ impl Turns {
         })
     }
 
-    /// How the turn a caller is waiting on ended, for a record in this phase: only
-    /// an ending needs the log, and while an agent is working there is no turn to
-    /// place against the last message.
+    /// How the awaited turn ended, for a record in `phase`. Only idle and done
+    /// records need the log; any other phase is `NotYet`.
     pub(crate) fn ended(&mut self, phase: Phase) -> Ended {
         if !matches!(phase, Phase::Idle | Phase::Done) {
             return Ended::NotYet;
         }
         if let Some((fresh, next)) = crate::verbs::events::grown(&self.log, self.read) {
             // A log shorter than what was read is a new record under the same
-            // id, and is read from its start.
+            // id; start over.
             if next < self.read {
                 self.fold = Fold::START;
             }
@@ -316,21 +297,15 @@ impl Turns {
     }
 }
 
-/// Whether the last turn has ended, and what ended it, folded over the log an event at a time.
+/// Whether the last turn has ended and how, folded over the log one event at a
+/// time.
 ///
-/// Order, not a clock: the log is appended to under one lock, so "a turn ended
-/// after the last message" is a position in it. A turn opens at a message amx
-/// sent, at a prompt when none is open, and at the start for the task the
-/// agent was spawned with; an agent nobody has sent anything to answers with
-/// its last turn.
-///
-/// The first ending of an open turn is the one that counts. An interrupt the
-/// vendor caught up with afterwards is still the thing that ended the turn,
-/// and a turn that ended on its own before anybody typed at it ended on its
-/// own. Only a message puts the answer out of date: a turn opened by a prompt
-/// alone that is still open leaves the last ending standing.
-///
-/// Whose word said the turn ended is not this question — see [`a_turn_ended`].
+/// Log order decides, since the log is appended under one lock. A turn opens
+/// at a sent message, at a prompt when none is open, and at spawn for the
+/// initial task, so an agent never sent a message answers with its last turn.
+/// The first ending of an open turn counts; a vendor Stop arriving after an
+/// interrupt does not change it. Only a message makes the previous answer
+/// stale. What counts as an ending is [`a_turn_ended`].
 #[derive(Debug, Clone, Copy)]
 struct Fold {
     ended: Ended,
@@ -361,60 +336,40 @@ impl Fold {
     }
 }
 
-/// Whether this event says a turn of the agent's own began: the vendor, or a
-/// reading of the pane, saying a prompt went in.
+/// Whether this event is a prompt reaching the agent, from a hook or read off
+/// the pane.
 fn a_turn_began(hooks: Option<&Hooks>, event: &Event) -> bool {
     let moment = moment(hooks, event);
     (matches!(moment, Some(Moment::Prompted | Moment::Taken)) || event.kind == derive::READ_PROMPT)
         && event.payload["agent_id"].is_null()
 }
 
-/// Whether this event says a turn of the agent's own ended.
+/// Whether this event ends one of the agent's own turns.
 ///
-/// The vendor's own word where there was a vendor to say it, and amx's name for
-/// the same moment where a reading of the pane is the only thing that will ever
-/// place it — see [`derive::READ_TURN_END`]. Both say a turn ended; a wait that
-/// took only the first waited on a word half the table never sends, so `result`
-/// on a hookless agent that had been sent a message ran to its own deadline
-/// over a turn that had ended and an answer that was on the record beside it.
-///
-/// An interrupt is the third, and the one nothing else may ever say twice: a
-/// turn cancelled at the pane is over whether or not the vendor mentions it,
-/// and a wait holding out for a word that may never come is a wait that runs
-/// to its own deadline. A resume and a park are the same for a turn still
-/// open: the process it was going on in is gone.
-///
-/// A subagent's events ride the same log and are not the agent's turn.
+/// Three sources count: the vendor's turn-end hook, [`derive::READ_TURN_END`]
+/// for vendors without hooks (their turns end only on a screen reading), and
+/// amx cutting the turn short (see [`cut_short`]), which vendors may never
+/// report. Subagent events share the log and are ignored.
 fn a_turn_ended(hooks: Option<&Hooks>, event: &Event) -> bool {
     (turn_end(hooks, event) || event.kind == derive::READ_TURN_END || cut_short(event))
         && event.payload["agent_id"].is_null()
 }
 
-/// Whether this event is amx cutting the turn short, or taking away the
-/// process it was going on in.
+/// Whether amx ended the turn itself: an interrupt, or a resume or park that
+/// replaced the process the turn ran in.
 fn cut_short(event: &Event) -> bool {
     [INTERRUPT, RESUMED, PARKED].contains(&event.kind.as_str())
 }
 
-/// The answer, or the honest absence of one.
+/// Print the answer, or fail when none was captured.
 ///
-/// The record is where the answer lives: the Stop hook takes it from the
-/// vendor's own payload, and falls back to the transcript. That transcript is
-/// written asynchronously, so a hook that arrived a moment too early left
-/// nothing behind — and this call, which is standing at the end of the turn
-/// anyway, is the right place to look again.
+/// The record holds the answer, taken from the Stop hook's payload or the
+/// transcript. The vendor writes the transcript asynchronously, so a hook that
+/// fired early may have found nothing, and the transcript is read again here.
+/// For vendors without hooks or transcripts, the record holds what a reading
+/// took off the screen (with source `screen`).
 ///
-/// A vendor that has neither — no hooks to send an answer and no conversation
-/// to read one out of — reaches the record another way, and this reads it the
-/// same: what a reader read off the pane when it read the screen as a finished
-/// turn is written down there like anything else, with `screen` recorded beside
-/// it as where it came from. That is `crate::derive`'s reading of a picture
-/// rather than the vendor's own words, and a caller that cares which asks the
-/// source; nothing here knows one vendor from another.
-///
-/// A turn that ends with nothing captured is a failure to answer, never an
-/// empty success: exit 0 means there is an answer on stdout, and a caller that
-/// cannot trust that has nothing to branch on.
+/// A missing answer is exit 1: exit 0 always means an answer is on stdout.
 fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let Some(answer) = view.state.result.clone().or_else(|| transcript(view)) else {
         match why_it_stopped(view) {
@@ -433,23 +388,18 @@ fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     Ok(exit::OK)
 }
 
-/// The transcript's own last word, read at the end of the turn, by the shape
-/// the record's vendor writes it in.
+/// The answer at the end of the transcript, in the vendor's format.
 fn transcript(view: &View) -> Option<String> {
     read_transcript(view, crate::conversation::answer)
 }
 
-/// Why the vendor's own last message says there are no words, where it says
-/// anything about it: a reply cut off at the token limit, a provider that
-/// failed, a turn somebody aborted.
-///
-/// Asked only once the record and the transcript have both come up empty, so
-/// the cost of a second read is a cost paid on the failing path alone.
+/// Why the transcript's last message has no answer, where it says: a token
+/// limit, a provider error, an aborted turn. Read only on the failure path.
 fn why_it_stopped(view: &View) -> Option<String> {
     read_transcript(view, crate::conversation::why_it_stopped)
 }
 
-/// The record's transcript, read by whichever question is being asked of it.
+/// Ask `ask` of the tail of the record's transcript.
 fn read_transcript(
     view: &View,
     ask: fn(crate::vendor::Transcript, &str) -> Option<String>,
@@ -480,15 +430,14 @@ mod tests {
         fold.ended
     }
 
-    /// How the last turn ended, read in claude's words.
+    /// How the last turn ended, read with claude's hooks.
     fn claudes(events: &[Event]) -> Ended {
         turn_ended(Some(&crate::vendor::claude::HOOKS), events)
     }
 
     #[test]
     fn a_turn_ends_in_the_words_of_the_records_own_vendor() {
-        // pi's word for a turn ending ends a pi turn, and claude's does not:
-        // a word one vendor spells is not a word another one said.
+        // Each vendor's turn-end event counts only for that vendor.
         let pi = crate::vendor::pi::VENDOR.hooks;
         assert_eq!(
             turn_ended(pi.as_ref(), &log(&[send::SEND, "agent_settled"])),
@@ -517,8 +466,7 @@ mod tests {
 
     #[test]
     fn a_turn_nobody_let_finish_leaves_no_answer_to_hand_back() {
-        // The one ending with an answer on the record that is not this turn's:
-        // what amx captured belongs to the turn before the message.
+        // The recorded answer belongs to the turn before the message.
         assert_eq!(
             settled(Phase::Idle, Ended::Interrupted),
             Settled::Interrupted
@@ -534,15 +482,14 @@ mod tests {
         for phase in [Phase::Starting, Phase::Working, Phase::Unknown] {
             assert_eq!(settled(phase, Ended::NotYet), Settled::NotYet, "{phase}");
         }
-        // Idle, but the turn amx is waiting for has not started yet: the
-        // message it was sent is still in front of it.
+        // Idle with the message not yet taken: the awaited turn has not
+        // started.
         assert_eq!(settled(Phase::Idle, Ended::NotYet), Settled::NotYet);
     }
 
     #[test]
     fn a_command_that_ended_on_an_unanswered_message_is_not_an_answer() {
-        // Nothing more is coming, and what is on the record answers the turn
-        // before the message. Saying so is the only honest ending.
+        // No answer is coming, and the recorded one is the previous turn's.
         assert_eq!(settled(Phase::Done, Ended::NotYet), Settled::Unanswered);
     }
 
@@ -551,8 +498,7 @@ mod tests {
         for evidence in [Evidence::Record, Evidence::Gone, Evidence::Hooks] {
             assert_eq!(pace(&evidence), POLL, "{evidence:?}");
         }
-        // An agent amx let go has no pane to read either: what says it is
-        // parked is the record, and reading that costs nothing.
+        // A parked agent has no pane; the record alone says so.
         assert_eq!(pace(&Evidence::LetGo), POLL);
 
         for evidence in [Evidence::Screen, Evidence::Unknown] {
@@ -580,7 +526,7 @@ mod tests {
             claudes(&log(&["Stop", send::SEND, "UserPromptSubmit", "Stop"])),
             Ended::Turn
         );
-        // And it is the *last* message that counts.
+        // Only the last message counts.
         assert_eq!(
             claudes(&log(&[send::SEND, "Stop", send::SEND])),
             Ended::NotYet
@@ -589,9 +535,8 @@ mod tests {
 
     #[test]
     fn a_turn_a_reading_watched_end_ends_a_wait_like_any_other() {
-        // On the vendor that sends no Stop, a reading of the pane is the only
-        // thing that will ever place the end of a turn, so a wait that took
-        // the vendor's word alone was waiting on a word never coming.
+        // A vendor without a Stop hook ends turns only through a screen
+        // reading, so that must end a wait too.
         assert_eq!(
             claudes(&log(&[
                 send::SEND,
@@ -614,29 +559,24 @@ mod tests {
 
     #[test]
     fn a_turn_amx_cut_short_is_a_turn_that_ended() {
-        // A wait that held out for the vendor's word about a turn it was
-        // interrupted out of would run to its own deadline over a turn that
-        // ended the moment the key landed.
+        // Vendors may never report an interrupted turn, so the interrupt
+        // itself ends it.
         assert_eq!(
             claudes(&log(&[send::SEND, "UserPromptSubmit", INTERRUPT])),
             Ended::Interrupted
         );
-        // The first word for the turn's end is the one that ended it: a vendor
-        // catching up afterwards is not a second ending.
+        // The first ending counts; a later vendor Stop does not replace it.
         assert_eq!(
             claudes(&log(&[send::SEND, INTERRUPT, TURN_END])),
             Ended::Interrupted
         );
-        // And an interrupt from before the last message belongs to the turn
-        // before it, like any other ending.
+        // An interrupt before the last message belongs to the previous turn.
         assert_eq!(claudes(&log(&[INTERRUPT, send::SEND])), Ended::NotYet);
     }
 
     #[test]
     fn result_over_an_interrupted_turn_hands_back_nothing_and_says_so() {
-        // The answer on the record is the turn before the message's, and
-        // serving it as this turn's is the mistake nothing downstream can
-        // undo. A turn nobody let finish has no answer at all.
+        // The recorded answer is the previous turn's and must not be returned.
         let root = tempfile::TempDir::new().unwrap();
         let waited_on = |id: &str, ended_on: &str| {
             let meta = Meta {
@@ -672,8 +612,7 @@ mod tests {
                 .observe(|state| {
                     state.state = Phase::Idle;
                     state.result = Some("the login bug is fixed".to_string());
-                    // Parked, so the record's own phase is what a reader hands
-                    // back with no pane left to look at.
+                    // Parked, so the reading returns the recorded phase.
                     state.parked_at = 4_600;
                 })
                 .unwrap();
@@ -688,9 +627,8 @@ mod tests {
             waited_on("fix-login-a1b", INTERRUPT),
             (exit::FAILURE, String::new())
         );
-        // The same wait over a turn the agent was left to finish hands back
-        // what it answered, which is what says the ending above is the
-        // interrupt rather than the record being unreadable.
+        // Control: the same record ending on Stop returns the answer, so the
+        // failure above comes from the interrupt.
         assert_eq!(
             waited_on("fix-login-c3d", TURN_END),
             (exit::OK, "the login bug is fixed\n".to_string())
@@ -699,13 +637,12 @@ mod tests {
 
     #[test]
     fn an_interrupt_with_no_message_before_it_still_cut_the_turn_short() {
-        // The task an agent was spawned with is a turn nobody sent, and one
-        // cut short leaves the answer to no turn at all on the record.
+        // The spawn task's turn, with no message sent, can be interrupted too.
         assert_eq!(
             claudes(&log(&["SessionStart", "UserPromptSubmit", INTERRUPT])),
             Ended::Interrupted
         );
-        // And so is a turn somebody typed into the pane by hand.
+        // So can a turn typed into the pane by hand.
         assert_eq!(
             claudes(&log(&[
                 "UserPromptSubmit",
@@ -715,7 +652,7 @@ mod tests {
             ])),
             Ended::Interrupted
         );
-        // An interrupt that lands after the turn ended on its own ends nothing.
+        // An interrupt after the turn already ended changes nothing.
         assert_eq!(
             claudes(&log(&["UserPromptSubmit", TURN_END, INTERRUPT])),
             Ended::Turn
@@ -724,14 +661,13 @@ mod tests {
 
     #[test]
     fn a_resume_or_a_park_ends_the_turn_a_message_left_open() {
-        // The process the message went to is gone either way, and the turn it
-        // asked for went with it.
+        // Both replace the process the turn ran in.
         assert_eq!(claudes(&log(&[send::SEND, RESUMED])), Ended::Interrupted);
         assert_eq!(claudes(&log(&[send::SEND, PARKED])), Ended::Interrupted);
-        // A park after a turn that ended is not a second ending.
+        // A park after the turn ended is not a second ending.
         assert_eq!(claudes(&log(&[send::SEND, TURN_END, PARKED])), Ended::Turn);
         assert_eq!(claudes(&log(&[TURN_END, PARKED])), Ended::Turn);
-        // A resume carrying a message records it after itself, and that turn
+        // A resume with a message logs the message after itself, so that turn
         // is still to come.
         assert_eq!(
             claudes(&log(&[send::SEND, RESUMED, send::SEND])),
@@ -739,8 +675,7 @@ mod tests {
         );
     }
 
-    /// A child stopped on a question, under a parent, as a reader hands it
-    /// back once its pane is gone.
+    /// A parent `lead-a1b` and a parked child `scout-c3d` waiting on a question.
     fn a_family_with_a_question(root: &Path) {
         let meta = |id: &str, parent: Option<&str>, created: u64| Meta {
             role: None,
@@ -810,8 +745,7 @@ mod tests {
 
     #[test]
     fn result_children_of_a_childless_parent_is_a_failure() {
-        // A family of none has no answers to hand back, and an empty stdout
-        // with a zero reads as every child having answered.
+        // Exit 0 with nothing printed would read as every child answering.
         let root = tempfile::TempDir::new().unwrap();
         a_family_with_a_question(root.path());
 
@@ -825,9 +759,8 @@ mod tests {
 
     #[test]
     fn result_children_refuses_a_child_whose_record_goes_mid_wait() {
-        // `amx stop --delete` on a child the family is waiting on: the wait
-        // ends with the error `wait` gives, rather than running to the
-        // deadline (or forever, with no deadline).
+        // A child removed mid-wait (`amx stop --delete`) ends the wait with an
+        // error at once, as `amx wait` does.
         let root = tempfile::TempDir::new().unwrap();
         a_family_with_a_question(root.path());
         let child = Agent::open(root.path(), "scout-c3d").unwrap();
@@ -933,7 +866,7 @@ mod tests {
         said(TURN_END);
         assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
 
-        // A line still being written is read once it is whole.
+        // A partial line is read once it is complete.
         let mut log = std::fs::OpenOptions::new()
             .append(true)
             .open(agent.events_path())
@@ -943,13 +876,13 @@ mod tests {
         writeln!(log, ",\"payload\":{{}}}}").unwrap();
         assert_eq!(turns.ended(Phase::Idle), Ended::NotYet);
 
-        // A log shorter than what was read is a new one, read from its start.
+        // A log shorter than what was read is new and is read from its start.
         std::fs::write(agent.events_path(), "").unwrap();
         said(TURN_END);
         assert_eq!(turns.ended(Phase::Idle), Ended::Turn);
     }
 
-    /// claude's word for a turn ending, as its entry spells it.
+    /// claude's turn-end hook event.
     const TURN_END: &str = "Stop";
 
     #[test]
