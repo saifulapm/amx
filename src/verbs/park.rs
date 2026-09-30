@@ -1,22 +1,10 @@
-//! `amx _park` — let an idle agent's pane go, and keep everything else.
+//! `amx _park`: end an idle agent's pane to free its memory, keeping the agent.
 //!
-//! A vendor sitting at its prompt holds a couple of hundred megabytes to do
-//! nothing with, and a wall of them is the machine's memory spent on turns
-//! that ended hours ago. So the pane goes and the agent stays: the record, the
-//! event log, the transcript and the vendor's session are where they were, and
-//! the next enter, attach or resume puts it in a pane again.
-//!
-//! amx has no daemon, so nothing sits watching for the moment to do this. The
-//! tmux server holding the pane is asked to run the verb once, `park_after`
-//! seconds after the hook that left the record idle, which makes what is
-//! written here the whole of the decision — and a decision taken against a
-//! record and a pane that have both had that long to move on. So every reason
-//! to leave the pane where it is is asked again from scratch, and any one of
-//! them ends the verb having done nothing at all. Doing nothing is the usual
-//! outcome and is not a failure: a timer that fired over an agent somebody
-//! went back to has no complaint to make about it. Neither has one that fired
-//! over an agent somebody cleared away first, which is the most ordinary of
-//! them: the person finished with the agent and said so.
+//! The record, event log, transcript and vendor session stay, and the next
+//! enter, attach or resume gives the agent a pane again. With no daemon, the
+//! tmux server runs this verb once, `park_after` seconds after the hook that
+//! left the record idle. Every condition is checked again at that point, and
+//! any reason to keep the pane makes the verb exit 0 having done nothing.
 
 use anyhow::Result;
 use std::path::Path;
@@ -27,7 +15,7 @@ use crate::tui::rows::Arrangement;
 use crate::verbs::stop;
 use crate::{config, exit, paths, store};
 
-/// What amx records when it lets a pane go.
+/// The event logged when amx lets a pane go.
 pub(crate) const PARKED: &str = "park";
 
 /// Run the verb against the machine.
@@ -38,76 +26,50 @@ pub fn from_env(id: &str) -> Result<i32> {
 
 /// The verb, with the state directory and the moment named.
 pub fn consider(root: &Path, id: &str, now: u64) -> Result<i32> {
-    // A record that has been cleared is a reason to do nothing like any of
-    // the guards below, and the one with the least to say: somebody typed
-    // `amx clear` and meant it, and an hour-old timer firing over the gap they
-    // left has no complaint to make. `agent_dir_in` still bails on an id amx
-    // would never have handed out, and a record that is there but cannot be
-    // read fails loudly on the first line of it that is asked for.
+    // A record cleared since the timer was set is nothing to do. An invalid
+    // id still fails, and so does a record that is there but unreadable.
     if !paths::agent_dir_in(root, id)?.is_dir() {
         return Ok(exit::OK);
     }
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
-    // The project's file over the person's, which is the rule `resume` follows
-    // for the cap: what a pane of that project's is worth is that project's to
-    // say, and this process is a timer a server fired rather than a command
-    // somebody typed anywhere in particular.
+    // The agent's project config, as `resume` reads it: this runs from a tmux
+    // timer, not from any particular directory.
     let (config, _) = config::for_dir(&meta.dir);
     let_go(root, &agent, &meta, config.park_after, now)
 }
 
-/// [`consider`], with the seconds an idle agent keeps its pane passed in
-/// rather than read off the config, so a test says what the person's file
-/// would have said. The suite cannot set an environment for one of its
-/// threads; see [`crate::paths`].
+/// [`consider`] with `park_after` passed in, so tests need not set a config.
 fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) -> Result<i32> {
-    // The writer first, and held to the end. A send or a hook landing between
-    // the reading and the kill would be a message pasted at a pane on its way
-    // out, or a turn ended under it; holding the writer puts every one of them
-    // either before the reading, where it is what park reads, or after the
-    // stamp, where it is what `send` refuses.
+    // Held to the end, so a send or hook lands either before the reading (and
+    // park sees it) or after the stamp (and `send` refuses).
     let writer = agent.writer()?;
     let state = writer.state()?;
     if !ripe(&state, park_after, now) {
         return Ok(exit::OK);
     }
 
-    // The pane as it is now rather than as the timer was set over it. One that
-    // has already gone was killed, or its server died, and both of those are
-    // an agent that ended: a stamp on that record would tell every reader
-    // after it that amx let this one go and will bring it back. A pane that
-    // answers for somebody else is the same answer — the number came round
-    // again to another agent, and taking it would end theirs. A tmux that
-    // could not be asked has said neither, and the timer says why it did
-    // nothing.
+    // A pane already gone means the agent ended, and a stamp would misreport it
+    // as parked. A pane number reused by another agent is not ours to end. A
+    // tmux that cannot be asked is an error.
     let server = Server::from_socket(meta.socket.clone());
     if !server.answers_for_now(&meta.pane, &meta.id)? {
         return Ok(exit::OK);
     }
 
-    // Somebody is looking at it, or has said they want to be. A pin outlives
-    // the view it was made in, so it is read off the file that view left
-    // rather than asked of a screen that is no longer open.
+    // Someone is watching the pane, or pinned the agent in the view (read off
+    // the file the view saves, since it may be closed).
     if server.pane_watched(&meta.pane) || Arrangement::from_disk(root).has_pinned(agent.id()) {
         return Ok(exit::OK);
     }
 
-    // The stamp goes on before the pane goes, not after: a reader landing
-    // between the two would find a pane gone and no word that amx took it,
-    // which is what a killed agent looks like, and would call this one
-    // stopped. While the pane is still there the stamp says nothing — a
-    // reader with a pane to look at looks at it — so nothing reads wrong on
-    // the way in, and a kill that fails takes the stamp back out.
-    //
-    // `observe` rather than `update_state`: this is something amx did, not
-    // something the agent said, and a `last_event` that moved would put an
-    // unread mark on a row with nothing new on it.
+    // Stamp before the kill, so a reader never sees a missing pane without the
+    // stamp and calls the agent stopped. A failed kill removes the stamp.
+    // `observe`, so `last_event` does not move and the row shows nothing new.
     writer.observe(|state| state.parked_at = now)?;
 
-    // stop's own ladder: the vendor is asked to finish what it is writing
-    // before it is insisted on. What it was writing is the transcript, and the
-    // transcript is what an agent that comes back comes back to.
+    // stop's SIGTERM-then-SIGKILL ladder, so the vendor can flush the
+    // transcript the agent resumes from.
     if let Err(e) = stop::end(&server, &meta.pane, &meta.id) {
         writer.observe(|state| state.parked_at = 0)?;
         return Err(e);
@@ -120,8 +82,8 @@ fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) ->
     Ok(exit::OK)
 }
 
-/// Whether the record says this agent has sat idle long enough for its pane to
-/// be worth more than what it is doing with it.
+/// Whether the record has been idle for at least `park_after` seconds. Zero
+/// disables parking.
 fn ripe(state: &State, park_after: u64, now: u64) -> bool {
     park_after > 0 && state.state == Phase::Idle && now >= state.since.saturating_add(park_after)
 }
@@ -136,7 +98,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    /// A server of this test's own, gone when the test is.
+    /// A private tmux server, killed on drop.
     struct TestServer {
         name: String,
         server: Server,
@@ -150,8 +112,7 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             );
-            // An empty conf, so nothing in the developer's ~/.tmux.conf can
-            // change what these tests measure.
+            // An empty conf, so the developer's ~/.tmux.conf has no effect.
             let server = Server::named(&name).with_conf("/dev/null");
             Self { name, server }
         }
@@ -170,9 +131,7 @@ mod tests {
         }
     }
 
-    /// An agent with a record and a pane of its own, which is every refusal's
-    /// starting point: what each of them proves is that this pane is still
-    /// there afterwards.
+    /// An agent with a record and a live pane of its own.
     struct Sitting {
         server: TestServer,
         session: crate::tmux::SessionId,
@@ -181,12 +140,10 @@ mod tests {
     }
 
     impl Sitting {
-        /// One agent, in a pane running a shell that does not exit.
+        /// One agent in a pane running a shell that does not exit.
         ///
-        /// In a session named the way [`crate::spawn::place`] names one, which
-        /// is what makes the pane answer for this agent rather than for
-        /// nobody: an agent whose pane is somebody else's has lost it, and a
-        /// pane nobody can be shown to own is that.
+        /// The session is named as [`crate::spawn::place`] names it, which is
+        /// what makes the pane answer for this agent.
         fn new(root: &Path, id: &str) -> Sitting {
             let server = TestServer::new();
             let (session, pane) = server
@@ -205,11 +162,10 @@ mod tests {
             }
         }
 
-        /// Put the record in a phase at a moment of the test's choosing.
+        /// Put the record in `phase` since `since`.
         ///
-        /// Through `observe`, because `update_state` stamps `since` with the
-        /// clock, and what these tests are about is an agent that has been
-        /// sitting there since before lunch.
+        /// Through `observe`, because `update_state` would stamp `since` with
+        /// the current time.
         fn recorded(&self, phase: Phase, since: u64) -> &Sitting {
             self.agent
                 .writer()
@@ -223,13 +179,12 @@ mod tests {
             self
         }
 
-        /// Whether its pane is still there.
         fn has_a_pane(&self) -> bool {
             self.server.pane_alive(&self.pane)
         }
     }
 
-    /// Poll until `f` is happy, rather than sleeping and hoping.
+    /// Poll until `f` returns true, or panic after ten seconds.
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -241,14 +196,14 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
-    /// A state directory, with room beside it for the view's own file.
+    /// A state directory, with room beside it for the view's arrangement file.
     fn state_root(state: &TempDir) -> PathBuf {
         let root = state.path().join("agents");
         std::fs::create_dir_all(&root).expect("somewhere to keep the records");
         root
     }
 
-    /// A record of an agent, pointed at whichever pane the test has.
+    /// A record of an agent pointed at `pane`.
     fn record(root: &Path, id: &str, socket: Socket, pane: PaneId) -> Agent {
         Agent::create(
             root,
@@ -276,14 +231,13 @@ mod tests {
         .expect("the record")
     }
 
-    /// The verb over the record this test has laid out, with the seconds and
-    /// the moment it is about.
+    /// Run the verb with this `park_after` at `now`.
     fn considered(root: &Path, agent: &Agent, park_after: u64, now: u64) -> i32 {
         let meta = agent.meta().expect("the record");
         let_go(root, agent, &meta, park_after, now).expect("a decision")
     }
 
-    /// What the verb left on the record: the stamp, and the log it wrote it in.
+    /// The record's `parked_at` stamp and the kinds in its event log.
     fn left(agent: &Agent) -> (u64, Vec<String>) {
         let kinds = agent
             .events()
@@ -296,10 +250,7 @@ mod tests {
 
     #[test]
     fn park_finds_nothing_to_do_where_the_record_has_been_cleared() {
-        // The timer was set an hour ago and somebody has since typed `amx
-        // clear`. Being finished with an agent is an answer like the rest,
-        // and the verb gives it the same way: nothing happens and it exits
-        // OK, with nothing on either stream for the server to report.
+        // Cleared since the timer was set: exit 0, nothing printed.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         assert_eq!(
@@ -310,8 +261,8 @@ mod tests {
 
     #[test]
     fn park_still_says_so_where_the_record_cannot_be_read() {
-        // The directory is there and the record in it is not. That is not the
-        // cleared record above: amx has something to report and reports it.
+        // A directory without a readable record is an error, unlike a cleared
+        // one.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         std::fs::create_dir_all(root.join("broken-a1b")).unwrap();
@@ -320,8 +271,7 @@ mod tests {
 
     #[test]
     fn park_refuses_a_tmux_that_cannot_be_asked_and_stamps_nothing() {
-        // Ripe, and nobody can say whether its pane is there: a stamp would
-        // tell every reader amx took a pane it never touched.
+        // Idle long enough, but tmux cannot say whether the pane exists.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let agent = record(
@@ -359,8 +309,8 @@ mod tests {
         assert_eq!(considered(&root, &it.agent, 3_600, 4_600), exit::OK);
         assert!(!it.has_a_pane(), "the pane went with the vendor");
 
-        // Everything the agent is stays where it was. Only the stamp is new,
-        // and it is what tells this pane from one that was killed.
+        // Only the stamp and the event are new; the stamp is what tells a
+        // parked agent from a killed one.
         let after = it.agent.state().unwrap();
         assert_eq!(after.parked_at, 4_600);
         assert_eq!(after.state, Phase::Idle);
@@ -374,9 +324,7 @@ mod tests {
 
     #[test]
     fn park_leaves_an_agent_that_is_not_idle_alone() {
-        // The record is the answer, and this record says the agent is working:
-        // the timer was set an hour ago and somebody has sent it something
-        // since.
+        // Set an hour ago, but the agent has been sent work since.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let it = Sitting::new(&root, "fix-login-a1b");
@@ -389,8 +337,7 @@ mod tests {
 
     #[test]
     fn park_takes_no_pane_at_all_where_the_key_is_zero() {
-        // Idle since the morning, and the person has said panes are not amx's
-        // to take.
+        // `park_after = 0` turns parking off.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let it = Sitting::new(&root, "fix-login-a1b");
@@ -408,8 +355,8 @@ mod tests {
         let it = Sitting::new(&root, "fix-login-a1b");
         it.recorded(Phase::Idle, 1_000);
 
-        // A second short, which is where a timer set over a turn that ended
-        // and then started again lands.
+        // One second short, as when the timer was set over an earlier idle and
+        // the agent went idle again since.
         assert_eq!(considered(&root, &it.agent, 3_600, 4_599), exit::OK);
         assert!(it.has_a_pane(), "the hour is not up");
         assert_eq!(left(&it.agent), (0, Vec::new()));
@@ -422,9 +369,8 @@ mod tests {
 
     #[test]
     fn park_does_not_stamp_a_pane_that_had_already_gone() {
-        // Killed, or its server died with it. Both are an agent that ended,
-        // and a stamp here would tell every reader after it that amx let this
-        // one go and will bring it back.
+        // The pane was killed or its server died, so the agent ended and must
+        // not be stamped as parked.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let agent = record(
@@ -448,10 +394,8 @@ mod tests {
 
     #[test]
     fn park_leaves_a_pane_that_answers_for_another_agent_alone() {
-        // The pane is today's agent's, and the record asking for it is
-        // yesterday's, whose server died and whose number came round again.
-        // Nothing here is this record's to take, and a stamp would tell every
-        // reader after it that this agent is parked and comes back.
+        // The pane number was reused by another agent after this record's
+        // server died. It is not this record's to end.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let today = Sitting::new(&root, "today-b2c");
@@ -482,8 +426,8 @@ mod tests {
         let it = Sitting::new(&root, "fix-login-a1b");
         it.recorded(Phase::Idle, 1_000);
 
-        // A client on a terminal of its own, which is what `session_attached`
-        // counts: a pane on another server, running a client of this one.
+        // An attached client, counted by `session_attached`: a pane on another
+        // server running a client of this one.
         let watcher = TestServer::new();
         watcher
             .new_session(&Spawn {
@@ -516,8 +460,7 @@ mod tests {
         let it = Sitting::new(&root, "fix-login-a1b");
         it.recorded(Phase::Idle, 1_000);
 
-        // The view's own file, as a view that has since been closed left it.
-        // Pinning an agent is having said you want it in front of you.
+        // The arrangement file a closed view left, with the agent pinned.
         std::fs::write(
             crate::paths::view_file(&root).expect("somewhere to keep it"),
             br#"{"arrangement":{"held":["fix-login-a1b"]}}"#,
@@ -531,11 +474,8 @@ mod tests {
 
     #[test]
     fn park_decides_on_the_record_as_it_is_once_it_holds_the_writer() {
-        // The timer fires over an agent that has sat idle for an hour, and in
-        // the moment between the verb reading the record and taking the pane,
-        // somebody sends it something. The writer is what orders the two: the
-        // record park goes by is the one it reads while holding it, so a send
-        // that got there first is a turn park finds and leaves alone.
+        // A send racing the timer. Park reads the record under the writer, so a
+        // send that wins the lock is a turn park sees and leaves alone.
         let state = TempDir::new().unwrap();
         let root = state_root(&state);
         let it = Sitting::new(&root, "fix-login-a1b");
@@ -547,7 +487,7 @@ mod tests {
             let agent = Agent::open(&root, "fix-login-a1b").unwrap();
             move || considered(&root, &agent, 3_600, 4_600)
         });
-        // Long enough for a verb that read first to have read.
+        // Long enough for a park that locked first to have read.
         std::thread::sleep(Duration::from_millis(300));
         writer
             .observe(|state| {

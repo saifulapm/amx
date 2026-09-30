@@ -1,37 +1,18 @@
-//! `amx interrupt` — stop the turn an agent is in the middle of.
+//! `amx interrupt`: end the turn an agent is working on by pressing Escape.
 //!
-//! Escape is the key. A vendor at work reads it as drop what you are doing:
-//! the turn ends where it stands, whatever it had half written, and the agent
-//! is back at its prompt with the conversation behind it intact. That is the
-//! whole of the verb, and the rest of this file is about the panes it must not
-//! be typed at.
+//! The key is sent only to a working agent. Everything else is refused, with
+//! nothing typed and nothing recorded:
 //!
-//! * **A question is not a turn.** Escape at a permission prompt dismisses the
-//!   prompt, which is an answer to it, and answering a question by accident is
-//!   not something a caller can take back. The question goes to stdout where
-//!   `send` puts it, and the line beside it names the verb that does mean to
-//!   answer: `amx answer <id> esc`.
-//! * **A command is not an agent.** A row running a shell command has no
-//!   vendor in it to read a key: Escape reaches whatever the command makes of
-//!   it, which is usually nothing, and the command runs on. `amx stop` is what
-//!   ends one.
-//! * **Nothing running is nothing to interrupt.** Parked, idle or ended, the
-//!   key would land in the agent's next turn rather than in this one, and a
-//!   verb that reported success would leave a caller believing a turn had been
-//!   cut short when none was.
+//! - A waiting agent (exit 2): Escape would answer its question. The question
+//!   is printed, and `amx answer <id> esc` named as the way to dismiss it.
+//! - A command row (exit 1): no vendor reads the key. `amx stop` ends it.
+//! - A parked, idle or ended agent (exit 1): there is no turn to cut short.
 //!
-//! It records itself before it types, for the reason `send` does: a `result`
-//! in another shell must not hand back the last turn's answer as this turn's.
-//! The event is also what says the turn is over. Whether a vendor mentions a
-//! turn it was interrupted out of is that vendor's business, and its hooks are
-//! written around turns that run to their end, so a wait holding out for one
-//! is a wait that may sit there until its own deadline over a turn that ended
-//! the moment the key landed. See [`crate::verbs::result`].
-//!
-//! What it does not do is move the phase. amx typed at the agent and heard
-//! nothing back, and a keystroke is not news about the screen it was typed at;
-//! the next hook, or the next reader at the pane, is what says the agent has
-//! stopped. `answer` leaves a key it cannot name on the record the same way.
+//! The interrupt is logged before the key is sent, as `send` logs a message,
+//! so a `result` in another shell never returns the previous turn's answer.
+//! The event also ends the turn for [`crate::verbs::result`], since vendors
+//! may send no hook for an interrupted turn. The phase is not changed: the
+//! next hook or reading of the pane does that.
 
 use anyhow::Result;
 use std::io::Write;
@@ -50,8 +31,8 @@ pub const INTERRUPT: &str = "interrupt";
 /// The key that ends the turn a vendor is in the middle of.
 const CANCELS: &str = "Escape";
 
-/// How far apart the presses go for a vendor that wants more than one: close
-/// enough that its first still has the cancel armed when the next lands.
+/// The gap between presses for a vendor that needs several, short enough that
+/// the first press still has the cancel armed.
 const BETWEEN_PRESSES: Duration = Duration::from_millis(300);
 
 /// Run the verb against the machine.
@@ -66,10 +47,7 @@ pub fn from_env(id: &str) -> Result<i32> {
 pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     match cut_the_turn(root, id)? {
         Cut::Turn => Ok(exit::OK),
-        // The three that sent nothing are answered off the record read again,
-        // which says what it said a moment ago: a refusal types nothing at the
-        // pane and writes nothing down, so there is nothing for a second
-        // reading to disagree with.
+        // A refusal changed nothing, so reading again gives the same answer.
         Cut::Question => a_question_is_answered(&reading(root, id)?, to_terminal, out),
         Cut::Command => {
             complain!("amx: {}", end_the_command(id));
@@ -85,14 +63,11 @@ pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Re
     }
 }
 
-/// Cut the turn short, and say what was at the pane.
+/// Cut the turn short if one is running, and say what was at the pane.
 ///
-/// The whole of the verb bar the sentences: [`Cut::Turn`] is the interrupt
-/// recorded and Escape sent, and each of the other three is a pane the key was
-/// kept away from, with nothing written down and nothing typed. The view
-/// presses this so that a key on the list and the verb at a shell weigh the
-/// same record the same way, and says in its own words what `run` says in
-/// stderr's.
+/// Only [`Cut::Turn`] records the interrupt and sends Escape; the other
+/// outcomes touch nothing. The view calls this too, so both apply the same
+/// rules.
 pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
     let view = reading(root, id)?;
     let cut = what_is_running(&view);
@@ -100,8 +75,7 @@ pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
         let agent = Agent::open(root, id)?;
         recorded(&agent, view.meta.agent.as_deref())?;
         let server = Server::from_socket(view.meta.socket.clone());
-        // A record whose vendor amx no longer knows is pressed once, as every
-        // vendor was before one needed more.
+        // An unknown vendor gets one press.
         let presses = crate::registry::entry(view.meta.agent.as_deref().unwrap_or_default())
             .map_or(1, |vendor| vendor.cancel_presses);
         pressed(presses, || server.send_keys(&view.meta.pane, &[CANCELS]))?;
@@ -120,30 +94,27 @@ fn pressed(presses: u8, mut press: impl FnMut() -> Result<()>) -> Result<()> {
     Ok(())
 }
 
-/// This agent as a reader has it now.
 fn reading(root: &Path, id: &str) -> Result<View> {
     derive::view(root, id, store::now())
 }
 
-/// What is in this agent's pane, as far as a key is concerned.
+/// What is in an agent's pane, as far as Escape is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cut {
-    /// A turn, which is the one thing Escape ends.
+    /// A running turn: the key was sent.
     Turn,
-    /// A question. Escape there answers it rather than ends anything.
+    /// A question, which Escape would answer.
     Question,
-    /// A command somebody ran, with no vendor in it to read a key at all.
+    /// A shell command, with no vendor to read the key.
     Command,
-    /// Nothing: there is no turn for a key to cut short.
+    /// No turn to cut short.
     Nothing,
 }
 
-/// Weigh one reading.
+/// Classify one reading.
 ///
-/// A pane amx let go is asked about before the phase is, because letting a
-/// pane go is no ending: the record reads whatever the agent was doing at the
-/// moment the pane was taken, so nothing below would say a word about a key
-/// being sent to a pane that is not there.
+/// A parked agent is checked first: its record keeps the phase it had when the
+/// pane was taken, which may read as working.
 fn what_is_running(view: &View) -> Cut {
     if view.verdict.evidence == Evidence::LetGo {
         return Cut::Nothing;
@@ -156,38 +127,24 @@ fn what_is_running(view: &View) -> Cut {
     }
 }
 
-/// Whether this row is a command somebody ran rather than an agent.
+/// Whether this row is a shell command rather than an agent.
 ///
-/// The two things [`crate::derive`] asks of it. A command spawn writes no
-/// vendor on the record because it runs none, and nothing ever reports about a
-/// command — no hook is sent for it and no rule is held against its pane — so
-/// its record sits at the phase the spawn wrote for the whole of its life. A
-/// reading of `working` over that pair is tmux saying the pane is still there,
-/// which is the whole of what amx knows about a command.
+/// A command's record has no vendor and stays at `starting` for its whole life,
+/// since nothing reports on it. The same test [`crate::derive`] uses.
 fn runs_a_command(view: &View) -> bool {
     view.meta.agent.is_none() && view.state.state == Phase::Starting
 }
 
-/// Write the interrupt down, before the key that causes it is sent.
+/// Record the interrupt, before the key is sent.
 ///
-/// The record comes first for the reason `send`'s does: what it tells a reader
-/// in another process is that the answer it can see belongs to the turn this
-/// key is about to end. A `result` reading the log a moment later would
-/// otherwise hand that answer back as this turn's, which is the mistake
-/// nothing downstream can undo.
+/// Logs an `interrupt` event and stamps `interrupted_at` on the state, so a
+/// reader goes to the pane at once instead of waiting out the hook window (see
+/// [`crate::derive::read`]). Written with `observe`, since nothing was heard
+/// from the agent.
 ///
-/// The log is for whoever reads the whole history; the stamp beside it is for
-/// whoever reads the state document, which is every reader of a row. It says
-/// the turn on that document is one amx ended itself, so a reader need not sit
-/// out the wait a turn nobody cut short is owed — see [`crate::derive::read`].
-/// Written with the observing hand, because nothing was heard: the phase is
-/// still the vendor's last word, and a stamp for a key amx typed must not have
-/// the next reader believe this document over the pane it was typed at.
-///
-/// A vendor that puts what it was holding back in its composer on a cancel
-/// gets that written down too, read off the log before this event ends the
-/// queue: the text is on the vendor's prompt now, unsubmitted, and `send`
-/// refuses to type after it — see [`crate::store::State::composer_holds`].
+/// For a vendor that puts queued messages back in its composer on cancel, the
+/// queue is read off the log first and kept in
+/// [`crate::store::State::composer_holds`], which `send` refuses to type after.
 fn recorded(agent: &Agent, vendor: Option<&str>) -> Result<()> {
     let writer = agent.writer()?;
     let holds = match crate::registry::entry(vendor.unwrap_or_default())
@@ -208,14 +165,8 @@ fn recorded(agent: &Agent, vendor: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Exit `BLOCKED`, with the question this agent is stopped on where the answer
-/// would have gone.
-///
-/// The three lines `send` writes at the same pane, for the same reasons: a
-/// caller reads stdout, the choices are what an answer has to be one of, and a
-/// question amx never captured still blocks. What differs is the sentence
-/// beside them, because what is being offered here is not the grammar of an
-/// answer but the one key that takes the question away.
+/// Exit `BLOCKED` with the pending question on stdout, as `send` does, and
+/// name `amx answer <id> esc` on stderr.
 fn a_question_is_answered(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     if let Some(question) = &view.state.question {
         super::print_question(question, &view.state.options, to_terminal, out)?;
@@ -224,35 +175,20 @@ fn a_question_is_answered(view: &View, to_terminal: bool, out: &mut impl Write) 
     Ok(exit::BLOCKED)
 }
 
-/// What sends Escape at a question, which is the other verb.
-///
-/// The same key either way, and which verb sends it is the difference between
-/// dismissing a prompt on purpose and cutting short a turn that is not
-/// running.
 fn answer_it_instead(id: &str) -> String {
     format!("{id} is waiting on a question, not working. dismiss it with `amx answer {id} esc`")
 }
 
-/// What ends a command, which is not a key at its pane.
 fn end_the_command(id: &str) -> String {
     format!("{id} is a command rather than an agent; there is no turn in it. run: amx stop {id}")
 }
 
-/// What a pane with no turn in it has to say for itself.
 fn nothing_is_running(id: &str, doing: &str) -> String {
     format!("{id} is {doing}; nothing is running to interrupt")
 }
 
-/// What this agent is doing, for a refusal to name it by.
-///
-/// `parked` where the phase alone would say `idle`: the record keeps the phase
-/// the agent was at when amx took its pane, and a refusal naming that without
-/// saying the pane has gone is one somebody reads as an agent sitting at a
-/// prompt.
-///
-/// Public for the view, which says the same of the row under the cursor: the
-/// word belongs to the refusal, and one of them saying `idle` where the other
-/// says `parked` would be two accounts of one agent.
+/// The word a refusal uses for this agent's state: its phase, or `parked`
+/// when amx let its pane go. Shared with the view so both say the same.
 pub fn doing(view: &View) -> &'static str {
     match view.verdict.evidence == Evidence::LetGo {
         true => "parked",
@@ -267,7 +203,7 @@ mod tests {
     use crate::store::{Agent, Meta, Phase, State};
     use crate::tmux::{PaneId, Socket};
 
-    /// An agent as a reader hands it over.
+    /// A view of an agent in `phase`, read off `evidence`.
     fn reading(phase: Phase, evidence: Evidence) -> View {
         View {
             meta: Meta {
@@ -316,8 +252,7 @@ mod tests {
             Cut::Question
         );
 
-        // Nothing is running, so the key would land in whatever the agent does
-        // next rather than in the turn it was meant for.
+        // No turn is running.
         for phase in [
             Phase::Starting,
             Phase::Idle,
@@ -333,9 +268,7 @@ mod tests {
             );
         }
 
-        // A pane amx let go is no ending, so the record reads whatever the
-        // agent was doing when the pane was taken — and there is no pane left
-        // to type at.
+        // A parked agent has no pane to type at, and its refusal says parked.
         assert_eq!(
             what_is_running(&reading(Phase::Idle, Evidence::LetGo)),
             Cut::Nothing
@@ -349,8 +282,8 @@ mod tests {
 
     #[test]
     fn interrupt_presses_as_many_times_as_the_vendor_asks_300_ms_apart() {
-        // opencode's first Escape only arms the cancel; the second cuts the
-        // turn. The fixture asks for three, and every table vendor for one.
+        // opencode's first Escape only arms the cancel and the second cuts the
+        // turn. The test vendor asks for three; claude for one.
         let three = crate::vendor::second::ELSEWHERE.cancel_presses;
         let one = crate::registry::entry("claude").unwrap().cancel_presses;
         for presses in [three, one] {
@@ -375,16 +308,15 @@ mod tests {
 
     #[test]
     fn interrupt_a_command_has_no_vendor_in_it_to_read_a_key() {
-        // A command spawn writes no vendor on the record and nothing ever
-        // moves its record off the phase that spawn wrote, so a live pane is
-        // the whole of what amx knows about one — which reads as working.
+        // A command's record has no vendor and stays at starting, and its live
+        // pane reads as working.
         let mut command = reading(Phase::Working, Evidence::Screen);
         command.meta.agent = None;
         command.state.state = Phase::Starting;
         assert_eq!(what_is_running(&command), Cut::Command);
 
-        // An agent from before amx kept the vendor's name is still an agent:
-        // its record has moved off starting, which a command's never does.
+        // An older agent record with no vendor has moved off starting, which
+        // a command's never does.
         let mut older = reading(Phase::Working, Evidence::Hooks);
         older.meta.agent = None;
         assert_eq!(what_is_running(&older), Cut::Turn);
@@ -403,9 +335,7 @@ mod tests {
 
     #[test]
     fn interrupt_a_waiting_agent_gets_its_question_back_rather_than_a_key() {
-        // Escape at a permission prompt answers the prompt, and answering a
-        // question by accident is not something a caller can take back. The
-        // question goes where the answer would have gone.
+        // Escape would answer the prompt, so the question is printed instead.
         let mut view = reading(Phase::Waiting, Evidence::Hooks);
         view.state.question = Some("Claude needs your permission to use Bash".to_string());
         view.state.options = vec!["Yes".to_string(), "No".to_string()];
@@ -422,10 +352,8 @@ mod tests {
 
     #[test]
     fn interrupt_says_so_when_amx_has_let_the_agents_pane_go() {
-        // A parked agent reads idle, which is where it was when its pane was
-        // taken, so without a word here the key would go to a pane that is not
-        // there. The record is untouched: nothing was cut short, and a
-        // `result` waiting on this agent must not read one.
+        // Refused, and nothing is logged, so a `result` waiting on this agent
+        // does not see an interrupt.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
             parent: None,
@@ -453,10 +381,8 @@ mod tests {
 
     #[test]
     fn interrupt_the_turn_is_on_the_record_before_the_key_is_sent() {
-        // A `result` in another shell reads the log to tell this turn's end
-        // from the end of the turn before it, so an interrupt that reached the
-        // pane first would leave that reader handing back the last turn's
-        // answer as this one's.
+        // Logged before the key, so a concurrent `result` never returns the
+        // previous turn's answer.
         let root = tempfile::TempDir::new().unwrap();
         let agent =
             Agent::create(root.path(), &reading(Phase::Working, Evidence::Hooks).meta).unwrap();
@@ -472,10 +398,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, INTERRUPT);
 
-        // And the stamp beside it, which is what tells a reader the turn on the
-        // record is one amx ended itself. Written with the observing hand: amx
-        // typed at the pane and heard nothing back, so the record is no fresher
-        // than it was.
+        // Stamped with `observe`: `last_event` and the phase do not move.
         let state = agent.state().unwrap();
         assert_eq!(state.interrupted_at, events[0].at);
         assert_eq!(state.last_event, turn.last_event, "and nothing was heard");
@@ -484,9 +407,8 @@ mod tests {
 
     #[test]
     fn interrupt_a_pi_holding_sends_stamps_what_goes_back_in_its_composer() {
-        // pi puts the messages it was holding back in its composer when a turn
-        // is cancelled, so the record keeps them for `send` to refuse over.
-        // claude drops nothing back, and its record is left alone.
+        // pi puts queued messages back in its composer on cancel, so the record
+        // keeps them for `send`. claude does not.
         for (vendor, held) in [("pi", vec!["and the linter"]), ("claude", vec![])] {
             let root = tempfile::TempDir::new().unwrap();
             let meta = Meta {
@@ -510,7 +432,7 @@ mod tests {
             assert_eq!(agent.state().unwrap().composer_holds, held, "{vendor}");
         }
 
-        // A pi holding nothing has nothing put back.
+        // A pi with nothing queued gets nothing put back.
         let root = tempfile::TempDir::new().unwrap();
         let meta = Meta {
             agent: Some("pi".to_string()),
