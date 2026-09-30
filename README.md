@@ -22,7 +22,7 @@
 
 ---
 
-https://github.com/user-attachments/assets/4ed78eda-e58c-406b-be81-680c1a420f82
+https://github.com/user-attachments/assets/a4dac175-5291-4f8e-b8fe-1f94594e24ab
 
 **Run coding agents as tmux panes.**
 
