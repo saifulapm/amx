@@ -260,7 +260,7 @@ fn new_refuses_a_file_with_nothing_in_it_the_way_it_refuses_an_empty_task() {
         "a malformed command line, the same as an empty argument"
     );
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("something to do"), "{said}");
+    assert!(said.contains("the text is empty"), "{said}");
 
     // An unreadable file is named in the error, since the name is the likely
     // typo.
@@ -358,7 +358,10 @@ fn new_starts_nothing_where_the_editor_would_have_none_of_it() {
     assert_eq!(refused.status.code(), Some(1));
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.starts_with("amx new: "), "{said}");
-    assert!(said.contains("left the line as it was"), "{said}");
+    assert!(
+        said.contains("exited with an error; the line is unchanged"),
+        "{said}"
+    );
     assert!(ls(&amx).is_empty(), "and nothing was minted for it");
 }
 
@@ -378,7 +381,7 @@ fn new_refuses_an_editor_closed_on_nothing_the_way_it_refuses_an_empty_task() {
 
     assert_eq!(refused.status.code(), Some(64));
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("something to do"), "{said}");
+    assert!(said.contains("the text is empty"), "{said}");
     assert!(ls(&amx).is_empty(), "and nothing was minted for it");
 }
 
@@ -1457,7 +1460,7 @@ fn new_takes_back_the_tree_when_the_work_will_not_apply_in_it() {
 
     assert_eq!(refused.status.code(), Some(1));
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("moving the work"), "{said}");
+    assert!(said.contains("moving the uncommitted changes"), "{said}");
     assert_eq!(
         std::fs::read_to_string(repo.join("README.md")).unwrap(),
         "third\n",
@@ -1822,7 +1825,7 @@ fn new_refuses_a_branch_another_tree_already_holds() {
 
     assert_eq!(refused.status.code(), Some(1));
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("main is checked out"), "{said}");
+    assert!(said.contains("main is already checked out"), "{said}");
     let listed = amx.amx(&["ls", "--json"]);
     assert_eq!(
         String::from_utf8_lossy(&listed.stdout).trim(),

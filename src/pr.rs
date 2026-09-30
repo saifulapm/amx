@@ -558,8 +558,7 @@ fn head_from(repo: &Path, number: u64, gh: &Path) -> Result<PrHead> {
         // repository; naming the repository catches a wrong checkout.
         bail!("no pull request #{number} in {}", repo.display());
     }
-    serde_json::from_slice(&out.stdout)
-        .with_context(|| format!("reading what gh said about #{number}"))
+    serde_json::from_slice(&out.stdout).with_context(|| format!("reading gh output for #{number}"))
 }
 
 #[cfg(test)]

@@ -126,7 +126,7 @@ fn stop_keeps_a_branch_whose_commits_are_on_no_other_branch_and_says_how_many() 
         ],
     ));
     assert!(
-        out.contains("kept amx/fix-login-a1b: 2 commits are on no other branch"),
+        out.contains("kept amx/fix-login-a1b: 2 commits are not on any other branch"),
         "{out}"
     );
     assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");

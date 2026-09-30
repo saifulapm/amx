@@ -283,7 +283,7 @@ fn a_still_screen_does_not_end_a_turn_the_record_says_is_running() {
 
     let out = amx.amx(&["status", "fix-login-a1b"]);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("held still"), "{text}");
+    assert!(text.contains("still changing"), "{text}");
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn a_screen_no_rule_claims_is_unknown_and_says_how_stale_it_is() {
 
     let out = amx.amx(&["status", "nothing-known-b2c"]);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("no rule claims"), "{text}");
+    assert!(text.contains("no rule matches"), "{text}");
 }
 
 #[test]

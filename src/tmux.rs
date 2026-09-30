@@ -380,7 +380,7 @@ impl Server {
         match self.pane_owners() {
             Ok(owners) => Ok(owners),
             Err(e) if is_no_server(&e) => Ok(PaneOwners::default()),
-            Err(e) => Err(e.context("tmux could not be asked")),
+            Err(e) => Err(e.context("listing the tmux panes")),
         }
     }
 
@@ -398,7 +398,7 @@ impl Server {
         printed
             .trim()
             .parse()
-            .with_context(|| format!("pane {pane} reported pid {printed:?}"))
+            .with_context(|| format!("pane {pane} reported an unreadable pid {printed:?}"))
     }
 
     /// Whether someone is looking at this pane: it is the active pane of the
@@ -1653,7 +1653,7 @@ mod tests {
         let unasked = Server::from_socket(unaskable());
         let why = unasked.answers_for_now(&pane, "fix-login-a1b").unwrap_err();
         assert!(
-            format!("{why:#}").starts_with("tmux could not be asked: "),
+            format!("{why:#}").starts_with("listing the tmux panes: "),
             "{why:#}"
         );
     }

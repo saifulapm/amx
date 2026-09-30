@@ -31,7 +31,7 @@ pub const FILE_MODE: u32 = 0o600;
 /// that, and it does not apply at all to a file that already exists.
 pub fn keep_to_the_owner(path: &Path, mode: u32) -> Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .with_context(|| format!("keeping {} to its owner", path.display()))
+        .with_context(|| format!("setting permissions on {}", path.display()))
 }
 
 /// A file's length and mtime, or `None` if it does not exist.
@@ -94,7 +94,7 @@ fn beside_the_agents(state_root: &Path, name: &str) -> Option<PathBuf> {
 
 /// Where cached vendor model listings are kept, one file per harness.
 pub fn models_dir() -> Result<PathBuf> {
-    beside_the_agents(&state_root()?, MODELS).context("no state root to keep a model listing under")
+    beside_the_agents(&state_root()?, MODELS).context("no directory to cache model lists in")
 }
 
 const MODELS: &str = "models";
@@ -140,7 +140,7 @@ pub fn anchored(dir: &Path) -> Result<PathBuf> {
 }
 
 fn home() -> Result<PathBuf> {
-    std::env::home_dir().context("no home directory: set $HOME, or $AMX_STATE_DIR in tests")
+    std::env::home_dir().context("no home directory: set $HOME or $AMX_STATE_DIR")
 }
 
 /// An environment variable as a path, with empty treated as unset (as XDG

@@ -56,13 +56,13 @@ pub fn run(
     let session = copied_session(&meta)?;
     if !meta.dir.is_dir() {
         bail!(
-            "{} is gone, and it is where {} ran",
+            "{}, where {} ran, no longer exists",
             meta.dir.display(),
             meta.id
         );
     }
     let recorded = spawn::read_handoff(origin.dir())
-        .with_context(|| format!("reading what {} was started with", meta.id))?;
+        .with_context(|| format!("reading how {} was started", meta.id))?;
     if let Some(refusal) = cannot_branch(spawn::vendor_of(&recorded), &meta.id) {
         bail!(refusal);
     }
@@ -289,18 +289,16 @@ fn cannot_branch(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     let vendor = vendor?;
     if !vendor.can(Capability::Fork) {
         return Some(format!(
-            "{id} runs {}, which cannot branch a conversation, so there is no \
-             copy to ask it for. carry this one on with `amx resume {id}`, or \
-             start a fresh agent with `amx new`",
+            "{id} runs {}, which cannot fork a conversation; continue it with \
+             `amx resume {id}`, or start a new agent with `amx new`",
             vendor.name
         ));
     }
     // A claimed capability with no session vocabulary is refused the same way.
     vendor.session.is_none().then(|| {
         format!(
-            "{id} runs {}, which names no session vocabulary, so there is no \
-             copy to ask it for. carry this one on with `amx resume {id}`, or \
-             start a fresh agent with `amx new`",
+            "{id} runs {}, and amx has no session support for it; continue it with \
+             `amx resume {id}`, or start a new agent with `amx new`",
             vendor.name
         )
     })
@@ -310,14 +308,14 @@ fn cannot_branch(vendor: Option<&Vendor>, id: &str) -> Option<String> {
 fn copied_session(meta: &Meta) -> Result<String> {
     let Some(session) = meta.session.as_deref() else {
         bail!(
-            "no session was ever recorded for {}, so there is no conversation to copy. \
-             start a fresh agent with `amx new`",
+            "no session was recorded for {}, so there is no conversation to copy; \
+             start a new agent with `amx new`",
             meta.id
         );
     };
     if !resume::is_session_id(session) {
         bail!(
-            "the session recorded for {} is not a session id, so it will not be handed on",
+            "the session recorded for {} is not a session id, so amx will not pass it on",
             meta.id
         );
     }
@@ -755,7 +753,7 @@ mod tests {
             cannot_branch(Some(&cannot), "fix-login-a1b").expect("it names no session vocabulary");
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(cannot.name), "{said}");
-        assert!(said.contains("no session vocabulary"), "{said}");
+        assert!(said.contains("no session support"), "{said}");
         assert!(said.contains("amx resume fix-login-a1b"), "{said}");
     }
 
@@ -765,7 +763,7 @@ mod tests {
         let said = cannot_branch(Some(&SECOND), "fix-login-a1b").expect("it cannot fork");
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(SECOND.name), "{said}");
-        assert!(said.contains("cannot branch a conversation"), "{said}");
+        assert!(said.contains("cannot fork a conversation"), "{said}");
         assert!(said.contains("amx resume fix-login-a1b"), "{said}");
 
         assert_eq!(
@@ -926,6 +924,6 @@ mod tests {
 
         let said = format!("{:#}", fork(root.path(), "fix-login-a1b").unwrap_err());
         assert!(said.contains(&meta.dir.display().to_string()), "{said}");
-        assert!(said.contains("is gone"), "{said}");
+        assert!(said.contains("no longer exists"), "{said}");
     }
 }

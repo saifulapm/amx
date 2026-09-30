@@ -60,11 +60,11 @@ pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
     let name = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
     let name = name.as_str();
     if name.is_empty() {
-        return Ok(Renamed::No("a name is a word, not nothing".to_string()));
+        return Ok(Renamed::No("a name cannot be empty".to_string()));
     }
     if name.chars().count() > NAME {
         return Ok(Renamed::No(format!(
-            "a name is {NAME} characters at most, so that a row can carry it"
+            "a name can be at most {NAME} characters, so that it fits on a row"
         )));
     }
 
@@ -74,7 +74,7 @@ pub fn rename(root: &Path, id: &str, typed: &str) -> Result<Renamed> {
     agent
         .writer()?
         .observe(|state| state.name = (name != id).then(|| name.to_string()))?;
-    Ok(Renamed::Yes(format!("{id} is {name}")))
+    Ok(Renamed::Yes(format!("renamed {id} to {name}")))
 }
 
 #[cfg(test)]
@@ -174,7 +174,10 @@ mod tests {
         let code = run(root.path(), "fix-login-a1b", "auth", &mut out).unwrap();
 
         assert_eq!(code, exit::OK);
-        assert_eq!(String::from_utf8(out).unwrap(), "fix-login-a1b is auth\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "renamed fix-login-a1b to auth\n"
+        );
         assert_eq!(agent.state().unwrap().name.as_deref(), Some("auth"));
         assert_eq!(
             agent.meta().unwrap().id,

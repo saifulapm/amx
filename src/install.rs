@@ -439,13 +439,13 @@ impl Merge {
                 .entry("hooks")
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
-                .context("its `hooks` is not an object")?;
+                .context("`hooks` in the hooks file is not an object")?;
             for (event, groups) in shipped["hooks"].as_object().into_iter().flatten() {
                 let list = events
                     .entry(event.clone())
                     .or_insert_with(|| json!([]))
                     .as_array_mut()
-                    .with_context(|| format!("its `{event}` is not a list"))?;
+                    .with_context(|| format!("`hooks.{event}` in the hooks file is not a list"))?;
                 for group in groups.as_array().into_iter().flatten() {
                     let at = match list.iter().position(|it| is_amx_group(it, command)) {
                         Some(at) => {

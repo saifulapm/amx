@@ -755,7 +755,7 @@ pub struct StopArgs {
 /// Anything else is passed on exactly as typed.
 fn a_task(text: &str) -> Result<String, String> {
     match text.trim().is_empty() {
-        true => Err("an agent needs something to do".to_string()),
+        true => Err("the text is empty".to_string()),
         false => Ok(text.to_string()),
     }
 }
@@ -770,7 +770,7 @@ fn a_phase(word: &str) -> Result<Phase, String> {
         .find(|phase| phase.as_str() == word)
         .ok_or_else(|| {
             format!(
-                "no state `{word}`: {}",
+                "unknown state `{word}`; expected one of: {}",
                 PHASES.map(Phase::as_str).join(", ")
             )
         })

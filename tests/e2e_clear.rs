@@ -59,7 +59,7 @@ fn clear_lists_the_finished_rows_and_forgets_the_ones_whose_trees_hold_nothing()
 
     assert!(
         out.contains(&format!(
-            "kept port-import-c3d: {tree} is still there, and so is its record"
+            "kept port-import-c3d: {tree} has uncommitted changes"
         )),
         "{out}"
     );

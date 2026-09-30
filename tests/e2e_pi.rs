@@ -811,11 +811,11 @@ fn a_model_neither_harness_offers_is_refused_naming_what_each_takes() {
     );
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        said.contains("pi takes 2 models (pi --list-models)"),
+        said.contains("pi lists 2 models (`pi --list-models`)"),
         "how many models pi has and what prints them: {said}"
     );
     assert!(
-        said.contains("claude takes") && said.contains("opus"),
+        said.contains("claude accepts") && said.contains("opus"),
         "and claude's own words, which amx holds itself: {said}"
     );
     assert!(

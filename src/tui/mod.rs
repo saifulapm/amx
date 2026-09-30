@@ -901,9 +901,8 @@ fn offer_the_statusline(path: &Path) -> Option<String> {
     let _ = remembered.write(path);
 
     Some(format!(
-        "amx can keep the fleet in the corner of your tmux status line:\n\n    \
-         {STATUSLINE}\n\nPaste that into your tmux config. amx will not write \
-         it for you."
+        "To show your agents in the tmux status line, add this line to your tmux \
+         config:\n\n    {STATUSLINE}\n\namx does not edit your tmux config itself."
     ))
 }
 
@@ -1135,8 +1134,8 @@ where
     Ok(match handed {
         Ok(status) if status.success() => None,
         // tmux's own message was on the screen the view has since redrawn.
-        Ok(_) => Some(Notice::Failed(format!("tmux would not open {id}"))),
-        Err(e) => Some(Notice::Failed(format!("reaching {id}: {e}"))),
+        Ok(_) => Some(Notice::Failed(format!("tmux could not attach to {id}"))),
+        Err(e) => Some(Notice::Failed(format!("attaching to {id}: {e}"))),
     })
 }
 
@@ -1848,7 +1847,7 @@ impl Screen {
                         // Name the config key that would set a viewer.
                         false => {
                             self.notice = Some(Notice::Refused(
-                                "no diff key in the config to read the patch with".to_string(),
+                                "no patch viewer: set the diff key in the config".to_string(),
                             ));
                         }
                     }
@@ -1907,8 +1906,8 @@ impl Screen {
                         }
                         None => {
                             self.notice = Some(Notice::Refused(format!(
-                                "{} is a command, not an agent; there is no \
-                                 conversation to copy",
+                                "{} is a command, not an agent, so there is no \
+                                 conversation to fork",
                                 rows::called(view)
                             )));
                         }
@@ -2390,9 +2389,7 @@ impl Screen {
                 self.list.land_on(&id);
             }
             None => {
-                self.notice = Some(Notice::Advice(
-                    "nothing on the wall is waiting on you".to_string(),
-                ));
+                self.notice = Some(Notice::Advice("no agent is waiting on you".to_string()));
             }
         }
     }
@@ -2599,7 +2596,7 @@ impl Screen {
             self.notice = match trouble.len() {
                 0 => kept_a_tree(forgotten),
                 stuck => Some(Notice::Failed(format!(
-                    "{} · {stuck} would not stop: {}",
+                    "{} · {stuck} failed to stop: {}",
                     match &forgotten {
                         Ok((said, _)) => said.clone(),
                         Err(e) => format!("{e:#}"),
@@ -2723,7 +2720,7 @@ impl Screen {
             None => match kept {
                 0 => Notice::Advice(format!("cleared {cleared}")),
                 kept => Notice::Refused(format!(
-                    "cleared {cleared} · kept {kept} holding work no commit has"
+                    "cleared {cleared} · kept {kept} with uncommitted changes"
                 )),
             },
         });
@@ -3480,7 +3477,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
         && server.pane_field(&view.meta.pane, "#{pid}")? != here.pid
     {
         return Ok(Reach::Say(Notice::Refused(format!(
-            "{id} is on another tmux. run `amx attach {id}` to reach it",
+            "{id} runs on another tmux server; run `amx attach {id}` to reach it",
             id = view.id()
         ))));
     }

@@ -417,7 +417,7 @@ const CLEARS: &str = "c again clears";
 
 /// The summary of a row `c` found with uncommitted work in its worktree. The
 /// second press keeps such a row, so it must not say `c again clears`.
-const HOLDS: &str = "holds work no commit has";
+const HOLDS: &str = "has uncommitted changes";
 
 /// Width of the pull request column: the widest label on the list, or zero
 /// when no agent has a request.
@@ -1207,7 +1207,7 @@ mod tests {
         });
         let drawn = painted(&screen, size);
         assert!(
-            drawn[2].contains("holds work no commit has · #12 merged"),
+            drawn[2].contains("has uncommitted changes · #12 merged"),
             "the row says what the press after this one will not do to it: {:?}",
             drawn[2]
         );
@@ -1217,7 +1217,7 @@ mod tests {
             drawn[2]
         );
         assert_eq!(
-            word_colour(&screen, size, 2, "holds work no commit has"),
+            word_colour(&screen, size, 2, "has uncommitted changes"),
             theme().waiting,
             "in the colour every armed row wears"
         );

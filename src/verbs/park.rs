@@ -293,7 +293,7 @@ mod tests {
         let why = let_go(&root, &agent, &meta, 3_600, 4_600).unwrap_err();
 
         assert!(
-            format!("{why:#}").starts_with("tmux could not be asked: "),
+            format!("{why:#}").starts_with("listing the tmux panes: "),
             "{why:#}"
         );
         assert_eq!(left(&agent), (0, Vec::new()));

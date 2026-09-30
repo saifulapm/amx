@@ -1390,7 +1390,7 @@ pub fn claims(root: &Path) -> Result<Vec<(String, PathBuf)>> {
         }
         let mut project = Vec::new();
         file.read_to_end(&mut project)
-            .with_context(|| format!("reading {}'s claim", id))?;
+            .with_context(|| format!("reading the claim of {id}"))?;
         held.push((id, PathBuf::from(OsString::from_vec(project))));
     }
     Ok(held)

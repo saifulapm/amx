@@ -167,7 +167,7 @@ impl Setup {
     fn says(&self) -> String {
         match self {
             Setup::Gate { screen, .. } => format!("its vendor's {screen} screen"),
-            Setup::Unread => "an opening screen amx has no rule for".to_string(),
+            Setup::Unread => "a startup screen amx does not recognise".to_string(),
         }
     }
 }
@@ -195,23 +195,26 @@ pub fn report(found: &Findings) -> Vec<Check> {
 fn orphan_check(found: &Findings) -> Check {
     let (ids, trees) = (found.orphan_ids.len(), found.orphan_trees.len());
     if ids == 0 && trees == 0 {
-        return Check::ok("orphans", "every id and every tree amx made has a record");
+        return Check::ok("orphans", "every agent directory and worktree has a record");
     }
     let mut said = Vec::new();
     if ids > 0 {
         said.push(match ids {
-            1 => "one id directory has no record".to_string(),
-            n => format!("{n} id directories have no record"),
+            1 => "one agent directory has no record".to_string(),
+            n => format!("{n} agent directories have no record"),
         });
     }
     for tree in &found.orphan_trees {
-        said.push(format!("no record names {}", tree.display()));
+        said.push(format!("no record names the worktree {}", tree.display()));
     }
     let remedy = match (ids > 0, trees > 0) {
         (true, false) => "run `amx doctor --fix`".to_string(),
-        (false, _) => "look in each tree, then `git worktree remove` it".to_string(),
+        (false, _) => {
+            "check each worktree for work to keep, then `git worktree remove` it".to_string()
+        }
         (true, true) => {
-            "run `amx doctor --fix` for the ids; look in each tree, then `git worktree remove` it"
+            "run `amx doctor --fix` for the directories; check each worktree for work to keep, \
+             then `git worktree remove` it"
                 .to_string()
         }
     };
@@ -228,7 +231,7 @@ fn tmux_check(found: &Findings) -> Check {
             "tmux",
             format!("{major}.{minor}"),
             format!(
-                "amx addresses panes by id, which needs tmux {want_major}.{want_minor} or newer"
+                "install tmux {want_major}.{want_minor} or newer, which amx needs to address panes by id"
             ),
         ),
         None => Check::wrong(
@@ -247,7 +250,7 @@ fn vendor_check(found: &Findings) -> Check {
         Some(path) if registry::entry(&found.vendor).is_none() => Check::ok(
             "agent",
             format!(
-                "{} at {}; no entry for {}: read as claude",
+                "{} at {}; amx has no entry for {}, so it treats it as claude",
                 found.vendor,
                 path.display(),
                 registry::program(&found.vendor)
@@ -258,7 +261,7 @@ fn vendor_check(found: &Findings) -> Check {
             "agent",
             format!("`{}` is not on the PATH", program(&found.vendor)),
             format!(
-                "install it, or set `agent` in {} to a command that is",
+                "install it, or set `agent` in {} to a command on the PATH",
                 found.config.display()
             ),
         ),
@@ -285,7 +288,7 @@ fn wiring_check(found: &VendorWiring) -> Check {
     let Some(hooks) = found.hooks else {
         return Check::ok(
             "hooks",
-            format!("{who} reports nothing amx can wire, so its pane is what amx reads"),
+            format!("{who} has no hooks; amx reads its pane instead"),
         );
     };
     let wire = found.wire.display();
@@ -347,7 +350,7 @@ fn hooks_check(who: &str, dir: &Path, wired: &install::Wired) -> Check {
         ),
         install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
             "hooks",
-            format!("{who}: no hooks of amx's in {}", hooks.display()),
+            format!("{who}: no amx hooks in {}", hooks.display()),
             setup_with(who),
         ),
     }
@@ -397,7 +400,9 @@ fn amx_check(found: &Findings) -> Check {
         return Check::wrong(
             "amx",
             format!("{exe} is not on the PATH"),
-            format!("an agent started by hand reports to the amx the PATH finds; put {dir} on it"),
+            format!(
+                "add {dir} to the PATH: the hooks of an agent started by hand run the amx found there"
+            ),
         );
     };
     let others: Vec<String> = found
@@ -411,7 +416,7 @@ fn amx_check(found: &Findings) -> Check {
     }
     let what = if *first == found.exe {
         format!(
-            "{exe} is first on the PATH, which also finds {}",
+            "{exe} is first on the PATH, which also has {}",
             others.join(", ")
         )
     } else {
@@ -423,8 +428,8 @@ fn amx_check(found: &Findings) -> Check {
     Check::wrong(
         "amx",
         what,
-        "the hooks report to the amx the PATH finds, and each amx judges its own wiring; \
-         install once, and make the other a symlink to it or take it off the PATH",
+        "hooks run the first amx on the PATH, and each amx checks only its own hooks; \
+         keep one install, and make the others symlinks to it or take them off the PATH",
     )
 }
 
@@ -440,10 +445,9 @@ fn server_check(found: &Findings) -> Option<Check> {
     Some(if standing.cwd.stale {
         Check::wrong(
             "server",
-            format!("tmux server {pid}'s directory is gone: {where_}"),
+            format!("the directory of tmux server {pid} no longer exists: {where_}"),
             format!(
-                "every pane it starts inherits that and dies at once; \
-                 restart it: tmux {} kill-server",
+                "every pane it starts exits at once; restart it with `tmux {} kill-server`",
                 address(&standing.socket)
             ),
         )
@@ -470,7 +474,7 @@ fn state_check(found: &Findings) -> Check {
         return Check::wrong(
             "state",
             why.clone(),
-            "amx keeps every agent there, so until that is fixed it has nowhere to put one",
+            "amx keeps every agent there and cannot start one until this is fixed",
         );
     }
     let zeroed: Vec<String> = found
@@ -478,7 +482,7 @@ fn state_check(found: &Findings) -> Check {
         .iter()
         .map(|(id, worked)| {
             format!(
-                "{id} worked 0s and its log adds up to {}",
+                "{id} records 0s of work, but its log adds up to {}",
                 derive::in_words(*worked)
             )
         })
@@ -496,25 +500,19 @@ fn state_check(found: &Findings) -> Check {
 fn env_check(found: &Findings) -> Check {
     let dirty = found.dirty_handoffs.len();
     if dirty == 0 {
-        return Check::ok(
-            "env",
-            "no handoff.json still carries the environment inline",
-        );
+        return Check::ok("env", "no handoff.json holds a copy of the environment");
     }
     let what = if dirty == 1 {
-        "one handoff.json still carries the environment inline".to_string()
+        "one handoff.json still holds a copy of the environment".to_string()
     } else {
-        format!("{dirty} handoff.json files still carry the environment inline")
+        format!("{dirty} handoff.json files still hold a copy of the environment")
     };
     Check::wrong("env", what, "run `amx doctor --fix`")
 }
 
 fn setup_check(found: &Findings) -> Check {
     let Some(first) = found.parked.first() else {
-        return Check::ok(
-            "gate",
-            "no agent is stopped at a screen its vendor puts first",
-        );
+        return Check::ok("gate", "no agent is stuck on a startup screen");
     };
 
     let each: Vec<String> = found
@@ -524,18 +522,18 @@ fn setup_check(found: &Findings) -> Check {
         .collect();
     let what = match each.as_slice() {
         [one] => one.clone(),
-        many => format!("{} agents are stopped: {}", many.len(), many.join(", ")),
+        many => format!("{} agents are stuck: {}", many.len(), many.join(", ")),
     };
 
     let remedy = match &first.screen {
         // The config key is offered only for the folder-trust question, and
         // only for a vendor whose answer amx writes.
         Setup::Gate { trust: true, .. } => format!(
-            "answer it yourself: amx attach {}, or set trust = true in the \
-             config and amx answers it for any linked worktree",
+            "answer it in the pane with `amx attach {}`, or set trust = true in the \
+             config to have amx answer it for linked worktrees",
             first.id
         ),
-        _ => format!("answer it yourself: amx attach {}", first.id),
+        _ => format!("answer it in the pane with `amx attach {}`", first.id),
     };
     Check::wrong("gate", what, remedy)
 }
@@ -550,7 +548,7 @@ fn store_check(found: &Findings) -> Check {
         return Check::ok(
             "store",
             format!(
-                "{} keeps no store amx writes trees into",
+                "{} has no trust store for amx to clean up",
                 program(&found.vendor)
             ),
         );
@@ -559,12 +557,15 @@ fn store_check(found: &Findings) -> Check {
 
     let stale = found.stale.len();
     if stale == 0 {
-        return Check::ok("store", format!("no tree amx cut is left in {store}"));
+        return Check::ok(
+            "store",
+            format!("no deleted amx worktree is listed in {store}"),
+        );
     }
     let what = if stale == 1 {
-        format!("one tree amx cut is gone and still in {store}")
+        format!("one deleted amx worktree is still listed in {store}")
     } else {
-        format!("{stale} trees amx cut are gone and still in {store}")
+        format!("{stale} deleted amx worktrees are still listed in {store}")
     };
     Check::wrong("store", what, "run `amx doctor --fix`")
 }
@@ -583,7 +584,7 @@ fn folder_check(found: &Findings) -> Option<Check> {
     Some(match folder.covered {
         None => Check::ok(
             "trust",
-            format!("{who} keeps no store amx reads a folder's answer from"),
+            format!("{who} keeps no store of folder-trust answers for amx to read"),
         ),
         Some(true) => Check::ok(
             "trust",
@@ -591,20 +592,18 @@ fn folder_check(found: &Findings) -> Option<Check> {
         ),
         Some(false) if folder.trust && folder.repo.is_some() => Check::ok(
             "trust",
-            format!(
-                "{who} would ask about {dir}, and amx answers for a linked worktree at the spawn"
-            ),
+            format!("{who} would ask to trust {dir}, and amx answers that for linked worktrees"),
         ),
         Some(false) => Check::wrong(
             "trust",
             format!("{who} would stop at its folder-trust screen in {dir}"),
             match &folder.repo {
                 Some(repo) => format!(
-                    "start {who} in {} once and answer it yourself, or set trust = true in \
-                     the config and amx answers it for any linked worktree",
+                    "start {who} in {} once and answer the prompt, or set trust = true in \
+                     the config to have amx answer it for linked worktrees",
                     repo.display()
                 ),
-                None => format!("start {who} in {dir} once and answer it yourself"),
+                None => format!("start {who} in {dir} once and answer the prompt"),
             },
         ),
     })
@@ -630,7 +629,7 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         let cleaned = clean_handoffs(&current.dirty_handoffs)?;
         writeln!(
             out,
-            "\ncleaned the environment out of {cleaned} handoff.json {}",
+            "\nremoved the environment from {cleaned} handoff.json {}",
             if cleaned == 1 { "file" } else { "files" }
         )?;
         current.dirty_handoffs = Vec::new();
@@ -644,8 +643,12 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         let forgotten = forget_trees(&store, &current.stale, now)?;
         writeln!(
             out,
-            "\nforgot {forgotten} {} from {}",
-            if forgotten == 1 { "tree" } else { "trees" },
+            "\nremoved {forgotten} {} from {}",
+            if forgotten == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            },
             store.display()
         )?;
         current.stale = Vec::new();
@@ -665,7 +668,7 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         if !old.is_empty() {
             writeln!(
                 out,
-                "\nremoved {} id {} with no record",
+                "\nremoved {} agent {} with no record",
                 old.len(),
                 if old.len() == 1 {
                     "directory"
@@ -682,7 +685,7 @@ pub fn run(found: &Findings, fix: bool, now: u64, out: &mut impl Write) -> Resul
         let rebuilt = rebuild_clocks(&current.state_root, &current.zeroed)?;
         writeln!(
             out,
-            "\nrebuilt the clock of {rebuilt} {} from its log",
+            "\nrebuilt the work time of {rebuilt} {} from the log",
             if rebuilt == 1 { "agent" } else { "agents" }
         )?;
         current.zeroed = Vec::new();
@@ -1037,7 +1040,7 @@ fn usable(root: &Path) -> Option<String> {
         format!("{} is not readable and writable: {why}", dir.display())
     } else {
         format!(
-            "{} would be made in {}, which is not writable: {why}",
+            "{} cannot be created because {} is not writable: {why}",
             root.display(),
             dir.display()
         )
@@ -1049,10 +1052,7 @@ pub fn from_env(fix: bool, dir: Option<&Path>) -> Result<i32> {
     if let Some(dir) = dir
         && !dir.is_dir()
     {
-        anyhow::bail!(
-            "{} is not a directory an agent could start in",
-            dir.display()
-        );
+        anyhow::bail!("{} is not a directory", dir.display());
     }
     let cwd = std::env::current_dir().ok();
     let root = crate::paths::state_root()?;
@@ -1216,7 +1216,7 @@ mod tests {
 
         let orphans = check(&found, "orphans");
         assert!(
-            orphans.found.contains("2 id directories have no record"),
+            orphans.found.contains("2 agent directories have no record"),
             "{}",
             orphans.found
         );
@@ -1226,7 +1226,7 @@ mod tests {
         let (code, said) = said(&found, true);
         assert_eq!(code, exit::FAILURE, "the tree is still there to look at");
         assert!(
-            said.contains("removed 1 id directory with no record"),
+            said.contains("removed 1 agent directory with no record"),
             "{said}"
         );
         assert!(!old.exists(), "the old one went");
@@ -1315,7 +1315,7 @@ mod tests {
         let (code, printed) = said(&found, true);
         assert_eq!(code, exit::OK, "{printed}");
         assert!(
-            printed.contains("rebuilt the clock of 1 agent"),
+            printed.contains("rebuilt the work time of 1 agent"),
             "{printed}"
         );
         assert_eq!(zeroed.state().unwrap().worked, 60);
@@ -1544,7 +1544,7 @@ mod tests {
         assert!(
             agent
                 .found
-                .contains("no entry for my-agent: read as claude"),
+                .contains("no entry for my-agent, so it treats it as claude"),
             "{}",
             agent.found
         );
@@ -1678,7 +1678,7 @@ mod tests {
         assert_eq!(
             missing.found,
             format!(
-                "codex: no hooks of amx's in {}",
+                "codex: no amx hooks in {}",
                 dir.join("hooks.json").display()
             )
         );
@@ -2164,7 +2164,10 @@ mod tests {
 
         let (code, printed) = said(&found, true);
         assert_eq!(code, exit::OK, "nothing is left to prune: {printed}");
-        assert!(printed.contains("forgot 1 tree"), "how many: {printed}");
+        assert!(
+            printed.contains("removed 1 worktree"),
+            "how many: {printed}"
+        );
         assert!(
             printed.contains(&store.display().to_string()),
             "and out of which file: {printed}"

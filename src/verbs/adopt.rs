@@ -60,12 +60,12 @@ pub fn run(
     if let Some(id) = env.get(crate::hook::ID_ENV)
         && Agent::open(root, id).is_ok()
     {
-        bail!("this pane is agent `{id}` already, which amx started");
+        bail!("this pane is already agent `{id}`, started by amx");
     }
 
     let pane = this_pane(env)?;
     if !server.pane_alive(&pane) {
-        bail!("{pane} is not a pane on the tmux server this is running on");
+        bail!("{pane} is not a pane on this tmux server");
     }
     let (vendor, session) = this_session(server, &pane, env)?;
     // Checking for an existing record and writing one happen under one lock,
@@ -85,7 +85,7 @@ pub fn run(
     // root untouched.
     let screen = server
         .capture(&pane)
-        .with_context(|| format!("reading what is on {pane}"))?;
+        .with_context(|| format!("reading the screen of {pane}"))?;
 
     let (id, claimed) = new::claim(root, args.name.as_deref(), &task)?;
     let meta = Meta {
@@ -183,12 +183,11 @@ fn seed(state: &mut State, rules: &Ruleset, screen: &str) {
 fn this_pane(env: &BTreeMap<String, String>) -> Result<PaneId> {
     let Some(pane) = env.get(PANE_ENV).filter(|pane| !pane.is_empty()) else {
         bail!(
-            "no ${PANE_ENV} here: `amx adopt` needs the agent to be running \
-             inside a tmux pane, because a pane is the only thing amx can \
-             watch and type at"
+            "${PANE_ENV} is not set: run `amx adopt` inside a tmux pane, \
+             because amx watches and types into the agent through its pane"
         );
     };
-    PaneId::new(pane.clone()).with_context(|| format!("${PANE_ENV} holds {pane:?}"))
+    PaneId::new(pane.clone()).with_context(|| format!("reading ${PANE_ENV}"))
 }
 
 /// The vendor running in `pane` and the session it names in `env`.
@@ -231,9 +230,8 @@ fn in_this_pane<'v>(
     // names a session variable.
     let Some(named) = vendor.session_env.filter(|_| vendor.can(Capability::Adopt)) else {
         bail!(
-            "tmux says a {} is running in this pane, and a {} cannot be taken \
-             over: amx would have a record here and no way to hear from it",
-            vendor.name,
+            "this pane is running {}, which cannot be taken over: amx would \
+             receive no events from it",
             vendor.name
         );
     };
@@ -241,11 +239,8 @@ fn in_this_pane<'v>(
         // No fallback to another vendor's variable: that session id would
         // never match this agent's hooks.
         bail!(
-            "tmux says a {} is running in this pane and there is no ${named} \
-             here, so amx cannot tell which {} conversation this is. `amx \
-             adopt` is run inside the agent it adopts, and that session id is \
-             how its events are recognised afterwards",
-            vendor.name,
+            "this pane is running {}, but ${named} is not set: run `amx adopt` \
+             from inside the agent, so amx can match its events by session id",
             vendor.name
         );
     };
@@ -267,9 +262,8 @@ fn in_the_environment<'v>(
         };
         if !vendor.can(Capability::Adopt) {
             bail!(
-                "${named} says this is a {} session, and a {} cannot be taken \
-                 over: amx would have a record here and no way to hear from it",
-                vendor.name,
+                "${named} names a {} session, which cannot be taken over: amx \
+                 would receive no events from it",
                 vendor.name
             );
         }
@@ -278,19 +272,15 @@ fn in_the_environment<'v>(
 
     let names: Vec<&str> = adoptable(vendors).map(|vendor| vendor.name).collect();
     if names.is_empty() {
-        bail!(
-            "amx has an entry for no vendor it can take over, so there is \
-             nothing here for `amx adopt` to write a record about"
-        );
+        bail!("no vendor amx knows can be adopted");
     }
     let looked_for: Vec<String> = adoptable(vendors)
         .filter_map(|vendor| vendor.session_env)
         .map(|named| format!("${named}"))
         .collect();
     bail!(
-        "no {} here, so no {} started this command. `amx adopt` is run inside \
-         the agent it adopts, and that session id is how its events are \
-         recognised afterwards",
+        "no {} in the environment: run `amx adopt` from inside the {} session \
+         you want to adopt",
         either(&looked_for),
         either(&names)
     )
@@ -335,10 +325,10 @@ fn spoken_for(
             continue;
         }
         if &meta.pane == pane && &meta.socket == socket && owners.pane_answers_for(pane, &id) {
-            return Ok(Some(format!("{pane} is agent `{id}` already")));
+            return Ok(Some(format!("{pane} is already agent `{id}`")));
         }
         if meta.session.as_deref() == Some(session) {
-            return Ok(Some(format!("this conversation is agent `{id}` already")));
+            return Ok(Some(format!("this conversation is already agent `{id}`")));
         }
     }
     Ok(None)

@@ -230,7 +230,7 @@ fn load_in(themes: &Path, named: &str) -> (Theme, Vec<String>) {
             let shadow = themes.join(format!("{name}{EXTENSION}"));
             let warnings = match shadow.exists() {
                 true => vec![format!(
-                    "{}: not read, `{name}` is a theme amx ships; give yours another name",
+                    "{}: ignored: `{name}` is a built-in theme; give yours another name",
                     shadow.display()
                 )],
                 false => Vec::new(),
@@ -259,7 +259,7 @@ fn load_in(themes: &Path, named: &str) -> (Theme, Vec<String>) {
         Err(e) => (
             Theme::default(),
             vec![format!(
-                "ignoring {}, painting the default theme: {e:#}",
+                "ignoring {}, using the default theme: {e:#}",
                 path.display()
             )],
         ),
@@ -283,7 +283,7 @@ pub fn parse(text: &str) -> Result<(Theme, Vec<String>)> {
         };
         let said = value
             .as_str()
-            .with_context(|| format!("{key}: a colour is written as a string"))?;
+            .with_context(|| format!("{key}: a colour must be a string"))?;
         *slot = colour(said).with_context(|| key.to_owned())?;
     }
 

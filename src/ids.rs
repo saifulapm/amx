@@ -100,8 +100,8 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
         // one; `amx doctor --fix` clears it.
         if !held.join(crate::store::META).exists() {
             bail!(
-                "name {name:?} is held by a spawn that never finished: \
-                 `amx doctor --fix` clears it"
+                "name {name:?} is held by a spawn that did not finish; \
+                 run `amx doctor --fix` to free it"
             );
         }
         bail!("name {name:?} is already taken");

@@ -375,7 +375,7 @@ fn a_theme_put_right_takes_its_own_complaint_off_the_screen() {
         None,
         Painting {
             watching,
-            warnings: vec!["ignoring mine.toml, painting the default".to_string()],
+            warnings: vec!["ignoring mine.toml, using the default".to_string()],
             ..Painting::default()
         },
     );
@@ -3912,7 +3912,7 @@ fn ctrl_x_on_a_heading_says_a_tree_it_kept_the_same_way() {
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("a group that left a tree standing was said as a clean sweep")
     };
-    assert_eq!(said, "forgot 1 · kept 1 holding work no commit has");
+    assert_eq!(said, "forgot 1 · kept 1 with uncommitted changes");
     assert_eq!(
         crate::store::list(root.path()).unwrap(),
         ["fix-login-a1b".to_string()]
@@ -4216,7 +4216,7 @@ fn ctrl_x_sweep_leaves_a_row_it_could_not_stop_unforgotten() {
         panic!("a failed stop is said louder than what went through")
     };
     assert!(said.contains("forgot 1"), "{said}");
-    assert!(said.contains("1 would not stop: broken-b2c"), "{said}");
+    assert!(said.contains("1 failed to stop: broken-b2c"), "{said}");
 }
 
 #[test]
@@ -4684,7 +4684,7 @@ fn keys_c_marks_a_tree_that_holds_work_no_commit_has_and_counts_it_when_it_keeps
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("a row the press passed by was said as though it had gone")
     };
-    assert_eq!(said, "cleared 1 · kept 1 holding work no commit has");
+    assert_eq!(said, "cleared 1 · kept 1 with uncommitted changes");
     assert_eq!(
         crate::store::list(root.path()).unwrap(),
         ["fix-login-a1b".to_string()],
@@ -4715,7 +4715,7 @@ fn keys_c_passes_by_a_row_it_marked_whatever_the_tree_holds_by_the_second_press(
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("nothing said about the row the press passed by")
     };
-    assert_eq!(said, "cleared 0 · kept 1 holding work no commit has");
+    assert_eq!(said, "cleared 0 · kept 1 with uncommitted changes");
 }
 
 #[test]
@@ -4742,7 +4742,7 @@ fn keys_c_counts_the_trees_it_keeps_when_more_than_one_holds_work() {
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("nothing said about the rows the press passed by")
     };
-    assert_eq!(said, "cleared 0 · kept 2 holding work no commit has");
+    assert_eq!(said, "cleared 0 · kept 2 with uncommitted changes");
     assert_eq!(
         crate::store::list(root.path()).unwrap().len(),
         2,
@@ -4843,7 +4843,7 @@ fn keys_w_says_nothing_is_waiting_when_every_agent_is_at_work() {
     let Some(Notice::Advice(said)) = &screen.notice else {
         panic!("nothing said about a wall with nothing waiting on it")
     };
-    assert_eq!(said, "nothing on the wall is waiting on you");
+    assert_eq!(said, "no agent is waiting on you");
     assert_eq!(
         screen.list.selected().unwrap().id(),
         standing,
@@ -4994,7 +4994,7 @@ fn alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
         vec![alt('2'), KeyEvent::from(KeyCode::Char('q'))],
     );
     assert!(
-        second.contains("no session was ever recorded for second-b2c"),
+        second.contains("no session was recorded for second-b2c"),
         "{second}"
     );
 
@@ -5003,7 +5003,7 @@ fn alt_and_a_digit_reach_the_agent_at_that_place_on_the_wall() {
         vec![alt('1'), KeyEvent::from(KeyCode::Char('q'))],
     );
     assert!(
-        first.contains("no session was ever recorded for first-a1b"),
+        first.contains("no session was recorded for first-a1b"),
         "{first}"
     );
 
@@ -5624,7 +5624,7 @@ fn keys_f_opens_a_line_that_copies_the_row_and_turns_a_command_away() {
     };
     assert_eq!(
         said,
-        "ls-b2c is a command, not an agent; there is no conversation to copy"
+        "ls-b2c is a command, not an agent, so there is no conversation to fork"
     );
     assert!(
         matches!(screen.mode, Mode::List),
@@ -6074,7 +6074,7 @@ fn view_says_it_cannot_reach_an_agent_rather_than_going_quiet() {
 
     let (_, screen) = held(root.path(), &[KeyCode::Enter, KeyCode::Char('q')]);
     assert!(
-        screen.contains("no session was ever recorded for first-a1b"),
+        screen.contains("no session was recorded for first-a1b"),
         "an agent with nothing behind it to pick up is nowhere to be \
              taken, and the view says which is missing: {screen}"
     );
@@ -6466,7 +6466,7 @@ fn composer_keeps_a_line_a_dial_refused_where_it_was_typed() {
         "a line nothing was made from is a line somebody is still \
              writing: {screen}"
     );
-    assert!(screen.contains("p:nonsense: claude takes"), "{screen}");
+    assert!(screen.contains("p:nonsense: claude accepts"), "{screen}");
     assert!(crate::store::list(root.path()).unwrap().is_empty());
 }
 
@@ -6543,7 +6543,7 @@ fn enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
         panic!("an agent with nothing to continue was reached anyway")
     };
     assert!(
-        !said.contains("no pane any more"),
+        !said.contains("no longer has a pane"),
         "which is a fact about the pane, not a reason: {said}"
     );
     assert!(said.contains("amx new"), "and what to do instead: {said}");
@@ -6746,7 +6746,7 @@ fn mouse_click_on_a_row_reaches_for_the_agents_window_like_enter() {
     let (code, drawn) = driving(root.path(), script);
     assert_eq!(code, exit::OK);
     assert!(
-        drawn.contains("no session was ever recorded"),
+        drawn.contains("no session was recorded"),
         "the click read the row as enter does:\n{drawn}"
     );
 }

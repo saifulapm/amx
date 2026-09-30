@@ -60,7 +60,7 @@ pub fn for_name(personal: &Path, project: &Path, name: &str) -> (Option<Role>, V
             && role.agent.take().is_some()
         {
             warnings.push(format!(
-                "{}: ignoring `agent`: a project's role does not name the program",
+                "{}: ignoring `agent`: only your own roles can set it",
                 path.display()
             ));
         }
@@ -97,9 +97,9 @@ pub fn names_under(personal: &Path, project: &Path) -> Vec<String> {
 fn read(text: &str, name: &str, path: &Path, warnings: &mut Vec<String>) -> Option<Role> {
     let Some((front, body)) = split(text) else {
         warnings.push(match opens(text) {
-            true => format!("{}: the frontmatter is never closed", path.display()),
+            true => format!("{}: the frontmatter has no closing `---`", path.display()),
             false => format!(
-                "{}: not a role: it opens with no frontmatter",
+                "{}: not a role: it does not start with frontmatter",
                 path.display()
             ),
         });
@@ -128,7 +128,7 @@ fn read(text: &str, name: &str, path: &Path, warnings: &mut Vec<String>) -> Opti
                 "true" => role.worktree = Some(true),
                 "false" => role.worktree = Some(false),
                 other => warnings.push(format!(
-                    "{}: worktree `{other}` is neither true nor false",
+                    "{}: ignoring worktree `{other}`: expected true or false",
                     path.display()
                 )),
             },

@@ -8,7 +8,7 @@ use crate::tui::grid;
 use crate::tui::rows::List;
 
 /// The line shown when no agent has been started yet.
-pub(super) const WELCOME: &str = "nothing running, nothing broken, nobody asking. enjoy it";
+pub(super) const WELCOME: &str = "no agents yet";
 
 /// Columns before an agent's name on a row: indent, glyph and a space. The
 /// offered keys start there.
@@ -80,7 +80,7 @@ mod tests {
             "{:?}",
             screen[0]
         );
-        assert_eq!(screen[1], "no agents");
+        assert_eq!(screen[1], WELCOME);
     }
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
         );
         assert_eq!(heading_of(&one[3]), "Completed");
         assert!(
-            !one.iter().any(|line| line.contains("nobody asking")),
+            !one.iter().any(|line| line.contains("no agents yet")),
             "one agent and there is something to read off the rows: {one:?}"
         );
 

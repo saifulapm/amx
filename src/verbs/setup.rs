@@ -43,17 +43,21 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     let Some(name) = vendor else {
-        writeln!(out, "name an agent to set up: {}", every_agent())?;
+        writeln!(out, "name a vendor to set up: {}", every_agent())?;
         return Ok(exit::USAGE);
     };
     let Some(entry) = registry::entry(name) else {
-        writeln!(out, "amx has no entry for `{name}`: {}", every_agent())?;
+        writeln!(
+            out,
+            "unknown vendor `{name}`; expected one of: {}",
+            every_agent()
+        )?;
         return Ok(exit::USAGE);
     };
     let Some(hooks) = &entry.hooks else {
         writeln!(
             out,
-            "{} reports nothing amx can wire, so its pane is what amx reads",
+            "{} has no hooks; amx reads its pane instead",
             entry.name
         )?;
         return Ok(exit::OK);
@@ -62,7 +66,7 @@ pub fn run(
     if subagent && hooks.opt_in.is_empty() {
         writeln!(
             out,
-            "amx has no subagent to wire for `{}`: {}",
+            "`{}` has no subagent extension; the vendors with one: {}",
             entry.name,
             every_opt_in()
         )?;
@@ -82,7 +86,7 @@ pub fn run(
     if !wrote {
         writeln!(
             out,
-            "nothing to do: {} is already that",
+            "nothing to do: {} is already up to date",
             install::wire_path(&hooks.wire, home, env).display()
         )?;
     }
@@ -123,7 +127,7 @@ fn wire_one(
         )?,
     }
     if let Some(backup) = wrote.backup {
-        writeln!(out, "the file as it was is at {}", backup.display())?;
+        writeln!(out, "the previous file is saved at {}", backup.display())?;
     }
     Ok(true)
 }
@@ -392,7 +396,10 @@ mod tests {
             )),
             "{printed}"
         );
-        assert!(printed.contains("the file as it was is at"), "{printed}");
+        assert!(
+            printed.contains("the previous file is saved at"),
+            "{printed}"
+        );
 
         let mut out = Vec::new();
         assert!(

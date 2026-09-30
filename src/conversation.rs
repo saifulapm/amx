@@ -188,13 +188,13 @@ pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
         .or_else(|| message["stop_reason"].as_str())?;
     match reason {
         "stop" | "toolUse" | "end_turn" | "tool_use" => None,
-        "length" | "max_tokens" => Some("it stopped at the model's token limit".to_string()),
+        "length" | "max_tokens" => Some("the model reached its token limit".to_string()),
         "aborted" => Some("the turn was aborted".to_string()),
         "error" => Some(match message["errorMessage"].as_str() {
             Some(said) => format!("the provider failed: {}", one_line(said)),
             None => "the provider failed".to_string(),
         }),
-        other => Some(format!("the vendor stopped on `{other}`")),
+        other => Some(format!("the vendor stopped with reason `{other}`")),
     }
 }
 
@@ -673,7 +673,7 @@ fn codex_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String
     match end["type"].as_str()? {
         "turn_aborted" => Some(match end["reason"].as_str() {
             Some("interrupted") | None => "the turn was aborted".to_string(),
-            Some(other) => format!("the vendor stopped on `{other}`"),
+            Some(other) => format!("the vendor stopped with reason `{other}`"),
         }),
         "task_complete" if !end["error"].is_null() => {
             let written = end["error"]["message"].as_str();
@@ -767,7 +767,7 @@ fn opencode_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Str
                 None => "the provider failed".to_string(),
             },
         ),
-        other => Some(format!("the vendor stopped on `{other}`")),
+        other => Some(format!("the vendor stopped with reason `{other}`")),
     }
 }
 
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(why_it_stopped(Transcript::Claude, CLAUDE), None);
         assert_eq!(
             pi_ended("\"stopReason\":\"length\"").as_deref(),
-            Some("it stopped at the model's token limit")
+            Some("the model reached its token limit")
         );
         assert_eq!(
             pi_ended("\"stopReason\":\"aborted\"").as_deref(),
@@ -1197,7 +1197,7 @@ mod tests {
         );
         assert_eq!(
             pi_ended("\"stopReason\":\"refusal\"").as_deref(),
-            Some("the vendor stopped on `refusal`"),
+            Some("the vendor stopped with reason `refusal`"),
             "a reason amx has no word for is repeated as the vendor spelled it"
         );
 
@@ -1208,7 +1208,7 @@ mod tests {
         );
         assert_eq!(
             why_it_stopped(Transcript::Claude, &cut_short).as_deref(),
-            Some("it stopped at the model's token limit")
+            Some("the model reached its token limit")
         );
         let running = format!(
             "{CLAUDE}{}\n",

@@ -351,7 +351,8 @@ pub fn write_boot_env(dir: &Path, env: &BTreeMap<String, String>) -> Result<()> 
 
 /// Write `value` as pretty JSON, atomically and owner-only.
 fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let mut bytes = serde_json::to_vec_pretty(value).context("writing the record")?;
+    let mut bytes =
+        serde_json::to_vec_pretty(value).with_context(|| format!("writing {}", path.display()))?;
     bytes.push(b'\n');
     crate::store::write_atomic(path, &bytes)
 }
@@ -464,9 +465,7 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
 fn meets_the_floor((major, minor): (u32, u32)) -> Result<()> {
     let (want_major, want_minor) = crate::tmux::MINIMUM_VERSION;
     if (major, minor) < (want_major, want_minor) {
-        bail!(
-            "tmux {major}.{minor} is installed and amx needs tmux {want_major}.{want_minor} or newer"
-        );
+        bail!("amx needs tmux {want_major}.{want_minor} or newer; this is tmux {major}.{minor}");
     }
     Ok(())
 }
@@ -491,7 +490,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
     // Before the exec, so the first bytes are captured. A pipe that fails
     // costs the output file only; the command still runs.
     if let Err(e) = keep_output(&meta, &keeping_output(&meta, &dir)) {
-        crate::warn!("amx: {id}: what it prints will not be kept: {e:#}");
+        crate::warn!("amx: {id}: cannot save the pane output: {e:#}");
     }
 
     let mut command = std::process::Command::new("sh");
@@ -619,7 +618,7 @@ fn wait_for(path: &Path) -> Result<()> {
     let deadline = Instant::now() + RECORD_PATIENCE;
     while !path.exists() {
         if Instant::now() >= deadline {
-            bail!("{} never arrived", path.display());
+            bail!("timed out waiting for the agent record {}", path.display());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -754,7 +753,7 @@ pub fn at_capacity(
     let here = here.len();
     if here >= max_agents {
         return Ok(Some(format!(
-            "{here} agents already running in {}, and max_agents is {max_agents}",
+            "{here} agents are already running in {}, and max_agents is {max_agents}",
             project.display()
         )));
     }
@@ -768,7 +767,9 @@ pub fn at_capacity(
         .collect();
     let everywhere = everywhere.len();
     Ok((everywhere >= ceiling).then(|| {
-        format!("{everywhere} agents already running on this machine, and max_total is {ceiling}")
+        format!(
+            "{everywhere} agents are already running on this machine, and max_total is {ceiling}"
+        )
     }))
 }
 
@@ -1771,7 +1772,7 @@ mod tests {
 
         let why = at_capacity(root.path(), project.path(), 2, None).unwrap_err();
         assert!(
-            format!("{why:#}").starts_with("tmux could not be asked: "),
+            format!("{why:#}").starts_with("listing the tmux panes: "),
             "{why:#}"
         );
     }

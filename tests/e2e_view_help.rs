@@ -257,7 +257,7 @@ fn q_closes_the_view_and_gives_the_screen_back() {
     });
     assert_eq!(status, "0", "closing a view is not a failure");
     assert!(
-        !amx.capture(&view).contains("nobody asking"),
+        !amx.capture(&view).contains("no agents yet"),
         "the screen the view borrowed is handed back"
     );
 }

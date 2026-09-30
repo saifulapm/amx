@@ -285,7 +285,7 @@ fn an_agent_spelled_as_a_path_is_asked_about_as_the_vendor_it_names() {
     let (ok, line) = check_line(&printed, "agent");
     assert!(ok, "an unknown agent is not a fault: {line}");
     assert!(
-        line.contains("no entry for my-agent: read as claude"),
+        line.contains("no entry for my-agent, so it treats it as claude"),
         "{line}"
     );
     let (ok, line) = hooks_line(&printed, "claude");
@@ -407,7 +407,10 @@ fn doctor_fix_keeps_a_copy_of_a_file_that_is_not_amxs_and_uninstall_puts_it_back
         printed.contains("keeping a copy"),
         "it said so first: {printed}"
     );
-    assert!(printed.contains("the file as it was is at"), "{printed}");
+    assert!(
+        printed.contains("the previous file is saved at"),
+        "{printed}"
+    );
     assert!(
         std::fs::read_to_string(&extension)
             .unwrap()
@@ -447,7 +450,7 @@ fn doctor_says_when_the_extension_on_disk_is_not_the_one_this_amx_ships() {
         "the consent line must not promise a copy it will not keep: {printed}"
     );
     assert!(
-        !printed.contains("the file as it was is at"),
+        !printed.contains("the previous file is saved at"),
         "an older amx's file is amx's to replace, and no copy is kept: {printed}"
     );
     let (ok, _) = hooks_line(&doctor(&amx), "pi");
@@ -479,7 +482,10 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
     let printed = doctor(&amx);
     let (ok, line) = check_line(&printed, "store");
     assert!(!ok, "a tree that is gone is still named: {printed}");
-    assert!(line.contains("one tree"), "how many: {line}");
+    assert!(
+        line.contains("one deleted amx worktree"),
+        "how many: {line}"
+    );
     assert!(
         line.contains(&store.display().to_string()),
         "and which file: {line}"
@@ -489,7 +495,7 @@ fn doctor_forgets_the_trees_claudes_store_still_names_after_they_went() {
     let out = amx.amx(&["doctor", "--fix"]);
     let printed = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
-        printed.contains(&format!("forgot 1 tree from {}", store.display())),
+        printed.contains(&format!("removed 1 worktree from {}", store.display())),
         "it says what it did: {printed}"
     );
 
@@ -566,7 +572,7 @@ fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() 
 
     let out = amx.amx(&["doctor"]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("one id directory has no record"), "{said}");
+    assert!(said.contains("one agent directory has no record"), "{said}");
     assert!(said.contains("amx doctor --fix"), "{said}");
 
     // A directory younger than ten minutes may be a spawn still starting, so

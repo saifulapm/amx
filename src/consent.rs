@@ -29,7 +29,8 @@ pub fn allowed_in(root: &Path, project_file: &Path) -> bool {
 
 /// Allow the file as it stands now by keeping a copy of its bytes.
 pub fn allow_in(root: &Path, project_file: &Path) -> Result<()> {
-    let copy = copy_of(root, project_file).context("no place beside the agents to keep it")?;
+    let copy =
+        copy_of(root, project_file).context("no directory to record allowed project files in")?;
     let bytes = std::fs::read(project_file)
         .with_context(|| format!("reading {}", project_file.display()))?;
     let dir = copy.parent().expect("the copy sits in a directory");

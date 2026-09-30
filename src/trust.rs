@@ -195,7 +195,7 @@ fn seed_within(
     // An amx tree is known by its path; any other is asked of git.
     if !worktree::is_amx_tree(tree) && !worktree::is_linked(tree) {
         bail!(
-            "{} is not a linked worktree, so its trust is not amx's to answer",
+            "{} is not a linked worktree; amx marks only linked worktrees as trusted",
             tree.display()
         );
     }
@@ -208,7 +208,7 @@ fn seed_within(
 
     let Some(held) = Held::take(store, patience, STALE)? else {
         bail!(
-            "{} is being written by {CLAUDE}, so amx left it alone",
+            "{} is locked by {CLAUDE}; amx left it unchanged",
             store.display()
         );
     };
@@ -227,7 +227,7 @@ fn seed_within(
     // no longer held would lose that holder's changes.
     if !held.holds() {
         bail!(
-            "{} is being written by {CLAUDE}, so amx left it alone",
+            "{} is locked by {CLAUDE}; amx left it unchanged",
             store.display()
         );
     }
@@ -245,7 +245,7 @@ fn seed_within(
 pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     if !worktree::is_amx_tree(tree) {
         bail!(
-            "{} is not a tree amx made, so its entry is not amx's to remove",
+            "{} is not a worktree amx created; amx removes only its own entries",
             tree.display()
         );
     }
@@ -258,7 +258,7 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
 
     let Some(held) = Held::take(store, PATIENCE, STALE)? else {
         bail!(
-            "{} is being written by {CLAUDE}, so amx left it alone",
+            "{} is locked by {CLAUDE}; amx left it unchanged",
             store.display()
         );
     };
@@ -279,7 +279,7 @@ pub fn forget_tree(store: &Path, tree: &Path, now: u64) -> Result<bool> {
     // no longer held would lose that holder's changes.
     if !held.holds() {
         bail!(
-            "{} is being written by {CLAUDE}, so amx left it alone",
+            "{} is locked by {CLAUDE}; amx left it unchanged",
             store.display()
         );
     }
@@ -929,7 +929,7 @@ mod tests {
 
         let refused = forget_tree(&store, &repo, 1).unwrap_err();
         assert!(
-            format!("{refused:#}").contains("not a tree amx made"),
+            format!("{refused:#}").contains("not a worktree amx created"),
             "{refused:#}"
         );
         assert_eq!(
@@ -1023,7 +1023,7 @@ mod tests {
 
         let refused = forget_tree(&store, &tree, 1).unwrap_err();
         assert!(
-            format!("{refused:#}").contains("being written"),
+            format!("{refused:#}").contains("is locked by"),
             "{refused:#}"
         );
         assert!(
@@ -1050,7 +1050,7 @@ mod tests {
 
         let refused = seed_within(&store, &second, Some(&repo), 2, Duration::ZERO).unwrap_err();
         assert!(
-            format!("{refused:#}").contains("being written"),
+            format!("{refused:#}").contains("is locked by"),
             "{refused:#}"
         );
         assert!(

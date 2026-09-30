@@ -121,7 +121,7 @@ pub fn run(
 
     // A working agent takes the message only when its current turn ends.
     if phase == Phase::Working {
-        warn!("amx: {id} is working; the message is queued behind the turn it is on");
+        warn!("amx: {id} is working; the message is queued until the current turn ends");
         return Ok(exit::OK);
     }
 
@@ -149,7 +149,7 @@ pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Res
         Delivered::Sent => Ok(()),
         Delivered::Refused(why) => bail!(why),
         Delivered::Waiting(_) => bail!(
-            "{} is waiting on a question; nothing was typed at it",
+            "{} is waiting on a question; the message was not sent",
             agent.id()
         ),
     }
@@ -174,8 +174,8 @@ enum Delivered {
 fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<Delivered> {
     if ends_its_own_paste(text) {
         bail!(
-            "that message carries the end of a bracketed paste; \
-             what follows it would be typed at `{}` rather than pasted into it",
+            "the message contains a bracketed-paste control sequence, \
+             which would make the rest of it arrive at `{}` as keystrokes",
             agent.id()
         );
     }
@@ -194,7 +194,7 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     }
     if !server.pane_answers_for(pane, id) {
         return Ok(Delivered::Refused(format!(
-            "{id} has no pane any more; run: amx status {id}"
+            "{id} no longer has a pane; run `amx status {id}`"
         )));
     }
 
@@ -214,8 +214,8 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
 fn held(id: &str, held: &[String]) -> String {
     let held: Vec<String> = held.iter().map(|text| format!("{text:?}")).collect();
     format!(
-        "{id}'s composer still holds what the interrupt put back: {}; \
-         a send now would go out with it. submit or clear it at the pane: amx attach {id}",
+        "the interrupt put text back into the input of {id}: {}; a message sent now \
+         would be submitted with it, so submit or clear it first in `amx attach {id}`",
         held.join(", ")
     )
 }
@@ -403,7 +403,7 @@ pub fn waiting_on_a_question(view: &View, to_terminal: bool, out: &mut impl Writ
         print_question(question, &view.state.options, to_terminal, out)?;
     }
     warn!(
-        "amx: {id} is waiting on a question. answer it with `{}`",
+        "amx: {id} is waiting on a question; answer it with `{}`",
         how_to_answer(view)
     );
     Ok(exit::BLOCKED)
@@ -454,23 +454,23 @@ fn takes(kind: Option<Kind>, state: &State) -> String {
 
 /// Exit `FAILURE` for an agent that has ended, saying what to do next.
 pub fn nothing_more_is_coming(id: &str, phase: Phase) -> i32 {
-    complain!("amx: {id} is {phase}. {}", remedy(id, phase));
+    complain!("amx: {id} is {phase}; {}", remedy(id, phase));
     exit::FAILURE
 }
 
 /// The refusal for a parked agent: its pane is gone, the session is intact,
 /// and `amx resume` brings it back. See [`crate::verbs::park`].
 fn was_let_go(id: &str) -> String {
-    format!("{id} is parked; amx let its pane go. run: amx resume {id}")
+    format!("{id} is parked and has no pane; run `amx resume {id}`")
 }
 
 /// What to do about an agent that ended in `phase`, as `ls` suggests it.
 fn remedy(id: &str, phase: Phase) -> String {
     match phase {
-        Phase::Stopped => format!("run: amx resume {id}"),
-        Phase::Failed => format!("it ended badly; run: amx status {id}"),
+        Phase::Stopped => format!("run `amx resume {id}`"),
+        Phase::Failed => format!("run `amx status {id}` to see why"),
         Phase::Done => "its command has ended".to_string(),
-        _ => format!("run: amx status {id}"),
+        _ => format!("run `amx status {id}`"),
     }
 }
 

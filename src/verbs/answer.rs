@@ -287,8 +287,8 @@ fn read(
         .flatten()
         .any(|text| ends_its_own_paste(text))
     {
-        return Err("that answer carries the end of a bracketed paste; \
-                    what follows it would be typed at the agent rather than pasted"
+        return Err("the answer contains a bracketed-paste control sequence, \
+                    which would make the rest of it arrive as keystrokes"
             .to_string());
     }
     let note = note(args, state.pending())?;
@@ -305,13 +305,13 @@ fn note(args: &AnswerArgs, pending: Option<&Ask>) -> Result<Option<String>, Stri
     };
     if !previewed(pending) {
         return Err(
-            "this question draws no notes field: the vendor draws one where a choice \
-             carries a preview, and none of these do"
+            "this question has no notes field; the vendor shows one only when \
+             the choices have a preview"
                 .to_string(),
         );
     }
     if note.trim().is_empty() {
-        return Err("a note with nothing in it is not a note".to_string());
+        return Err("the note is empty".to_string());
     }
     Ok(Some(note.trim().to_string()))
 }
@@ -345,13 +345,13 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
         if unnumbered(kind, state) && key != "Escape" {
             return Err(match key == TAKE_IT {
                 true => format!(
-                    "`{typed}` takes the row the cursor is on, and this screen numbers none \
-                     of its rows for amx to see which that is: walk to the one you mean, \
-                     as `down enter`"
+                    "`{typed}` picks the row under the cursor, and this list has no numbers \
+                     to show amx which row that is; move to the row you want, for example \
+                     `down enter`"
                 ),
                 false => format!(
-                    "`{typed}` does nothing to this screen, which numbers none of its rows \
-                     and reads no letter: walk to the one you mean, as `down enter`"
+                    "`{typed}` does nothing on this list, which has no numbers or letter keys; \
+                     move to the row you want, for example `down enter`"
                 ),
             });
         }
@@ -372,7 +372,7 @@ fn answer(args: &AnswerArgs, kind: Option<Kind>, state: &State) -> Result<Answer
             Ok(Answer::Words(typed.trim().to_string()))
         }
         _ => Err(format!(
-            "`{typed}` is not an answer. {}",
+            "`{typed}` is not an answer; {}",
             grammar(kind, state)
         )),
     }
@@ -392,17 +392,17 @@ fn at_a_walked_list(key: &str, state: &State) -> Result<Answer, String> {
     match one_choice(key) {
         Some(at) if at <= rows => Ok(Answer::Picked(at, to_the_row(at, rows, None))),
         Some(_) => Err(format!(
-            "this screen lists {rows} choices, and `{key}` is not one of them: press {}",
+            "this list has {rows} choices, and `{key}` is not one of them; press {}",
             digits(rows)
         )),
         None if key == TAKE_IT => Err(format!(
-            "`enter` takes the row the cursor is on, which is the first row until \
-             somebody moves it: press {} for the row you mean",
+            "`enter` picks the row under the cursor, which may not be the first; \
+             press {} for the row you want",
             digits(rows)
         )),
         None => Err(format!(
-            "`{key}` does nothing to this screen, which reads no letter and draws no \
-             number of its own: press {} for the row you mean",
+            "`{key}` does nothing on this list, which has no numbers or letter keys; \
+             press {} for the row you want",
             digits(rows)
         )),
     }
@@ -483,8 +483,8 @@ fn walk(keys: Vec<String>) -> Result<Answer, String> {
     match keys.last().is_some_and(|key| key == TAKE_IT) {
         true => Ok(Answer::Walk(keys)),
         false => Err(
-            "a walk moves the cursor and answers nothing on its own: say what to do at \
-             the end of it, as `down enter`"
+            "moving the cursor answers nothing; end the keys with `enter`, \
+             for example `down enter`"
                 .to_string(),
         ),
     }
@@ -517,8 +517,8 @@ fn a_choice_of(at: usize, pending: &Ask) -> Result<(), String> {
     }
     if at == offered + 1 && !pending.takes_notes() {
         return Err(format!(
-            "`{at}` is the row the vendor draws for words of your own, and pressing it \
-             answers nothing: give words with --text"
+            "`{at}` is the row for words of your own, and pressing it answers \
+             nothing; pass the words with --text"
         ));
     }
     Err(format!(
@@ -535,22 +535,20 @@ fn field(text: &str, kind: Option<Kind>, state: &State) -> Result<Answer, String
     let pending = state.pending();
     if kind != Some(Kind::Question) {
         return Err(format!(
-            "this prompt has no row for words of your own. {}",
+            "this prompt has no row for words of your own; {}",
             grammar(kind, state)
         ));
     }
     if previewed(pending) {
         return Err(
-            "this question draws a preview beside its choices, and that shape has no row \
-             for words of your own: answer it with a choice"
+            "this question shows a preview beside its choices and has no free-text \
+             row; answer with a choice"
                 .to_string(),
         );
     }
     if text.trim().is_empty() {
         return Err(
-            "words with nothing in them are not an answer: the vendor reads a blank \
-             submission as a cancel"
-                .to_string(),
+            "the text is empty, and the vendor would read an empty answer as a cancel".to_string(),
         );
     }
     Ok(Answer::Words(text.trim().to_string()))
@@ -580,15 +578,14 @@ fn a_list(typed: &str) -> bool {
 fn boxes(typed: &str, multi: bool, pending: Option<&Ask>) -> Result<Answer, String> {
     if !multi {
         return Err(format!(
-            "`{typed}` checks the boxes of a question that takes several, \
-             and this one takes one choice"
+            "`{typed}` checks several boxes, and this question takes one choice"
         ));
     }
     let mut checked = Vec::new();
     for part in typed.split(',') {
         let part = part.trim();
         if part.is_empty() {
-            return Err(format!("`{typed}` has a choice missing between its commas"));
+            return Err(format!("`{typed}` has an empty choice between its commas"));
         }
         let Some(at) = one_choice(part) else {
             return Err(format!("`{part}` is not one of this question's choices"));
@@ -597,9 +594,7 @@ fn boxes(typed: &str, multi: bool, pending: Option<&Ask>) -> Result<Answer, Stri
             a_choice_of(at, ask)?;
         }
         if checked.contains(&at) {
-            return Err(format!(
-                "`{part}` is checked twice, which leaves it as it was"
-            ));
+            return Err(format!("`{part}` is listed twice, which would uncheck it"));
         }
         checked.push(at);
     }

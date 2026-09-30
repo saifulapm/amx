@@ -677,7 +677,7 @@ pub fn agents(amx: &Harness) -> Vec<String> {
 /// Wait for the empty view's one line.
 pub fn until_empty(amx: &Harness, view: &str) {
     amx.until("the empty view", || {
-        amx.capture(view).contains("nobody asking").then_some(())
+        amx.capture(view).contains("no agents yet").then_some(())
     });
 }
 

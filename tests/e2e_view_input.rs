@@ -2052,7 +2052,7 @@ fn the_composer_keeps_a_line_the_vendor_would_refuse_and_says_what_it_takes() {
 
     let drawn = amx.until("the refusal", || {
         let drawn = amx.capture(&view);
-        drawn.contains("claude takes").then_some(drawn)
+        drawn.contains("claude accepts").then_some(drawn)
     });
     assert!(
         drawn.contains("acceptEdits"),

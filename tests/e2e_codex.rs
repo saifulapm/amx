@@ -431,13 +431,13 @@ fn a_codex_that_never_took_a_turn_has_no_session_to_resume_or_fork() {
     let out = amx_with_codex(&amx, "takes-a-turn", &["fork", id]);
     assert!(!out.status.success(), "a fork of nothing");
     let why = String::from_utf8_lossy(&out.stderr);
-    assert!(why.contains("no session was ever recorded"), "{why}");
+    assert!(why.contains("no session was recorded"), "{why}");
 
     amx.amx(&["stop", id, "--force"]);
     let out = amx_with_codex(&amx, "takes-a-turn", &["resume", id]);
     assert!(!out.status.success(), "a resume of nothing");
     let why = String::from_utf8_lossy(&out.stderr);
-    assert!(why.contains("no session was ever recorded"), "{why}");
+    assert!(why.contains("no session was recorded"), "{why}");
 }
 
 /// A codex started outside amx, in a pane amx did not open. Answers with the

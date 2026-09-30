@@ -27,7 +27,7 @@ pub fn run(state_root: &Path, home: &Path, env: install::Env, out: &mut impl Wri
     if !still_there.is_empty() {
         writeln!(
             out,
-            "still running: {}. stop them first, or their answers go with the records.",
+            "agents still running: {}; stop them first, because uninstalling deletes their records and answers",
             still_there.join(", ")
         )?;
         return Ok(exit::FAILURE);
@@ -41,15 +41,15 @@ pub fn run(state_root: &Path, home: &Path, env: install::Env, out: &mut impl Wri
             let path = report.path.display();
             match (wire, report.changed) {
                 (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
-                (Wire::File { .. }, false) => writeln!(out, "no extension of amx's at {path}")?,
+                (Wire::File { .. }, false) => writeln!(out, "no amx extension at {path}")?,
                 (Wire::Plugin { .. } | Wire::Placed { .. }, true) => {
                     writeln!(out, "removed the plugin at {path}")?
                 }
                 (Wire::Plugin { .. } | Wire::Placed { .. }, false) => {
-                    writeln!(out, "no plugin of amx's at {path}")?
+                    writeln!(out, "no amx plugin at {path}")?
                 }
-                (Wire::Hooks { .. }, true) => writeln!(out, "took amx's hooks out of {path}")?,
-                (Wire::Hooks { .. }, false) => writeln!(out, "no hooks of amx's in {path}")?,
+                (Wire::Hooks { .. }, true) => writeln!(out, "removed the amx hooks from {path}")?,
+                (Wire::Hooks { .. }, false) => writeln!(out, "no amx hooks in {path}")?,
             }
         }
     }
@@ -248,7 +248,7 @@ mod tests {
         let why = run(root.path(), home.path(), &install::no_env, &mut said).unwrap_err();
 
         assert!(
-            format!("{why:#}").starts_with("tmux could not be asked: "),
+            format!("{why:#}").starts_with("listing the tmux panes: "),
             "{why:#}"
         );
         assert!(
@@ -304,6 +304,6 @@ mod tests {
             theirs,
             "a directory amx never wrote a manifest into stays untouched"
         );
-        assert!(String::from_utf8(said).unwrap().contains("no plugin"));
+        assert!(String::from_utf8(said).unwrap().contains("no amx plugin"));
     }
 }

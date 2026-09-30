@@ -372,11 +372,11 @@ fn answer(view: &View, to_terminal: bool, out: &mut impl Write) -> Result<i32> {
     let Some(answer) = view.state.result.clone().or_else(|| transcript(view)) else {
         match why_it_stopped(view) {
             Some(why) => complain!(
-                "amx: {} ended its turn, but amx captured no answer: {why}",
+                "amx: {} ended its turn, and no answer was captured: {why}",
                 view.id()
             ),
             None => complain!(
-                "amx: {} ended its turn, but amx captured no answer",
+                "amx: {} ended its turn, and no answer was captured",
                 view.id()
             ),
         }

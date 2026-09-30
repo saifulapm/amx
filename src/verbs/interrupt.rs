@@ -168,11 +168,13 @@ fn a_question_is_answered(view: &View, to_terminal: bool, out: &mut impl Write) 
 }
 
 fn answer_it_instead(id: &str) -> String {
-    format!("{id} is waiting on a question, not working. dismiss it with `amx answer {id} esc`")
+    format!("{id} is waiting on a question, not working; dismiss it with `amx answer {id} esc`")
 }
 
 fn end_the_command(id: &str) -> String {
-    format!("{id} is a command rather than an agent; there is no turn in it. run: amx stop {id}")
+    format!(
+        "{id} is a command, not an agent, so there is no turn to interrupt; stop it with `amx stop {id}`"
+    )
 }
 
 fn nothing_is_running(id: &str, doing: &str) -> String {

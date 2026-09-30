@@ -385,7 +385,7 @@ fn new_refuses_a_task_with_nothing_in_it() {
 
     assert_eq!(out.status.code(), Some(64), "a malformed command line");
     let said = String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("something to do"), "{said}");
+    assert!(said.contains("the text is empty"), "{said}");
     assert!(
         std::fs::read_dir(amx.state_root())
             .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),

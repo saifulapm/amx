@@ -44,7 +44,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
                 "{}",
                 said(
                     Severity::Warned,
-                    &format!("amx sub: no agent `{id}` to be the parent of this one"),
+                    &format!("amx sub: no agent `{id}` to use as the parent"),
                     colours
                 )
             )?;
@@ -60,7 +60,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             "{}",
             said(
                 Severity::Warned,
-                "amx sub: --context digest needs a parent, and there is none here",
+                "amx sub: --context digest needs a parent agent, and this is not running in one",
                 colours
             )
         )?;
@@ -86,7 +86,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             said(
                 Severity::Warned,
                 &format!(
-                    "amx sub: {} ran in {}, which is not there any more: name a directory with --dir",
+                    "amx sub: {} ran in {}, which no longer exists; pass a directory with --dir",
                     parent.id,
                     dir.display()
                 ),
@@ -152,7 +152,7 @@ pub fn run(root: &Path, args: &SubArgs, out: &mut impl Write, err: &mut impl Wri
             err,
             colours,
             format!(
-                "amx sub: max_children is {} and {} already has that many",
+                "amx sub: max_children is {} and {} already has that many children",
                 config.max_children, parent.id
             ),
         );
@@ -239,7 +239,7 @@ fn digest_of(parent: &Meta) -> String {
         && let Some(tail) = Agent::transcript_tail(parent)
         && let Some(words) = crate::conversation::answer(format, &tail)
     {
-        digest.push_str(&format!("\n\nIts latest word on it:\n\n{words}"));
+        digest.push_str(&format!("\n\nIts latest answer:\n\n{words}"));
     }
     digest
 }

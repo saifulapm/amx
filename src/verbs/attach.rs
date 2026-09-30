@@ -26,7 +26,7 @@ use crate::{derive, exit, paths, spawn};
 const PANE_ENV: &str = "TMUX_PANE";
 
 /// The refusal for an empty wall.
-const EMPTY: &str = "nothing on the wall to attach to";
+const EMPTY: &str = "no agents to attach to";
 
 /// How many agents the `--last` trail keeps.
 const TRAIL: usize = 20;
@@ -148,7 +148,7 @@ fn pick(
         // The same rule as the view's key, see [`rows::needing_you`].
         Aim::Waiting => match rows::needing_you(order) {
             Some(id) => Ok(id),
-            None => bail!("nothing on the wall is waiting on you"),
+            None => bail!("no agent is waiting on you"),
         },
         // Skip trail entries the wall no longer holds.
         Aim::Last => {

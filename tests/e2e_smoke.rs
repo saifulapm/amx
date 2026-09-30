@@ -127,7 +127,7 @@ fn a_turn_that_captured_no_answer_says_why_the_vendor_stopped() {
     let out = amx.amx(&["result", "summarise-d4e"]);
     assert_eq!(out.status.code(), Some(1), "no answer is a failure");
     let said = String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("captured no answer"), "{said}");
+    assert!(said.contains("no answer was captured"), "{said}");
     assert!(said.contains("token limit"), "and why: {said}");
 }
 

@@ -48,7 +48,7 @@ pub fn run(
     if !stop_one(root, &args.id, &meta, out)? {
         writeln!(
             out,
-            "{} was resumed while it was being stopped; left it running",
+            "{} was resumed before it could be stopped; it is still running",
             args.id
         )?;
         return Ok(exit::FAILURE);
@@ -62,7 +62,7 @@ pub fn run(
         match meta.worktree.as_ref().filter(|tree| tree.exists()) {
             Some(tree) => writeln!(
                 out,
-                "kept {}'s record: {} is still there",
+                "kept {}'s record: its worktree {} still exists",
                 args.id,
                 tree.display()
             )?,
@@ -170,7 +170,7 @@ fn no_ending(meta: &Meta) -> String {
         None => "its session".to_string(),
     };
     format!(
-        "{}'s turn did not end within {}s; ending its pane anyway, and {session} may still be held as running",
+        "{}'s turn did not end within {}s; closing its pane anyway, so {session} may still be marked as running",
         meta.id,
         GRACE.as_secs()
     )
@@ -290,7 +290,7 @@ fn dispositions(
     if holds_work(tree) {
         writeln!(
             out,
-            "keeping {}: it holds work no commit has",
+            "keeping {}: it has uncommitted changes",
             tree.display()
         )?;
     } else if !asked(
@@ -335,7 +335,7 @@ fn dispositions(
             1 => "1 commit is".to_string(),
             n => format!("{n} commits are"),
         };
-        writeln!(out, "kept {branch}: {commits} on no other branch")?;
+        writeln!(out, "kept {branch}: {commits} not on any other branch")?;
         return Ok(());
     }
 
@@ -383,7 +383,7 @@ pub(crate) fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<(
         return Ok(());
     };
     match trust::forget_tree(&store, tree, store::now()) {
-        Ok(true) => writeln!(out, "forgot {} in {}", tree.display(), store.display())?,
+        Ok(true) => writeln!(out, "removed {} from {}", tree.display(), store.display())?,
         Ok(false) => {}
         Err(why) => warn!("amx stop: {why:#}"),
     }
@@ -548,7 +548,7 @@ mod tests {
         let why = run(dir.path(), &args, &mut "".as_bytes(), &mut out).unwrap_err();
 
         assert!(
-            format!("{why:#}").starts_with("tmux could not be asked: "),
+            format!("{why:#}").starts_with("listing the tmux panes: "),
             "{why:#}"
         );
         assert_eq!(agent.state().unwrap().state, Phase::Working);

@@ -1149,11 +1149,11 @@ mod tests {
     fn view_says_what_it_could_not_do_where_the_keys_are() {
         let mut screen = showing(Vec::new(), None);
         screen.notice = Some(Notice::Advice(
-            "fix-login-a1b has no pane any more".to_string(),
+            "fix-login-a1b no longer has a pane".to_string(),
         ));
 
         let painted = painted(&screen, (60, 6));
-        assert_eq!(painted[5], "fix-login-a1b has no pane any more");
+        assert_eq!(painted[5], "fix-login-a1b no longer has a pane");
     }
 
     #[test]
@@ -1179,7 +1179,7 @@ mod tests {
         );
         assert_eq!(
             said(Notice::Refused(
-                "keeping fix-login-a1b: it holds work no commit has".to_string()
+                "keeping fix-login-a1b: it has uncommitted changes".to_string()
             )),
             (theme().waiting, Modifier::empty()),
             "and a thing somebody asked for that did not happen is neither: \

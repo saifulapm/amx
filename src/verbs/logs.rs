@@ -139,7 +139,7 @@ fn screen(
     let tail = tail_of(&chrome.cut(&rows).join("\n"), lines as usize);
     if tail.is_empty() {
         // Say so: an empty stdout alone looks like amx failed to read.
-        warn!("amx: {id} has a pane, and it has printed nothing yet");
+        warn!("amx: {id} has printed nothing yet");
         return Ok(exit::OK);
     }
     send::line(&tail, out)?;
@@ -178,10 +178,10 @@ fn recorded(
 /// that keeps no transcript, since that is where someone would look next.
 fn nothing_left(id: &str, vendor: Option<&Vendor>) -> String {
     let gap = match vendor.filter(|vendor| !vendor.can(Capability::Transcript)) {
-        Some(vendor) => format!(", {} keeps no conversation to read back", vendor.name),
+        Some(vendor) => format!("; {} keeps no conversation to read back", vendor.name),
         None => String::new(),
     };
-    format!("amx: {id} has no pane any more{gap}, and amx captured no answer from it")
+    format!("amx: {id} has no pane and no recorded answer{gap}")
 }
 
 /// The visible pane plus `lines` lines of scrollback (`-S -<n>`), joined.

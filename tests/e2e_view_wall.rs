@@ -988,14 +988,14 @@ fn a_wall_with_nothing_on_it_says_so_in_one_line_of_amxs_own() {
         );
     }
     assert!(
-        drawn.contains("nothing running, nothing broken, nobody asking"),
+        drawn.contains("no agents yet"),
         "and the wall says what it is in its own words:\n{drawn}"
     );
 
     amx.play("ask-a1b", "asks-a-question");
     amx.until("the agent's own row", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("ask-a1b") && !drawn.contains("nobody asking")).then_some(())
+        (drawn.contains("ask-a1b") && !drawn.contains("no agents yet")).then_some(())
     });
 }
 
@@ -1485,7 +1485,7 @@ fn the_list_takes_the_mouse_and_a_click_is_the_cursor() {
     // has no recorded session, so the refusal shows it got that far.
     amx.until("the refusal", || {
         amx.capture(&view)
-            .contains("no session was ever recorded")
+            .contains("no session was recorded")
             .then_some(())
     });
 
@@ -2779,11 +2779,11 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
     press(&amx, &view, "c");
     let armed = amx.until("the row that will be kept to say why", || {
         let drawn = amx.capture(&view);
-        drawn.contains("holds work no commit has").then_some(drawn)
+        drawn.contains("has uncommitted changes").then_some(drawn)
     });
     let held_row = row_of(&amx, &view, "tidy-b2c").expect("the row still on the wall");
     assert!(
-        held_row.contains("holds work no commit has") && !held_row.contains("c again clears"),
+        held_row.contains("has uncommitted changes") && !held_row.contains("c again clears"),
         "the held row says why rather than promising a press that passes it \
          by:\n{armed}"
     );
@@ -2798,7 +2798,7 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
     press(&amx, &view, "c");
     amx.until("the count of what went and what was kept", || {
         amx.capture(&view)
-            .contains("cleared 1 · kept 1 holding work no commit has")
+            .contains("cleared 1 · kept 1 with uncommitted changes")
             .then_some(())
     });
     assert_eq!(

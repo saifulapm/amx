@@ -179,7 +179,7 @@ pub fn create(repo: &Path, id: &str, from: Option<&str>) -> Result<Worktree> {
     let base = match from {
         Some(named) => commit_of(repo, named)?,
         None => git(repo, &["rev-parse", "HEAD"])
-            .context("this repository has no commit to cut a worktree from yet")?,
+            .context("this repository has no commits yet, so amx cannot create a worktree")?,
     };
     ensure_excluded(repo)?;
 
@@ -213,7 +213,7 @@ pub fn create_on(repo: &Path, id: &str, branch: &str, fetch: &str) -> Result<Wor
         &["fetch", "origin", &format!("{fetch}:refs/heads/{branch}")],
     ) {
         if format!("{e:#}").contains("non-fast-forward") {
-            bail!("{branch} has commits {fetch} does not, so it was left where it is");
+            bail!("{branch} has commits that {fetch} does not; amx left the branch unchanged");
         }
         return Err(e);
     }
@@ -342,7 +342,7 @@ fn commit_of(repo: &Path, named: &str) -> Result<String> {
         repo,
         &["rev-parse", "--verify", &format!("{named}^{{commit}}")],
     )
-    .map_err(|_| anyhow!("{named} is no commit to cut a worktree from"))
+    .map_err(|_| anyhow!("{named} is not a commit, branch or tag"))
 }
 
 /// The tree a setup command runs in.
@@ -386,7 +386,7 @@ pub fn furnish(
             )
         });
         if !inside {
-            bail!("`{path}` is not a path inside the repository: copy and link name files in it");
+            bail!("`{path}` is outside the repository: copy and link take paths inside it");
         }
     }
 
@@ -399,7 +399,7 @@ pub fn furnish(
         // A tracked file, or a tracked symlink a copy would write through.
         let to = tree.join(path);
         if to.symlink_metadata().is_ok() {
-            missing.push(format!("kept {path}: already in the tree"));
+            missing.push(format!("kept {path}: the worktree already has it"));
             continue;
         }
         make_way_for(&to)?;
@@ -453,7 +453,7 @@ fn run_setup(repo: &Path, tree: &Path, command: &str, env: &[(String, String)]) 
     if !out.status.success() {
         let said = String::from_utf8_lossy(&out.stderr);
         match said.trim() {
-            "" => bail!("setup {command:?} failed and said nothing"),
+            "" => bail!("setup {command:?} failed with no error output"),
             said => bail!("setup {command:?}: {said}"),
         }
     }
@@ -502,7 +502,7 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
         git(from, &["reset", "-q"])?;
         return Err(e).with_context(|| {
             format!(
-                "moving the work in {} into {}",
+                "moving the uncommitted changes in {} into {}",
                 from.display(),
                 tree.display()
             )
@@ -519,7 +519,7 @@ pub fn carry_changes(from: &Path, tree: &Path) -> Result<Option<String>> {
 /// Put work moved by [`carry_changes`] back into `from`, unstaged.
 pub fn give_back(from: &Path, stash: &str) -> Result<()> {
     git(from, &["stash", "apply", stash])
-        .with_context(|| format!("putting the work back in {}", from.display()))?;
+        .with_context(|| format!("restoring the uncommitted changes in {}", from.display()))?;
     git(from, &["reset", "-q"])?;
     Ok(())
 }
@@ -542,7 +542,7 @@ pub fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     }
 
     if is_dirty(worktree)? {
-        bail!("{} holds uncommitted work", worktree.display());
+        bail!("{} has uncommitted changes", worktree.display());
     }
     git(repo, &["worktree", "remove", &worktree.to_string_lossy()])?;
     Ok(())
@@ -583,8 +583,8 @@ pub fn restore(repo: &Path, worktree: &Path, branch: &str) -> Result<()> {
 pub fn delete_branch(repo: &Path, branch: &str, merged_heads: &[String]) -> Result<()> {
     match loses(repo, branch, merged_heads)? {
         0 => {}
-        1 => bail!("1 commit is on no other branch"),
-        n => bail!("{n} commits are on no other branch"),
+        1 => bail!("1 commit is not on any other branch"),
+        n => bail!("{n} commits are not on any other branch"),
     }
     git(repo, &["branch", "-D", branch])?;
     Ok(())
@@ -1203,7 +1203,7 @@ mod tests {
         let refused = create(repo.path(), "fix-login-a1b", Some("release")).unwrap_err();
         let said = format!("{refused:#}");
         assert!(said.contains("release"), "the ref that was typed: {said}");
-        assert!(said.contains("no commit"), "{said}");
+        assert!(said.contains("not a commit"), "{said}");
         assert!(
             !repo.path().join(".amx").exists(),
             "and no tree was cut for it"
@@ -1684,12 +1684,12 @@ mod tests {
         );
         assert!(
             said.iter()
-                .any(|s| s == "kept settings.toml: already in the tree"),
+                .any(|s| s == "kept settings.toml: the worktree already has it"),
             "{said:?}"
         );
         assert!(
             said.iter()
-                .any(|s| s == "kept README.md: already in the tree"),
+                .any(|s| s == "kept README.md: the worktree already has it"),
             "{said:?}"
         );
     }
@@ -1849,7 +1849,7 @@ mod tests {
 
         let refused = carry_changes(repo.path(), &tree.path).unwrap_err();
         assert!(
-            format!("{refused:#}").contains("moving the work"),
+            format!("{refused:#}").contains("moving the uncommitted changes"),
             "{refused:#}"
         );
         assert_eq!(
@@ -1892,7 +1892,10 @@ mod tests {
 
         // It cannot be deleted while its commit is on no other branch.
         let refused = delete_branch(repo.path(), &tree.branch, &[]).unwrap_err();
-        assert_eq!(format!("{refused:#}"), "1 commit is on no other branch");
+        assert_eq!(
+            format!("{refused:#}"),
+            "1 commit is not on any other branch"
+        );
         assert!(setup(repo.path(), &["branch", "--list", &tree.branch]).contains(&tree.branch));
 
         // Once main has the commit, deleting the branch loses nothing.

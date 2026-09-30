@@ -1318,7 +1318,7 @@ fn attach_by_the_wall_says_so_when_there_is_no_wall_and_when_there_is_an_id() {
     let out = amx.amx(&["attach", "--next"]);
     assert_eq!(out.status.code(), Some(1));
     let why = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(why.contains("nothing on the wall"), "{why}");
+    assert!(why.contains("no agents to attach to"), "{why}");
 }
 
 #[test]
@@ -1435,7 +1435,7 @@ fn enter_on_an_agent_with_nothing_to_resume_says_why() {
         screen.contains("session").then_some(screen)
     });
     assert!(
-        !said.contains("no pane any more"),
+        !said.contains("no longer has a pane"),
         "which is a fact about the pane, not a reason: {said}"
     );
 }
@@ -1493,7 +1493,7 @@ fn enter_on_a_claude_started_by_hand_says_which_half_is_missing() {
         screen.contains("by hand").then_some(screen)
     });
     assert!(
-        !said.contains("no pane any more"),
+        !said.contains("no longer has a pane"),
         "which is a fact about the pane, not a reason: {said}"
     );
     assert!(

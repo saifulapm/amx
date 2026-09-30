@@ -111,8 +111,8 @@ fn one(
     // whatever its phase.
     if message.is_some() && is_a_command(&view) {
         complain!(
-            "amx resume: {id} is a command, and a command has no vendor to take a \
-             message. run it again with `amx new --exec`"
+            "amx resume: {id} is a command and cannot take a message; \
+             run it again with `amx new --exec`"
         );
         return Ok(exit::FAILURE);
     }
@@ -123,7 +123,7 @@ fn one(
     }
     if !nothing_is_running(&view) {
         warn!(
-            "amx resume: {id} is {}. stop it before starting it again",
+            "amx resume: {id} is {}; stop it before resuming it",
             view.phase()
         );
         return Ok(exit::BLOCKED);
@@ -222,14 +222,14 @@ fn bring_back(
     if !current.state.is_terminal()
         && Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id)?
     {
-        bail!("{id} is already going again");
+        bail!("{id} is already running");
     }
 
     let session = to_continue(&meta).map_err(anyhow::Error::msg)?;
     to_start(agent.dir(), id).map_err(anyhow::Error::msg)?;
 
     let recorded = spawn::read_handoff(agent.dir())
-        .with_context(|| format!("reading what {id} was started with"))?;
+        .with_context(|| format!("reading how {id} was started"))?;
     let dir = ready_dir(&meta)?;
 
     // The caller's current environment, as in `new`. Harness pairs come from
@@ -390,11 +390,11 @@ fn ready_dir(meta: &Meta) -> Result<PathBuf> {
     match (&meta.worktree, &meta.branch) {
         (Some(tree), Some(branch)) if tree == &meta.dir => {
             worktree::restore(&repo_above(tree)?, tree, branch)
-                .with_context(|| format!("putting {} back", tree.display()))?;
+                .with_context(|| format!("restoring the worktree {}", tree.display()))?;
             Ok(meta.dir.clone())
         }
         _ => bail!(
-            "{} is gone, and it is where {} ran",
+            "{}, where {} ran, no longer exists",
             meta.dir.display(),
             meta.id
         ),
@@ -407,19 +407,19 @@ fn repo_above(tree: &Path) -> Result<PathBuf> {
     while let Some(dir) = above {
         if dir.is_dir() {
             return worktree::repo_root(dir)?
-                .with_context(|| format!("{} is in no repository any more", dir.display()));
+                .with_context(|| format!("{} is no longer in a git repository", dir.display()));
         }
         above = dir.parent();
     }
-    bail!("nothing is left of {}", tree.display())
+    bail!("no directory above {} exists", tree.display())
 }
 
 /// The recorded session to resume, or why there is none.
 fn to_continue(meta: &Meta) -> Result<&str, String> {
     let Some(session) = meta.session.as_deref() else {
         return Err(format!(
-            "no session was ever recorded for {}, so there is nothing to continue. \
-             start a fresh agent with `amx new`",
+            "no session was recorded for {}, so there is nothing to continue; \
+             start a new agent with `amx new`",
             meta.id
         ));
     };
@@ -427,7 +427,7 @@ fn to_continue(meta: &Meta) -> Result<&str, String> {
     // argument.
     if !is_session_id(session) {
         return Err(format!(
-            "the session recorded for {} is not a session id, so it will not be handed on",
+            "the session recorded for {} is not a session id, so amx will not pass it on",
             meta.id
         ));
     }
@@ -461,16 +461,15 @@ fn cannot_continue(vendor: Option<&Vendor>, id: &str) -> Option<String> {
     let vendor = vendor?;
     if !vendor.can(Capability::Resume) {
         return Some(format!(
-            "{id} runs {}, which cannot be told to carry a session on, so \
-             there is nothing to pick up. start a fresh agent with `amx new`",
+            "{id} runs {}, which cannot resume a session; start a new agent with `amx new`",
             vendor.name
         ));
     }
     // A claimed capability with no session vocabulary is refused the same way.
     vendor.session.is_none().then(|| {
         format!(
-            "{id} runs {}, which names no session vocabulary, so there is \
-             nothing to pick up. start a fresh agent with `amx new`",
+            "{id} runs {}, and amx has no session support for it; \
+             start a new agent with `amx new`",
             vendor.name
         )
     })
@@ -609,7 +608,7 @@ mod tests {
         for why in [named.map(|_| ()), picked] {
             let why = why.unwrap_err();
             assert!(
-                format!("{why:#}").starts_with("tmux could not be asked: "),
+                format!("{why:#}").starts_with("listing the tmux panes: "),
                 "{why:#}"
             );
         }
@@ -650,7 +649,7 @@ mod tests {
         let said = cannot_continue(Some(&cannot), "fix-login-a1b").expect("it cannot resume");
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(cannot.name), "{said}");
-        assert!(said.contains("carry a session on"), "{said}");
+        assert!(said.contains("cannot resume a session"), "{said}");
         assert!(said.contains("amx new"), "{said}");
 
         assert_eq!(cannot_continue(Some(&SECOND), "fix-login-a1b"), None);
@@ -682,7 +681,7 @@ mod tests {
             .expect("it names no session vocabulary");
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(cannot.name), "{said}");
-        assert!(said.contains("no session vocabulary"), "{said}");
+        assert!(said.contains("no session support"), "{said}");
         assert!(said.contains("amx new"), "{said}");
     }
 

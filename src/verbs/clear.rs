@@ -67,7 +67,7 @@ pub fn run(
             Ok(Taken::Gone) => {}
             Ok(Taken::Holding(tree)) => writeln!(
                 out,
-                "kept {}: {} is still there, and so is its record",
+                "kept {}: {} has uncommitted changes",
                 view.id(),
                 tree.display()
             )?,
@@ -170,10 +170,10 @@ fn still_over(agent: &Agent) -> Result<Meta> {
     let meta = agent.meta()?;
     let state = agent.state()?;
     if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
-        bail!("{}'s pane is still there", meta.id);
+        bail!("{}'s pane is open again", meta.id);
     }
     if !state.state.is_terminal() && state.parked_at > 0 {
-        bail!("{} is {} now", meta.id, state.state);
+        bail!("{} is now {}", meta.id, state.state);
     }
     Ok(meta)
 }

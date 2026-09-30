@@ -1213,7 +1213,7 @@ const ANSI: [Color; 16] = [
 ];
 
 /// The body shown when the capture was nothing but vendor furniture.
-pub(super) const ALL_CHROME: &str = "amx captured nothing but the vendor's own chrome";
+pub(super) const ALL_CHROME: &str = "the pane shows nothing but the vendor's interface";
 
 /// The tab strip for a multi-question call: the current tab's header and
 /// "N of M". `None` for a single question.
@@ -1254,10 +1254,10 @@ fn added(card: &Card<Body>, showing: Option<Showing>) -> Option<&'static str> {
 }
 
 /// The note for the vendor's free-text row.
-const OTHER: &str = "and under them, the vendor's row for words of your own";
+const OTHER: &str = "plus a row for words of your own";
 
 /// The note for the vendor's notes field (choices with previews).
-const NOTES: &str = "and beside them, the vendor's field for a note";
+const NOTES: &str = "plus a field for a note";
 
 /// The choices, numbered by [`numbered`] (as `amx answer` and `ls` number
 /// them) and packed onto as few rows as fit in `width`. A choice too wide
@@ -2100,7 +2100,7 @@ index e69de29..0000000
             .expect("the line");
         assert_eq!(roomy[line - 1], "", "a blank row over the line: {roomy:?}");
         assert!(
-            roomy[line - 2].contains("vendor's row"),
+            roomy[line - 2].contains("words of your own"),
             "and the card's last row over that: {roomy:?}"
         );
 

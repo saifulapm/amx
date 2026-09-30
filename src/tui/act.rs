@@ -698,7 +698,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                         turned.with_changes = true;
                         true
                     }
-                    _ => return Err(format!("w:{value}: on, off or changes")),
+                    _ => return Err(format!("w:{value}: expected on, off or changes")),
                 });
             }
             DIR => {
@@ -746,22 +746,22 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     // matter.
     if turned.pr.is_some() {
         if turned.base.is_some() {
-            return Err("pr: and b: — a request says what it is cut from".to_string());
+            return Err("pr: cannot take b:; a pull request has its own base".to_string());
         }
         if turned.worktree == Some(false) || turned.with_changes {
-            return Err("pr: and w: — a request is a tree of its own".to_string());
+            return Err("pr: cannot take w:; a pull request gets its own worktree".to_string());
         }
     }
     if turned.branch.is_some() {
         if turned.base.is_some() {
-            return Err("on: and b: — a branch says what it is cut from".to_string());
+            return Err("on: cannot take b:; the branch has its own base".to_string());
         }
         if turned.pr.is_some() {
-            return Err("on: and pr: — a request is a branch of its own".to_string());
+            return Err("on: cannot take pr:; a pull request has its own branch".to_string());
         }
         // `w:changes` is allowed: the uncommitted work can go on that branch.
         if turned.worktree == Some(false) {
-            return Err("on: and w:off — a branch is a tree of its own".to_string());
+            return Err("on: cannot take w:off; a branch gets its own worktree".to_string());
         }
     }
     Ok((turned, task.to_string()))
@@ -780,9 +780,7 @@ fn commanded(rest: &str) -> Result<(Turned, String), String> {
     };
     for (dial, value) in &tokens {
         if *dial != DIR {
-            return Err(format!(
-                "{dial}{value}: a command row takes d: and no other dial"
-            ));
+            return Err(format!("{dial}{value}: a command takes only the d: dial"));
         }
         if value.is_empty() {
             return Err("d: takes a directory".to_string());
@@ -801,7 +799,7 @@ fn pointed(
 ) -> Result<String, String> {
     let Some(spec) = spec else {
         return Err(format!(
-            "{dial}{value}: amx knows no such dial for {}",
+            "{dial}{value}: amx cannot set that dial for {}",
             registry::program(agent)
         ));
     };
@@ -810,7 +808,7 @@ fn pointed(
     }
     if !registry::accepts(&spec, value) {
         return Err(format!(
-            "{dial}{value}: {} takes {}",
+            "{dial}{value}: {} accepts {}",
             registry::program(agent),
             spec.cycle.join(", ")
         ));
@@ -1165,7 +1163,9 @@ fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
     let _ = std::fs::remove_file(path);
 
     if !status.success() {
-        return Ok(Edited::No(format!("{editor} left the line as it was")));
+        return Ok(Edited::No(format!(
+            "{editor} exited with an error; the line is unchanged"
+        )));
     }
     let written = written.with_context(|| format!("reading {} back", path.display()))?;
     // Drop the file's trailing newline; newlines inside are the task's own.
@@ -1214,8 +1214,8 @@ pub fn start(
     };
     if task.trim().is_empty() {
         return Ok(Started::No(match turned.exec {
-            true => "the row is a command; now say what to run".to_string(),
-            false => "the dials are turned; now say what to do".to_string(),
+            true => "type the command to run after the dials".to_string(),
+            false => "type a task after the dials".to_string(),
         }));
     }
 
@@ -1234,7 +1234,7 @@ pub fn start(
     // nobody typed.
     if turned.with_changes && !worktree::has_changes_to_carry(&dir)? {
         return Ok(Started::No(format!(
-            "w:changes: nothing in {} to move",
+            "w:changes: {} has no uncommitted changes to move",
             dir.display()
         )));
     }
@@ -1335,7 +1335,7 @@ fn aimed(said: &str, here: &Path) -> Result<PathBuf, String> {
         None => here.join(said),
     };
     if !path.is_dir() {
-        return Err(format!("d:{said}: nothing is at {}", path.display()));
+        return Err(format!("d:{said}: {} is not a directory", path.display()));
     }
     Ok(path)
 }
@@ -1650,7 +1650,7 @@ pub fn forget(root: &Path, view: &View) -> Result<(String, bool)> {
         Taken::Gone => (format!("{} forgotten", view.id()), false),
         Taken::Holding(tree) => (
             format!(
-                "keeping {}: {} holds work no commit has",
+                "keeping {}: {} has uncommitted changes",
                 view.id(),
                 tree.display()
             ),
@@ -1677,12 +1677,12 @@ pub fn forget_all(root: &Path, views: &[&View]) -> Result<(String, bool)> {
 
     let mut said = format!("forgot {gone}");
     if kept > 0 {
-        said.push_str(&format!(" · kept {kept} holding work no commit has"));
+        said.push_str(&format!(" · kept {kept} with uncommitted changes"));
     }
     // An error so the view draws it as a failure: part of the request did not
     // happen.
     if !trouble.is_empty() {
-        bail!("{said} · {} would not go: {}", trouble.len(), trouble[0]);
+        bail!("{said} · {} failed: {}", trouble.len(), trouble[0]);
     }
     Ok((said, kept > 0))
 }
@@ -1773,7 +1773,7 @@ pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
     // Otherwise the spawn fails with ENOENT, which reads as the command
     // missing. A stop removes a clean tree, so this is the common case.
     if !dir.is_dir() {
-        bail!("{} is gone", dir.display());
+        bail!("{} no longer exists", dir.display());
     }
 
     let ended = std::process::Command::new("sh")
@@ -1787,7 +1787,7 @@ pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
     match ended.code() {
         // Killed by a signal, e.g. ctrl+c closing a pager: not an error.
         Some(exit::OK) | None => Ok(()),
-        Some(code) => bail!("{command} exited {code}"),
+        Some(code) => bail!("{command} exited with code {code}"),
     }
 }
 
@@ -2230,7 +2230,7 @@ mod tests {
             "{:#}",
             run_bound(root.path(), "fix-login-a1b", "exit 3").unwrap_err()
         );
-        assert_eq!(said, "exit 3 exited 3");
+        assert_eq!(said, "exit 3 exited with code 3");
 
         // A missing record is an error.
         let said = format!(
@@ -2251,7 +2251,7 @@ mod tests {
             "{:#}",
             run_bound(root.path(), "fix-login-a1b", "true").unwrap_err()
         );
-        assert_eq!(said, format!("{} is gone", tree.display()));
+        assert_eq!(said, format!("{} no longer exists", tree.display()));
     }
 
     /// An `AskUserQuestion` question with two choices. `multi` allows several
@@ -2718,7 +2718,7 @@ mod tests {
         ] {
             let said = refused(line);
             assert!(
-                said.ends_with("a command row takes d: and no other dial"),
+                said.ends_with("a command takes only the d: dial"),
                 "{line:?}: {said}"
             );
             assert!(
@@ -2903,7 +2903,7 @@ mod tests {
         for line in ["pr:412 b:main review it", "b:main pr:412 review it"] {
             assert_eq!(
                 refused(line),
-                "pr: and b: — a request says what it is cut from",
+                "pr: cannot take b:; a pull request has its own base",
                 "{line:?}"
             );
         }
@@ -2914,7 +2914,7 @@ mod tests {
         ] {
             assert_eq!(
                 refused(line),
-                "pr: and w: — a request is a tree of its own",
+                "pr: cannot take w:; a pull request gets its own worktree",
                 "{line:?}"
             );
         }
@@ -2957,21 +2957,21 @@ mod tests {
         for line in ["on:spike b:main port it", "b:main on:spike port it"] {
             assert_eq!(
                 refused(line),
-                "on: and b: — a branch says what it is cut from",
+                "on: cannot take b:; the branch has its own base",
                 "{line:?}"
             );
         }
         for line in ["on:spike pr:412 review it", "pr:412 on:spike review it"] {
             assert_eq!(
                 refused(line),
-                "on: and pr: — a request is a branch of its own",
+                "on: cannot take pr:; a pull request has its own branch",
                 "{line:?}"
             );
         }
         for line in ["on:spike w:off port it", "w:off on:spike port it"] {
             assert_eq!(
                 refused(line),
-                "on: and w:off — a branch is a tree of its own",
+                "on: cannot take w:off; a branch gets its own worktree",
                 "{line:?}"
             );
         }
@@ -2979,7 +2979,7 @@ mod tests {
         // A command row takes only `d:`.
         assert_eq!(
             refused("!on:spike ls"),
-            "on:spike: a command row takes d: and no other dial"
+            "on:spike: a command takes only the d: dial"
         );
     }
 
@@ -3014,7 +3014,10 @@ mod tests {
         };
         assert_eq!(
             why,
-            format!("w:changes: nothing in {} to move", here.path().display())
+            format!(
+                "w:changes: {} has no uncommitted changes to move",
+                here.path().display()
+            )
         );
         assert!(
             crate::store::list(root.path()).unwrap().is_empty(),
@@ -3046,7 +3049,7 @@ mod tests {
         // A relative path is read against the view's directory.
         assert_eq!(
             aimed("app", here.path()).expect_err("no such directory"),
-            format!("d:app: nothing is at {}/app", here.path().display())
+            format!("d:app: {}/app is not a directory", here.path().display())
         );
         std::fs::create_dir(here.path().join("app")).unwrap();
         assert_eq!(
@@ -3061,12 +3064,15 @@ mod tests {
         let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
 
         let said = refused("p:nonsense port the importer");
-        assert!(said.starts_with("p:nonsense: claude takes"), "{said}");
+        assert!(said.starts_with("p:nonsense: claude accepts"), "{said}");
         assert!(said.contains("acceptEdits"), "every mode it has: {said}");
-        assert_eq!(refused("w:maybe port it"), "w:maybe: on, off or changes");
+        assert_eq!(
+            refused("w:maybe port it"),
+            "w:maybe: expected on, off or changes"
+        );
         assert_eq!(refused("m: port it"), "m: takes a value");
         let said = refused("e:hard port it");
-        assert!(said.starts_with("e:hard: claude takes"), "{said}");
+        assert!(said.starts_with("e:hard: claude accepts"), "{said}");
         assert!(said.contains("xhigh"), "every level it has: {said}");
         assert_eq!(refused("agent: port it"), "agent: takes a command");
 
@@ -3080,7 +3086,7 @@ mod tests {
         // An unregistered agent still spawns, but dials it never declared are
         // refused by name.
         let said = turned(&as_claude(), "agent:mock-claude m:opus port it").expect_err("refused");
-        assert_eq!(said, "m:opus: amx knows no such dial for mock-claude");
+        assert_eq!(said, "m:opus: amx cannot set that dial for mock-claude");
 
         let config = Config {
             agent: "mock-claude".to_string(),
@@ -3088,7 +3094,7 @@ mod tests {
         };
         assert_eq!(
             turned(&config, "p:plan port it").expect_err("refused"),
-            "p:plan: amx knows no such dial for mock-claude"
+            "p:plan: amx cannot set that dial for mock-claude"
         );
         let (dials, task) = turned(&config, "w:off port it").unwrap();
         assert_eq!(

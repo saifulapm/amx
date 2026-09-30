@@ -106,22 +106,22 @@ fn evidence(view: &View, now: u64) -> String {
         Evidence::Record => "the record says how it ended".to_string(),
         Evidence::Gone => "its pane is gone".to_string(),
         Evidence::LetGo => format!(
-            "amx let the process go {}s ago; enter, attach or resume bring it back",
+            "parked {}s ago; `amx resume`, `amx attach` or enter in the view brings it back",
             now.saturating_sub(view.state.parked_at)
         ),
         Evidence::Hooks => match &view.verdict.rule {
             // A rule matched the screen but was not allowed to end the turn.
             Some(rule) => format!(
-                "the vendor's hooks, {age}s ago; the screen looks like `{rule}` but has not held still"
+                "the vendor's hooks, {age}s ago; the screen matches `{rule}` but is still changing"
             ),
             None => format!("the vendor's hooks, {age}s ago"),
         },
         Evidence::Screen => format!(
-            "the screen, matching `{}`, with nothing heard for {age}s",
+            "the screen, matching `{}`, with no hook for {age}s",
             view.verdict.rule.as_deref().unwrap_or("a rule")
         ),
         Evidence::Unknown => {
-            format!("nothing amx knows: no hooks for {age}s, and no rule claims the screen")
+            format!("none: no hooks for {age}s, and no rule matches the screen")
         }
     }
 }
@@ -267,7 +267,7 @@ mod tests {
         assert!(screen.contains("idle_prompt"), "{screen}");
 
         let unknown = printed(&view(Phase::Unknown, Evidence::Unknown, None, 300));
-        assert!(unknown.contains("no rule claims"), "{unknown}");
+        assert!(unknown.contains("no rule matches"), "{unknown}");
         assert!(unknown.contains("300s"), "{unknown}");
 
         let gone = printed(&view(Phase::Stopped, Evidence::Gone, None, 4));
@@ -283,7 +283,7 @@ mod tests {
             40,
         ));
         assert!(held.contains("idle_prompt"), "{held}");
-        assert!(held.contains("held still"), "{held}");
+        assert!(held.contains("still changing"), "{held}");
     }
 
     #[test]
@@ -295,8 +295,8 @@ mod tests {
         let text = printed_at(&parked, 5_040);
 
         assert!(text.starts_with("fix-login-a1b  done"), "{text}");
-        assert!(text.contains("let the process go 40s ago"), "{text}");
-        assert!(text.contains("enter, attach or resume"), "{text}");
+        assert!(text.contains("parked 40s ago"), "{text}");
+        assert!(text.contains("`amx resume`"), "{text}");
     }
 
     #[test]

@@ -93,7 +93,7 @@ fn in_viewer_with(root: &Path, id: &str, viewer: &str, from: Option<&str>) -> Re
         }
         // The viewer has reported its own error on the terminal.
         Some(code) => {
-            complain!("amx diff: {viewer} exited {code}");
+            complain!("amx diff: {viewer} exited with code {code}");
             Ok(exit::FAILURE)
         }
         // Killed by a signal.
@@ -110,8 +110,11 @@ fn work_of<'a>(meta: &'a Meta, id: &str, from: Option<&str>) -> Result<(&'a Path
 
     if !tree.exists() {
         match &meta.branch {
-            Some(branch) => bail!("{} is gone; what `{id}` did is on {branch}", tree.display()),
-            None => bail!("{} is gone", tree.display()),
+            Some(branch) => bail!(
+                "{} no longer exists; the work of `{id}` is on {branch}",
+                tree.display()
+            ),
+            None => bail!("{} no longer exists", tree.display()),
         }
     }
 
@@ -122,7 +125,7 @@ fn work_of<'a>(meta: &'a Meta, id: &str, from: Option<&str>) -> Result<(&'a Path
             None => match worktree::fork_point(tree)? {
                 Some(base) => base,
                 None => bail!(
-                    "`{id}` works in {}, which is no git worktree, \
+                    "`{id}` works in {}, which is not in a git repository, \
                      so there is nothing to compare it against",
                     tree.display()
                 ),
@@ -281,7 +284,7 @@ mod tests {
         record_in(root.path(), "no-repo-b2c", plain.path());
 
         let said = refused(root.path(), "no-repo-b2c");
-        assert!(said.contains("no git worktree"), "{said}");
+        assert!(said.contains("not in a git repository"), "{said}");
         assert!(
             said.contains(&plain.path().display().to_string()),
             "and it names the directory: {said}"
@@ -298,7 +301,7 @@ mod tests {
         );
 
         let said = refused(root.path(), "fix-login-a1b");
-        assert!(said.contains("gone"), "{said}");
+        assert!(said.contains("no longer exists"), "{said}");
         assert!(said.contains("amx/fix-login-a1b"), "{said}");
     }
 
@@ -349,7 +352,7 @@ mod tests {
             "{:#}",
             in_viewer(root.path(), "no-repo-b2c", "cat").unwrap_err()
         );
-        assert!(said.contains("no git worktree"), "{said}");
+        assert!(said.contains("not in a git repository"), "{said}");
 
         let said = format!(
             "{:#}",

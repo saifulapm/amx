@@ -74,14 +74,14 @@ impl Launch {
                     // every accepted value.
                     Some(spec) => {
                         return Err(format!(
-                            "--{key} {value:?}: {} takes {}",
+                            "--{key} {value:?}: {} accepts {}",
                             registry::program(&agent),
                             spec.cycle.join(", ")
                         ));
                     }
                     None => {
                         return Err(format!(
-                            "--{key} {value:?}: amx knows no {key} dial for {}",
+                            "--{key} {value:?}: amx cannot set {key} for {}",
                             registry::program(&agent)
                         ));
                     }
@@ -184,14 +184,14 @@ fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
             if config.harness(vendor.name).models.is_empty() =>
         {
             format!(
-                "{} takes {} models ({} {})",
+                "{} lists {} models (`{} {}`)",
                 vendor.name,
                 list.len(),
                 vendor.name,
                 argv.join(" ")
             )
         }
-        _ => format!("{} takes {}", vendor.name, list.join(", ")),
+        _ => format!("{} accepts {}", vendor.name, list.join(", ")),
     }
 }
 
@@ -415,7 +415,10 @@ fn run_aloud(
 
     // `--with-changes` on a clean checkout is refused before anything is made.
     if args.with_changes && !worktree::has_changes_to_carry(dir)? {
-        bail!("--with-changes: nothing in {} to move", dir.display());
+        bail!(
+            "--with-changes: {} has no uncommitted changes to move",
+            dir.display()
+        );
     }
 
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
@@ -563,7 +566,7 @@ pub(crate) fn claim(root: &Path, name: Option<&str>, task: &str) -> Result<(Stri
         }
     }
     bail!(
-        "no id for {task:?} could be claimed under {} after {MAX_CLAIMS} draws",
+        "could not claim an id for {task:?} under {} after {MAX_CLAIMS} tries",
         root.display()
     )
 }
@@ -652,7 +655,7 @@ fn give_everything_back(
         && let Err(e) = worktree::give_back(dir, stash)
     {
         say(format!(
-            "{e:#}: your work is still in {}",
+            "{e:#}; your uncommitted changes are still in {}",
             tree.path.display()
         ));
         return;
@@ -846,8 +849,14 @@ fn cut_worktree(
     // Outside a repository, run in place unless a PR or branch was asked for.
     let Some(repo) = worktree::repo_root(dir)? else {
         match (args.pr, args.branch.as_deref()) {
-            (Some(number), _) => bail!("--pr {number}: {} is in no repository", dir.display()),
-            (_, Some(name)) => bail!("--branch {name}: {} is in no repository", dir.display()),
+            (Some(number), _) => bail!(
+                "--pr {number}: {} is not in a git repository",
+                dir.display()
+            ),
+            (_, Some(name)) => bail!(
+                "--branch {name}: {} is not in a git repository",
+                dir.display()
+            ),
             _ => return Ok(None),
         }
     };
@@ -886,14 +895,14 @@ fn request_branch(repo: &Path, head: &crate::pr::PrHead, number: u64) -> String 
 fn cut_on_branch(repo: &Path, id: &str, name: &str) -> Result<worktree::Worktree> {
     let name = name.strip_prefix("origin/").unwrap_or(name);
     if worktree::checked_out(repo, name)? {
-        bail!("{name} is checked out in another tree already");
+        bail!("{name} is already checked out in another worktree");
     }
     if here_already(repo, name) {
         return worktree::create_on_local(repo, id, name);
     }
     match worktree::create_on(repo, id, name, name) {
         Ok(tree) => Ok(tree),
-        Err(_) => bail!("{name} is no branch here or on origin"),
+        Err(_) => bail!("{name} is not a branch here or on origin"),
     }
 }
 
@@ -1344,10 +1353,10 @@ mod tests {
 
         assert!(refusal.contains("--model \"gpt-4\""), "{refusal}");
         assert!(
-            refusal.contains("claude takes fable, opus, sonnet, haiku"),
+            refusal.contains("claude accepts fable, opus, sonnet, haiku"),
             "{refusal}"
         );
-        assert!(refusal.contains("pi takes openai/gpt-5"), "{refusal}");
+        assert!(refusal.contains("pi accepts openai/gpt-5"), "{refusal}");
     }
 
     #[test]
@@ -1358,19 +1367,19 @@ mod tests {
         let pi = registry::entry("pi").expect("an entry for pi");
         assert_eq!(
             takes(pi, &Config::default(), &printed),
-            "pi takes 490 models (pi --list-models)"
+            "pi lists 490 models (`pi --list-models`)"
         );
 
         let told = listing(&[("pi", &["openai/gpt-5"])]);
         assert_eq!(
             takes(pi, &told, &models::models_of(pi, &told)),
-            "pi takes openai/gpt-5"
+            "pi accepts openai/gpt-5"
         );
 
         let json = crate::vendor::second::BRANCHING;
         assert_eq!(
             takes(&json, &Config::default(), &printed[..3]),
-            "second takes 3 models (second list models)"
+            "second lists 3 models (`second list models`)"
         );
     }
 
@@ -1399,7 +1408,7 @@ mod tests {
 
         assert!(refusal.contains("mock-claude"), "{refusal}");
         assert!(
-            refusal.contains("no model dial"),
+            refusal.contains("cannot set model"),
             "claude was never asked: {refusal}"
         );
     }
@@ -1678,7 +1687,10 @@ mod tests {
         assert!(tree.path.exists(), "the tree holding the work stays");
         let said = String::from_utf8_lossy(&problems);
         assert!(
-            said.contains(&format!("your work is still in {}", tree.path.display())),
+            said.contains(&format!(
+                "your uncommitted changes are still in {}",
+                tree.path.display()
+            )),
             "{said}"
         );
     }
@@ -1750,7 +1762,7 @@ mod tests {
         let refused =
             worktree::create_on(&repo, "again-b2c", "pr-12", "refs/pull/12/head").unwrap_err();
         assert!(
-            format!("{refused:#}").starts_with("pr-12 has commits refs/pull/12/head does not"),
+            format!("{refused:#}").starts_with("pr-12 has commits that refs/pull/12/head does not"),
             "{refused:#}"
         );
         assert_eq!(
@@ -1811,7 +1823,7 @@ mod tests {
         let refusal = cut_on_branch(&repo, "fix-login-a1b", "main").unwrap_err();
 
         assert!(
-            refusal.to_string().contains("main is checked out"),
+            refusal.to_string().contains("main is already checked out"),
             "{refusal:#}"
         );
         assert_eq!(trees_in(&repo), 1, "and no tree was cut for it");
@@ -1827,7 +1839,7 @@ mod tests {
 
         assert_eq!(
             refusal.to_string(),
-            "spike is no branch here or on origin",
+            "spike is not a branch here or on origin",
             "{refusal:#}"
         );
         assert_eq!(trees_in(&repo), 1, "and no tree was cut for it");

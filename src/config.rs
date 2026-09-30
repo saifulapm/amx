@@ -298,9 +298,7 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
             } else if key == BOUND_KEYS {
                 None
             } else if registry::entry(key).is_none() {
-                Some(format!(
-                    "ignoring [{key}]: amx runs no harness called {key}"
-                ))
+                Some(format!("ignoring [{key}]: amx has no vendor named `{key}`"))
             } else {
                 None
             }
@@ -377,10 +375,10 @@ fn check_dials(config: &mut Config) -> Vec<String> {
             // Only a closed dial refuses, so its cycle is the full list of
             // accepted values.
             Some(spec) => format!(
-                "ignoring {key} = {set:?}: {agent} takes {}",
+                "ignoring {key} = {set:?}: {agent} accepts {}",
                 spec.cycle.join(", ")
             ),
-            None => format!("ignoring {key} = {set:?}: amx knows no {key} dial for {agent}"),
+            None => format!("ignoring {key} = {set:?}: amx cannot set {key} for {agent}"),
         };
         *value = None;
         Some(warning)
@@ -566,7 +564,7 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
     for name in NEVER_FROM_A_PROJECT {
         if keys.remove(name).is_some() {
             said.push(format!(
-                "{}: ignoring `{name}`: it is yours to set, not a project's",
+                "{}: ignoring `{name}`: only your own config can set it",
                 file.display()
             ));
         }
@@ -587,7 +585,7 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
         for name in refused {
             env.remove(&name);
             said.push(format!(
-                "{}: ignoring `{harness}.env.{name}`: it is yours to set, not a project's",
+                "{}: ignoring `{harness}.env.{name}`: only your own config can set it",
                 file.display()
             ));
         }

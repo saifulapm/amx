@@ -151,7 +151,7 @@ fn sweep_keeps_a_merged_branch_the_agent_went_on_committing_on() {
     let out = said(&sweep(&amx, &["--force"]));
     assert!(out.contains("fix-login-a1b  #12 merged"), "{out}");
     assert!(
-        out.contains("kept amx/fix-login-a1b: 3 commits are on no other branch"),
+        out.contains("kept amx/fix-login-a1b: 3 commits are not on any other branch"),
         "{out}"
     );
     assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
@@ -198,7 +198,7 @@ fn sweep_never_deletes_a_branch_a_person_named() {
         out.contains("fix-login-a1b  develop merged into main"),
         "{out}"
     );
-    assert!(out.contains("kept develop: not amx's to delete"), "{out}");
+    assert!(out.contains("kept develop: amx did not create it"), "{out}");
     assert!(branches(&repo).contains("develop"), "{out}");
 }
 
@@ -227,7 +227,7 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
     // Nothing says this head merged, and its commit is on no other branch, so
     // the branch is kept.
     assert!(
-        out.contains("kept amx/fix-login-a1b: 1 commit is on no other branch"),
+        out.contains("kept amx/fix-login-a1b: 1 commit is not on any other branch"),
         "{out}"
     );
     assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
@@ -249,7 +249,7 @@ fn sweep_keeps_a_tree_that_holds_work_no_commit_has_and_the_record_with_it() {
     let out = said(&sweep(&amx, &["--force"]));
     assert!(
         out.contains(&format!(
-            "kept fix-login-a1b: {tree} holds work no commit has"
+            "kept fix-login-a1b: {tree} has uncommitted changes"
         )),
         "{out}"
     );

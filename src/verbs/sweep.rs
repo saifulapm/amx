@@ -227,7 +227,7 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
     if let Some(tree) = clear::holding(meta) {
         writeln!(
             out,
-            "kept {}: {} holds work no commit has",
+            "kept {}: {} has uncommitted changes",
             meta.id,
             tree.display()
         )?;
@@ -238,7 +238,7 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
     // `--branch develop`) reads as landed whenever main catches up with it.
     let branch = match &meta.branch {
         Some(branch) if !worktree::named_by_amx(&meta.id, branch) => {
-            writeln!(out, "kept {branch}: not amx's to delete")?;
+            writeln!(out, "kept {branch}: amx did not create it")?;
             Disposition::Keep
         }
         _ => Disposition::Delete,
@@ -586,7 +586,7 @@ mod tests {
         let said = swept(root.path(), true, "");
         assert!(
             said.contains(&format!(
-                "kept fix-login-a1b: {} holds work no commit has",
+                "kept fix-login-a1b: {} has uncommitted changes",
                 tree.display()
             )),
             "{said}"
