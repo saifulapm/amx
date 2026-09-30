@@ -573,6 +573,6 @@ fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() 
     // --fix leaves it.
     let fixed = amx.amx(&["doctor", "--fix"]);
     let said = String::from_utf8_lossy(&fixed.stdout);
-    assert!(said.contains("removed 0 id directories"), "{said}");
+    assert!(!said.contains("removed"), "{said}");
     assert!(amx.state_root().join("lost-a1b").exists());
 }
