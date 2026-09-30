@@ -1,45 +1,17 @@
-//! What the view lists, and where the cursor is in it.
+//! The view's list of agents: grouping, ordering, folding, narrowing, and the
+//! cursor over the resulting lines.
 //!
-//! A list of agents is not a table with a sort order. What somebody opens this
-//! for is one question — *is anything waiting on me?* — so the agents are
-//! gathered under the answer: the ones somebody pinned there first, then the
-//! work standing in front of a reviewer, then the ones that have stopped on a
-//! question, then the ones mid-turn, then the turns that are over, and under
-//! all of them the ones somebody has put to sleep.
-//!
-//! Inside a group the order is the order agents were started in, which is the
-//! one order that does not move under a cursor while somebody is reading. The
-//! exception is the finished group, where the newest ending comes first.
-//!
-//! A group past [`FOLD_AT`] rows shows that many and folds the rest away
-//! behind a count, whichever axis it was gathered on. Thirty rows is as much
-//! of one group as somebody reads before they scroll, and the fold is the same
-//! thirty whatever the terminal is: a wall cut to the height of the window
-//! moves rows under a reader every time the window changes, and a screen with
-//! room to spare is not a reason to put sixty endings in front of somebody.
-//!
-//! There is a second question a wall of agents gets asked — *what is running in
-//! this repository?* — and it is the same agents gathered a different way, so
-//! it is an axis rather than a screen. Under it the headings are projects and
-//! every row carries the state the heading used to say. Both axes draw the
-//! agents in one order, so turning the axis never changes who a row's
-//! neighbours are.
-//!
-//! Either axis can be narrowed to part of the fleet. A hidden agent is not a
-//! member of anything: nothing counts it, no heading is drawn for a group it
-//! was the last of, and the cursor cannot land on it.
-//!
-//! A heading is a line of the list like the rows under it: the cursor stops on
-//! one, and shutting it puts its agents away and leaves the heading standing
-//! for them. What was shut is remembered against the group itself rather than
-//! against a line number, because the list is laid out again every second and
-//! line four is somebody else's by then.
-//!
-//! An order the list works out is an order somebody may disagree with, so
-//! three things are theirs to say: which agent is pinned over the wall, which
-//! is asleep under it, and what order a group goes in. All are said against
-//! the agents and the group rather than against the screen, which is what lets
-//! them outlive the view they were said in.
+//! - Groups read Pinned, Review, NeedsInput, Working, Completed, Asleep. Inside
+//!   a group, agents keep start order, except Completed, newest ending first.
+//!   A hand-made order for a group overrides both.
+//! - The state, project and repo axes draw agents in the same order, so
+//!   turning the axis never changes a row's neighbours.
+//! - A group or project past [`FOLD_AT`] rows folds the rest behind a count.
+//!   The fold does not depend on terminal height.
+//! - An agent hidden by a narrowing is counted by nothing and drawn nowhere.
+//! - Shut headings, opened folds, pins, sleeps and hand-made orders are kept
+//!   by group, project path or agent id, never by line number, because the
+//!   list is rebuilt on every reading.
 
 use crate::derive::{Evidence, View};
 use crate::pr::{self, Pr, Standing};
@@ -49,39 +21,32 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// How many rows of one group somebody is shown before the rest fold away
-/// behind a count.
+/// Rows of one group shown before the rest fold behind a count.
 pub const FOLD_AT: usize = 30;
 
-/// What an agent is, to somebody deciding what to do next.
+/// The heading an agent is listed under.
 ///
-/// Written down as the word it is titled with, because an order somebody put a
-/// group in is kept against the group and read back by a later view.
+/// Serialized by name because hand-made group orders are persisted per group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Group {
-    /// Held here by somebody, whatever it is doing: the one agent they want in
-    /// front of them outranks whatever amx would have made of it.
+    /// Pinned by the user, whatever its phase.
     Pinned,
-    /// Its turn is over and its branch has a request still asking for
-    /// something. The agent has nothing left to do and a person has.
+    /// Turn over, with a pull request on its branch still open for review.
     Review,
-    /// Stopped on a question: nothing happens until somebody answers it.
+    /// Stopped on a question.
     NeedsInput,
-    /// Mid-turn. Nothing to do but let it work.
+    /// Mid-turn.
     Working,
-    /// The turn is over: sitting at its prompt, ended one way or another, or
-    /// gone somewhere amx cannot account for. Whether there is still a process
-    /// behind it is the row's to say, and the glyph says it.
+    /// Turn over: idle, done, failed, stopped or unknown. The row's glyph says
+    /// whether a process is still behind it.
     Completed,
-    /// Put under everything by somebody, whatever it is doing: the agent they
-    /// have decided not to look at for now. The other thing a person says
-    /// about a row, and the opposite of pinning it.
+    /// Put to sleep by the user, whatever its phase. The opposite of a pin.
     Asleep,
 }
 
 impl Group {
-    /// Every group, in the order a person reads them.
+    /// Every group, in display order.
     pub const ALL: [Group; 6] = [
         Group::Pinned,
         Group::Review,
@@ -91,14 +56,10 @@ impl Group {
         Group::Asleep,
     ];
 
-    /// Which group an agent belongs to: what somebody said about it, then what
-    /// it is doing, then what its work is waiting on.
+    /// The group for an agent with this phase and these marks.
     ///
-    /// What a person said wins over everything, because those are the two lines
-    /// of this table they wrote themselves: pinned over the wall, or under all
-    /// of it. After them the states a person can do nothing about, so a request
-    /// standing open never takes an agent out of the group that says it is
-    /// asking or working.
+    /// A pin or a sleep wins over the phase. An open pull request only moves an
+    /// agent whose turn is over, never one that is asking or working.
     pub fn of(phase: Phase, held: bool, asleep: bool, reviewable: bool) -> Group {
         if held {
             return Group::Pinned;
@@ -114,7 +75,7 @@ impl Group {
         }
     }
 
-    /// The words a heading over the group reads, as a person reads them.
+    /// The heading text for the group.
     pub fn title(self) -> &'static str {
         match self {
             Group::Pinned => "Pinned",
@@ -126,15 +87,10 @@ impl Group {
         }
     }
 
-    /// The word the group is counted and narrowed by, where a count of it is
-    /// being read rather than a heading over rows.
+    /// The word the header counts the group by, and the word `s:` narrows by.
     ///
-    /// Two words for one group, and the second earns its keep: a heading says
-    /// what the group means to somebody scanning the list, and a counter says
-    /// the word `s:` takes for it, so the header teaches the language the list
-    /// is narrowed in by existing. One word per group and none for anything
-    /// else — a counter naming a word the list cannot be narrowed by would
-    /// send somebody to an empty list.
+    /// The header shows these words so it doubles as a guide to `s:`. Every
+    /// word here must narrow to the group it counts.
     pub fn state(self) -> &'static str {
         match self {
             Group::Pinned => "pinned",
@@ -147,30 +103,25 @@ impl Group {
     }
 }
 
-/// Which way the agents are gathered.
+/// How the list's headings divide the agents.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Axis {
-    /// Under what they need, which is what somebody opens the view for.
+    /// By [`Group`].
     #[default]
     State,
-    /// Under the project they are running in.
+    /// By project directory, reading amx's own worktree layout.
     Project,
-    /// Under the repository that holds them, with every worktree of it
-    /// together. Where [`Axis::Project`] reads amx's own worktree layout, this
-    /// asks git, so a `workflow run` tree heads the same repository as the
-    /// checkout beside it.
+    /// By repository, asking git, so every linked worktree (including ones
+    /// `workflow run` cut) heads with its main checkout.
     Repo,
 }
 
-/// How somebody has arranged the list, in terms that outlive the view they
-/// arranged it in: which way it is gathered, the agents pinned over the wall
-/// and the ones asleep under it, and the order a group was put in.
+/// The user's persisted arrangement of the list: axis, pins, sleeps and
+/// hand-made group orders.
 ///
-/// Agents by id and groups by name, because that is what a later view has to
-/// find them by. An id in here that no longer names an agent costs a lookup
-/// that misses, which is what a view opened on a fleet that has moved on
-/// should cost.
+/// Keyed by agent id and group name so a later view can apply it. Ids of
+/// agents that no longer exist are harmless misses.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Arrangement {
@@ -181,35 +132,22 @@ pub struct Arrangement {
 }
 
 impl Arrangement {
-    /// What the last view left written down under this state root, for a
-    /// reader that is not a view.
+    /// The arrangement the last view saved under this state root, for readers
+    /// outside the view (`park` checks pins).
     ///
-    /// Nothing else amx runs holds a list, and what somebody pinned is still
-    /// theirs to have obeyed: a verb deciding whether to take an idle agent's
-    /// pane has to know that the agent is the one they wanted in front of
-    /// them. So the file is read where it is written, through the view's own
-    /// [`crate::tui::Remembered`], rather than a second account of the same
-    /// document.
-    ///
-    /// The default where there is no file, no room for one, or nothing
-    /// readable in it. A verb that failed because a view had never been opened
-    /// would be a verb that needs a view.
+    /// Read through [`crate::tui::Remembered`] so there is one parser for the
+    /// file. Missing or unreadable files give the default.
     pub fn from_disk(root: &Path) -> Arrangement {
         crate::paths::view_file(root)
             .map(|path| super::Remembered::read(&path).arrangement)
             .unwrap_or_default()
     }
 
-    /// What the view file should hold: `disk` with the difference between
-    /// `published` and `local` laid over it.
+    /// `disk` with this view's changes since `published` applied on top.
     ///
-    /// Two views are two hands on one wall, and each writes the whole
-    /// document. Writing `local` outright would drop whatever the other view
-    /// changed since this one last read it; writing this keeps both. Only the
-    /// fields that moved between `published` and `local` are taken, one field
-    /// at a time — an axis somebody turned, the ids pinned or let go, the
-    /// groups whose order somebody put in — so a change this view did not
-    /// make is never undone by it.
+    /// Several views can write the same file. Only fields that differ between
+    /// `published` and `local` (the axis, each pin and sleep, each group's
+    /// order) are taken, so another view's changes survive.
     pub fn merged(published: &Arrangement, local: &Arrangement, disk: &Arrangement) -> Arrangement {
         let mut merged = disk.clone();
         if local.axis != published.axis {
@@ -235,61 +173,44 @@ impl Arrangement {
         merged
     }
 
-    /// Whether this agent is one somebody pinned over the wall.
-    ///
-    /// By id, because a reader outside the view has an id and not a reading:
-    /// see [`List::holding`], which is the same question asked of the list a
-    /// view is drawing.
+    /// Whether the agent with this id is pinned. See [`List::holding`].
     pub fn has_pinned(&self, id: &str) -> bool {
         self.held.contains(id)
     }
 
-    /// Whether this agent is one somebody has put under the wall.
-    ///
-    /// The other half of the same question, asked the same way: see
-    /// [`List::sleeping`].
+    /// Whether the agent with this id is asleep. See [`List::sleeping`].
     #[cfg(test)]
     pub fn has_asleep(&self, id: &str) -> bool {
         self.asleep.contains(id)
     }
 }
 
-/// What a heading stands for.
+/// What a heading stands for, valid for the current reading only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Under {
-    /// A state, on the state axis.
+    /// A group, on the state axis.
     Group(Group),
-    /// The project at this place in the list's own table of them. An index
-    /// rather than the path itself, so a line of the list stays a small copied
-    /// value.
+    /// An index into the list's project table, so [`Item`] stays `Copy`.
     Project(usize),
 }
 
-/// What a heading is answerable for: the agents gathered under it, the
-/// failures among them, what each of them is doing, and whether they are on
-/// the screen or put away behind it.
-///
-/// The counts are what a narrowing left, always: a heading may not claim
-/// members that opening it could not reach.
+/// Counts for one heading, taken after narrowing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tally {
+    /// Top-level agents under the heading.
     pub members: usize,
+    /// Failed agents under the heading, children included.
     pub failures: usize,
-    /// How many rows under this heading are in each group, by that group's
-    /// place in [`Group::ALL`].
+    /// Rows per group, indexed by position in [`Group::ALL`].
     ///
-    /// Every row, children included, where `members` counts the top-level ones
-    /// a heading stands over. The two answer different questions: `members` is
-    /// how many rows come back when a shut group is opened, and this is how
-    /// much work is under there — and a child is work.
+    /// Counts children, unlike `members`: this is how much work is under the
+    /// heading, and `members` is how many rows opening it brings back.
     pub states: [usize; Group::ALL.len()],
     pub shut: bool,
 }
 
 impl Tally {
-    /// What each group under this heading is doing, in the header band's own
-    /// grammar, loudest first and saying nothing about a group with nobody in
-    /// it.
+    /// The non-empty group counts, in [`Group::ALL`] order.
     pub fn doing(&self) -> Vec<(Group, usize)> {
         Group::ALL
             .into_iter()
@@ -300,36 +221,31 @@ impl Tally {
     }
 }
 
-/// One line of the list. Every one of them but the blank is a place the
-/// cursor can stop; the blank is spacing, and the cursor walks over it.
+/// One line of the list. The cursor can stop on every line except a blank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
-    /// A heading, and what it answers for.
     Heading(Under, Tally),
-    /// The agent at this position of the reading behind the list.
+    /// An index into the list's views.
     Agent(usize),
-    /// Which heading's rows the fold is holding back, and how many of them.
-    /// The heading, because a fold is opened one group at a time and the row
-    /// somebody presses is the only thing that says which.
+    /// The fold under a heading, and how many rows it hides. Opening it
+    /// unfolds that heading only.
     Fold(Under, usize),
-    /// A parent whose own children the fold is holding back, and how many of
-    /// its descendants went with them. The parent, because opening a subtree
-    /// is opening the fold the same way the group's own row does.
+    /// The fold under a parent row, and how many of its descendants it hides.
+    /// Opening it unfolds the parent's heading.
     Sub(usize, usize),
-    /// The line that stands a heading off from the group above it.
+    /// Spacing above a heading.
     Blank,
 }
 
-/// A heading in terms that outlive the next reading. `Under` holds a project's
-/// place in a table that is built again every second, and what somebody shut
-/// has to be remembered against something that does not move under them.
+/// A heading identity that survives rebuilds, unlike [`Under`], whose project
+/// index changes with every reading.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Group(Group),
     Project(PathBuf),
 }
 
-/// What the cursor is on, in the same terms and for the same reason.
+/// What the cursor is on, by stable identity.
 enum On {
     Agent(String),
     Heading(Key),
@@ -337,7 +253,6 @@ enum On {
 }
 
 impl On {
-    /// The agent the cursor is standing on, where it is standing on one.
     fn agent(&self) -> Option<&str> {
         match self {
             On::Agent(id) => Some(id),
@@ -346,23 +261,18 @@ impl On {
     }
 }
 
-/// One narrowing, as the change it makes. A line only changes what it names,
-/// so `a:port` on its own leaves the state narrowing where it was, and `s:`
-/// with nothing after it drops the states. What a line of state words does to
-/// the name is `List::narrow`'s to say.
+/// One change to the narrowing. `None` clears that part. See [`List::narrow`]
+/// for how a batch of them combines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Narrow {
     State(Option<String>),
     Name(Option<String>),
 }
 
-/// What the list is narrowed to. Every one that is set has to match, and
-/// nothing set keeps everything.
+/// The active narrowing. The state and name parts must both match when set.
 ///
-/// The states are a list because a line may name several of them, and any one
-/// of them keeps a row: `s:waiting s:working` is somebody asking for what needs
-/// them beside what is still running, and states that all had to match at once
-/// would be a line that always emptied the wall.
+/// Several states match if any one does, so `s:waiting s:working` shows both
+/// groups.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Filters {
     state: Vec<String>,
@@ -371,21 +281,11 @@ struct Filters {
 
 impl Filters {
     fn keeps(&self, view: &View, group: Group, prs: &[Pr]) -> bool {
-        // The group the row is drawn under rather than the state on the
-        // record. The words a counter says are the words `s:` takes, so a wall
-        // gathered five ways is narrowed the same five ways, and what somebody
-        // typed leaves the list holding exactly the group they read the count
-        // of.
-        //
-        // But the record knows more states than the wall has groups — failed,
-        // idle, stopped, starting and unknown all share a heading with others
-        // — and a word no counter says still finds its rows, because
-        // `s:failed` is how somebody picks the one that died out of everything
-        // that finished. A group's word stays the group's, though: `working`
-        // and `done` are both, and reading them as the state as well would
-        // put a pinned agent under `s:working` and a row under review under
-        // `s:done`, which is the list no longer holding what the counter
-        // counted.
+        // A group word matches the group, so `s:` leaves exactly what the
+        // header counted. Any other word is matched against the phase, so
+        // `s:failed` still finds failures. `working` and `done` are both group
+        // words and phases, and they must stay group words, or `s:working`
+        // would also match a pinned working agent.
         let state = self.state.is_empty()
             || self.state.iter().any(|want| {
                 if Group::ALL.iter().any(|group| group.state() == want) {
@@ -394,21 +294,9 @@ impl Filters {
                     view.phase().as_str() == want
                 }
             });
-        // Every word for the agent that somebody might have in front of them:
-        // the id every other surface uses, the name a person gave it because
-        // the id was not what they call it, the `#12` its branch wears — which
-        // is routinely the only one of those a person has, because they came
-        // to the wall from the pull request — and the task it was started on.
-        //
-        // The task because that is the one string on the record the person
-        // wrote themselves. The id is a word amx made up, and what an agent
-        // last said is the agent's. A search that could not reach the sentence
-        // somebody typed an hour ago is a search that misses the thing they
-        // actually remember.
-        //
-        // Not the summary, though it is the one on the screen. It changes
-        // every time the agent speaks, so a wall narrowed by it would drop
-        // rows while somebody was reading them.
+        // Id, display name, pull request label (`#12`) and task. Not the
+        // summary: it changes as the agent works, so rows would drop out
+        // while being read.
         let name = self.name.as_ref().is_none_or(|want| {
             holds(view.id(), want)
                 || holds(called(view), want)
@@ -418,9 +306,7 @@ impl Filters {
         state && name
     }
 
-    /// What was typed, read back — in the words it would be typed in now. The
-    /// name came off a find line, so it reads as one: a header naming a token
-    /// nobody can type any more is a header that cannot be acted on.
+    /// The narrowing as the find line would spell it (`s:waiting /port`).
     fn label(&self) -> Option<String> {
         let said: Vec<String> = self
             .state
@@ -432,86 +318,65 @@ impl Filters {
     }
 }
 
-/// The agents, as lines with a cursor on one of them.
+/// The agents laid out as lines, with a cursor.
 #[derive(Debug)]
 pub struct List {
     views: Vec<View>,
     items: Vec<Item>,
     cursor: usize,
-    /// Whether the cursor has been put on anything yet, which is what tells a
-    /// view that has just opened from one somebody is reading.
+    /// Whether the cursor has been placed since the list was last empty. The
+    /// first placement lands on an agent rather than a heading.
     landed: bool,
-    /// The groups somebody has opened the fold of, by what they stand for.
-    /// Remembered the way `shut` is and for the same reason: the heading a
-    /// fold belongs to has to be the same heading on the next reading.
+    /// Headings whose fold the user opened.
     unfolded: HashSet<Key>,
-    /// The groups somebody has shut, by what they stand for.
+    /// Headings the user shut.
     shut: HashSet<Key>,
-    /// The agents somebody has pinned over the wall.
+    /// Pinned agent ids.
     held: BTreeSet<String>,
-    /// And the ones somebody has put under it.
+    /// Sleeping agent ids.
     asleep: BTreeSet<String>,
-    /// The order somebody put a group in, as the ids of the agents that were
-    /// under it when they said so.
+    /// Hand-made group orders, as the ids in the group when it was arranged.
     order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
-    /// Which of the two path axes was shown last, so that the turn out of the
-    /// state axis shows the other one. Repository to begin with, because the
-    /// directory axis is the one a first `ctrl+s` has always reached. Not kept
-    /// in the [`Arrangement`]: it is where in a walk somebody is, which is
-    /// worth nothing to the next view that opens.
+    /// The path axis shown last, so leaving the state axis alternates between
+    /// the two. Starts at `Repo` so the first turn reaches `Project`. Not
+    /// persisted.
     last_path: Axis,
     filters: Filters,
-    /// How many agents each group has, worked out where the lines are.
+    /// Top-level agents per group, cached per rebuild for the header.
     counts: Vec<(Group, usize)>,
-    /// And how many of them have stopped on a question, which is the one count
-    /// that is about a state rather than a group.
+    /// Agents waiting on a question, by phase rather than group, so a pinned
+    /// or sleeping agent still counts.
     waiting: usize,
-    /// The projects the headings name, in the order they are drawn.
+    /// The paths the project headings name, in display order.
     projects: Vec<PathBuf>,
-    /// Which project each agent belongs to, worked out once per agent: the
-    /// reading is taken again every second, and either walk below reaches a
-    /// disk — one reads directories, the other runs git. An agent's directory
-    /// does not move under it, so one answer per id is one answer for as long
-    /// as the view is open on that axis.
+    /// Project root per agent id on a path axis. Cached because finding it
+    /// probes the disk or runs git, and an agent's directory does not change.
+    /// Cleared when the axis turns and pruned to the current fleet on rebuild.
     roots: HashMap<String, PathBuf>,
-    /// The parent of each agent, where the parent is itself on the wall: the
-    /// record's `parent` read back to an index, and dropped where it names no
-    /// record, names the agent itself, or closes a loop. A child whose parent
-    /// is not drawn is a root, which is what a record a `stop --delete` left
-    /// behind reads as.
+    /// Each agent's parent index, where the parent is on the list. `None` for a
+    /// missing parent, a self-reference, or a link that closes a loop, so such
+    /// a child is drawn as a root.
     parents: Vec<Option<usize>>,
-    /// And the children of each agent, in the one reading order, so a row and
-    /// its subtree are laid down together.
+    /// Each agent's children, newest first.
     children: Vec<Vec<usize>>,
-    /// The top-level rows, in that same order.
+    /// Top-level agents, in list order.
     tops: Vec<usize>,
-    /// Whether a directory holds a repository. A field so that a test can say
-    /// what the disk looks like, and count what was asked of it.
+    /// Whether a directory is a repository top. Injected for tests.
     probe: fn(&Path) -> bool,
-    /// How the repository axis reads a directory back to the repository that
-    /// holds it. A field for the same reason `probe` is: it runs git, and a
-    /// test over a fake disk should answer for itself.
+    /// The repository holding a directory, per git. Injected for tests.
     repo_of: fn(&Path) -> Option<PathBuf>,
-    /// And how a repository heading reads the branch its root is on, which is
-    /// the other question that axis asks git.
+    /// The branch a repository root has checked out. Injected for tests.
     branch_at: fn(&Path) -> Option<String>,
-    /// What each of those roots has checked out, by root. Beside the roots
-    /// and dropped with them, because a turn of the axis is what changes which
-    /// directories the headings stand for. Taken only on the repository axis,
-    /// and a root on no branch is remembered as such rather than asked about
-    /// again every second.
+    /// Checked-out branch per repository root, repo axis only. Cached per root
+    /// (a root on no branch included) and cleared with `roots`.
     branches: HashMap<PathBuf, Option<String>>,
-    /// What each agent's branch has open, by id. Taken with the reading rather
-    /// than once per agent, because a check goes green while somebody is
-    /// looking at the row — the look itself is a small file beside the record,
-    /// and the forge is asked from a thread nobody waits on.
+    /// Pull requests per agent id, read again on every reading because their
+    /// status changes while the row is on screen.
     prs: HashMap<String, Vec<Pr>>,
-    /// Where those come from. A field for the same reason `probe` is one: a
-    /// test says what the forge holds without one being anywhere near it.
+    /// Source of `prs`. Injected for tests.
     asks: fn(&Meta) -> Vec<Pr>,
-    /// Home as this view knows it, read once: a heading says `~/code/amx` the
-    /// way a person writes it, and `$HOME` does not move while they read.
+    /// `$HOME`, read once, for abbreviating heading paths to `~`.
     home: Option<PathBuf>,
 }
 
@@ -549,8 +414,7 @@ impl Default for List {
 }
 
 impl List {
-    /// The same list over a stated disk and home, which is the seam the walk
-    /// below and the abbreviation above are proven at.
+    /// A list with a fake repository probe and home.
     #[cfg(test)]
     fn probing(probe: fn(&Path) -> bool, home: Option<PathBuf>) -> List {
         List {
@@ -560,8 +424,7 @@ impl List {
         }
     }
 
-    /// The same over a stated git, which is the seam the repository axis is
-    /// proven at: both questions that axis asks are answered by a process.
+    /// A list with fake git answers for the repo axis.
     #[cfg(test)]
     fn probing_repos(
         repo_of: fn(&Path) -> Option<PathBuf>,
@@ -576,18 +439,16 @@ impl List {
         }
     }
 
-    /// The same list over a stated forge, which is the seam the label and the
-    /// narrowing that finds it by number are proven at.
+    /// Replace the pull request source with a fake.
     #[cfg(test)]
     pub(super) fn asking(&mut self, asks: fn(&Meta) -> Vec<Pr>) {
         self.asks = asks;
     }
 
-    /// Take a fresh reading.
+    /// Replace the views with a fresh reading and rebuild the lines.
     ///
-    /// The cursor holds onto what it was on rather than the line number it was
-    /// at: agents change groups while somebody is looking at them, and a
-    /// cursor that stayed on line four would end up on whoever moved into it.
+    /// The cursor follows the agent or heading it was on, since rows move
+    /// between groups from one reading to the next.
     pub fn show(&mut self, views: Vec<View>) {
         let on = self.on();
         self.remember_the_requests(&views);
@@ -596,11 +457,8 @@ impl List {
         self.follow(&on);
     }
 
-    /// What each agent's branch has open, taken again with the reading.
-    ///
-    /// Every agent every time, unlike the projects: which repository an agent
-    /// runs in does not move under it, and what its pull request is doing is
-    /// the thing on the row most likely to have changed since the last look.
+    /// Read every agent's pull requests again. Unlike project roots these are
+    /// not cached, because their status changes between readings.
     fn remember_the_requests(&mut self, views: &[View]) {
         self.prs = views
             .iter()
@@ -608,7 +466,7 @@ impl List {
             .collect();
     }
 
-    /// What this agent's branch has open, in the order a surface reads them.
+    /// The pull requests on this agent's branch, as of the last reading.
     pub fn requests(&self, view: &View) -> &[Pr] {
         self.prs.get(view.id()).map_or(&[], Vec::as_slice)
     }
@@ -617,17 +475,12 @@ impl List {
         self.axis
     }
 
-    /// Gather them the other way. The cursor holds its agent across the turn,
-    /// because turning the axis is a question about the fleet and not about
-    /// the one agent somebody was looking at.
+    /// Turn to the next axis: state, project, state, repo, and around.
     ///
-    /// Three ways now, and the state axis stands between the other two:
-    /// `ctrl+s` walks state, directory, state, repository. The two path axes
-    /// routinely head the same paths — a fleet where nothing was cut by
-    /// `workflow run` heads the same list either way — so a turn straight
-    /// from one to the other reads as a key that did nothing. The roots are
-    /// dropped because what a directory resolves to is a question each axis
-    /// answers differently, and the next reading has to ask the new one.
+    /// The state axis sits between the two path axes because they often show
+    /// the same headings, and a direct turn between them would look like a
+    /// no-op. Cached roots are dropped since each path axis resolves them
+    /// differently. The cursor keeps its agent.
     pub fn turn(&mut self) {
         let on = self.on();
         self.axis = match self.axis {
@@ -646,8 +499,7 @@ impl List {
         self.follow(&on);
     }
 
-    /// How the list stands arranged, to be kept and given back to the next
-    /// view that opens.
+    /// The current arrangement, for persisting.
     pub fn arrangement(&self) -> Arrangement {
         Arrangement {
             axis: self.axis,
@@ -657,12 +509,11 @@ impl List {
         }
     }
 
-    /// Put the list back the way it was arranged. The cursor holds what it was
-    /// on, for the same reason it does across a turn of the axis.
+    /// Apply a saved arrangement. The cursor keeps what it was on.
     pub fn arrange(&mut self, arrangement: Arrangement) {
         let on = self.on();
-        // A turn somebody else made in another view is one this list has not
-        // read yet: the roots in hand answer the old axis's question.
+        // Another view may have turned the axis, and cached roots belong to
+        // the old one.
         if arrangement.axis != self.axis {
             self.roots.clear();
             self.branches.clear();
@@ -675,28 +526,20 @@ impl List {
         self.follow(&on);
     }
 
-    /// Whether this agent is one somebody has pinned over the wall.
+    /// Whether this agent is pinned.
     pub fn holding(&self, view: &View) -> bool {
         self.held.contains(view.id())
     }
 
-    /// Whether this agent is one somebody has put under it.
+    /// Whether this agent is asleep.
     pub fn sleeping(&self, view: &View) -> bool {
         self.asleep.contains(view.id())
     }
 
-    /// Pin the agent under the cursor to the top of the list, or let it go.
+    /// Toggle the pin on the agent under the cursor.
     ///
-    /// About the agent and not about the state it is in: a pinned agent stays
-    /// pinned as its turn runs and ends, because what somebody said is that
-    /// this agent is the one they want in front of them.
-    ///
-    /// A sleeping agent wakes as it is pinned. The two marks are the same
-    /// sentence in opposite directions, and an agent cannot be both the one
-    /// somebody wants in front of them and one they have put away.
-    ///
-    /// Answers whether there was an agent to do it to, which is what tells a
-    /// key pressed on a heading from a key that changed something.
+    /// A pin holds across phase changes. Pinning a sleeping agent wakes it.
+    /// Returns false when the cursor is not on an agent.
     pub fn hold_or_let_go(&mut self) -> bool {
         let Some(id) = self.selected().map(|view| view.id().to_string()) else {
             return false;
@@ -711,16 +554,11 @@ impl List {
         true
     }
 
-    /// Put the agent under the cursor under the whole wall, or wake it.
+    /// Toggle sleep on the agent under the cursor.
     ///
-    /// About the agent for the same reason pinning is: a sleeping agent stays
-    /// under everything as its turn runs and ends, because what somebody said
-    /// is that this is the agent they are not looking at for now. It goes on
-    /// counting among the ones asking, though — where a row is drawn is not an
-    /// answer to its question.
-    ///
-    /// A pinned agent lets go as it goes to sleep, and answers the same way
-    /// [`List::hold_or_let_go`] does.
+    /// Sleep holds across phase changes, and a sleeping agent still counts in
+    /// [`List::waiting`]. Sleeping a pinned agent unpins it. Returns false when
+    /// the cursor is not on an agent.
     pub fn sleep_or_wake(&mut self) -> bool {
         let Some(id) = self.selected().map(|view| view.id().to_string()) else {
             return false;
@@ -735,17 +573,11 @@ impl List {
         true
     }
 
-    /// Move the agent under the cursor a row up or down its own group.
+    /// Move the agent under the cursor `by` rows within its group.
     ///
-    /// The whole group's order is written down, not the one move: an order is
-    /// a sequence, and half of one would leave the agents nobody moved with
-    /// nothing said about where they go. An agent that arrives afterwards is
-    /// not in it and sits under the ones that are — a group somebody has
-    /// arranged by hand is not a group amx goes on sorting under them.
-    ///
-    /// What a narrowing was hiding is not in it either, for the same reason it
-    /// is not on the screen: an arrangement is made of the agents it was made
-    /// among.
+    /// Records the whole group's current order, so agents that join later sort
+    /// after the arranged ones. Agents hidden by a narrowing are left out of
+    /// the recorded order. Returns false when nothing moved.
     pub fn move_by(&mut self, by: isize) -> bool {
         let Some(Item::Agent(n)) = self.items.get(self.cursor).copied() else {
             return false;
@@ -765,10 +597,7 @@ impl List {
         let Some(to) = at.checked_add_signed(by).filter(|to| *to < members.len()) else {
             return false;
         };
-        // The rows a move can reach are the rows on the screen. A fold
-        // holds history back, and an agent moved behind one would go where the
-        // cursor could not follow it, leaving somebody's cursor on whoever
-        // came up in its place.
+        // Refuse to move behind a fold, where the cursor could not follow.
         if !self.drawn(&members[to]) {
             return false;
         }
@@ -781,16 +610,15 @@ impl List {
         true
     }
 
-    /// Whether this agent has a row on the screen, as against being counted by
-    /// a heading that is shut or held back by a fold.
+    /// Whether this agent has a line, as opposed to being hidden under a shut
+    /// heading or a fold.
     fn drawn(&self, id: &str) -> bool {
         self.items
             .iter()
             .any(|item| self.agent(*item).is_some_and(|view| view.id() == id))
     }
 
-    /// Where an agent comes in the reading order, which is where its group
-    /// comes.
+    /// The position of the agent's heading group in [`Group::ALL`].
     fn rank(&self, n: usize) -> usize {
         let group = self.family(n);
         Group::ALL
@@ -799,8 +627,8 @@ impl List {
             .unwrap_or(Group::ALL.len())
     }
 
-    /// Where an agent sits in the order somebody put its group in, and past
-    /// the end of it for one nobody has placed.
+    /// The agent's position in its group's hand-made order, or `usize::MAX`
+    /// when it has none.
     fn seat(&self, n: usize) -> usize {
         let view = &self.views[n];
         self.order
@@ -809,20 +637,13 @@ impl List {
             .unwrap_or(usize::MAX)
     }
 
-    /// Narrow the list to part of the fleet, changing only what was named.
+    /// Apply one reading of the find line.
     ///
-    /// One batch is one reading of the line, so the states it names are the
-    /// states there now: a line read again on every keystroke that added its
-    /// words to the reading before it could never be widened by deleting one.
-    /// A batch naming no state at all leaves the states where they were, and
-    /// `s:` on its own names none, which is how the last word deleted back to
-    /// the token gives the fleet back.
-    ///
-    /// A batch that names states and no name drops the name with them, because
-    /// a line of state words is not a line with a name on it. Half of typing
-    /// `s:waiting s:working` reads as a name — `s:waiting s` is a sentence
-    /// until the colon lands — and a name left standing from the keystroke
-    /// before would narrow the wall to nothing under a header saying states.
+    /// A batch with any state change replaces the state set (a bare `s:`
+    /// clears it) and also replaces the name, which clears it when the batch
+    /// has none. A batch with no state change leaves the states alone. The
+    /// name is dropped with states because a half-typed `s:waiting s` parses
+    /// as a name first, and it must not linger once the line is all states.
     pub fn narrow(&mut self, changes: Vec<Narrow>) {
         let on = self.on();
         let mut states: Option<Vec<String>> = None;
@@ -847,13 +668,12 @@ impl List {
         self.rebuild(on.agent());
     }
 
-    /// What the list is narrowed to, in the words it was narrowed with, so
-    /// somebody who has forgotten why it is short can read why.
+    /// The active narrowing as find-line text, for the header.
     pub fn narrowing(&self) -> Option<String> {
         self.filters.label()
     }
 
-    /// What a heading says.
+    /// The heading text.
     pub fn title(&self, under: Under) -> String {
         match under {
             Under::Group(group) => group.title().to_string(),
@@ -864,13 +684,9 @@ impl List {
         }
     }
 
-    /// What a path heading says: the directory the way a person writes it,
-    /// and on the repository axis the branch that root is checked out on.
-    ///
-    /// The branch is what tells the two path axes apart on a fleet where they
-    /// head the same paths, and it is the one thing on the heading that says
-    /// something about the repository rather than about where it sits. Only
-    /// the repository axis has branches in hand, so only it says one.
+    /// A path heading: the root with `~` for home, plus the checked-out branch
+    /// on the repo axis. The branch is what tells the two path axes apart when
+    /// they head the same paths.
     fn path_title(&self, root: &Path) -> String {
         let path = shorten(root, self.home.as_deref());
         match self.branches.get(root).and_then(Option::as_deref) {
@@ -887,7 +703,7 @@ impl List {
         self.cursor
     }
 
-    /// Where the heading `key` names stands now, and what it answers for.
+    /// The line and [`Under`] of the heading for `key`, if it is drawn.
     pub fn heading_at(&self, key: &Key) -> Option<(usize, Under)> {
         self.items
             .iter()
@@ -900,7 +716,7 @@ impl List {
             })
     }
 
-    /// The agent a line stands for, if it stands for one.
+    /// The agent on this line, if any.
     pub fn agent(&self, item: Item) -> Option<&View> {
         match item {
             Item::Agent(n) => self.views.get(n),
@@ -908,12 +724,12 @@ impl List {
         }
     }
 
-    /// The agent the cursor is on.
+    /// The agent under the cursor, if any.
     pub fn selected(&self) -> Option<&View> {
         self.agent(*self.items.get(self.cursor)?)
     }
 
-    /// Whether the cursor is on the fold rather than on an agent.
+    /// Whether the cursor is on a fold line.
     pub fn on_fold(&self) -> bool {
         matches!(
             self.items.get(self.cursor),
@@ -921,12 +737,12 @@ impl List {
         )
     }
 
-    /// Whether the cursor is on a heading rather than on anything under one.
+    /// Whether the cursor is on a heading.
     pub fn on_heading(&self) -> bool {
         matches!(self.items.get(self.cursor), Some(Item::Heading(..)))
     }
 
-    /// What the heading under the cursor stands for, where it is on one.
+    /// The heading under the cursor, if any.
     pub fn heading(&self) -> Option<Under> {
         match self.items.get(self.cursor) {
             Some(Item::Heading(under, _)) => Some(*under),
@@ -934,15 +750,8 @@ impl List {
         }
     }
 
-    /// The project the cursor is standing in, where the list is gathered by
-    /// them.
-    ///
-    /// A heading names one and every row under it runs in it, so the whole
-    /// group answers the same path: somebody reading a project's agents is
-    /// looking at that project, wherever in it their cursor stopped.
-    ///
-    /// Nothing on the state axis, where the row above one is somebody else's
-    /// repository and a heading is a word rather than a place.
+    /// The project of the heading or agent under the cursor, on a path axis.
+    /// `None` on the state axis.
     pub fn project_under_cursor(&self) -> Option<PathBuf> {
         if self.axis == Axis::State {
             return None;
@@ -954,13 +763,11 @@ impl List {
         }
     }
 
-    /// The agents a heading answers for, in the order they are drawn.
+    /// Every agent under a heading, in list order.
     ///
-    /// Whether or not they are on the screen: a group somebody shut is still
-    /// standing for them and the fold only decides how many rows are drawn, so
-    /// an act on a heading reaches what the heading's own count claims. What a
-    /// narrowing put out of reach is not among them, for the same reason it is
-    /// not in the count.
+    /// Includes agents under a shut heading or behind a fold, so an action on
+    /// a heading reaches everything its count claims. Excludes agents hidden
+    /// by a narrowing.
     pub fn members(&self, under: Under) -> Vec<&View> {
         self.ordered()
             .into_iter()
@@ -969,25 +776,20 @@ impl List {
             .collect()
     }
 
-    /// The reading of one agent by id, for an act decided on one screen and
-    /// carried out on the next.
+    /// The current view of the agent with this id.
     pub fn agent_by_id(&self, id: &str) -> Option<&View> {
         self.views.iter().find(|view| view.id() == id)
     }
 
-    /// Whether a narrowing left this agent on the screen, with everything on
-    /// its row that a narrowing may be written against.
+    /// Whether the narrowing keeps this agent.
     fn keeps(&self, n: usize) -> bool {
         let view = &self.views[n];
         self.filters
             .keeps(view, self.family(n), self.requests(view))
     }
 
-    /// What one agent is doing: where somebody put it, what state it is in, and
-    /// what its work is waiting on out in the world.
-    ///
-    /// About that row alone. Which heading it is drawn under is [`family`]'s
-    /// question, and for a row with anything hanging off it the two differ.
+    /// The agent's own group, ignoring its children. See [`Self::family`] for
+    /// the heading it is drawn under.
     fn group(&self, n: usize) -> Group {
         let view = &self.views[n];
         Group::of(
@@ -998,23 +800,11 @@ impl List {
         )
     }
 
-    /// Which heading a row is drawn under, which is what its whole family is
-    /// doing rather than what it is doing alone.
+    /// The group a row is drawn under: the most urgent group in its subtree.
     ///
-    /// A parent is drawn with its children under it, so the heading over it
-    /// answers for all of them. A row whose own turn ended while a child of it
-    /// is still working has not finished — the work is going on, one level
-    /// down — and `c` clears a group of them at a word. That was the trap: a
-    /// parent under `Completed` with a working child under it is a family
-    /// somebody takes without ever seeing the row that was still running.
-    ///
-    /// So the family stands where its most urgent member stands, which is the
-    /// first group of [`Group::ALL`] anybody in it is in.
-    ///
-    /// Bar the two lines of that table a person wrote themselves. Pinning a row
-    /// and putting one to sleep are things said about the one row they were
-    /// said on: a child somebody pinned does not pin the family over the wall,
-    /// and one they put to sleep does not take the family under it.
+    /// A parent whose turn ended while a child still works must not land in
+    /// Completed, where `c` would clear the running family unseen. A child's
+    /// pin or sleep applies to that child only and does not move the family.
     fn family(&self, n: usize) -> Group {
         let mine = self.group(n);
         if self.children[n].is_empty() || matches!(mine, Group::Pinned | Group::Asleep) {
@@ -1029,13 +819,11 @@ impl List {
             .unwrap_or(mine)
     }
 
-    /// Whether this agent's work is standing in front of a reviewer: its turn
-    /// is over, and its branch has a request that is still asking somebody for
-    /// something.
+    /// Whether the agent's turn is over and a pull request on its branch is
+    /// still open for review.
     ///
-    /// An agent amx cannot account for is not among them. The group is a claim
-    /// that there is nothing left to do but read the work, and a reading that
-    /// cannot say what the agent is doing cannot make it.
+    /// Excludes `Unknown`: Review claims the agent has nothing left to do, and
+    /// an unknown phase cannot support that.
     pub fn reviewable(&self, view: &View) -> bool {
         let over = matches!(
             view.phase(),
@@ -1044,9 +832,8 @@ impl List {
         over && self.requests(view).iter().any(|pr| asking(pr.standing))
     }
 
-    /// Whether an agent is drawn under this heading: by the top-level agent it
-    /// hangs from, so a child answers for the group and project its parent was
-    /// gathered into rather than for one of its own.
+    /// Whether the agent is drawn under this heading, which is decided by its
+    /// top-level ancestor.
     fn belongs(&self, n: usize, under: Under) -> bool {
         let anchor = self.anchor_of(n);
         match under {
@@ -1058,8 +845,7 @@ impl List {
         }
     }
 
-    /// The top-level row an agent hangs from, which is itself where it hangs
-    /// from nothing.
+    /// The agent's top-level ancestor, or itself.
     fn anchor_of(&self, n: usize) -> usize {
         let mut here = n;
         while let Some(parent) = self.parents[here] {
@@ -1068,9 +854,8 @@ impl List {
         here
     }
 
-    /// Put the group the cursor is on away, or bring it back. The heading
-    /// stays either way: it is what stands for the agents while they are gone,
-    /// and what somebody presses again to have them back.
+    /// Toggle the heading under the cursor between shut and open. A shut
+    /// heading stays on the list with its rows hidden.
     pub fn shut_or_open(&mut self) {
         let Some(Item::Heading(under, _)) = self.items.get(self.cursor).copied() else {
             return;
@@ -1086,35 +871,25 @@ impl List {
         self.follow(&on);
     }
 
-    /// Whether this is a fleet nobody has started, rather than one a narrowing
-    /// has emptied or a list of the places nobody is running anything.
-    ///
-    /// The one case a view has anything of its own to say about an empty
-    /// screen. Somebody who narrowed the list to nothing is owed the words
-    /// they typed back, and the project axis is a list of places, which nobody
-    /// arrives at without agents to arrange.
+    /// Whether there are no agents at all, on the state axis with nothing
+    /// narrowed. The only empty list that gets the first-run screen; an empty
+    /// narrowing shows the narrowing instead.
     pub fn unstarted(&self) -> bool {
         self.axis == Axis::State && self.views.is_empty() && self.filters.label().is_none()
     }
 
-    /// Show the rows the fold under the cursor was holding back, and keep
-    /// showing them: somebody who opened it is going through them.
-    ///
-    /// That group and no other. A fold is a row of one group, so opening one
-    /// says nothing about the rest of the wall, and a press that gave every
-    /// group its rows back would be a press nobody could undo.
+    /// Open the fold under the cursor, for this heading only, for the life of
+    /// the list.
     pub fn unfold(&mut self) {
         self.unfold_at(self.cursor);
     }
 
-    /// The same for a fold somebody pointed at rather than walked to, which
-    /// is a line of its own: a click on a fold opens it and leaves the cursor
-    /// where it was.
+    /// Open the fold on line `at`, as a click does. The cursor keeps what it
+    /// was on.
     pub fn unfold_at(&mut self, at: usize) {
         let key = match self.items.get(at).copied() {
             Some(Item::Fold(under, _)) => self.key(under),
-            // A parent's own fold opens the same group or project its children
-            // were gathered into, so pressing it gives the subtree back.
+            // A subtree fold opens the heading its parent is drawn under.
             Some(Item::Sub(n, _)) => self.key_of_row(n),
             _ => None,
         };
@@ -1127,8 +902,7 @@ impl List {
         self.follow(&on);
     }
 
-    /// What heading a row is drawn under, in terms that outlive the next
-    /// reading: a state on the state axis, a project place on the others.
+    /// The [`Key`] of the heading this agent is drawn under.
     fn key_of_row(&self, n: usize) -> Option<Key> {
         let anchor = self.anchor_of(n);
         match self.axis {
@@ -1137,48 +911,31 @@ impl List {
         }
     }
 
-    /// How many agents have stopped on a question, wherever their rows are.
-    ///
-    /// The one count that goes by the state rather than by the group: an agent
-    /// somebody pinned is drawn over the wall and is still waiting on them,
-    /// and the badge that number feeds is the whole of what the view is opened
-    /// to read.
+    /// Agents stopped on a question, counted by phase, so pinned and sleeping
+    /// ones count too.
     pub fn waiting(&self) -> usize {
         self.waiting
     }
 
-    /// How many agents are in each group that has any, whichever way they are
-    /// gathered: what there is does not depend on how it was laid out.
+    /// Top-level agents per non-empty group, whatever the axis.
     ///
-    /// Read back rather than worked out. The counters along the header and the
-    /// name the terminal is given both ask on every frame, and a frame is
-    /// drawn many times over a reading that was taken once, so the walk goes
-    /// where the lines are laid out and each look after it is a look at that.
+    /// Computed once per rebuild, since the header and the terminal title read
+    /// it on every frame.
     pub fn counts(&self) -> &[(Group, usize)] {
         &self.counts
     }
 
-    /// Whether there is nothing on the screen — which is not the same as
-    /// having no agents, once a narrowing can hide every one of them.
+    /// Whether the list has no lines. A narrowing can empty it while agents
+    /// exist.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
-    /// How many agents are holding a slot against the spawn gate.
+    /// Agents holding a slot against the spawn cap, ignoring any narrowing.
     ///
-    /// The whole fleet's worth, whatever the list was narrowed to: the gate
-    /// counts agents, and an agent somebody has filtered off the screen is
-    /// still in the way of the next one.
-    ///
-    /// Counted off the reading rather than by asking tmux again, and it is the
-    /// same answer: the gate counts the agents whose pane still answers for
-    /// them, and the reading has already asked. An agent whose pane went is
-    /// stopped by the time the list sees it, and one whose pane amx took —
-    /// idle and unwatched long enough to be parked — keeps its phase and says
-    /// so in its evidence, so it is the evidence and not the phase that keeps
-    /// it off the count. The gate would let a spawn through over it; a header
-    /// counting it against the cap would say the fleet is fuller than the
-    /// gate does.
+    /// Matches the spawn gate without asking tmux: a gone pane already reads
+    /// as a terminal phase, and a parked agent keeps its phase but has
+    /// `Evidence::LetGo`, so the evidence excludes it.
     pub fn live(&self) -> usize {
         self.views
             .iter()
@@ -1194,13 +951,7 @@ impl List {
         self.step(-1);
     }
 
-    /// The first line of the list, and the last — the two ends one move away
-    /// rather than a walk.
-    ///
-    /// Reached by standing outside the list and stepping inward, so the same
-    /// walk that keeps the cursor off a blank line keeps it off one here: the
-    /// ends of the list are wherever the step stops, not wherever the items
-    /// happen to end.
+    /// Move to the first line, skipping a blank the way [`Self::step`] does.
     pub fn top(&mut self) {
         self.cursor = 0;
         if matches!(self.items.first(), Some(Item::Blank)) {
@@ -1208,6 +959,7 @@ impl List {
         }
     }
 
+    /// Move to the last line, skipping a trailing blank.
     pub fn bottom(&mut self) {
         self.cursor = self.items.len().saturating_sub(1);
         if matches!(self.items.last(), Some(Item::Blank)) {
@@ -1215,9 +967,8 @@ impl List {
         }
     }
 
-    /// Put the cursor on this line, for a pointer that named one: any line
-    /// but the blank, which is spacing rather than a stop. Answers whether
-    /// the cursor landed.
+    /// Put the cursor on line `at`, as a click does. Returns false for a blank
+    /// or out-of-range line.
     pub fn land(&mut self, at: usize) -> bool {
         match self.items.get(at) {
             Some(Item::Blank) | None => false,
@@ -1228,11 +979,8 @@ impl List {
         }
     }
 
-    /// Put the cursor on this agent, for a caller holding an id rather than a
-    /// line: an agent just started has no line on the screen for anything to
-    /// point at, and its id is the whole of what is known about it. Answers
-    /// whether the cursor landed, which a narrowing hiding that agent — or a
-    /// reading taken before it — makes false.
+    /// Put the cursor on the agent with this id. Returns false when it has no
+    /// line, e.g. it is narrowed out or not in the reading yet.
     pub fn land_on(&mut self, id: &str) -> bool {
         let Some(at) = self.row_of(id) else {
             return false;
@@ -1241,14 +989,11 @@ impl List {
         true
     }
 
-    /// The first agent on the screen with something on it for the person
-    /// reading, for a key that lands the cursor on it.
+    /// The id of the first drawn agent that needs the user, per
+    /// [`needing_you`], judged by each agent's own group whatever the axis.
     ///
-    /// The rows the list is showing, which is what a narrowing left and what a
-    /// shut heading is not holding back, so [`List::land_on`] can always go
-    /// where this says. In their state order whichever axis is drawn, because
-    /// what an agent is waiting for is a fact about the agent and not about
-    /// the way the fleet was gathered.
+    /// Only drawn agents are considered, so [`List::land_on`] always succeeds
+    /// on the answer.
     pub fn first_needing(&self) -> Option<String> {
         let showing: Vec<(Group, String)> = self
             .ordered()
@@ -1259,16 +1004,13 @@ impl List {
         needing_you(&showing)
     }
 
-    /// Which line this agent is drawn on, where the list is drawing it.
     fn row_of(&self, id: &str) -> Option<usize> {
         self.items
             .iter()
             .position(|item| self.agent(*item).is_some_and(|view| view.id() == id))
     }
 
-    /// Move to the next line, staying put at the ends. Every line is a stop,
-    /// headings included — a group is a thing somebody does something to —
-    /// except the blank over a heading, which the cursor walks straight over.
+    /// Move `by` lines, skipping blanks and stopping at the ends.
     fn step(&mut self, by: isize) {
         let mut at = self.cursor;
         loop {
@@ -1286,21 +1028,15 @@ impl List {
         }
     }
 
-    /// Lay the reading out as lines.
+    /// Rebuild the lines from the current views.
     ///
-    /// `keeping` is the agent the cursor was on when the caller decided to
-    /// rebuild, taken as an argument rather than read here: half the callers
-    /// have already moved the reading the old items point into, and an id
-    /// read across that seam could be somebody else's.
+    /// `keeping` is the id the cursor was on, passed in because some callers
+    /// have already replaced `views`, so the old items no longer index them.
     fn rebuild(&mut self, keeping: Option<&str>) {
         self.remember_the_roots();
-        // The forest twice: once over the whole fleet and once over what the
-        // narrowing left. Which heading a row stands under is what its family
-        // is doing — see [`List::family`] — and that is a question asked of
-        // every row while the narrowing is still being decided, so the
-        // relation has to be there before the order is. The second planting is
-        // the one the wall is drawn from, where a parent the narrowing took is
-        // a parent its children no longer hang off.
+        // Plant the forest twice. Narrowing needs `family`, which needs the
+        // whole fleet's parent links. The lines are drawn from the second
+        // planting, where a child of a narrowed-out parent is a root.
         let fleet: Vec<usize> = (0..self.views.len()).collect();
         self.plant(&fleet);
         let order = self.ordered();
@@ -1324,17 +1060,15 @@ impl List {
         self.settle();
     }
 
-    /// Which repository each agent belongs to, for the ones not worked out
-    /// yet. Only on an axis that asks, because both walks reach a disk — one
-    /// reads directories, the other runs git.
+    /// Resolve the project root of every agent not yet cached, on a path axis
+    /// only, since resolving probes the disk or runs git.
     fn remember_the_roots(&mut self) {
         let axis = self.axis;
         if axis == Axis::State {
             return;
         }
         let (probe, repo_of) = (self.probe, self.repo_of);
-        // Rebuilt from the agents on this reading, so one that has left the
-        // wall is dropped rather than kept for the life of the view.
+        // Rebuilt from this reading so agents that left are dropped.
         let mut known = std::mem::take(&mut self.roots);
         self.roots = self
             .views
@@ -1353,9 +1087,8 @@ impl List {
         }
     }
 
-    /// What each repository heading is checked out on, for the roots not asked
-    /// about yet. Once per root rather than once per agent, since a repository
-    /// full of agents is one branch.
+    /// Look up the checked-out branch of every root not yet cached. Keyed by
+    /// root, so many agents in one repository cost one lookup.
     fn remember_the_branches(&mut self) {
         let branch_at = self.branch_at;
         let fresh: Vec<PathBuf> = self
@@ -1371,14 +1104,11 @@ impl List {
         }
     }
 
-    /// Read the `parent` each record names back to a row on this wall, and lay
-    /// the fleet out as the forest that follows.
+    /// Build `parents`, `children` and `tops` for the agents in `order`.
     ///
-    /// A parent that names no record on the wall — a narrowed-out one, one a
-    /// `stop --delete` took, the agent itself, one already met going up — is
-    /// dropped, and the child stands as a root. A loop is cut at the second
-    /// visit rather than walked, because a record somebody edited is not a
-    /// reason for a view to hang.
+    /// A parent link to an agent outside `order`, to itself, or one that closes
+    /// a loop is dropped, and the child becomes a root. Loops are cut rather
+    /// than walked so a hand-edited record cannot hang the view.
     fn plant(&mut self, order: &[usize]) {
         let kept: HashSet<usize> = order.iter().copied().collect();
         let at: HashMap<&str, usize> = self
@@ -1416,11 +1146,8 @@ impl List {
                 self.children[parent].push(n);
             }
         }
-        // A parent's children read newest first, the way the wall's own
-        // finished rows do, and not in the order their own groups sort: a
-        // child is drawn under its parent whatever state it is in, so its
-        // state is not where it stands. The closing connector therefore lands
-        // on the oldest of them.
+        // Children sort newest first by creation, not by group, so the
+        // closing connector lands on the oldest.
         let created: Vec<u64> = self.views.iter().map(|view| view.meta.created).collect();
         for children in &mut self.children {
             children.sort_by(|&a, &b| created[b].cmp(&created[a]));
@@ -1432,9 +1159,8 @@ impl List {
             .collect();
     }
 
-    /// How deep a row stands, counted from the roots the parents are laid back
-    /// to rather than trusted from the record: a child whose parent is gone is
-    /// drawn a root whatever depth it was written at.
+    /// The row's depth in the planted forest. The record's own `depth` is not
+    /// used, since a child whose parent is gone is drawn as a root.
     fn depth_of_row(&self, n: usize) -> usize {
         let mut depth = 0;
         let mut here = n;
@@ -1445,8 +1171,7 @@ impl List {
         depth
     }
 
-    /// Every row under these roots, depth first: a parent and then its whole
-    /// subtree, so a group's members read the way the wall draws them.
+    /// These roots and all their descendants, depth first, in drawing order.
     fn nested(&self, roots: &[usize]) -> Vec<usize> {
         let mut out = Vec::new();
         for &n in roots {
@@ -1462,8 +1187,8 @@ impl List {
         }
     }
 
-    /// Whether this row is the last of its siblings, which is the connector it
-    /// wears: `└─` for the last, `├─` for one with a brother after it.
+    /// Whether the row is its parent's last child, which draws `└─` rather
+    /// than `├─`.
     fn last_sibling(&self, n: usize) -> bool {
         match self.parents[n] {
             Some(parent) => self.children[parent].last() == Some(&n),
@@ -1471,19 +1196,16 @@ impl List {
         }
     }
 
-    /// The levels every root is padded by, which is none of them.
+    /// Nesting levels every root is padded by: always 0.
     ///
-    /// A child's connector starts in the column of its parent's glyph rather
-    /// than beside it, so a family needs no room in front of the roots and a
-    /// root stands at the same column whether or not anything hangs from it.
-    /// Padding them moved the whole wall the moment one agent spawned a sub.
+    /// A child's connector starts in its parent's glyph column, so roots keep
+    /// their column when a family appears.
     pub fn root_pad(&self) -> usize {
         0
     }
 
-    /// How deep this item stands: the number of two-cell levels its gutter
-    /// indents, which is also the room its name gives up so the columns after
-    /// it stay under its parent's. A heading or a fold stands nowhere.
+    /// The nesting depth of an agent line, 0 for anything else. The name
+    /// column gives up two cells per level so later columns stay aligned.
     pub(super) fn depth(&self, item: Item) -> usize {
         match item {
             Item::Agent(n) => self.depth_of_row(n),
@@ -1491,22 +1213,16 @@ impl List {
         }
     }
 
-    /// The cells before an agent's glyph: nothing at a root, then one two-cell
-    /// level for each step of this row's own depth.
+    /// The tree connectors before an agent's glyph, two cells per level.
     ///
-    /// Every root stands at the same column, the one the wall starts at, so
-    /// none of them moves when a family is drawn beside it. A child's
-    /// connector lands in the column of the glyph it hangs from — `├─` where a
-    /// brother follows, `└─` on the last of them, `│ ` where a connector from
-    /// an ancestor passes the row on its way to a brother, and spaces where
-    /// neither — so the family reads as a tree and each level indents its own
-    /// row.
+    /// Empty for a root. The last level is `├─`, or `└─` for a last child.
+    /// Each level above it is `│ ` where that ancestor has a later sibling,
+    /// else blank.
     pub fn gutter(&self, item: Item) -> String {
         let n = match item {
             Item::Agent(n) => n,
-            // The fold's own row stands one level under the parent whose
-            // children it holds back, at the column a child's glyph would
-            // take, and wears no connector of its own.
+            // A subtree fold sits where a child's glyph would, with no
+            // connector.
             Item::Sub(n, _) => {
                 return "  ".repeat(self.depth_of_row(n) + 1);
             }
@@ -1517,8 +1233,7 @@ impl List {
         if depth == 0 {
             return cells;
         }
-        // The path from the root down to this row, so each rail can ask the
-        // ancestor whose connector it stands under.
+        // Root-to-row path, so each level can ask its ancestor.
         let mut path = vec![n];
         let mut here = n;
         while let Some(parent) = self.parents[here] {
@@ -1543,17 +1258,12 @@ impl List {
         cells
     }
 
-    /// Every agent a narrowing left, in the one order both axes draw them in:
-    /// by what they need, and inside that the order somebody put the group in,
-    /// then the order the agents were started in — except the finished ones,
-    /// where the newest ending comes first because what just finished is what
-    /// somebody scanning them came for.
+    /// The agents the narrowing keeps, in list order: by group, then the
+    /// group's hand-made order, then start order, except Completed, newest
+    /// ending first.
     ///
-    /// One order for both axes is what keeps a row's neighbours its own: an
-    /// agent does not change who it sits beside merely because the fleet was
-    /// gathered a different way. It is also what a hand-made order means here:
-    /// somebody arranging the list is arranging the fleet, not one screen of
-    /// it.
+    /// Every axis uses this one order, so turning the axis never changes a
+    /// row's neighbours.
     fn ordered(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.views.len()).filter(|&n| self.keeps(n)).collect();
         // Keyed once per agent: `family` walks a subtree and `seat` scans the
@@ -1562,8 +1272,8 @@ impl List {
             let view = &self.views[n];
             let ending = match self.family(n) {
                 Group::Completed => Some((Reverse(ended(view)), view.id())),
-                // A stable sort, so everything else keeps the order it was
-                // read in, which is the order the agents were started in.
+                // The sort is stable, so other groups keep reading order,
+                // which is start order.
                 _ => None,
             };
             (self.rank(n), self.seat(n), ending)
@@ -1571,12 +1281,8 @@ impl List {
         order
     }
 
-    /// How many top-level agents each state has, off the order the lines are
-    /// laid out from.
-    ///
-    /// The top-level agents only: a child is drawn under its parent and its
-    /// parent's heading, so counting it again under its own group would say
-    /// the fleet holds more than the wall shows a heading for.
+    /// Top-level agents per non-empty group. Children are left out because
+    /// they are drawn under their parent's heading.
     fn counted(&self, order: &[usize]) -> Vec<(Group, usize)> {
         Group::ALL
             .into_iter()
@@ -1590,8 +1296,6 @@ impl List {
             .collect()
     }
 
-    /// The top-level rows among a reading, which is where a heading's rows
-    /// begin.
     fn tops_in(&self, order: &[usize]) -> Vec<usize> {
         order
             .iter()
@@ -1600,7 +1304,7 @@ impl List {
             .collect()
     }
 
-    /// One heading per state that has anybody under it.
+    /// The lines for the state axis: one heading per non-empty group.
     fn by_state(&self, order: &[usize], keeping: Option<&str>) -> Vec<Item> {
         let mut items = Vec::new();
         for group in Group::ALL {
@@ -1634,16 +1338,11 @@ impl List {
         items
     }
 
-    /// Put a heading's rows on the list: every top-level agent and then its
-    /// whole subtree, with the rows past [`FOLD_AT`] folded away behind a
-    /// count on a row of their own.
+    /// Push a heading's rows: each top-level agent and its subtree, folding
+    /// past [`FOLD_AT`] rows unless the heading was unfolded.
     ///
-    /// Nothing here asks how tall the screen is. A group is as long as it is,
-    /// and the list scrolls.
-    ///
-    /// The heading is handed in both ways round because the two do not answer
-    /// each other yet: `Under::Project` is a place in a table this walk is
-    /// still building, so the key it would read back is the last reading's.
+    /// Takes both `under` and `key` because `projects` is still being built,
+    /// so [`Self::key`] would read the previous reading's table.
     fn tree(
         &self,
         under: Under,
@@ -1665,9 +1364,8 @@ impl List {
                 self.subtree_rows(root, &shown, items);
             }
         }
-        // What the fold's own row counts is the top-level agents it held
-        // back, whole families at a time: a drawn parent already says how many
-        // of its own children went with it.
+        // Hidden top-level agents, counted with their whole families. Children
+        // hidden under a drawn parent are counted by that parent's `Sub` line.
         let more: usize = roots
             .iter()
             .filter(|root| !shown.contains(root))
@@ -1678,8 +1376,7 @@ impl List {
         }
     }
 
-    /// Draw a parent and the children the fold kept, and say on a row under it
-    /// how many of its descendants were held back.
+    /// Push a row, its kept descendants, and a `Sub` line for any it hides.
     fn subtree_rows(&self, n: usize, shown: &HashSet<usize>, items: &mut Vec<Item>) {
         items.push(Item::Agent(n));
         for &child in &self.children[n] {
@@ -1693,7 +1390,6 @@ impl List {
         }
     }
 
-    /// How many of a parent's descendants the fold held back.
     fn hidden_under(&self, n: usize, shown: &HashSet<usize>) -> usize {
         self.children[n]
             .iter()
@@ -1704,7 +1400,6 @@ impl List {
             .sum()
     }
 
-    /// Every row under this one, itself not counted.
     fn descendants(&self, n: usize) -> usize {
         self.children[n]
             .iter()
@@ -1712,20 +1407,14 @@ impl List {
             .sum()
     }
 
-    /// Which rows a fold keeps: the ones a person came to scan for. A failure
-    /// is news however old it is, a row carrying a pull request is work still
-    /// moving, and the row the cursor stands on is taken even over the room —
-    /// folding it away would land the cursor on whoever came up in its place,
-    /// and the card with it. What is left over fills whatever room is left,
-    /// and everything kept is drawn in the order the group already reads in.
+    /// The rows a folded heading keeps, in `members` order.
     ///
-    /// A kept row's ancestors come with it, over the room if need be: a child
-    /// cannot stand on the wall without the parent it hangs from.
+    /// Priority: the cursor's row (even past `room`, so the cursor and any
+    /// open card stay put), then failures and rows with a pull request, then
+    /// the rest. A kept row's ancestors are kept too, even past `room`.
     ///
-    /// Whether anybody has read a row plays no part. It used to, and a card
-    /// marks its row read, so reading one made the row under the cursor fall
-    /// out of the fold and the rest of the group shuffle up under somebody
-    /// mid-scan.
+    /// Read state is deliberately ignored: opening a card marks its row read,
+    /// and a fold that used it reshuffled the group under the cursor.
     fn worth_the_room(&self, members: &[usize], room: usize, keeping: Option<&str>) -> Vec<usize> {
         let cursor = |n: usize| keeping == Some(self.views[n].id());
         let scanned = |n: usize| {
@@ -1764,15 +1453,10 @@ impl List {
             .collect()
     }
 
-    /// What a heading answers for: the top-level agents under it, and what it
-    /// says of their failures.
+    /// The [`Tally`] for a heading over these roots.
     ///
-    /// The failures are counted whether the group is open or shut: a group
-    /// says how many of its agents failed even while their rows are on the
-    /// screen, because the count is what somebody scanning a screenful of
-    /// headings reads instead of the rows. A child that failed is counted
-    /// under the parent it is drawn beneath, so a heading answers for the
-    /// rows it stands over rather than for a group of its own.
+    /// Failures are counted whether the heading is open or shut, and a failed
+    /// child counts under the heading its parent is drawn under.
     fn tally(&self, roots: &[usize], shut: bool) -> Tally {
         let under = self.nested(roots);
         let mut states = [0; Group::ALL.len()];
@@ -1793,13 +1477,11 @@ impl List {
         }
     }
 
-    /// One heading per project somebody has an agent in.
+    /// The lines for a path axis: one heading per project, and the project
+    /// table the headings index.
     ///
-    /// Projects are ordered by what their most urgent agent needs and then by
-    /// where they are: a question at the bottom of a quiet repository is still
-    /// a question, and two equally quiet repositories go by path. A project
-    /// past [`FOLD_AT`] agents folds the way a group does: sixty rows under
-    /// one path is as long a wall as sixty under one heading.
+    /// Projects sort by their most urgent agent's group, then by path. A
+    /// project past [`FOLD_AT`] rows folds like a group.
     fn by_project(&self, order: &[usize], keeping: Option<&str>) -> (Vec<PathBuf>, Vec<Item>) {
         let mut projects: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for &n in &self.tops_in(order) {
@@ -1810,8 +1492,7 @@ impl List {
             }
         }
 
-        // `order` is already the reading order, so a project's first agent is
-        // its most urgent one, and that is what the project sorts by.
+        // `order` is list order, so a project's first agent is its most urgent.
         projects.sort_by(|(here, ours), (there, theirs)| {
             self.rank(ours[0])
                 .cmp(&self.rank(theirs[0]))
@@ -1837,8 +1518,7 @@ impl List {
         (roots, items)
     }
 
-    /// Which project an agent is drawn under: the walk's answer where it has
-    /// one, and where the agent runs where it has not.
+    /// The project an agent is drawn under: its cached root, else its `dir`.
     fn root_of(&self, n: usize) -> PathBuf {
         self.roots
             .get(self.views[n].id())
@@ -1846,7 +1526,7 @@ impl List {
             .unwrap_or_else(|| self.views[n].meta.dir.clone())
     }
 
-    /// What a heading stands for, in terms that outlive the next reading.
+    /// The stable [`Key`] for a heading.
     pub fn key(&self, under: Under) -> Option<Key> {
         match under {
             Under::Group(group) => Some(Key::Group(group)),
@@ -1854,7 +1534,6 @@ impl List {
         }
     }
 
-    /// What the cursor is on now.
     fn on(&self) -> On {
         match self.items.get(self.cursor) {
             Some(Item::Agent(n)) => match self.views.get(*n) {
@@ -1869,7 +1548,7 @@ impl List {
         }
     }
 
-    /// Put the cursor back on what it was on, where that is still drawn.
+    /// Put the cursor back on what it was on, if that is still drawn.
     fn follow(&mut self, held: &On) {
         let found = match held {
             On::Agent(id) => self.row_of(id),
@@ -1881,11 +1560,9 @@ impl List {
         };
         match (found, held) {
             (Some(at), _) => self.cursor = at,
-            // The agent the cursor was on has gone from the list. The line
-            // that has drifted into its place is some other agent, and a key
-            // meant for the one that went would land on it: the cursor goes to
-            // the heading over where it was instead, which no single key acts
-            // on irreversibly.
+            // The agent left the list. Its old line now holds another agent,
+            // which a key meant for the gone one would hit, so move to the
+            // heading above instead. No single key on a heading is destructive.
             (None, On::Agent(_)) if !self.items.is_empty() => {
                 let over = self.items[..=self.cursor.min(self.items.len() - 1)]
                     .iter()
@@ -1903,21 +1580,17 @@ impl List {
         }
     }
 
-    /// Put the cursor somewhere there is a line: where it is, else the last
-    /// line there is.
+    /// Clamp the cursor to a valid, non-blank line.
     fn settle(&mut self) {
         if self.items.is_empty() {
             self.cursor = 0;
-            // Nothing to stand on. Whatever comes next is a view opening
-            // again, as far as the cursor is concerned.
+            // The next non-empty rebuild places the cursor as if newly opened.
             self.landed = false;
             return;
         }
         if !self.landed {
             self.landed = true;
-            // A view opens on an agent rather than on the heading over it:
-            // somebody who opened it came for the agents, and the heading is
-            // one step back up from the first of them.
+            // The first placement is on the first agent, not its heading.
             self.cursor = self
                 .items
                 .iter()
@@ -1926,33 +1599,18 @@ impl List {
             return;
         }
         self.cursor = self.cursor.min(self.items.len() - 1);
-        // A blank is not a stop. It only ever stands over a heading, so the
-        // heading is what the cursor was nearest to.
+        // A blank always sits above a heading, so step onto the heading.
         if matches!(self.items[self.cursor], Item::Blank) {
             self.cursor = (self.cursor + 1).min(self.items.len() - 1);
         }
     }
 }
 
-/// The wall in the order the view draws it, for a reader that is not the view.
+/// Every agent as `(group, id)` in list order, for verbs such as `attach`.
 ///
-/// A verb stepping through the fleet has to land where somebody reading the
-/// wall would expect it to: the pinned row over everything, the sleeping ones
-/// under it, and in between the groups in the order somebody scanning them
-/// reads, each group the way they left it. All of that is the list's, so this
-/// is the list — built, arranged the way the last view left it, and read back
-/// as ids under their groups rather than as lines on a screen.
-///
-/// The state axis whatever axis the view was left on. The project axis is the
-/// same agents gathered a different way, and a verb asked for the next agent
-/// is asking about the wall rather than about the screen somebody happened to
-/// close. Nothing is narrowed and nothing folds either, for the same reason:
-/// a narrowing is a line somebody typed and a fold is a fact about a screen
-/// that is not here.
-///
-/// What a branch has open comes from what the last look wrote down and no
-/// forge is asked, because the reader here is gone before one could answer:
-/// see [`pr::written`] for what a look started from a verb costs.
+/// Builds a [`List`] with the saved arrangement, always on the state axis,
+/// with no narrowing and no folding. Pull requests come from what was last
+/// written down ([`pr::written`]), since a verb exits before a forge answers.
 pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, String)> {
     let mut list = List {
         asks: pr::written,
@@ -1969,18 +1627,10 @@ pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, Stri
         .collect()
 }
 
-/// Which agent on a wall has something on it for the person reading it.
+/// The first agent needing the user in a list-ordered `(group, id)` slice:
+/// the first NeedsInput, else the first Review, else the first Completed.
 ///
-/// What is keeping somebody from getting on is a question nobody has answered,
-/// then work standing in front of a reviewer, then the last turn to have
-/// ended: an agent that stopped while they were away is what they came back
-/// for. The order the wall is already in settles which row of a group that is
-/// — each group the way somebody left it, and the finished newest first — so
-/// the head of the first group with anybody in it is the answer.
-///
-/// Here rather than in the verb that first asked, because the key on the list
-/// and `amx attach --waiting` are the same question asked of the same wall,
-/// and two spellings of it would drift apart a group at a time.
+/// Shared by the view's key and `amx attach --waiting` so the two agree.
 pub fn needing_you(order: &[(Group, String)]) -> Option<String> {
     let first_of = |group: Group| {
         order
@@ -1993,30 +1643,16 @@ pub fn needing_you(order: &[(Group, String)]) -> Option<String> {
         .or_else(|| first_of(Group::Completed))
 }
 
-/// Whether `said` holds `want`, whatever case either was written in.
-///
-/// An id and a generated name are lowercase and always were, so folding costs
-/// them nothing. A task is a sentence somebody wrote, capitals and all, and a
-/// search that missed `Port the importer` because the `p` was typed small is a
-/// search nobody would use twice.
+/// Case-insensitive substring match. Tasks are free text with capitals.
 fn holds(said: &str, want: &str) -> bool {
     said.to_lowercase().contains(&want.to_lowercase())
 }
 
-/// What a row calls its agent: the name somebody gave it, else the title the
-/// session goes under, and the id until there is either.
+/// The name a row shows: the user's rename, else the vendor's session title,
+/// else the id.
 ///
-/// Here rather than on the reading itself, because it is a fact about the row:
-/// the record is filed under the id, every verb takes the id, and these are
-/// the words this one screen shows instead.
-///
-/// The rename comes first because it is the only one of the three a person
-/// here wrote. The title after it, because an id says what the agent was
-/// started on and says it in the words it was started with, while the vendor
-/// has been naming the conversation out of the work all along and writing a
-/// new name as the work moves. The id last, and it is not lost anywhere else:
-/// the `ls` table prints it, every verb takes it, and a narrowing finds a row
-/// by it.
+/// The session title beats the id because the vendor keeps it current as the
+/// work moves. The id stays reachable through `ls`, every verb, and find.
 pub fn called(view: &View) -> &str {
     view.state
         .name
@@ -2025,18 +1661,11 @@ pub fn called(view: &View) -> &str {
         .unwrap_or_else(|| view.id())
 }
 
-/// What a row says its agent runs: the program the launch command names, then
-/// the model, then the effort, space separated.
+/// The vendor column text: program, model and effort, space separated.
 ///
-/// Only the parts the record holds. A dial nobody turned is the vendor's own
-/// choice and amx never saw it, so a row naming a default would be amx
-/// guessing out loud where the record says nothing — and the words are read
-/// left to right rather than filled into fixed places, because two of the
-/// three are usually missing.
-///
-/// `sh` where no vendor runs the row at all, which is what `!cmd` and an
-/// `--exec` spawn write. The glyph already says the row is a command; this
-/// says what a command is, in the column that says what everything else runs.
+/// Only parts the record holds are shown. An unset dial is the vendor's
+/// default, which amx does not know, so it is left out rather than guessed.
+/// `sh` for a command row (`!cmd` or `--exec`), which has no vendor.
 pub fn vendor_words(meta: &Meta) -> String {
     let Some(agent) = meta.agent.as_deref() else {
         return "sh".to_string();
@@ -2052,16 +1681,13 @@ pub fn vendor_words(meta: &Meta) -> String {
     .join(" ")
 }
 
-/// When the agent last said anything, as well as the record can say.
+/// When the agent was last heard from.
 fn said(view: &View) -> u64 {
     view.state.last_event.max(view.state.since)
 }
 
-/// When an agent's run ended.
-///
-/// The stamp the ending wrote, where there is one. A record that has none is
-/// dated from the last thing the agent said: an older amx wrote it, or the
-/// pane went and nothing got to record an exit.
+/// When the run ended: the recorded end, else the last event. Records from
+/// older amx versions, or whose pane vanished, have no end stamp.
 fn ended(view: &View) -> u64 {
     match view.state.ended {
         0 => said(view),
@@ -2069,40 +1695,34 @@ fn ended(view: &View) -> u64 {
     }
 }
 
-/// The question an agent is showing, and where it comes in the call that asked
-/// it.
+/// The question an agent is showing, and its position in the call.
 ///
-/// A fact about the row for the same reason [`called`] is one: it is read off
-/// the record and it is what a surface draws. None of it can be read off the
-/// pane. `AskUserQuestion` draws its questions as tabs on one screen, and
-/// measured against claude 2.1.240 the strip elides its own headers as the
-/// pane narrows — at 24 columns the showing tab's name is an ellipsis and
-/// nothing else. How many questions there are, what each is called, and
-/// whether one takes more than one choice are in the payload and only there
+/// Read from the recorded payload because the pane cannot supply it: as of
+/// claude 2.1.240 the `AskUserQuestion` tab strip elides headers as the pane
+/// narrows (at 24 columns the tab name is only an ellipsis). The question
+/// count, headers and multi-select flag exist only in the payload
 /// (`docs/question-shapes.md`).
 #[derive(Clone, Copy)]
 pub struct Showing<'a> {
-    /// The question on the screen, as the payload wrote it.
     pub ask: &'a Ask,
-    /// Which of the call's questions it is, counting from one.
+    /// 1-based index of this question in the call.
     pub at: usize,
-    /// And how many the call holds.
+    /// Number of questions in the call.
     pub of: usize,
 }
 
 impl Showing<'_> {
-    /// What the tab strip would call it, where the payload named it.
+    /// The tab header, if the payload has a non-empty one.
     pub fn header(&self) -> Option<&str> {
         self.ask.header.as_deref().filter(|word| !word.is_empty())
     }
 }
 
-/// What the record holds about the question this agent has stopped on, where
-/// the call it came from was ever written down.
+/// The question the agent is stopped on, if its call was recorded.
 ///
-/// The question showing is the first with no answer on it, which is the same
-/// rule the record itself uses: answering one does not end a call, so the tab
-/// after it is what the vendor has on the screen.
+/// That is the first unanswered question, the same rule the record uses:
+/// answering one question does not end the call, so the vendor moves to the
+/// next tab.
 pub fn showing(view: &View) -> Option<Showing<'_>> {
     let at = view
         .state
@@ -2116,11 +1736,8 @@ pub fn showing(view: &View) -> Option<Showing<'_>> {
     })
 }
 
-/// Whether a request is still asking somebody for something.
-///
-/// One that was merged or shut is over, and a draft is not offered to anybody
-/// yet. Everything else is work standing between an agent and a person,
-/// whatever the checks on it are doing.
+/// Whether a pull request is open for review: not merged, closed or draft,
+/// whatever its checks say.
 fn asking(standing: Standing) -> bool {
     match standing {
         Standing::Merged | Standing::Closed | Standing::Draft => false,
@@ -2132,42 +1749,30 @@ fn asking(standing: Standing) -> bool {
     }
 }
 
-/// Which project an agent is running in.
+/// The project an agent runs in, for the project axis.
 fn project_of(meta: &Meta, probe: fn(&Path) -> bool) -> PathBuf {
-    // A worktree amx made says which repository it was cut from, in the shape
-    // the record already holds: string work, and no disk at all. A worktree of
-    // any other shape is one somebody moved or a record somebody edited, and
-    // it is grouped by where it actually runs rather than by a guess.
+    // An amx worktree names its repository by its path alone. Any other
+    // worktree path (moved, or a hand-edited record) groups by `dir`.
     if let Some(tree) = &meta.worktree {
         return crate::worktree::repo_of(tree).unwrap_or_else(|| meta.dir.clone());
     }
 
-    // An agent started without a worktree records the directory it was asked
-    // for, which is routinely a subdirectory of the repository. Without the
-    // walk, an agent started in `<repo>/src` and a worktree agent of the same
-    // repository would head two projects, splitting the one thing this axis
-    // exists to gather.
+    // `dir` is often a subdirectory, so walk up to the repository top, or
+    // `<repo>/src` and a worktree of `<repo>` would head separate projects.
     meta.dir
         .ancestors()
-        // A relative directory ends its walk at the empty path, and asking
-        // about that would ask about wherever the view happens to be running.
+        // A relative path ends at "", which would probe the view's own cwd.
         .filter(|dir| !dir.as_os_str().is_empty())
         .find(|dir| probe(dir))
         .map(Path::to_path_buf)
-        // Under no repository at all: its own directory, verbatim.
         .unwrap_or_else(|| meta.dir.clone())
 }
 
-/// Which repository an agent belongs to, with every worktree of it together.
+/// The repository an agent belongs to, for the repo axis.
 ///
-/// [`project_of`] answers where an agent runs. This asks the other question:
-/// which repository holds the tree, however it was cut and wherever it lives.
-/// git answers that for any linked worktree — its own directory and the one
-/// the repository shares are two, and the shared one names the repository —
-/// so a tree `workflow run` cut and the checkout beside it head one
-/// repository, where the directory axis (which reads only amx's own worktree
-/// layout) heads each. A directory git cannot place, because it is gone or in
-/// no repository at all, falls back to the answer the directory axis gives.
+/// Asks git for the shared repository, so any linked worktree (including
+/// ones `workflow run` cut) groups with its main checkout. Falls back to
+/// [`project_of`] when git cannot place the directory.
 fn repo_root_of(
     meta: &Meta,
     probe: fn(&Path) -> bool,
@@ -2177,7 +1782,7 @@ fn repo_root_of(
     repo_of(dir).unwrap_or_else(|| project_of(meta, probe))
 }
 
-/// The repository the axis asks about, by whichever question that axis asks.
+/// The heading root for an agent on this path axis.
 fn root_of(
     axis: Axis,
     meta: &Meta,
@@ -2190,21 +1795,17 @@ fn root_of(
     }
 }
 
-/// A directory read back to the repository that holds it, as git answers.
 fn main_repo_of(dir: &Path) -> Option<PathBuf> {
     crate::worktree::main_repo(dir).ok()
 }
 
-/// Whether a directory is the top of a repository. An entry rather than a
-/// directory, because a worktree's own `.git` is a file.
+/// Whether `dir` has a `.git` entry. A linked worktree's `.git` is a file.
 fn holds_a_repository(dir: &Path) -> bool {
     dir.join(".git").exists()
 }
 
-/// A path the way a person writes it, with home as `~`.
-///
-/// Shared with the header, which says where the next agent will run and must
-/// not write a path a different way from the headings under it.
+/// `path` with `home` abbreviated to `~`. Shared with the header and the
+/// composer so every surface writes paths the same way.
 pub(super) fn shorten(path: &Path, home: Option<&Path>) -> String {
     let under = home
         .filter(|home| !home.as_os_str().is_empty())
@@ -2226,8 +1827,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// A reading of one agent: the state it is in, and when it was last heard
-    /// from.
+    /// A view of one agent in `phase`, created and last heard from at `at`.
     fn view(id: &str, phase: Phase, at: u64) -> View {
         View {
             meta: Meta {
@@ -2267,28 +1867,23 @@ mod tests {
         }
     }
 
-    /// The same reading, running somewhere else.
     fn at(mut view: View, dir: &str) -> View {
         view.meta.dir = PathBuf::from(dir);
         view
     }
 
-    /// The same reading, on a branch of its own.
     fn on_a_branch(mut view: View, branch: &str) -> View {
         view.meta.branch = Some(branch.to_string());
         view
     }
 
-    /// The same reading, a child of the agent with this id.
     fn child_of(mut view: View, parent: &str) -> View {
         view.meta.parent = Some(parent.to_string());
         view.meta.depth = 1;
         view
     }
 
-    /// A forge where three of the branches have a request on them, so the
-    /// number on the row is read from something rather than made up here. Two
-    /// are still asking somebody for something and the third is in.
+    /// A fake forge: two branches with an open pull request and one merged.
     fn a_forge(meta: &Meta) -> Vec<Pr> {
         match meta.branch.as_deref() {
             Some("amx/fix-login-a1b") => vec![Pr {
@@ -2307,8 +1902,7 @@ mod tests {
         }
     }
 
-    /// The same list with one agent pinned, which is a cursor on its row and
-    /// the key.
+    /// Pin `id` by walking the cursor to it and pressing the key.
     fn pinning(mut list: List, id: &str) -> List {
         list.top();
         while list.selected().is_none_or(|view| view.id() != id) {
@@ -2320,8 +1914,7 @@ mod tests {
         list
     }
 
-    /// The same list with one agent asleep, which is a cursor on its row and
-    /// the other key.
+    /// Put `id` to sleep by walking the cursor to it and pressing the key.
     fn sleeping(mut list: List, id: &str) -> List {
         list.top();
         while list.selected().is_none_or(|view| view.id() != id) {
@@ -2333,7 +1926,6 @@ mod tests {
         list
     }
 
-    /// A list reading that forge.
     fn over_the_forge(views: Vec<View>) -> List {
         let mut list = List::default();
         list.asking(a_forge);
@@ -2341,14 +1933,14 @@ mod tests {
         list
     }
 
-    /// The same reading, in a worktree amx made for it.
     fn in_a_worktree(mut view: View, tree: &str) -> View {
         view.meta.dir = PathBuf::from(tree);
         view.meta.worktree = Some(PathBuf::from(tree));
         view
     }
 
-    /// The list as a person reads it down the screen.
+    /// The list as text lines: headings with member counts, agents by id
+    /// with their gutter, folds, and blanks.
     fn lines(list: &List) -> Vec<String> {
         list.items()
             .iter()
@@ -2371,9 +1963,7 @@ mod tests {
             .collect()
     }
 
-    /// What stands before each agent's glyph, by id and sorted by it, for the
-    /// tests about which column a row starts in rather than which order the
-    /// rows come in.
+    /// Each agent's gutter, sorted by id.
     fn gutters(list: &List) -> Vec<(String, String)> {
         let mut cells: Vec<(String, String)> = list
             .items()
@@ -2396,9 +1986,7 @@ mod tests {
         list
     }
 
-    /// A tally's per-group counts written the way a person says them, so a
-    /// test names the groups it means rather than counting places along
-    /// [`Group::ALL`].
+    /// A `Tally::states` array built from named group counts.
     fn states(counts: &[(Group, usize)]) -> [usize; Group::ALL.len()] {
         let mut states = [0; Group::ALL.len()];
         for (group, count) in counts {
@@ -2411,8 +1999,7 @@ mod tests {
         states
     }
 
-    /// The wall as a reader outside the view reads it down: the group each
-    /// agent was gathered under, and the agent. What [`lines`] is to a screen.
+    /// [`wall_order`] output as `"<group title> <id>"` lines.
     fn walled(order: &[(Group, String)]) -> Vec<String> {
         order
             .iter()
@@ -2420,24 +2007,21 @@ mod tests {
             .collect()
     }
 
-    /// A run of finished agents, `done-0` the oldest ending and the last of
-    /// them the newest, which is the order the group draws them in.
+    /// `count` done agents, `done-0` ending first and the last ending newest.
     fn a_history(count: usize) -> Vec<View> {
         (0..count)
             .map(|n| view(&format!("done-{n}"), Phase::Done, 10 * n as u64))
             .collect()
     }
 
-    // Every directory the list asked about, in the order it asked. A thread
-    // local, because a test has a thread to itself and the suite runs in
+    // Every directory probed, in order. Thread-local because tests run in
     // parallel.
     thread_local! {
         static ASKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// A disk where two directories are repositories, which writes down what it
-    /// was asked: "once per agent" is a claim about how often, and a claim
-    /// about I/O that nothing counts is not a claim.
+    /// A fake probe where `/src/api` and `/src/web` are repositories. Records
+    /// each call in `ASKED` so tests can count disk access.
     fn a_disk_with_repos(dir: &Path) -> bool {
         ASKED.with_borrow_mut(|asked| asked.push(dir.to_path_buf()));
         dir == Path::new("/src/api") || dir == Path::new("/src/web")
@@ -2447,7 +2031,7 @@ mod tests {
         ASKED.with_borrow(|asked| asked.clone())
     }
 
-    /// A list over that disk, with a home to abbreviate against.
+    /// A list on the project axis over `a_disk_with_repos`, home `/home/dev`.
     fn over_the_disk(views: Vec<View>) -> List {
         ASKED.with_borrow_mut(|asked| asked.clear());
         let mut list = List::probing(a_disk_with_repos, Some(PathBuf::from("/home/dev")));
@@ -2456,22 +2040,19 @@ mod tests {
         list
     }
 
-    /// The repository a stated git says a directory belongs to: everything
-    /// under `/work/repo` is that repository, wherever in it the tree lives,
-    /// and `/tmp/scratch` belongs to none.
+    /// A fake git: everything under `/work/repo` belongs to it, nothing else
+    /// belongs to any repository.
     fn a_disk_that_answers_git(dir: &Path) -> Option<PathBuf> {
         dir.starts_with("/work/repo")
             .then(|| PathBuf::from("/work/repo"))
     }
 
-    /// What that git says each root has checked out: `/work/repo` is on
-    /// `main`, and a root it could not place is on nothing it can name.
+    /// A fake git: `/work/repo` is on `main`, other roots on no branch.
     fn a_branch_at(root: &Path) -> Option<String> {
         (root == Path::new("/work/repo")).then(|| "main".to_string())
     }
 
-    /// A list over that git, gathered by repository: the axis `ctrl+s`
-    /// reaches by turning three times, through the state axis in between.
+    /// A list on the repo axis (three turns) over the fake git.
     fn over_the_repos(views: Vec<View>) -> List {
         let mut list = List::probing_repos(
             a_disk_that_answers_git,
@@ -2523,10 +2104,8 @@ mod tests {
 
     #[test]
     fn view_counts_the_fleet_once_for_however_many_frames_read_it() {
-        // Two things on a frame ask what the fleet is — the counters along the
-        // header and the name the terminal is given — and a frame is drawn
-        // many times over a reading that was taken once. So the count is
-        // worked out where the lines are, and every look after that reads it.
+        // The header and the terminal title read the counts on every frame, so
+        // they are computed once per rebuild and read back after that.
         let mut list = listed(vec![
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -2546,16 +2125,14 @@ mod tests {
             "the second look is the first answer rather than a second walk"
         );
 
-        // And the answer is the reading's own: what a narrowing left, and what
-        // the next reading brought.
+        // The counts follow the narrowing and each new reading.
         list.narrow(vec![Narrow::State(Some("working".to_string()))]);
         assert_eq!(list.counts(), [(Group::Working, 2)]);
         list.narrow(vec![Narrow::State(None)]);
         list.show(vec![view("ask-a1b", Phase::Waiting, 10)]);
         assert_eq!(list.counts(), [(Group::NeedsInput, 1)]);
 
-        // Whichever way they are gathered: what there is does not depend on
-        // how it was laid out.
+        // The counts do not depend on the axis.
         let gathered = over_the_disk(vec![
             at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
             at(view("busy-b2c", Phase::Working, 20), "/src/web"),
@@ -2568,9 +2145,7 @@ mod tests {
 
     #[test]
     fn view_puts_an_agent_it_cannot_account_for_among_the_turns_that_are_over() {
-        // `unknown` is not a claim that anything is happening, so it does not
-        // sit among the agents that are working. How long it has been out of
-        // touch is on the row; the group only says nobody is waiting on it.
+        // `unknown` claims nothing is happening, so it is not grouped as working.
         let list = listed(vec![view("puzzling-a1b", Phase::Unknown, 10)]);
         assert_eq!(lines(&list), ["Completed (1)", "puzzling-a1b"]);
     }
@@ -2626,9 +2201,8 @@ mod tests {
 
     #[test]
     fn view_draws_a_child_under_its_parent_with_a_connector() {
-        // The parent is working and its children are done: a child is drawn
-        // under its parent whatever group its own state would have put it in,
-        // and the oldest of them wears the closed connector.
+        // Children are drawn under their parent whatever their own group, newest
+        // first, so the oldest gets the closing connector.
         let list = listed(vec![
             view("parent-a1b", Phase::Working, 10),
             child_of(view("scout-b2c", Phase::Done, 20), "parent-a1b"),
@@ -2649,9 +2223,8 @@ mod tests {
 
     #[test]
     fn view_leaves_a_root_where_it_was_when_a_family_is_drawn() {
-        // The fault Saiful drove into: a root moved across the wall the moment
-        // one agent spawned a sub. The root's column is the wall's, family or
-        // no family, and the child's connector starts in it.
+        // A root keeps its column when a family appears, and a child's connector
+        // starts in the parent's glyph column.
         let alone = listed(vec![view("other-d4e", Phase::Working, 40)]);
         let family = listed(vec![
             view("other-d4e", Phase::Working, 40),
@@ -2679,10 +2252,8 @@ mod tests {
 
     #[test]
     fn a_parent_waits_for_its_family_before_it_is_one_of_the_completed() {
-        // Saiful's wall, 2026-09-19: `wf-v1-mzl9` sat under Completed with a
-        // working child hanging off it. `c` takes a group at a word, and the
-        // row still running was two lines under the heading somebody was
-        // about to clear.
+        // A done parent with a working child must not sit under Completed, where
+        // `c` would clear the family with the running child unseen.
         let working = listed(vec![
             view("parent-a1b", Phase::Done, 10),
             child_of(view("review-b2c", Phase::Working, 20), "parent-a1b"),
@@ -2694,9 +2265,8 @@ mod tests {
         );
         assert_eq!(working.counts(), [(Group::Working, 1)]);
 
-        // And the heading over it is the most urgent thing in it, not merely
-        // the opposite of finished: a child that has stopped on a question is
-        // what somebody at the wall has to act on.
+        // The family takes its most urgent member's group, so a child waiting on a
+        // question puts it under Needs input.
         let asking = listed(vec![
             view("parent-a1b", Phase::Done, 10),
             child_of(view("review-b2c", Phase::Waiting, 20), "parent-a1b"),
@@ -2706,7 +2276,7 @@ mod tests {
             ["Needs input (1)", "parent-a1b", "└─review-b2c"]
         );
 
-        // The child finishes and the family is finished with it.
+        // Once the child finishes, the family is Completed.
         let done = listed(vec![
             view("parent-a1b", Phase::Done, 10),
             child_of(view("review-b2c", Phase::Done, 20), "parent-a1b"),
@@ -2719,8 +2289,7 @@ mod tests {
 
     #[test]
     fn view_draws_a_child_of_a_missing_parent_as_a_root() {
-        // The parent's record was swept: the child is read as a root, with no
-        // connector and no gutter reserved for a row that is not there.
+        // The parent's record is gone, so the child is a root with no gutter.
         let list = listed(vec![child_of(
             view("scout-b2c", Phase::Working, 20),
             "gone-a1b",
@@ -2730,10 +2299,8 @@ mod tests {
 
     #[test]
     fn view_nests_a_grandchild_under_the_row_it_hangs_from() {
-        // Two levels: the root stands where every root stands, and each level
-        // then indents by two cells, so a connector starts in the column of the
-        // glyph it hangs from and the rail under the child is the one a
-        // connector would pass down.
+        // Each level indents two cells, and a connector starts under the glyph it
+        // hangs from.
         let mut grandchild = child_of(view("scout-b2c", Phase::Working, 20), "parent-a1b");
         grandchild.meta.depth = 2;
         let list = listed(vec![
@@ -2756,9 +2323,7 @@ mod tests {
 
     #[test]
     fn view_folds_a_family_whole_and_says_how_many_went_with_it() {
-        // One parent and more children than the fold has room for: the parent
-        // is drawn, the children that fit are drawn under it, and the rest are
-        // counted on a row of their own rather than left to look like none.
+        // Children past the fold are counted on a `Sub` line under the parent.
         let mut views = vec![view("parent-a1b", Phase::Working, 10)];
         for n in 0..FOLD_AT + 2 {
             views.push(child_of(
@@ -2788,9 +2353,7 @@ mod tests {
 
     #[test]
     fn view_asks_the_disk_for_a_childs_project() {
-        // A child runs in its parent's directory unless it was given one, and
-        // the project axis gathers it where its parent stands: a nested row
-        // never heads a project of its own.
+        // A child is grouped with its parent's project and never heads its own.
         let list = over_the_disk(vec![
             at(view("parent-a1b", Phase::Working, 10), "/src/api"),
             at(
@@ -2807,10 +2370,8 @@ mod tests {
 
     #[test]
     fn view_orders_the_finished_agents_by_when_their_run_ended() {
-        // Something arrives after the exit is recorded: a hook that fired as
-        // the pane went, an answer written down late. The newest ending is
-        // still the newest ending, so the group goes by the stamp the ending
-        // wrote rather than by whatever was written last.
+        // Events can land after the exit is recorded (a late hook or answer). The
+        // group sorts by the recorded end, not the last event.
         let mut early = view("done-a1b", Phase::Done, 100);
         early.state.ended = 100;
         early.state.last_event = 400;
@@ -2823,9 +2384,8 @@ mod tests {
 
     #[test]
     fn view_folds_a_group_past_thirty_rows_behind_a_count() {
-        // Two endings more than the fold: the heading, the newest `FOLD_AT` of
-        // them, and the fold on the row under them. However tall the screen is
-        // — nothing here has been told one.
+        // Two more than the fold: the heading, the newest `FOLD_AT`, and the fold
+        // line. No screen height is involved.
         let mut list = listed(a_history(FOLD_AT + 2));
         let mut standing = vec![format!("Completed ({})", FOLD_AT + 2)];
         standing.extend((0..FOLD_AT).map(|n| format!("done-{}", FOLD_AT + 1 - n)));
@@ -2843,7 +2403,7 @@ mod tests {
         );
         assert!(lines(&list).contains(&"done-0".to_string()));
 
-        // And it stays open while more finish.
+        // It stays open as more agents finish.
         list.show(a_history(FOLD_AT + 3));
         assert!(lines(&list).contains(&"done-0".to_string()));
     }
@@ -2869,9 +2429,7 @@ mod tests {
 
     #[test]
     fn view_folds_every_group_and_not_only_the_finished_ones() {
-        // A group of agents stopped on a question is as long a wall as the
-        // same number of endings, and the fold is for the wall rather than for
-        // history.
+        // Every group folds, not only Completed.
         let mut views: Vec<View> = (0..FOLD_AT + 2)
             .map(|n| view(&format!("ask-{n}"), Phase::Waiting, 10 * n as u64))
             .collect();
@@ -2890,14 +2448,8 @@ mod tests {
 
     #[test]
     fn view_keeps_failures_and_requests_ahead_of_the_plainly_done() {
-        // Four endings more than the fold has room for. The failure and the
-        // row carrying a number are what somebody scans this group for, so the
-        // fold keeps them over the oldest plainly done rows — in the order the
-        // group already reads in.
-        //
-        // Nobody has read any of these, and the four that fold away are the
-        // four oldest all the same: whether a row has been looked at plays no
-        // part, because looking at one would otherwise move it.
+        // Four past the fold. The failure and the row with a pull request are kept
+        // over the oldest plain rows, in group order. Read state plays no part.
         let mut list = List::default();
         list.asking(a_forge);
         let mut views: Vec<View> = (1..=FOLD_AT + 2)
@@ -2928,10 +2480,8 @@ mod tests {
         }
         assert_eq!(list.selected().unwrap().id(), "done-1");
 
-        // One more ending arrives and pushes the cursor's row past the rows
-        // the fold leaves standing. It is kept anyway, and an older row goes
-        // in its place: a fold that took it would leave the cursor on
-        // whoever came up there.
+        // A new ending pushes the cursor's row past the fold. It is kept anyway,
+        // and an older row folds in its place.
         let mut views = a_history(FOLD_AT + 1);
         views.push(view(
             &format!("done-{}", FOLD_AT + 1),
@@ -2954,8 +2504,7 @@ mod tests {
             view("busy-b2c", Phase::Working, 20),
             view("done-c3d", Phase::Done, 30),
         ]);
-        // Headings and the blanks between the groups, so neither end of the
-        // walk is a line the cursor may rest on by accident.
+        // Both ends of the list are headings or agents, never blanks.
         assert_eq!(
             lines(&list),
             [
@@ -2979,8 +2528,7 @@ mod tests {
             "the first line there is, which is a heading"
         );
 
-        // From anywhere, and never onto a blank: the cursor does not rest on
-        // spacing, so neither end of the list may be one.
+        // From anywhere, and never onto a blank.
         list.down();
         list.bottom();
         list.bottom();
@@ -2997,17 +2545,15 @@ mod tests {
         list.down();
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
-        // The one above it answers and moves group, so line 3 is now somebody
-        // else's.
+        // The agent above answers and changes group, so the line index shifts.
         list.show(vec![
             view("ask-a1b", Phase::Idle, 10),
             view("busy-b2c", Phase::Working, 20),
         ]);
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
-        // And when the agent it was on goes, the cursor lands on the heading
-        // over where it was rather than on whichever agent drifted into its
-        // line: a key meant for the one that went must not reach another.
+        // When the agent leaves, the cursor goes to the heading above, not to the
+        // agent that moved into its line.
         list.show(vec![view("ask-a1b", Phase::Idle, 10)]);
         assert!(list.on_heading(), "a heading, not the agent below it");
         assert!(list.selected().is_none());
@@ -3024,15 +2570,14 @@ mod tests {
         assert!(list.land_on("busy-b2c"));
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
 
-        // An agent the list is not drawing has no line for the cursor to go
-        // to, and the answer says so rather than the cursor moving.
+        // An agent with no line: returns false and the cursor stays.
         assert!(!list.land_on("port-c3d"));
         assert_eq!(list.selected().unwrap().id(), "busy-b2c");
     }
 
     #[test]
     fn view_names_the_first_agent_that_needs_you() {
-        // A question nobody has answered is what is holding somebody up.
+        // A waiting question comes first.
         let fleet = || {
             vec![
                 view("busy-a1b", Phase::Working, 10),
@@ -3046,7 +2591,7 @@ mod tests {
             Some("ask-c3d")
         );
 
-        // With nothing asking, work standing in front of a reviewer.
+        // Then a turn ready for review.
         let mut without_the_question = fleet();
         without_the_question.remove(2);
         assert_eq!(
@@ -3056,8 +2601,7 @@ mod tests {
             Some("review-b2c")
         );
 
-        // And with neither, the turn that ended most recently, which the group
-        // has at its head already.
+        // Then the most recent ending, which heads Completed.
         let ended = |id: &str, at: u64| {
             let mut view = view(id, Phase::Done, at);
             view.state.ended = at;
@@ -3074,8 +2618,7 @@ mod tests {
             Some("late-c3d")
         );
 
-        // Work in flight and rows somebody put away is a wall with nothing on
-        // it for them.
+        // Working and sleeping agents need nothing.
         let list = sleeping(
             listed(vec![
                 view("busy-a1b", Phase::Working, 10),
@@ -3096,15 +2639,13 @@ mod tests {
             ]
         };
 
-        // Gathered by project, the agent that needs somebody is the same one:
-        // what a row is waiting for is not a fact about the way the rows were
-        // laid out.
+        // The answer does not depend on the axis.
         let mut list = over_the_disk(fleet());
         assert_eq!(list.first_needing().as_deref(), Some("ask-a1b"));
         assert!(list.land_on("ask-a1b"));
 
-        // A narrowing that hid the question leaves what is under it, because
-        // the rows on the screen are the rows a cursor can reach.
+        // An agent hidden by a narrowing is skipped, since the cursor cannot reach
+        // it.
         let mut list = listed(fleet());
         list.narrow(vec![Narrow::State(Some("done".to_string()))]);
         assert_eq!(list.first_needing().as_deref(), Some("done-c3d"));
@@ -3117,8 +2658,7 @@ mod tests {
             "a screen of work in flight has nothing on it to land on"
         );
 
-        // A shut heading holds its rows the same way: the count says the
-        // question is there, and no line of it is somewhere to put a cursor.
+        // So is an agent under a shut heading.
         let mut list = listed(fleet());
         list.top();
         list.shut_or_open();
@@ -3210,9 +2750,7 @@ mod tests {
 
     #[test]
     fn axis_says_which_project_the_cursor_is_standing_in() {
-        // What a line opened here is about. A heading names a project and the
-        // rows under it run in it, so where in the group somebody stopped
-        // makes no difference to the answer.
+        // A heading and every row under it answer with the heading's project.
         let mut list = over_the_disk(vec![
             at(view("ask-a1b", Phase::Waiting, 10), "/src/api"),
             at(view("done-b2c", Phase::Done, 20), "/src/api/cmd/serve"),
@@ -3237,9 +2775,7 @@ mod tests {
             Some(PathBuf::from("/tmp/scratch"))
         );
 
-        // Gathered by repository, two turns on, the cursor is still standing
-        // in a place, and only the state axis has none for it to stand in:
-        // the row above one there belongs to whoever started it.
+        // The repo axis answers too. Only the state axis has no project.
         list.turn();
         assert_eq!(list.project_under_cursor(), None);
         list.turn();
@@ -3251,9 +2787,7 @@ mod tests {
 
     #[test]
     fn axis_puts_the_project_whose_agent_is_waiting_first() {
-        // Ordered by what each project's most urgent agent needs, so the
-        // question at the bottom of a quiet repo is not buried under a busy
-        // one, and projects that are equally quiet go by path.
+        // Projects sort by their most urgent agent, then by path.
         let list = over_the_disk(vec![
             at(view("busy-a1b", Phase::Working, 10), "/src/api"),
             at(view("ask-b2c", Phase::Waiting, 20), "/src/web"),
@@ -3281,10 +2815,8 @@ mod tests {
 
     #[test]
     fn repo_axis_gathers_every_worktree_under_the_repository_it_shares() {
-        // The directory axis answers where an agent runs; this one answers
-        // which repository holds it. A tree `workflow run` cut, one amx cut,
-        // and the checkout beside them are one heading, because git says they
-        // share a repository and amx's own layout never enters into it.
+        // A `workflow run` tree, an amx worktree and a subdirectory of the checkout
+        // share one heading because git says they share a repository.
         let list = over_the_repos(vec![
             at(
                 view("worker-a1b", Phase::Working, 10),
@@ -3316,8 +2848,7 @@ mod tests {
 
     #[test]
     fn repo_axis_names_the_branch_each_repository_has_checked_out() {
-        // The two path axes head the same paths often enough that the branch
-        // is what tells a repository heading from a directory one.
+        // The branch tells a repo heading from a project heading on the same path.
         let mut list = over_the_repos(vec![
             at(view("busy-a1b", Phase::Working, 10), "/work/repo/src"),
             at(view("loose-b2c", Phase::Idle, 20), "/tmp/scratch"),
@@ -3335,8 +2866,7 @@ mod tests {
             "a root git cannot name a branch at is the bare path"
         );
 
-        // And the directory axis, two turns on, says where they run and
-        // nothing about a branch.
+        // The project axis shows no branch.
         list.turn();
         list.turn();
         assert_eq!(list.axis(), Axis::Project);
@@ -3345,9 +2875,8 @@ mod tests {
 
     #[test]
     fn axis_reads_a_worktree_back_to_the_repository_it_was_cut_from() {
-        // An agent in a worktree amx made is running in the repository that
-        // worktree came out of, which is where somebody looking for "what is
-        // happening in this repo" expects to find it.
+        // An agent in an amx worktree is grouped under the repository it was cut
+        // from.
         let list = over_the_disk(vec![
             in_a_worktree(
                 view("fix-login-a1b", Phase::Working, 10),
@@ -3421,9 +2950,8 @@ mod tests {
         ]);
         assert_eq!(list.axis(), Axis::State);
 
-        // The two path axes are routinely the same paths, and a turn between
-        // them looks like a key that did nothing. The state axis stands
-        // between them, so every turn moves the wall somebody is looking at.
+        // The state axis sits between the two path axes, since a direct turn
+        // between them often changes nothing visible.
         let walk: Vec<Axis> = (0..6)
             .map(|_| {
                 list.turn();
@@ -3446,8 +2974,7 @@ mod tests {
             ["Needs input (1)", "ask-a1b", "", "Working (1)", "busy-b2c"]
         );
 
-        // And the press after the walk shows the path axis it did not show
-        // last, rather than the one it just came from.
+        // The next turn shows the path axis not shown last.
         list.turn();
         assert_eq!(list.axis(), Axis::Repo);
         assert_eq!(lines(&list)[0], "/src/api (1)");
@@ -3497,8 +3024,7 @@ mod tests {
         list.unfold();
         assert_eq!(lines(&list).len(), FOLD_AT + 3, "{:?}", lines(&list));
 
-        // The same agents gathered by state are folded still: what somebody
-        // opened is one heading rather than the fleet.
+        // Unfolding is per heading, so the state axis is still folded.
         list.turn();
         assert!(
             lines(&list).contains(&"… 2 more".to_string()),
@@ -3525,9 +3051,7 @@ mod tests {
         assert_eq!(list.counts(), [(Group::Working, 2)]);
         assert_eq!(list.narrowing().as_deref(), Some("s:working"));
 
-        // Two words are two states to keep rather than the second word winning:
-        // somebody watching a fleet wants what needs them and what is still
-        // running on the one screen, and the third group goes.
+        // Several states keep any of them.
         list.narrow(vec![
             Narrow::State(Some("waiting".to_string())),
             Narrow::State(Some("working".to_string())),
@@ -3569,8 +3093,8 @@ mod tests {
             "the name reads back as the find line it came off"
         );
 
-        // Half of `s:waiting s:working` reads as a name on the way through, so
-        // a line of state words has to take the name with it.
+        // A half-typed `s:waiting s` parses as a name, so a batch of states drops
+        // the name.
         list.narrow(vec![
             Narrow::State(Some("waiting".to_string())),
             Narrow::State(Some("working".to_string())),
@@ -3625,8 +3149,7 @@ mod tests {
             view("busy-b2c", Phase::Working, 20),
         ]);
 
-        // The view opens on an agent: somebody who opened it came to look at
-        // agents, and the heading is one step back up from the first of them.
+        // The list opens on the first agent, not its heading.
         assert_eq!(list.cursor(), 1);
         assert_eq!(list.selected().unwrap().id(), "ask-a1b");
 
@@ -3676,7 +3199,7 @@ mod tests {
             view("done-a1b", Phase::Done, 10),
             view("busy-b2c", Phase::Working, 20),
         ]);
-        // Down off the working agent and onto the completed heading.
+        // Onto the Completed heading.
         list.down();
         list.shut_or_open();
 
@@ -3717,9 +3240,7 @@ mod tests {
         };
         list.up();
 
-        // Three finished rows, one of which failed: `Completed` is the whole
-        // of what is under there, and the tally says so in the words the
-        // heading band counts the fleet in.
+        // Three finished rows, one failed.
         assert_eq!(
             heading(&list),
             Tally {
@@ -3763,8 +3284,8 @@ mod tests {
             ["/src/api (1) shut", "", "/src/web (1)", "busy-b2c"]
         );
 
-        // The waiting agent answers, so its project is no longer the first one
-        // drawn. What was shut is the repository, not the line it was on.
+        // The waiting agent answers and its project moves down. The shut state
+        // follows the project, not the line.
         list.show(vec![
             at(view("ask-a1b", Phase::Idle, 10), "/src/api"),
             at(view("busy-b2c", Phase::Working, 20), "/src/web"),
@@ -3777,9 +3298,8 @@ mod tests {
 
     #[test]
     fn arranged_a_write_lays_only_this_views_change_over_the_file() {
-        // Two views, one file, and each writes the whole document. What this
-        // view changed since it last read is laid over what is there now, so
-        // a pin this one made and a pin the other made both stand.
+        // Two views share one file. This view's changes since its last read are
+        // applied over the file, so both views' pins survive.
         let published = Arrangement {
             held: ["gone-c3d".to_string()].into_iter().collect(),
             ..Arrangement::default()
@@ -3802,8 +3322,7 @@ mod tests {
             "this view unpinned gone-c3d and pinned mine-a1b; theirs stays"
         );
 
-        // A group order somebody put in is taken whole, and one this view did
-        // not touch is left as the file has it.
+        // A changed group order is taken whole; untouched orders stay as on disk.
         let published = Arrangement::default();
         let mut local = Arrangement::default();
         local
@@ -3874,9 +3393,7 @@ mod tests {
         );
         assert!(list.holding(list.agent_by_id("busy-c3d").unwrap()));
 
-        // It stops on a question, and it has not moved: what somebody said is
-        // that this agent is the one they want in front of them, not that the
-        // group it happened to be in has a favourite.
+        // A pinned agent stays pinned when its phase changes.
         list.show(vec![
             view("ask-a1b", Phase::Waiting, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -3898,7 +3415,7 @@ mod tests {
             ]
         );
 
-        // And the same key lets it go, back under what it is doing.
+        // The same key unpins it.
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
@@ -3945,8 +3462,7 @@ mod tests {
             "and still counted among the ones waiting on somebody"
         );
 
-        // Its turn goes on under there: what somebody said is that they are
-        // not looking at this agent for now, not that it has finished.
+        // A sleeping agent stays asleep while its turn runs.
         list.show(vec![
             view("ask-a1b", Phase::Working, 10),
             view("busy-b2c", Phase::Working, 20),
@@ -3966,7 +3482,7 @@ mod tests {
             ]
         );
 
-        // And the same key wakes it, back under what it is doing.
+        // The same key wakes it.
         assert!(list.sleep_or_wake());
         assert_eq!(
             lines(&list),
@@ -3994,8 +3510,7 @@ mod tests {
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
         );
 
-        // Pinning it wakes it: an agent cannot be both the one somebody wants
-        // in front of them and one they have put away.
+        // Pinning a sleeping agent wakes it.
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
@@ -4003,7 +3518,7 @@ mod tests {
         );
         assert!(!list.sleeping(list.agent_by_id("busy-a1b").unwrap()));
 
-        // And sleeping it lets it go the same way.
+        // Sleeping a pinned agent unpins it.
         assert!(list.sleep_or_wake());
         assert_eq!(
             lines(&list),
@@ -4011,8 +3526,7 @@ mod tests {
         );
         assert!(!list.holding(list.agent_by_id("busy-a1b").unwrap()));
 
-        // A heading is not an agent to put to sleep, any more than it is one
-        // to pin.
+        // A heading cannot be put to sleep or pinned.
         list.top();
         assert!(list.on_heading());
         assert!(!list.sleep_or_wake());
@@ -4071,8 +3585,7 @@ mod tests {
         list.down();
         assert!(!list.move_by(1), "and nothing is under the last");
 
-        // A pinned agent has a group of its own, so the rows a move can reach
-        // are the ones left in the group it came out of.
+        // A pinned agent leaves its group, so it is out of a move's reach.
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
@@ -4088,7 +3601,7 @@ mod tests {
             ["Pinned (1)", "busy-b2c", "", "Working (1)", "busy-a1b"]
         );
 
-        // And a heading is not an agent either to move or to pin.
+        // A heading cannot be moved or pinned.
         list.up();
         assert!(list.on_heading());
         assert!(!list.move_by(1));
@@ -4098,7 +3611,7 @@ mod tests {
     #[test]
     fn arranged_a_move_reaches_the_rows_on_the_screen_and_not_the_folded_ones() {
         let mut list = listed(a_history(FOLD_AT + 2));
-        // Down to the last row the fold leaves standing.
+        // To the last row the fold leaves.
         for _ in 0..FOLD_AT - 1 {
             list.down();
         }
@@ -4110,7 +3623,7 @@ mod tests {
         );
         assert_eq!(lines(&list).last().map(String::as_str), Some("… 2 more"));
 
-        // Opened, every row is a row a move can reach.
+        // Once unfolded, every row can be moved.
         list.down();
         list.unfold();
         assert!(list.move_by(1));
@@ -4208,8 +3721,7 @@ mod tests {
             "and not the one they pinned"
         );
 
-        // A file written before the wall had a second mark reads as a wall
-        // with nobody asleep, rather than as no arrangement at all.
+        // A file saved before the asleep field existed reads with nobody asleep.
         std::fs::write(
             &kept,
             br#"{"arrangement":{"axis":"state","held":["fix-login-a1b"],"order":{}}}"#,
@@ -4261,9 +3773,8 @@ mod tests {
             [
                 "Pinned busy-d4e",
                 "Working busy-b2c",
-                // On a branch and nothing written down about it, so it is a
-                // turn that is over rather than work in front of a reviewer:
-                // a reader that prints once asks no forge.
+                // No pull request is written down and a verb asks no forge, so this is
+                // Completed, not Review.
                 "Completed done-c3d",
                 "Asleep ask-a1b",
             ],
@@ -4375,9 +3886,7 @@ mod tests {
 
     #[test]
     fn a_group_titles_itself_in_the_words_its_heading_reads() {
-        // The heading is drawn out of this and nothing else, so the words a
-        // person reads over the rows are settled here rather than by whoever
-        // paints them.
+        // The heading text is decided here, not by the painter.
         assert_eq!(
             Group::ALL.map(Group::title),
             [
@@ -4393,10 +3902,8 @@ mod tests {
 
     #[test]
     fn header_counts_a_group_in_a_word_the_list_can_be_narrowed_by() {
-        // The heading over the rows says what the group means; the counter at
-        // the top says the word that stands for it, and every one of those is
-        // a word `s:` takes — so the header teaches the filter language by
-        // existing rather than by documenting itself.
+        // Every counter word is a word `s:` accepts, so the header documents the
+        // filter.
         let fleet = || {
             vec![
                 view("pinned-a1b", Phase::Working, 10),
@@ -4435,11 +3942,8 @@ mod tests {
 
     #[test]
     fn a_state_word_still_narrows_to_the_rows_in_that_state() {
-        // The counters teach the five group words, but the wall knew eight
-        // states before it knew five groups, and `s:failed` was how somebody
-        // found the one that died among everything that finished. A word the
-        // record says has to keep finding its rows, or the completed group
-        // becomes the one place the list cannot be narrowed inside.
+        // Phase words that are not group words (such as `failed`) still narrow to
+        // their rows, so Completed can be narrowed inside.
         let fleet = || {
             vec![
                 view("done-a1b", Phase::Done, 10),
@@ -4484,9 +3988,8 @@ mod tests {
         ]);
         assert_eq!(list.waiting(), 1);
 
-        // The view opens on the agent that is asking, so the key pins that
-        // one, and the badge is the one number on the screen that does not
-        // move for it.
+        // The list opens on the waiting agent. Pinning it moves the row but not
+        // the waiting count.
         assert!(list.hold_or_let_go());
         assert_eq!(
             lines(&list),
@@ -4521,9 +4024,7 @@ mod tests {
             "and the gate counts the fleet rather than what is on the screen"
         );
 
-        // The reading has already asked tmux, so an agent whose pane went is
-        // stopped by the time the list sees it — and that is the agent the
-        // gate skips for having no pane, counted the same way here.
+        // A gone pane already reads as stopped, which the spawn gate skips too.
         let mut gone = view("gone-e5f", Phase::Working, 50);
         gone.verdict.phase = Phase::Stopped;
         gone.verdict.evidence = Evidence::Gone;
@@ -4531,9 +4032,7 @@ mod tests {
         list.show(vec![view("busy-a1b", Phase::Working, 10), gone]);
         assert_eq!(list.live(), 1);
 
-        // An agent amx parked keeps its phase — nothing about it ended — and
-        // holds no pane, so the gate skips it too. Eight of them on a machine
-        // read as `9 running` beside one agent at work, on 2026-09-11.
+        // A parked agent keeps its phase but holds no pane, so the gate skips it.
         let mut parked = view("parked-f6a", Phase::Idle, 60);
         parked.verdict.evidence = Evidence::LetGo;
         list.show(vec![view("busy-a1b", Phase::Working, 10), parked]);
@@ -4601,9 +4100,7 @@ mod tests {
     #[test]
     fn acts_a_row_says_the_program_then_the_dials_the_spawn_turned() {
         let mut agent = view("fix-login-a1b", Phase::Working, 10);
-        // The launch command rather than the program, because that is what the
-        // record holds: the column is about the vendor, not about the argv it
-        // was reached through.
+        // The record holds the launch command; the column names its program.
         agent.meta.agent = Some("claude --dangerously-skip-permissions".to_string());
         agent.meta.model = Some("opus".to_string());
         agent.meta.effort = Some("high".to_string());
@@ -4619,16 +4116,14 @@ mod tests {
             "a dial nobody turned is the vendor's own and amx never saw it"
         );
 
-        // An effort turned where the model was left alone still reads: the
-        // words are what was recorded, in order, not a row of fixed places.
+        // Parts are listed in order as recorded, not in fixed slots.
         agent.meta.effort = Some("low".to_string());
         assert_eq!(vendor_words(&agent.meta), "claude low");
     }
 
     #[test]
     fn acts_a_row_running_a_command_says_sh_where_the_vendor_would_be() {
-        // What `!cmd` and an `--exec` spawn write, which is a record with no
-        // agent on it: there is no vendor to name and no dial to have turned.
+        // `!cmd` and `--exec` records have no agent.
         let command = view("build-b2c", Phase::Working, 10);
         assert_eq!(command.meta.agent, None);
         assert_eq!(vendor_words(&command.meta), "sh");
@@ -4636,8 +4131,7 @@ mod tests {
 
     #[test]
     fn acts_a_row_takes_the_rename_then_the_sessions_title_then_the_id() {
-        // All three on one agent, so what outranks what is read off one row
-        // rather than off three that could each be true on their own.
+        // All three names on one agent, to check precedence on a single row.
         let mut named = view("fix-login-a1b", Phase::Idle, 10);
         named.state.session_title = Some("Login timeout".to_string());
         named.state.name = Some("auth".to_string());
@@ -4679,15 +4173,12 @@ mod tests {
         let mut logging = view("b2c", Phase::Idle, 20);
         logging.meta.task = "fix the login bug".to_string();
 
-        // What somebody remembers about an agent is what they asked it for.
-        // The id is a word amx made up and the summary is the agent's, so the
-        // task is the one string on the record that the person typed.
+        // The task is the one string on the record the user typed.
         let mut list = listed(vec![porting, logging]);
         list.narrow(vec![Narrow::Name(Some("importer".to_string()))]);
         assert_eq!(lines(&list), ["Completed (1)", "a1b"]);
 
-        // Ignoring case, because a task is a sentence somebody wrote and a
-        // search that missed it over a capital is a search nobody trusts.
+        // Case-insensitive.
         list.narrow(vec![Narrow::Name(Some("PORT".to_string()))]);
         assert_eq!(lines(&list), ["Completed (1)", "a1b"]);
 
@@ -4737,8 +4228,7 @@ mod tests {
             ),
         ]);
 
-        // Somebody has come to the wall from the request itself, and its
-        // number is the only word for the agent they have in front of them.
+        // The pull request number may be the only name the user has for the agent.
         list.narrow(vec![Narrow::Name(Some("#12".to_string()))]);
         assert_eq!(lines(&list), ["Ready for review (1)", "fix-login-a1b"]);
         assert_eq!(list.counts(), [(Group::Review, 1)]);
@@ -4755,10 +4245,8 @@ mod tests {
 
     #[test]
     fn pr_is_read_again_with_every_reading() {
-        // What a request is doing is the thing on a row most likely to have
-        // moved since the last look: a check goes green while somebody is
-        // reading it, and a row that answered from the first reading for as
-        // long as the view was open would be a row that never went green.
+        // Pull request status changes while the row is on screen, so it is read
+        // on every reading.
         let mut list = over_the_forge(vec![view("fix-login-a1b", Phase::Working, 10)]);
         assert!(
             list.requests(list.agent_by_id("fix-login-a1b").unwrap())
@@ -4774,7 +4262,7 @@ mod tests {
             12
         );
 
-        // And an agent that has gone takes its number with it.
+        // A departed agent's entry is dropped.
         list.show(vec![view("port-importer-b2c", Phase::Working, 20)]);
         assert!(list.agent_by_id("fix-login-a1b").is_none());
         assert_eq!(list.prs.len(), 1, "{:?}", list.prs);
