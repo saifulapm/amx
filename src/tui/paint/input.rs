@@ -34,10 +34,8 @@ const MORE: Hint<'static> = ("?", "keys");
 const CLOSES: Hint<'static> = ("esc", "closes it");
 
 /// The keys row while a `g` waits for its second press.
-const WAITING_ON_A_G: [Hint<'static>; 2] = [
-    ("g again", "the top of the list"),
-    ("any other key", "carries on"),
-];
+const WAITING_ON_A_G: [Hint<'static>; 2] =
+    [("g again", "goes to the top"), ("any other key", "cancels")];
 
 /// A message in the keys row, by severity: a failure (red), a refusal
 /// (amber), or advice (dim).
@@ -624,11 +622,7 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 ("esc", "cancels"),
                 width,
             ),
-            Asking::Name { .. } => fitted(
-                &[("enter", "renames it")],
-                ("esc", "leaves it alone"),
-                width,
-            ),
+            Asking::Name { .. } => fitted(&[("enter", "renames it")], ("esc", "cancels"), width),
             // Enter on an empty fork line starts a copy with no first turn.
             Asking::Fork { .. } => fitted(
                 &[("enter", "starts the copy"), ("empty", "no first turn")],
@@ -724,9 +718,9 @@ mod tests {
 
         screen.going = true;
         let row = hint_row(&screen, wide);
-        assert!(row.starts_with("g again the top of the list"), "{row:?}");
+        assert!(row.starts_with("g again goes to the top"), "{row:?}");
         assert!(
-            row.contains("any other key carries on"),
+            row.contains("any other key cancels"),
             "and the way out of it: {row:?}"
         );
     }

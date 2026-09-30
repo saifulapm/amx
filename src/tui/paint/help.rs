@@ -26,63 +26,63 @@ use crate::tui::keyname::Bound;
 pub(in crate::tui) const HELP: [(&str, &str); 55] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
-    ("gg G", "the top of the list, and the foot"),
-    ("alt+1..9", "reach one by where it is on the wall"),
+    ("gg G", "top and bottom of the list"),
+    ("alt+1..9", "the agent at that position on the wall"),
     ("w", "the first agent that needs you"),
     ("backspace", "the agent you were last in"),
-    ("esc", "put the card away · leave a line alone"),
+    ("esc", "close the card · leave the line"),
     ("?", "these keys"),
     ("q ctrl+c", "close the view"),
     // look
-    ("space", "the card, and an answer or a message on it"),
+    ("space", "open the card, to answer or send a message"),
     ("v", "which vendor, model and effort each one runs"),
-    ("enter → l", "bring its window forward · shut a group"),
+    ("enter → l", "go into the agent · open or shut a group"),
     ("d", "what it has changed"),
     ("o", "open its pull request in the browser"),
-    ("alt+d", "the patch in the viewer the config names"),
-    ("pgup ctrl+b", "page the card, when it holds more"),
-    ("pgdn ctrl+f", "and the other way"),
-    ("ctrl+u", "half a page of it, toward the edge"),
-    ("ctrl+d", "and half a page away"),
+    ("alt+d", "the patch in the viewer the diff key sets"),
+    ("pgup ctrl+b", "page the card up"),
+    ("pgdn ctrl+f", "page the card down"),
+    ("ctrl+u", "half a page up"),
+    ("ctrl+d", "half a page down"),
     ("ctrl+n", "the next hunk of the patch"),
-    ("ctrl+p", "and the one before it, or the top"),
+    ("ctrl+p", "the previous hunk, or the top"),
     // start
     ("n", "start an agent"),
-    ("alt+n", "start the line and go to the agent"),
-    ("f", "start a copy of it on a task"),
+    ("alt+n", "start it and go into it"),
+    ("f", "fork the agent onto a task"),
     ("!", "run the line as a command, not a task"),
-    ("shift+enter", "a newline in the line, without sending it"),
-    ("alt+enter", "the same, where shift+enter does not arrive"),
-    ("ctrl+j", "the same, where neither of those arrives"),
-    ("tab", "the word offered · on nothing, the agents"),
-    ("← → ctrl+←", "the cursor: a character, a word, home end"),
+    ("shift+enter", "a newline, without sending the line"),
+    ("alt+enter", "a newline, if shift+enter does not arrive"),
+    ("ctrl+j", "a newline, if neither of those arrives"),
+    ("tab", "the word offered · on an empty line, @ offers"),
+    ("← → ctrl+←", "move by character or word · home end"),
     ("backspace", "a character · delete ahead · ctrl+w a word"),
-    ("ctrl+g", "write the line in $EDITOR"),
-    ("alt+↑ alt+↓", "lines sent before · ↑ ↓ too on a task line"),
+    ("ctrl+g", "edit the line in $EDITOR"),
+    ("alt+↑ alt+↓", "earlier lines · ↑ ↓ too on a task line"),
     // arrange
-    ("ctrl+s", "gather them: state, directory, state, repo"),
-    ("ctrl+t", "pin it over the wall · again lets it go"),
-    ("z", "put it under everything · again wakes it"),
+    ("ctrl+s", "group by state, directory, state, repo"),
+    ("ctrl+t", "pin it to the top · again unpins it"),
+    ("z", "put it to sleep · again wakes it"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),
-    ("ctrl+r", "call it something else"),
-    ("i", "cut short the turn it is on"),
+    ("ctrl+r", "rename it"),
+    ("i", "interrupt the turn it is on"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
-    ("c", "clear the finished · again takes them"),
+    ("c", "mark the finished · again clears them"),
     ("/", "find by name, task or #12, as you type"),
-    ("s:", "narrow by state, on the find line"),
+    ("s:", "filter by state, on the find line"),
     // dials
     ("alt+a", "which vendor the next agent runs"),
-    ("alt+m", "which model the next agent is given"),
+    ("alt+m", "which model the next agent uses"),
     ("alt+e", "how hard the next agent thinks"),
     ("alt+w", "whether it gets a worktree of its own"),
     ("shift+tab", "what it may do without asking"),
     ("m: p: w:", "model, permission and worktree, for one spawn"),
     ("e:", "effort, for one spawn"),
-    ("b: pr:", "a ref to cut from · a request to start on"),
-    ("on:", "a branch that already exists, to start on"),
-    ("w:changes", "take the uncommitted work"),
-    ("d:", "where one spawn runs, on the task line"),
+    ("b: pr:", "a base ref · a pull request to start on"),
+    ("on:", "an existing branch to start on"),
+    ("w:changes", "bring along the uncommitted changes"),
+    ("d:", "the directory for one spawn"),
     ("agent:", "which vendor runs it, for one spawn"),
 ];
 
@@ -289,8 +289,8 @@ fn marker(keymap: &Keymap, above: usize, shown: usize, keys: usize, room: usize)
     // or the plain total.
     let whole = HELP.len() + keymap.yours.get();
     let standing = match (keys, shown < keys, keys < whole) {
-        (0, ..) => " nothing answers to that".to_string(),
-        (keys, true, _) => format!("{}–{} of {keys} ", above + 1, above + shown),
+        (0, ..) => " no keys match".to_string(),
+        (keys, true, _) => format!("{}-{} of {keys} ", above + 1, above + shown),
         (keys, false, true) => format!("{keys} of {whole} "),
         (keys, false, false) => format!("{keys} keys "),
     };
@@ -592,9 +592,9 @@ mod tests {
         // An emptied group loses its heading; the count is against the table.
         assert!(!drawn.contains("WALK"), "{drawn}");
         assert!(
-            drawn.contains("6 of 55"),
-            "and it is said against the whole of the table, because `6 keys` \
-             about a table of fifty-five reads as a program with six:\n{drawn}"
+            drawn.contains("5 of 55"),
+            "and it is said against the whole of the table, because `5 keys` \
+             about a table of fifty-five reads as a program with five:\n{drawn}"
         );
 
         // Backspace removes a letter; esc drops the search.
@@ -623,7 +623,7 @@ mod tests {
             let _ = screen.reading_the_keys(KeyEvent::from(KeyCode::Char(letter)));
         }
         let drawn = painted(&screen, SHORT_SCREEN).join("\n");
-        assert!(drawn.contains("nothing answers to that"), "{drawn}");
+        assert!(drawn.contains("no keys match"), "{drawn}");
         assert!(drawn.contains("find zzzz▌"), "{drawn}");
     }
 

@@ -127,13 +127,15 @@ pub(in crate::tui) fn bound_by(keys: &BTreeMap<String, String>) -> (Vec<Bound>, 
     let mut refused = Vec::new();
     for (spelling, command) in keys {
         let Some(key) = spelt(spelling) else {
-            refused.push(format!("keys: `{spelling}` is no key the view can read"));
+            refused.push(format!("keys: `{spelling}` is not a key the view can read"));
             continue;
         };
         // amx's own keys are matched first, so a binding on one would never
         // run.
         if let Some(does) = amx_binds(key) {
-            refused.push(format!("keys: `{spelling}` is amx's own: {does}"));
+            refused.push(format!(
+                "keys: `{spelling}` is already bound by amx: {does}"
+            ));
             continue;
         }
         bound.push(Bound {
@@ -240,12 +242,12 @@ mod tests {
         let named = |spelling: &str| amx_binds(spelt(spelling).expect("a spelling"));
         assert_eq!(
             named("g"),
-            Some("the top of the list, and the foot"),
+            Some("top and bottom of the list"),
             "`gg` is two presses of a key the column cannot spell once"
         );
         assert_eq!(
             named("alt+3"),
-            Some("reach one by where it is on the wall"),
+            Some("the agent at that position on the wall"),
             "the row names the range rather than the nine keys in it"
         );
         assert_eq!(named("7"), Some("an answer on a question card"));
@@ -283,7 +285,7 @@ mod tests {
         );
         assert_eq!(
             refused,
-            ["keys: `shift+z` is no key the view can read"],
+            ["keys: `shift+z` is not a key the view can read"],
             "and the one it could not read is named rather than dropped"
         );
     }
@@ -307,7 +309,9 @@ mod tests {
         );
         assert_eq!(
             refused,
-            ["keys: `ctrl+x` is amx's own: stop it · again forgets · a heading, the group"],
+            [
+                "keys: `ctrl+x` is already bound by amx: stop it · again forgets · a heading, the group"
+            ],
             "and the sentence says which key of amx's somebody wrote"
         );
     }

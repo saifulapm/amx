@@ -5941,7 +5941,7 @@ fn binding() -> Config {
 #[test]
 fn view_says_the_spellings_it_could_not_read_on_the_frame_it_opens_on() {
     let root = TempDir::new().unwrap();
-    let refused = "keys: `shift+z` is no key the view can read";
+    let refused = "keys: `shift+z` is not a key the view can read";
 
     let opening = drawn_under(root.path(), &binding(), Vec::new());
     assert!(
