@@ -254,7 +254,8 @@ Even when allowed, a project file cannot set:
   `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG`,
   `OPENCODE_CONFIG_CONTENT`, or any `LD_*`, `DYLD_*` or `AMX_*` variable.
 
-A project's roles in `.amx/agents/` need no `allow`, but cannot set `agent`.
+A project's roles in `.amx/agents/` need no `allow`, but cannot set `agent` or
+`permission`.
 
 ### Which file the view reads
 

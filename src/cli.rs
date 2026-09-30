@@ -559,6 +559,15 @@ pub struct NewArgs {
     #[arg(long, conflicts_with_all = ["AgentArgs", "vendor_args", "role"])]
     pub exec: bool,
 
+    /// Settle the spawn and start nothing.
+    ///
+    /// The role, the harness the model picks and every dial are read as a
+    /// spawn reads them; exit 0 where it would start, and the refusal
+    /// otherwise. No id, tree or pane is made, so a caller about to start
+    /// many agents on one model can ask once, before the first.
+    #[arg(long, conflicts_with = "exec")]
+    pub check: bool,
+
     /// The vendor and settings for this spawn; `None` when the caller named
     /// none and the config decides.
     #[command(flatten)]

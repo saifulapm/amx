@@ -1279,6 +1279,7 @@ pub fn start(
         pr: turned.pr,
         with_changes: turned.with_changes,
         exec: turned.exec,
+        check: false,
         agent: named.then_some(dials),
         vendor_args,
         // A context brief is a subagent's preamble, and a view spawn has no

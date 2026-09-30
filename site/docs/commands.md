@@ -60,6 +60,7 @@ amx new [OPTIONS] [TASK] [-- AGENT_ARGS...]
 | `--pr <N>` | Put the worktree on this pull request's branch. Needs `gh`. |
 | `--with-changes` | Move your uncommitted work into the new worktree. |
 | `--exec` | Run the task as a shell command instead of an agent. |
+| `--check` | Resolve the role, vendor and dials, start nothing: exit 0, or the refusal a spawn would meet. |
 | `--agent <COMMAND>` | The agent command to run, such as `pi` or `codex`. |
 | `--model <MODEL>` | Model. Also picks the vendor when `--agent` is not given. |
 | `--permission <MODE>` | Permission mode. |

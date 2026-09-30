@@ -356,6 +356,10 @@ fn run_aloud(
     // brief, and an unknown name is a usage error.
     let mut args_with_role = args.clone();
     let mut brief = String::new();
+    // A role's permission goes where the config's would: one role may run on
+    // whichever harness its model picks, and a held value is dropped where
+    // the harness has no such dial, where a typed one is refused.
+    let mut with_role: Option<Config> = None;
     if let Some(name) = args.role.clone() {
         let (personal, project) = role_places(dir)?;
         let (found, warnings) = role::for_name(&personal, &project, &name);
@@ -373,7 +377,14 @@ fn run_aloud(
         };
         brief = role.brief.clone();
         fill_from_role(&role, &mut args_with_role);
+        if role.permission.is_some() {
+            with_role = Some(Config {
+                permission: role.permission.clone(),
+                ..config.clone()
+            });
+        }
     }
+    let config = with_role.as_ref().unwrap_or(config);
     // A subagent's digest of its parent follows the role brief. The vendor
     // sees it; the record does not keep it.
     if let Some(context) = &args.context_brief {
@@ -398,6 +409,9 @@ fn run_aloud(
             return Ok(exit::USAGE);
         }
     };
+    if args.check {
+        return Ok(exit::OK);
+    }
 
     // Refuse a spawn past `subagent_depth` before any id or tree exists.
     let lineage = Lineage::of(root, args);
@@ -1066,6 +1080,7 @@ mod tests {
             pr: None,
             with_changes: false,
             exec: false,
+            check: false,
             agent: Some(AgentArgs {
                 command: agent.map(str::to_string),
                 model: model.map(str::to_string),
@@ -1093,6 +1108,7 @@ mod tests {
             pr: None,
             with_changes: false,
             exec: true,
+            check: false,
             agent: None,
             vendor_args: Vec::new(),
             context_brief: None,

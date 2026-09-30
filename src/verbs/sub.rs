@@ -220,6 +220,7 @@ fn as_new(args: &SubArgs, parent: Option<&Meta>) -> NewArgs {
         pr: None,
         with_changes: false,
         exec: false,
+        check: false,
         agent: args.agent.clone(),
         vendor_args: args.vendor_args.clone(),
         context_brief: None,

@@ -2658,6 +2658,92 @@ fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
 }
 
 #[test]
+fn a_personal_roles_permission_is_the_default_and_a_harness_without_the_dial_drops_it() {
+    // One role may run on claude or pi, whichever its model picks; pi has no
+    // permission dial, so the role's is dropped there rather than refused.
+    let amx = Harness::new();
+    a_role(
+        &amx,
+        "worker",
+        "---\ndescription: a run's worker\npermission: bypassPermissions\n---\nWork.\n",
+    );
+
+    let out = new_as_claude(
+        &amx,
+        "happy-turn",
+        &[
+            "--no-worktree",
+            "--role",
+            "worker",
+            "--model",
+            "opus",
+            "port it",
+        ],
+    );
+    let command = command_of(&amx, &id_of(&out));
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w[0] == "--permission-mode" && w[1] == "bypassPermissions"),
+        "the role's permission rides on claude's argv: {command:?}"
+    );
+
+    let out = amx.amx(&[
+        "new",
+        "--check",
+        "--no-worktree",
+        "--role",
+        "worker",
+        "--agent",
+        "pi",
+        "port it",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_settles_a_spawn_and_starts_nothing() {
+    // A caller about to start many agents on one model asks once.
+    let amx = Harness::new();
+
+    let out = amx.amx(&[
+        "new",
+        "--check",
+        "--no-worktree",
+        "--model",
+        "opus",
+        "port it",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty(), "no id is printed");
+
+    let out = amx.amx(&[
+        "new",
+        "--check",
+        "--no-worktree",
+        "--model",
+        "claude-opus-5-5",
+        "port it",
+    ]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{said}");
+    assert!(said.contains("claude-opus-5-5"), "{said}");
+
+    let listed = String::from_utf8_lossy(&amx.amx(&["ls"]).stdout).into_owned();
+    assert!(!listed.contains("port"), "no agent was started: {listed}");
+}
+
+#[test]
 fn a_role_is_refused_beside_a_shell_command() {
     // A role configures a vendor (model, effort, brief), and `--exec` runs
     // none.

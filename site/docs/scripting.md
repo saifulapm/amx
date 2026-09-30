@@ -293,12 +293,12 @@ amx sub --role scout "find every caller of charge()"
 | `description` | One line, for listings. |
 | `agent` | The agent command. Ignored in a repository's role. |
 | `model`, `effort` | Dials. |
+| `permission` | Permission mode. Ignored in a repository's role, and dropped on a vendor with no permission dial. |
 | `worktree` | `true` or `false`. |
 
 The body goes in front of the task the agent receives. The record keeps only
 the task, and `amx status` names the role. Flags on the command line beat the
-role, and for `sub` the role beats what the parent passes down. A role cannot
-set the permission mode. An unknown role name exits 64 and lists the roles
+role, and for `sub` the role beats what the parent passes down. An unknown role name exits 64 and lists the roles
 amx can see.
 
 ## Inside an agent's pane
