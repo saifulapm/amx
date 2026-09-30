@@ -1,25 +1,12 @@
-//! The agents themselves, which is what the view is for.
+//! The list of agents: headings, rows and folds.
 //!
-//! A row is one line, always: an agent's answer is a paragraph, and a
-//! paragraph in a list is how a list stops being one. What a row says stands
-//! on the widths the grid fixes rather than on what this fleet happens to
-//! hold, so the columns are where they were when the last agent ended.
-//!
-//! A row says its state on one glyph: the shape is whether there is still a
-//! process to go back to, the colour is which state that process is in, and
-//! the pulse is a turn running. It says nothing at all with weight, because the
-//! wall spends none: a screenful of names half of which are shouting is a
-//! screenful nobody reads down.
-//!
-//! What marks the row somebody is working with is strength instead. Every name
-//! is as quiet as the summary beside it and the heading over it, but the one
-//! under the cursor and the one under the pointer, and those come up to the
-//! terminal's own.
-//!
-//! One colour is not about the agent either: the row the terminal was lent to
-//! wears the accent on its name. Detaching from a pane lands on a wall of rows
-//! that all look alike, and the one somebody was just inside is the one they
-//! are about to look for.
+//! - Each row is exactly one line, laid out on the fixed column widths from
+//!   [`grid`], so columns do not shift as the fleet changes.
+//! - A row's state is its glyph: the shape says whether a process is still
+//!   there, the colour which state it is in, and a pulse that a turn is
+//!   running.
+//! - The wall uses no bold. Names are dim except under the cursor or the
+//!   pointer; the row the terminal was last lent to wears the accent.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -39,12 +26,9 @@ use crate::theme::Theme;
 use crate::tui::grid::{self, Widths};
 use crate::tui::rows::{self, Group, Item, List, Tally, Under};
 
-/// The agents themselves.
+/// Draw the list into `area`, starting at item `offset`.
 ///
-/// The whole band, whatever else is on the screen: a card is drawn over the
-/// last rows of it rather than taking rows off it, so the rows are drawn where
-/// they were drawn before it opened and none of them moves while somebody walks
-/// the list with it up.
+/// Always the whole band; a card is drawn over its foot afterwards.
 pub(super) fn agents(
     frame: &mut Frame,
     list: &List,
@@ -91,41 +75,22 @@ pub(super) fn agents(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Where the wall stands: which item the band's first row holds, and whether
-/// the window owes the cursor a move.
+/// The list's scroll position.
 ///
-/// Cells for the reason [`Scroll`](super::Scroll)'s are: only the paint knows
-/// how tall the band is this frame, so only the paint can say which page is the
-/// last one, and a draw is otherwise a reading of the view and nothing else.
-///
-/// Two things move the window and nothing else does. The wheel moves `top` and
-/// leaves the cursor where it was, the way a page scrolls under a hand. A
-/// cursor move sets `follow`, and the window comes after it by as little as it
-/// can.
+/// The mouse wheel moves `top` without moving the cursor; a cursor move sets
+/// `follow` so the next frame scrolls just enough to show it. `Cell`s because
+/// only the paint knows the band's height and so can clamp.
 #[derive(Default)]
 pub struct WallScroll {
-    /// The item the band's first row holds, clamped afresh every frame.
+    /// The item on the band's first row, clamped every frame.
     pub top: Cell<usize>,
-    /// Whether the window owes the cursor a move: set where the cursor went,
-    /// and cleared by the frame that answered it.
+    /// Set when the cursor moved; cleared by the frame that scrolls to it.
     pub follow: Cell<bool>,
 }
 
-/// The first item a band this tall draws, which is where the window stands
-/// once this frame has had its say about it.
-///
-/// Clamped here rather than where the wheel and the keys are read, because only
-/// this knows how tall the band is: a `top` left past the last page is put back
-/// on it, so a wheel that ran off the end of a list, and a list that lost the
-/// rows the window was over, both come back to rows there are.
-///
-/// A window that owes the cursor a move makes it here, and by the least it can:
-/// the cursor comes to the first drawn line when it walked off the top of the
-/// window and to the last when it walked off the foot, and the window holds
-/// still for a cursor anywhere inside it.
-///
-/// Shared with the map the mouse reads, so a click lands on the row the frame
-/// actually drew there.
+/// The first item drawn in a band `visible` rows tall, after clamping `top`
+/// to the last page and scrolling the least needed to show the cursor when
+/// [`WallScroll::follow`] is set.
 pub(super) fn first_drawn(list: &List, visible: u16, scroll: &WallScroll) -> usize {
     let visible = visible.max(1) as usize;
     let last = list.items().len().saturating_sub(visible);
@@ -138,42 +103,31 @@ pub(super) fn first_drawn(list: &List, visible: u16, scroll: &WallScroll) -> usi
     top
 }
 
-/// What the clock has made of the list at the moment it is drawn: which frame
-/// of the working pulse the rows are on, and which of them a press has armed —
-/// one row, or every row under the heading the press was on.
-///
-/// Neither is a fact about an agent, and neither is worth writing down: they
-/// are what the view is doing while somebody watches it, so they are handed to
-/// the rows and forgotten with the frame.
+/// Per-frame view state the rows need that is not part of any agent's record.
 #[derive(Clone, Copy)]
 pub(super) struct Moment<'a> {
+    /// The frame of the working pulse.
     pub(super) beat: usize,
+    /// Ids of the rows a press has armed.
     pub(super) armed: &'a [String],
-    /// Why each of those rows was armed, in the order `armed` is in, where the
-    /// press had a reason to give. Empty where it had none.
+    /// Why each armed row was armed, parallel to `armed`; empty if the press
+    /// gave no reasons.
     pub(super) why: &'a [String],
-    /// Which of those rows the second press will leave where they are, because
-    /// the tree behind them holds work no commit has. A row asks whether it is
-    /// among them, since most presses find none.
+    /// Armed rows the second press will keep because their worktree holds
+    /// uncommitted work.
     pub(super) held: &'a [String],
-    /// Whether a heading armed them, which is what the armed rows say the
-    /// press after this one would do. One arm at a time, so it is a fact about
-    /// the frame rather than about each row.
+    /// Whether a heading armed the rows (so the next press stops and forgets
+    /// the whole group).
     pub(super) swept: bool,
-    /// The line the pointer is resting on, if it is resting on an agent's or
-    /// a heading.
+    /// The item under the pointer, if it is an agent or a heading.
     pub(super) hover: Option<usize>,
-    /// The agent the terminal was last lent to, where it has been lent to one.
+    /// The agent the terminal was last lent to.
     pub(super) lent: Option<&'a str>,
-    /// Whether the rows are saying what runs them. Not a fact about the clock
-    /// like the rest of these, but the same kind of thing to a row: something
-    /// the person at the screen is doing to the whole list at once, handed
-    /// down rather than asked for row by row.
+    /// Whether the vendor column is shown.
     pub(super) vendor: bool,
 }
 
-/// How the cursor and the pointer stand to one line: on it, over it, or come
-/// back from it.
+/// How the cursor, the pointer and the last lend relate to one line.
 #[derive(Clone, Copy, Default)]
 struct At {
     selected: bool,
@@ -181,7 +135,7 @@ struct At {
     lent: bool,
 }
 
-/// One line of the list, whatever kind of line it is.
+/// One line of the list: a heading, fold, agent row or blank.
 #[allow(clippy::too_many_arguments)]
 fn line(
     list: &List,
@@ -228,17 +182,11 @@ fn line(
     }
 }
 
-/// The line the cursor is on, with the bar that says so under it.
+/// The cursor line: `line` padded to `width` on the theme's cursor background.
 ///
-/// A background colour the width of the list rather than a reversal of what
-/// the line already says. The two look alike on a row, which is nearly as wide
-/// as the list, and they part company on a heading: a reversal there marks a
-/// short label, and what the cursor is on is a line. So both wear the bar, and
-/// the cursor looks like one thing wherever it is.
-///
-/// The colour is the theme's, which by default is the vendor's own for a
-/// selected line, measured from the 2.1.237 bundle for the reason the rest of
-/// them are.
+/// A full-width background rather than reverse video, so a short heading gets
+/// the same bar as a row. The default colour is claude's own selection colour
+/// (from the 2.1.237 bundle).
 fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
     let said = line.width();
     let mut line = line;
@@ -248,27 +196,11 @@ fn barred(line: Line<'static>, width: usize, theme: Theme) -> Line<'static> {
     line.style(Style::new().bg(theme.cursor))
 }
 
-/// A heading: what it stands for, and what it is answerable for.
-///
-/// The group's own words, and the line ends there. What makes it a heading is
-/// the blank row over it and the rows indented under it, so it needs neither
-/// case nor weight to be read as one — and with no number waiting at the far
-/// edge there is nothing for a rule to carry the eye out to. That leaves the
-/// right margin of the wall the ages alone.
-///
-/// The count is there only while the rows are not: an open group is counted by
-/// the rows a person is looking at, and saying it again in a number is the same
-/// fact twice. Shut, the number is all that stands in for them, so it follows
-/// the label rather than the edge.
-///
-/// The failures come after it either way, because that is the one thing a
-/// heading is worth reading without opening it — an agent that failed is the
-/// reason somebody came to the screen.
+/// A state group's heading: its title, the member count when the group is
+/// shut, and the failure count when there are failures.
 fn heading(group: Group, tally: Tally, hovered: bool, theme: Theme) -> Line<'static> {
-    // Dim like the rows under it, with the one exception the wall makes up
-    // here: the group that wants a person says so in colour, which is what the
-    // weight used to be spent on and reads louder than it did. Under the
-    // pointer it comes up the way a hovered name does.
+    // Dim, except the waiting group, which wears the waiting colour, and a
+    // hovered heading, which comes up to full strength.
     let label = match group {
         Group::NeedsInput => Style::new().fg(theme.waiting),
         _ if hovered => Style::new(),
@@ -280,23 +212,11 @@ fn heading(group: Group, tally: Tally, hovered: bool, theme: Theme) -> Line<'sta
     ])
 }
 
-/// The heading over a project, which is a path rather than a word.
+/// A project heading: the path, laid out like a group heading, with the
+/// per-state counts of its rows right-aligned.
 ///
-/// The same words in the same places as the heading over a group, so the two
-/// axes read as one document: dim end to end, no weight on the last segment,
-/// and the count only where the rows are shut.
-///
-/// A path too long for the heading loses its middle rather than its end, which
-/// is [`grid::elide`]'s business: the end is the segment that says which
-/// worktree of a project this is, and cutting there would leave every one of
-/// them reading the same.
-///
-/// And at the far edge, what the rows under it are doing. A path says which
-/// repository a screenful of rows is in and nothing about how it is going, so
-/// a wall gathered by directory is one a person reads every row of to answer
-/// the question they gathered it to ask. The header band already answers it
-/// for the whole fleet in these words; this is the same sentence about one
-/// heading's worth of them, standing where the header's own stands.
+/// A long path loses its middle ([`grid::elide`]), since the last segments
+/// tell worktrees of one project apart. The counts use the header's words.
 fn path_heading(
     title: String,
     tally: Tally,
@@ -328,12 +248,8 @@ fn path_heading(
     ])
 }
 
-/// What the rows under a heading are doing, in the words the header band
-/// counts the whole fleet in — so the two rows teach one language, and every
-/// word of them is one the list can be narrowed by.
-///
-/// A group with nobody in it is left out rather than said as a zero: what a
-/// heading is for is the work that is there.
+/// Per-state counts of a heading's rows, in the header's words (which are also
+/// the narrowing words). Empty groups are left out.
 fn doing(tally: Tally) -> String {
     tally
         .doing()
@@ -343,13 +259,10 @@ fn doing(tally: Tally) -> String {
         .join(&" ".repeat(APART))
 }
 
-/// The air between one count and the next, and between the path and the first
-/// of them. The header band's own, for the same reason: a count is a reading
-/// with nothing between it and the next to say.
+/// Gap between counts, as in the header.
 const APART: usize = 3;
 
-/// How many agents a heading answers for, said only where the rows it stands
-/// over are not on the screen to be counted.
+/// The member count, shown only when the group is shut.
 fn count(tally: Tally) -> String {
     match tally.shut {
         true => format!(" {}", tally.members),
@@ -357,7 +270,7 @@ fn count(tally: Tally) -> String {
     }
 }
 
-/// And how many of them failed, said whether the group is open or shut.
+/// The failure count, shown whether the group is open or shut.
 fn failures(tally: Tally) -> String {
     match tally.failures {
         0 => String::new(),
@@ -365,35 +278,17 @@ fn failures(tally: Tally) -> String {
     }
 }
 
-/// An agent's row: what state it is in, what it is called, what its work is
-/// waiting on out in the world, what it is up to, and how long it has worked.
+/// An agent's row: indent, glyph, name, then the optional vendor, state and
+/// pull request columns, the summary, and the worked time right-aligned.
 ///
-/// Three cells before the name — one of indent, the state glyph and the space
-/// after it — then the name, the summary, and the age right-aligned at the
-/// edge, all on the widths the grid fixes for the screen. Fixed rather than
-/// measured off the fleet, so the columns stand where they stood when the last
-/// agent ended and the row a person learned wide is the row they get narrow.
+/// Columns come from the [`grid`] widths for the screen, not from the fleet.
+/// Everything is dim except: the name under the cursor or pointer (full
+/// strength), a waiting agent's question (full strength), waiting and failed
+/// names (their colour, see [`name_colour`]), the pull request (its standing's
+/// colour), and the state word (see [`state_colour`]).
 ///
-/// The wall spends no weight, so a row is drawn as quietly as the heading over
-/// it: the name dim, what the agent said dim beside it, and the state on the
-/// glyph alone. The name under the cursor and the name under the pointer are
-/// what come up to the terminal's own, which is the row somebody is working
-/// with saying so. A row that is asking puts its question at full strength,
-/// because that is the sentence somebody opened the view to read. The
-/// exceptions earn their colour: a waiting name and a failed one say so without
-/// their glyph being read, the pull request's number answers how the work went,
-/// and under a project heading the state word keeps what the phase has to say
-/// because it replaces the glyph's job there — see [`state_colour`].
-///
-/// The row the terminal was lent to takes the accent on its name: about the
-/// person at the screen rather than the agent, and given up wherever the state
-/// has already coloured the name.
-///
-/// A row a press has armed says that instead of what the agent said, in the
-/// colour of a thing waiting on a person. The summary is the one part of a row
-/// amx is free to speak over: the state, the name and the age are what the row
-/// is for, and a warning that took a column of its own would move every row
-/// under it for as long as it was up.
+/// An armed row replaces its summary with what the next press will do, in
+/// the waiting colour, so no column moves.
 #[allow(clippy::too_many_arguments)]
 fn row(
     view: &View,
@@ -407,20 +302,14 @@ fn row(
     theme: Theme,
 ) -> Line<'static> {
     let phase = view.phase();
-    // The reading's own number and the reading's own units: a row and a table
-    // that worked the words out for themselves would agree until one of them
-    // was edited. The worked seconds, not the age — an idle agent's clock
-    // climbing was timing the silence, and the wait stays on the card.
+    // Worked time, not age: an idle agent's age keeps climbing. Formatted by
+    // `derive` so `ls` and the view agree.
     let worked = derive::in_words(view.verdict.worked);
-    // The one word on a row a person typed rather than amx minting it, so it
-    // is neutralised here as well as where it was written down.
-    // The name column a child gives up to the connector that indents it, so
-    // the state, the age and the summary stay under its parent's.
+    // A user can rename an agent, so the name is made inert. `name_room` is
+    // already short by a child's connector indent.
     let name = grid::pad(&inert(rows::called(view)), name_room);
-    // The pull request is not one of the design's columns, so it is paid for
-    // the way the state word is: out of the summary, which is the column that
-    // gives way. Name, age and count stay where they are whether or not there
-    // is a forge on the machine.
+    // The pull request column comes out of the summary, so no other column
+    // moves when there is a forge.
     let room = widths.summary.saturating_sub(match requests {
         0 => 0,
         column => column + GAP,
@@ -455,17 +344,13 @@ fn row(
         ),
         Span::styled(
             format!("{name}{}", " ".repeat(GAP)),
-            // The two rows a person is working with, brought up out of the
-            // quiet the rest of the wall is drawn at: the one the cursor is on,
-            // and the one the pointer is resting on — which, without the bar,
-            // is the whole of what a hover is.
+            // Full strength under the cursor or the pointer; a hover has no
+            // other mark.
             name_colour(theme, phase, at.selected || at.hovered, at.lent),
         ),
     ];
     if widths.vendor > 0 {
-        // Dim like the name beside it. What runs a row is a fact about how it
-        // was started rather than about how it is going, so it is the quietest
-        // thing on the line whatever state the row is in.
+        // Always dim, whatever the state.
         spans.push(Span::styled(
             format!(
                 "{}{}",
@@ -486,9 +371,7 @@ fn row(
         ));
     }
     if requests > 0 {
-        // The one this branch is being read for, which is whatever of them is
-        // still live. The rest are on the card, where there is room to list
-        // them and to say what each is waiting on.
+        // Only the branch's first (live) request; the card lists them all.
         let (label, paint) = match prs.first() {
             Some(first) => (first.label(), request_colour(theme, first.standing)),
             None => (String::new(), Style::new()),
@@ -511,13 +394,8 @@ fn row(
     Line::from(spans)
 }
 
-/// What the state word is painted in under a project heading: the phase's own
-/// colour where the phase has one, and dim where it has not.
-///
-/// The word is the glyph's job moved down a level rather than a second summary.
-/// A row that has ended says how it went in the colour that says so, and a row
-/// still at work has nothing to say about that yet — so it stays out of the way
-/// of the line beside it, which is the part somebody is reading.
+/// The state word's style (project axis only): the phase's colour once it has
+/// ended, dim while it is starting or working.
 fn state_colour(theme: Theme, phase: Phase) -> Style {
     match phase {
         Phase::Starting | Phase::Working => dim(),
@@ -525,48 +403,23 @@ fn state_colour(theme: Theme, phase: Phase) -> Style {
     }
 }
 
-/// What an armed row says where its summary was: the key again, and what it
-/// does this time.
-///
-/// The words claude's own agent view uses for the same two presses, because a
-/// person who has met one of these screens should not have to learn the other.
+/// An armed row's summary after `ctrl+x`. Same words as claude's agent view.
 const AGAIN: &str = "ctrl+x again forgets";
 
-/// And what a row a heading armed says, which is more: the press after it
-/// stops every live agent under that heading before it forgets them all.
-///
-/// The whole group wears it, whatever each row is doing, because the press is
-/// about the group and a row cannot say what the press will cost by speaking
-/// only for itself.
+/// An armed row's summary when `ctrl+x` was pressed on its heading: the next
+/// press stops every live agent in the group and forgets them all.
 const AGAIN_ALL: &str = "ctrl+x again stops and forgets";
 
-/// And what a row `c` armed says before the reason it was found by: the same
-/// two-press sentence in the key that is actually armed.
-///
-/// The instruction comes first because the summary column is the one that
-/// gives way: at eighty columns it holds forty-eight cells, and a branch
-/// merged into main is more than that on its own. What the cut takes is the
-/// end of the sentence, and the end can be the reason, which the card still
-/// holds; it cannot be the half that says what the next press does.
+/// An armed row's summary after `c`, before the reason. The instruction comes
+/// first so a narrow summary column cuts the reason, not the instruction.
 const CLEARS: &str = "c again clears";
 
-/// And what a row `c` found holding work no commit has says instead, which is
-/// why rather than what next: the press after this one goes past it.
-///
-/// The verb keeps such a tree and the record that names it, so the row would
-/// still be on the wall after the second press. Saying `c again clears` over
-/// it promises something that will not happen — and the reason it will not is
-/// the one thing worth reading, since it is work somebody has not committed.
-///
-/// The row is where it is said. The notice the second press leaves counts them
-/// — `kept 2 holding work no commit has` — because a press that covers a wall
-/// can keep more rows than one line of a footer holds.
+/// The summary of a row `c` found with uncommitted work in its worktree. The
+/// second press keeps such a row, so it must not say `c again clears`.
 const HOLDS: &str = "holds work no commit has";
 
-/// How wide the pull request column has to be, which is the one column of a
-/// row the design does not fix: the widest label anybody on the screen is
-/// wearing, and no column at all where nobody is wearing one — which is every
-/// list on a machine with no forge on it.
+/// Width of the pull request column: the widest label on the list, or zero
+/// when no agent has a request.
 fn request_column(list: &List) -> usize {
     list.items()
         .iter()
@@ -577,24 +430,19 @@ fn request_column(list: &List) -> usize {
         .unwrap_or(0)
 }
 
-/// What stands between two columns of a row, whether that is a name and a
-/// summary or a summary and the seconds at the edge.
+/// Gap between two columns of a row.
 const GAP: usize = 2;
 
-/// One line of it, so a paragraph of an answer cannot take over a row.
+/// The first line of `text`, trimmed.
 pub(super) fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("").trim()
 }
 
-/// What a row is indented by, so an agent reads as sitting under the heading
-/// it belongs to rather than beside it. One blank cell, which is what the
-/// vendor's own view spends there: a wall that put a mark in it would be a
-/// column a person has to learn before the one they came to read.
+/// A row's indent under its heading, as in claude's own agent view.
 const GUTTER: &str = " ";
 
-/// The vendor's glyph set for a terminal. Ghostty draws the eight-spoked
-/// asterisk where everything else gets a plain one, and that is the only thing
-/// `$TERM` decides. Measured from the 2.1.237 bundle.
+/// claude's pulse glyphs for this `$TERM` (from the 2.1.237 bundle). Ghostty
+/// gets an eight-spoked asterisk in place of the plain one.
 pub(super) fn set_for(term: &str) -> [&'static str; 6] {
     match term {
         "xterm-ghostty" => ["·", "✢", "✳", "✶", "✻", "✻"],
@@ -602,50 +450,37 @@ pub(super) fn set_for(term: &str) -> [&'static str; 6] {
     }
 }
 
-/// That set for this terminal, read once: `$TERM` does not change under a
-/// running view, and the vendor memoizes it for the same reason.
+/// [`set_for`] this terminal, read once.
 pub(super) fn set() -> [&'static str; 6] {
     static SET: OnceLock<[&'static str; 6]> = OnceLock::new();
     *SET.get_or_init(|| set_for(std::env::var("TERM").unwrap_or_default().as_str()))
 }
 
-/// Which of the six a working row rests on, and the frame the pulse is
-/// largest at either side of.
+/// The glyph of [`set`] a live row rests on, and the pulse's largest frame.
 pub(super) const LIVE: usize = 4;
 
-/// The six ping-ponged into twelve frames, which is the vendor's own working
-/// mark ported rather than approximated: the set forwards and then backwards,
-/// one frame every 120ms. It grows from a dot to the largest asterisk and
-/// shrinks back, so a working row breathes rather than spins.
+/// The working glyph for this frame: [`set`] played forwards then backwards,
+/// twelve frames, as claude's own working mark does.
 pub(super) fn pulse(beat: usize) -> &'static str {
     let set = set();
     let frames = set.len() * 2;
     let at = beat % frames;
-    // The back half is the front half read the other way.
+    // The second half mirrors the first.
     set[at.min(frames - 1 - at)]
 }
 
-/// What a row whose process has gone is marked with: the dot it left behind,
-/// which is the one shape here the vendor's set does not hand out.
+/// The glyph of a row whose process has gone.
 const ENDED: &str = "∙";
 
-/// What a row running a shell command is marked with: the prompt a person
-/// types a command at.
+/// The glyph of a row running a shell command.
 pub(super) const COMMAND_GLYPH: &str = "$";
 
-/// The mark a state rests on: the vendor's own asterisk while there is still a
-/// process to go back to, and that dot once there is not.
+/// The still glyph for a state: [`set`]'s [`LIVE`] glyph while a process is
+/// there to attach to, [`ENDED`] once it is gone.
 ///
-/// Two shapes over eight states, because the shape is not where a state is
-/// said — the colour is, and a wall of eight shapes is a wall somebody reads a
-/// legend for. What the shape carries is the one thing the colour cannot: an
-/// agent still there is one somebody can attach to, answer or stop, and an
-/// agent that has gone is a record to read. That is what a person walking the
-/// list is deciding on, and it survives a terminal with the colour turned off.
-///
-/// The live shape is read out of the pulse rather than spelled a second time
-/// here, so a row that stops working settles onto the glyph it was already
-/// breathing through rather than changing under the reader.
+/// Only two shapes: the colour carries the state. The live glyph is taken from
+/// the pulse, so a row that stops working settles on a glyph it already
+/// showed.
 pub(super) fn resting(phase: Phase) -> &'static str {
     match phase {
         Phase::Waiting | Phase::Starting | Phase::Working | Phase::Idle | Phase::Unknown => {
@@ -655,27 +490,12 @@ pub(super) fn resting(phase: Phase) -> &'static str {
     }
 }
 
-/// The mark on a row now: an agent whose turn is running is drawn a frame at a
-/// time, and every other state stands still.
+/// A row's glyph this frame.
 ///
-/// Starting as well as working, because coming up is the first part of a turn
-/// and the pulse is what says a turn is under way. Which of the two it is, is
-/// on the row in words under a project heading and in the heading itself under
-/// a state one.
-///
-/// An agent amx let go is the dot whatever its record says, and the evidence
-/// is asked before the phase for it: parking takes the pane and leaves the
-/// record standing, so the phase is the one the agent was in and the shape is
-/// the only thing on the row that can say the pane has gone. The colour stays
-/// the state's own, because the state is still true — see
-/// [`crate::derive::Evidence::LetGo`].
-///
-/// A command is asked before either of them, and in every state, because the
-/// two shapes above are an agent's: they say whether there is a pane left to
-/// attach to, answer or stop, and a row running `!cmd` or an `--exec` spawn
-/// is none of those things. So the shape says which kind of row it is — the
-/// one thing a wall mixing the two could not say at all — and the colour goes
-/// on saying how it is going.
+/// In order: a shell command (`!cmd`, `--exec`) is always [`COMMAND_GLYPH`];
+/// an agent amx let go is [`ENDED`], since its record keeps the old phase
+/// (see [`crate::derive::Evidence::LetGo`]); starting and working pulse;
+/// everything else is [`resting`]. The colour stays the state's either way.
 pub(super) fn icon(phase: Phase, evidence: &Evidence, beat: usize, command: bool) -> &'static str {
     match (command, evidence, phase) {
         (true, _, _) => COMMAND_GLYPH,
@@ -699,7 +519,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    /// Every state there is, so a table of marks cannot quietly miss one.
+    /// Every state, so a table over them cannot miss one.
     const EVERY: [Phase; 8] = [
         Phase::Starting,
         Phase::Working,
@@ -711,28 +531,27 @@ mod tests {
         Phase::Unknown,
     ];
 
-    /// The same reading, with somebody having been to look at what it is
-    /// holding. The wall paints it neither way; what it moves is where the row
-    /// sorts against the completed fold, which is [`rows`]'s business.
+    /// The same reading, marked as seen. This only changes where the row sorts
+    /// against the completed fold ([`rows`]).
     fn read(mut view: View) -> View {
         view.state.seen = view.state.last_event.max(view.state.since);
         view
     }
 
-    /// The same reading, running somewhere else.
+    /// The same reading, in another directory.
     fn at(mut view: View, dir: &str) -> View {
         view.meta.dir = PathBuf::from(dir);
         view
     }
 
-    /// The same reading, a child of the agent with this id.
+    /// The same reading, as a child of `parent`.
     fn child_of(mut view: View, parent: &str) -> View {
         view.meta.parent = Some(parent.to_string());
         view.meta.depth = 1;
         view
     }
 
-    /// The view with the agents gathered by where they are running.
+    /// The view on the project axis.
     fn by_project(views: Vec<View>) -> Screen {
         let mut screen = Screen::default();
         screen.list.turn();
@@ -740,26 +559,24 @@ mod tests {
         screen
     }
 
-    /// The mark on a row, and how the view painted it: a mark carries its
-    /// colour, and a test that read the text alone could not see it.
+    /// The glyph cell of a row: symbol, colour and modifiers.
     fn mark(screen: &Screen, size: (u16, u16), row: u16) -> (String, Color, Modifier) {
         let cell = cells(screen, size)[(1, row)].clone();
         (cell.symbol().to_string(), cell.fg, cell.modifier)
     }
 
-    /// The same, drawn through a screen of its own: what a person reads at
-    /// this size.
+    /// The rows drawn for these readings, with no card.
     fn settled(views: Vec<View>, size: (u16, u16)) -> Vec<String> {
         painted(&showing(views, None), size)
     }
 
-    /// The background of every cell across one row of the list.
+    /// The background colour of every cell in a row.
     fn behind(screen: &Screen, size: (u16, u16), row: u16) -> Vec<Color> {
         let buffer = cells(screen, size);
         (0..size.0).map(|at| buffer[(at, row)].bg).collect()
     }
 
-    /// The colour a word on a row was painted in.
+    /// The foreground colour of `word`'s first cell on a row.
     fn word_colour(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Color {
         let buffer = cells(screen, size);
         let line: String = (0..size.0)
@@ -771,8 +588,7 @@ mod tests {
         buffer[(line[..at].chars().count() as u16, row)].fg
     }
 
-    /// And the strength it was painted at, for the tests about which of the
-    /// wall's rows is brought up out of the quiet.
+    /// The modifiers of `word`'s first cell on a row.
     fn word_modifier(screen: &Screen, size: (u16, u16), row: u16, word: &str) -> Modifier {
         let buffer = cells(screen, size);
         let line: String = (0..size.0)
@@ -784,16 +600,13 @@ mod tests {
         buffer[(line[..at].chars().count() as u16, row)].modifier
     }
 
-    /// A screen with room for the bands above and below the list, the space
-    /// between the header and it, and a group or two under that.
+    /// Room for the header, the spacing rows and a group or two.
     const WALL: (u16, u16) = (80, 12);
 
     #[test]
     fn rows_draw_a_parent_and_its_children_as_one_family() {
-        // The mockup in the plan: a working parent, a finished child and one
-        // still reading, the children hung under the parent on connectors,
-        // newest first, and every name and summary standing at the same
-        // column.
+        // A working parent with a finished child and a working one: children
+        // hang on connectors, newest first, and the summaries line up.
         let mut scout = child_of(
             view("scout-b2c", Phase::Done, Some("find auth"), 12),
             "parent-a1b",
@@ -840,8 +653,7 @@ mod tests {
         );
         let column = |line: &str, word: &str| {
             let at = line.find(word).expect("the word on the row");
-            // The cells before the word, not the bytes: the connectors are
-            // multi-byte and a byte offset would say the columns parted.
+            // Chars, not bytes: the connectors are multi-byte.
             line[..at].chars().count()
         };
         assert_eq!(
@@ -864,10 +676,8 @@ mod tests {
 
     #[test]
     fn rows_stand_a_root_at_the_glyph_column_however_deep_the_family_goes() {
-        // A grandchild takes the family to two levels. The root stands at the
-        // column every root stands at, and so does the root beside it: the
-        // wall spends nothing on there being a family, so a sub spawning does
-        // not push every row on the screen across.
+        // Two levels deep. Roots stay at the glyph column, so a sub-agent
+        // spawning never shifts the other rows.
         let mut helper = child_of(
             view("helper-f6g", Phase::Done, Some("ran the suite"), 12),
             "parent-a1b",
@@ -941,10 +751,8 @@ mod tests {
 
     #[test]
     fn a_child_pays_for_its_connector_out_of_its_own_name() {
-        // The connector indents a child, and the two cells it takes come out
-        // of the child's name rather than out of the wall: a name too long for
-        // what is left is cut, so the state, the age and the summary still
-        // stand under the parent's.
+        // The connector's two cells come out of the child's name column, so
+        // a long name is cut and the other columns stay aligned.
         let mut loud = child_of(
             view(
                 "a-child-name-far-too-long-1a2b",
@@ -991,8 +799,7 @@ mod tests {
 
     #[test]
     fn glyphs_say_a_process_that_is_there_from_one_that_has_gone() {
-        // Two shapes over eight states, and the colour says which of the eight
-        // it is: a wall of eight shapes is a wall somebody reads a legend for.
+        // Two shapes over eight states; the colour tells the states apart.
         let live = [
             Phase::Waiting,
             Phase::Starting,
@@ -1029,7 +836,7 @@ mod tests {
         assert_eq!(frames, want, "the set, and then the set backwards");
         assert_eq!(pulse(12), pulse(0), "and round again");
 
-        // The pulse is a turn running, which starting is the first part of.
+        // Starting pulses too: it is the start of a turn.
         for phase in [Phase::Starting, Phase::Working] {
             assert_eq!(
                 icon(phase, &Evidence::Hooks, 1, false),
@@ -1051,11 +858,7 @@ mod tests {
 
     #[test]
     fn glyphs_wear_a_dollar_on_a_row_running_a_command() {
-        // Every state and both evidences, because a command's row says what
-        // it is and not how far along it is: the pulse and the dot are an
-        // agent's, and what they carry — whether there is still a pane to
-        // attach to, answer or stop — is not a question anybody asks of a
-        // shell command.
+        // In every state and for every kind of evidence.
         for phase in EVERY {
             for evidence in [Evidence::Hooks, Evidence::Screen, Evidence::LetGo] {
                 assert_eq!(
@@ -1069,15 +872,13 @@ mod tests {
 
     #[test]
     fn glyphs_leave_a_command_row_the_colour_too() {
-        // The mark on the one row a view of one command draws.
         let painted = |phase| {
             let screen = showing(vec![command("build-a1b", phase)], None);
             mark(&screen, (60, 8), 2)
         };
         let plain = Modifier::empty();
 
-        // The shape is the kind of row and the colour is how it went, which is
-        // the division the wall already draws the glyph by.
+        // The shape says it is a command; the colour still says the state.
         assert_eq!(
             painted(Phase::Working),
             (COMMAND_GLYPH.into(), Color::Reset, plain),
@@ -1106,15 +907,13 @@ mod tests {
 
     #[test]
     fn glyphs_leave_the_colour_to_say_how_it_went() {
-        // The mark on the one row a view of one agent draws.
         let painted = |phase| {
             let screen = showing(vec![view("agent-a1b", phase, Some("said"), 5)], None);
             mark(&screen, (60, 8), 2)
         };
         let plain = Modifier::empty();
 
-        // The colour is the whole of what the glyph says, weight and all: the
-        // wall spends no weight on anything, the glyph included.
+        // Colour only, never weight.
         assert_eq!(
             painted(Phase::Waiting),
             ("✻".into(), theme().waiting, plain)
@@ -1126,13 +925,9 @@ mod tests {
             ("∙".into(), theme().stopped, plain)
         );
 
-        // An agent still at work has nothing to say about how it went, so it
-        // takes the terminal's own colour and the pulse does the talking. An
-        // agent whose turn is over — still at its prompt or gone — says how it
-        // went in green, and the shape says whether there is still a process
-        // to reach. One amx cannot account for is neither: it stands still in
-        // the terminal's own, which is the one thing left to tell it from a
-        // row that is asking.
+        // A live turn keeps the terminal's colour and pulses. Idle wears the
+        // done colour. Unknown stands still in the terminal's colour, unlike a
+        // waiting row.
         assert_eq!(
             painted(Phase::Starting),
             (pulse(0).into(), Color::Reset, plain)
@@ -1147,10 +942,8 @@ mod tests {
 
     #[test]
     fn glyphs_draw_the_dot_on_an_agent_amx_let_go() {
-        // The same idle agent twice: one sitting at its prompt, and one whose
-        // pane amx took while nobody was watching. The record says the same
-        // thing about both — nothing about the agent ended — so the shape is
-        // the only thing left to say there is nothing there to attach to.
+        // The same idle agent at its prompt and after amx let its pane go.
+        // The record is the same for both; only the glyph differs.
         let row = |evidence| {
             let mut idle = view(
                 "fix-login-a1b",
@@ -1503,9 +1296,7 @@ mod tests {
         assert_eq!(screen[5], "", "the next project stands off from this one");
         assert!(screen[6].starts_with("/src/web"), "{screen:?}");
 
-        // One column, so the states read down the screen rather than wandering
-        // with the length of the name above them. Counted in characters: the
-        // marks are not all one byte, and a column is what a person sees.
+        // State words line up in one column (counted in chars, not bytes).
         let column = |line: &str, word: &str| {
             let at = line.find(word).expect("the state on the row");
             line[..at].chars().count()
@@ -1515,10 +1306,6 @@ mod tests {
 
     #[test]
     fn a_path_heading_says_at_its_far_edge_what_the_rows_under_it_are_doing() {
-        // A path says which repository a screenful of rows is in and nothing
-        // about how it is going, so a wall gathered by directory is one a
-        // person reads every row of to answer the question they gathered it
-        // to ask.
         let wide = (70, 12);
         let screen = painted(
             &by_project(vec![
@@ -1536,8 +1323,7 @@ mod tests {
             wide,
         );
 
-        // The header band's own words, so the two rows teach one language and
-        // every word of them is one `s:` takes.
+        // In the header's words, which `s:` also takes.
         let heading = |screen: &[String]| {
             screen
                 .iter()
@@ -1557,13 +1343,12 @@ mod tests {
              stand: {said:?}"
         );
 
-        // A group with nobody in it is left out rather than said as a zero.
+        // Empty groups are left out, not shown as zero.
         for word in ["pinned", "review", "asleep"] {
             assert!(!said.contains(word), "{word}: {said:?}");
         }
 
-        // A child is work, so it is counted: a heading answers for the rows it
-        // stands over rather than for the tops alone.
+        // Children are counted, not only top-level agents.
         let family = painted(
             &by_project(vec![
                 at(
@@ -1633,7 +1418,7 @@ mod tests {
         let bar = vec![theme().cursor; 60];
         let plain = vec![Color::Reset; 60];
 
-        // The view opens on the first agent, with the heading over it bare.
+        // The cursor opens on the first agent.
         assert_eq!(behind(&screen, (60, 8), 2), bar, "the row the cursor is on");
         assert_eq!(behind(&screen, (60, 8), 1), plain, "and not the heading");
 
@@ -1666,9 +1451,7 @@ mod tests {
 
     #[test]
     fn headings_read_the_groups_own_words_and_stop_there() {
-        // The words somebody would say out loud, and nothing after them: no
-        // rule, because there is no number at the far end to carry the eye out
-        // to, and the right margin is the ages alone.
+        // No rule after the title.
         let screen = drawn(a_fleet(), None, (60, 12));
 
         assert_eq!(screen[3], "Needs input");
@@ -1758,10 +1541,7 @@ mod tests {
 
     #[test]
     fn headings_stand_off_from_whatever_is_above_them() {
-        // A blank line above every heading, so the groups read as groups
-        // instead of one run of rows — and the first of them is stood off from
-        // the header the same way, so the list starts where the chrome ends
-        // rather than against it.
+        // A blank row above every heading, the first one included.
         let screen = drawn(a_fleet(), None, (60, 12));
         assert!(screen[0].contains("running"), "the header: {screen:?}");
         assert_eq!(screen[2], "", "the space over the list");
@@ -1774,10 +1554,7 @@ mod tests {
 
     #[test]
     fn headings_carry_no_weight_and_one_colour() {
-        // What makes a heading here is the blank row over it and the rows
-        // indented under it, not weight: the wall spends none. So a heading
-        // reads as quiet as the summaries beside the rows it heads, and the
-        // one thing that breaks the quiet is a group waiting on a person.
+        // Headings are dim with no bold; only the waiting group has a colour.
         let screen = showing(a_fleet(), None);
         let cells = cells(&screen, (60, 10));
 
@@ -1804,8 +1581,7 @@ mod tests {
 
     #[test]
     fn path_headings_read_the_way_a_group_heading_does() {
-        // One document on either axis: the same words in the same places, dim
-        // end to end, with the count only where the rows are not.
+        // Dim throughout, with the count only when shut.
         let size = (60, 10);
         let mut screen = by_project(vec![
             at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
@@ -1839,9 +1615,7 @@ mod tests {
 
     #[test]
     fn view_shows_the_fold_and_what_it_is_holding_back() {
-        // A working agent and two endings more than the fold holds: the fold's
-        // worth are drawn and the fold stands under them saying what it is
-        // holding back.
+        // Two more finished agents than the fold shows.
         let fleet = || {
             let mut views = vec![view("busy-b2c", Phase::Working, Some("Running Bash"), 3)];
             views.extend(
@@ -1860,8 +1634,7 @@ mod tests {
             "the fold stands on the row under them: {tall:?}"
         );
 
-        // Twice the screen, the same rows and the same count. What folds is
-        // the length of the group, and the window has no say in it.
+        // The fold depends on the group's length, not the screen's height.
         let taller = settled(fleet(), (40, height * 2));
         assert_eq!(
             taller.iter().filter(|l| l.contains("done-")).count(),
@@ -1891,9 +1664,7 @@ mod tests {
             None,
         );
 
-        // The cursor opens on the first agent, and its name is the one thing on
-        // the wall at the terminal's own strength. Everything else is dim: what
-        // the agent said, how long it worked, and the whole of the row under it.
+        // Only the name under the cursor is at full strength.
         let named = word_modifier(&screen, size, 3, "fix-login-a1b");
         assert!(
             !named.contains(Modifier::DIM) && !named.contains(Modifier::BOLD),
@@ -1913,7 +1684,7 @@ mod tests {
             );
         }
 
-        // The state is carried by the glyph's colour alone.
+        // The glyph's colour carries the state.
         let (glyph, painted, _) = mark(&screen, size, 4);
         assert_eq!((glyph.as_str(), painted), ("∙", theme().done));
     }
@@ -1935,9 +1706,8 @@ mod tests {
             None,
         );
 
-        // An ending nobody has been to read and one somebody has been through
-        // are the same row: whether a person has caught up is what keeps the
-        // unread one in front of the fold, and the paint says none of it.
+        // Seen and unseen rows are drawn alike; being seen only affects the
+        // fold's ordering.
         for (row, name) in [(6, "fix-login-a1b"), (7, "port-import-b2c")] {
             let painted = word_modifier(&screen, size, row, name);
             assert!(
@@ -1946,8 +1716,6 @@ mod tests {
             );
         }
 
-        // The colour a state earned stays on the name off the cursor's row, at
-        // the strength the rest of the wall is drawn at.
         assert_eq!(word_colour(&screen, size, 3, "ask-c3d"), theme().waiting);
         assert!(
             !word_modifier(&screen, size, 3, "ask-c3d").contains(Modifier::DIM),
@@ -1975,8 +1743,7 @@ mod tests {
             ],
             None,
         );
-        // The pointer resting on the second agent's line, which is the third
-        // item under the heading.
+        // Item 2 is the second agent (item 0 is the heading).
         screen.hover = Some(2);
 
         let hovered = word_modifier(&screen, size, 4, "port-import-b2c");
@@ -2021,14 +1788,7 @@ mod tests {
 
     #[test]
     fn rows_the_one_the_terminal_came_back_from_wears_the_accent() {
-        // Somebody attaches to an agent, reads what it is doing, and detaches
-        // onto a wall of rows that all look alike. The one they were just in
-        // is the row they are about to look for, so the wall says which it
-        // was rather than leaving them to remember.
-        //
-        // A row taller than the rest of these: the three rows and the two
-        // headings between them want every row the list has once the keys
-        // have taken their own and the blank one over them.
+        // Tall enough for three groups.
         let size = (60, 13);
         let mut screen = showing(
             vec![
@@ -2038,8 +1798,7 @@ mod tests {
             ],
             None,
         );
-        // Which line each of them is drawn on, taken once: the mark is a
-        // colour on a name and moves no row.
+        // Row positions, taken once: the accent moves no row.
         let lines = painted(&screen, size);
         let at = |name: &str| {
             lines
@@ -2049,8 +1808,6 @@ mod tests {
         };
         let (asking, busy, done) = (at("ask-a1b"), at("busy-b2c"), at("fix-login-c3d"));
 
-        // A view nobody has lent the terminal out of yet marks nothing: the
-        // accent says where somebody has been, and they have been nowhere.
         assert_eq!(
             word_colour(&screen, size, busy, "busy-b2c"),
             Color::Reset,
@@ -2069,9 +1826,7 @@ mod tests {
             "and every other name is the terminal's own"
         );
 
-        // A name that already has a colour keeps it. What an agent wants is
-        // worth more than where the terminal has been, and a wall that said
-        // both on one name would be saying neither.
+        // A name that already has a state colour keeps it.
         screen.lent = Some("ask-a1b".to_string());
         assert_eq!(
             word_colour(&screen, size, asking, "ask-a1b"),
@@ -2079,8 +1834,7 @@ mod tests {
             "a row that is asking is still asking"
         );
 
-        // And the mark is a colour rather than a second cursor, so it is drawn
-        // at the strength every row off the cursor's is drawn at.
+        // Off the cursor, the accented name is still dim.
         screen.lent = Some("fix-login-c3d".to_string());
         assert_eq!(
             word_colour(&screen, size, done, "fix-login-c3d"),
@@ -2093,9 +1847,8 @@ mod tests {
         );
     }
 
-    /// The three kinds of row the vendor column has anything to say about: a
-    /// spawn that turned both dials, one that turned neither, and a shell
-    /// command, which runs no vendor at all.
+    /// An agent with model and effort set, one with neither, and a shell
+    /// command.
     fn three_kinds() -> Vec<View> {
         let mut dialled = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
         dialled.meta.model = Some("opus".to_string());
@@ -2168,8 +1921,7 @@ mod tests {
                 after.find(id),
                 "the name column does not move for {id}:\n{before:?}\n{after:?}"
             );
-            // The age is right-aligned at the edge, which is where the line
-            // ends once the trailing spaces are off it.
+            // The age is right-aligned, so it ends the trimmed line.
             let age = |line: &str| line.chars().rev().take(2).collect::<String>();
             assert_eq!(
                 age(before),
@@ -2177,9 +1929,8 @@ mod tests {
                 "nor does the age for {id}:\n{before:?}\n{after:?}"
             );
         }
-        // And off, no row says any of it. The header's dial row says `claude`
-        // about the next agent whatever the wall is doing, so this is asked of
-        // the rows rather than of the screen.
+        // Off, no row shows it. Checked per row because the header's dials
+        // row always says `claude`.
         for id in ["fix-login-a1b", "port-import-b2c", "build-c3d"] {
             let row = quiet
                 .iter()
@@ -2229,8 +1980,6 @@ mod tests {
 
     #[test]
     fn rows_on_the_project_axis_keep_the_phase_colour_on_the_state_word() {
-        // The state word replaces the icon's job under a project heading, so
-        // it keeps the phase colour while the words beside it stay muted.
         let size = (60, 10);
         let screen = by_project(vec![
             at(
@@ -2276,8 +2025,7 @@ mod tests {
             "a failing check is a thing that was attempted and failed"
         );
 
-        // One column, so the numbers read down the screen rather than
-        // wandering with the length of the name beside them.
+        // The numbers line up in one column.
         let busy = row("busy-b2c");
         let column = |line: &str, word: &str| {
             let at = line.find(word).expect("the number on the row");
@@ -2303,8 +2051,6 @@ mod tests {
 
     #[test]
     fn pr_costs_the_list_nothing_where_no_branch_has_one() {
-        // Which is every list on a machine with no forge on it, and the whole
-        // of what such a machine loses.
         let fleet = || {
             vec![
                 view("ask-a1b", Phase::Waiting, None, 30),
@@ -2320,10 +2066,7 @@ mod tests {
 
     #[test]
     fn view_ages_are_the_readings_own_number_in_the_readings_own_words() {
-        // Both the number and the units come from the reading, and the row
-        // only asks for them. A row that worked the words out for itself would
-        // agree with the table until the next hand touched one of the two, and
-        // the person with both open is who finds out.
+        // Formatted by `derive::in_words`, the same as `ls`.
         for age in [0, 59, 60, 3_599, 3_600, 86_400] {
             let row = drawn(
                 vec![view("busy-a1b", Phase::Working, None, age)],
@@ -2342,9 +2085,7 @@ mod tests {
 
     #[test]
     fn view_rows_carry_the_worked_seconds_and_not_the_age() {
-        // An idle agent's age climbs with every quiet second; what it worked
-        // does not, and the column is about the work. The wait and the age
-        // stay the card's.
+        // An idle agent's age keeps climbing; its worked time does not.
         let mut idle = view("rests-a1b", Phase::Idle, Some("done for now"), 500);
         idle.verdict.worked = 60;
         let row = drawn(vec![idle], None, WALL)
@@ -2356,10 +2097,8 @@ mod tests {
 
     #[test]
     fn rows_neutralise_what_an_agent_said_the_way_the_name_and_the_question_are() {
-        // An escape byte and a zero-width character in what an agent said are
-        // neutralised the way the name at row 338 and the card's question at
-        // card.rs:402 are: replaced with a space rather than dropped, so the
-        // row stays exactly as wide as the record spells it.
+        // Control and zero-width characters become spaces, as in the name and
+        // the card's question, so the row keeps its width.
         let said = "pro\u{1b}ceed\u{200b}now";
         let row = drawn(
             vec![view("fix-login-a1b", Phase::Done, Some(said), 60)],
@@ -2377,10 +2116,8 @@ mod tests {
 
     #[test]
     fn view_a_wide_glyph_in_the_summary_does_not_push_the_age_off_the_edge() {
-        // Measured on the wall 2026-08-25: `Hello! 👋` — one char, two
-        // columns — shifted everything after it right by one, and the row's
-        // age lost its unit to the terminal's edge, reading `5` where every
-        // other row read `5m`. A row is measured in columns, not characters.
+        // An emoji is one char and two columns. Measured in chars, it pushed
+        // the row one column right and cut the age's unit off the edge.
         let row = drawn(
             vec![view(
                 "waves-a1b",
@@ -2399,15 +2136,13 @@ mod tests {
             "the unit survives the emoji: {row:?}"
         );
 
-        // And the clip itself counts columns: four emoji are eight columns,
-        // whole at eight and one emoji plus the ellipsis at four.
+        // `fit` counts columns too.
         assert_eq!(fit("👋👋👋👋", 8), "👋👋👋👋");
         assert_eq!(fit("👋👋👋👋", 4), "👋…");
         assert_eq!(fit("ab👋cd", 5), "ab👋…");
     }
 
-    /// More agents than any band here is tall, all in one state so they stand
-    /// under one heading and none of them is folded away.
+    /// More agents than any band here is tall, under one heading and unfolded.
     fn twenty() -> Vec<View> {
         (0..20)
             .map(|n| view(&format!("row-{n:02}"), Phase::Done, Some("did it"), 60))
@@ -2419,22 +2154,18 @@ mod tests {
         let screen = showing(twenty(), None);
         let items = screen.list.items().len();
 
-        // Nothing has scrolled it, so it stands on the top of the list.
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 0);
 
-        // Three lines of wheel, and it holds three rows down: the cursor is
-        // off the top of the band and the window does not care.
+        // The wheel scrolls without following the cursor.
         screen.wall.top.set(3);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 3);
 
-        // Past the end, and it lands on the last page rather than over rows
-        // the list has none of — and holds there, so the next wheel-up is a
-        // line off the end rather than a line off wherever it had run to.
+        // Past the end clamps to the last page, and the clamp is stored.
         screen.wall.top.set(900);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
         assert_eq!(screen.wall.top.get(), items - 6);
 
-        // A band taller than the list has one page, and it is the top.
+        // A band taller than the list shows it from the top.
         screen.wall.top.set(4);
         assert_eq!(first_drawn(&screen.list, 60, &screen.wall), 0);
     }
@@ -2444,26 +2175,23 @@ mod tests {
         let mut screen = showing(twenty(), None);
         let items = screen.list.items().len();
 
-        // The cursor at the end of the list, with the window on the top of
-        // it: the window comes down until the cursor is on its last line, and
-        // not one row further.
+        // Cursor below the window: scroll until it is on the last line.
         screen.list.bottom();
         screen.wall.follow.set(true);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
         assert!(!screen.wall.follow.get(), "the frame answered it");
 
-        // A cursor inside the window moves it nothing.
+        // Cursor inside the window: no scroll.
         screen.list.up();
         screen.wall.follow.set(true);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
 
-        // And a cursor off the top brings the window to it, the same way.
+        // Cursor above the window: scroll up to it.
         screen.list.top();
         screen.wall.follow.set(true);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), 0);
 
-        // A window the wheel carried away from the cursor stays carried away:
-        // nothing owes the cursor a move until something moves it.
+        // Without `follow`, a wheel scroll away from the cursor holds.
         screen.wall.top.set(items - 6);
         assert_eq!(first_drawn(&screen.list, 6, &screen.wall), items - 6);
     }
