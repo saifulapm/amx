@@ -1,6 +1,6 @@
 //! `amx clear`: forget every agent that has ended.
 //!
-//! Where [`sweep`](super::sweep) takes only agents whose work landed, this
+//! Where [`super::sweep`] takes only agents whose work landed, this
 //! takes every ended row (stopped, failed, done), lists each with its reason,
 //! and asks once for the whole list. A row whose work landed goes the sweep's
 //! way (tree, branch and record); any other goes the way the view's `ctrl+x`
