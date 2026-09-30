@@ -1,20 +1,13 @@
-//! Doing something about what the view is showing.
+//! Actions the view takes on agents, and the composer line they are typed on.
 //!
-//! Each of these is the verb that does the same thing, run in the view's own
-//! process rather than shelled out to: the same records, the same tmux, the
-//! same laws.
-//! Two things are deliberately not the verb itself. A verb says what it could
-//! not do on stderr, which a terminal in raw mode is in no position to receive
-//! — so what these answer with is the line the view puts where its keys are.
-//! And a verb may wait: `send` gives the vendor five seconds to say the text
-//! arrived. A view holding a screen open cannot spend five seconds anywhere,
-//! and it does not have to, because the next reading is where that word shows
-//! up anyway.
+//! Each action runs the same code as its verb, in the view's own process, with
+//! two differences. Failures come back as the one line the view shows, since a
+//! terminal in raw mode cannot take stderr. And the view does not wait for the
+//! vendor to confirm: `send` gives it five seconds, which a view cannot spend,
+//! and the next reading shows the result anyway.
 //!
-//! Which reply an agent gets is decided by what it is doing at the moment the
-//! line is entered, not at the moment it was opened: text typed at a
-//! permission prompt answers the prompt, and a turn can end while somebody is
-//! still typing.
+//! A reply is routed by the agent's phase when the line is entered, not when
+//! it was opened: text typed at a permission prompt answers the prompt.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -36,73 +29,46 @@ use crate::verbs::clear::Taken;
 use crate::verbs::resume::Comeback;
 use crate::{derive, exit, models, registry, spawn, store, verbs, worktree};
 
-/// A line somebody is typing, and what it is for.
+/// A line being typed, and what entering it does.
 pub struct Composer {
     pub asking: Asking,
     pub text: String,
-    /// Where the next character lands, counted in characters of the line
-    /// rather than bytes: what somebody sees the block standing on is a
-    /// character, and a line takes whatever they can type into it.
-    ///
-    /// A line opens with it at the end — of nothing on a new line, and of the
-    /// name a rename is opened on, because a name is edited rather than typed
-    /// again from the start.
+    /// Cursor position, in characters rather than bytes.
     pub at: usize,
-    /// What the next agent may do without asking, for the rule over the line
-    /// to carry at the far end of itself.
+    /// The permission the next agent would run with, drawn at the right end
+    /// of the rule over the line.
     ///
-    /// It is a fact about the view rather than about the line — which
-    /// permission the dial is resting on, and it moves under the line as
-    /// shift+tab is pressed — and the band that draws the rule is handed the
-    /// line and not the view. So the reading is taken once a frame where the
-    /// view is in hand and left here, which is the errand the paint map's
-    /// cells run in the other direction.
+    /// The view sets it once a frame, because the band that draws the rule is
+    /// handed the line and not the view.
     pub allowed: Cell<Option<String>>,
-    /// What the word under the cursor could be, where it could be something.
+    /// Completions for the word under the cursor.
     pub suggest: Option<Suggest>,
-    /// The vendor's catalog as this line last read it, and who it was read
-    /// for. A cell for the reason `allowed` is one: the suggestions are taken
-    /// off a reading of the line, and what the reading finds out along the way
-    /// is left here for the next one.
+    /// The vendor catalog this line last read, cached across keystrokes.
     pub listed: RefCell<Option<Listed>>,
-    /// Where the line will run: the project the wall was showing when it was
-    /// opened, and nothing where the wall was not showing one.
+    /// The project the wall was showing when the line opened.
     ///
-    /// Taken when the line opens rather than read again when it is entered,
-    /// because it is where somebody was looking as they typed. A `d:` on the
-    /// line says it instead — a directory named in words is somebody saying
-    /// where, and the cursor is only where they were.
+    /// A task runs there unless its line has a `d:`.
     pub under: Option<PathBuf>,
-    /// What each marker on the line stands for, in the order they were
-    /// numbered: the first is `[Pasted text #1]`.
-    ///
-    /// Kept beside the line rather than in it, which is the whole of the fold:
-    /// what is drawn is one row a person can read the rest of their task
-    /// around, and what is sent is every character they pasted.
+    /// The text each paste marker stands for: `[Pasted text #1]` is
+    /// `pastes[0]`.
     pub pastes: Vec<String>,
-    /// Where a walk back through the lines sent before is standing, while
-    /// one is under way.
+    /// The walk through sent lines, while one is under way.
     pub walking: Option<Walking>,
 }
 
-/// A walk back through the lines sent before: which of them is on the line,
-/// and what the line held when the walk began.
+/// A walk through the lines sent before.
 pub struct Walking {
-    /// Which of the lines sent is on the line now, newest first.
+    /// Index of the line shown, newest first.
     at: usize,
-    /// The line as it was when the first step was taken — text, cursor and
-    /// pastes — given back by the step past the newest, so a line half
-    /// written is not lost to a look at the last one.
+    /// Text, cursor and pastes from before the walk, restored by stepping
+    /// past the newest line.
     draft: (String, usize, Vec<String>),
 }
 
-/// The lines the view has sent, for a line being typed to bring back.
+/// Lines the view has sent, for the composer to recall.
 ///
-/// Two lists, because what went to an agent is not what the next agent would
-/// be started with: a task and a reply are different sentences to different
-/// listeners. Newest first, a line equal to the newest not kept twice, and
-/// fifty of each. A shell's history is longer, but a shell's history is the
-/// whole of what somebody typed, and this is only what the view sent.
+/// Tasks and replies are separate lists, newest first, at most fifty each,
+/// with an immediate repeat stored once.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Backlog {
@@ -114,17 +80,14 @@ pub struct Backlog {
 const REMEMBERED_LINES: usize = 50;
 
 impl Backlog {
-    /// Keep a line the view has just sent, newest first.
+    /// Records a sent line, newest first.
     ///
-    /// A rename and a find line are not sent, and a digit pressed at a
-    /// question is a choice rather than a line, so only a task and a reply
-    /// have a list to go on. The same line sent twice running is kept once:
-    /// walking back over two copies of it would be a step that went nowhere.
+    /// Only tasks, forks and replies are kept. A line equal to the newest one
+    /// is not stored again.
     pub fn remember_line(&mut self, asking: &Asking, line: &str) {
         let lines = match asking {
-            // A fork line is a task said to an agent that does not exist yet,
-            // the same as the line that starts one from nothing, so the two of
-            // them are walked back through together.
+            // A fork's first turn is a task for an agent that does not exist
+            // yet, so forks share the task history.
             Asking::Task | Asking::Fork { .. } => &mut self.tasks,
             Asking::Reply => &mut self.replies,
             Asking::Name { .. } | Asking::Find => return,
@@ -136,8 +99,7 @@ impl Backlog {
         lines.truncate(REMEMBERED_LINES);
     }
 
-    /// The lines sent from this kind of line, newest first, and none from a
-    /// kind that sends nothing.
+    /// The lines sent from this kind of line, newest first.
     pub fn lines_for(&self, asking: &Asking) -> &[String] {
         match asking {
             Asking::Task | Asking::Fork { .. } => &self.tasks,
@@ -147,72 +109,47 @@ impl Backlog {
     }
 }
 
-/// The words a vendor would answer to where the cursor is standing, as they
-/// stood at the last keystroke.
+/// Completions for the word under the cursor, recomputed on every keystroke.
 ///
-/// Taken again on every keystroke rather than held, so that the list under the
-/// word is never a keystroke behind it. What it is narrowed from is the
-/// catalog the line read on the first keystroke that asked for one, which is
-/// [`Listed`]'s to keep.
+/// Narrowed from the catalog cached in [`Listed`].
 pub struct Suggest {
-    /// Where the word stands on the line, counted in characters the way the
-    /// cursor is, because it is what taking a suggestion writes over.
+    /// The word's span on the line, in characters. A completion replaces it.
     pub word: Range<usize>,
-    /// What answers to it, narrowed by what has been typed of it. Never empty:
-    /// a word nothing answers to has no suggestions rather than an empty list
-    /// of them.
+    /// Entries matching what has been typed of the word. Never empty.
     pub entries: Vec<Entry>,
-    /// Which of them the choice is standing on.
+    /// Index of the highlighted entry.
     pub chosen: usize,
 }
 
-/// Everything the vendor loads by name, as it stood when this line first
-/// asked, and who it was read for.
+/// The vendor's catalog as read for one vendor and project, kept for the life
+/// of the line.
 ///
-/// Read once for the life of the line rather than on every keystroke. The
-/// catalog is a walk of every place the vendor declares and a read of every
-/// file's frontmatter under them, and a line is typed a character at a time:
-/// thirty files is nothing, and a plugin cache of a few hundred is a line that
-/// lags behind the fingers typing it. What is narrowed on the keystroke is
-/// what was typed, and that costs nothing.
-///
-/// The vendor and the project because they are what the catalog is a function
-/// of: `agent:pi` typed onto a line that has been offering claude's skills is
-/// a different vendor's directories, and a `d:` aimed at another project is
-/// that project's own places. Either one changing is the reading gone, and
-/// the next keystroke takes it again.
+/// Reading it walks every place the vendor declares and parses each file's
+/// frontmatter. With a plugin cache of a few hundred files that is too slow to
+/// repeat per keystroke. A different vendor (`agent:`) or project (`d:`) on
+/// the line invalidates it.
 pub struct Listed {
     agent: String,
     project: PathBuf,
     entries: Vec<Entry>,
 }
 
-/// What entering the line will do.
+/// What entering the line does.
 pub enum Asking {
-    /// A task, for an agent that does not exist yet.
+    /// Start a new agent with the line as its task.
     Task,
-    /// Something for the agent the card is a look at: a message, or the key
-    /// its question is waiting for.
+    /// Send to the agent on the open card: a message, or an answer to its
+    /// question.
     ///
-    /// It names no agent, because the card it stands at the foot of does: the
-    /// line is the card's last row, and which agent that card is showing is
-    /// the view's to say at the moment enter is pressed rather than the
-    /// line's to have remembered from the moment it opened.
+    /// The agent is read off the card when enter is pressed, so it names no
+    /// id here.
     Reply,
-    /// A name for one of them, which goes nowhere near the agent itself.
+    /// Rename an agent. Nothing is sent to it.
     Name { id: String },
-    /// The first turn of a copy of one of them, which is what `amx fork`
-    /// starts: a second agent on the conversation the first one has had.
-    /// Nothing typed is a copy waiting for a turn.
-    ///
-    /// It names the agent it is a copy of, where a reply names nobody: this
-    /// line stands over the wall rather than at the foot of a card, so the row
-    /// the key was pressed on is the only thing that says which agent is being
-    /// copied.
+    /// Start a copy of an agent, as `amx fork` does, with the line as the
+    /// copy's first turn. An empty line starts the copy idle.
     Fork { id: String },
-    /// Which agents to keep on the wall. Not a line that is sent: it is read
-    /// on every keystroke, so the list under it is already narrowed by the
-    /// time somebody has finished typing what they were looking for.
+    /// Narrow the wall. Applied on every keystroke and never sent.
     Find,
 }
 
@@ -231,15 +168,11 @@ impl Composer {
         }
     }
 
-    /// Bring back a line sent before, or the one after it.
+    /// Recalls the next older (`older`) or newer sent line.
     ///
-    /// `older` walks toward the oldest and stops there; the other way walks
-    /// toward the newest, and the step past it puts back what was being typed
-    /// when the walk began — text, cursor and pastes — so a line half written
-    /// is not lost to a look at the last one. A recalled line arrives whole,
-    /// the cursor at its end and no pastes standing beside it: it was sent as
-    /// characters and it comes back as characters. Answers whether the line
-    /// changed, which a step past either end does not.
+    /// Stepping newer past the newest restores the draft from before the walk.
+    /// A recalled line is plain text with the cursor at its end and no pastes.
+    /// Returns whether the line changed.
     pub fn recall(&mut self, sent: &[String], older: bool) -> bool {
         let at = match (&self.walking, older) {
             (None, true) => 0,
@@ -276,43 +209,20 @@ impl Composer {
         true
     }
 
-    /// Put text in where the cursor is, and leave the cursor after it.
-    ///
-    /// One character or a whole paste through the same door: both are text
-    /// arriving at the one place on the line that takes text, and what the
-    /// cursor was standing on is still in front of it afterwards.
+    /// Inserts text at the cursor and moves the cursor past it.
     pub fn insert(&mut self, text: &str) {
         let at = self.byte();
         self.text.insert_str(at, text);
         self.at += text.chars().count();
     }
 
-    /// Put a paste in where the cursor is, folded behind a marker where it is
-    /// long enough to bury the line it landed on.
+    /// Inserts a paste at the cursor, folded behind a `[Pasted text #N]`
+    /// marker when it is longer than `PASTED_CHARACTERS` or `PASTED_ROWS`.
     ///
-    /// A clipboard holds whole files, and a task typed around one of them is a
-    /// task nobody can read: the log somebody pasted scrolls the sentence
-    /// asking about it off the top of the composer. So a long paste stands as
-    /// `[Pasted text #N]` — one row, in the place on the line where it landed,
-    /// and the text itself waiting beside the line until it is sent.
-    ///
-    /// Anything shorter goes in as it is. A folded phrase would be a line
-    /// somebody could not read back, and the marker is only worth its
-    /// awkwardness where what it hides was going to be unreadable anyway.
-    ///
-    /// The same text pasted onto a line whose marker for it is still standing
-    /// unfolds that marker instead of raising a second one beside it. Pressing
-    /// paste again on a row that came back where a file was expected is
-    /// somebody asking to see what they pasted, and this is the one press that
-    /// says so — so the text goes back in the place the marker was holding for
-    /// it, and the line reads as what will be sent. What is sent does not
-    /// move: the marker went, and the paste it stood for is the characters
-    /// now standing there.
-    ///
-    /// A marker taken back is not there to unfold, so the same text pasted
-    /// again after that folds afresh, under the next number. The paste beside
-    /// the line keeps the number it was given either way, because that number
-    /// is how [`whole`](Self::whole) reads every other marker on the line.
+    /// Pasting the same text again while its marker is still on the line
+    /// unfolds the marker in place instead of adding a second one. A paste
+    /// keeps its number after its marker is deleted, because
+    /// [`whole`](Self::whole) maps markers to pastes by number.
     pub fn paste(&mut self, text: &str) {
         if text.chars().count() <= PASTED_CHARACTERS && text.lines().count() <= PASTED_ROWS {
             self.insert(text);
@@ -327,12 +237,8 @@ impl Composer {
         self.insert(&marker(self.pastes.len()));
     }
 
-    /// Where the line's marker for a paste it is already holding equal to this
-    /// text stands, in bytes, and nothing where no such marker is on the line.
-    ///
-    /// The text and not the number, because a person pastes a clipboard rather
-    /// than a marker: what says this is the same paste is that it is the same
-    /// characters.
+    /// The byte range of the marker for an earlier paste equal to `text`, if
+    /// that marker is still on the line.
     fn standing(&self, text: &str) -> Option<Range<usize>> {
         self.pastes
             .iter()
@@ -345,13 +251,9 @@ impl Composer {
             })
     }
 
-    /// The line as whatever it is sent to will be given it: every marker on it
-    /// back to the paste it stands for.
+    /// The line as sent: every marker replaced by the paste it stands for.
     ///
-    /// The line itself is what is drawn and what the cursor walks, so nothing
-    /// here writes to it. A marker somebody has edited into something that is
-    /// no longer one stands as the characters they left, which is what
-    /// deleting half of it asked for.
+    /// A marker edited into something else stays as the characters left.
     pub fn whole(&self) -> String {
         self.pastes
             .iter()
@@ -361,18 +263,11 @@ impl Composer {
             })
     }
 
-    /// Take the character behind the cursor, and the one under it.
+    /// Deletes the character before the cursor, or the whole marker ending
+    /// there.
     ///
-    /// Neither reaches past the end it is standing at: a backspace at the front
-    /// of the line and a delete at the back of it are one press more than
-    /// somebody meant, not a character taken from the other end.
-    ///
-    /// A marker standing against the cursor goes whole. It is one row for one
-    /// paste, and a press that took a character off it would leave a row that
-    /// is no longer a marker and no longer the paste either: what `whole`
-    /// sent then would be the broken bracket, and the text it stood for would
-    /// go nowhere without anybody being told. Taking the character is what
-    /// somebody meant by the press; taking the paste is what the marker means.
+    /// Taking one character off a marker would leave a broken bracket in the
+    /// sent text and silently drop the paste.
     pub fn delete_back(&mut self) {
         if self.at == 0 {
             return;
@@ -392,12 +287,8 @@ impl Composer {
         self.text.replace_range(from..to, "");
     }
 
-    /// Take the word behind the cursor, in one edit.
-    ///
-    /// The word the cursor would have walked back over, because a chord that
-    /// deleted by one rule while the arrow beside it moved by another would be
-    /// two words to keep in mind for one word on the line. A marker is the
-    /// word it stands as, spaces and all, for the reason `delete_back` gives.
+    /// Deletes the word before the cursor, by the same rule as
+    /// [`word_left`](Self::word_left). A marker counts as one word.
     pub fn delete_word_back(&mut self) {
         if self.marker_behind().is_some() {
             return self.delete_back();
@@ -408,14 +299,10 @@ impl Composer {
         self.text.replace_range(from..to, "");
     }
 
-    /// The marker the cursor is standing at the end of, as the characters it
-    /// spans, and the one it is standing at the front of. Only a marker for a
-    /// paste this line holds: the bracket typed by hand is the characters it
-    /// is.
+    /// The length in characters of a paste marker ending at the cursor.
     ///
-    /// A cursor walked into the middle of one is left to the edit it makes;
-    /// the two presses that mean "take that paste back" are the ones that
-    /// land against its ends.
+    /// Only markers for pastes this line holds count; a bracket typed by hand
+    /// is plain text.
     fn marker_behind(&self) -> Option<usize> {
         let before = &self.text[..self.byte()];
         self.markers()
@@ -434,8 +321,7 @@ impl Composer {
         (1..=self.pastes.len()).map(marker)
     }
 
-    /// One character back, and one on. Neither walks off the line: the ends of
-    /// it are where a cursor stops.
+    /// Moves one character left, stopping at the start of the line.
     pub fn left(&mut self) {
         self.at = self.at.saturating_sub(1);
     }
@@ -444,9 +330,7 @@ impl Composer {
         self.at = (self.at + 1).min(self.length());
     }
 
-    /// Both ends of it, whatever it is holding. The whole line rather than the
-    /// row the cursor is on: a task pasted over four rows is one line, and the
-    /// end of it is where the line ends.
+    /// Moves to the start of the whole line, not of the wrapped row.
     pub fn home(&mut self) {
         self.at = 0;
     }
@@ -455,12 +339,9 @@ impl Composer {
         self.at = self.length();
     }
 
-    /// A word at a time: whatever whitespace is in the way, and then the run
-    /// of characters behind or in front of it.
+    /// Moves to the start of the previous word.
     ///
-    /// Whitespace and not punctuation, because what is on this line is a
-    /// sentence somebody is writing: `m:opus` is one word of it, and a chord
-    /// that stopped inside the dial would be a chord nobody could aim.
+    /// Words split on whitespace only, so a dial like `m:opus` is one word.
     pub fn word_left(&mut self) {
         let line: Vec<char> = self.text.chars().collect();
         let mut at = self.at.min(line.len());
@@ -485,11 +366,7 @@ impl Composer {
         self.at = at;
     }
 
-    /// Move the choice through the suggestions, wrapping at both ends: a list
-    /// walked with two keys has nowhere else for them to stop.
-    ///
-    /// Nothing where there are no suggestions, which is what leaves a line
-    /// without an up and a down of its own.
+    /// Moves the highlight through the suggestions, wrapping at both ends.
     pub fn choose(&mut self, by: isize) {
         let Some(suggest) = &mut self.suggest else {
             return;
@@ -501,17 +378,11 @@ impl Composer {
         suggest.chosen = (suggest.chosen + many).saturating_add_signed(by) % many;
     }
 
-    /// Put the suggestion the choice is on where the word under the cursor is,
-    /// and a space after it.
+    /// Replaces the word under the cursor with the chosen suggestion and
+    /// clears the suggestions.
     ///
-    /// The space is what says the word is finished: what is being completed is
-    /// one word of a sentence, and the next thing typed is the next word
-    /// rather than more of this one. Never where the line already has one
-    /// there, because a word mended in the middle of a sentence is not a word
-    /// that pushes the next one along — and never after a directory, because a
-    /// path that has reached one is a word with more of itself to come. The
-    /// suggestions go with it either way, since the word they were about is now
-    /// the word one of them named.
+    /// Adds a trailing space unless whitespace already follows or the entry
+    /// is a directory (ending in `/`), which the next keystroke continues.
     pub fn complete(&mut self) {
         let Some(suggest) = self.suggest.take() else {
             return;
@@ -532,22 +403,12 @@ impl Composer {
         self.at = suggest.word.start + word.chars().count();
     }
 
-    /// Whether the word under the cursor is still being finished: there are
-    /// suggestions under it, and it is not yet spelled the way the choice
-    /// spells it.
+    /// Whether enter should complete the word rather than submit the line:
+    /// there are suggestions and the word is not yet spelled like the chosen
+    /// one.
     ///
-    /// This is what tells enter which of its two jobs it has. A line with a
-    /// list open under it is a line somebody is still writing a word of, and
-    /// enter finishes the word — but a word already spelled the way the choice
-    /// spells it is a finished word, and enter on a finished word is enter on
-    /// the line. Without the distinction `/review` typed out to the end
-    /// leaves one suggestion, itself, and takes two enters to send: one to
-    /// put a space after a word that needed nothing, and one to mean it. Tab
-    /// asks nothing of this, because tab has the one job.
-    ///
-    /// The choice rather than any of the entries: a word spelled like one of
-    /// them while the choice was walked to another is somebody choosing the
-    /// other, and enter gives them what they walked to.
+    /// Without this, typing `/review` in full leaves one suggestion (itself)
+    /// and takes two enters to send.
     pub fn finishing(&self) -> bool {
         let Some(suggest) = &self.suggest else {
             return false;
@@ -564,13 +425,10 @@ impl Composer {
         typed != entry.spelled
     }
 
-    /// The vendor's catalog for this line: the one already read for this
-    /// vendor and this project, and otherwise what `read` finds, kept for the
-    /// next keystroke.
+    /// The cached catalog for this vendor and project, calling `read` when
+    /// there is none or it was read for another vendor or project.
     ///
-    /// `read` is handed in rather than called here so that what fills the
-    /// reading and what decides whether to take it again are two things, and
-    /// the second can be proved without a disk.
+    /// `read` is a parameter so the caching can be tested without a disk.
     fn catalog(
         &self,
         agent: &str,
@@ -596,15 +454,12 @@ impl Composer {
         })
     }
 
-    /// Where the cursor stands as a byte of the line, which is what the string
-    /// under it is cut by. Past the last character it is the end of the line,
-    /// which is where a line being typed usually is.
+    /// The cursor as a byte offset into `text`.
     fn byte(&self) -> usize {
         self.byte_at(self.at)
     }
 
-    /// The same reading for any character of the line, which is how a word
-    /// somewhere else on it is cut out.
+    /// Byte offset of character `at`, clamped to the end of the line.
     fn byte_at(&self, at: usize) -> usize {
         self.text
             .char_indices()
@@ -612,111 +467,73 @@ impl Composer {
             .map_or(self.text.len(), |(byte, _)| byte)
     }
 
-    /// How many characters the line is, which is where its end is.
+    /// Length in characters.
     fn length(&self) -> usize {
         self.text.chars().count()
     }
 
-    /// Whether this line runs a command rather than starting an agent, which
-    /// is what the bang it opens with says.
+    /// Whether this is a task line starting with `!`, which runs a shell
+    /// command instead of starting an agent.
     ///
-    /// A task line only: every other line goes to an agent that is already
-    /// running or narrows the wall, and a bang typed on one of those is the
-    /// character it is.
-    ///
-    /// Read off the whole of it, because that is what enter is handed: a
-    /// pasted script folded into a marker still opens with the bang it was
-    /// copied with, and a rule saying TASK over a line about to run a shell
-    /// would be the one thing the rule is there to say, said wrong.
+    /// Read from [`whole`](Self::whole), so a pasted script folded into a
+    /// marker still counts.
     pub fn commanding(&self) -> bool {
         matches!(self.asking, Asking::Task) && self.whole().starts_with(BANG)
     }
 
-    /// What the rule over the line calls the mode, in the one word a band's
-    /// edge has room for.
+    /// The mode word drawn on the rule over the line.
     ///
-    /// Uppercase, the way every heading on the wall is: a label on a border is
-    /// read at a glance or not at all. The one thing a person needs to know
-    /// before pressing enter is what enter is about to do, which is why the
-    /// word changes under the bang as it is typed and as it is taken back:
-    /// what a line starts is what the label is about.
+    /// Uppercase so it reads at a glance. It becomes `COMMAND` as soon as the
+    /// line starts with `!`.
     pub fn label(&self) -> &'static str {
         if self.commanding() {
             return "COMMAND";
         }
         match &self.asking {
             Asking::Task => "TASK",
-            // Nothing draws a rule over a reply: it is the card's own last
-            // row, under a rule the card has already written the agent's name
-            // on.
+            // Not drawn: a reply is the card's last row, under the card's
+            // own rule.
             Asking::Reply => "REPLY",
             Asking::Name { .. } => "RENAME",
             Asking::Fork { .. } => "FORK",
-            // Nothing draws a rule over a find line: it is one row at the
-            // foot, so the label has nowhere to be said and nothing to say.
+            // Not drawn: the find line is a single row with no rule.
             Asking::Find => "FIND",
         }
     }
 
-    /// What the line is aimed at, where it is aimed at anything.
+    /// What the line is aimed at, drawn on the rule beside the label.
     ///
-    /// The label alone does not say it, and it is what somebody about to press
-    /// enter has to be sure of: a rename renames one agent and nothing else,
-    /// and a fork copies one. Both name that agent by its id, which is the
-    /// word every verb takes it by and the one the line was opened with.
-    /// A task is aimed at nobody yet, so what it says instead is
-    /// the project it will run in — the one thing about a spawn that the rule
-    /// can say before there is an agent to name — and nothing where that is
-    /// the directory the view was opened in, which is where a task runs unless
-    /// something says otherwise.
-    ///
-    /// It stands on the rule beside the label rather than in front of the
-    /// line, so every line the band draws begins in the same column. The path
-    /// is written the way the heading it was read off writes it, because it is
-    /// the same place said twice on one screen.
+    /// A rename or fork names the agent's id. A task names the project it will
+    /// run in, when the line was opened under one, written the way the path
+    /// headings write it.
     pub fn about(&self) -> Option<String> {
         match &self.asking {
             Asking::Task => self
                 .under
                 .as_deref()
                 .map(|dir| format!("in {}", shorten(dir, std::env::home_dir().as_deref()))),
-            // And a reply names nobody here, because the card's rule above it
-            // already names the agent it is going to.
+            // The card's own rule already names the reply's agent.
             Asking::Find | Asking::Reply => None,
             Asking::Name { id } | Asking::Fork { id } => Some(id.clone()),
         }
     }
 }
 
-/// How much of a paste is too much to leave on the line: the characters a
-/// composer can show at its widest, and the rows it can show at its tallest.
-///
-/// Either of them, because a paste is long in one of two ways and both of them
-/// bury the line: a thousand characters of one paragraph wrap into rows, and
-/// four short rows are four rows.
+/// A paste longer than this many characters, or [`PASTED_ROWS`] rows, is
+/// folded behind a marker. Roughly what the composer shows at its widest and
+/// tallest.
 const PASTED_CHARACTERS: usize = 800;
 const PASTED_ROWS: usize = 3;
 
-/// What a folded paste stands as, numbered from one for the line it was
-/// pasted onto.
-///
-/// Per line rather than across the view: the number is read on the row it is
-/// drawn on, and a second paste onto a fresh line is that line's first.
+/// The marker for the `nth` paste on a line, numbered from one per line.
 fn marker(nth: usize) -> String {
     format!("[Pasted text #{nth}]")
 }
 
-/// A find line of nothing but `s:` tokens narrows the list by state; anything
-/// else is the name to look for.
+/// Reads a find line made only of `s:` tokens as a state narrowing.
 ///
-/// Nothing but: "s:waiting is what to check" is a sentence somebody may well
-/// be looking for an agent by, and a surface that guessed otherwise would be
-/// one nobody could type into.
-///
-/// The task line read these once, and an `a:` beside them that narrowed by
-/// name. `/` does the whole of it now, on every keystroke and without a line
-/// to open first — so the tokens live on the one line that narrows anything,
-/// and the line a task is typed on starts an agent and nothing else.
+/// Any other word makes the line a name search, so "s:waiting is what to
+/// check" still finds an agent by that text.
 pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     if tokens.is_empty() || !tokens.iter().all(|token| token.starts_with(STATE)) {
@@ -727,7 +544,7 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
         tokens
             .iter()
             .map(|token| {
-                // A token with nothing after it drops that narrowing.
+                // A bare `s:` drops the state narrowing.
                 let want = &token[STATE.len()..];
                 Narrow::State((!want.is_empty()).then(|| want.to_string()))
             })
@@ -735,18 +552,14 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
     )
 }
 
-/// The one token that narrows by something other than the name.
+/// The find-line token that narrows by state.
 pub const STATE: &str = "s:";
 
-/// What a find line narrows the list to, which is anything somebody types.
+/// What a find line narrows the wall to.
 ///
-/// A line of nothing but `s:` tokens narrows by state. Anything else is the
-/// name to look for, whole and untokenised: `/` is a search box before it is a
-/// grammar, and somebody typing `port the` means an agent called that rather
-/// than two filters.
-///
-/// An empty line narrows to nothing, which is what puts the fleet back as the
-/// last character is deleted.
+/// A line of only `s:` tokens narrows by state. Anything else is one name
+/// search, untokenised, so `port the` matches that text. An empty line clears
+/// the name.
 pub fn finding(line: &str) -> Vec<Narrow> {
     if let Some(narrowing) = narrowing(line) {
         return narrowing;
@@ -755,90 +568,75 @@ pub fn finding(line: &str) -> Vec<Narrow> {
     vec![Narrow::Name((!want.is_empty()).then(|| want.to_string()))]
 }
 
-/// The tokens a task line may be led with, and what each of them turns.
+/// The dial tokens a task line may start with.
 const DIALS: [&str; 9] = [
     MODEL, PERMISSION, EFFORT, WORKTREE, DIR, AGENT, BASE, REQUEST, BRANCH,
 ];
 
-/// The one of them that says which vendor the line is for, which is the vendor
-/// every other word on it is read against.
+/// Names the vendor; the other dials are checked against it.
 const AGENT: &str = "agent:";
 
-/// The three the vendor declares, whose values are the vendor's own to name.
+/// The vendor's own dials, whose values come from its registry entry.
 const MODEL: &str = "m:";
 const PERMISSION: &str = "p:";
 const EFFORT: &str = "e:";
 
-/// And the five that are amx's: whether this agent is given a tree of its own,
-/// where it runs, what its tree is cut from, the request it is cut for and the
-/// branch it carries on with.
+/// amx's own dials: worktree on or off, directory, base ref, pull request and
+/// branch.
 const WORKTREE: &str = "w:";
 const DIR: &str = "d:";
 const BASE: &str = "b:";
 const REQUEST: &str = "pr:";
 const BRANCH: &str = "on:";
 
-/// What `w:` takes, which is amx's own answer and in no vendor's table.
-///
-/// `changes` is a tree and the work you had not committed yet moved into it,
-/// which is why it is a value of this word rather than one of its own.
+/// The values `w:` takes. `changes` means a worktree with the uncommitted work
+/// moved into it.
 const TREE: [&str; 3] = ["on", "off", "changes"];
 
-/// The mark a file is named by, which is the vendor's own and the same one an
-/// agent is named by.
+/// The mark that names a file or one of the vendor's agents.
 const AT: &str = "@";
 
-/// The mark a command row is led with, which is the shell's own: a line that
-/// opens with it runs what is after it instead of asking an agent to.
+/// A task line starting with this runs the rest as a shell command.
 const BANG: char = '!';
 
-/// What a line's leading tokens turn, for the one spawn they lead. Empty is
-/// the ordinary line, which leaves every dial where the config put it.
+/// The dials a task line's leading tokens set. The default leaves every dial
+/// to the config.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Turned {
-    /// Whether the line runs a command rather than starting an agent, which is
-    /// what the bang it opens with says.
+    /// The line starts with `!` and runs a shell command.
     pub exec: bool,
     pub agent: Option<String>,
     pub model: Option<String>,
     pub permission: Option<String>,
     pub effort: Option<String>,
-    /// Whether this agent is given a tree of its own, when the line said.
+    /// Whether the agent gets its own worktree, where the line said.
     pub worktree: Option<bool>,
-    /// Where this one runs, as it was typed. Kept as the word on the line
-    /// rather than a path: what `~` and a relative name mean is the running
-    /// view's business, and this is only what somebody asked for.
+    /// The `d:` value as typed. `~` and relative paths are resolved later,
+    /// against the view's directory.
     pub dir: Option<String>,
-    /// What its tree is cut from, as it was typed. Whether git can resolve the
-    /// ref is the spawn's own answer, the same as at a shell prompt.
+    /// The `b:` ref as typed; the spawn resolves it.
     pub base: Option<String>,
-    /// The branch it carries on with, as it was typed. Whether git has one of
-    /// that name here or on the origin is the spawn's own answer.
+    /// The `on:` branch as typed; the spawn finds it locally or on the
+    /// origin.
     pub branch: Option<String>,
-    /// The request it is started on, which says both what the tree is cut from
-    /// and where the work goes.
+    /// The `pr:` number, which sets both the base and the branch.
     pub pr: Option<u64>,
-    /// Whether the work no commit holds here moves into that tree.
+    /// Move uncommitted work into the new worktree (`w:changes`).
     pub with_changes: bool,
 }
 
-/// What starting an agent came to.
+/// The outcome of starting an agent.
 pub enum Started {
-    /// It is running: which one, and the line the view says so on. Both,
-    /// because the id is what a key that goes to the new agent addresses and
-    /// the line is what a person reads.
+    /// Started: the new id, for keys that go to it, and the line to show.
     Yes { id: String, said: String },
-    /// Nothing was made, and this says why.
+    /// Nothing was started, and why.
     No(String),
 }
 
-/// Split a task line into the dial tokens at the front of it and the task
-/// itself.
+/// Splits a task line into its leading dial tokens and the task.
 ///
-/// Leading only: `port the m:opus importer` is a task with a colon in it,
-/// under the same law that keeps `s:waiting is what to check` one. A task that
-/// has to *begin* with one of these words is what `amx new` at a shell prompt
-/// is for.
+/// Only leading tokens count, so `port the m:opus importer` is all task. A
+/// task that must begin with a dial word needs `amx new` at a shell prompt.
 fn tokens(line: &str) -> (Vec<(&'static str, &str)>, &str) {
     let mut found = Vec::new();
     let mut rest = line;
@@ -857,21 +655,13 @@ fn tokens(line: &str) -> (Vec<(&'static str, &str)>, &str) {
     }
 }
 
-/// The dials a task line turns and the task that is left, or the word that is
-/// not a value for the dial it was typed at.
+/// Reads a task line's dials and returns them with the remaining task, or the
+/// refusal for a bad value.
 ///
-/// What a dial takes is the vendor's business, and the answer comes from the
-/// table `new` resolves against: a value amx passed on and the vendor refused
-/// would be an agent that died in its pane with the reason scrolled past.
-///
-/// `agent:` is the exception and takes any command, the way `--agent` does at
-/// a shell prompt. The registry is launch metadata rather than a list of who
-/// may be launched, and an agent it has never heard of has always been allowed
-/// to spawn; what it costs is its dials, which `m:` and `p:` beside it say by
-/// name.
-///
-/// A line led with the bang is not a task at all and is read by [`commanded`]:
-/// what is left of it is a command, and the dials it may lead are its own.
+/// Values are checked against the registry table `new` resolves against, so a
+/// value the vendor would reject is refused here instead of killing the pane.
+/// `agent:` takes any command, as `--agent` does; an unknown vendor just has
+/// no dials. A line starting with `!` is read by [`commanded`] instead.
 pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     if let Some(rest) = line.strip_prefix(BANG) {
         return commanded(rest);
@@ -879,8 +669,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     let (tokens, task) = tokens(line);
     let mut turned = Turned::default();
 
-    // Which vendor first: which dials exist at all is its answer, and a line
-    // may name one the config does not.
+    // The vendor first, since it decides which dials exist.
     for (dial, value) in &tokens {
         if *dial == AGENT {
             if value.is_empty() {
@@ -899,8 +688,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
                 turned.worktree = Some(match *value {
                     "on" => true,
                     "off" => false,
-                    // The work moves into a tree, so the word asks for one as
-                    // well as for the work.
+                    // Moving work implies a worktree.
                     "changes" => {
                         turned.with_changes = true;
                         true
@@ -949,9 +737,8 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
         }
     }
 
-    // The pairs clap holds the flags to, read after every word rather than as
-    // each one lands: which of the two was typed first says nothing about
-    // which of them somebody meant.
+    // The flag pairs clap refuses, checked after all tokens so order does not
+    // matter.
     if turned.pr.is_some() {
         if turned.base.is_some() {
             return Err("pr: and b: — a request says what it is cut from".to_string());
@@ -967,9 +754,7 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
         if turned.pr.is_some() {
             return Err("on: and pr: — a request is a branch of its own".to_string());
         }
-        // `w:changes` stands beside it, so only the word that asks for no tree
-        // at all: the work no commit holds belongs on that branch as much as
-        // anywhere.
+        // `w:changes` is allowed: the uncommitted work can go on that branch.
         if turned.worktree == Some(false) {
             return Err("on: and w:off — a branch is a tree of its own".to_string());
         }
@@ -977,16 +762,11 @@ pub fn turned(config: &Config, line: &str) -> Result<(Turned, String), String> {
     Ok((turned, task.to_string()))
 }
 
-/// The one dial a command row takes and the command that is left, or the word
-/// that is a dial it has nothing to turn.
+/// Reads a command row's dials and returns them with the command.
 ///
-/// `d:` alone, because it is the only one of the nine that is about the row
-/// rather than about an agent: where the command runs. A row that runs `sh -c`
-/// launches no vendor, so the vendor's own two and the word that names one have
-/// nothing here to be about — which is why `--exec` refuses those flags at a
-/// shell prompt too. `w:`, `b:`, `pr:` and `on:` go with them: a command is not
-/// a conversation to keep apart from the next one, so it runs in the checkout
-/// it was typed in whatever any line says.
+/// Only `d:` applies. A `sh -c` row launches no vendor, so the vendor dials
+/// and `agent:` mean nothing (as `--exec` refuses them), and it runs in the
+/// checkout it was typed in, so `w:`, `b:`, `pr:` and `on:` do not apply.
 fn commanded(rest: &str) -> Result<(Turned, String), String> {
     let (tokens, command) = tokens(rest);
     let mut turned = Turned {
@@ -1007,7 +787,7 @@ fn commanded(rest: &str) -> Result<(Turned, String), String> {
     Ok((turned, command.trim_start().to_string()))
 }
 
-/// A value for one of the vendor's own dials, or why it is not one.
+/// Checks a value for one of the vendor's own dials.
 fn pointed(
     agent: &str,
     dial: &str,
@@ -1033,32 +813,23 @@ fn pointed(
     Ok(value.to_string())
 }
 
-/// What the word under the cursor could be, where it could be something.
+/// Completions for the word under the cursor, if any.
 ///
-/// The three lines a vendor is ever given words on: the task, the line at the
-/// foot of the card, and the first turn of a copy. What a vendor loads by name
-/// is what those ask it for, and a rename and a find line ask it for nothing.
-/// A command row asks it for nothing either: it runs a shell, where `/etc` is a
-/// directory rather than the front of a skill's name.
+/// Only on lines whose text reaches a vendor (task, reply, fork), and never on
+/// a `!` command row, where `/etc` is a path. Runs per keystroke: a plain word
+/// costs nothing, a path reads a directory, `on:` runs git, and the vendor
+/// catalog is read once per line.
 ///
-/// Read on the keystroke, the way the find line narrows the wall on one: a
-/// suggestion arriving after the word it was about has been finished is no use
-/// to anybody. What it costs is a directory read for a path, and the vendor's
-/// catalog once for the line — and only for a word that opens with one of the
-/// marks that ask for one. An ordinary sentence asks nothing of the disk.
-///
-/// `wall` is the projects the view is showing agents in, which is what a `d:`
-/// is offered besides the directories under it.
+/// `wall` is the projects on the wall, offered to `d:` beside the
+/// directories under it.
 pub fn suggest(
     composer: &Composer,
     config: &Config,
     project: &Path,
     wall: &[PathBuf],
 ) -> Option<Suggest> {
-    // A task line, the line at the foot of the card, and a fork line: the
-    // vendor's words are the same words said to an agent already running, and
-    // `config` and `project` are that agent's own on those two rather than the
-    // header's dials. The dials are the task line's alone — see [`answering`].
+    // On a reply or fork, `config` and `project` are the agent's own. Only
+    // the task line takes dials; see [`answering`].
     if !matches!(
         composer.asking,
         Asking::Task | Asking::Reply | Asking::Fork { .. }
@@ -1082,13 +853,11 @@ pub fn suggest(
     })
 }
 
-/// The word the cursor is standing in, in characters, and nothing where it is
-/// standing on whitespace.
+/// The span of the word containing the cursor, in characters, or nothing on
+/// whitespace.
 ///
-/// The whole word rather than the part in front of the cursor: what a
-/// suggestion goes in the place of is the word somebody is mending, and a
-/// letter put back into the middle of `/reveiw` is one word being written and
-/// not two.
+/// The whole word, not just the part before the cursor, so a completion
+/// replaces a word being corrected in the middle.
 fn under_the_cursor(text: &str, at: usize) -> Option<Range<usize>> {
     let line: Vec<char> = text.chars().collect();
     let (mut from, mut to) = (at.min(line.len()), at.min(line.len()));
@@ -1101,12 +870,8 @@ fn under_the_cursor(text: &str, at: usize) -> Option<Range<usize>> {
     (from < to).then_some(from..to)
 }
 
-/// Which vendor's words these are: the `agent:` the line is led with, and the
-/// one the view is holding otherwise.
-///
-/// The line's own first, because it is what the agent this line starts will
-/// be: a word offered out of the dial's vendor would be a word the vendor
-/// named beside it has never heard of.
+/// The vendor the line's words are for: its `agent:` token, else the
+/// configured one.
 fn asked_of(config: &Config, line: &str) -> String {
     let (tokens, _) = tokens(line);
     tokens
@@ -1115,23 +880,16 @@ fn asked_of(config: &Config, line: &str) -> String {
         .map_or_else(|| config.agent.clone(), |(_, value)| (*value).to_string())
 }
 
-/// What answers to the word being typed, narrowed to what is typed of it.
+/// The entries that complete the word being typed.
 ///
-/// Three kinds of word, in the order a mark is read. The dials are amx's own
-/// and are answered out of the table and off the disk: `agent:` by the vendors
-/// there are entries for, `m:` and `p:` by the cycle the vendor declares, `w:`
-/// by amx's two words, `on:` by the branches the checkout has, and `d:` by the
-/// directories a path names. The marks past
-/// them are the vendor's own: its sigil — `/`, or codex's `$` — runs a skill,
-/// a command or something the vendor answers out of itself, and `@` names one
-/// of its agents. And a word
-/// naming none of those is the third kind — a path, which is the other thing
-/// the mark a vendor reads a file by is for.
+/// On a task line the dials come first: `agent:` from the registry, `m:`,
+/// `p:` and `e:` from the vendor's values, `w:` from [`TREE`], `on:` from the
+/// checkout's branches and `d:` from directories. Then the vendor's sigil
+/// (`/`, or `$` for codex) lists skills, commands and built-ins, and `@` lists
+/// its agents, falling back to file paths.
 ///
-/// A vendor amx has measured no places for names nothing of its own, and so
-/// does a machine with no home directory for its places to hang off; the files
-/// under the cursor are still there, since they are the project's rather than
-/// anybody's catalog.
+/// A vendor with no catalog places, or a machine with no home directory,
+/// still gets file paths.
 fn answering(
     composer: &Composer,
     typed: &str,
@@ -1140,11 +898,8 @@ fn answering(
     wall: &[PathBuf],
 ) -> Vec<Entry> {
     let line = composer.text.as_str();
-    // The dials are the task line's alone: they say what an agent is started
-    // with, and the line at the foot of the card goes to one already running
-    // under whatever it was started with. There every one of them is a word
-    // of the message, `agent:` included — and the vendor asked is the
-    // agent's own, which is what the line was handed.
+    // Dials only on the task line. On a reply they are words of the message,
+    // and the vendor is the running agent's own.
     let starting = matches!(composer.asking, Asking::Task);
     let agent = match starting {
         true => asked_of(config, line),
@@ -1157,13 +912,13 @@ fn answering(
         if let Some(values) = dialled(&agent, typed, config) {
             return values;
         }
-        // A branch is read where the agent will run, the same as a path is:
-        // the checkout the `d:` names is the one the spawn cuts its tree in.
+        // Branches are read where the agent will run, the checkout its `d:`
+        // names.
         if typed.starts_with(BRANCH) {
             return branches_here(&running(line, project), typed);
         }
-        // A `d:` being typed is the one path on the line that is not read
-        // against the `d:`: it is what the rest of them will be read against.
+        // A `d:` itself is read against the view's directory, not against a
+        // `d:`.
         if typed.starts_with(DIR) {
             let mut found = paths(DIR, typed, project, true);
             found.extend(on_the_wall(wall, typed));
@@ -1171,8 +926,7 @@ fn answering(
         }
     }
 
-    // The vendor's own sigil opens its skills, commands and built-ins: `/`
-    // for claude and pi, `$` for codex, where `/` asks the catalog nothing.
+    // `/` for claude and pi, `$` for codex; on codex `/` lists nothing.
     let sigil = registry::entry(&agent)
         .and_then(|vendor| vendor.catalog)
         .map(|catalog| catalog.sigil);
@@ -1187,8 +941,8 @@ fn answering(
     };
     let listed = composer.catalog(&agent, project, || catalogued(&agent, project));
     let named = named(&listed, typed, kinds);
-    // A path on a task line is read where its `d:` says the agent will run;
-    // on the card's line, where the agent already runs.
+    // Paths on a task line are read where its `d:` says; on a reply, where
+    // the agent runs.
     let here = match starting {
         true => running(line, project),
         false => project.to_path_buf(),
@@ -1199,7 +953,7 @@ fn answering(
     }
 }
 
-/// What the vendor loads by name, out of the places its entry declares.
+/// Everything the vendor loads by name, from the places its entry declares.
 fn catalogued(agent: &str, project: &Path) -> Vec<Entry> {
     let places = registry::entry(agent).and_then(|vendor| vendor.catalog);
     let (Some(places), Some(home)) = (places, std::env::home_dir()) else {
@@ -1208,7 +962,7 @@ fn catalogued(agent: &str, project: &Path) -> Vec<Entry> {
     catalog::listing(&places, &home, project)
 }
 
-/// The entries of these kinds that answer to what has been typed of the word.
+/// The entries of these kinds whose spelling starts with `typed`.
 fn named(entries: &[Entry], typed: &str, kinds: &[catalog::Kind]) -> Vec<Entry> {
     entries
         .iter()
@@ -1217,10 +971,7 @@ fn named(entries: &[Entry], typed: &str, kinds: &[catalog::Kind]) -> Vec<Entry> 
         .collect()
 }
 
-/// The vendors amx has an entry for, as the words that aim a line at one.
-///
-/// Out of the table: a vendor is in no file of anybody's for a sentence about
-/// it to be read from.
+/// `agent:` completions for every vendor in the registry.
 fn vendors(typed: &str) -> Vec<Entry> {
     registry::entries()
         .iter()
@@ -1229,25 +980,16 @@ fn vendors(typed: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// What the dial a word is typed at takes, and nothing where the word is typed
-/// at no dial.
+/// Completions for a dial value, or `None` when the word is not a dial.
 ///
-/// The vendor's own cycle for the vendor's own two, which is the list the key
-/// under the header offers and the list `turned` reads a value against: a line
-/// that suggested a word the spawn would refuse would be offering somebody a
-/// refusal. A dial this vendor does not declare has no values to offer, which
-/// is the same silence `turned` refuses the token in.
-///
-/// The model is the one dial answered from somewhere other than its cycle: a
-/// vendor that prints its models holds more than a cycle could name, and the
-/// file may say which of them this harness runs. It is read out of the same
-/// [`models::models_of`] the model key walks, sentinel and all, so no line can
-/// offer a model the key cannot reach or miss one it can.
+/// `p:` and `e:` offer the vendor's cycle, the same list `turned` checks
+/// against, so nothing is offered that the spawn would refuse. `m:` offers
+/// [`models::models_of`], the list the model key walks, plus the default
+/// sentinel. A dial the vendor does not declare offers nothing.
 fn dialled(agent: &str, typed: &str, config: &Config) -> Option<Vec<Entry>> {
     let vendor = registry::entry(agent);
     if typed.starts_with(MODEL) {
-        // No model dial, no values, the same silence `turned` refuses the
-        // token with.
+        // No model dial, no values.
         let _model = vendor?.model?;
         return Some(
             std::iter::once(registry::DEFAULT.to_string())
@@ -1272,17 +1014,10 @@ fn dialled(agent: &str, typed: &str, config: &Config) -> Option<Vec<Entry>> {
     )
 }
 
-/// The branches the checkout at `here` already has, as the words that would
-/// finish the one being typed.
+/// `on:` completions from the local branches of the checkout at `here`.
 ///
-/// git's own answer rather than the record's: what `on:` takes is a branch
-/// somebody left work on, and plenty of those were never an agent's. The local
-/// refs and not the origin's, because a name only the origin has is fetched by
-/// the spawn and is nothing this checkout can offer a list of without going to
-/// the network, which a view drawing a frame does not do.
-///
-/// A directory that is no repository, and a git that will not answer, offer
-/// nothing and say nothing: somebody typing a task is owed suggestions or none.
+/// Local refs only: listing the origin's would mean a network call. A
+/// directory outside a repository, or a failing git, offers nothing.
 pub fn branches_here(here: &Path, typed: &str) -> Vec<Entry> {
     let read = std::process::Command::new("git")
         .current_dir(here)
@@ -1302,31 +1037,19 @@ pub fn branches_here(here: &Path, typed: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// What is in the directory a path names, as the words that would finish the
-/// one being typed.
+/// Completions for a path word, from the directory it names.
 ///
-/// The path is read the way a shell prompt standing in `here` would read it: a
-/// leading `~` is the home directory, and a name that is not absolute is under
-/// `here`. What comes back is spelled as it was typed, mark and all, because a
-/// suggestion goes in the place of the whole word.
-///
-/// A directory carries the separator that says the path may go on, which is
-/// also what keeps a space off the end of it when the word is taken. `.git` and
-/// `.amx` are left out: they are in every project a line is typed in and
-/// neither is anybody's next word.
-///
-/// `folders` is whether only directories answer, which is what a `d:` takes.
+/// Read the way a shell in `here` would: `~` is home and a relative name is
+/// under `here`. Results keep the word's mark and prefix, and directories end
+/// in `/` so completing one adds no space. `.git` and `.amx` are left out.
+/// `folders` limits the results to directories, for `d:`.
 fn paths(mark: &str, typed: &str, here: &Path, folders: bool) -> Vec<Entry> {
     let said = typed.strip_prefix(mark).unwrap_or(typed);
-    // The directory it names and the part of a name that has been typed: what
-    // is being narrowed is the last segment, and everything in front of it is
-    // where to look.
     let (dir, leaf) = match said.rfind('/') {
         Some(at) => said.split_at(at + 1),
         None => ("", said),
     };
-    // A directory nothing is at, or one nobody may read, offers nothing and
-    // says nothing: somebody typing a task is owed suggestions or none.
+    // A directory that is missing or unreadable offers nothing.
     let Ok(at) = aimed(dir, here) else {
         return Vec::new();
     };
@@ -1346,22 +1069,18 @@ fn paths(mark: &str, typed: &str, here: &Path, folders: bool) -> Vec<Entry> {
             offered.then(|| worded(format!("{mark}{dir}{name}{slash}")))
         })
         .collect();
-    // By name, so what a machine offers does not depend on the order a
-    // filesystem happens to hand its entries back.
+    // Sorted so the result does not depend on the filesystem's order.
     found.sort_by(|one, two| one.spelled.cmp(&two.spelled));
     found
 }
 
-/// The directories in every project that no line names: git's own, and amx's.
+/// Directories never offered as a path.
 const KEPT_BACK: [&str; 2] = [".git", ".amx"];
 
-/// Every project an agent on the wall runs in, as the words that aim a line at
-/// one.
+/// `d:` completions for every project an agent on the wall runs in.
 ///
-/// The wall's own answer rather than a walk of anybody's disk: where somebody
-/// starts an agent is nearly always where they already have one, and those
-/// directories are rarely under the one the view was opened in for a path to
-/// reach in a word.
+/// People usually start an agent where they already have one, and those
+/// directories are rarely under the view's own.
 fn on_the_wall(wall: &[PathBuf], typed: &str) -> Vec<Entry> {
     wall.iter()
         .map(|project| worded(format!("{DIR}{}", project.display())))
@@ -1369,13 +1088,10 @@ fn on_the_wall(wall: &[PathBuf], typed: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// Where a path typed on this line is read from: the directory the line's own
-/// `d:` names, and the one the view is running in otherwise.
+/// The directory paths on this line are read against: the line's `d:` where
+/// it names a directory, else `project`.
 ///
-/// The `d:` because that is where the agent this line starts will run, and a
-/// file offered out of anywhere else is a file it would not find. A `d:`
-/// nothing is at yet is a word somebody is still typing, and the view's own
-/// directory is what a path is read against until it is a directory.
+/// A `d:` naming nothing yet is still being typed.
 fn running(line: &str, project: &Path) -> PathBuf {
     let (tokens, _) = tokens(line);
     tokens
@@ -1385,10 +1101,8 @@ fn running(line: &str, project: &Path) -> PathBuf {
         .unwrap_or_else(|| project.to_path_buf())
 }
 
-/// One word amx offers out of itself: a vendor, a dial's value, a file.
-///
-/// Nothing to say about any of them, because there is no file to read a
-/// sentence from — the word is the whole of what it says.
+/// A completion amx supplies itself (vendor, dial value, path), with no
+/// description.
 fn worded(spelled: String) -> Entry {
     Entry {
         spelled,
@@ -1397,21 +1111,18 @@ fn worded(spelled: String) -> Entry {
     }
 }
 
-/// What editing a line in an editor came to.
+/// The outcome of editing a line in `$EDITOR`.
 pub enum Edited {
-    /// The editor was closed on this, and it is the line now.
+    /// The editor saved this, and it replaces the line.
     Line(String),
-    /// It said it wanted none of it, and this says how: the line stays where
-    /// it was, with what was typed on it.
+    /// The editor exited with an error, so the line stays. Holds the message.
     No(String),
 }
 
-/// What a line is edited in: what somebody configured, and `vi` where they
-/// configured nothing, which is the editor a unix box is obliged to have.
+/// The editor to run: `$VISUAL`, then `$EDITOR`, then `vi`.
 ///
-/// `$VISUAL` first, because that is the one that names a program for a terminal
-/// somebody is sitting at, and this line is being edited on the terminal they
-/// are sitting at.
+/// `$VISUAL` first because it names the editor for an interactive terminal,
+/// which is where this line is being edited.
 fn editor() -> String {
     ["VISUAL", "EDITOR"]
         .iter()
@@ -1420,23 +1131,20 @@ fn editor() -> String {
         .unwrap_or_else(|| "vi".to_string())
 }
 
-/// Give the line to an editor and take back whatever it was left holding.
+/// Opens the line in an editor and returns what it saved.
 ///
-/// A file rather than a pipe, because an editor is a program that opens a file:
-/// `$EDITOR` is routinely a command line of its own, so the whole of it is
-/// handed to a shell with the file behind it, exactly as `git commit` does it.
+/// Through a file and `sh -c`, as `git commit` does, because `$EDITOR` is
+/// often a command line of its own.
 pub fn edited(text: &str) -> Result<Edited> {
     let path = std::env::temp_dir().join(format!("amx-task-{}.md", std::process::id()));
     edited_in(&editor(), &path, text)
 }
 
-/// The same, with the editor and the file it opens both named, because a test
-/// has to be able to say what the person at the terminal would have done.
+/// [`edited`] with the editor and file named, for tests.
 fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
-    // Unlinked and then made new rather than truncated: the directory this
-    // sits in is everybody's, and a name amx can work out is a name somebody
-    // else can work out too. Making it new refuses a file already standing
-    // there instead of writing through whatever it points at.
+    // The temp directory is shared and the name is predictable, so remove any
+    // file there and create it with create_new instead of truncating, which
+    // would write through a planted symlink.
     let _ = std::fs::remove_file(path);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -1454,63 +1162,51 @@ fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
         .status()
         .with_context(|| format!("running {editor}"))?;
     let written = std::fs::read_to_string(path);
-    // Whatever came of it, the task is not left lying in a directory everybody
-    // can read.
+    // Never leave the task in a world-readable directory.
     let _ = std::fs::remove_file(path);
 
     if !status.success() {
         return Ok(Edited::No(format!("{editor} left the line as it was")));
     }
     let written = written.with_context(|| format!("reading {} back", path.display()))?;
-    // The newline a file ends with is the file's own. Everything above it is
-    // the task, newlines and all.
+    // Drop the file's trailing newline; newlines inside are the task's own.
     Ok(Edited::Line(
         written.trim_end_matches('\n').replace("\r\n", "\n"),
     ))
 }
 
-/// A path as one word to a shell, whatever is in it.
+/// A path quoted as one `sh` word.
 fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
-/// How many characters a task is before the view takes it for one.
+/// Tasks shorter than this many characters are confirmed before starting.
 ///
-/// Four, measured against what a stray keystroke leaves behind: `n` opens the
-/// line and the letter after it is a task nobody typed, and an agent started on
-/// `w` is a minute of somebody's afternoon and a record to clear away. Nothing
-/// this short is refused — it is asked about, once, because "wip" is a task
-/// somebody means.
+/// A stray keystroke after `n` opens the line leaves a one-letter task, and
+/// starting an agent on it costs a pane and a record. Short tasks are asked
+/// about, not refused, since "wip" can be meant.
 const ENOUGH: usize = 4;
 
-/// The task on this line where it is too slight to start an agent on without
-/// asking, and nothing where the line stands on its own.
+/// The task on this line if it is too short to start without asking.
 ///
-/// The task rather than the whole line: `m:opus fix` is three characters of
-/// instruction behind seven of dials, and the instruction is what the agent is
-/// given.
-///
-/// A command row is never asked about. The bang is not a keystroke anybody
-/// leans on by accident, and `ls` is a command somebody means every bit as
-/// much as a longer one.
+/// Measured on the task without its dials: `m:opus fix` is a three-character
+/// task. A `!` command row is never asked about, since `ls` is a real
+/// command.
 pub fn slight(config: &Config, line: &str) -> Option<String> {
     let (turned, task) = turned(config, line).ok()?;
     if turned.exec {
         return None;
     }
-    // Said back on one row, whatever it was typed on: the question quotes it,
-    // and a newline in a line of prose is a row the footer does not have.
+    // Quoted back on the footer's one row, so collapse newlines.
     let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
     (!task.is_empty() && task.chars().count() < ENOUGH).then_some(task)
 }
 
-/// Start an agent on what was typed, where the view is — or run it, where the
-/// line is a command row.
+/// Starts an agent on the typed line, or runs it where it is a `!` command
+/// row.
 ///
-/// `here` is where the view stands. `under` is the project the line was
-/// opened in, where the wall was showing one. It stands in for `here` and
-/// gives way to a `d:`: the cursor says where somebody was looking and the
-/// line says where they mean.
+/// The agent runs in the line's `d:` if it has one, else `under` (the project
+/// the line was opened under), else `here` (the view's directory).
 pub fn start(
     root: &Path,
     config: &Config,
@@ -1530,13 +1226,9 @@ pub fn start(
     }
 
     let here = here.to_path_buf();
-    // Where this one runs: what the line named, then the project it was opened
-    // in, then where the view is. A relative path is still read against the
-    // view's own directory whichever of them it lands in — what a name means at
-    // a prompt is where the prompt is standing, and this line was typed at one.
-    //
-    // Answered before anything is made: a directory nothing is at is a line
-    // somebody is still writing, not a spawn to clean up after.
+    // Resolved before anything is made, so a `d:` naming nothing is refused
+    // instead of leaving a half-made spawn. A relative `d:` is read against the
+    // view's directory, as a shell prompt there would.
     let dir = match &turned.dir {
         Some(said) => match aimed(said, &here) {
             Ok(dir) => dir,
@@ -1544,19 +1236,16 @@ pub fn start(
         },
         None => under.map_or(here, Path::to_path_buf),
     };
-    // Asked here, before anything is made, and said in the word that was
-    // typed: `new` refuses the same thing under the name of its flag, which is
-    // a name nobody typed on this line.
+    // Checked here so the refusal names `w:changes`, not the `new` flag
+    // nobody typed.
     if turned.with_changes && !worktree::has_changes_to_carry(&dir)? {
         return Ok(Started::No(format!(
             "w:changes: nothing in {} to move",
             dir.display()
         )));
     }
-    // Who the vendor is asked to be, read against the directory this one runs
-    // in: an agent it loads out of the project is an agent of the project the
-    // line names, not of the one the view was opened in. A command row asks for
-    // nobody — it runs a shell, and the mark is the shell's own to read.
+    // An `@agent` is looked up in the project the agent runs in. A command row
+    // passes its text to the shell unchanged.
     let (vendor_args, task) = match turned.exec {
         true => (Vec::new(), task),
         false => {
@@ -1565,9 +1254,8 @@ pub fn start(
         }
     };
 
-    // A `w:` is a decision about this agent, so it is made where the config's
-    // own answer is made rather than argued with downstream: `new` has a flag
-    // for going without a tree and none for insisting on one.
+    // `new` has a flag for going without a worktree and none for forcing one,
+    // so a `w:` is applied to the config instead.
     let mut config = config.clone();
     if let Some(worktree) = turned.worktree {
         config.worktrees = worktree;
@@ -1585,9 +1273,7 @@ pub fn start(
         || dials.effort.is_some();
     let args = NewArgs {
         task: Some(task),
-        // The line the view types is the task itself; a file and an editor are
-        // the command line's own ways of handing over one too long to type,
-        // and `ctrl+g` is where the view opens the editor.
+        // The view passes the task inline; `ctrl+g` is its editor.
         file: None,
         edit: false,
         name: None,
@@ -1601,8 +1287,8 @@ pub fn start(
         exec: turned.exec,
         agent: named.then_some(dials),
         vendor_args,
-        // The view types a task, and a digest is a subagent's preamble: there
-        // is nobody above it to read one from.
+        // A context brief is a subagent's preamble, and a view spawn has no
+        // parent.
         context_brief: None,
         parent: None,
     };
@@ -1610,18 +1296,13 @@ pub fn start(
     spawned(root, &dir, &config, &args, "started")
 }
 
-/// The vendor's own agent a task line is led with, as the argv that asks for
-/// it, and the task with the word taken off.
+/// Turns a leading `@name` into the vendor's agent flag, returning the argv
+/// and the task without the word.
 ///
-/// The front of the line and nowhere else, the way the dials are read: a task
-/// is aimed at one agent, and `@scout` in the middle of a sentence is the file
-/// or the word it was typed as. One of the agents in the vendor's own places
-/// and no other name, because the flag is handed to the vendor: a name it has
-/// never heard of is a spawn that dies in its pane.
-///
-/// Nothing from a vendor that cannot be told to be one of its agents, which is
-/// the same silence a word naming none of them gets. Both leave the line
-/// whole, and the mark keeps whatever the vendor reads it as.
+/// Only at the front of the task, and only for an agent in the vendor's own
+/// catalog: the flag goes to the vendor, which fails the pane on a name it does
+/// not know. Otherwise, or for a vendor with no agent flag, the task is left
+/// whole.
 fn as_agent(agent: &str, task: &str, project: &Path) -> (Vec<String>, String) {
     let whole = || (Vec::new(), task.to_string());
     let Some(flag) = registry::entry(agent)
@@ -1649,12 +1330,8 @@ fn as_agent(agent: &str, task: &str, project: &Path) -> (Vec<String>, String) {
     )
 }
 
-/// Where a `d:` points, read the way a shell prompt in `here` would read it,
-/// or why it points nowhere.
-///
-/// Both halves of that reading are amx's here, because there is no shell on
-/// this line to do either: a leading `~` is the home directory, and a name that
-/// is not absolute is under the directory the view is running in.
+/// Resolves a `d:` value as a shell in `here` would (`~` is home, relative is
+/// under `here`), or says why it names no directory.
 fn aimed(said: &str, here: &Path) -> Result<PathBuf, String> {
     let path = match said.strip_prefix('~') {
         Some(under) => match std::env::home_dir() {
@@ -1669,8 +1346,7 @@ fn aimed(said: &str, here: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Hand the spawn to the verb, and say what came of it in the one line the
-/// view has room for.
+/// Runs `new` and reduces its output to the view's one line.
 fn spawned(
     root: &Path,
     dir: &Path,
@@ -1691,8 +1367,7 @@ fn spawned(
     if code != exit::OK {
         return Ok(Started::No(one_line(&refused)));
     }
-    // What the verb wrote is the id and nothing else, which is what a shell
-    // prompt gets from it too.
+    // On success `new` prints only the id.
     let id = one_line(&started);
     Ok(Started::Yes {
         said: format!("{said} {id}"),
@@ -1700,18 +1375,11 @@ fn spawned(
     })
 }
 
-/// Start a copy of an agent, on a task of its own or on nothing.
+/// Starts a copy of an agent via `amx fork`, with `task` as its first turn or
+/// none.
 ///
-/// `amx fork` said from the view: a second agent on the conversation the first
-/// one has had, running where it ran. What the copy is given is what was typed
-/// at the line, and a line with nothing on it is a copy sitting at its prompt
-/// with the whole conversation behind it, which is what the verb does with no
-/// task either.
-///
-/// The verb decides the whole of it — which session there is to copy, whether
-/// the vendor can be asked for a copy at all, the cap the project sets — and
-/// says so on the stderr it is handed, which is a buffer here: a view in raw
-/// mode is in no position to receive what a verb writes to a terminal.
+/// The verb decides everything (which session to copy, whether the vendor can
+/// fork, the project cap) and its stderr is captured for the view's line.
 pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> {
     let (mut out, mut problems) = (Vec::new(), Vec::new());
     let code = verbs::fork::run(
@@ -1726,8 +1394,8 @@ pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> 
     if code != exit::OK {
         return Ok(Started::No(one_line(&problems)));
     }
-    // What the verb wrote is the copy's id and nothing else, and the line says
-    // both agents: a copy is only ever read against the one it came from.
+    // On success `fork` prints only the copy's id. The line names both
+    // agents.
     let copy = one_line(&out);
     Ok(Started::Yes {
         said: format!("forked {id} as {copy}"),
@@ -1735,30 +1403,23 @@ pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> 
     })
 }
 
-/// What a reply came to.
+/// The outcome of a reply.
 pub enum Replied {
-    /// It reached the agent, and this says what was done with it.
+    /// Delivered, with what was done.
     Yes(String),
-    /// Nothing was sent, and this says why.
+    /// Nothing was sent, and why.
     No(String),
 }
 
-/// Say something to the agent under the cursor.
+/// Sends a line to an agent, routed by its phase at this moment.
 ///
-/// The grammar is `amx answer`'s, because it is the question's rather than
-/// amx's: the choices are read as choices wherever they are typed, the boxes
-/// of a question that takes several are checked by naming them, and words are
-/// an answer only at the prompts that offer a row to put them in. Words typed
-/// at a permission box would land on whatever is highlighted, which is an
-/// answer nobody chose, so the verb refuses them before a byte of them reaches
-/// the pane — and refuses them here in the same words, because it is the same
-/// reading of the same record.
+/// A waiting agent is answered with `amx answer`'s grammar: choices, boxes
+/// checked by name, and words only where the prompt has a row for them. Words
+/// at a permission box would select whatever is highlighted, so the verb
+/// refuses them before anything reaches the pane.
 ///
-/// An agent nothing is running is answered by starting it again on the line:
-/// what somebody typed at an agent that has ended is the next thing they want
-/// of it, and `amx resume <id> "message"` is the command that would carry it.
-/// The one row there is nothing to do that to is a command amx ran, which has
-/// no vendor to take a first turn.
+/// An ended or parked agent is resumed with the line, as `amx resume <id>
+/// "message"` does. A command row has no vendor to resume and is refused.
 pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     let view = derive::view(root, id, store::now())?;
     let agent = Agent::open(root, id)?;
@@ -1792,18 +1453,11 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     }
 }
 
-/// The words somebody typed on the card's line, with the hunk they are about
-/// in front of them.
+/// A card-line comment on a hunk: `path:line`, the hunk in a `diff` fence, then
+/// the words.
 ///
-/// What a review comment has to carry is where it is pointed, and on a patch
-/// that is the file and the line — said first, because it is the one thing the
-/// agent cannot work out from the words. Under it the hunk as git wrote it, in
-/// a fence marked `diff` so a vendor that renders markdown draws it as the
-/// patch it is rather than as a paragraph of plusses.
-///
-/// The fence grows a backtick for as long as the hunk holds one that long: a
-/// patch to a markdown file is routinely three backticks in column two, and a
-/// fence the text can close is a comment that ends in the middle of itself.
+/// The fence grows a backtick while the hunk contains one that long, since a
+/// patch to a markdown file often holds a triple backtick that would close it.
 pub fn on_hunk(hunk: &Hunk, words: &str) -> String {
     let mut fence = String::from("```");
     while hunk.text.contains(&fence) {
@@ -1815,17 +1469,12 @@ pub fn on_hunk(hunk: &Hunk, words: &str) -> String {
     )
 }
 
-/// A whole review as one message: what was said at the top of the patch, then
-/// every hunk somebody left words on, in patch order.
+/// A whole review as one message: the opening, then each commented hunk in
+/// patch order.
 ///
-/// A review is one turn because that is how it is read. Sent a hunk at a time
-/// the agent starts on the first before the second has arrived, and answers
-/// half a review; sent together the parts are one thing to weigh. Each part is
-/// what [`on_hunk`] already writes, so a review of one hunk and nothing said at
-/// the top is byte for byte the message the card has always sent.
-///
-/// A blank opening is no opening rather than an empty part, so nobody's message
-/// begins with a blank row they did not type.
+/// Sent as one turn so the agent does not start on the first hunk before the
+/// rest arrive. A single hunk with no opening is byte-for-byte what
+/// [`on_hunk`] writes. A blank opening is omitted.
 pub fn on_hunks(opening: &str, notes: &[(&Hunk, &str)]) -> String {
     let opening = (!opening.trim().is_empty()).then(|| opening.to_string());
     opening
@@ -1835,17 +1484,13 @@ pub fn on_hunks(opening: &str, notes: &[(&Hunk, &str)]) -> String {
         .join("\n\n")
 }
 
-/// Whether a line typed at this agent would reach it, for the card that has to
-/// say so before anybody types.
+/// Whether a line typed at this agent would reach it, for the card to say so
+/// before anybody types.
 ///
-/// An agent in a pane takes what is typed as it stands. One whose pane has
-/// gone takes it by being brought back on it, where there is a session to pick
-/// up and a command to pick it up with. A command amx ran has neither: no
-/// vendor was started for it, so there is nothing to put a first turn to.
-///
-/// Read from the same record [`reply`] reads, because the card saying nothing
-/// will come of a line and the keystroke refusing it are the same fact said
-/// before and after.
+/// A live agent takes it; an ended or parked one takes it by being resumed,
+/// if there is a session to resume. An ended command row has no vendor to
+/// resume. Reads the same record as [`reply`], so the card and the keystroke
+/// agree.
 pub fn listening(root: &Path, view: &View) -> bool {
     if !(view.phase().is_terminal() || parked(view)) {
         return true;
@@ -1855,30 +1500,20 @@ pub fn listening(root: &Path, view: &View) -> bool {
             .is_ok_and(|agent| verbs::resume::can_come_back(&view.meta, agent.dir()))
 }
 
-/// Whether amx took this agent's pane away while it sat at its prompt.
+/// Whether amx took this agent's pane while it sat idle.
 ///
-/// A parked agent reads idle, because idle is where it was when the pane went,
-/// and nothing is running it: the vendor is gone and the session is waiting to
-/// be picked up. So a line typed at one is a resume rather than a send, which
-/// is what `send` itself says when it turns one away.
+/// A parked agent still reads idle but nothing is running, so a line to it is
+/// a resume, not a send.
 fn parked(view: &View) -> bool {
     view.verdict.evidence == derive::Evidence::LetGo
 }
 
-/// The card's one line, as the command line the verb reads.
+/// The card line as `amx answer` arguments.
 ///
-/// The card holds a line and not a command line, so everything typed on it is
-/// the answer — a key, the choices to check, or words of your own — and the
-/// verb tells the three apart exactly as it does at a shell prompt.
-///
-/// The note is the exception, and the shape it belongs to is what makes room
-/// for it. Measured against claude 2.1.240, a question whose choices carry a
-/// preview draws a notes field and no free-text row at all, so on that one
-/// question words are not an answer and there is nothing else for them to be:
-/// the key in front of them is the choice, and what follows it is the note it
-/// rides beside. Everywhere else the whole line goes to the verb, whatever is
-/// in it, so a line the question would refuse is quoted back whole rather than
-/// by its first word.
+/// The whole line goes as the key, and the verb tells a key, choices and
+/// words apart as it does at a shell prompt. The exception is a question whose
+/// choices carry a preview: claude 2.1.240 draws a notes field there and no
+/// free-text row, so a key followed by words is the key plus a note.
 fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
     let text = text.trim();
     let whole = |key: &str| AnswerArgs {
@@ -1902,31 +1537,17 @@ fn card_line(text: &str, asked: Option<&Ask>) -> AnswerArgs {
     }
 }
 
-/// Whether a digit on this card is the answer itself rather than a character
-/// on the line.
+/// Whether a digit on this card is the answer itself, sent on the press.
 ///
-/// The vendor's own question, with its choices read and one of them all it
-/// takes. There the number pressed is the whole answer — it is what the
-/// vendor's own screen submits the moment it is typed — and an enter after it
-/// would be a card asking somebody to confirm a choice they had already made.
-/// What it costs is the answer that opens with a digit, which is typed after
-/// any other character of it.
+/// Only for the vendor's own question with read choices that takes one
+/// choice, where the vendor's screen also submits on the digit. Not for:
 ///
-/// The three prompts it is not true of keep the line. A question that takes
-/// more than one choice is answered by checking boxes, so a digit there is one
-/// box named and the rest of the line still to come. A question whose choices
-/// carry a preview takes a note after the key, and every note there begins
-/// with the key it rides beside, so a digit sent on the press would put the
-/// note out of reach altogether. And a permission box carries no payload:
-/// what its numbers stand for is amx's reading of a picture of a pane, an
-/// allowed tool call cannot be taken back, and a card that sent one on a
-/// keystroke would be answering a screen it guessed the shape of.
-///
-/// A walked list is the fourth. Its numbers are amx's own — the vendor draws
-/// none, and the verb walks its cursor to the row a number names — so the
-/// press is a reading of a picture of a pane in exactly the way a permission
-/// box is, and what it would send is an enter on a row. A pi dialog is a tool
-/// gate too, and an allow cannot be taken back.
+/// - a multi-choice question, where a digit checks one box;
+/// - a question with previews, where a note follows the key;
+/// - a permission box, whose numbers are amx's reading of the pane and whose
+///   allow cannot be undone;
+/// - a walked list (pi dialogs included), whose numbers are amx's own and
+///   whose press would be an enter on a row, also an irreversible allow.
 pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>, walked: bool) -> bool {
     kind == Some(Kind::Question)
         && !walked
@@ -1934,27 +1555,13 @@ pub fn picks(kind: Option<Kind>, options: &[String], asked: Option<&Ask>, walked
         && !asked.is_some_and(|ask| ask.multi || ask.takes_notes())
 }
 
-/// What this question will take, in the words the card invites it with — and
-/// the words it is refused in, which are the same words for the same reason.
+/// The card's hint for what this prompt takes. The verb refuses input in the
+/// same terms.
 ///
-/// Only what is true of the prompt in front of somebody, which is why the
-/// question the call is showing comes into it: a question that takes more than
-/// one choice is answered by checking boxes, and a question whose choices
-/// carry a preview has a field for a note and no row for words of your own at
-/// all. A permission box has neither, so neither is ever written there; a
-/// question whose choices amx has not read yet does not name numbers it cannot
-/// stand behind, and with no numbers there is nothing to check or to hang a
-/// note on.
-///
-/// Where the numbers answer on the press they are named as doing it, out of
-/// the same [`picks`] the keystroke is read by: a row that said `press 1-2`
-/// wherever the digits went straight to the pane would be inviting an enter
-/// that is never wanted.
-///
-/// On a walked list the numbers are the whole line. They are amx's own, put on
-/// a list the vendor numbered none of, and a walk is all the verb will send
-/// there: no `y`, no `n`, and no words, because the screen underneath has no
-/// field to take them.
+/// Mentions checking several boxes only for a multi-choice question and notes
+/// only for one with previews. Numbers appear only when amx has read the
+/// choices, and are described as picking on the press where [`picks`] says
+/// so. On a walked list the numbers are the only input.
 pub fn invitation(
     kind: Option<Kind>,
     options: &[String],
@@ -1976,9 +1583,8 @@ pub fn invitation(
     let Some(choices) = choices else {
         return match kind {
             Some(Kind::Question) => "type an answer".to_string(),
-            // A trust screen amx read no numbers off is a list the vendor
-            // puts none on, and the verb refuses every key but a walk and
-            // `esc` there: the card invites what the verb will take.
+            // The vendor numbers nothing on a trust screen, and the verb
+            // takes only a walk or `esc` there.
             Some(Kind::Trust) => "type down enter, up enter or esc".to_string(),
             _ => "press y, n or 1-9".to_string(),
         };
@@ -1993,45 +1599,33 @@ pub fn invitation(
             format!("{several}, and words after it are a note")
         }
         (Some(Kind::Question), _) => format!("{several}, or type an answer"),
-        // A question of a call, under a record that calls the screen something
-        // else. `AskUserQuestion` is the only thing that writes a question
-        // down, so a pending one is the vendor's own menu whatever an older amx
-        // wrote over it — and a menu has no y and no n to offer. The choices
-        // are all that is offered, because they are all this amx will send: the
-        // verb reads words against the same word for the kind, and a line that
-        // invited them here would be inviting what it is about to refuse.
+        // A pending `AskUserQuestion` is the vendor's menu whatever kind an
+        // older amx recorded, and a menu has no y or n. The verb refuses words
+        // here too.
         (_, Some(_)) => several,
         _ => format!("{several}, y or n"),
     }
 }
 
-/// Calling the agent under the cursor something else, which is the verb's.
-///
-/// `ctrl+r` and `amx rename` are one reading of one line: the same limit, the
-/// same refusals in the same words, and the same record written the same way.
-/// What differs is where the sentence lands, which is this file's whole errand.
+/// `ctrl+r` renames through the verb, so limits, refusals and the record
+/// write match `amx rename`.
 pub use crate::verbs::rename::{Renamed, rename};
 
-/// Write down that somebody has looked at this agent.
+/// Records that the agent has been looked at.
 ///
-/// A look, like a name, is a fact about the wall rather than something the
-/// agent said, so it goes in through the same door: the record's own clock
-/// stays where it was, and a look that changes nothing writes nothing.
+/// Like a rename, this does not move the record's own clock, and a look that
+/// changes nothing writes nothing.
 pub fn looked(root: &Path, id: &str) -> Result<()> {
     let agent = Agent::open(root, id)?;
     agent.writer()?.observe(|state| state.seen = store::now())?;
     Ok(())
 }
 
-/// Stop the agent under the cursor: the pane goes and the record stays.
+/// Stops an agent: the pane goes, the record stays.
 ///
-/// The dispositions a person gets asked about at a shell prompt are taken
-/// here as the defaults they already are: the worktree goes, the branch
-/// stays, the record stays. Nothing that could lose work is decided by a
-/// keystroke.
-/// `forget` below is this file's own `--delete`, and it is a second
-/// keystroke rather than part of this one: ending an agent and clearing its
-/// row away are two decisions on the wall as well as at a prompt.
+/// Uses the verb's defaults for what a prompt would ask: the worktree goes
+/// (unless it holds uncommitted work), the branch and record stay. Deleting
+/// the record is [`forget`], a separate keystroke.
 pub fn stop(root: &Path, view: &View) -> Result<String> {
     let args = StopArgs {
         id: view.id().to_string(),
@@ -2046,28 +1640,17 @@ pub fn stop(root: &Path, view: &View) -> Result<String> {
     Ok(one_line(&said))
 }
 
-/// Forget an agent whose command has ended: its record, and the tree it was
-/// given with it.
-///
-/// The verb's door and this one are the same door. `amx clear` is ctrl+x said
-/// once for a whole wall, so the law that keeps a tree holding work no commit
-/// has — and the record naming it — is written down once, where the verb is.
+/// Forgets an ended agent through `amx clear`'s code, which keeps a worktree
+/// holding uncommitted work and the record naming it.
 fn forgetting(root: &Path, view: &View) -> Result<Taken> {
     verbs::clear::forget_row(root, view)
 }
 
-/// The same, as the line the view puts where its keys are, and whether a tree
-/// was kept back.
+/// Forgets an agent, returning the view's line and whether a worktree was
+/// kept.
 ///
-/// How many presses it took to get here is the view's own business, and the
-/// answer there is two whatever the row was doing: this door opens on the
-/// second press of a row the first one armed — stopping it if it was live —
-/// because nothing brings a record and the tree under it back.
-///
-/// The second half of the answer is the caller's to paint with: a press that
-/// kept a tree is a press that did not do what it was pressed for, and a
-/// sentence saying so in the colour of one that went through is a sentence
-/// nobody reads twice.
+/// The view calls this on the second press of an armed row. The flag lets the
+/// caller show a kept worktree as a refusal.
 pub fn forget(root: &Path, view: &View) -> Result<(String, bool)> {
     Ok(match forgetting(root, view)? {
         Taken::Gone => (format!("{} forgotten", view.id()), false),
@@ -2082,17 +1665,11 @@ pub fn forget(root: &Path, view: &View) -> Result<(String, bool)> {
     })
 }
 
-/// Forget all of these, and say what became of them — and, as [`forget`]
-/// does, whether any of their trees was kept back.
+/// Forgets each of these, returning a summary line and whether any worktree
+/// was kept.
 ///
-/// One at a time and through the door a single ctrl+x uses, so a tree holding
-/// work no commit has keeps its agent here exactly as it does there. That is
-/// the whole safety of a key that clears a group: a sweep may only do what
-/// somebody could have done row by row.
-///
-/// Nothing stops for a record that will not go. Somebody asked for the group
-/// to be cleared, and one agent amx could not deal with is a line at the end
-/// rather than a reason to leave the rest of them standing.
+/// Goes row by row through the single-row path, so the same worktree safety
+/// applies. One failure does not stop the rest; it is reported at the end.
 pub fn forget_all(root: &Path, views: &[&View]) -> Result<(String, bool)> {
     let (mut gone, mut kept) = (0, 0);
     let mut trouble = Vec::new();
@@ -2108,22 +1685,20 @@ pub fn forget_all(root: &Path, views: &[&View]) -> Result<(String, bool)> {
     if kept > 0 {
         said.push_str(&format!(" · kept {kept} holding work no commit has"));
     }
-    // Raised rather than said, because part of what was asked for did not
-    // happen: the view draws what it could not do louder than what it did.
+    // An error so the view draws it as a failure: part of the request did not
+    // happen.
     if !trouble.is_empty() {
         bail!("{said} · {} would not go: {}", trouble.len(), trouble[0]);
     }
     Ok((said, kept > 0))
 }
 
-/// What the agent has changed, for the card.
+/// The agent's full patch, as a card.
 ///
-/// Taken once, when somebody asks, and held: re-running `git diff` on every
-/// reading would put a repository's whole worth of work behind a clock tick.
+/// Taken once when asked; running `git diff` on every reading would cost too
+/// much.
 pub fn changes(root: &Path, view: &View) -> Result<Card> {
-    // The whole patch, not the summary: the closer look is where somebody
-    // reads what was written, and the wall already says how much of it there
-    // is.
+    // The full patch, not `--stat`.
     let mut patch = Vec::new();
     verbs::diff::run(root, view.id(), false, &mut patch)?;
 
@@ -2146,17 +1721,12 @@ pub fn changes(root: &Path, view: &View) -> Result<Card> {
     })
 }
 
-/// Open the request on the row in the browser.
+/// Opens the row's pull request in the browser via the forge CLI.
 ///
-/// Through the forge's own command, which is where the person's login already
-/// is and which knows the repository the tree is a checkout of. What the last
-/// look wrote down beside the record does not say which forge answered, so gh
-/// is asked first and glab where there is no gh, the order every reader in
-/// `pr.rs` takes them in.
-///
-/// Spawned and not waited on, with nothing of its left pointed at the terminal:
-/// what opens is a browser, and a view that waited on one would stop drawing
-/// until somebody closed a tab.
+/// The CLI holds the login and knows the repository. The cached look does not
+/// record which forge answered, so gh is tried first and glab after, the order
+/// `pr.rs` uses. Not waited on in the draw loop, since it can block until
+/// the browser tab closes.
 pub fn open(view: &View, number: u64) -> Result<()> {
     let at = match &view.meta.worktree {
         Some(tree) if tree.is_dir() => tree.clone(),
@@ -2165,13 +1735,11 @@ pub fn open(view: &View, number: u64) -> Result<()> {
     opened(&at, Path::new("gh"), Path::new("glab"), number)
 }
 
-/// The same, from forges named rather than looked for, which is how it is
-/// tested: fakes written under a tempdir, never the gh the machine running the
-/// suite has installed.
+/// [`open`] with the forge commands named, so tests can use fakes instead of
+/// the machine's gh.
 fn opened(at: &Path, gh: &Path, glab: &Path, number: u64) -> Result<()> {
     match browse(at, gh, "pr", number) {
-        // A machine with no gh is a machine whose requests are somebody else's
-        // forge, which is the one error worth trying the other command on.
+        // No gh installed: try glab.
         Err(trouble) if trouble.kind() == std::io::ErrorKind::NotFound => {
             browse(at, glab, "mr", number).map_err(|trouble| match trouble.kind() {
                 std::io::ErrorKind::NotFound => anyhow!("neither gh nor glab is on the PATH"),
@@ -2182,7 +1750,7 @@ fn opened(at: &Path, gh: &Path, glab: &Path, number: u64) -> Result<()> {
     }
 }
 
-/// One forge, told to open a request in the browser.
+/// Starts one forge CLI to open a request in the browser.
 fn browse(at: &Path, forge: &Path, request: &str, number: u64) -> std::io::Result<()> {
     let mut child = std::process::Command::new(forge)
         .current_dir(at)
@@ -2197,18 +1765,12 @@ fn browse(at: &Path, forge: &Path, request: &str, number: u64) -> std::io::Resul
     Ok(())
 }
 
-/// Run the command somebody bound a key to, on the agent under the cursor.
+/// Runs a key-bound command for an agent, in its worktree or else its
+/// directory.
 ///
-/// `sh -c`, because what the table holds is a command line a person wrote — a
-/// pager on the end of it, flags, a pipe — and not a program and its argv. It
-/// runs where the agent works: the tree amx cut for it, and else the directory
-/// it was started in, which is the same answer a moment key's errand gets.
-///
-/// The terminal is the command's own, stdin and all: the view has given it up
-/// for exactly as long as this takes, and whatever the command draws, pages and
-/// asks is between it and the person who pressed the key. So what comes back
-/// here is only what they could not have seen — a command that never started,
-/// and the code one ended on.
+/// Through `sh -c`, since the binding is a command line. The command owns the
+/// terminal until it exits, so only a failure to start or a non-zero exit is
+/// reported.
 pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
@@ -2228,14 +1790,13 @@ pub fn run_bound(root: &Path, id: &str, command: &str) -> Result<()> {
         .with_context(|| format!("running `{command}`"))?;
 
     match ended.code() {
-        // A signal took the command down, and a signal is not a code to report
-        // as one: ctrl+c on a pager is somebody closing it.
+        // Killed by a signal, e.g. ctrl+c closing a pager: not an error.
         Some(exit::OK) | None => Ok(()),
         Some(code) => bail!("{command} exited {code}"),
     }
 }
 
-/// What a verb wrote, as the one line the view has room for.
+/// A verb's output as one line, non-empty lines joined with ` · `.
 fn one_line(written: &[u8]) -> String {
     String::from_utf8_lossy(written)
         .lines()
@@ -2257,19 +1818,15 @@ mod tests {
 
     #[test]
     fn a_line_says_what_it_is_aimed_at_before_anybody_types_into_it() {
-        // A task is aimed at nobody yet, and it was opened where a task runs
-        // anyway, so the rule over it has only its own word to say.
+        // A task opened outside any project names nothing.
         assert_eq!(Composer::new(Asking::Task).about(), None);
 
-        // Opened on the project axis it says where it will run, in the words
-        // the heading it was read off is written in.
+        // Opened under a project, it names where it will run.
         let mut under = Composer::new(Asking::Task);
         under.under = Some(PathBuf::from("/src/api"));
         assert_eq!(under.about().as_deref(), Some("in /src/api"));
 
-        // A reply stands at the foot of the card, under a rule already
-        // carrying the name of the agent it is going to, so it has nothing of
-        // its own to say and nothing draws this.
+        // A reply's agent is already named by the card's rule.
         assert_eq!(Composer::new(Asking::Reply).about(), None);
 
         let rename = Composer::new(Asking::Name {
@@ -2284,7 +1841,7 @@ mod tests {
         line.insert("port the imprter");
         assert_eq!(line.at, 16, "a line stands at the end of what is on it");
 
-        // Four characters back, which is the r the o belongs in front of.
+        // Back to just after the `r` of "imprter".
         for _ in 0..4 {
             line.left();
         }
@@ -2292,8 +1849,7 @@ mod tests {
         assert_eq!(line.text, "port the importer");
         assert_eq!(line.at, 13, "and the cursor is after what was typed");
 
-        // Counted in characters and not in bytes, because a character is what
-        // somebody sees the block standing on.
+        // Counted in characters, not bytes.
         let mut line = Composer::new(Asking::Name {
             id: "fix-login-a1b".to_string(),
         });
@@ -2306,8 +1862,7 @@ mod tests {
 
     #[test]
     fn composer_folds_a_long_paste_behind_a_marker_and_sends_what_it_holds() {
-        // Short enough to read on the line, so it lands as the characters it
-        // is and the line has nothing standing for anything.
+        // A short paste goes in as text.
         let mut line = Composer::new(Asking::Task);
         line.insert("port ");
         line.paste("the importer\nand its tests");
@@ -2315,8 +1870,7 @@ mod tests {
         assert!(line.pastes.is_empty());
         assert_eq!(line.whole(), line.text);
 
-        // A row more than the line will hold is a row on the line instead,
-        // with the cursor after it and the paste itself waiting beside.
+        // Four rows is past the limit, so it folds behind a marker.
         let mut line = Composer::new(Asking::Task);
         line.insert("what went wrong here: ");
         let log = "one\ntwo\nthree\nfour";
@@ -2325,9 +1879,7 @@ mod tests {
         assert_eq!(line.at, line.text.chars().count());
         assert_eq!(line.whole(), format!("what went wrong here: {log}"));
 
-        // And so is one paragraph of more characters than a composer can show.
-        // The second paste on the line is that line's second, and what is
-        // typed between them is typed between them.
+        // So does one long paragraph. The second paste is marker #2.
         line.insert(" and ");
         let dump = "x".repeat(801);
         line.paste(&dump);
@@ -2340,8 +1892,8 @@ mod tests {
             format!("what went wrong here: {log} and {dump}")
         );
 
-        // The bang is read off the whole of it, so a script pasted onto the
-        // line is the command row it opens with.
+        // The `!` is read from the whole line, so a pasted script is a command
+        // row.
         let mut line = Composer::new(Asking::Task);
         line.paste("!set -e\ncargo build\ncargo test\ncargo clippy");
         assert_eq!(line.text, "[Pasted text #1]");
@@ -2360,9 +1912,8 @@ mod tests {
             line
         };
 
-        // The same text pasted again goes in where its marker was standing,
-        // with the cursor after it — and what is sent is what was going to be
-        // sent either way.
+        // Pasting the same text again unfolds its marker in place. What is
+        // sent does not change.
         let mut line = folded();
         line.home();
         line.paste(log);
@@ -2370,9 +1921,8 @@ mod tests {
         assert_eq!(line.at, "why: ".chars().count() + log.chars().count());
         assert_eq!(line.whole(), format!("why: {log} then"));
 
-        // A marker taken back is not there to unfold, so the same text folds
-        // afresh — on the next number, since the first is still what the paste
-        // beside the line is read by.
+        // Once the marker is deleted the same text folds again, as #2, since
+        // #1 still names the first paste.
         let mut line = folded();
         line.at = "why: [Pasted text #1]".chars().count();
         line.delete_back();
@@ -2380,8 +1930,7 @@ mod tests {
         assert_eq!(line.text, "why: [Pasted text #2] then");
         assert_eq!(line.whole(), format!("why: {log} then"));
 
-        // And a paste the line is not already holding folds the way it always
-        // did.
+        // A different paste folds as usual.
         let mut line = folded();
         line.end();
         let dump = "x".repeat(801);
@@ -2401,29 +1950,26 @@ mod tests {
             line
         };
 
-        // Backspace against the end of the marker takes the marker, so the
-        // line never holds a bracket `whole` cannot read and the paste is not
-        // sent behind somebody's back.
+        // Backspace at the end of a marker takes the whole marker.
         let mut line = folded();
         line.at = "why: [Pasted text #1]".chars().count();
         line.delete_back();
         assert_eq!(line.text, "why:  then");
         assert_eq!(line.whole(), "why:  then");
 
-        // Delete against its front does the same.
+        // Delete at its start does the same.
         let mut line = folded();
         line.at = "why: ".chars().count();
         line.delete_forward();
         assert_eq!(line.text, "why:  then");
 
-        // And ctrl+w, which would otherwise take the `#1]` and leave the rest.
+        // So does ctrl+w, which would otherwise take only `#1]`.
         let mut line = folded();
         line.at = "why: [Pasted text #1]".chars().count();
         line.delete_word_back();
         assert_eq!(line.text, "why:  then");
 
-        // The same characters typed by hand are characters, on a line holding
-        // no paste for them to stand for.
+        // The same characters typed by hand are plain text.
         let mut line = Composer::new(Asking::Task);
         line.insert("[Pasted text #1]");
         line.delete_back();
@@ -2442,8 +1988,6 @@ mod tests {
         line.right();
         assert_eq!(line.at, 17);
 
-        // A word is whatever whitespace is in the way and the run of
-        // characters behind or in front of it.
         line.word_left();
         assert_eq!(line.at, 9, "the front of the word it was at the end of");
         line.word_left();
@@ -2465,8 +2009,6 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("port the importer");
 
-        // The character behind the cursor and the one under it, wherever on
-        // the line the cursor is standing.
         line.word_left();
         line.delete_back();
         assert_eq!((line.text.as_str(), line.at), ("port theimporter", 8));
@@ -2477,7 +2019,7 @@ mod tests {
             "the one under it goes and the cursor stays where it was"
         );
 
-        // Neither end of the line loses a character to a key pressed at it.
+        // Neither key deletes past its end of the line.
         line.home();
         line.delete_back();
         assert_eq!((line.text.as_str(), line.at), ("port themporter", 0));
@@ -2485,9 +2027,7 @@ mod tests {
         line.delete_forward();
         assert_eq!((line.text.as_str(), line.at), ("port themporter", 15));
 
-        // A word is the one the cursor walks over a word at a time: the
-        // whitespace behind it and the run of characters behind that, taken in
-        // one edit.
+        // ctrl+w deletes back to where word_left would go.
         let mut line = Composer::new(Asking::Task);
         line.insert("port the importer");
         line.word_left();
@@ -2502,8 +2042,7 @@ mod tests {
             "and the front of the line is where it stops too"
         );
 
-        // Characters and not bytes, the same as everything else the cursor
-        // does.
+        // Counted in characters, not bytes.
         let mut line = Composer::new(Asking::Task);
         line.insert("a é c");
         line.left();
@@ -2514,8 +2053,6 @@ mod tests {
 
     #[test]
     fn a_line_names_itself_in_one_word_on_the_rule_over_it() {
-        // Which of the five this is, in one word, with the agent it is aimed
-        // at said beside it rather than in it.
         assert_eq!(Composer::new(Asking::Task).label(), "TASK");
         assert_eq!(
             Composer::new(Asking::Name {
@@ -2545,9 +2082,7 @@ mod tests {
              takes it by"
         );
 
-        // A fork line is a task for an agent that does not exist yet, so it is
-        // kept where the line that starts one from nothing is kept and walked
-        // back from either of them.
+        // A fork line is kept and recalled with the tasks.
         let mut sent = Backlog::default();
         sent.remember_line(&copying(), "now do it with sqlite");
         assert_eq!(sent.lines_for(&Asking::Task), ["now do it with sqlite"]);
@@ -2556,10 +2091,8 @@ mod tests {
 
     #[test]
     fn fork_from_the_view_answers_in_the_line_the_verb_would_have_written() {
-        // The cap is the one refusal a fork can be turned away with before
-        // anything is made, so it is what proves the verb's stderr comes back
-        // as the line the view says things on: plain, because there is no
-        // terminal on the other end of it, and on one row.
+        // A project cap of zero refuses the fork before anything is made, which
+        // shows the verb's stderr comes back as one plain line.
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
         let meta = Meta {
@@ -2614,7 +2147,7 @@ mod tests {
         );
     }
 
-    /// A record of an agent, with its tree wherever the test wants it.
+    /// Creates an agent record in `dir`, with an optional worktree.
     fn record(root: &Path, id: &str, dir: &Path, worktree: Option<&Path>) -> Agent {
         Agent::create(
             root,
@@ -2650,8 +2183,7 @@ mod tests {
         let said = here.path().join("said");
         let agent = record(root.path(), "fix-login-a1b", here.path(), Some(tree.path()));
 
-        // What the command is told about the agent it was pressed on, in the
-        // one place those pairs are named.
+        // Writes its directory and the agent's environment variables.
         let command = format!(
             "{{ pwd; echo \"$AMX_ID|$AMX_DIR|$AMX_AGENT_DIR|$AMX_WORKTREE|$AMX_NESTED\"; }} > {}",
             said.display()
@@ -2675,8 +2207,7 @@ mod tests {
             )
         );
 
-        // An agent with no tree of its own works in the directory it was
-        // started in, and that is where its key runs too.
+        // Without a worktree it runs in the agent's directory.
         let work = TempDir::new().unwrap();
         record(root.path(), "no-tree-b2c", work.path(), None);
         let said = here.path().join("elsewhere");
@@ -2694,8 +2225,8 @@ mod tests {
 
     #[test]
     fn a_bound_command_that_ended_badly_is_named_with_the_code_it_gave() {
-        // Whatever went wrong the command has already said on the terminal it
-        // was handed, so what is left for the view is which command it was.
+        // The command has already shown its own error on the terminal, so the
+        // view only names it and its exit code.
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
         record(root.path(), "fix-login-a1b", here.path(), None);
@@ -2706,7 +2237,7 @@ mod tests {
         );
         assert_eq!(said, "exit 3 exited 3");
 
-        // And a row whose record is not there is nothing to run anything for.
+        // A missing record is an error.
         let said = format!(
             "{:#}",
             run_bound(root.path(), "never-made-abc", "true").unwrap_err()
@@ -2728,9 +2259,9 @@ mod tests {
         assert_eq!(said, format!("{} is gone", tree.display()));
     }
 
-    /// One question of a call, as the payload records one: `multi` is whether
-    /// it takes more than one choice, and a preview on a choice is what turns
-    /// the notes field on.
+    /// An `AskUserQuestion` question with two choices. `multi` allows several
+    /// choices; `previewed` gives the first a preview, which adds a notes
+    /// field.
     fn asked(multi: bool, previewed: bool) -> Ask {
         let choice = |label: &str, preview: bool| Choice {
             label: label.to_string(),
@@ -2754,8 +2285,7 @@ mod tests {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
         let one = ["Yes".to_string()];
 
-        // A question of the vendor's own offers choices and a field, and the
-        // choices answer it on the press.
+        // A single-choice question: digits pick on the press, or type words.
         assert_eq!(
             invitation(Some(Kind::Question), &two, None, false),
             "1-2 picks, or type an answer"
@@ -2771,8 +2301,7 @@ mod tests {
             "and a menu whose choices amx has not read yet names none"
         );
 
-        // One that takes more than one choice is answered by checking boxes,
-        // and the line says how they are named.
+        // A multi-choice question checks boxes by number.
         assert_eq!(
             invitation(Some(Kind::Question), &two, Some(&asked(true, false)), false),
             "press 1-2, 1,3 for several, or type an answer"
@@ -2783,9 +2312,8 @@ mod tests {
             "with no choices read there is nothing to check"
         );
 
-        // And one whose choices carry a preview has a field for a note and no
-        // row for words of your own at all, so the words on the line are the
-        // note rather than an answer.
+        // With previews there is a notes field and no free-text row, so words
+        // after the key are a note.
         assert_eq!(
             invitation(Some(Kind::Question), &two, Some(&asked(false, true)), false),
             "press 1-2, and words after it are a note"
@@ -2796,8 +2324,7 @@ mod tests {
             "and a checkbox question can carry one too"
         );
 
-        // A permission box and the trust screen read one key, so the card
-        // never invites words at either.
+        // A permission box and a trust screen take one key, never words.
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
             assert_eq!(
                 invitation(kind, &two, None, false),
@@ -2818,19 +2345,15 @@ mod tests {
             );
         }
 
-        // A trust screen with no numbers read off it is one the vendor draws
-        // none on — claude 2.1.259's gate — and the verb takes only a walk or
-        // `esc` there, so that is what the card invites.
+        // claude 2.1.259's trust gate draws no numbers, and the verb takes only
+        // a walk or `esc` there.
         assert_eq!(
             invitation(Some(Kind::Trust), &[], None, false),
             "type down enter, up enter or esc"
         );
 
-        // A list amx numbered itself, off the mark the vendor draws in front
-        // of the row its cursor is on. The numbers are amx's own reading and
-        // the verb sends a walk to reach the row one names, so they are the
-        // whole of what the card offers: no y, no n, and no words, whatever
-        // kind the screen is.
+        // A walked list: amx numbers the rows itself and the verb walks to the
+        // chosen one, so numbers are all the card offers, whatever the kind.
         let five = [
             "Trust".to_string(),
             "Trust parent".to_string(),
@@ -2853,12 +2376,9 @@ mod tests {
             "and one choice is one number"
         );
 
-        // And a question of a call under a record that calls the screen
-        // something else — an older amx wrote `permission` over every menu it
-        // saw, and records outlive the amx that wrote them. The screen is the
-        // menu the call drew, which has no y and no n on it, and the words the
-        // record's own word for the kind would have the verb refuse are not
-        // offered either.
+        // A pending question under a record that says otherwise: an older amx
+        // wrote `permission` over every menu. The screen is the call's menu,
+        // so no y or n is offered.
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
             assert_eq!(
                 invitation(kind, &two, Some(&asked(false, false)), false),
@@ -2878,20 +2398,16 @@ mod tests {
         let two = ["the sqlite one".to_string(), "the docker one".to_string()];
         let question = |asked: Option<&Ask>| picks(Some(Kind::Question), &two, asked, false);
 
-        // The vendor's own question with its choices read, whether the payload
-        // behind it was read or not: one of them is the whole answer.
+        // A single-choice question, with or without the payload read.
         assert!(question(None));
         assert!(question(Some(&asked(false, false))));
 
-        // A question that takes several is answered by checking boxes, and one
-        // whose choices carry a preview takes a note after the key — a note
-        // begins with that key, so a digit that went on the press would be a
-        // note nobody could type.
+        // Multi-choice checks boxes, and a previewed question takes a note that
+        // starts with the key, so neither sends on the press.
         assert!(!question(Some(&asked(true, false))));
         assert!(!question(Some(&asked(false, true))));
 
-        // A menu whose choices amx has not read has no number to stand behind,
-        // and a permission box is answered in a grammar amx read off a pane.
+        // No choices read, or a permission or trust screen read off the pane.
         assert!(!picks(Some(Kind::Question), &[], None, false));
         for kind in [Some(Kind::Permission), Some(Kind::Trust), None] {
             assert!(!picks(kind, &two, None, false), "{kind:?}");
@@ -2901,10 +2417,8 @@ mod tests {
             );
         }
 
-        // And a list amx numbered itself is answered by a walk the verb sends,
-        // which is a good deal more than the keystroke: the digit fills the
-        // line and enter sends it, because a dialog can be a tool gate and an
-        // allow cannot be taken back.
+        // A walked list can be a tool gate, so the digit fills the line and
+        // enter sends the walk.
         assert!(!picks(Some(Kind::Question), &two, None, true));
     }
 
@@ -2916,8 +2430,8 @@ mod tests {
         };
         let plain = asked(false, false);
 
-        // A key, the boxes to check and words of your own are one thing on the
-        // card, because the verb tells them apart at a shell prompt too.
+        // Keys, box lists and words all go whole as the key; the verb tells
+        // them apart.
         for typed in ["2", "1,3", "neither, keep both"] {
             assert_eq!(
                 line(typed, Some(&plain)),
@@ -2931,8 +2445,8 @@ mod tests {
             "trimmed, so a stray space is not an answer of its own"
         );
 
-        // The question that draws a notes field is the one that has no row for
-        // words, so what follows the key on that line is the note.
+        // A previewed question has a notes field and no free-text row, so
+        // words after the key are the note.
         let previewed = asked(false, true);
         assert_eq!(
             line("1 prefer the stacked one", Some(&previewed)),
@@ -2963,9 +2477,7 @@ mod tests {
             text: text.to_string(),
         };
 
-        // Where it is pointed, then the hunk as git wrote it, then what
-        // somebody typed: an agent reading this has the file, the line and the
-        // rows the comment is about before it has the comment.
+        // `path:line`, then the hunk in a fence, then the words.
         assert_eq!(
             on_hunk(
                 &hunk("@@ -12,2 +12,3 @@\n context\n+added"),
@@ -2974,9 +2486,7 @@ mod tests {
             "src/foo.rs:12\n\n```diff\n@@ -12,2 +12,3 @@\n context\n+added\n```\n\nwhy this row?"
         );
 
-        // A patch to a file that has a fence of its own in it takes a longer
-        // one, because a fence the hunk can close is a comment that ends in
-        // the middle of itself.
+        // A hunk containing a triple backtick gets a four-backtick fence.
         let fenced = on_hunk(&hunk("@@ -1,1 +1,2 @@\n+```sh"), "and this?");
         assert_eq!(
             fenced,
@@ -2995,15 +2505,13 @@ mod tests {
         let first = hunk(12, "@@ -12,2 +12,3 @@\n context\n+added");
         let second = hunk(40, "@@ -40,1 +40,1 @@\n-gone\n+here");
 
-        // One note and nothing said at the top is the one-hunk comment byte for
-        // byte, so a review of a single hunk reads as it always has.
+        // One hunk with no opening is exactly the single-hunk comment.
         assert_eq!(
             on_hunks("", &[(&first, "why this row?")]),
             on_hunk(&first, "why this row?")
         );
 
-        // An opening rides in front, and each noted hunk follows in the order
-        // it was given, a blank row between the parts.
+        // The opening, then each hunk in order, separated by blank lines.
         assert_eq!(
             on_hunks(
                 "two things",
@@ -3016,8 +2524,7 @@ mod tests {
             )
         );
 
-        // An opening of nothing but whitespace is no opening: it leaves no
-        // blank row at the head of the message.
+        // A whitespace-only opening is dropped.
         assert_eq!(
             on_hunks(
                 "  \n ",
@@ -3030,7 +2537,7 @@ mod tests {
             )
         );
 
-        // Words at the top with no hunk noted are the whole message.
+        // An opening with no hunks is the whole message.
         assert_eq!(on_hunks("just this", &[]), "just this");
     }
 
@@ -3076,9 +2583,7 @@ mod tests {
 
     #[test]
     fn axis_leaves_the_state_tokens_on_the_task_line_alone() {
-        // The one line that narrows is `/`. What the tokens are here is a task
-        // with a colon in it, which the rule over the line says in the one
-        // word it says about every task.
+        // Only the find line narrows. On a task line `s:waiting` is task text.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "s:waiting".to_string();
         assert_eq!(composer.label(), "TASK");
@@ -3088,7 +2593,7 @@ mod tests {
         assert_eq!(task, "s:waiting", "and the whole of it is what is started");
     }
 
-    /// A config whose vendor is the one the registry declares dials for.
+    /// A config using claude, which declares dials in the registry.
     fn as_claude() -> Config {
         Config {
             agent: "claude".to_string(),
@@ -3128,8 +2633,7 @@ mod tests {
         let here = TempDir::new().unwrap();
         let path = here.path().join("task.md");
 
-        // An editor that edits: what it is given is what was on the line, and
-        // what it leaves behind is the line afterwards.
+        // The editor gets the line and what it leaves becomes the line.
         let Edited::Line(text) =
             edited_in("sed -i -e s/fix/port/", &path, "fix the importer").unwrap()
         else {
@@ -3157,8 +2661,7 @@ mod tests {
         let here = TempDir::new().unwrap();
         let path = here.path().join("task.md");
 
-        // `:cq` is how a person says they meant none of it, and what it comes
-        // back as is a status.
+        // A non-zero exit (vi's `:cq`) keeps the line.
         let Edited::No(why) = edited_in("false", &path, "port the importer").unwrap() else {
             panic!("an editor that refused took the line with it");
         };
@@ -3168,8 +2671,7 @@ mod tests {
 
     #[test]
     fn composer_a_leading_bang_makes_the_line_a_command_row() {
-        // The mark leads the line and the rest of it is the command: what
-        // `amx new --exec` is at a shell prompt, typed where the wall is.
+        // A leading `!` makes the rest a command, as `amx new --exec` does.
         let mut composer = Composer::new(Asking::Task);
         composer.text = "!cargo test".to_string();
         assert_eq!(
@@ -3191,8 +2693,7 @@ mod tests {
         );
         assert_eq!(command, "cargo test");
 
-        // The one dial it takes is where it runs, and the command is what is
-        // left of the line.
+        // `d:` is the only dial it takes.
         let (dials, command) = turned(&as_claude(), "!d:/srv/app  cargo test").unwrap();
         assert_eq!(
             dials,
@@ -3207,10 +2708,9 @@ mod tests {
 
     #[test]
     fn composer_refuses_the_dials_a_command_row_has_nothing_to_turn() {
-        // Said in the words of the line and naming the one it does take. The
-        // vendor's two and the vendor itself have no vendor here to be read
-        // against, which is why `--exec` refuses them at a shell prompt; the
-        // tree goes with them, because a command runs where it was typed.
+        // Vendor dials and `agent:` have no vendor to apply to (`--exec`
+        // refuses them too), and a command runs where it was typed, so the
+        // worktree dials go as well.
         let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
 
         for line in [
@@ -3233,8 +2733,7 @@ mod tests {
         }
         assert_eq!(refused("!d: cargo test"), "d: takes a directory");
 
-        // A word that is one of those anywhere but the front is the command's
-        // own, the same law that keeps `port the m:opus importer` a task.
+        // Only leading tokens are dials.
         let (dials, command) = turned(&as_claude(), "!echo m:opus").unwrap();
         assert!(dials.exec);
         assert_eq!(command, "echo m:opus");
@@ -3242,18 +2741,16 @@ mod tests {
 
     #[test]
     fn composer_never_asks_about_a_command_row_however_short_it_is() {
-        // The question is about a stray keystroke behind the key that opens
-        // the line, and a bang is not one. `ls` is a command somebody means.
+        // The prompt guards against a stray keystroke after `n`, and `!` is not
+        // one.
         assert_eq!(slight(&as_claude(), "!ls"), None);
         assert_eq!(slight(&as_claude(), "!d:/srv/app ls"), None);
     }
 
     #[test]
     fn composer_offers_the_cards_line_the_vendors_words_and_none_of_the_dials() {
-        // The line at the foot of the card goes to an agent already running
-        // under whatever it was started with, so the words that start one are
-        // words of the message there: a dial typed at it is offered nothing,
-        // where the task line reads the same word as a dial.
+        // A reply goes to a running agent, so dial words are message text and
+        // are offered nothing.
         for word in ["agent:cl", "m:", "p:", "w:", "d:/"] {
             let mut line = Composer::new(Asking::Reply);
             line.insert(word);
@@ -3269,8 +2766,8 @@ mod tests {
             "and a dial on the task line it still is"
         );
 
-        // A path is read against the directory the line was handed, which is
-        // the agent's own: there is no `d:` to read it against instead.
+        // A reply has no `d:`, so paths are read in the directory it was
+        // handed.
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("importer.rs"), "").unwrap();
         let mut line = Composer::new(Asking::Reply);
@@ -3288,9 +2785,7 @@ mod tests {
 
     #[test]
     fn composer_offers_a_command_row_none_of_the_words_a_vendor_answers_to() {
-        // A shell reads `/etc` as a directory rather than as the front of a
-        // skill's name, and `@src` there is a word it hands to `cat` rather
-        // than one of the vendor's agents.
+        // In a shell, `/etc` is a path and `@src` is a word for `cat`.
         for line in ["!ls /", "!cat @src"] {
             let mut composer = Composer::new(Asking::Task);
             composer.insert(line);
@@ -3342,8 +2837,7 @@ mod tests {
 
     #[test]
     fn composer_takes_a_line_with_a_dial_word_anywhere_else_for_the_task_it_is() {
-        // The same law that keeps `s:waiting is what to check` a task: leading
-        // tokens only, and everything from the first word that is not one.
+        // Only leading tokens are dials.
         for line in [
             "port the m:opus importer",
             "fix w:off",
@@ -3383,8 +2877,7 @@ mod tests {
         assert_eq!(dials.base.as_deref(), Some("main"));
         assert_eq!(task, "port the importer");
 
-        // A ref git cannot resolve is the spawn's own refusal, as it is at a
-        // shell prompt: the word only has to be there.
+        // Resolving the ref is the spawn's job; any word is accepted here.
         let (dials, task) = turned(&as_claude(), "b:v0.2.0  m:opus  port it").unwrap();
         assert_eq!(dials.base.as_deref(), Some("v0.2.0"));
         assert_eq!(dials.model.as_deref(), Some("opus"));
@@ -3409,7 +2902,7 @@ mod tests {
 
     #[test]
     fn composer_refuses_a_request_beside_the_words_that_answer_it() {
-        // The pairs clap holds the flags to, in whichever order they are typed.
+        // The pairs clap refuses, in either order.
         let refused = |line: &str| turned(&as_claude(), line).expect_err(line);
 
         for line in ["pr:412 b:main review it", "b:main pr:412 review it"] {
@@ -3431,8 +2924,8 @@ mod tests {
             );
         }
 
-        // Asking for the tree a request is cut in anyway says nothing it does
-        // not already, so it is allowed, and so is the pair the flags allow.
+        // `w:on` is redundant with a request and allowed, as is `b:` with
+        // `w:changes`.
         let (dials, _) = turned(&as_claude(), "pr:412 w:on review it").unwrap();
         assert_eq!((dials.pr, dials.worktree), (Some(412), Some(true)));
 
@@ -3447,15 +2940,13 @@ mod tests {
         assert_eq!(dials.branch.as_deref(), Some("spike"));
         assert_eq!(task, "carry on with it");
 
-        // Whether the branch is one git has is the spawn's own answer, as it
-        // is at a shell prompt: the word only has to be there.
+        // Finding the branch is the spawn's job; any word is accepted here.
         let (dials, task) = turned(&as_claude(), "on:origin/spike  m:opus  carry on").unwrap();
         assert_eq!(dials.branch.as_deref(), Some("origin/spike"));
         assert_eq!(dials.model.as_deref(), Some("opus"));
         assert_eq!(task, "carry on");
 
-        // The one word that stands beside it: what you have not committed
-        // belongs on that branch as much as anywhere.
+        // `w:changes` is allowed with it.
         let (dials, _) = turned(&as_claude(), "on:spike w:changes carry on").unwrap();
         assert_eq!(dials.branch.as_deref(), Some("spike"));
         assert!(dials.with_changes);
@@ -3467,7 +2958,7 @@ mod tests {
 
         assert_eq!(refused("on: carry on with it"), "on: takes a branch");
 
-        // The pairs clap holds the flag to, in whichever order they are typed.
+        // The pairs clap refuses, in either order.
         for line in ["on:spike b:main port it", "b:main on:spike port it"] {
             assert_eq!(
                 refused(line),
@@ -3490,8 +2981,7 @@ mod tests {
             );
         }
 
-        // A command row launches no vendor and keeps no branch, so the word is
-        // refused there with every other dial but `d:`.
+        // A command row takes only `d:`.
         assert_eq!(
             refused("!on:spike ls"),
             "on:spike: a command row takes d: and no other dial"
@@ -3520,8 +3010,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let here = TempDir::new().unwrap();
 
-        // Said in the word that was typed: `new` refuses this under the name of
-        // its flag, which is a name nobody on a task line has seen.
+        // The refusal names `w:changes`, not `new`'s flag.
         let line = format!("d:{} w:changes port the importer", here.path().display());
         let Started::No(why) =
             start(root.path(), &Config::default(), &line, None, here.path()).unwrap()
@@ -3559,8 +3048,7 @@ mod tests {
             "and nothing was made on the way to finding out"
         );
 
-        // A path is read against the directory the view is running in, the way
-        // a shell would read it.
+        // A relative path is read against the view's directory.
         assert_eq!(
             aimed("app", here.path()).expect_err("no such directory"),
             format!("d:app: nothing is at {}/app", here.path().display())
@@ -3587,16 +3075,15 @@ mod tests {
         assert!(said.contains("xhigh"), "every level it has: {said}");
         assert_eq!(refused("agent: port it"), "agent: takes a command");
 
-        // Open dials take what the cycle never names, because `--model` does.
+        // An open dial accepts values outside its cycle, as `--model` does.
         let (dials, _) = turned(&as_claude(), "m:claude-fable-5 port it").unwrap();
         assert_eq!(dials.model.as_deref(), Some("claude-fable-5"));
     }
 
     #[test]
     fn composer_refuses_a_dial_the_agent_on_the_same_line_does_not_declare() {
-        // The unregistered rule, said where somebody is standing: an agent amx
-        // has no table for spawns exactly as it always did, and the dials it
-        // never declared are refused by name rather than injected at it.
+        // An unregistered agent still spawns, but dials it never declared are
+        // refused by name.
         let said = turned(&as_claude(), "agent:mock-claude m:opus port it").expect_err("refused");
         assert_eq!(said, "m:opus: amx knows no such dial for mock-claude");
 
@@ -3618,9 +3105,8 @@ mod tests {
 
     #[test]
     fn composer_hands_the_agent_a_line_is_led_with_to_the_vendor_and_not_the_task() {
-        // One of the agents in the vendor's own places, read in the project
-        // this line's agent will run in: the word comes off the task and goes
-        // to the vendor under the flag it declares for one.
+        // A leading `@name` found in the project's agents becomes the vendor's
+        // `--agent` flag.
         let project = TempDir::new().unwrap();
         let agents = project.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -3638,9 +3124,8 @@ mod tests {
             )
         );
 
-        // The front of the line and nowhere else, and one of the vendor's own
-        // agents and no other name. Everything else is the sentence it was
-        // typed in, mark and all.
+        // Anywhere else, or a name that is not one of its agents, stays in the
+        // task.
         for line in [
             "port the importer @scout",
             "@notes.md port the importer",
@@ -3654,9 +3139,8 @@ mod tests {
             );
         }
 
-        // A vendor that cannot be told to be one of its agents leaves the word
-        // where it was typed, whatever is in anybody's directories: the flag is
-        // the vendor's own, and pi has none.
+        // A vendor with no agent flag (pi, or one amx has no entry for) leaves
+        // the word in the task.
         for agent in ["pi", "mock-claude"] {
             assert_eq!(
                 as_agent(agent, "@scout port the importer", project.path()),
@@ -3667,7 +3151,7 @@ mod tests {
         }
     }
 
-    /// The words a suggestion offers, in the order it offers them.
+    /// The spellings a suggestion offers, in order.
     fn offered(suggest: &Suggest) -> Vec<&str> {
         suggest
             .entries
@@ -3676,16 +3160,14 @@ mod tests {
             .collect()
     }
 
-    /// Somewhere for a project's own files to be, for the words that are not
-    /// read out of any.
+    /// A project path for suggestions that never read the disk.
     fn a_project() -> &'static Path {
         Path::new("/srv/app")
     }
 
     #[test]
     fn composer_offers_the_vendors_a_line_can_be_aimed_at_by_name() {
-        // The dial's own token, completed out of the table: every vendor amx
-        // has an entry for, narrowed as the word is typed.
+        // `agent:` completes to every vendor in the registry.
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:");
         let found = suggest(&line, &as_claude(), a_project(), &[]).expect("the table");
@@ -3716,8 +3198,7 @@ mod tests {
         line.insert("m:opus agent:");
         line.suggest = suggest(&line, &as_claude(), a_project(), &[]);
 
-        // The two keys walk the list, and the ends of it are each other's
-        // neighbours.
+        // The highlight wraps at both ends.
         line.choose(1);
         assert_eq!(line.suggest.as_ref().expect("the list").chosen, 1);
         line.choose(1);
@@ -3750,8 +3231,7 @@ mod tests {
     fn composer_completes_the_word_the_cursor_is_in_rather_than_the_line() {
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:cl port it");
-        // Back to the end of the word being typed, which is where somebody
-        // mending one stands.
+        // Put the cursor at the end of the word being corrected.
         for _ in 0.." port it".chars().count() {
             line.left();
         }
@@ -3788,8 +3268,8 @@ mod tests {
              stand under it"
         );
 
-        // Spelled like one of them while the choice stands on another is
-        // somebody choosing the other.
+        // Matching one entry while the highlight is on another means the
+        // other.
         let mut line = Composer::new(Asking::Task);
         line.insert("/review");
         line.suggest = Some(Suggest {
@@ -3816,8 +3296,7 @@ mod tests {
 
     #[test]
     fn composer_reads_the_catalog_once_for_the_life_of_the_line() {
-        // What fills the reading is counted rather than walked: the disk is
-        // not what this is about.
+        // Counts reads instead of touching the disk.
         let reads = Cell::new(0);
         let read = || {
             reads.set(reads.get() + 1);
@@ -3855,9 +3334,8 @@ mod tests {
 
     #[test]
     fn composer_narrows_the_next_keystroke_out_of_the_catalog_the_last_one_read() {
-        // A catalog put into the line by hand, naming a word no disk has:
-        // what the keystrokes after it offer is read out of the line, not the
-        // vendor's directories.
+        // The catalog is set by hand, with names no disk has, so these
+        // results can only come from the cache.
         let mut line = Composer::new(Asking::Task);
         *line.listed.borrow_mut() = Some(Listed {
             agent: "claude".to_string(),
@@ -3879,8 +3357,7 @@ mod tests {
             "narrowed by what was typed, out of the same reading"
         );
 
-        // The line aimed at another vendor is another vendor's catalog, and
-        // the reading goes with the first one.
+        // Naming another vendor replaces the cached catalog.
         line.home();
         line.insert("agent:pi ");
         suggest(&line, &as_claude(), a_project(), &[]);
@@ -3894,17 +3371,15 @@ mod tests {
         );
     }
 
-    /// The words a reading holds, in the order it holds them.
+    /// The spellings in a catalog, in order.
     fn offered_by(entries: &[Entry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.spelled.as_str()).collect()
     }
 
     #[test]
     fn composer_opens_a_codex_lines_suggestions_on_its_own_sigil() {
-        // codex runs a skill as `$name`, and a `/` there runs none: the line
-        // opens the catalog on the vendor's sigil and on nothing else. A
-        // reading put into the line by hand, so the disk is not what this is
-        // about.
+        // codex runs a skill as `$name`, so only `$` opens its catalog and `/`
+        // lists nothing. The catalog is set by hand.
         let as_codex = Config {
             agent: "codex".to_string(),
             ..Config::default()
@@ -3951,10 +3426,8 @@ mod tests {
 
     #[test]
     fn composer_offers_the_values_the_dial_under_the_cursor_takes() {
-        // The vendor's own cycle, read out of the table rather than named
-        // here: what the line offers is what the spawn would take, and a value
-        // named twice is a value that stops being offered the day the vendor
-        // renames it.
+        // Expected values come from the registry, so a vendor renaming one
+        // does not need this test changed.
         let claude = registry::entry("claude").expect("claude is in the table");
         let cycle = |dial: &str, spec: registry::DialSpec| -> Vec<String> {
             spec.cycle
@@ -3988,15 +3461,13 @@ mod tests {
             cycle("e:", claude.effort.expect("claude has an effort dial"))
         );
 
-        // The tree is amx's own dial, so its words are amx's own answer and in
-        // no table.
+        // `w:` is amx's own dial, with amx's own values.
         let mut line = Composer::new(Asking::Task);
         line.insert("w:");
         let found = suggest(&line, &as_claude(), a_project(), &[]).expect("on, off or changes");
         assert_eq!(offered(&found), ["w:on", "w:off", "w:changes"]);
 
-        // A dial the agent on this line does not declare has no values to
-        // offer, which is the answer `turned` refuses the token with.
+        // A dial the vendor does not declare offers nothing.
         let config = Config {
             agent: "mock-claude".to_string(),
             ..Config::default()
@@ -4008,9 +3479,8 @@ mod tests {
 
     #[test]
     fn composer_offers_the_models_the_model_key_walks() {
-        // A harness whose models are the file's to name: the line offers what
-        // the model key would walk, sentinel and all, so the two doors into
-        // the same harness never disagree about what it runs.
+        // With models listed in the config, `m:` offers what the model key
+        // walks: the default sentinel, then the list.
         let told = Config {
             agent: "pi".to_string(),
             harnesses: std::collections::BTreeMap::from([(
@@ -4034,13 +3504,14 @@ mod tests {
             "the sentinel and then the file's list, which is what the key walks"
         );
 
-        // And a word typed part of the way narrows to the model it spells.
+        // A partial value narrows the list.
         line.insert("openai/");
         let found = suggest(&line, &told, a_project(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["m:openai/gpt-5"]);
     }
 
-    /// git as these tests run it, in a repository of its own.
+    /// Initialises a git repository in `dir` with one commit and `branches`,
+    /// isolated from the user's git config.
     fn a_repo_on(dir: &Path, branches: &[&str]) {
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
@@ -4084,8 +3555,7 @@ mod tests {
              be"
         );
 
-        // Narrowed by what has been typed of it, the same as every other word
-        // the line offers.
+        // Narrowed by what has been typed.
         line.insert("spike-");
         let found = suggest(&line, &as_claude(), project.path(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["on:spike-two"]);
@@ -4096,15 +3566,14 @@ mod tests {
             "and a name no branch answers to is the name somebody typed"
         );
 
-        // Read where the agent will run rather than where the view is: a
-        // branch offered out of anywhere else is one that spawn would not find.
+        // Read in the `d:` directory, where the agent will run.
         let here = TempDir::new().unwrap();
         let mut line = Composer::new(Asking::Task);
         line.insert(&format!("d:{} on:rel", project.path().display()));
         let found = suggest(&line, &as_claude(), here.path(), &[]).expect("what is over there");
         assert_eq!(offered(&found), ["on:release"]);
 
-        // A directory git knows nothing about offers nothing and says nothing.
+        // Outside a repository, nothing.
         let mut line = Composer::new(Asking::Task);
         line.insert("on:");
         assert!(suggest(&line, &as_claude(), here.path(), &[]).is_none());
@@ -4112,10 +3581,8 @@ mod tests {
 
     #[test]
     fn composer_offers_the_files_under_a_word_the_vendor_answers_to_with_none() {
-        // `@` names one of the vendor's agents, and where it names none of
-        // them it is the other thing the mark is for: a file of the project
-        // the agent will run in. A word with a separator in it is no agent's
-        // name, so this is that word every time.
+        // `@` that names no agent completes files in the project. A word with
+        // a `/` is never an agent name.
         let project = TempDir::new().unwrap();
         std::fs::create_dir_all(project.path().join("src/tui")).unwrap();
         std::fs::write(project.path().join("src/main.rs"), "fn main() {}").unwrap();
@@ -4130,8 +3597,7 @@ mod tests {
              that says the path may go on"
         );
 
-        // Narrowed by what has been typed of the name, the same as every other
-        // word the line offers.
+        // Narrowed by what has been typed.
         line.insert("m");
         let found = suggest(&line, &as_claude(), project.path(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["@src/main.rs"]);
@@ -4162,8 +3628,7 @@ mod tests {
 
     #[test]
     fn composer_reads_a_path_against_the_directory_the_line_aims_at() {
-        // Where the agent will run rather than where the view is: a file
-        // offered out of anywhere else is a file that agent would not find.
+        // Read in the `d:` directory, where the agent will run.
         let here = TempDir::new().unwrap();
         let there = TempDir::new().unwrap();
         std::fs::create_dir_all(there.path().join("crates/importer")).unwrap();
@@ -4204,8 +3669,7 @@ mod tests {
              amx's are nobody's"
         );
 
-        // Narrowed by what is typed of it, whichever of the two a word came
-        // from.
+        // Narrowed by what has been typed, for either source.
         let mut line = Composer::new(Asking::Task);
         line.insert(&format!("d:{}/i", elsewhere.path().display()));
         let found = suggest(&line, &as_claude(), here.path(), &wall).expect("the one project");
@@ -4214,9 +3678,7 @@ mod tests {
 
     #[test]
     fn a_line_that_is_not_a_task_is_the_words_somebody_typed() {
-        // Every other line goes to an agent that is already running or
-        // narrows the wall, and what a vendor loads by name is what a task
-        // line asks it for.
+        // Only task-like lines reach a vendor, so no other line completes.
         for asking in [
             Asking::Find,
             Asking::Name {
@@ -4256,18 +3718,17 @@ mod tests {
         );
         assert_eq!(sent.lines_for(&Asking::Reply), ["yes, go on"]);
 
-        // The same line sent twice running is one line to walk back over.
+        // An immediate repeat is stored once.
         sent.remember_line(&Asking::Task, "fix the login");
         assert_eq!(sent.lines_for(&Asking::Task).len(), 2, "not kept twice");
-        // Sent again later, it is the newest again rather than a second copy
-        // somewhere down the list.
+        // Sent again after another line, it is stored again as the newest.
         sent.remember_line(&Asking::Task, "port the importer");
         assert_eq!(
             sent.lines_for(&Asking::Task),
             ["port the importer", "fix the login", "port the importer"]
         );
 
-        // Nothing but a task and a reply is a line sent.
+        // Only tasks and replies are kept.
         sent.remember_line(&Asking::Find, "login");
         sent.remember_line(
             &Asking::Name {
@@ -4283,7 +3744,7 @@ mod tests {
             "a blank line is nothing sent"
         );
 
-        // Fifty, and the oldest is the one that goes.
+        // At most fifty; the oldest goes.
         for n in 0..60 {
             sent.remember_line(&Asking::Reply, &format!("line {n}"));
         }
@@ -4300,18 +3761,17 @@ mod tests {
         composer.insert("half a");
         composer.left();
 
-        // The first step sets the line aside and puts the newest in its place,
-        // the cursor at its end.
+        // The first step saves the draft and shows the newest line, cursor at
+        // its end.
         assert!(composer.recall(&sent, true));
         assert_eq!((composer.text.as_str(), composer.at), ("fix the login", 13));
         assert!(composer.recall(&sent, true));
         assert_eq!(composer.text, "port the importer");
-        // The oldest is where the walk back stops.
+        // The walk stops at the oldest.
         assert!(!composer.recall(&sent, true), "nothing older to bring back");
         assert_eq!(composer.text, "port the importer");
 
-        // Forward again, and the step past the newest is the draft, cursor
-        // and all.
+        // Stepping newer past the newest restores the draft and its cursor.
         assert!(composer.recall(&sent, false));
         assert_eq!(composer.text, "fix the login");
         assert!(composer.recall(&sent, false));
@@ -4322,8 +3782,7 @@ mod tests {
         );
         assert_eq!((composer.text.as_str(), composer.at), ("half a", 5));
 
-        // A walk that began again starts from the newest, not where the last
-        // one left off.
+        // A new walk starts again from the newest.
         assert!(composer.recall(&sent, true));
         assert_eq!(composer.text, "fix the login");
     }
@@ -4337,19 +3796,18 @@ mod tests {
         let folded = composer.text.clone();
         assert_eq!(composer.pastes.len(), 1, "the draft holds a paste");
 
-        // A recalled line was sent as characters and comes back as characters,
-        // with no marker standing beside it for anything.
+        // A recalled line comes back as plain text, with no pastes.
         assert!(composer.recall(&sent, true));
         assert_eq!(composer.text, "ship it");
         assert!(composer.pastes.is_empty());
         assert_eq!(composer.whole(), "ship it");
 
-        // And the draft comes back with its paste still behind the marker.
+        // The draft comes back with its paste still folded.
         assert!(composer.recall(&sent, false));
         assert_eq!(composer.text, folded);
         assert_eq!(composer.whole(), long);
 
-        // Nothing sent is nothing to bring back, and the line is left alone.
+        // With no history, the line is left alone.
         let mut empty = Composer::new(Asking::Task);
         empty.insert("typed");
         assert!(!empty.recall(&[], true));
@@ -4357,13 +3815,10 @@ mod tests {
         assert!(!empty.recall(&[], false));
     }
 
-    /// A forge of amx's own: a script that writes down the directory it ran in
-    /// and every word it was given, so what the view spawned can be read back.
+    /// Writes a fake forge script that records its directory and arguments.
     ///
-    /// Written under a tempdir and handed to [`opened`] by name rather than put
-    /// on the PATH: what a suite must never do is run the gh the machine
-    /// running it has installed, against whatever repository it would answer
-    /// about.
+    /// Passed to [`opened`] by path, never put on `PATH`, so the suite never
+    /// runs the machine's real gh.
     fn a_fake_forge(under: &Path, name: &str, wrote: &Path) -> PathBuf {
         let script = under.join(name);
         std::fs::write(
@@ -4378,17 +3833,13 @@ mod tests {
         script
     }
 
-    /// What the forge the view spawned was told.
+    /// Runs [`opened`] against fakes and returns what the forge recorded.
     ///
-    /// The spawn is not waited on, so the answer is waited for here instead.
-    /// And it is asked for again where none arrived: a script written this
-    /// instant is refused with `Text file busy` while a sibling thread's fork
-    /// still holds amx's write of it open, which is a flake rather than a fact
-    /// about the key.
+    /// The spawn is not waited on, so this polls for the file. A spawn is
+    /// retried when it fails with `Text file busy`, which happens while another
+    /// test thread's fork still holds the just-written script open.
     fn told(at: &Path, gh: &Path, glab: &Path, wrote: &Path) -> Vec<String> {
         for _ in 0..20 {
-            // The refusal lands on the spawn itself, so a spawn that failed
-            // is the thing to try again, not a fact about the key.
             if opened(at, gh, glab, 12).is_err() {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;
@@ -4411,8 +3862,7 @@ mod tests {
         let tree = home.path().join("tree");
         std::fs::create_dir(&tree).unwrap();
 
-        // The browser is what opens, so the request is asked for by number and
-        // nothing else: the forge already knows which repository the tree is.
+        // Only the number: the forge knows the repository from the directory.
         let said = told(&tree, &gh, Path::new("/nowhere/glab"), &wrote);
         assert_eq!(
             said[1..],
@@ -4433,9 +3883,8 @@ mod tests {
         let glab = a_fake_forge(home.path(), "glab", &wrote);
         let missing = home.path().join("nothing-here");
 
-        // What is written down beside the record does not say which forge
-        // answered about the branch, so a machine without gh is a machine whose
-        // requests are GitLab's.
+        // The cached look does not record the forge, so without gh the
+        // request is taken to be GitLab's.
         let said = told(home.path(), &missing, &glab, &wrote);
         assert_eq!(
             said[1..],
@@ -4443,8 +3892,7 @@ mod tests {
             "glab opens a merge request: {said:?}"
         );
 
-        // Neither of them installed is worth saying: there is nothing to press
-        // twice, and the row will go on carrying the number.
+        // With neither installed, the error says so.
         let why = format!(
             "{:#}",
             opened(home.path(), &missing, &missing, 12).unwrap_err()
@@ -4482,8 +3930,7 @@ mod tests {
         panic!("the forge was never waited on: {stat}");
     }
 
-    /// The pid a forge that writes only `$$` ran as, retried the way [`told`]
-    /// retries a spawn refused with `Text file busy`.
+    /// The pid of a fake forge that writes only `$$`, retried like [`told`].
     fn told_pid(at: &Path, gh: &Path, wrote: &Path) -> u32 {
         for _ in 0..20 {
             if opened(at, gh, Path::new("/nowhere/glab"), 12).is_err() {
