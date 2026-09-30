@@ -121,18 +121,10 @@ fn what_is_running(view: &View) -> Cut {
     }
     match view.phase() {
         Phase::Waiting => Cut::Question,
-        Phase::Working if runs_a_command(view) => Cut::Command,
+        Phase::Working if derive::runs_a_command(&view.meta, &view.state) => Cut::Command,
         Phase::Working => Cut::Turn,
         _ => Cut::Nothing,
     }
-}
-
-/// Whether this row is a shell command rather than an agent.
-///
-/// A command's record has no vendor and stays at `starting` for its whole life,
-/// since nothing reports on it. The same test [`crate::derive`] uses.
-fn runs_a_command(view: &View) -> bool {
-    view.meta.agent.is_none() && view.state.state == Phase::Starting
 }
 
 /// Record the interrupt, before the key is sent.

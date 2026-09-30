@@ -456,7 +456,7 @@ fn reads_its_own_record(vendor: Option<&Vendor>) -> bool {
 /// A command spawn writes no vendor (see [`crate::verbs::new`]), and nothing
 /// moves a command's phase off `starting` until it exits. A record with no
 /// vendor at another phase is an agent written by an older amx.
-fn runs_a_command(meta: &Meta, state: &State) -> bool {
+pub(crate) fn runs_a_command(meta: &Meta, state: &State) -> bool {
     meta.agent.is_none() && state.state == Phase::Starting
 }
 
