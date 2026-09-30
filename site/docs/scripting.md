@@ -320,6 +320,15 @@ copy of claude by hand from its shell, that copy inherits `AMX_ID` and its
 hooks would report as the parent. Set `AMX_NESTED=1` for it and its hooks stay
 silent.
 
+A spawner can keep a variable to the one agent it starts. List the names in
+`AMX_SCOPE` when running `amx new` or `amx sub`: the agent gets them, and
+`AMX_SCOPED` in its pane names them, so any agent started from that pane leaves
+them behind unless its own spawner scopes them again.
+
+```sh
+WORKFLOW_TASK=plan/t1 AMX_SCOPE=WORKFLOW_TASK amx new "do task t1"
+```
+
 ## Teaching an agent to use amx
 
 The repository ships a skill, `skill/amx/SKILL.md`, that teaches a coding

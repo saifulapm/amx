@@ -88,15 +88,42 @@ pub struct Handoff {
     pub command: Vec<String>,
 }
 
+/// Where a spawner names the variables it sets for this one agent and not
+/// for anything that agent starts: space-separated names.
+pub const SCOPE_ENV: &str = "AMX_SCOPE";
+
+/// Where an agent is told which of its variables were its own alone, so a
+/// spawn from its pane leaves them behind.
+pub const SCOPED_ENV: &str = "AMX_SCOPED";
+
 /// The environment an agent inherits from the one `new` ran in.
 ///
 /// Drops the calling pane's variables and every vendor's session markers: a
 /// vendor that sees its spawner's markers thinks it is a child session and
-/// keeps no transcript.
+/// keeps no transcript. Drops too what the calling pane's own spawner scoped
+/// to it ([`SCOPED_ENV`]), unless this spawn scopes the same name again
+/// ([`SCOPE_ENV`]); what this spawn scopes becomes the agent's
+/// [`SCOPED_ENV`]. An orchestrator's task id or scratch directory is the
+/// worker's, and an agent the worker starts by hand is not that task.
 pub fn env_snapshot(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
-    vars.into_iter()
+    let vars: Vec<(String, String)> = vars.into_iter().collect();
+    let names = |key: &str| -> Vec<String> {
+        vars.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let (scope, scoped) = (names(SCOPE_ENV), names(SCOPED_ENV));
+    let mut snapshot: BTreeMap<String, String> = vars
+        .into_iter()
         .filter(|(name, _)| !NOT_INHERITED.contains(&name.as_str()) && !marks_a_session(name))
-        .collect()
+        .filter(|(name, _)| name != SCOPE_ENV && name != SCOPED_ENV)
+        .filter(|(name, _)| !scoped.contains(name) || scope.contains(name))
+        .collect();
+    if !scope.is_empty() {
+        snapshot.insert(SCOPED_ENV.to_string(), scope.join(" "));
+    }
+    snapshot
 }
 
 /// Every vendor's session-marker variables.
@@ -832,6 +859,36 @@ mod tests {
                 "{gone} describes where the command was typed, not where the agent runs"
             );
         }
+    }
+
+    #[test]
+    fn spawn_a_variable_scoped_to_the_calling_pane_stays_behind() {
+        // An orchestrator starts its worker with a task id scoped to it.
+        let worker = env_snapshot(vars(&[
+            ("PATH", "/usr/bin"),
+            ("WORKFLOW_TASK", "plan/t1"),
+            ("TMPDIR", "/runs/plan/t1.tmp"),
+            ("AMX_SCOPE", "WORKFLOW_TASK TMPDIR"),
+        ]));
+        assert_eq!(worker.get("WORKFLOW_TASK").unwrap(), "plan/t1");
+        assert_eq!(worker.get("AMX_SCOPED").unwrap(), "WORKFLOW_TASK TMPDIR");
+        assert!(!worker.contains_key("AMX_SCOPE"));
+
+        // An agent the worker starts by hand is not that task.
+        let nested = env_snapshot(worker.clone());
+        assert_eq!(nested.get("PATH").unwrap(), "/usr/bin");
+        for gone in ["WORKFLOW_TASK", "TMPDIR", "AMX_SCOPED"] {
+            assert!(!nested.contains_key(gone), "{gone}: {nested:?}");
+        }
+
+        // A spawner inside that pane may scope a name again, for its own child.
+        let mut again = worker;
+        again.insert("WORKFLOW_TASK".into(), "plan/t1-reader".into());
+        again.insert("AMX_SCOPE".into(), "WORKFLOW_TASK".into());
+        let reader = env_snapshot(again);
+        assert_eq!(reader.get("WORKFLOW_TASK").unwrap(), "plan/t1-reader");
+        assert!(!reader.contains_key("TMPDIR"));
+        assert_eq!(reader.get("AMX_SCOPED").unwrap(), "WORKFLOW_TASK");
     }
 
     #[test]
