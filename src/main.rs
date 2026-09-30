@@ -31,7 +31,6 @@ mod role;
 mod rules;
 mod shade;
 mod spawn;
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod store;
 mod theme;
 #[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
