@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use crate::config::{self, Config};
 use crate::store::{Agent, now};
 use crate::tmux::{self, PaneId, Server, SessionId};
 use crate::tui::rows::{self, Arrangement, Group};
@@ -50,9 +49,8 @@ pub enum Aim {
 /// Run the verb against the machine.
 pub fn from_env(aim: &Aim) -> Result<i32> {
     let root = paths::state_root()?;
-    // Attaching may resume the agent, which needs the config for the caps and
-    // this environment to run in, as `new` and `resume` do.
-    let config = config::current();
+    // Attaching may resume the agent, which needs this environment to run in,
+    // as `new` and `resume` do.
     let env = spawn::env_snapshot(std::env::vars());
     let inside = std::env::var("TMUX").ok().filter(|v| !v.is_empty());
 
@@ -71,7 +69,7 @@ pub fn from_env(aim: &Aim) -> Result<i32> {
         }
     };
 
-    run(&root, config, &id, &env, inside.as_deref())
+    run(&root, &id, &env, inside.as_deref())
 }
 
 /// The agent whose session this command runs in, if the wall holds it.
@@ -168,7 +166,6 @@ fn pick(
 /// Attach to `id`, from inside tmux or from outside it.
 pub fn run(
     root: &Path,
-    config: &Config,
     id: &str,
     env: &BTreeMap<String, String>,
     inside: Option<&str>,
@@ -177,7 +174,7 @@ pub fn run(
     let mut meta = agent.meta()?;
 
     if !Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
-        match resume::again(root, config, id, env)? {
+        match resume::picked_up(root, id, None, env)? {
             // The resume wrote a new pane on the record.
             Comeback::Back => meta = agent.meta()?,
             Comeback::No(why) => bail!("{why}"),

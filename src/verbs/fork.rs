@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
-use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
 use crate::vendor::{Capability, ForkSpec, Resume, Vendor};
@@ -29,8 +28,8 @@ const FORKED: &str = "fork";
 
 /// Run the verb against the machine.
 ///
-/// The caller's config is unused: caps come from the origin's project.
-pub fn from_env(_config: &Config, id: &str, task: Option<&str>) -> Result<i32> {
+/// Caps come from the origin's project config.
+pub fn from_env(id: &str, task: Option<&str>) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();

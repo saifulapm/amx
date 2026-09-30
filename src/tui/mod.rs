@@ -1057,7 +1057,7 @@ where
                 // Collapse a run of pointer movements into one.
                 let (rest, ended) = at_rest(keys, mouse);
                 held = ended;
-                screen.moused(rest, root, config, here.as_ref())?
+                screen.moused(rest, root, here.as_ref())?
             }
             Typed::Paste(text) => {
                 screen.pasted(&text, config);
@@ -1785,13 +1785,13 @@ impl Screen {
                 } else if self.list.on_fold() {
                     self.list.unfold();
                 } else {
-                    return self.bring_forward(root, config, here);
+                    return self.bring_forward(root, here);
                 }
             }
             // alt+1 to alt+9 go to the nth agent on the wall.
             KeyCode::Char(digit @ '1'..='9') if alt => {
                 let at = digit.to_digit(10).unwrap_or_default() as usize;
-                return self.reach_the_nth(at, root, config, here);
+                return self.reach_the_nth(at, root, here);
             }
             // The first agent waiting on the user.
             KeyCode::Char('w') if plain => self.land_on_what_needs_you(),
@@ -2325,13 +2325,7 @@ impl Screen {
     /// Put the agent just started in front of the user.
     ///
     /// Read from its record, since the wall's reading predates the agent.
-    fn landing(
-        &mut self,
-        root: &Path,
-        config: &Config,
-        id: &str,
-        here: Option<&Here>,
-    ) -> Result<Doing> {
+    fn landing(&mut self, root: &Path, id: &str, here: Option<&Here>) -> Result<Doing> {
         let view = match derive::view(root, id, now()) {
             Ok(view) => view,
             // The agent runs either way; report the error and stay open.
@@ -2341,7 +2335,7 @@ impl Screen {
             }
         };
 
-        let reached = reach(root, config, here, &view)?;
+        let reached = reach(root, here, &view)?;
         Ok(self.arrived(id.to_string(), reached))
     }
 
@@ -2357,17 +2351,12 @@ impl Screen {
     }
 
     /// Go to the selected agent: enter or a click on a row.
-    fn bring_forward(
-        &mut self,
-        root: &Path,
-        config: &Config,
-        here: Option<&Here>,
-    ) -> Result<Doing> {
+    fn bring_forward(&mut self, root: &Path, here: Option<&Here>) -> Result<Doing> {
         let Some(view) = self.list.selected() else {
             return Ok(Doing::Carry);
         };
         let id = view.id().to_string();
-        let reached = reach(root, config, here, view)?;
+        let reached = reach(root, here, view)?;
         // A resumed agent is in a pane this reading does not know.
         self.acted();
         Ok(self.arrived(id, reached))
@@ -2376,13 +2365,7 @@ impl Screen {
     /// Go to the `at`th agent on the wall, counted from the top.
     ///
     /// Headings, the fold and agents in shut groups are not counted.
-    fn reach_the_nth(
-        &mut self,
-        at: usize,
-        root: &Path,
-        config: &Config,
-        here: Option<&Here>,
-    ) -> Result<Doing> {
+    fn reach_the_nth(&mut self, at: usize, root: &Path, here: Option<&Here>) -> Result<Doing> {
         let nth = self
             .list
             .items()
@@ -2397,7 +2380,7 @@ impl Screen {
         };
 
         let id = view.id().to_string();
-        let reached = reach(root, config, here, view)?;
+        let reached = reach(root, here, view)?;
         self.acted();
         Ok(self.arrived(id, reached))
     }
@@ -2477,7 +2460,7 @@ impl Screen {
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
                 if follow {
-                    return self.landing(root, config, &id, here);
+                    return self.landing(root, &id, here);
                 }
                 // Land on the new agent once a reading includes it.
                 self.started = Some(id);
@@ -3002,13 +2985,7 @@ impl Screen {
     /// A left drag selects and copies the cells it covers, since mouse capture
     /// takes away the terminal's own selection. The press records where it
     /// started; the release tells a click (same cell) from a drag.
-    fn moused(
-        &mut self,
-        mouse: MouseEvent,
-        root: &Path,
-        config: &Config,
-        here: Option<&Here>,
-    ) -> Result<Doing> {
+    fn moused(&mut self, mouse: MouseEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
         match mouse.kind {
             MouseEventKind::Moved => {
                 self.hover = self.line_under(mouse.column, mouse.row).filter(|at| {
@@ -3030,7 +3007,7 @@ impl Screen {
                 self.pressed_at = None;
                 match self.selection.take() {
                     Some((from, to)) if from != to => self.copied(from, to),
-                    _ => return self.clicked(mouse, root, config, here),
+                    _ => return self.clicked(mouse, root, here),
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
@@ -3049,13 +3026,7 @@ impl Screen {
     }
 
     /// A left click: pressed and released on the same cell.
-    fn clicked(
-        &mut self,
-        mouse: MouseEvent,
-        root: &Path,
-        config: &Config,
-        here: Option<&Here>,
-    ) -> Result<Doing> {
+    fn clicked(&mut self, mouse: MouseEvent, root: &Path, here: Option<&Here>) -> Result<Doing> {
         if !self.list_takes_the_mouse() {
             return Ok(Doing::Carry);
         }
@@ -3069,7 +3040,7 @@ impl Screen {
             Some(rows::Item::Agent(_)) => {
                 if self.list.land(at) {
                     self.moved();
-                    return self.bring_forward(root, config, here);
+                    return self.bring_forward(root, here);
                 }
             }
             Some(rows::Item::Heading(..)) => {
@@ -3471,14 +3442,14 @@ enum Reach {
 /// An agent with a session to continue is resumed into a fresh pane, as
 /// `amx attach` does; one with nothing to continue is refused with the
 /// reason.
-fn reach(root: &Path, config: &Config, here: Option<&Here>, view: &View) -> Result<Reach> {
+fn reach(root: &Path, here: Option<&Here>, view: &View) -> Result<Reach> {
     let server = Server::from_socket(view.meta.socket.clone());
     if server.pane_answers_for(&view.meta.pane, view.id()) {
         return Ok(noted(root, view.id(), reaching(server, here, view)?));
     }
 
     let env = spawn::env_snapshot(std::env::vars());
-    match verbs::resume::again(root, config, view.id(), &env)? {
+    match verbs::resume::picked_up(root, view.id(), None, &env)? {
         Comeback::No(why) => Ok(Reach::Say(Notice::Refused(why))),
         // Resuming moved the agent to a new pane, so read its record again.
         Comeback::Back => {

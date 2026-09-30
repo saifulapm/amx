@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, State};
 use crate::tmux::Server;
@@ -39,24 +38,12 @@ pub enum Comeback {
     No(String),
 }
 
-/// Resume an agent whose pane is gone, for `amx attach` and the view's enter
-/// key.
+/// Resume an agent whose pane is gone, with an optional first message.
 ///
-/// The caller has already found the pane gone. A missing session or handoff
-/// and a full cap come back as [`Comeback::No`]; anything else is an error.
-pub fn again(
-    root: &Path,
-    _config: &Config,
-    id: &str,
-    env: &BTreeMap<String, String>,
-) -> Result<Comeback> {
-    picked_up(root, id, None, env)
-}
-
-/// [`again`], with an optional first message for the resumed agent.
-///
-/// The view sends what was typed at an ended agent's card here. The message
-/// rides the vendor argv, as with `amx resume <id> <message>`.
+/// For `amx attach` and the view. The caller has already found the pane gone.
+/// A missing session or handoff and a full cap come back as
+/// [`Comeback::No`]; anything else is an error. The message rides the vendor
+/// argv, as with `amx resume <id> <message>`.
 pub fn picked_up(
     root: &Path,
     id: &str,
@@ -88,13 +75,8 @@ pub fn can_come_back(meta: &Meta, dir: &Path) -> bool {
 
 /// Run the verb against the machine.
 ///
-/// The caller's config is unused: caps come from the agent's own project.
-pub fn from_env(
-    _config: &Config,
-    id: Option<&str>,
-    message: Option<&str>,
-    all: bool,
-) -> Result<i32> {
+/// Caps come from the agent's own project config.
+pub fn from_env(id: Option<&str>, message: Option<&str>, all: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();

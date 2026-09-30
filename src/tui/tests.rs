@@ -6521,9 +6521,7 @@ fn acts_the_view_reaches_an_agent_it_started_by_reading_the_record_again() {
 
     // Read from the record: the list is a reading old and does not know the new
     // agent.
-    screen
-        .landing(root.path(), &Config::default(), "first-a1b", None)
-        .unwrap();
+    screen.landing(root.path(), "first-a1b", None).unwrap();
     let Some(Notice::Refused(said)) = &screen.notice else {
         panic!("nothing was said about where the agent went")
     };
@@ -6541,9 +6539,7 @@ fn acts_enter_on_an_agent_with_nothing_to_continue_says_which_is_missing() {
     finished(root.path(), "first-a1b", "wrote the parser", 60);
     let view = derive::view(root.path(), "first-a1b", now()).unwrap();
 
-    let Reach::Say(Notice::Refused(said)) =
-        reach(root.path(), &Config::default(), None, &view).unwrap()
-    else {
+    let Reach::Say(Notice::Refused(said)) = reach(root.path(), None, &view).unwrap() else {
         panic!("an agent with nothing to continue was reached anyway")
     };
     assert!(
@@ -6638,23 +6634,15 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
 
 /// A left click: the press records the position and the release acts, since a
 /// click and the start of a drag look the same until the button comes up.
-fn click(
-    screen: &mut Screen,
-    column: u16,
-    row: u16,
-    root: &Path,
-    config: &Config,
-) -> Result<Doing> {
+fn click(screen: &mut Screen, column: u16, row: u16, root: &Path) -> Result<Doing> {
     screen.moused(
         mouse(MouseEventKind::Down(MouseButton::Left), column, row),
         root,
-        config,
         None,
     )?;
     screen.moused(
         mouse(MouseEventKind::Up(MouseButton::Left), column, row),
         root,
-        config,
         None,
     )
 }
@@ -6684,7 +6672,6 @@ fn a_frame_of(screen: &mut Screen, size: (u16, u16)) {
 #[test]
 fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
     let root = TempDir::new().unwrap();
-    let config = Config::default();
     let mut screen = watching(vec![
         finished_saying("done-a1b", "the first answer"),
         finished_saying("done-b2c", "the second answer"),
@@ -6695,26 +6682,25 @@ fn mouse_click_selects_the_row_and_toggles_the_heading_under_the_pointer() {
     // The second agent's row, two under the heading on row 3. The cursor lands
     // before the click tries to reach the window; with no record to resume, the
     // reach itself is left to the e2e tests.
-    let _ = click(&mut screen, 5, 5, root.path(), &config);
+    let _ = click(&mut screen, 5, 5, root.path());
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
 
     // A click on the heading shuts the group, and another opens it.
     a_frame(&mut screen);
-    click(&mut screen, 5, 3, root.path(), &config).unwrap();
+    click(&mut screen, 5, 3, root.path()).unwrap();
     assert_eq!(
         screen.list.items().len(),
         1,
         "the rows are behind the count"
     );
     a_frame(&mut screen);
-    click(&mut screen, 5, 3, root.path(), &config).unwrap();
+    click(&mut screen, 5, 3, root.path()).unwrap();
     assert_eq!(screen.list.items().len(), 3);
 }
 
 #[test]
 fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
     let root = TempDir::new().unwrap();
-    let config = Config::default();
     // Two finished agents past the fold: a heading, the rows the group shows
     // and the fold under them, on a screen tall enough for all of it.
     let height = (rows::FOLD_AT + 10) as u16;
@@ -6731,14 +6717,7 @@ fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
     );
 
     // The fold is the row under the drawn agents; the list starts on row 3.
-    click(
-        &mut screen,
-        5,
-        (rows::FOLD_AT + 4) as u16,
-        root.path(),
-        &config,
-    )
-    .unwrap();
+    click(&mut screen, 5, (rows::FOLD_AT + 4) as u16, root.path()).unwrap();
     assert_eq!(
         screen.list.items().len(),
         rows::FOLD_AT + 3,
@@ -6748,14 +6727,7 @@ fn mouse_click_on_the_fold_unfolds_it_and_elsewhere_does_nothing() {
     // A click past the end of the list lands on nothing and moves nothing.
     let before = screen.list.selected().unwrap().id().to_string();
     a_frame_of(&mut screen, (60, height));
-    click(
-        &mut screen,
-        5,
-        (rows::FOLD_AT + 7) as u16,
-        root.path(),
-        &config,
-    )
-    .unwrap();
+    click(&mut screen, 5, (rows::FOLD_AT + 7) as u16, root.path()).unwrap();
     assert_eq!(screen.list.selected().unwrap().id(), before);
 }
 
@@ -6782,7 +6754,6 @@ fn mouse_click_on_a_row_reaches_for_the_agents_window_like_enter() {
 #[test]
 fn mouse_hover_tints_a_name_and_moves_no_cursor() {
     let root = TempDir::new().unwrap();
-    let config = Config::default();
     let mut screen = watching(vec![
         finished_saying("done-a1b", "the first answer"),
         finished_saying("done-b2c", "the second answer"),
@@ -6790,12 +6761,7 @@ fn mouse_hover_tints_a_name_and_moves_no_cursor() {
     a_frame(&mut screen);
     let resting = |screen: &mut Screen, column, row| {
         screen
-            .moused(
-                mouse(MouseEventKind::Moved, column, row),
-                root.path(),
-                &config,
-                None,
-            )
+            .moused(mouse(MouseEventKind::Moved, column, row), root.path(), None)
             .unwrap();
     };
 
@@ -6828,12 +6794,7 @@ fn ctrl_x_is_read_on_the_row_or_heading_under_the_pointer() {
     // With the pointer on the other row, the press lands the cursor there and
     // arms that row.
     screen
-        .moused(
-            mouse(MouseEventKind::Moved, 5, 5),
-            root.path(),
-            &config,
-            None,
-        )
+        .moused(mouse(MouseEventKind::Moved, 5, 5), root.path(), None)
         .unwrap();
     screen
         .pressed(ctrl('x'), root.path(), &config, None)
@@ -6843,12 +6804,7 @@ fn ctrl_x_is_read_on_the_row_or_heading_under_the_pointer() {
 
     // On the heading, the press belongs to the group.
     screen
-        .moused(
-            mouse(MouseEventKind::Moved, 5, 3),
-            root.path(),
-            &config,
-            None,
-        )
+        .moused(mouse(MouseEventKind::Moved, 5, 3), root.path(), None)
         .unwrap();
     screen
         .pressed(ctrl('x'), root.path(), &config, None)
@@ -6872,12 +6828,7 @@ fn space_opens_the_card_on_the_row_under_the_pointer() {
 
     let resting = |screen: &mut Screen, row| {
         screen
-            .moused(
-                mouse(MouseEventKind::Moved, 5, row),
-                root.path(),
-                &config,
-                None,
-            )
+            .moused(mouse(MouseEventKind::Moved, 5, row), root.path(), None)
             .unwrap();
     };
     let press = |screen: &mut Screen, code| {
@@ -6931,12 +6882,7 @@ fn a_key_press_retires_the_pointer_and_the_next_movement_brings_it_back() {
 
     let resting = |screen: &mut Screen, row| {
         screen
-            .moused(
-                mouse(MouseEventKind::Moved, 5, row),
-                root.path(),
-                &config,
-                None,
-            )
+            .moused(mouse(MouseEventKind::Moved, 5, row), root.path(), None)
             .unwrap();
     };
     let press = |screen: &mut Screen, code| {
@@ -6973,19 +6919,13 @@ fn a_key_press_retires_the_pointer_and_the_next_movement_brings_it_back() {
 #[test]
 fn going_into_an_agent_retires_the_pointer() {
     let root = TempDir::new().unwrap();
-    let config = Config::default();
     let mut screen = watching(vec![
         finished_saying("done-a1b", "the first answer"),
         finished_saying("done-b2c", "the second answer"),
     ]);
     a_frame(&mut screen);
     screen
-        .moused(
-            mouse(MouseEventKind::Moved, 5, 5),
-            root.path(),
-            &config,
-            None,
-        )
+        .moused(mouse(MouseEventKind::Moved, 5, 5), root.path(), None)
         .unwrap();
     assert_eq!(screen.hover, Some(2));
 
@@ -7118,7 +7058,6 @@ fn a_tall_wall() -> Vec<View> {
 #[test]
 fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     let root = TempDir::new().unwrap();
-    let config = Config::default();
     let mut screen = watching(a_tall_wall());
     a_frame(&mut screen);
     let on = screen.list.cursor();
@@ -7127,22 +7066,12 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     // the cursor stays (now above the band), and the hover goes with the rows
     // that moved.
     screen
-        .moused(
-            mouse(MouseEventKind::Moved, 5, 5),
-            root.path(),
-            &config,
-            None,
-        )
+        .moused(mouse(MouseEventKind::Moved, 5, 5), root.path(), None)
         .unwrap();
     assert!(screen.hover.is_some(), "the pointer is on a row");
     for _ in 0..3 {
         screen
-            .moused(
-                mouse(MouseEventKind::ScrollDown, 5, 5),
-                root.path(),
-                &config,
-                None,
-            )
+            .moused(mouse(MouseEventKind::ScrollDown, 5, 5), root.path(), None)
             .unwrap();
     }
     a_frame(&mut screen);
@@ -7154,7 +7083,7 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     // starts on row 3, which is the window's top item. Reaching the window
     // after the landing fails for lack of a record, which is not under test
     // here.
-    let _ = click(&mut screen, 5, 3, root.path(), &config);
+    let _ = click(&mut screen, 5, 3, root.path());
     assert_eq!(
         screen.list.selected().unwrap().id(),
         "row-02-a1b",
@@ -7170,12 +7099,7 @@ fn mouse_wheel_scrolls_the_wall_and_leaves_the_cursor_where_it_was() {
     // Wheel-up past the top stops at the top.
     for _ in 0..9 {
         screen
-            .moused(
-                mouse(MouseEventKind::ScrollUp, 5, 5),
-                root.path(),
-                &config,
-                None,
-            )
+            .moused(mouse(MouseEventKind::ScrollUp, 5, 5), root.path(), None)
             .unwrap();
     }
     a_frame(&mut screen);
@@ -7256,7 +7180,7 @@ fn mouse_wheel_pages_the_card_under_the_pointer_and_scrolls_the_list_beside_it()
     a_frame_of(&mut screen, (60, 20));
     let wheel = |screen: &mut Screen, kind, column, row| {
         screen
-            .moused(mouse(kind, column, row), root.path(), &config, None)
+            .moused(mouse(kind, column, row), root.path(), None)
             .unwrap();
     };
 
@@ -7312,14 +7236,9 @@ fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
     screen.mode = Mode::Typing(Composer::new(Asking::Task));
     a_frame(&mut screen);
 
-    click(&mut screen, 5, 5, root.path(), &config).unwrap();
+    click(&mut screen, 5, 5, root.path()).unwrap();
     screen
-        .moused(
-            mouse(MouseEventKind::ScrollDown, 5, 5),
-            root.path(),
-            &config,
-            None,
-        )
+        .moused(mouse(MouseEventKind::ScrollDown, 5, 5), root.path(), None)
         .unwrap();
     assert_eq!(
         screen.list.selected().unwrap().id(),
@@ -7343,7 +7262,7 @@ fn mouse_clicks_are_the_lists_alone_while_a_line_is_being_typed() {
         .unwrap();
     assert!(screen.answering().is_some(), "the card's line is up");
     a_frame(&mut screen);
-    let _ = click(&mut screen, 5, 5, root.path(), &config);
+    let _ = click(&mut screen, 5, 5, root.path());
     assert_eq!(screen.list.selected().unwrap().id(), "done-b2c");
     assert_eq!(
         screen.card.as_ref().map(|card| card.id.as_str()),

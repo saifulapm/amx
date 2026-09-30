@@ -87,7 +87,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
     match &cli.command {
         Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
         Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
-        Some(cli::Command::New(args)) => finish(verbs::new::from_env(config, args)),
+        Some(cli::Command::New(args)) => finish(verbs::new::from_env(args)),
         Some(cli::Command::Sub(args)) => finish(verbs::sub::from_env(args)),
         Some(cli::Command::Ls { json, dir }) => finish(verbs::ls::from_env(
             *json,
@@ -154,15 +154,12 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
             finish(verbs::diff::from_env(id, *stat, from.as_deref()))
         }
         Some(cli::Command::Resume { id, message, all }) => finish(verbs::resume::from_env(
-            config,
             id.as_deref(),
             message.as_deref(),
             *all,
         )),
         Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
-        Some(cli::Command::Fork { id, task }) => {
-            finish(verbs::fork::from_env(config, id, task.as_deref()))
-        }
+        Some(cli::Command::Fork { id, task }) => finish(verbs::fork::from_env(id, task.as_deref())),
         Some(cli::Command::Events { ids, follow, json }) => {
             finish(verbs::events::from_env(ids, *follow, *json))
         }

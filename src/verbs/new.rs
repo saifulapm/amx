@@ -215,7 +215,7 @@ fn carrying(config: &Config, agent: String) -> String {
 }
 
 /// Runs the verb from the command line.
-pub fn from_env(_config: &Config, args: &NewArgs) -> Result<i32> {
+pub fn from_env(args: &NewArgs) -> Result<i32> {
     let root = paths::state_root()?;
     // Absolute before anything reads it, so the record and the cap count
     // match records started from inside that directory.
