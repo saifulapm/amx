@@ -1,27 +1,14 @@
-//! `amx clear` — forget the rows that are over.
+//! `amx clear`: forget every agent that has ended.
 //!
-//! [`sweep`](super::sweep) takes the agents somebody else established are done
-//! with: a request the forge settled, a branch git reads as in the main line.
-//! Most of what fills a wall is none of those. A row somebody stopped, a
-//! command that ran and exited, an agent that was never given a branch to land
-//! anything on — nothing outside amx will ever have an opinion about them, so
-//! nothing outside amx can say when their records go. Without this verb they
-//! go one `ctrl+x` or one `amx stop --delete` at a time, which on a wall of
-//! sixty is why they do not go at all.
+//! Where [`sweep`](super::sweep) takes only agents whose work landed, this
+//! takes every ended row (stopped, failed, done), lists each with its reason,
+//! and asks once for the whole list. A row whose work landed goes the sweep's
+//! way (tree, branch and record); any other goes the way the view's `ctrl+x`
+//! takes it (record and tree, branch kept). An idle agent is not ended: its
+//! session can still take a turn.
 //!
-//! So the two verbs are the same shape over different lists: everything
-//! finished is listed with the reason it is finished, one question covers the
-//! list, and then each row is taken the way its own evidence says to — the
-//! sweep's way where the work landed, and otherwise the way `ctrl+x` takes one
-//! row, which is the record and a tree amx cut, with the branch left standing.
-//!
-//! An agent sitting at its prompt is not finished. It has a session somebody
-//! can still send a turn to, and the whole cost of leaving it on the wall is a
-//! row; the whole cost of getting it wrong is a conversation nobody can reach
-//! again.
-//!
-//! The one law it will not break is `stop`'s: a tree holding work no commit
-//! has is never removed, and neither is the record that names it.
+//! - A worktree holding uncommitted work is never removed, and neither is the
+//!   record that names it.
 
 use anyhow::{Result, bail};
 use std::io::{BufRead, Write};
@@ -35,10 +22,9 @@ use crate::{exit, paths, spawn, store, worktree};
 
 /// What taking one row came to.
 pub enum Taken {
-    /// The record is gone, and the tree amx cut with it.
+    /// The record and its tree are gone.
     Gone,
-    /// Both are still here, because this tree holds work no commit has or git
-    /// would not remove it.
+    /// Both stay: the tree holds uncommitted work or git would not remove it.
     Holding(PathBuf),
 }
 
@@ -73,8 +59,7 @@ pub fn run(
         return Ok(exit::OK);
     }
 
-    // A row that will not go is said and passed by: the rest of the list is
-    // still what was asked for.
+    // A row that fails is reported and the rest of the list still goes.
     let mut failed = false;
     for (at, _) in &rows {
         let view = &views[*at];
@@ -98,16 +83,11 @@ pub fn run(
     })
 }
 
-/// Which of these rows are finished, and why each one is on the list.
+/// The index of each ended view, with the reason it is listed.
 ///
-/// Where the work landed the reason is the sweep's own — `#12 merged` — read
-/// off what the last look wrote down and never off a network: this is what the
-/// view presses for too, and a press must not stand still while a forge
-/// answers. Everywhere else the reason is the phase, which is all there is to
-/// say about a row that stopped.
-///
-/// The index rather than the view, because the caller has the views and the
-/// view has no place on the wall until somebody counts them.
+/// The reason is the sweep's where the work landed (`#12 merged`), read from
+/// what is written down and never from the network, since the view calls this
+/// on a key press. Otherwise it is the phase.
 pub fn finished_rows(views: &[View]) -> Vec<(usize, String)> {
     views
         .iter()
@@ -120,22 +100,16 @@ pub fn finished_rows(views: &[View]) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// Take one finished row the way its own evidence says to.
+/// Take one ended row: tree, branch and record where the work landed, else the
+/// record and the tree with the branch kept.
 ///
-/// Work that landed goes the sweep's way — the tree, the branch and the record
-/// together, since the repository holds every commit that was on it. Work that
-/// did not keeps its branch: nothing here says it is safe to lose, and a
-/// branch costs a line in `git branch`.
-///
-/// What the ladder says as it goes is dropped. Both doors this is behind print
-/// their own sentence about the whole list, and neither has room for the run
-/// of lines `stop` writes per agent.
+/// `stop`'s per-agent output is discarded; both callers print one line per row.
 pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     if sweep::why_landed(view).is_none() {
         return forget_row(root, view);
     }
-    // Asked again under the writer, which is then let go: the stop behind the
-    // sweep takes it for itself. What it would read is what was just asked.
+    // Checked under the writer, then released: the stop behind the sweep
+    // takes the writer itself.
     let meta = {
         let agent = Agent::open(root, view.id())?;
         let _writer = agent.writer()?;
@@ -145,8 +119,7 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
         return Ok(Taken::Holding(tree));
     }
     sweep::take_landed(root, &meta, &mut std::io::sink())?;
-    // The stop behind the sweep keeps a tree git would not remove, and the
-    // record with it.
+    // The stop keeps a tree git would not remove, and the record with it.
     Ok(match meta.worktree.as_ref().filter(|tree| tree.exists()) {
         Some(tree) => Taken::Holding(tree.clone()),
         None => {
@@ -156,16 +129,14 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     })
 }
 
-/// Forget a row whose work went nowhere: its record, and the tree amx gave it.
+/// Remove a row whose work did not land: its record and the tree amx cut.
 ///
-/// A tree holding work no commit has keeps both. Its record is where the
-/// branch and the commit that tree was cut from are named, and a tree nothing
-/// names is work nobody will find again.
+/// A tree holding uncommitted work keeps both, since the record is what names
+/// its branch and base.
 ///
-/// The writer is taken before anything is decided and held until the record
-/// is gone. The row was read before somebody said yes, and a resume in
-/// between takes the writer too: it either finished first and the record
-/// reads as running, or it waits and finds nothing to resume.
+/// The writer is held from the check until the record is gone. A resume
+/// between the listing and the yes takes the writer too, so either it
+/// finished first and the row reads as running, or it finds no record.
 pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
     let agent = Agent::open(root, view.id())?;
     let _writer = agent.writer()?;
@@ -181,8 +152,7 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
         if worktree::remove(&repo, tree).is_err() {
             return Ok(Taken::Holding(tree.clone()));
         }
-        // And its key in the vendor's store with it, the way `stop` takes it:
-        // the caller has one line to say what happened to the whole list.
+        // And the tree's entry in the vendor's store, as `stop` does.
         stop::forget(&meta, tree, &mut std::io::sink())?;
     }
 
@@ -191,12 +161,11 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
     Ok(Taken::Gone)
 }
 
-/// The record as it is now, if it is still finished; asked under its writer.
+/// The record's meta, or an error if the agent is no longer ended. Call under
+/// the writer.
 ///
-/// Finished the way the reader reads it: a pane that still answers for the
-/// agent is somebody's to read whatever the phase on the record says, and is
-/// what a resume leaves behind it. With no pane, a phase that is not terminal
-/// reads as stopped unless amx let the pane go and means to bring it back.
+/// A live pane means the agent was resumed, whatever the phase says. With no
+/// pane, a non-terminal phase reads as stopped unless the agent is parked.
 fn still_over(agent: &Agent) -> Result<Meta> {
     let meta = agent.meta()?;
     let state = agent.state()?;
@@ -209,20 +178,13 @@ fn still_over(agent: &Agent) -> Result<Meta> {
     Ok(meta)
 }
 
-/// The tree this row will not give up, if it has one.
-///
-/// A tree amx cannot read is read as dirty: the answer that keeps the work is
-/// the answer to give when git will not say.
+/// The row's tree, if it holds uncommitted work (or git cannot say).
 pub fn holding(meta: &Meta) -> Option<PathBuf> {
     let tree = meta.worktree.as_ref()?;
     stop::holds_work(tree).then(|| tree.clone())
 }
 
-/// The one question, asked once for the whole list.
-///
-/// It reads the way every other question amx asks reads: the default is the
-/// one that loses nothing, and anything that is not plainly yes — a shrug, a
-/// typo, nobody there at all — takes it.
+/// Ask once for the whole list. Anything but yes, including no input, is no.
 fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Result<bool> {
     stop::confirm(&format!("clear {count}?"), false, input, out)
 }
@@ -236,8 +198,7 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// git as the tests run it: none of the developer's own configuration and
-    /// an identity of its own.
+    /// Run git with no user or system config and a fixed identity.
     fn git(dir: &Path, args: &[&str]) {
         let out = Command::new("git")
             .current_dir(dir)
@@ -272,9 +233,8 @@ mod tests {
         dir
     }
 
-    /// An agent that has finished, in a clean tree of its own cut in `repo`.
-    /// With its branch named the branch is in the main line, so the row goes
-    /// the sweep's way; without, it is forgotten.
+    /// A done agent in a clean tree cut in `repo`. With `landed`, its branch is
+    /// on the record and already in main, so the row goes the sweep's way.
     fn a_finished_agent(root: &Path, repo: &Path, id: &str, landed: bool) -> PathBuf {
         let tree = worktree::create(repo, id, None).unwrap();
         let agent = Agent::create(
@@ -292,9 +252,7 @@ mod tests {
                 worktree: Some(tree.path.clone()),
                 branch: landed.then(|| tree.branch.clone()),
                 base: Some(tree.base.clone()),
-                // A socket no tmux server on this machine answers on: nothing
-                // here has a pane, and nothing here may signal one that is
-                // somebody's.
+                // No server listens here, so no real pane can be signalled.
                 socket: Socket::Name("amx-clear-tests".to_string()),
                 pane: PaneId::new("%1").unwrap(),
                 bg: false,
@@ -318,9 +276,8 @@ mod tests {
         tree.path
     }
 
-    /// Somebody at the prompt who, before typing yes, resumes these agents
-    /// from another shell: a pane placed for each, then the record pointed at
-    /// it and reset, under the writer.
+    /// Input that resumes `ids` (a new pane each, the record repointed under
+    /// the writer) before the yes is read.
     struct ResumedFirst<'a> {
         root: &'a Path,
         server: &'a Server,
@@ -377,8 +334,7 @@ mod tests {
         cleared.unwrap();
         let out = String::from_utf8(out).unwrap();
 
-        // All three were on the list, and were finished when it was read:
-        // one the sweep's way and two by their phase.
+        // All three were listed: one landed, two by phase.
         assert!(
             out.contains("landed-c3d  amx/landed-c3d merged into main"),
             "{out}"
@@ -386,24 +342,21 @@ mod tests {
         for id in ["forgotten-a1b", "left-e5f"] {
             assert!(out.contains(&format!("{id}  done")), "{out}");
         }
-        // The two that came back keep their records and their trees, and
-        // stay running.
+        // The two resumed rows keep their records and trees and stay running.
         for (id, tree) in [("forgotten-a1b", &forgotten), ("landed-c3d", &landed)] {
             assert!(tree.exists(), "{id}'s tree: {out}");
             let agent = Agent::open(root.path(), id).expect("its record");
             assert_eq!(agent.state().unwrap().state, Phase::Starting, "{id}");
             assert!(out.contains(&format!("could not clear {id}")), "{out}");
         }
-        // The one nobody touched went.
         assert!(!left.exists(), "{out}");
         assert_eq!(store::list(root.path()).unwrap().len(), 2);
     }
 
     #[test]
     fn clear_kills_a_session_remain_on_exit_left_standing_for_the_record() {
-        // A pane an older amx placed under a tmux.conf that keeps dead panes:
-        // not the record's pane any more, but still holding the name a resume
-        // opens a session under.
+        // A dead pane kept by `remain-on-exit`: no longer the record's pane,
+        // but holding the session name a resume would open.
         let repo = a_repo();
         let root = TempDir::new().unwrap();
         a_finished_agent(root.path(), repo.path(), "lingers-a1b", false);

@@ -1,31 +1,15 @@
-//! `amx sweep` — forget the agents whose work is in.
+//! `amx sweep`: remove the record, tree and branch of agents whose work landed.
 //!
-//! An agent that finished leaves three things behind: a record, a tree and a
-//! branch. Each of them is worth keeping while the work is still going
-//! somewhere — the record holds the answer, the tree holds the diff somebody
-//! may still want to read, the branch holds the commits. Once the request went
-//! in, or somebody merged the branch themselves, all three are a copy of
-//! history the repository already has, and clearing them one `amx stop` at a
-//! time is the chore that stops people from clearing them at all.
+//! An ended or idle agent on a branch is a candidate when one of three outside
+//! facts holds: its pull request is merged or closed, git reads the branch as
+//! merged into the main line, or the origin no longer has the branch (which is
+//! how a squash merge shows). The verb asks the forge where the written-down
+//! state is stale and fetches each repository once; the view's `c` reads only
+//! what is written down and never waits on the network. Candidates are listed
+//! with their reason and nothing is taken until the list is agreed to.
 //!
-//! What makes an agent a candidate is never amx's own opinion of the work. It
-//! is the forge saying the request is over, git saying every commit on the
-//! branch is in the main line, or the origin no longer having the branch at
-//! all: three facts somebody else established, and none of them can be
-//! established by a wall going quiet.
-//!
-//! The verb asks the forge itself where what the last look wrote down is
-//! stale, and fetches once per repository before it reads the third one. Both
-//! cost a moment, and both are what an operator who never opens the view is
-//! owed: the view keeps what is written down current for itself, and nothing
-//! keeps it current for anybody else. The view's own `c` is the opposite
-//! reading — what is written down, and never a wait.
-//!
-//! Nothing is swept without being listed first, with the reason it is on the
-//! list, and nothing at all is taken until that list has been agreed to. The
-//! one law it will not break for an answer is the law `stop` keeps: a tree
-//! holding work no commit has is never removed, and neither is the record that
-//! names it.
+//! - A worktree holding uncommitted work is never removed, and neither is the
+//!   record that names it.
 
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,35 +66,25 @@ pub fn run(
     Ok(exit::OK)
 }
 
-/// Why this agent is on the list, or nothing at all, without waiting on
-/// anything.
+/// Why this agent's work landed, if it did, without touching the network.
 ///
-/// What the view presses `c` for. The forge is asked only through what the last
-/// look wrote down, and the upstream only as git last recorded it: a press must
-/// not stand still while a network answers, and the view is the reader that
-/// keeps both of those worth reading.
+/// What the view's `c` asks. Requests come from what the last look wrote down
+/// and the upstream from what git last fetched; the view keeps both current.
 pub fn why_landed(view: &View) -> Option<String> {
     landed(view, pr::written)
 }
 
-/// The same, for the verb, which asks the forge where what is written down is
-/// stale.
+/// [`why_landed`] for the verb, asking the forge where the written-down state
+/// is stale.
 ///
-/// A sweep at a shell has nothing written down to fall back on: the operator
-/// who never opens the view has no pr.json beside any record, and every
-/// agent whose work went in through a request would sit on the wall forever.
-/// It can afford the question, too — it prints a list and waits for an answer
-/// anyway. The upstream is read after [`prune_origin`](worktree::prune_origin)
-/// has been run over the repository, which is [`run`]'s first act.
+/// Without the view running, no `pr.json` is ever written, so the verb has to
+/// ask. The upstream is current because [`run`] fetches every repository first.
 pub fn why_landed_asking(view: &View) -> Option<String> {
     landed(view, pr::asked_now)
 }
 
-/// The three facts, in the order they cost something to establish, with the
-/// requests read however the caller reads them.
-///
-/// A turn that is over or an agent sitting idle, on a branch of amx's cutting,
-/// whose work has landed.
+/// The reason an ended or idle agent's branch landed, trying the three facts
+/// cheapest first, with requests read through `requests`.
 fn landed(view: &View, requests: fn(&Meta) -> Vec<Pr>) -> Option<String> {
     if !finished(view.phase()) {
         return None;
@@ -121,19 +95,12 @@ fn landed(view: &View, requests: fn(&Meta) -> Vec<Pr>) -> Option<String> {
         .or_else(|| gone_from_origin(&view.meta, branch))
 }
 
-/// Bring every repository the walk is about to ask about up to date, once
-/// apiece.
+/// Fetch and prune origin once in every repository a candidate could come
+/// from, since git sees a deleted upstream branch only after a fetch.
 ///
-/// Without it `gone from origin` would be a week behind, since git records a
-/// deleted upstream only when somebody fetches. Once per repository rather
-/// than once per agent, because a wall of agents is usually a wall of trees
-/// cut in two or three checkouts, and only the agents a candidate could come
-/// from are worth the fetch at all.
-///
-/// A fetch that fails costs the third fact and nothing else — a network that
-/// is not there, a forge asking for a password nobody is here to type — so it
-/// is said once and the walk goes on. A repository with no origin is not that:
-/// [`prune_origin`](worktree::prune_origin) runs nothing there and says nothing.
+/// A failed fetch (no network, a credential prompt) only loses the "gone from
+/// origin" check, so it is a warning. A repository with no origin is skipped
+/// silently by [`prune_origin`](worktree::prune_origin).
 fn fetch_origins(views: &[View]) {
     for repo in repositories(views) {
         if let Err(e) = worktree::prune_origin(&repo) {
@@ -145,7 +112,7 @@ fn fetch_origins(views: &[View]) {
     }
 }
 
-/// The repositories a walk over these views would ask git about, once apiece.
+/// The repositories of the views that could be candidates, without duplicates.
 fn repositories(views: &[View]) -> Vec<PathBuf> {
     let mut fetched = BTreeSet::new();
     views
@@ -156,28 +123,18 @@ fn repositories(views: &[View]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// How long a repository is left alone after a fetch the view asked for.
-///
-/// Long enough that a wall open all day costs a handful of fetches per
-/// repository an hour, short enough that a branch deleted on the forge while
-/// you are reading the wall is on the list before you have finished reading it.
+/// The minimum time between two background fetches of one repository.
 const PRUNE_EVERY: Duration = Duration::from_secs(300);
 
-/// When each repository was last fetched for a view, so the next reading a
-/// second later does not fetch it again.
+/// When each repository was last fetched for the view.
 static PRUNED: Mutex<BTreeMap<PathBuf, Instant>> = Mutex::new(BTreeMap::new());
 
-/// The same fetch, for a reader that cannot wait: the view.
+/// The view's version of [`fetch_origins`]: fetch each candidate repository
+/// on a background thread, at most once every [`PRUNE_EVERY`], so `c` has a
+/// current upstream to read.
 ///
-/// `c` reads the upstream as git last recorded it and never waits on a network,
-/// which leaves `gone from origin` as stale as the last fetch somebody happened
-/// to run. This is what runs those fetches: while the view is open, every
-/// repository it has a candidate in is brought up to date in the background,
-/// once every [`PRUNE_EVERY`], so the press has something current to read.
-///
-/// Nothing waits for the answer and nothing is said about it. A fetch that
-/// fails costs the third fact until the next one, exactly as it does in the
-/// verb, and the view has no stderr to say so on.
+/// Nothing waits on the threads and failures are ignored; the view has no
+/// stderr to report them on.
 pub fn fetch_origins_again(views: &[View]) {
     for repo in prune_due(views, Instant::now()) {
         let _ = std::thread::Builder::new()
@@ -188,12 +145,10 @@ pub fn fetch_origins_again(views: &[View]) {
     }
 }
 
-/// The repositories due a fetch at `now`, marked as fetched as they are handed
-/// out.
+/// The repositories due a fetch at `now`, marked as fetched on the way out.
 ///
-/// Marked here rather than when the thread comes back, so a reading a second
-/// later starts nothing second: the cost of a fetch that failed is one
-/// repository left alone for five minutes.
+/// Marked before the fetch runs, so the next reading does not start a second
+/// one. A failed fetch leaves the repository alone until the next interval.
 fn prune_due(views: &[View], now: Instant) -> Vec<PathBuf> {
     let Ok(mut pruned) = PRUNED.lock() else {
         return Vec::new();
@@ -210,21 +165,19 @@ fn prune_due(views: &[View], now: Instant) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether the agent is done being an agent: its turn ended, or it is sitting
-/// there with nothing to do. A parked agent reads idle and counts.
+/// Ended or idle. A parked agent reads idle and counts.
 fn finished(phase: Phase) -> bool {
     phase.is_terminal() || phase == Phase::Idle
 }
 
-/// The first request on the branch that is over, said the way a row says it.
+/// The first merged or closed request, worded the way a row shows it.
 fn settled(prs: &[Pr]) -> Option<String> {
     prs.iter()
         .find(|pr| pr.standing.settled())
         .map(|pr| format!("{} {}", pr.label(), pr.standing.says()))
 }
 
-/// The other way work lands: somebody merged the branch themselves, and there
-/// is no request to have an opinion about it.
+/// The branch was merged into the main line without a request.
 fn in_the_main_line(meta: &Meta, branch: &str) -> Option<String> {
     let repo = repository(meta);
     worktree::is_merged(&repo, branch)
@@ -232,58 +185,45 @@ fn in_the_main_line(meta: &Meta, branch: &str) -> Option<String> {
         .then(|| format!("{branch} merged into {}", worktree::main_branch(&repo)))
 }
 
-/// The third way work lands, and the only one that sees a squash merge: the
-/// forge took the commits under a sha this branch does not hold, so nothing is
-/// merged into anything as far as git can tell, and then it deleted the branch.
+/// The origin deleted the branch. The only check that catches a squash merge,
+/// whose commits git cannot see as merged.
 ///
-/// Read off what git recorded rather than off the origin, so this costs no
-/// network wherever it is asked from. Making that record current is the fetch
-/// [`run`] does once per repository.
+/// Reads git's recorded upstream, so it costs no network; [`run`] fetches
+/// first to make that current.
 fn gone_from_origin(meta: &Meta, branch: &str) -> Option<String> {
     worktree::upstream_gone(&repository(meta), branch)
         .ok()?
         .then(|| format!("{branch} gone from origin"))
 }
 
-/// Where git is asked about this agent's branch.
+/// The repository to ask git about this agent's branch.
 ///
-/// The repository rather than the tree, since the tree is what may be about to
-/// go — and a tree already removed leaves git nothing to answer from inside it.
-/// An agent amx cut no tree for works in the directory it was started in, and
-/// that is the repository.
+/// The repository, not the tree, since the tree may be about to go or already
+/// gone. An agent without a tree runs in its repository.
 fn repository(meta: &Meta) -> PathBuf {
     let Some(tree) = &meta.worktree else {
         return meta.dir.clone();
     };
-    // The tree's `.git` file first: the view asks this of every finished
-    // agent on every reading, and `main_repo` is a git subprocess.
+    // The tree's `.git` file first: the view asks this of every finished agent
+    // on every reading, and `main_repo` runs git.
     worktree::repo_of_linked(tree)
         .or_else(|| worktree::main_repo(tree).ok())
         .or_else(|| worktree::repo_of(tree))
         .unwrap_or_else(|| meta.dir.clone())
 }
 
-/// The one question, asked once for the whole list.
-///
-/// It reads the way every other question amx asks reads: the default is the
-/// one that loses nothing, and anything that is not plainly yes — a shrug, a
-/// typo, nobody there at all — takes it.
+/// Ask once for the whole list. Anything but yes, including no input, is no.
 fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Result<bool> {
     stop::confirm(&format!("sweep {count}?"), false, input, out)
 }
 
-/// Take one candidate: the tree, the branch and the record, and the pane first
-/// where the agent is somehow still in one.
+/// Take one candidate: its pane if it still has one, tree, branch and record.
 ///
-/// Which is `stop --force --delete --worktree delete --branch delete` and
-/// nothing else. The whole ladder — the grace period, the tree git is asked to
-/// remove, the branch that cannot go while a tree holds it, every line said as
-/// it happens — is written down once, in the verb whose job it is.
+/// This is `stop --force --delete --worktree delete --branch delete`, so the
+/// ending, the removals and their output all come from `stop`.
 pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()> {
-    // The one thing `stop --force` would not save us from is the one thing
-    // that cannot be undone, so it is answered before the ladder starts: a
-    // dirty tree keeps its record too, because the record is where the tree
-    // and the branch are named.
+    // Checked before `stop`: a tree holding uncommitted work keeps the whole
+    // agent, record included, since the record names the tree and branch.
     if let Some(tree) = &meta.worktree
         && stop::holds_work(tree)
     {
@@ -296,9 +236,8 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
         return Ok(());
     }
 
-    // Only a branch amx named is a sweep's to delete. One a person named —
-    // `--branch develop`, which reads as landed whenever main has caught up
-    // with it — is theirs, landed or not.
+    // Only a branch amx named is deleted. A branch the person named (e.g.
+    // `--branch develop`) reads as landed whenever main catches up with it.
     let branch = match &meta.branch {
         Some(branch) if !worktree::named_by_amx(&meta.id, branch) => {
             writeln!(out, "kept {branch}: not amx's to delete")?;
@@ -330,8 +269,7 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// git as the tests run it: none of the developer's own configuration and
-    /// an identity of its own.
+    /// Run git with no user or system config and a fixed identity.
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .current_dir(dir)
@@ -367,8 +305,7 @@ mod tests {
         dir
     }
 
-    /// An origin for `repo` to push to and be pruned against, bare and in a
-    /// directory of its own.
+    /// A bare origin for `repo`, with main pushed to it.
     fn an_origin(repo: &Path) -> TempDir {
         let bare = TempDir::new().unwrap();
         git(bare.path(), &["init", "--bare", "-b", "main"]);
@@ -380,12 +317,8 @@ mod tests {
         bare
     }
 
-    /// An agent that has ended, with a tree of its own cut in `repo` and its
-    /// branch already in the main line.
-    ///
-    /// The tree is cut and left where it is, so the branch holds exactly what
-    /// main holds and git reads it as merged without anybody having to merge
-    /// anything.
+    /// A done agent with a fresh tree cut in `repo`. Its branch has no commits
+    /// of its own, so git reads it as merged into main.
     fn a_swept_agent(root: &Path, repo: &Path, id: &str) -> Meta {
         let tree = worktree::create(repo, id, None).unwrap();
         let meta = Meta {
@@ -401,8 +334,7 @@ mod tests {
             worktree: Some(tree.path.clone()),
             branch: Some(tree.branch.clone()),
             base: Some(tree.base.clone()),
-            // A socket no tmux server on this machine answers on: nothing here
-            // has a pane, and nothing here may signal one that is somebody's.
+            // No server listens here, so no real pane can be signalled.
             socket: Socket::Name("amx-sweep-tests".to_string()),
             pane: PaneId::new("%1").unwrap(),
             bg: false,
@@ -415,8 +347,7 @@ mod tests {
         meta
     }
 
-    /// Straight onto the disk: what the sweep reads is the phase, and these
-    /// agents are meant to have finished.
+    /// Write a done state straight to disk.
     fn ended(agent: &Agent) {
         let state = State {
             state: Phase::Done,
@@ -431,7 +362,7 @@ mod tests {
         .unwrap();
     }
 
-    /// The verb, with what it printed.
+    /// Run the verb and return what it printed.
     fn swept(root: &Path, force: bool, typed: &str) -> String {
         let mut out = Vec::new();
         let code = run(root, force, &mut typed.as_bytes(), &mut out).unwrap();
@@ -482,10 +413,9 @@ mod tests {
 
     #[test]
     fn sweep_reads_a_branch_the_origin_no_longer_has_as_work_that_landed() {
-        // What a squash merge leaves behind: the forge took the work under a
-        // commit this branch does not hold, so `--merged` says no, and then it
-        // deleted the branch. Read without a fetch of its own, so the view can
-        // ask it too.
+        // A squash merge: main does not hold the branch's commit, so
+        // `--merged` says no, then the origin deletes the branch. The check
+        // itself never fetches, so the view can ask it too.
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let origin = an_origin(repo.path());
@@ -524,9 +454,7 @@ mod tests {
 
     #[test]
     fn sweep_fetches_a_repository_for_the_view_once_in_five_minutes() {
-        // What keeps `gone from origin` worth reading in a view that never
-        // waits on a network. The clock is the argument, so the five minutes
-        // are read here rather than waited out.
+        // The clock is an argument, so the interval is not waited out.
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
@@ -626,9 +554,7 @@ mod tests {
 
     #[test]
     fn sweep_hands_out_the_same_reader_and_taker_the_verb_runs_on() {
-        // What the view presses `c` for is these two and nothing beside them:
-        // one asks of an agent why it is on the list, the other takes that one
-        // agent, with no list and no question in between.
+        // The view's `c` uses these two directly, with no list and no prompt.
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
@@ -652,9 +578,7 @@ mod tests {
 
     #[test]
     fn sweep_keeps_a_tree_that_holds_work_no_commit_has() {
-        // The one law an answer does not move, the same law `stop` keeps: the
-        // record goes with the tree, because the record is where the tree and
-        // the branch are written down.
+        // Even with --force, the tree and the record that names it stay.
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
@@ -681,8 +605,8 @@ mod tests {
         let root = TempDir::new().unwrap();
         let repo = a_repo();
         let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
-        // Work nothing has taken yet, which is the ordinary state of an agent
-        // that has just finished.
+        // A commit main does not have yet: the usual state of a just-finished
+        // agent.
         let tree = meta.worktree.as_deref().unwrap();
         std::fs::write(tree.join("login.rs"), "fn login() {}\n").unwrap();
         git(tree, &["add", "login.rs"]);
@@ -718,7 +642,7 @@ mod tests {
         let tree = meta.worktree.clone().unwrap();
         assert_eq!(repository(&meta), worktree::main_repo(&tree).unwrap());
 
-        // A tree already removed is named by where amx cut it.
+        // Once the tree is gone, the repository comes from its path.
         let named = repository(&meta);
         worktree::remove(&named, &tree).unwrap();
         assert_eq!(repository(&meta), worktree::repo_of(&tree).unwrap());
