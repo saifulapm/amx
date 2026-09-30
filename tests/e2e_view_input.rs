@@ -1695,9 +1695,10 @@ fn header_puts_what_the_next_agent_may_do_over_the_line_that_starts_it() {
     });
 
     press(&amx, &view, "n");
+    // The rule and the keys under the line, which can land a frame apart.
     let drawn = amx.until("the rule over the line", || {
         let drawn = amx.capture(&view);
-        drawn.contains("vendor default").then_some(drawn)
+        (drawn.contains("vendor default") && drawn.contains("shift+tab")).then_some(drawn)
     });
     assert!(
         drawn.contains("shift+tab permission"),

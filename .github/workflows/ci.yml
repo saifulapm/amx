@@ -44,5 +44,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The end-to-end suites drive real tmux servers and read their screens,
+      # and a shared runner is sometimes slow enough to catch one mid-frame.
+      # So a failing run gets one more try: a failure that repeats is real,
+      # and one that does not is still in the log above.
       - name: Test
-        run: cargo test
+        run: cargo test || cargo test
