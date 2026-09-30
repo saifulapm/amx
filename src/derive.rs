@@ -1548,12 +1548,18 @@ fn have_a_line_where_one_is_wanted(
     state: &State,
     now: u64,
 ) {
+    // Looking the command up reads the tree's `.git` and canonicalizes a
+    // path, on every look at every agent, so the cheap checks go first.
+    let (line, rewrite) = (wants_a_line(state), wants_a_rewrite(state));
+    if !staying() || !(line || rewrite) {
+        return;
+    }
     let Some(command) = summary_command(meta) else {
         return;
     };
-    if wants_a_line(state) {
+    if line {
         have_a_line_written(root, agent, meta, state, command, now);
-    } else if wants_a_rewrite(state) {
+    } else {
         have_a_line_rewritten(root, agent, meta, state, command, now);
     }
 }
