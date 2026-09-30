@@ -13,6 +13,9 @@
 use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 use crate::vendor::Transcript;
 
@@ -453,6 +456,54 @@ pub fn unqueued(format: Transcript, jsonl: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
+/// [`unqueued`] for the transcript at `path`, reading back from its end only
+/// as far as the first whole line stamped before `since`.
+///
+/// A queued message is taken after it was sent, so nothing older matters, and
+/// claude transcripts run to tens of megabytes.
+pub fn unqueued_since(format: Transcript, path: &Path, since: u64) -> Vec<(u64, String)> {
+    if format != Transcript::Claude {
+        return Vec::new();
+    }
+    since_stamp(path, since)
+        .map(|jsonl| unqueued(format, &jsonl))
+        .unwrap_or_default()
+}
+
+/// The end of the file at `path`, read back in chunks until its first whole
+/// line carries a timestamp before `since`, or the whole file.
+fn since_stamp(path: &Path, since: u64) -> Option<String> {
+    const CHUNK: u64 = 64 * 1024;
+    let mut file = File::open(path).ok()?;
+    let mut start = file.metadata().ok()?.len();
+    let mut bytes = Vec::new();
+    while start > 0 {
+        let from = start.saturating_sub(CHUNK);
+        let mut chunk = vec![0; (start - from) as usize];
+        file.seek(SeekFrom::Start(from)).ok()?;
+        file.read_exact(&mut chunk).ok()?;
+        chunk.extend_from_slice(&bytes);
+        bytes = chunk;
+        start = from;
+        // The first line is cut unless the read reached the start.
+        let whole = match start {
+            0 => &bytes[..],
+            _ => bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(&[][..], |at| &bytes[at + 1..]),
+        };
+        let earliest = whole
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+            .find_map(|entry| epoch(entry["timestamp"].as_str()?));
+        if earliest.is_some_and(|at| at < since) {
+            break;
+        }
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Epoch seconds for a UTC stamp like `2026-09-29T20:32:04.768Z`.
 fn epoch(stamp: &str) -> Option<u64> {
     let (date, time) = stamp.split_once('T')?;
@@ -869,6 +920,35 @@ mod tests {
             "a prompt, the call with the first line of its command, the words; \
              thinking, the tool's result and the bookkeeping are nobody's reading"
         );
+    }
+
+    #[test]
+    fn a_taken_message_is_found_however_far_back_the_read_must_go() {
+        // Older lines, the removal, then more than one chunk of newer lines.
+        let line = |stamp: &str, text: &str| {
+            format!(
+                "{{\"type\":\"user\",\"timestamp\":\"{stamp}\",\"message\":{{\"content\":\"{text}\"}}}}\n"
+            )
+        };
+        let mut jsonl = String::new();
+        for _ in 0..2000 {
+            jsonl += &line("2026-09-29T20:00:00.000Z", "old");
+        }
+        jsonl += "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-09-29T20:32:04.768Z\",\"content\":\"and the linter\",\"reason\":\"absorbed_mid_turn\"}\n";
+        let newer = "x".repeat(500);
+        for _ in 0..400 {
+            jsonl += &line("2026-09-29T20:33:00.000Z", &newer);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, &jsonl).unwrap();
+
+        // Sent at 20:27:34.
+        assert_eq!(
+            unqueued_since(Transcript::Claude, &path, 1_790_713_654),
+            vec![(1_790_713_924, "and the linter".to_string())]
+        );
+        assert!(unqueued_since(Transcript::Pi, &path, 0).is_empty());
     }
 
     #[test]

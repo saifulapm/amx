@@ -329,13 +329,16 @@ pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
     if pending.is_empty() {
         return Vec::new();
     }
+    let earliest = pending
+        .iter()
+        .map(|event| event.at)
+        .min()
+        .unwrap_or_default();
     let mut taken = match (
         &meta.transcript,
         crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default()),
     ) {
-        (Some(path), Some(format)) => std::fs::read_to_string(path)
-            .map(|jsonl| crate::conversation::unqueued(format, &jsonl))
-            .unwrap_or_default(),
+        (Some(path), Some(format)) => crate::conversation::unqueued_since(format, path, earliest),
         _ => Vec::new(),
     };
     pending
