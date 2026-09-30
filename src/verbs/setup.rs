@@ -1,30 +1,13 @@
-//! `amx setup <vendor>` — wire one agent's reporting into this machine.
+//! `amx setup <vendor>`: install one vendor's hooks on this machine.
 //!
-//! Everything amx knows about a running agent arrives through the vendor's own
-//! hooks, and putting them where that vendor looks for them is this verb.
-//! `uninstall` is its mirror: that one walks the whole table and takes every
-//! vendor's wiring out, this one takes a name and wires that one.
+//! Every vendor with hooks has one reporting wire, always installed, and may
+//! have opt-in wires (the subagent tool) installed only with `--subagent`.
+//! `uninstall` removes every vendor's wiring.
 //!
-//! A vendor carries one reporting wire and, sometimes, wires a person opts
-//! into. Reporting is not a choice — an agent amx cannot hear is an agent amx
-//! cannot show — but a tool is: `--subagent` is somebody saying the agent may
-//! have it. The opt-in wires are written by name, never with the rest, and a
-//! vendor that carries none is refused rather than quietly wired with
-//! something else.
-//!
-//! The name is not optional and is never guessed. A machine usually has more
-//! than one agent on it, and the one a config happens to name is not evidence
-//! about the others — amx wiring an agent nobody asked it to would be writing
-//! under somebody's home on a hunch. So a bare `amx setup` prints the agents
-//! it knows and writes nothing.
-//!
-//! Nor does it ask. `doctor --fix` had to, because one flag stood for every
-//! repair it could make and the files are under somebody's home; naming the
-//! agent on the command line is that consent, said more precisely. What is
-//! kept from that door is the sentence: what is about to be written is named
-//! before it is written, and anything of somebody's at that name is copied
-//! aside first. A machine already wired is told so instead, since a sentence
-//! about a write that is not going to happen is a sentence that is not true.
+//! The vendor must be named; a bare `amx setup` lists the known vendors and
+//! writes nothing. Naming it is the consent, so nothing is asked. Each write
+//! is announced first, and any existing file at that path is copied aside. An
+//! already wired machine is told so instead.
 
 use anyhow::Result;
 use std::io::Write;
@@ -33,7 +16,7 @@ use std::path::Path;
 use crate::vendor::Wire;
 use crate::{exit, install, registry, store};
 
-/// Run the verb against the machine's own paths.
+/// Run the verb against the machine.
 pub fn from_env(vendor: Option<&str>, subagent: bool) -> Result<i32> {
     let home = install::home()?;
     let mut out = std::io::stdout().lock();
@@ -47,13 +30,10 @@ pub fn from_env(vendor: Option<&str>, subagent: bool) -> Result<i32> {
     )
 }
 
-/// Run the verb, with everything it touches named: the agent, the home its
-/// wiring goes under, and the environment a wire may name its directory in.
+/// Run the verb with the home directory and environment named.
 ///
-/// The hook command is not among them. Every wire amx writes now runs `amx`
-/// off the PATH rather than the path this amx happens to stand at, which is
-/// the thing `doctor` insists on when it asks that there be one amx and this
-/// be it.
+/// The hook command every wire runs is `amx` from `PATH`, not this binary's
+/// path.
 pub fn run(
     vendor: Option<&str>,
     subagent: bool,
@@ -78,10 +58,7 @@ pub fn run(
         )?;
         return Ok(exit::OK);
     };
-    // Asked for a tool this vendor does not carry, which is a different thing
-    // from a vendor amx wires nothing into at all: it is wired, and there is
-    // nothing of the kind here. Naming who does carry one is the whole of the
-    // help, since the flag is the same on every vendor.
+    // The vendor has hooks but no subagent tool: name the vendors that do.
     if subagent && hooks.opt_in.is_empty() {
         writeln!(
             out,
@@ -92,11 +69,8 @@ pub fn run(
         return Ok(exit::USAGE);
     }
 
-    // The reporting wire, and then whatever opt-in wires were asked for. Read
-    // before saying anything: the sentence below is about a write that is
-    // going to happen, and promises a copy of what it goes over; on a machine
-    // already wired it would be followed immediately by "nothing to do",
-    // which is two lines contradicting each other and a copy nobody took.
+    // Each wire is checked before its announcement, so an already wired
+    // machine is not promised a write and a copy that never happen.
     let mut wires: Vec<&Wire> = vec![&hooks.wire];
     if subagent {
         wires.extend(hooks.opt_in.iter());
@@ -115,8 +89,8 @@ pub fn run(
     Ok(exit::OK)
 }
 
-/// Write one wire, unless it is already what amx ships. Says what it is about
-/// to write first, and keeps a copy of whatever stood there.
+/// Install one wire unless it is already current, announcing the write first
+/// and copying aside what was there. Returns whether anything was written.
 fn wire_one(
     wire: &Wire,
     home: &Path,
@@ -154,7 +128,7 @@ fn wire_one(
     Ok(true)
 }
 
-/// Every agent amx has an entry for, as a sentence names them.
+/// Every vendor amx knows, comma separated.
 fn every_agent() -> String {
     registry::entries()
         .iter()
@@ -163,7 +137,7 @@ fn every_agent() -> String {
         .join(", ")
 }
 
-/// Every agent that carries an opt-in wire, as a sentence names them.
+/// Every vendor with an opt-in wire, comma separated.
 fn every_opt_in() -> String {
     registry::entries()
         .iter()
@@ -179,13 +153,12 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
 
-    /// Run the verb over a home of the test's own, and answer with what it
-    /// exited and what it printed.
+    /// Run the verb over a test home; return the exit code and stdout.
     fn said(vendor: Option<&str>, home: &Path, now: u64) -> (i32, String) {
         said_with(vendor, false, home, now)
     }
 
-    /// The same, with the opt-in wire asked for or not.
+    /// [`said`], with or without `--subagent`.
     fn said_with(vendor: Option<&str>, subagent: bool, home: &Path, now: u64) -> (i32, String) {
         let mut out = Vec::new();
         let code = run(vendor, subagent, home, &install::no_env, now, &mut out).unwrap();
@@ -194,10 +167,9 @@ mod tests {
 
     #[test]
     fn setup_writes_claudes_plugin_and_keeps_the_skill_that_was_there() {
-        // claude reports through a plugin amx writes under the skills
-        // directory, not through entries in anybody's settings. A skill
-        // already standing at that name is somebody's own until amx has left
-        // a manifest there, so it is copied aside rather than lost.
+        // claude's hooks are a plugin under the skills directory. A skill
+        // already there without amx's manifest is the person's, so it is
+        // copied aside.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::claude::VENDOR.hooks.expect("claude reports");
         let dir = install::wire_path(&hooks.wire, home.path(), &install::no_env);
@@ -257,8 +229,8 @@ mod tests {
 
     #[test]
     fn setup_writes_opencodes_plugin_where_its_tui_loads_one() {
-        // Into the config dir `OPENCODE_CONFIG_DIR` names, else the person's,
-        // and nowhere else: no config file of theirs is opened (Ruling 3).
+        // Into `OPENCODE_CONFIG_DIR`, else the default config dir. No config
+        // file of the person's is opened.
         let home = TempDir::new().unwrap();
         let plugin = home.path().join(".config/opencode/plugins/amx/tui.js");
 
@@ -307,10 +279,8 @@ mod tests {
 
     #[test]
     fn setup_writes_pis_subagent_only_when_asked_and_uninstall_takes_it_back() {
-        // The tool is a capability, not plumbing: `amx setup pi` alone wires
-        // what amx reads, and a person asks for the rest by name. The opt-in
-        // file is named after the wire and reports nothing — it is the tool
-        // that calls `amx sub`.
+        // `amx setup pi` installs only the reporting wire. The opt-in file is
+        // the tool that calls `amx sub`, and reports nothing.
         let home = TempDir::new().unwrap();
         let hooks = crate::vendor::pi::VENDOR.hooks.expect("pi reports");
         let hook = install::wire_path(&hooks.wire, home.path(), &install::no_env);
@@ -338,8 +308,7 @@ mod tests {
 
     #[test]
     fn setup_refuses_a_subagent_for_a_vendor_that_carries_none() {
-        // The flag is the same on every vendor, so a vendor without the wire
-        // has to say so rather than write something else or nothing at all.
+        // A vendor without a subagent tool refuses the flag.
         let home = TempDir::new().unwrap();
 
         let (code, printed) = said_with(Some("claude"), true, home.path(), 1);
@@ -390,9 +359,9 @@ mod tests {
 
     #[test]
     fn setup_merges_a_hooks_wire_and_says_so_once() {
-        // codex's entry is not in the table yet, so the wire is the tests'
-        // own: amx's groups go into a hooks file of the person's, which is
-        // copied aside first, and the second run has nothing to do.
+        // A hooks wire of the tests' own: amx's groups are merged into the
+        // person's hooks file, copied aside first, and a second run does
+        // nothing.
         let home = TempDir::new().unwrap();
         let dir = install::wire_path(&install::HOOKS_WIRE, home.path(), &install::no_env);
         std::fs::create_dir_all(&dir).unwrap();
