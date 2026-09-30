@@ -2464,8 +2464,8 @@ fn new_two_racers_for_one_name_leave_the_winners_record_standing() {
     // loser's cleanup must not delete the winner's meta.json.
     let amx = Harness::new();
     let mock = amx.mock();
-    // Racers from earlier attempts still hold panes, so the default cap
-    // would start refusing spawns partway through the ten attempts.
+    // Winners of earlier attempts may still be running, and the default cap
+    // would then refuse later spawns.
     amx.config("max_agents = 40\n");
     let state_dir = amx
         .state_root()
