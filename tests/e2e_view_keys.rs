@@ -1,23 +1,18 @@
-//! The keys somebody binds themselves: the command one runs, where it runs,
-//! the group the keys screen gives them, and what a spelling nobody can press
-//! is answered with.
-//!
-//! Driven in a real tmux pane, because the whole of a bound key is the view
-//! handing the terminal to somebody else's command and taking it back again,
-//! and a terminal is the only thing that can be asked whether that happened.
+//! End-to-end tests for user key bindings in `[keys]`: where a bound command
+//! runs, how the help screen lists bindings, and which spellings are refused.
+//! Also checks the terminal state a killed view leaves behind.
 
 mod common;
 
 use common::{Harness, press, resize, until_empty};
 use serde_json::json;
 
-/// The keys screen, whole. A group somebody bound is drawn at its foot, after
-/// amx's own keys.
+/// Open the help screen and answer with the whole capture.
 ///
-/// The window must be tall enough to hold the whole document. The view has no
-/// synchronized output, so a capture can land mid-frame; the screen's key row
-/// is the last row the frame that opens it writes, so once that row is up the
-/// document above it is too.
+/// The pane must be tall enough for the whole document, since user bindings
+/// are listed last. The view has no synchronized output, so a capture can land
+/// mid-frame; the hint row is the last row the frame writes, so once it is up
+/// everything above it is too.
 fn keys_screen(amx: &Harness, view: &str) -> String {
     press(amx, view, "?");
     amx.until("the keys, with their key row drawn under them", || {
@@ -31,15 +26,14 @@ fn a_bound_key_runs_its_command_where_the_agent_works_and_the_view_takes_the_scr
     let amx = Harness::new();
     let repo = amx.a_repo();
 
-    // The command writes where it was started rather than the path it was
-    // told: a file it makes in the tree is the one answer no string comparison
-    // can be talked out of.
+    // The command writes to a relative path, so where the file lands shows
+    // the command's working directory.
     amx.config("[keys]\n\"x\" = \"{ echo $AMX_ID; echo $AMX_WORKTREE; } > ran-here\"\n");
 
     amx.play("fix-login-a1b", "asks-a-question");
     amx.until_state("fix-login-a1b", "waiting");
-    // An agent with a tree of its own, which is not the directory it was
-    // started in: the command runs in the tree.
+    // A worktree that differs from the agent's start directory. The command
+    // must run in the worktree.
     amx.set_meta("fix-login-a1b", json!({ "worktree": repo }));
 
     let view = amx.in_a_terminal(&[], &[]);
@@ -49,8 +43,8 @@ fn a_bound_key_runs_its_command_where_the_agent_works_and_the_view_takes_the_scr
 
     press(&amx, &view, "x");
 
-    // Waited for by both lines, so a file caught halfway through being written
-    // is not read as a variable the command was never given.
+    // Wait for both lines: the file can be read while the command is still
+    // writing it.
     let wrote = repo.join("ran-here");
     let said = amx.until("the command to have run in the tree", || {
         std::fs::read_to_string(&wrote)
@@ -64,9 +58,8 @@ fn a_bound_key_runs_its_command_where_the_agent_works_and_the_view_takes_the_scr
         "the agent it was pressed on, and the tree it was run in"
     );
 
-    // And the view has the terminal again. There is nothing on the screen a
-    // command that drew nothing changed, so the view is asked a question only
-    // one still holding the screen could answer.
+    // The command drew nothing, so open the help screen to show the view has
+    // the terminal back.
     press(&amx, &view, "?");
     amx.until("the keys", || {
         amx.capture(&view).contains("walk the agents").then_some(())
@@ -107,8 +100,8 @@ fn a_spelling_the_view_cannot_read_is_said_once_and_binds_nothing() {
     amx.config("[keys]\n\"shift+z\" = \"never runs\"\n");
 
     let view = amx.in_a_terminal(&[], &[]);
-    // Waited for by the whole notice the assertion reads: it is the last row
-    // of the frame, and a capture can land partway through it.
+    // Wait for the whole notice. It is the last row of the frame, and with no
+    // synchronized output a capture can land partway through it.
     let said = amx.until("the view to say which spelling it could not read", || {
         let drawn = amx.capture(&view);
         (drawn.contains("shift+z") && drawn.contains("is no key the view can read"))
@@ -137,7 +130,7 @@ fn a_spelling_amx_already_binds_is_refused_by_name_and_binds_nothing() {
     amx.config("[keys]\n\"ctrl+x\" = \"never runs\"\n");
 
     let view = amx.in_a_terminal(&[], &[]);
-    // Waited for by the whole notice the assertions read, as above.
+    // Wait for the whole notice, as above.
     let said = amx.until("the view to say the key is its own", || {
         let drawn = amx.capture(&view);
         (drawn.contains("ctrl+x") && drawn.contains("amx's own") && drawn.contains("stop it"))
@@ -171,8 +164,7 @@ fn a_killed_view_gives_the_terminal_back() {
         let view = amx.in_a_terminal(&[], &[]);
         until_empty(&amx, &view);
 
-        // Keep the pane after the view ends, so the modes it left behind can
-        // be read off it.
+        // Keep the pane after the view exits so its terminal modes can be read.
         amx.tmux(&["set-option", "-w", "-t", &view, "remain-on-exit", "on"]);
         let pid = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_pid}"]);
         let killed = std::process::Command::new("kill")
@@ -181,9 +173,8 @@ fn a_killed_view_gives_the_terminal_back() {
             .expect("kill");
         assert!(killed.success(), "SIG{signal} reached the view");
 
-        // Read in the same look as the end is recorded in, whether it ended
-        // by its own hand or the signal's, so the modes are what the view left
-        // and not what it was still drawing.
+        // Read the modes in the same query that first sees an exit status or
+        // signal, so they are what the view left, not a state mid-teardown.
         let left = amx.until("the view to end", || {
             let read = amx.tmux(&[
                 "display-message",
@@ -203,14 +194,14 @@ fn a_killed_view_gives_the_terminal_back() {
         );
     }
 
-    // And a view whose terminal goes with its pane ends too.
+    // A view whose pane is killed must exit too.
     let amx = Harness::new();
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
     let pid = amx.tmux(&["display-message", "-p", "-t", &view, "#{pane_pid}"]);
 
-    // The pane going takes the terminal with it: every read after that is an
-    // end of file or an error, and the view must stop reading, not spin.
+    // Killing the pane closes the tty. Every read then returns EOF or an
+    // error, and the view must exit, not spin.
     amx.tmux(&["kill-pane", "-t", &view]);
     let there = || std::path::Path::new(&format!("/proc/{pid}")).exists();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -219,7 +210,7 @@ fn a_killed_view_gives_the_terminal_back() {
     }
     let lingered = there();
     if lingered {
-        // Not left behind to spin after the test has failed.
+        // Do not leave a spinning process behind a failed test.
         let _ = std::process::Command::new("kill")
             .args(["-KILL", &pid])
             .status();
