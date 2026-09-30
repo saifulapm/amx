@@ -314,8 +314,8 @@ impl Harness {
         read(&self.agent_dir(id).join("meta.json")).unwrap_or_else(|| json!({}))
     }
 
-    /// The agent's handoff.json: the environment, command and task its pane
-    /// started with.
+    /// The agent's handoff.json: the task and the vendor command its pane
+    /// starts.
     pub fn handoff(&self, id: &str) -> Value {
         read(&self.agent_dir(id).join("handoff.json"))
             .unwrap_or_else(|| panic!("no handoff for {id}"))
