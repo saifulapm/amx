@@ -1,24 +1,14 @@
-//! The conversation a vendor keeps on disk, read into what was said.
+//! Vendor transcripts, read into what was said.
 //!
-//! A pane holds one screen of an agent's work and a record holds one turn's
-//! answer. The transcript the vendor writes holds the whole of it — every
-//! prompt, every answer, every tool call — and two surfaces want that whole:
-//! the card the view opens over an agent, and `amx logs`. Both read it here,
-//! so neither can disagree with the other about what a line of it means.
+//! The view's card and `amx logs` both read conversations through this module,
+//! so they agree on what each line means. Each vendor writes its own JSONL
+//! shape (see [`Transcript`]); this module keeps prompts, assistant text and
+//! tool calls, and skips thinking, tool results and bookkeeping.
 //!
-//! Four vendors keep one, in four shapes, and the shapes are the table's to
-//! name — see [`Transcript`]. What this file knows is where in each the words
-//! are, and it keeps three kinds of them: what the person asked, what the
-//! agent said, and which tool it called with what. Everything else in the file
-//! — thinking, tool results, the vendor's bookkeeping about models and
-//! compaction — is nobody's reading. A tool's result would drown the words
-//! around it, and thinking is the agent's own.
-//!
-//! Every file is one JSON document a line. pi's is a tree — entries carry an
-//! `id` and a `parentId`, and a session can branch in place — and it is read
-//! here along the branch its last entry is on, which is the one pi itself
-//! shows on a reload — see [`branch`]. A line that is not JSON is skipped
-//! rather than fatal: a transcript is appended to while it is read.
+//! - A pi session is a tree of `id`/`parentId` entries and is read along the
+//!   branch its last entry is on, as pi shows it on reload (see [`branch`]).
+//! - A line that is not JSON is skipped, since transcripts are read while the
+//!   vendor appends to them.
 
 use serde_json::Value;
 use std::borrow::Borrow;
@@ -26,27 +16,25 @@ use std::collections::HashMap;
 
 use crate::vendor::Transcript;
 
-/// One thing said in a conversation, in the order it was said.
+/// One thing said in a conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Said {
     /// What the person typed at the composer.
     Prompt(String),
-    /// What the agent said, one block of it, verbatim.
+    /// One block of what the agent said, verbatim.
     Text(String),
-    /// A tool the agent called: which, and the one argument worth a row.
+    /// A tool call: its name and the one argument worth showing.
     Tool {
         name: String,
         detail: Option<String>,
     },
 }
 
-/// The shape a record reads its conversation by, out of the agent command
-/// it was started with.
+/// The transcript format for an agent command.
 ///
-/// The same road `crate::rules::of` takes to a screens document: the vendor
-/// the command runs, and the first in the table for a command amx has no
-/// entry for — which is the wrapper-script law, and deliberate. A vendor that
-/// keeps no conversation answers `None`, and then there is nothing to read.
+/// Resolved like `crate::rules::of`: the command's vendor, or the first table
+/// entry for a command amx does not know (a wrapper script, say). `None` for a
+/// vendor that keeps no transcript.
 pub fn format_of(agent: &str) -> Option<Transcript> {
     crate::registry::entry(agent)
         .or_else(|| crate::registry::entries().first())
@@ -72,12 +60,11 @@ fn said_by(format: Transcript, entry: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// The entries a reading walks, in order: every line of a claude transcript
-/// or a codex rollout, and of a pi session the branch its last entry is on.
+/// The entries a reading walks, oldest first: every line, or for pi the
+/// branch its last entry is on.
 ///
-/// Lines are parsed as they are walked, so a transcript of tens of megabytes
-/// is never held as one tree of values. A pi session is the exception: its
-/// branch is found from the whole file.
+/// Lines are parsed lazily so a large transcript is never held as one tree of
+/// values; reversed, only the end is parsed. A pi branch needs the whole file.
 fn spoken(format: Transcript, jsonl: &str) -> Box<dyn DoubleEndedIterator<Item = Value> + '_> {
     match format {
         Transcript::Claude | Transcript::Codex | Transcript::Opencode => Box::new(entries(jsonl)),
@@ -85,23 +72,17 @@ fn spoken(format: Transcript, jsonl: &str) -> Box<dyn DoubleEndedIterator<Item =
     }
 }
 
-/// The branch a pi session is on: from its last entry up through `parentId`
-/// to a root, read back down.
+/// The branch of a pi session: from the last entry up through `parentId` to a
+/// root, returned root first.
 ///
-/// pi's own reader (`buildSessionPath`, session-manager.js at 0.84.4, and
-/// unchanged at 0.85.1) takes
-/// the last entry in the file as the leaf and walks to the root, and that is
-/// the whole of what the file says about which branch is live. Branching
-/// writes nothing by itself — the leaf pi keeps in memory moves, and the next
-/// entry appended is the first the file knows of the new branch — so a
-/// session navigated back to an earlier prompt and continued reads as that
-/// continuation, with the path it left behind out of the reading, exactly as
-/// pi would show it on a reload. A session that was never branched is one
-/// path, and reads as it always did.
+/// This matches pi's own reader (`buildSessionPath` in session-manager.js,
+/// 0.84.4 and 0.85.1), which takes the file's last entry as the leaf. The file
+/// does not record branching: after navigating back and continuing, the next
+/// appended entry is the first on the new branch.
 ///
-/// An entry with no `id` — the header — is on no path. A parent the file
-/// does not hold ends the walk where it is, and a walk longer than the file
-/// is a cycle somebody edited in, and ends too.
+/// The header has no `id` and is on no path. A parent missing from the file
+/// ends the walk, and so does a walk longer than the file (an edited-in
+/// cycle).
 fn branch(entries: Vec<Value>) -> Vec<Value> {
     let index: HashMap<&str, usize> = entries
         .iter()
@@ -127,22 +108,16 @@ fn branch(entries: Vec<Value>) -> Vec<Value> {
 
 /// The answer at the end of the conversation, if the turn has ended.
 ///
-/// Both vendors write a tool's result as a message of its own after the
-/// assistant's, so a conversation ending on one is a turn still running, and
-/// answering with the last assistant text would serve the *previous* turn's
-/// answer as this one's. That is the unrecoverable direction to be wrong in,
-/// so it answers with nothing instead. The vendor's bookkeeping lines are not
-/// the end of anything and are read past, and neither is a turn that never
-/// reached the vendor — see [`synthetic`].
-///
-/// codex writes where each turn ends, and its answer is read off that — see
-/// [`codex_answer`].
+/// A transcript ending on a tool result is a turn still running whose last
+/// assistant text belongs to the previous turn, so this answers `None`.
+/// Bookkeeping lines and synthetic entries (see [`synthetic`]) are skipped.
+/// codex answers from its turn-end event (see [`codex_answer`]).
 pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
     last_answer(format, spoken(format, jsonl).rev())
 }
 
-/// The answer at the end of a walk, given newest entry first. Stops at the
-/// first entry that settles it, so only the end of a lazy walk is parsed.
+/// The answer at the end of a walk given newest entry first. Stops at the
+/// first entry that settles it, so a lazy walk parses only the end.
 fn last_answer<V: Borrow<Value>>(
     format: Transcript,
     mut newest: impl Iterator<Item = V>,
@@ -160,8 +135,8 @@ fn last_answer<V: Borrow<Value>>(
     answer_text(last)
 }
 
-/// Whether an assistant entry stopped before its words were an answer: pi's
-/// `aborted`, a turn somebody cut short, and `error`, one its provider failed.
+/// Whether an assistant entry stopped short of an answer: `aborted` (cut
+/// short) or `error` (the provider failed).
 fn cut_off(entry: &Value) -> bool {
     matches!(
         entry["message"]["stopReason"].as_str(),
@@ -169,10 +144,10 @@ fn cut_off(entry: &Value) -> bool {
     )
 }
 
-/// What every synthetic entry in a transcript says — see [`synthetic`].
+/// The words of every synthetic entry (see [`synthetic`]).
 ///
-/// claude hands the words of one to the hook that ends the turn as though the
-/// agent had said them, and this is the only place that tells the two apart.
+/// claude hands these to its turn-end hook as if the agent said them; this is
+/// how the hook tells them apart.
 pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
     spoken(format, jsonl)
         .filter(|entry| synthetic(format, entry))
@@ -180,24 +155,17 @@ pub fn synthetic_words(format: Transcript, jsonl: &str) -> Vec<String> {
         .collect()
 }
 
-/// Why the last turn ended with nothing to show for it, where the vendor
-/// wrote a reason worth repeating.
+/// Why the last turn ended without an answer, where the vendor recorded a
+/// reason worth repeating.
 ///
-/// A turn that captured no answer is a failure a caller has to act on, and
-/// what it should do next depends on why: a reply cut off at the model's token
-/// limit is asked again shorter, a provider that failed is asked again at all,
-/// and an aborted turn is nobody's to retry. The vendor writes all three in
-/// the transcript and nowhere else — the pane has scrolled and the hooks say
-/// only that the turn ended — so this is the one place they can be read.
+/// The reason decides what a caller does next: retry shorter after a token
+/// limit, retry after a provider error, or stop after an abort. Only the
+/// transcript records it. When the account stops a claude turn (a usage
+/// limit, no credits), claude writes a synthetic API-error entry instead, and
+/// its text is the reason.
 ///
-/// claude writes none of those when the account stops the turn — a weekly
-/// limit, credits run out — and says why in a synthetic entry marked as the
-/// API's error instead, so its words are the reason, repeated as they are.
-///
-/// An ordinary ending answers `None`: `stop` and `toolUse`, and claude's
-/// `end_turn` and `tool_use`, say nothing about why there are no words, and a
-/// reason neither vendor's table names is repeated as the vendor spelled it
-/// rather than guessed at.
+/// Ordinary endings (`stop`, `toolUse`, `end_turn`, `tool_use`) answer `None`.
+/// An unknown reason is repeated as the vendor spelled it.
 pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
     let mut newest = spoken(format, jsonl).rev();
     match format {
@@ -229,8 +197,7 @@ pub fn why_it_stopped(format: Transcript, jsonl: &str) -> Option<String> {
     }
 }
 
-/// A vendor's error, as much of it as a sentence of amx's own has room for:
-/// its first line, and no more of that than reads at a glance.
+/// The first line of a vendor's error, capped at 160 characters.
 fn one_line(said: &str) -> String {
     let line = said.lines().next().unwrap_or_default().trim();
     match line.char_indices().nth(160) {
@@ -239,39 +206,32 @@ fn one_line(said: &str) -> String {
     }
 }
 
-/// What one assistant entry said, as the answer it would be: its text blocks
-/// joined, or nothing where it said nothing.
+/// An assistant entry's text blocks joined, or `None` if it has no text.
 fn answer_text(entry: &Value) -> Option<String> {
     trimmed(&text_of(&entry["message"]["content"]))
 }
 
-/// `text` trimmed, or `None` where nothing is left of it.
+/// `text` trimmed, or `None` if nothing is left.
 fn trimmed(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// Whether an assistant entry is the vendor's note that the turn never reached
-/// it, rather than something the agent said.
+/// Whether an entry is claude's own note about a turn that never reached the
+/// model.
 ///
-/// claude writes `"model":"<synthetic>"` for "No response requested.", an API
-/// error, a session limit: bookkeeping about a turn that did not happen, and
-/// neither an answer nor a last word.
+/// claude marks these `"model":"<synthetic>"`: "No response requested.", API
+/// errors, usage limits.
 fn synthetic(format: Transcript, entry: &Value) -> bool {
     matches!(format, Transcript::Claude) && entry["message"]["model"] == "<synthetic>"
 }
 
-/// The newest thing said, as the one line a row has room for.
+/// The newest thing said, as a single row.
 ///
-/// Where [`answer`] waits for the turn to end, this does not: a row says what
-/// an agent is doing now, and a call whose result has not come back yet is
-/// exactly that. A tool call is its name and the one argument worth a row —
-/// `Bash cargo test --all`, `Read src/importer.rs`, a name on its own where
-/// the call spells none of them. What the agent said is its first line,
-/// because the rest of a paragraph is not a row's to carry.
-///
-/// A prompt answers nothing. It is what the person typed, and whoever is
-/// reading the row typed it.
+/// Unlike [`answer`], this does not wait for the turn to end: a call whose
+/// result is pending is what the agent is doing now. A tool call reads as its
+/// name and main argument (`Bash cargo test --all`), text as its first line.
+/// A prompt answers `None`, since the reader typed it.
 pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
     let newest = spoken(format, jsonl).rev().find_map(|entry| {
         let mut said = Vec::new();
@@ -288,29 +248,19 @@ pub fn latest(format: Transcript, jsonl: &str) -> Option<String> {
     }
 }
 
-/// The input side of the conversation's usage, as of the last assistant entry
-/// that sent anything: what the next turn would send back to the vendor, in
-/// tokens.
+/// Input tokens as of the last assistant entry that sent any: what the next
+/// turn would send.
 ///
-/// Both vendors report usage per message rather than accumulating it
-/// themselves, so the last entry that carries it is the whole of what the
-/// conversation has cost so far: claude `input_tokens +
-/// cache_creation_input_tokens + cache_read_input_tokens`, pi `input +
-/// cacheRead + cacheWrite`. A field the entry does not carry counts as 0.
+/// Vendors report usage per message, so the last entry that has it covers the
+/// whole conversation. claude sums `input_tokens`,
+/// `cache_creation_input_tokens` and `cache_read_input_tokens`; pi sums
+/// `input`, `cacheRead` and `cacheWrite`. Missing fields count as 0.
 ///
-/// A turn that ended without reaching the vendor — claude writes
-/// `"model":"<synthetic>"` for "No response requested.", for an API error, for
-/// a session limit — carries a usage object of nothing but zeros, and it is
-/// written last, so reading it would report a conversation of hundreds of
-/// thousands of tokens as costing 0 for the whole window a caller polls. A
-/// real turn never sends 0 tokens, so the sum itself tells the two apart for
-/// either vendor, and a tail holding no turn that sent anything answers
-/// `None`.
+/// Entries summing to 0 are skipped: claude's synthetic entries carry all-zero
+/// usage and are written last, and a real turn never sends 0 tokens.
 ///
-/// codex keeps usage off its messages, in `token_count` events, and the
-/// `input_tokens` of their `last_token_usage` is the last request's whole
-/// input, the cached part of it included. A turn that never reached the model
-/// writes none.
+/// codex reports usage in `token_count` events; `last_token_usage.input_tokens`
+/// is the last request's whole input, cached part included.
 fn context_of<V: Borrow<Value>>(
     format: Transcript,
     newest: impl Iterator<Item = V>,
@@ -324,7 +274,7 @@ fn context_of<V: Borrow<Value>>(
         .find(|total| *total > 0)
 }
 
-/// The input side of one entry's usage, a field it does not carry at 0.
+/// The input tokens of one entry's usage, missing fields as 0.
 fn usage_sum(format: Transcript, entry: &Value) -> u64 {
     let usage = &entry["message"]["usage"];
     let field = |key: &str| usage[key].as_u64().unwrap_or(0);
@@ -352,15 +302,14 @@ fn usage_sum(format: Transcript, entry: &Value) -> u64 {
     }
 }
 
-/// What the next turn would send back to the vendor and the reader's own words
-/// at the end of the last one.
+/// The context size and the last answer, both read off the end.
 ///
 /// `View::json()` asks both of the same tail on every poll. Each walk parses
-/// from the end only as far as it needs; a pi branch, which needs the whole
-/// tail parsed, is parsed once for both.
+/// from the end only as far as it needs; a pi branch needs the whole tail
+/// parsed, so it is parsed once for both.
 pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, Option<String>) {
     match format {
-        // A pi branch is found from the whole file, so it is found once.
+        // Find the pi branch once for both walks.
         Transcript::Pi => {
             let entries: Vec<Value> = spoken(format, jsonl).collect();
             (
@@ -375,22 +324,17 @@ pub fn context_and_last_words(format: Transcript, jsonl: &str) -> (Option<u64>, 
     }
 }
 
-/// The name the session goes under, where something has given it one.
+/// The session's title, if it has one.
 ///
-/// claude writes the title on a line of its own and writes the whole line
-/// again every time it changes, so the file holds every name the session has
-/// had and the last of them is the one it goes under now. The vendor's own
-/// name for it is `aiTitle` and the one a person typed is `customTitle`; a
-/// session somebody has named is one the vendor stops naming — measured at
-/// 2.1.263 on 2026-09-08, no transcript holds both — so the last of either
-/// answers, and a name with nothing in it is no name at all.
-///
-/// pi keeps no title in its session file, and there is nothing to read.
+/// claude rewrites the title line whenever the title changes, so the last one
+/// wins. `aiTitle` is claude's own, `customTitle` one a person typed; claude
+/// 2.1.263 stops writing `aiTitle` once a session is renamed, so the last of
+/// either answers. A blank title is no title. Other vendors keep no title.
 pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
     match format {
         Transcript::Pi | Transcript::Codex | Transcript::Opencode => None,
-        // The hook asks this on every event, and title lines are rare, so
-        // only lines that could be one are parsed.
+        // Called by the hook on every event; title lines are rare, so skip
+        // parsing lines that cannot be one.
         Transcript::Claude => jsonl
             .lines()
             .filter(|line| line.contains("-title"))
@@ -408,11 +352,11 @@ pub fn session_title(format: Transcript, jsonl: &str) -> Option<String> {
     }
 }
 
-/// The conversation as lines somebody reads down a terminal or a pipe: a
-/// prompt wears the composer's own `❯` so the two voices read apart, a tool
-/// call wears `›`, and what the agent said is its own words. One blank line
-/// between one thing said and the next, except between one call and the call
-/// after it: a run of calls is one block, the way the card draws it.
+/// The conversation as plain text for a terminal or pipe.
+///
+/// Prompts are prefixed `❯`, tool calls `›`, and agent text is bare. Items are
+/// separated by a blank line, except consecutive tool calls, which form one
+/// block as on the card.
 pub fn plain(said: &[Said]) -> String {
     let mut out = String::new();
     let mut after_call = false;
@@ -434,22 +378,22 @@ pub fn plain(said: &[Said]) -> String {
     out
 }
 
-/// Which voice an entry is in, for the formats that have one.
+/// Which voice an entry is in, for formats that have one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Voice {
     User,
     Assistant,
-    /// A tool's result, which both vendors write as a message of its own.
+    /// A tool result, which vendors write as a message of its own.
     Result,
 }
 
-/// The voice of one entry, or `None` for the vendor's bookkeeping.
+/// The voice of one entry, or `None` for bookkeeping.
 fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
     match format {
         Transcript::Claude => match entry["type"].as_str()? {
-            // A tool's result is a `user` line whose blocks carry it; a
-            // prompt is a string, or blocks where an image was pasted into it
-            // or claude noted the person cut the turn short.
+            // A tool result is a `user` line with a `tool_result` block. A
+            // prompt is a string, or blocks when an image was pasted or the
+            // turn was interrupted.
             "user" => Some(
                 match blocks(entry)
                     .iter()
@@ -482,32 +426,19 @@ fn voice(format: Transcript, entry: &Value) -> Option<Voice> {
     }
 }
 
-/// What claude calls a queued message it took into the turn already running,
-/// and the reason it gives for taking it off the queue.
+/// claude's queue lines, and the removal reason for a queued message it folds
+/// into the running turn.
 ///
-/// The one case where a person's own words reach the model and are written
-/// nowhere a reading can see them. claude keeps a queue of what was typed
-/// while it worked, writes an `enqueue` line for each, and writes a `remove`
-/// line when it takes one — and for this reason, and only this one, it writes
-/// no `user` entry at all. Its own pane draws the message: measured at 2.1.278
-/// on 2026-09-21, `❯ also say BRAVO` stood between the tool it interrupted and
-/// the answer, with the transcript holding the two queue lines and nothing
-/// else about it.
-///
-/// So the removal is the prompt. It sits exactly where the pane draws it —
-/// after the call the message arrived during and before the answer it changed
-/// — and it carries the words, which the pane's own row would have to be
-/// captured and cut to get back.
-///
-/// This is what Saiful's `tell-me-about-this-uuz` came to: `Stop no need`,
-/// absorbed 868 milliseconds after it was queued, answered by the agent, and
-/// on no screen amx could draw.
+/// claude writes an `enqueue` line for a message typed mid-turn and a `remove`
+/// line when it takes it. For this reason alone it writes no `user` entry, so
+/// the removal is the only record of the prompt. It sits where claude's pane
+/// draws the message: after the tool call it arrived during, before the answer
+/// it changed. Seen in claude 2.1.278.
 const QUEUED: &str = "queue-operation";
 const ABSORBED: &str = "absorbed_mid_turn";
 
 /// Every message claude took off its queue, with the second it was taken.
-///
-/// Only claude keeps a queue in its transcript; other formats answer empty.
+/// Other formats have no queue and answer empty.
 pub fn unqueued(format: Transcript, jsonl: &str) -> Vec<(u64, String)> {
     if format != Transcript::Claude {
         return Vec::new();
@@ -524,7 +455,7 @@ pub fn unqueued(format: Transcript, jsonl: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// Seconds since the epoch for a UTC stamp like `2026-09-29T20:32:04.768Z`.
+/// Epoch seconds for a UTC stamp like `2026-09-29T20:32:04.768Z`.
 fn epoch(stamp: &str) -> Option<u64> {
     let (date, time) = stamp.split_once('T')?;
     let mut date = date.splitn(3, '-').map(str::parse::<i64>);
@@ -533,7 +464,7 @@ fn epoch(stamp: &str) -> Option<u64> {
     let hours: i64 = time.next()?.parse().ok()?;
     let minutes: i64 = time.next()?.parse().ok()?;
     let seconds: f64 = time.next()?.parse().ok()?;
-    // Days from 1970-01-01, after Howard Hinnant's `days_from_civil`.
+    // Days since 1970-01-01, per Howard Hinnant's `days_from_civil`.
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let year_of_era = year - era * 400;
@@ -543,23 +474,22 @@ fn epoch(stamp: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hours * 3_600 + minutes * 60 + seconds as i64).ok()
 }
 
-/// The words of a queued message claude took without writing a turn for it.
+/// The words of a queued message claude folded into the running turn.
 fn absorbed(entry: &Value) -> Option<&str> {
     let taken =
         entry["type"] == QUEUED && entry["operation"] == "remove" && entry["reason"] == ABSORBED;
     taken.then(|| entry["content"].as_str()).flatten()
 }
 
-/// One claude entry, into what it said.
+/// What one claude entry said.
 fn claude(entry: &Value, said: &mut Vec<Said>) {
     if let Some(queued) = absorbed(entry) {
         prompt(Some(queued), said);
         return;
     }
     match voice(Transcript::Claude, entry) {
-        // claude's own lines in the person's voice: a skill's body, an image's
-        // source, the caveat before a local command, the summary a compaction
-        // starts the conversation again from. Nobody typed them.
+        // claude's own lines in the user's voice: a skill's body, an image's
+        // source, the local-command caveat, a compaction summary.
         Some(Voice::User) if entry["isMeta"] == true || entry["isCompactSummary"] == true => {}
         Some(Voice::User) => {
             let typed = match entry["message"]["content"].as_str() {
@@ -581,11 +511,11 @@ fn claude(entry: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// One pi entry, into what it said.
+/// What one pi entry said.
 fn pi(entry: &Value, said: &mut Vec<Said>) {
     match voice(Transcript::Pi, entry) {
         Some(Voice::User) => {
-            // A prompt is a string, or blocks where an image rode with it.
+            // A string, or blocks when an image was attached.
             let content = &entry["message"]["content"];
             match content.as_str() {
                 Some(typed) => prompt(Some(typed), said),
@@ -605,23 +535,18 @@ fn pi(entry: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// One codex rollout line, into what it said.
+/// What one codex rollout line said.
 ///
-/// A prompt is read off codex's own record of what the person sent, never off
-/// the `user` messages it hands the model: those also carry the context codex
-/// writes in the person's voice — `<environment_context>`, a project's
-/// AGENTS.md — which nobody typed. codex keeps that record as an
-/// `item_completed` event whose item is a `UserMessage` on the paginated
-/// threads its TUI starts, and as a `user_message` event on legacy ones; a
-/// steered message is one of them like any other. Measured off codex 0.157.1
-/// on 2026-09-28, where every typed prompt had one and the injected context
-/// had none.
+/// Prompts come from codex's record of what the person sent, never from the
+/// `user` messages sent to the model, which also carry injected context
+/// (`<environment_context>`, AGENTS.md). That record is an `item_completed`
+/// event with a `UserMessage` item on threads the TUI starts, and a
+/// `user_message` event on legacy ones; steered messages appear the same way
+/// (codex 0.157.1).
 ///
-/// What the agent said and called is its `response_item`s: `output_text` of an
-/// assistant message, commentary and final answer alike, and a call as a
-/// `function_call` with JSON arguments or a `custom_tool_call` whose input is
-/// whatever the tool takes — for `exec`, a script, which names no argument
-/// worth a row.
+/// Assistant text is the `output_text` of assistant messages. A call is a
+/// `function_call` with JSON arguments or a `custom_tool_call` with free-form
+/// input (a script, for `exec`).
 fn codex(entry: &Value, said: &mut Vec<Said>) {
     let payload = &entry["payload"];
     match codex_event(entry) {
@@ -651,7 +576,7 @@ fn codex(entry: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// The type of a codex `event_msg` line, and `None` for any other line.
+/// The type of a codex `event_msg` line, or `None` for other lines.
 fn codex_event(entry: &Value) -> Option<&str> {
     match entry["type"] == "event_msg" {
         true => entry["payload"]["type"].as_str(),
@@ -659,12 +584,12 @@ fn codex_event(entry: &Value) -> Option<&str> {
     }
 }
 
-/// The event that last opened or closed a turn in a rollout: `task_started`,
-/// `task_complete` or `turn_aborted`.
+/// The last turn edge in a rollout: `task_started`, `task_complete` or
+/// `turn_aborted`.
 ///
-/// A turn whose last word is `task_started` is still running, and a pane
-/// killed under it leaves it so for good: codex writes nothing more for that
-/// turn, and a later resume does not either (docs/codex-screens.md).
+/// A turn whose last edge is `task_started` is still running. A pane killed
+/// mid-turn leaves it that way for good; codex never closes it, even on resume
+/// (docs/codex-screens.md).
 fn codex_turn_end<V: Borrow<Value>>(mut newest: impl Iterator<Item = V>) -> Option<V> {
     newest.find(|entry| {
         matches!(
@@ -674,10 +599,11 @@ fn codex_turn_end<V: Borrow<Value>>(mut newest: impl Iterator<Item = V>) -> Opti
     })
 }
 
-/// A codex turn's answer: the `last_agent_message` its `task_complete`
-/// carries. An Esc'd turn has no `task_complete` — even where it had written
-/// a final answer before the Esc landed — a turn that ended on a question
-/// carries a null one, and an errored one carries an `error` beside it.
+/// A codex turn's answer: `last_agent_message` from its `task_complete`.
+///
+/// An Esc'd turn has no `task_complete` even if it wrote a final answer, a
+/// turn that ended on a question has a null message, and a failed one carries
+/// an `error`.
 fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
     let end = codex_turn_end(newest)?;
     let end = &end.borrow()["payload"];
@@ -687,12 +613,11 @@ fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Str
     trimmed(end["last_agent_message"].as_str()?)
 }
 
-/// Why a codex turn ended with nothing: aborted, with the reason codex gave
-/// (Esc is `interrupted`), or failed, with the provider's own message.
+/// Why a codex turn ended with nothing: aborted (Esc is `interrupted`), or
+/// failed with the provider's message.
 ///
-/// codex writes the error it got back as the message, and where that is the
-/// provider's JSON — measured with a model the account may not use — its
-/// `error.message` is the sentence, and the rest is wrapping.
+/// When the error message is the provider's JSON, its `error.message` is the
+/// sentence and the rest is wrapping.
 fn codex_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
     let end = codex_turn_end(newest)?;
     let end = &end.borrow()["payload"];
@@ -716,12 +641,12 @@ fn codex_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String
     }
 }
 
-/// One opencode message, into what it said.
+/// What one opencode message said.
 ///
-/// A prompt is a `user` message's `text`; what the agent said and called is
-/// the `text` and `tool` items of an `assistant` message's `content`, a call's
-/// arguments under `state.input`. The rest -- `reasoning` items, `idle` rows,
-/// the `synthetic`, `system` and `compaction` messages -- is nobody's reading.
+/// A prompt is a `user` message's `text`. Assistant text and calls are the
+/// `text` and `tool` items of an `assistant` message's `content`, with call
+/// arguments under `state.input`. Reasoning items, `idle` rows and synthetic,
+/// system and compaction messages are skipped.
 fn opencode(entry: &Value, said: &mut Vec<Said>) {
     match voice(Transcript::Opencode, entry) {
         Some(Voice::User) => prompt(entry["text"].as_str(), said),
@@ -738,14 +663,13 @@ fn opencode(entry: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// How the last turn of an opencode list ended, and the last step it took.
+/// How the last opencode turn ended, and its last assistant step.
 ///
-/// The `idle` row closing a turn carries its outcome: `succeeded`, `failed`
+/// The `idle` row closing a turn carries the outcome: `succeeded`, `failed`
 /// or `interrupted`. A turn ended by a rejected permission or a dismissed
-/// question writes none (docs/opencode-screens.md, "The message lists"): its
-/// last step is an assistant whose `error` is `aborted`, and that is read as
-/// interrupted. A list ending on a prompt, or on a step with no error, is a
-/// turn still running, and has no outcome yet.
+/// question writes no `idle` row; its last step has an `aborted` error and
+/// reads as interrupted (docs/opencode-screens.md, "The message lists"). A
+/// list ending on a prompt, or on a step without an error, is still running.
 fn opencode_end<V: Borrow<Value>>(
     mut newest: impl Iterator<Item = V>,
 ) -> Option<(String, Option<V>)> {
@@ -770,8 +694,7 @@ fn opencode_end<V: Borrow<Value>>(
     Some((outcome, step))
 }
 
-/// An opencode turn's answer: the words of its last step, where the turn
-/// succeeded.
+/// An opencode turn's answer: its last step's text, if the turn succeeded.
 fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
     match opencode_end(newest)? {
         (outcome, Some(step)) if outcome == "succeeded" => {
@@ -781,8 +704,8 @@ fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<
     }
 }
 
-/// Why an opencode turn ended with nothing: interrupted, or failed with the
-/// message its last step's `error` carries.
+/// Why an opencode turn ended with nothing: interrupted, or failed with its
+/// last step's error message.
 fn opencode_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
     let (outcome, step) = opencode_end(newest)?;
     let step = step.as_ref().map(Borrow::borrow);
@@ -799,8 +722,8 @@ fn opencode_why<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Str
     }
 }
 
-/// The `text` blocks of a content array, joined by newlines. Other blocks, a
-/// pasted image or a thinking block, are skipped.
+/// The `text` blocks of a content array joined by newlines. Other blocks
+/// (images, thinking) are skipped.
 fn text_of(content: &Value) -> String {
     let text: Vec<&str> = content
         .as_array()
@@ -812,9 +735,8 @@ fn text_of(content: &Value) -> String {
     text.join("\n")
 }
 
-/// A slash command or a skill as the person typed it, out of the tags claude
-/// writes it in: `<command-name>/amx</command-name>` beside a
-/// `<command-message>` and the `<command-args>` typed after the name.
+/// A slash command or skill as typed, from claude's tags: `<command-name>`
+/// followed by any `<command-args>`.
 fn command(written: &str) -> Option<String> {
     let name = tagged(written, "command-name")?.trim();
     let args = tagged(written, "command-args").unwrap_or_default().trim();
@@ -824,7 +746,7 @@ fn command(written: &str) -> Option<String> {
     })
 }
 
-/// What stands between `<tag>` and `</tag>`.
+/// The text between `<tag>` and `</tag>`.
 fn tagged<'a>(written: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let from = written.find(&open)? + open.len();
@@ -832,7 +754,7 @@ fn tagged<'a>(written: &'a str, tag: &str) -> Option<&'a str> {
     Some(&written[from..from + to])
 }
 
-/// The message's blocks, or none where the content is not blocks.
+/// A message's content blocks, or none if the content is not an array.
 fn blocks(entry: &Value) -> &[Value] {
     entry["message"]["content"]
         .as_array()
@@ -860,12 +782,11 @@ fn tool(name: Option<&str>, input: &Value, said: &mut Vec<Said>) {
     }
 }
 
-/// The one argument of a tool call worth a row beside its name: the command
-/// a shell ran, the path a file tool touched, the pattern a search looked
-/// for. The first line of it, because a row is one line.
+/// The one tool argument worth showing beside its name, first line only:
+/// a shell command, a file path, a search pattern and so on.
 ///
-/// Named by the arguments both vendors' tools spell, in the order a reader
-/// would want them; a call spelling none of these is a name on its own.
+/// Keys are tried in order of usefulness; a call with none of them shows its
+/// name alone.
 fn detail(input: &Value) -> Option<String> {
     const WORTH_A_ROW: [&str; 9] = [
         "command",
@@ -887,7 +808,7 @@ fn detail(input: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Every line of the file that is a JSON document.
+/// Every line that parses as JSON.
 fn entries(jsonl: &str) -> impl DoubleEndedIterator<Item = Value> + '_ {
     jsonl
         .lines()
@@ -898,7 +819,7 @@ fn entries(jsonl: &str) -> impl DoubleEndedIterator<Item = Value> + '_ {
 mod tests {
     use super::*;
 
-    /// Shapes measured from a live claude 2.1.240 transcript on 2026-08-25.
+    /// Shapes from a live claude 2.1.240 transcript.
     const CLAUDE: &str = concat!(
         "{\"type\":\"mode\",\"x\":1}\n",
         "{\"type\":\"user\",\"message\":{\"content\":\"print the numbers\"}}\n",
@@ -909,9 +830,9 @@ mod tests {
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"1\\n2\\n3\"}]}}\n",
     );
 
-    /// Shapes measured from a live pi 0.84.4 session on 2026-09-05: the
-    /// header, two bookkeeping entries, and messages in the three voices.
-    /// 0.85.1 still writes session version 3.
+    /// Shapes from a live pi 0.84.4 session (0.85.1 writes the same version
+    /// 3): the header, two bookkeeping entries, and messages in all three
+    /// voices.
     const PI: &str = concat!(
         "{\"type\":\"session\",\"version\":3,\"id\":\"hi-c4g\",\"cwd\":\"/srv/app\"}\n",
         "{\"type\":\"model_change\",\"id\":\"0a\",\"parentId\":null,\"provider\":\"opencode\",\"modelId\":\"m\"}\n",
@@ -962,13 +883,9 @@ mod tests {
 
     #[test]
     fn conversation_reads_a_message_claude_took_off_its_queue_as_the_prompt_it_is() {
-        // A message typed while claude worked reaches the model and is written
-        // nowhere a reading can see it: two queue lines, and no `user` entry
-        // at all. Measured at 2.1.278 on 2026-09-21, twice — Saiful's
-        // `tell-me-about-this-uuz`, where `Stop no need` was absorbed 868ms
-        // after it was queued and then answered, and a driven session of the
-        // same shape. claude's own pane draws the row; amx drew nothing, so
-        // the card went from `· queued` to no sign of it anywhere.
+        // A message typed while claude works reaches the model with no `user`
+        // entry, only two queue lines (claude 2.1.278). The removal must read
+        // as a prompt, or the card shows no trace of the message.
         let absorbed = concat!(
             "{\"type\":\"user\",\"message\":{\"content\":\"run the tests\"}}\n",
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test\"}}]}}\n",
@@ -990,9 +907,8 @@ mod tests {
              changed"
         );
 
-        // The enqueue is not, because a message still on the queue is one the
-        // model has not seen and the row already says is waiting — and a
-        // removal for any other reason is claude doing something else with it.
+        // An enqueue is not a prompt: the model has not seen it yet. A removal
+        // for any other reason is not one either.
         let waiting = concat!(
             "{\"type\":\"user\",\"message\":{\"content\":\"run the tests\"}}\n",
             "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"also the linter\"}\n",
@@ -1011,10 +927,9 @@ mod tests {
 
     #[test]
     fn conversation_reads_pasted_image_skill_and_interrupt_prompts_as_they_were_typed() {
-        // Shapes read off this machine's claude transcripts on 2026-09-26. A
-        // prompt with an image pasted into it is blocks, not a string, and so
-        // is claude's note that the person cut the turn short; a slash command
-        // or a skill is a string of claude's own tags around what was typed.
+        // Shapes from claude transcripts. A prompt with a pasted image is
+        // blocks, as is claude's interrupt note; a slash command or skill is a
+        // string wrapped in claude's tags.
         let typed = concat!(
             "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Image #3] why is the name the store's?\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"data\":\"iVBO\"}}]}}\n",
             "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[Image: source: /tmp/images/3.png]\"}]},\"isMeta\":true}\n",
@@ -1063,8 +978,8 @@ mod tests {
 
     #[test]
     fn conversation_says_what_limit_stopped_a_claude_turn() {
-        // Written by claude 2.1 on 2026-08-22: a turn the account's limit
-        // stopped is a synthetic entry whose words are the reason.
+        // A turn stopped by an account limit is a synthetic entry whose text is
+        // the reason (claude 2.1).
         let limited = format!(
             "{CLAUDE}{}\n",
             "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"content\":[{\"type\":\"text\",\"text\":\"You've hit your weekly limit · resets Aug 24, 10am (Asia/Dhaka)\"}]},\"error\":\"rate_limit\",\"isApiErrorMessage\":true}"
@@ -1089,9 +1004,8 @@ mod tests {
             ]
         );
 
-        // A prompt pi writes as a string reads the same as one it writes as
-        // blocks, and a call spelling none of the arguments worth a row is a
-        // name on its own.
+        // A string prompt reads like a blocks prompt, and a call with no
+        // argument worth showing is its name alone.
         let bare = concat!(
             "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"  go  \"}}\n",
             "{\"type\":\"message\",\"id\":\"a2\",\"parentId\":\"a1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"ls\",\"arguments\":{}}]}}\n",
@@ -1105,10 +1019,9 @@ mod tests {
     #[test]
     fn conversation_follows_the_branch_a_pi_session_is_on() {
         // The session above, navigated back to its first prompt and answered
-        // again: pi moves its leaf to `0b`, writes the summary of the path it
-        // left behind as a child of it, and the new answer as a child of that.
-        // The reading is the prompt and the new answer; the tool call and
-        // the first answer are on the branch left behind.
+        // again: pi moves its leaf to `0b`, writes a branch summary as its
+        // child, and the new answer under that. The tool call and first answer
+        // are on the abandoned branch.
         let branched = format!(
             "{PI}{}\n{}\n",
             "{\"type\":\"branch_summary\",\"id\":\"e1\",\"parentId\":\"0b\",\"fromId\":\"c9\",\"summary\":\"was in /srv/app\"}",
@@ -1127,8 +1040,8 @@ mod tests {
             "and the answer is the branch's, not the file's last assistant line"
         );
 
-        // Navigated to before the first prompt and asked something else: a
-        // second root, and nothing of the first tree is on its path.
+        // Navigated to before the first prompt: a second root, sharing
+        // nothing with the first tree.
         let rerooted = format!(
             "{PI}{}\n",
             "{\"type\":\"message\",\"id\":\"f1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"start over\"}}",
@@ -1138,8 +1051,7 @@ mod tests {
             vec![Said::Prompt("start over".to_string())]
         );
 
-        // A parent the file does not hold ends the walk where it is, and a
-        // cycle somebody edited in ends it too.
+        // A missing parent ends the walk, and so does a cycle.
         let orphaned = "{\"type\":\"message\",\"id\":\"g1\",\"parentId\":\"gone\",\"message\":{\"role\":\"user\",\"content\":\"hm\"}}\n";
         assert_eq!(
             read(Transcript::Pi, orphaned),
@@ -1170,9 +1082,8 @@ mod tests {
 
     #[test]
     fn conversation_says_why_a_turn_that_said_nothing_ended() {
-        // The reasons a live pi wrote over 9000 turns on this machine:
-        // `toolUse` and `stop` are how a turn ends, and `error`, `aborted` and
-        // `length` are the three a caller with no answer has to act on.
+        // `toolUse` and `stop` are ordinary endings; `error`, `aborted` and
+        // `length` are the ones a caller has to act on.
         fn pi_ended(on: &str) -> Option<String> {
             why_it_stopped(
                 Transcript::Pi,
@@ -1212,8 +1123,7 @@ mod tests {
             "a reason amx has no word for is repeated as the vendor spelled it"
         );
 
-        // claude's own spelling, and a turn still running says nothing: the
-        // question is only asked of a turn that ended with no answer.
+        // claude's own spelling. A turn still running has no reason.
         let cut_short = format!(
             "{CLAUDE}{}\n",
             "{\"type\":\"assistant\",\"message\":{\"content\":[],\"stop_reason\":\"max_tokens\"}}"
@@ -1231,9 +1141,8 @@ mod tests {
 
     #[test]
     fn conversation_ending_on_a_tools_result_is_a_turn_still_running() {
-        // Tool results are `user` lines on claude and `toolResult` messages
-        // on pi, and there are ten of them for every real turn. A trailing
-        // one means the last assistant text belongs to the turn before.
+        // A trailing tool result (a `user` line on claude, `toolResult` on
+        // pi) means the last assistant text belongs to the previous turn.
         let claude_running = format!(
             "{CLAUDE}{}\n",
             "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}"
@@ -1246,7 +1155,7 @@ mod tests {
         );
         assert_eq!(answer(Transcript::Pi, &pi_running), None);
 
-        // And so is one ending on the prompt itself.
+        // As does one ending on the prompt.
         let asked = "{\"type\":\"message\",\"id\":\"d2\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
         assert_eq!(answer(Transcript::Pi, asked), None);
     }
@@ -1307,8 +1216,8 @@ mod tests {
             Some("Hello. You are in /srv/app.")
         );
 
-        // Mid-turn, with the call's result back and nothing said since: the
-        // call is the newest row there is, its command beside its name.
+        // Mid-turn with the result back and nothing said since: the call is
+        // the newest row.
         let calling = concat!(
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test --all\"}}]}}\n",
             "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}\n",
@@ -1318,11 +1227,11 @@ mod tests {
             Some("Bash cargo test --all")
         );
 
-        // A call spelling none of the arguments worth a row is its name alone.
+        // A call with no argument worth showing is its name alone.
         let bare = "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"ls\",\"arguments\":{}}]}}\n";
         assert_eq!(latest(Transcript::Pi, bare).as_deref(), Some("ls"));
 
-        // What the person typed is not news to whoever is reading the row.
+        // A prompt is not shown as the newest row.
         let asked = "{\"type\":\"user\",\"message\":{\"content\":\"print the numbers\"}}\n";
         assert_eq!(latest(Transcript::Claude, asked), None);
         assert_eq!(latest(Transcript::Claude, ""), None);
@@ -1333,8 +1242,7 @@ mod tests {
         );
     }
 
-    /// The context half of the combined reader, which is the only reader the
-    /// tests below have to ask.
+    /// The context half of `context_and_last_words`.
     fn usage_context(format: Transcript, jsonl: &str) -> Option<u64> {
         context_and_last_words(format, jsonl).0
     }
@@ -1366,10 +1274,8 @@ mod tests {
         );
         assert_eq!(usage_context(Transcript::Pi, PI), None);
 
-        // claude ends a turn it could not answer with a <synthetic> entry
-        // whose usage is all zeros -- "No response requested.", an API error,
-        // a session limit. That is not what the conversation costs, and the
-        // real turn before it is.
+        // claude ends a turn it could not answer with a synthetic entry whose
+        // usage is all zeros; the real turn before it is the context.
         let synthetic = concat!(
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"a\"}],\
              \"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":140,\
@@ -1420,9 +1326,8 @@ mod tests {
 
     #[test]
     fn conversation_title_is_the_last_name_the_session_was_given() {
-        // Shapes measured from live claude 2.1.263 transcripts on 2026-09-08.
-        // The vendor writes the whole line again every time the name changes,
-        // so the file holds every name the session has had.
+        // Shapes from claude 2.1.263 transcripts. The title line is rewritten
+        // on every change, so the file holds every title the session had.
         let named = concat!(
             "{\"type\":\"ai-title\",\"aiTitle\":\"Audio panel work\",\"sessionId\":\"120567b6\"}\n",
             "{\"type\":\"user\",\"message\":{\"content\":\"and the mixer too\"}}\n",
@@ -1434,8 +1339,7 @@ mod tests {
             "the newest of them is what the session goes under now"
         );
 
-        // A name a person typed arrives under a key of its own, after
-        // whatever the vendor had been calling the session.
+        // A title a person typed arrives under its own key.
         let renamed = format!(
             "{named}{}\n",
             "{\"type\":\"custom-title\",\"customTitle\":\"foundation\",\"sessionId\":\"120567b6\"}"
@@ -1445,8 +1349,7 @@ mod tests {
             Some("foundation")
         );
 
-        // A name with nothing in it is no name, and leaves the one before it
-        // standing.
+        // A blank title leaves the previous one standing.
         let blanked = format!(
             "{renamed}{}\n",
             "{\"type\":\"custom-title\",\"customTitle\":\"  \",\"sessionId\":\"120567b6\"}"
@@ -1488,8 +1391,8 @@ mod tests {
         assert_eq!(plain(&[]), "");
     }
 
-    /// Rollouts codex 0.157.1 wrote on 2026-09-28, copied out of a scratch
-    /// `CODEX_HOME` — see docs/codex-screens.md, "Rollouts".
+    /// Rollouts written by codex 0.157.1 (see docs/codex-screens.md,
+    /// "Rollouts").
     const CODEX_TURNS: &str =
         include_str!("../tests/codex/rollouts/turn-steer-abort-kill-resume.jsonl");
     const CODEX_ABORTED: &str = include_str!("../tests/codex/rollouts/aborted-first-turn.jsonl");
@@ -1504,11 +1407,9 @@ mod tests {
 
     #[test]
     fn conversation_reads_a_codex_rollout_in_order() {
-        // Every prompt the person typed, the steered one among them, and
-        // none of codex's own context: the `<environment_context>` it writes
-        // in the person's voice, the developer instructions, the
-        // `<turn_aborted>` note. What the agent said is its commentary and
-        // its final answers; reasoning and a call's output are nobody's.
+        // Every typed prompt, including the steered one, and none of codex's
+        // injected context (`<environment_context>`, developer instructions,
+        // the `<turn_aborted>` note). Reasoning and call output are skipped.
         assert_eq!(
             read(Transcript::Codex, CODEX_TURNS),
             vec![
@@ -1560,9 +1461,9 @@ mod tests {
             "the first turn, as the file stood when it completed"
         );
 
-        // A question turn completes with no last message, an errored one
-        // with an error, and an Esc'd one with `turn_aborted` -- even where
-        // the agent had written a final answer before the Esc landed.
+        // A question turn completes with no message, an errored one with an
+        // error, and an Esc'd one with `turn_aborted`, even if a final answer
+        // was already written.
         assert_eq!(answer(Transcript::Codex, CODEX_QUESTION), None);
         assert_eq!(answer(Transcript::Codex, CODEX_ERROR), None);
         assert_eq!(answer(Transcript::Codex, CODEX_ABORTED), None);
@@ -1571,9 +1472,8 @@ mod tests {
             None
         );
 
-        // A turn that has started and not ended is still running: one just
-        // started after a turn that did answer, and one whose pane was killed
-        // mid-call, which leaves it open in the file for good.
+        // A turn that started and has not ended is still running, including
+        // one whose pane was killed mid-call.
         assert_eq!(
             answer(Transcript::Codex, &codex_until(CODEX_TURNS, 28)),
             None
@@ -1627,7 +1527,7 @@ mod tests {
         );
         assert_eq!(latest(Transcript::Codex, CODEX_ERROR), None);
 
-        // The input side of the last token_count: the last request's.
+        // The input tokens of the last `token_count`.
         assert_eq!(usage_context(Transcript::Codex, CODEX_TURNS), Some(14066));
         assert_eq!(
             usage_context(Transcript::Codex, CODEX_APPROVAL),
@@ -1670,9 +1570,8 @@ mod tests {
         );
     }
 
-    /// Message lists opencode 2.0.16 gave on 2026-09-30, written as the plugin
-    /// writes them at a turn's end -- see docs/opencode-screens.md, "The
-    /// message lists".
+    /// Message lists from opencode 2.0.16, as the plugin writes them at the
+    /// end of a turn (see docs/opencode-screens.md, "The message lists").
     const OPENCODE_TURN: &str = include_str!("../tests/opencode/messages/turn.jsonl");
     const OPENCODE_STEER: &str = include_str!("../tests/opencode/messages/steer.jsonl");
     const OPENCODE_INTERRUPT: &str = include_str!("../tests/opencode/messages/interrupt.jsonl");
@@ -1682,7 +1581,7 @@ mod tests {
 
     #[test]
     fn conversation_reads_an_opencode_list_in_order() {
-        // Reasoning, a tool's output and the `idle` rows are nobody's reading.
+        // Reasoning, tool output and `idle` rows are skipped.
         assert_eq!(
             read(Transcript::Opencode, OPENCODE_STEER),
             vec![
@@ -1724,10 +1623,9 @@ mod tests {
             "the first turn, as the list stood when it ended"
         );
 
-        // An interrupted or failed turn answers nothing, and so does one a
-        // rejected permission or a dismissed question ended, which writes no
-        // `idle` row at all. A turn with a prompt or a step after its last
-        // `idle` is still running.
+        // Interrupted and failed turns have no answer, nor do turns ended by a
+        // rejected permission or dismissed question (no `idle` row). A turn
+        // with a prompt or step after its last `idle` is still running.
         assert_eq!(answer(Transcript::Opencode, OPENCODE_INTERRUPT), None);
         assert_eq!(answer(Transcript::Opencode, OPENCODE_FAILURE), None);
         assert_eq!(answer(Transcript::Opencode, OPENCODE_PERMISSION), None);
@@ -1786,8 +1684,8 @@ mod tests {
         );
         assert_eq!(latest(Transcript::Opencode, OPENCODE_FAILURE), None);
 
-        // The last step's input, its cached part and what it wrote to the
-        // cache: `input` counts none of the cache.
+        // The last step's input plus cache reads and writes; `input` excludes
+        // the cache.
         assert_eq!(
             usage_context(Transcript::Opencode, OPENCODE_TURN),
             Some(7065)
