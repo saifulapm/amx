@@ -3,6 +3,7 @@
 # The website's build output and its npm install.
 /site/dist/
 /site/node_modules/
+/site/assets/amx-demo.mp4
 
 # Worktrees amx makes for its own agents, and the ones tooling makes here.
 /.amx/

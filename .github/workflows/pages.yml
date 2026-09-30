@@ -35,6 +35,10 @@ jobs:
         working-directory: site
         run: npm ci
 
+      # The demo video lives on a release, not in git, so clones stay small.
+      - name: Fetch the demo video
+        run: curl -fsSL -o site/assets/amx-demo.mp4 https://github.com/saifulapm/amx/releases/download/v0.1.0/amx-demo.mp4
+
       - name: Build
         working-directory: site
         run: node build.mjs
