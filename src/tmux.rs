@@ -141,7 +141,10 @@ impl Listings {
                 at
             }
         };
-        self.0[at].1.as_ref().context("tmux could not be asked")
+        self.0[at]
+            .1
+            .as_ref()
+            .context("could not list the tmux panes")
     }
 }
 

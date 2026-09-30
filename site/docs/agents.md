@@ -89,7 +89,7 @@ and the valid values:
 
 ```
 $ amx new --agent pi --permission plan "x"
-amx new: --permission "plan": amx knows no permission dial for pi
+amx new: --permission "plan": amx cannot set permission for pi
 ```
 
 To pass a flag amx has no dial for, put it after `--`:

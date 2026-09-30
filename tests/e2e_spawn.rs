@@ -2050,7 +2050,7 @@ fn an_agent_that_has_ended_does_not_hold_a_place() {
     );
     assert!(
         second.status.success(),
-        "an agent that is over is not one of the five: {}",
+        "an agent that has ended does not count against max_agents: {}",
         String::from_utf8_lossy(&second.stderr)
     );
 }

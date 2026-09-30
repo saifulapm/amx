@@ -214,8 +214,8 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
 fn held(id: &str, held: &[String]) -> String {
     let held: Vec<String> = held.iter().map(|text| format!("{text:?}")).collect();
     format!(
-        "the interrupt put text back into the input of {id}: {}; a message sent now \
-         would be submitted with it, so submit or clear it first in `amx attach {id}`",
+        "{id}'s input still holds text the interrupt put back: {}; submit or clear it \
+         with `amx attach {id}` before sending",
         held.join(", ")
     )
 }
