@@ -1,20 +1,15 @@
-//! `amx stop` — end an agent, and decide what it leaves behind.
+//! `amx stop`: end an agent and decide what happens to its worktree, branch
+//! and record.
 //!
-//! Ending it is a ladder, not a killing: the pane's process group is asked to
-//! stop, given a moment to finish writing whatever it was writing, and only
-//! then killed. A vendor cut down mid-sentence loses the transcript it was
-//! flushing, and that transcript is where an answer lives.
+//! The pane's process group gets SIGTERM and a grace period before SIGKILL, so
+//! the vendor can finish flushing its transcript. The defaults lose nothing:
+//! the worktree is removed, the branch and record are kept. `--delete` removes
+//! the record; `--force` takes every default without asking. The two are
+//! separate so a finished agent can be cleared without also waiving the
+//! worktree questions.
 //!
-//! What it leaves behind is the person's to decide, with the defaults being
-//! the ones that lose nothing: the worktree goes, the branch stays, the record
-//! stays. A worktree with uncommitted work in it is never deleted, whatever
-//! anybody says — it holds work that no commit has, and deleting that is the
-//! one thing amx could do that nothing undoes.
-//!
-//! `--delete` is the record's disposition, and it is not `--force`. One says
-//! that this row goes; the other answers every question with its default.
-//! Keeping them apart is what lets somebody clear a finished agent away
-//! without also telling amx they do not care what happens to a worktree.
+//! - A worktree holding uncommitted work is never deleted, and a record is
+//!   never removed while its worktree still exists.
 
 use anyhow::Result;
 use std::io::{BufRead, Write};
@@ -28,7 +23,7 @@ use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{PaneId, Server};
 use crate::{exit, paths, spawn, store, trust, warn, worktree};
 
-/// How long the agent is given to stop of its own accord.
+/// How long the agent gets to stop on its own, per signal.
 const GRACE: Duration = Duration::from_secs(5);
 
 /// Run the verb against the machine.
@@ -49,8 +44,7 @@ pub fn run(
     let agent = Agent::open(root, &args.id)?;
     let meta = agent.meta()?;
 
-    // This one alone: a parent's children carry on, and a child's parent is
-    // never the child's to end. A family is stopped one id at a time.
+    // This agent only: its children and its parent keep running.
     if !stop_one(root, &args.id, &meta, out)? {
         writeln!(
             out,
@@ -62,12 +56,8 @@ pub fn run(
 
     dispositions(&meta, args, input, out)?;
 
-    // Last, and only once everything it names has been said. The record is
-    // where the worktree and the branch are written down, so a line about
-    // either of them has to be printed while there is still a record to print
-    // it from.
-    // A tree that stayed — holding work no commit has, or one git would not
-    // remove — is named nowhere but the record, so the record stays with it.
+    // Last, since the lines above are printed from the record. A tree that
+    // stayed is named only by the record, so the record stays with it.
     if args.delete {
         match meta.worktree.as_ref().filter(|tree| tree.exists()) {
             Some(tree) => writeln!(
@@ -85,17 +75,12 @@ pub fn run(
     Ok(exit::OK)
 }
 
-/// End one agent: take its pane down, mark it stopped where it is not already,
-/// and run whatever the person asked to run at that moment.
+/// End one agent: take its pane down, mark it stopped if it had not ended, and
+/// run the `on_stopped` command.
 ///
-/// Everything under the writer, from the reading to the write: an exit landing
-/// while stop decides has either written its phase already, and stop leaves it
-/// alone, or waits until stop has written its own. The pane first and the
-/// record after, so a pane that would not go leaves the phase as it was.
-///
-/// `read` is the record the caller decided from. A pane on the record that is
-/// not the one read is a resume that landed in between, and that agent is one
-/// nobody asked to stop: false, and nothing touched.
+/// `read` is the record the caller decided from. If the record now names a
+/// different pane, a resume landed in between: returns false and touches
+/// nothing.
 fn stop_one(root: &Path, id: &str, read: &Meta, out: &mut impl Write) -> Result<bool> {
     let agent = Agent::open(root, id)?;
     let signal = read
@@ -109,17 +94,15 @@ fn stop_one(root: &Path, id: &str, read: &Meta, out: &mut impl Write) -> Result<
     stop_one_ending(root, id, read, out, end)
 }
 
-/// Tell a vendor with a signal for it to end the turn it is in, and wait up to
-/// `patience` for the record to say it has. False only where the signal went
-/// and no ending came.
+/// For a vendor with an interrupt signal, send it and wait up to `patience`
+/// for the record to leave the turn. False only when the signal went out and
+/// no ending came.
 ///
-/// Before the writer is taken, because the ending is a hook, and a hook writes
-/// under it. A vendor whose pane is killed mid-turn can leave the turn claimed
-/// where the next process to open the session finds it: opencode's service
-/// holds a killed server's claim until it boots again.
+/// Runs before the writer is taken, since the ending arrives as a hook that
+/// writes under it. A vendor killed mid-turn can leave the session claimed:
+/// opencode's service holds a killed server's claim until it boots again.
 ///
-/// `send` says whether the signal went; a pane that is no longer this agent's
-/// took nothing, and there is nothing to wait on.
+/// `send` returns whether the signal was delivered.
 fn turn_ended(
     agent: &Agent,
     read: &Meta,
@@ -132,7 +115,7 @@ fn turn_ended(
         return Ok(true);
     };
     let meta = agent.meta()?;
-    // A resume that landed since the read is left to the ending below to say.
+    // A resume since the read is reported by `stop_one_ending`.
     if (&meta.socket, &meta.pane) != (&read.socket, &read.pane) || !in_a_turn(agent.state()?.state)
     {
         return Ok(true);
@@ -156,9 +139,9 @@ fn turn_ended(
 /// Send `signal` to the vendor in this agent's pane, if the pane is still
 /// this agent's.
 ///
-/// Not to the pane's own process: that is the shell that runs the vendor and
-/// then records how it ended, and a signal with its default action ends the
-/// shell rather than the turn. The vendor is its child.
+/// The pane's own process is the wrapper shell that records how the vendor
+/// ended; a signal with its default action would kill it. The vendor is its
+/// child.
 fn signalled(server: &Server, pane: &PaneId, id: &str, signal: Signal) -> Result<bool> {
     if !server.answers_for_now(pane, id)? {
         return Ok(false);
@@ -170,7 +153,7 @@ fn signalled(server: &Server, pane: &PaneId, id: &str, signal: Signal) -> Result
     Ok(sent)
 }
 
-/// The processes `pid` started, as Linux lists them. None where it cannot say.
+/// The child pids of `pid`, from `/proc`. Empty if unreadable.
 fn children(pid: i32) -> Vec<i32> {
     std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
         .unwrap_or_default()
@@ -179,8 +162,8 @@ fn children(pid: i32) -> Vec<i32> {
         .collect()
 }
 
-/// What stop says of a turn that did not end when asked: the session it may
-/// have left claimed, by name, since that is what the next resume opens.
+/// The warning for a turn that did not end when signalled, naming the session
+/// that may stay claimed, since the next resume opens it.
 fn no_ending(meta: &Meta) -> String {
     let session = match &meta.session {
         Some(session) => format!("session {session}"),
@@ -193,8 +176,13 @@ fn no_ending(meta: &Meta) -> String {
     )
 }
 
-/// The same, with the way a pane is ended handed in, so a test can say what
-/// tmux did.
+/// [`stop_one`] after the turn is dealt with, with the pane ending passed in
+/// for tests.
+///
+/// Holds the writer from the check to the write: an exit landing meanwhile has
+/// either written its phase already, which is left alone, or waits for this
+/// one. The pane goes first, so a pane that will not go leaves the phase
+/// unchanged.
 fn stop_one_ending(
     root: &Path,
     id: &str,
@@ -212,9 +200,8 @@ fn stop_one_ending(
 
     let was = writer.state()?.state;
     end(&server, &meta.pane, &meta.id)?;
-    // Still under the writer, so the exit the signal causes waits for this
-    // and reads it as what it is: an agent somebody stopped, not one that
-    // failed.
+    // Still under the writer, so the exit the kill causes waits and reads the
+    // agent as stopped, not failed.
     if !was.is_terminal() {
         writer.update_state_heard(agent.heartbeat(), |state| state.state = Phase::Stopped)?;
         drop(writer);
@@ -225,44 +212,27 @@ fn stop_one_ending(
     Ok(true)
 }
 
-/// Run whatever somebody asked to have run when an agent is stopped.
+/// Start the `on_stopped` command for an agent this verb stopped.
 ///
-/// Only where this verb is what wrote the phase, which is what the caller has
-/// just decided: an agent that had already ended reached this moment somewhere
-/// else, or never reached it at all.
-///
-/// Here rather than at the end of the verb, because what is left of the verb is
-/// a pane being ended and a worktree that may be about to go — and the worktree
-/// is where the command runs. Nothing is appended to the event log for it:
-/// nothing has happened to the agent that the record does not already say, so
-/// the line the command reads is built rather than read back.
-///
-/// The person's own config, because this verb is handed none — and the
-/// project's own file is read by [`crate::errand::assembled`], which is the one
-/// key of it that matters here.
+/// Called only when this verb wrote the phase, and before the worktree may be
+/// removed, since the command runs there. The event it is handed is built, not
+/// logged. The person's config is used; [`crate::errand::assembled`] reads the
+/// project's file itself.
 fn stopped(agent: &Agent, meta: &Meta) {
     let event = store::Event::new("stop", serde_json::json!({}));
     let config = crate::config::current();
     if let Some(errand) = crate::errand::assembled(config, agent, meta, Phase::Stopped, &event) {
-        // Nobody is asked whether anybody is looking at the pane: this verb is
-        // closing it.
+        // No check for a watched pane: this verb is closing it.
         crate::notify::start(&errand, None);
     }
 }
 
-/// Ask the agent to stop, then insist.
+/// End the agent's pane: SIGTERM to its process group, then SIGKILL, then
+/// `kill-pane`, each after [`GRACE`].
 ///
-/// The pid comes from tmux, live, and is never read off disk: pids are reused,
-/// and a stale one names whatever the machine has started since. The pane is
-/// asked whose it is for the same reason: tmux hands pane numbers out again,
-/// so a record that outlived its server names whichever pane took its number,
-/// and every rung below is a signal or a kill aimed at whatever is standing
-/// there. An agent whose pane answers for somebody else has already lost it,
-/// and there is nothing here left to end.
-///
-/// Shared with `_park`, which takes an idle agent's pane and leaves the record
-/// standing: how a vendor is ended is the same question there, and a second
-/// answer to it would be a second thing to get the grace period wrong in.
+/// The pid is read from tmux, never from disk, since pids are reused. The pane
+/// must still answer for this agent, since tmux reuses pane numbers too; a
+/// pane that answers for another agent is left alone. Also used by `_park`.
 pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
     use nix::sys::signal::killpg;
     use nix::unistd::Pid;
@@ -272,8 +242,7 @@ pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
     }
     let group = Pid::from_raw(server.pane_pid(pane)?);
 
-    // The whole group: the vendor forks, and a child holding the tty outlives
-    // a parent that is signalled alone.
+    // The whole group: a forked child holding the tty outlives its parent.
     let _ = killpg(group, Signal::SIGTERM);
     if gone(server, pane, id, GRACE) {
         return Ok(());
@@ -284,13 +253,12 @@ pub(crate) fn end(server: &Server, pane: &PaneId, id: &str) -> Result<()> {
         return Ok(());
     }
 
-    // The process is gone and the pane is not: tmux's own way out.
+    // The process is gone but the pane is not.
     server.kill_pane(pane)
 }
 
-/// Whether the pane stops being this agent's within `patience` — because it
-/// went, or because the number is somebody else's now. A tmux that could not
-/// be asked has not said so.
+/// Whether the pane stops answering for this agent within `patience`. A tmux
+/// that cannot be asked counts as no.
 fn gone(server: &Server, pane: &PaneId, id: &str, patience: Duration) -> bool {
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
@@ -312,17 +280,13 @@ fn dispositions(
     let (Some(tree), Some(branch)) = (&meta.worktree, &meta.branch) else {
         return Ok(());
     };
-    // Asked before anything is removed, and asked of the repository rather
-    // than of the tree: the tree is what may be about to go. When it has gone
-    // already, git has nothing to answer from inside it — and a tree amx cut
-    // says where its repository is by where it sits.
+    // Resolved before anything is removed, since the tree may go. A tree that
+    // is already gone is placed by the path amx cut it at.
     let repo = worktree::main_repo(tree)
         .ok()
         .or_else(|| worktree::repo_of(tree))
         .unwrap_or_else(|| tree.clone());
 
-    // Work nobody has committed is not amx's to delete, and saying so is part
-    // of the answer: somebody has to know it is still there.
     if holds_work(tree) {
         writeln!(
             out,
@@ -339,9 +303,8 @@ fn dispositions(
     )?
     .is_keep()
     {
-        // Saying so beats failing, for the same reason the branch below says
-        // so: the agent is already stopped, and the lines still to be printed
-        // are the record's — including, under `--delete`, its removal.
+        // Reported, not an error: the agent is already stopped and the rest of
+        // the output still has to be printed.
         match worktree::remove(&repo, tree) {
             Ok(()) => {
                 writeln!(out, "removed {}", tree.display())?;
@@ -353,9 +316,7 @@ fn dispositions(
         writeln!(out, "kept {}", tree.display())?;
     }
 
-    // A branch cannot go while a worktree has it checked out, and a tree that
-    // was kept still has it. Saying so is the answer; failing is not, because
-    // the agent is already stopped by now.
+    // A branch checked out in a kept tree cannot be deleted.
     if tree.exists() {
         writeln!(
             out,
@@ -365,10 +326,9 @@ fn dispositions(
         return Ok(());
     }
 
-    // Commits no other branch has go with the branch, and nothing asked here
-    // can bring them back: such a branch is kept whatever was asked, and the
-    // count is the reason given. A branch at exactly the head a request was
-    // merged from lost nothing, whatever the forge merged it as.
+    // A branch with commits on no other branch is kept whatever was asked. A
+    // branch at a head a request was merged from loses nothing, however the
+    // forge merged it.
     let merged = crate::pr::merged_heads_written(meta);
     if let Ok(n @ 1..) = worktree::loses(&repo, branch, &merged) {
         let commits = match n {
@@ -405,23 +365,13 @@ pub(crate) fn holds_work(tree: &Path) -> bool {
     tree.exists() && worktree::is_dirty(tree).unwrap_or(true)
 }
 
-/// Take the tree amx has just removed back out of the vendor's own store.
+/// Remove a deleted tree's entry from the vendor's own project store.
 ///
-/// A vendor that keeps a project entry per directory it runs in gathers one
-/// per agent, and nothing of the vendor's ever clears them: the directory the
-/// entry names has gone, and the entry is still there saying it may be worked
-/// in. Only the tree's own key, and only for the vendor whose store amx wrote
-/// in the first place.
-///
-/// The store is looked for in the environment `stop` was typed in with the
-/// harness table's pairs laid over it, which is where the vendor looked for it
-/// when the agent ran. Failing to write it is worth saying and not worth
-/// stopping for: the agent is already ended, and what is left is a key in a
-/// file nobody is about to read.
-///
-/// Shared with the view's own forget, which takes a finished agent's tree
-/// without going through the ladder above: a tree that goes takes its key
-/// whichever door it went through.
+/// A vendor that keeps one entry per directory would otherwise collect one per
+/// agent forever. Only the tree's key, and only for a vendor whose store amx
+/// writes. The store is found in this process's environment with the harness
+/// table's variables applied, as the agent saw it. A failed write is a warning.
+/// Also used by `clear` and the view.
 pub(crate) fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<()> {
     let agent = meta.agent.as_deref().unwrap_or_default();
     if !trust::writes_a_store(agent) {
@@ -440,8 +390,8 @@ pub(crate) fn forget(meta: &Meta, tree: &Path, out: &mut impl Write) -> Result<(
     Ok(())
 }
 
-/// The answer to one disposition: the flag if there was one, the default if
-/// nobody is to be asked, and otherwise the person.
+/// One disposition: the flag if given, the default under `--force`, else the
+/// person's answer.
 fn asked(
     told: Option<Disposition>,
     force: bool,
@@ -481,7 +431,6 @@ pub(crate) fn confirm(
 
     let mut answer = String::new();
     if input.read_line(&mut answer)? == 0 {
-        // Nobody there to ask: the default is the answer.
         writeln!(out)?;
         return Ok(default);
     }
@@ -514,8 +463,8 @@ mod tests {
         .unwrap()
     }
 
-    /// A record of an agent at `phase`, in a pane nothing here ever asks
-    /// about: these tests hand stop the ending, so no server is needed.
+    /// An agent at `phase`. The tests pass in the pane ending, so no server is
+    /// needed.
     fn record(root: &Path, id: &str, pane: &str, phase: Phase) -> Agent {
         let agent = Agent::create(
             root,
@@ -573,8 +522,8 @@ mod tests {
 
     #[test]
     fn stop_refuses_a_tmux_that_cannot_be_asked_and_touches_nothing() {
-        // No answer about the pane is not a pane gone: stopping on it would
-        // write Stopped over a live agent and take its tree with it.
+        // An unaskable tmux is not a gone pane: stopping would mark a live
+        // agent stopped and take its tree.
         let dir = tempfile::TempDir::new().unwrap();
         let tree = tempfile::TempDir::new().unwrap();
         let agent = record(dir.path(), "live-a1b", "%3", Phase::Working);
@@ -610,9 +559,7 @@ mod tests {
 
     #[test]
     fn stop_racing_an_exit_leaves_done() {
-        // The exit hook holds the writer while stop is on its way in, and
-        // writes Done before letting go. What stop decides, it decides from
-        // what the exit left.
+        // The exit hook holds the writer and writes Done before stop gets it.
         let dir = tempfile::TempDir::new().unwrap();
         let agent = record(dir.path(), "done-a1b", "%3", Phase::Working);
         let read = agent.meta().unwrap();
@@ -642,8 +589,8 @@ mod tests {
 
     #[test]
     fn stop_signals_a_turn_to_end_and_waits_for_the_ending() {
-        // Working or waiting, a vendor with a signal is told to end its turn
-        // first, and stop waits until the record says it has.
+        // A vendor with a signal is told to end its turn, and stop waits for
+        // the record to leave it.
         let signal = crate::vendor::second::ELSEWHERE.interrupt_signal;
         for phase in [Phase::Working, Phase::Waiting] {
             let dir = tempfile::TempDir::new().unwrap();
@@ -731,9 +678,9 @@ mod tests {
 
     #[test]
     fn stop_signals_the_vendor_under_the_panes_wrapper_not_the_wrapper() {
-        // The pane runs `sh -c '"$0" "$@"; amx _exit ...'`, and a signal with
-        // its default action kills that shell, which then never records how
-        // the vendor ended. The vendor is the shell's child.
+        // The pane runs `sh -c '"$0" "$@"; amx _exit ...'`. Signalling that
+        // shell would kill it before it records the exit; the vendor is its
+        // child.
         let mut wrapper = std::process::Command::new("sh")
             .arg("-c")
             .arg(r#""$0" "$@"; true"#)
@@ -767,8 +714,7 @@ mod tests {
         let agent = record(dir.path(), "back-a1b", "%3", Phase::Stopped);
         let read = agent.meta().unwrap();
 
-        // `amx resume` lands between the read and the stop: a new pane, and
-        // the record reset for the session it opens.
+        // A resume between the read and the stop: new pane, reset state.
         let writer = agent.writer().unwrap();
         writer
             .update_meta(|meta| meta.pane = PaneId::new("%9").unwrap())
@@ -841,7 +787,7 @@ mod tests {
 
     #[test]
     fn stop_the_default_answers_for_a_shrug() {
-        // Enter, something that is not an answer, or nobody there at all.
+        // Enter, an unrecognised answer, or no input at all.
         for typed in ["\n", "maybe\n", ""] {
             assert_eq!(
                 ask(None, false, Disposition::Delete, typed),
