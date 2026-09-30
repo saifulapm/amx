@@ -3,8 +3,8 @@
 //! amx is never in the byte path: an agent is a tmux pane, and everything amx
 //! does to it is a `tmux(1)` invocation. Invariants:
 //!
-//! - Ids, never names. `%pane`, `@window` and `$session` ids are stored and
-//!   targeted: target syntax splits a name at `:`, and `-t 0` reads as an index.
+//! - Ids, never names. `%pane` and `$session` ids are stored and targeted:
+//!   target syntax splits a name at `:`, and `-t 0` reads as an index.
 //! - A value read is no liveness check: `display -p -t <gone>` prints nothing
 //!   and succeeds. A pane is alive while `list-panes` lists it.
 //! - A pane number is no identity: tmux numbers panes from `%0` per server, so a
@@ -104,7 +104,6 @@ macro_rules! tmux_id {
 }
 
 tmux_id!(SessionId, '$', "session");
-tmux_id!(WindowId, '@', "window");
 tmux_id!(PaneId, '%', "pane");
 
 /// Which agent each pane on a server answers for, from one listing.
@@ -124,11 +123,8 @@ impl PaneOwners {
 /// What to create, and where.
 #[derive(Debug, Default, Clone)]
 pub struct Spawn<'a> {
-    /// A session or window name for display. amx never targets by it.
+    /// A session name for display. amx never targets by it.
     pub name: Option<&'a str>,
-    /// A name for a new session's first window. Unnamed, tmux names it after
-    /// the running command, which changes.
-    pub window: Option<&'a str>,
     /// The new pane's working directory.
     pub cwd: Option<&'a Path>,
     /// The pane's argv. Empty runs the user's shell.
@@ -166,6 +162,7 @@ impl Server {
 
     /// Pass `-f conf` on every call, so whichever call starts the server reads
     /// it instead of `~/.tmux.conf`.
+    #[cfg(test)]
     pub fn with_conf(mut self, conf: impl Into<PathBuf>) -> Self {
         self.conf = Some(conf.into());
         self
@@ -230,6 +227,7 @@ impl Server {
     }
 
     /// Whether a server is listening on this socket.
+    #[cfg(test)]
     pub fn is_alive(&self) -> bool {
         self.run(&["list-sessions", "-F", "#{session_id}"]).is_ok()
     }
@@ -251,6 +249,7 @@ impl Server {
     /// The socket file is removed too: tmux 3.7 leaves it after `kill-server`,
     /// and test servers would pile up files. A socket that something still
     /// answers at is left alone.
+    #[cfg(test)]
     pub fn kill(&self) -> Result<()> {
         let going = match self.run(&["kill-server"]) {
             // The server took the order, so its socket is dead even if it is
@@ -285,10 +284,6 @@ impl Server {
             args.push("-s".to_string());
             args.push(name.to_string());
         }
-        if let Some(window) = spawn.window {
-            args.push("-n".to_string());
-            args.push(window.to_string());
-        }
         push_spawn(&mut args, spawn);
 
         let printed = again_if_the_server_went(|| self.run(&borrow(&args)))?;
@@ -296,43 +291,6 @@ impl Server {
             .split_once(' ')
             .with_context(|| format!("new-session printed {printed:?}"))?;
         Ok((SessionId::new(session)?, PaneId::new(pane)?))
-    }
-
-    /// Create a window in `session` and return it with its first pane.
-    pub fn new_window(&self, session: &SessionId, spawn: &Spawn<'_>) -> Result<(WindowId, PaneId)> {
-        let mut args = vec![
-            "new-window".to_string(),
-            "-t".to_string(),
-            session.as_str().to_string(),
-            "-P".to_string(),
-            "-F".to_string(),
-            "#{window_id} #{pane_id}".to_string(),
-        ];
-        if let Some(name) = spawn.name {
-            args.push("-n".to_string());
-            args.push(name.to_string());
-        }
-        push_spawn(&mut args, spawn);
-
-        let printed = self.run(&borrow(&args))?;
-        let (window, pane) = printed
-            .split_once(' ')
-            .with_context(|| format!("new-window printed {printed:?}"))?;
-        Ok((WindowId::new(window)?, PaneId::new(pane)?))
-    }
-
-    /// Split `window`'s active pane and return the new pane.
-    pub fn split_window(&self, window: &WindowId, spawn: &Spawn<'_>) -> Result<PaneId> {
-        let mut args = vec![
-            "split-window".to_string(),
-            "-t".to_string(),
-            window.as_str().to_string(),
-            "-P".to_string(),
-            "-F".to_string(),
-            "#{pane_id}".to_string(),
-        ];
-        push_spawn(&mut args, spawn);
-        PaneId::new(self.run(&borrow(&args))?)
     }
 
     /// The session named `name`, if any.
@@ -346,24 +304,6 @@ impl Server {
             Err(e) => return Err(e),
         };
         named(&listed, name).map(SessionId::new).transpose()
-    }
-
-    /// The window named `name` in `session`, if any.
-    pub fn window_named(&self, session: &SessionId, name: &str) -> Result<Option<WindowId>> {
-        let listed = self.run(&[
-            "list-windows",
-            "-t",
-            session.as_str(),
-            "-F",
-            "#{window_id} #{window_name}",
-        ])?;
-        named(&listed, name).map(WindowId::new).transpose()
-    }
-
-    /// Apply a layout, such as `tiled`, to a window's panes.
-    pub fn select_layout(&self, window: &WindowId, layout: &str) -> Result<()> {
-        self.run(&["select-layout", "-t", window.as_str(), layout])?;
-        Ok(())
     }
 
     /// Every pane on the server.
@@ -575,18 +515,13 @@ impl Server {
     ///
     /// Read from `show-options -p`, since a `#{@name}` format falls back to a
     /// global value.
+    #[cfg(test)]
     pub fn pane_option(&self, pane: &PaneId, name: &str) -> Result<Option<String>> {
         let listed = self.run(&["show-options", "-p", "-t", pane.as_str()])?;
         Ok(listed.lines().find_map(|line| {
             let (key, value) = line.split_once(' ')?;
             (key == name).then(|| unquote(value))
         }))
-    }
-
-    /// Unset a pane-scoped option.
-    pub fn unset_pane_option(&self, pane: &PaneId, name: &str) -> Result<()> {
-        self.run(&["set-option", "-p", "-u", "-t", pane.as_str(), name])?;
-        Ok(())
     }
 
     /// Set a session-scoped option.
@@ -658,6 +593,7 @@ pub fn servers_here() -> Vec<Server> {
 /// Only asked when `kill-server` found no server. A server that took the order
 /// keeps its socket open for a moment (about 15ms on tmux 3.7), so probing it
 /// then would leave the file behind.
+#[cfg(test)]
 fn nobody_answers(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_err()
 }
@@ -817,6 +753,7 @@ fn watched_flags(printed: &str) -> bool {
 }
 
 /// Strip the quotes tmux puts around some option values.
+#[cfg(test)]
 fn unquote(value: &str) -> String {
     value
         .strip_prefix('"')
@@ -1160,7 +1097,6 @@ mod tests {
     #[test]
     fn tmux_ids_are_ids_and_names_are_not() {
         assert_eq!(PaneId::new("%3").unwrap().as_str(), "%3");
-        assert_eq!(WindowId::new("@1").unwrap().to_string(), "@1");
         assert_eq!(SessionId::new("$0").unwrap().as_str(), "$0");
         for bad in ["", "%", "3", "amx-view", "build: api", "@1"] {
             assert!(PaneId::new(bad).is_err(), "{bad:?} is not a pane id");
@@ -1251,20 +1187,17 @@ mod tests {
         );
         assert_eq!(server.session_named("elsewhere").unwrap(), None);
 
-        assert_eq!(server.window_named(&session, "amx-view").unwrap(), None);
-        let (window, _) = server
-            .new_window(
-                &session,
-                &Spawn {
-                    name: Some("amx-view"),
-                    ..idle()
-                },
-            )
+        let windows = || {
+            let format = "#{window_id} #{window_name}";
+            let listed = ["list-windows", "-t", session.as_str(), "-F", format];
+            server.run(&listed).unwrap()
+        };
+        assert_eq!(named(&windows(), "amx-view"), None);
+        let create = ["new-window", "-t", session.as_str(), "-n", "amx-view"];
+        let window = server
+            .run(&[&create[..], &["-P", "-F", "#{window_id}", "--"], IDLE].concat())
             .unwrap();
-        assert_eq!(
-            server.window_named(&session, "amx-view").unwrap().as_ref(),
-            Some(&window)
-        );
+        assert_eq!(named(&windows(), "amx-view"), Some(window.as_str()));
 
         server.kill().unwrap();
         until("the server to go", || !server.is_alive());
@@ -1300,24 +1233,22 @@ mod tests {
         let server = TestServer::new();
         let (session, _) = server.new_session(&idle()).unwrap();
 
-        // A colon splits tmux's target syntax, so only the id reaches this
+        // A colon splits tmux's target syntax, so only pane ids reach this
         // window.
-        let (window, pane) = server
-            .new_window(
-                &session,
-                &Spawn {
-                    name: Some("build: api"),
-                    ..idle()
-                },
-            )
-            .unwrap();
-
-        let second = server.split_window(&window, &idle()).unwrap();
+        let create = ["new-window", "-t", session.as_str(), "-n", "build: api"];
+        let printed = ["-P", "-F", "#{pane_id}", "--"];
+        let pane = server.run(&[&create[..], &printed, IDLE].concat()).unwrap();
+        let pane = PaneId::new(pane).unwrap();
+        let split = ["split-window", "-t", pane.as_str()];
+        let second = server.run(&[&split[..], &printed, IDLE].concat()).unwrap();
+        let second = PaneId::new(second).unwrap();
         assert_ne!(second, pane);
-        server.select_layout(&window, "tiled").unwrap();
 
         let panes = server.panes().unwrap();
         assert!(panes.contains(&pane) && panes.contains(&second));
+        server.kill_pane(&second).unwrap();
+        until("the split pane to go", || !server.pane_alive(&second));
+        assert!(server.pane_alive(&pane));
     }
 
     #[test]
@@ -1344,39 +1275,19 @@ mod tests {
         let dir = parent.path().join("a#{session_id}#S##b");
         std::fs::create_dir(&dir).unwrap();
         let server = TestServer::new();
-        let (session, pane) = server
+        let (_, pane) = server
             .new_session(&Spawn {
                 cwd: Some(&dir),
                 ..idle()
             })
             .unwrap();
-        let (window, _) = server
-            .new_window(
-                &session,
-                &Spawn {
-                    cwd: Some(&dir),
-                    ..idle()
-                },
-            )
-            .unwrap();
-        let split = server
-            .split_window(
-                &window,
-                &Spawn {
-                    cwd: Some(&dir),
-                    ..idle()
-                },
-            )
-            .unwrap();
 
-        for pane in [pane, split] {
-            let path = server.pane_field(&pane, "#{pane_current_path}").unwrap();
-            assert_eq!(
-                std::fs::canonicalize(&path).ok(),
-                std::fs::canonicalize(&dir).ok(),
-                "tmux read {path:?} for the directory"
-            );
-        }
+        let path = server.pane_field(&pane, "#{pane_current_path}").unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&path).ok(),
+            std::fs::canonicalize(&dir).ok(),
+            "tmux read {path:?} for the directory"
+        );
     }
 
     #[test]
@@ -1656,7 +1567,9 @@ mod tests {
             .unwrap();
         assert_eq!(server.pane_option(&pane, "@amx-elsewhere").unwrap(), None);
 
-        server.unset_pane_option(&pane, "@amx-id").unwrap();
+        server
+            .run(&["set-option", "-p", "-u", "-t", pane.as_str(), "@amx-id"])
+            .unwrap();
         assert_eq!(server.pane_option(&pane, "@amx-id").unwrap(), None);
     }
 
@@ -1741,8 +1654,8 @@ mod tests {
     #[test]
     fn tmux_liveness_comes_from_the_pane_list_not_from_a_value_read() {
         let server = TestServer::new();
-        let (session, first) = server.new_session(&idle()).unwrap();
-        let (_, second) = server.new_window(&session, &idle()).unwrap();
+        let (_, first) = server.new_session(&idle()).unwrap();
+        let (_, second) = server.new_session(&idle()).unwrap();
 
         assert!(server.pane_pid(&second).unwrap() > 0);
         server.kill_pane(&second).unwrap();
@@ -1775,8 +1688,10 @@ mod tests {
         // client attached, which is why all three flags are checked.
         assert!(!server.pane_watched(&first), "nobody is attached");
 
-        let window = WindowId::new(server.pane_field(&first, "#{window_id}").unwrap()).unwrap();
-        let second = server.split_window(&window, &idle()).unwrap();
+        // `-d` leaves the new pane inactive.
+        let split = ["split-window", "-d", "-t", first.as_str(), "-P", "-F"];
+        let second = server.run(&[&split[..], &["#{pane_id}", "--"], IDLE].concat());
+        let second = PaneId::new(second.unwrap()).unwrap();
         assert!(!server.pane_watched(&second), "and it is not even active");
 
         // A gone pane reads as unwatched: a missed notification is the worse

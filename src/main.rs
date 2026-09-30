@@ -33,7 +33,6 @@ mod shade;
 mod spawn;
 mod store;
 mod theme;
-#[cfg_attr(not(test), expect(dead_code, reason = "reached by the tests alone"))]
 mod tmux;
 mod trust;
 mod tui;

@@ -445,7 +445,6 @@ pub fn place(server: &Server, id: &str, cwd: &Path, command: &[String]) -> Resul
         name: Some(&name),
         cwd: Some(cwd),
         command: &command,
-        ..Spawn::default()
     })?;
 
     // Otherwise tmux destroys the session when a client detaches from it.
