@@ -1991,6 +1991,9 @@ mod tests {
         until("the client on their own session", || {
             client_on(&server, &theirs) == tty
         });
+        // The redirect creates the file once stty has run; before that the
+        // tty would turn C-z into a signal.
+        until("their pane recording", || typed.exists());
         server
             .run(&["send-keys", "-t", pane.as_str(), "C-z"])
             .unwrap();
