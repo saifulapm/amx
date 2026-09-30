@@ -33,10 +33,11 @@ use crossterm::execute;
 use crossterm::style::Print;
 use crossterm::terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode};
 use ratatui::Terminal;
-use ratatui::backend::Backend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io::{BufWriter, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -670,7 +671,7 @@ struct Screen {
 ///
 /// `cap` is what the header counts against; see [`Profile::cap`].
 pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> Result<i32> {
-    let mut terminal = ratatui::try_init().context("taking the terminal")?;
+    let mut terminal = take_the_terminal().context("taking the terminal")?;
     // Created before any mode is requested, so every exit path restores them.
     let held = Held;
     // Signals only set a flag the loop checks, so `held` still restores the
@@ -710,6 +711,26 @@ pub fn run(root: &Path, config: &Config, scope: &Scope, cap: Option<usize>) -> R
         println!("{offer}");
     }
     outcome
+}
+
+/// Room for a whole frame, so the terminal reads each one in a single write.
+const FRAME_BUFFER: usize = 64 * 1024;
+
+/// What `ratatui::try_init` does, over a buffered stdout.
+///
+/// `Stdout` flushes every kilobyte, so a frame reached the terminal in many
+/// writes and a slow link or a `tmux capture-pane` could see half of one.
+/// ratatui flushes the backend once at the end of each draw.
+fn take_the_terminal() -> std::io::Result<Terminal<CrosstermBackend<BufWriter<Stdout>>>> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::try_restore();
+        hook(info);
+    }));
+    enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    let stdout = BufWriter::with_capacity(FRAME_BUFFER, std::io::stdout());
+    Terminal::new(CrosstermBackend::new(stdout))
 }
 
 /// Restores the terminal modes the view requested: on return, on a panic
