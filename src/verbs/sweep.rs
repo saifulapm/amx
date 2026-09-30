@@ -22,7 +22,7 @@ use crate::cli::{Disposition, StopArgs};
 use crate::derive::{self, View};
 use crate::pr::{self, Pr};
 use crate::store::{Meta, Phase};
-use crate::verbs::stop;
+use crate::verbs::{clear, stop};
 use crate::{exit, paths, store, warn, worktree};
 
 /// Run the verb against the machine.
@@ -224,9 +224,7 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
 pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()> {
     // Checked before `stop`: a tree holding uncommitted work keeps the whole
     // agent, record included, since the record names the tree and branch.
-    if let Some(tree) = &meta.worktree
-        && stop::holds_work(tree)
-    {
+    if let Some(tree) = clear::holding(meta) {
         writeln!(
             out,
             "kept {}: {} holds work no commit has",
