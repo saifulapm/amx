@@ -1,9 +1,9 @@
 # Theming the view
 
-A theme answers six questions and nothing else. This file is the whole of the
+A theme answers six questions and nothing else. This file is the whole
 contract: what the six mean, why six, what a value may be, where a name is
 looked up, what happens when a file is wrong, and what is deliberately out of a
-theme's reach. The code it describes is `src/theme.rs` and the two files under
+theme's reach. The code it describes is `src/theme.rs` and the files under
 `assets/themes/`.
 
 ## The six roles
@@ -17,19 +17,19 @@ colour: a row is painted for having failed, not for being red.
 | `done` | what went as intended: finished rows, merged and ready pull requests |
 | `failed` | what was attempted and failed: failed rows, failing checks, the failure notice |
 | `stopped` | what was ended by hand and is over: stopped rows, closed requests |
-| `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off — its label, and the permission dial set into its far end. On a card, the glyph a prompt wears, and a heading and inline code in an answer |
-| `cursor` | the line the cursor is on — a background, so it says where the cursor is without taking a colour away from what the line was saying |
+| `accent` | the agent that does not exist yet: the dials' values in the header, and the rule a line is typed off (its label, and the permission dial set into its far end). On a card, the glyph a prompt wears, and a heading and inline code in an answer |
+| `cursor` | the line the cursor is on, as a background, so it says where the cursor is without taking a colour away from what the line was saying |
 
 Most of the screen wears none of them. What a row is, where a group begins and
 what it holds are said in words and in the dim the terminal already renders,
-which is why a wall of forty rows has two or three colours on it and they are
-the two or three worth looking at.
+so a wall of forty rows has two or three colours on it, and they are the two or
+three worth looking at.
 
 ## The glyph
 
-The mark in front of a name says two things in one cell. The shape is whether
-there is still a process to go back to — `✻` while there is, `∙` once there is
-not — and no theme's business, for the reason under
+The mark in front of a name says two things in one cell. The shape says
+whether there is still a process to go back to: `✻` while there is, `∙` once
+there is not. The shape is not a theme's business, for the reason under
 [what a theme cannot touch](#what-a-theme-cannot-touch-on-purpose). The colour
 is which state that process is in, and it comes from the roles above:
 
@@ -43,61 +43,61 @@ is which state that process is in, and it comes from the roles above:
 | coming up, working, or one amx cannot account for | nothing: the terminal's own |
 
 The name beside it takes `waiting` and `failed` and nothing else. Those two are
-what somebody scanning a wall is looking for; a column of names in eight
-colours is a column nobody reads, and the rest have said what they have to say
-on the glyph.
+what somebody scanning a wall is looking for. A column of names in eight
+colours is a column nobody reads, and the other states have already said what
+they have to say on the glyph.
 
 ## Six, where the design names eleven
 
-The screen this palette is for was drawn to a design whose own palette lists
-eleven values. Five of them never became roles, because they are the terminal's
-answer rather than amx's:
+The design this screen was drawn to has a palette of eleven values. Five of
+them never became roles, because they are the terminal's answer rather than
+amx's:
 
-- `bg` and `fg` are whatever the terminal is set to. Naming them here would be
-  amx painting over the one part of the screen its reader already chose, and a
-  file that can set the background is a file that can make the view
+- `bg` and `fg` are whatever the terminal is set to. Naming them here would
+  have amx painting over the one part of the screen its reader already chose,
+  and a file that can set the background is a file that can make the view
   unreadable.
 - `bold` and `dim` are weights rather than shades. Dim is an attribute the
   terminal renders, so there is no colour to put in a file, and a grey picked
   for it would take the weight away from every place the view spends weight to
-  mean something, which is why weight is out of a theme's reach altogether —
-  see [what a theme cannot touch](#what-a-theme-cannot-touch-on-purpose).
+  mean something. Weight is out of a theme's reach altogether; see
+  [what a theme cannot touch](#what-a-theme-cannot-touch-on-purpose).
 - `rule` is what the rule beside a heading is drawn in, and that is the same
-  dim. A value of its own would be one more thing to hold in step with the
+  dim. A value of its own would be one more thing to keep in step with the
   weight the rest of the chrome already wears, for a line nobody reads as a
   colour.
 
-What is left is the six above, which are the things on the screen that mean
-something amx knows and the terminal cannot: how it went, whether it wants a
-person, what the next agent will be, and where the cursor is standing.
+What is left is the six above: the things on the screen that mean something
+amx knows and the terminal cannot. How it went, whether it wants a person,
+what the next agent will be, and where the cursor is.
 
 ## Values
 
 A value is a colour the way a terminal names one, in any of three spellings:
 
-- a name — `cyan`, `bright black`, the sixteen the terminal itself defines.
+- a name: `cyan`, `bright black`, the sixteen the terminal itself defines.
   A named colour is the terminal's to draw, so it follows the terminal's own
-  theme. This is a feature, not a fallback: `accent` ships as `cyan` because
-  what colour claude paints its own permission row is not something amx has
-  measured, and an RGB nobody measured would read as one that was.
-- a 256-colour index — `134`.
-- a hex triple — `#4eba65`.
+  theme. `accent` ships as `cyan` on purpose: amx has not measured the colour
+  claude paints its own permission row, and an RGB nobody measured would read
+  as one that was.
+- a 256-colour index: `134`.
+- a hex triple: `#4eba65`.
 
 ## Resolution
 
 `theme` in `~/.config/amx/config.toml` is a name, and a name is looked up in
 this order:
 
-0. `auto`, which is the value amx uses when the key is left out, is not a
-   palette at all: the terminal is asked what shade its background is and the
-   answer is read as `light` or `default`. It is resolved before anything below
-   runs, so an `auto.toml` in the themes directory is a file amx never opens.
-1. A name amx ships — `default`, `light`, `terminal` — is answered out of the
+0. `auto`, the value amx uses when the key is left out, is not a palette. The
+   terminal is asked what shade its background is, and the answer is read as
+   `light` or `default`. It is resolved before anything below runs, so an
+   `auto.toml` in the themes directory is a file amx never opens.
+1. A name amx ships (`default`, `light`, `terminal`) is answered out of the
    binary.
 2. A name with a `/` in it is a path, taken exactly as written. A theme kept
    in a repository, or synced between machines, is reached this way.
 3. Anything else is a file of that name in `~/.config/amx/themes/`, with
-   `.toml` added if it was left off: `mine` and `mine.toml` are the same wish.
+   `.toml` added if it was left off: `mine` and `mine.toml` are the same.
 
 ## Failure
 
@@ -112,41 +112,38 @@ a stray comma is the worse outcome.
 ## Live reload
 
 While the view is open, the active theme's file is stat'ed once a second,
-beside the reading the view is already taking on that clock. When the mtime
-moves, the file is read again and the next pass paints in it. An edit is seen
-on the next pass rather than the instant it lands, which is the cadence
-everything else on that screen moves at — and what it buys is no watcher
-thread, no descriptor held open and nothing to unwind when the screen is
-handed back.
+beside the reading the view already takes on that clock. When the mtime moves,
+the file is read again and the next pass paints in it. An edit shows on the
+next pass rather than the instant it lands, the cadence everything else on
+that screen moves at, and in exchange there is no watcher thread, no
+descriptor held open and nothing to unwind when the screen is handed back.
 
-A shipped theme lives in the binary, so there is nothing to watch; switching
+A shipped theme lives in the binary, so there is nothing to watch. Switching
 `theme` in the config is read on the same clock.
 
 ## The three that ship
 
-`default` is measured off claude's own palette — a view sitting beside
-claude's panes should not be a different shade of the same idea. `light` is
-the same six roles at the other end of the contrast, measured for a white
-background off GitHub's own light palette: the colours picked to carry on a
-dark terminal dissolve into a light one, and the off-black the cursor's bar is
-painted in takes the row's own text down with it. `terminal` names no colour of
-its own: every value is a named colour, so the view wears whatever the terminal
-does, light or dark.
+`default` is measured off claude's own palette, so a view sitting beside
+claude's panes reads as the same thing. `light` is the same six roles at the
+other end of the contrast, measured for a white background off GitHub's own
+light palette: the colours picked to carry on a dark terminal dissolve into a
+light one, and the off-black of the cursor's bar takes the row's own text down
+with it. `terminal` names no colour of its own. Every value is a named colour,
+so the view wears whatever the terminal does, light or dark.
 
 ## Asking the terminal which one
 
-`auto` writes xterm's `OSC 11 ; ? ST` — the escape that asks a terminal for its
-background colour — and reads the answer back, then weighs it by Rec. 709
-luminance: over halfway is `light`, under it is `default`. A terminal that does
-not know the escape says nothing, and `COLORFGBG` answers instead where the
-environment carries it; with neither, `default`, which is what amx painted for
-everybody before there was a choice.
+`auto` writes xterm's `OSC 11 ; ? ST`, the escape that asks a terminal for its
+background colour, reads the answer back, and weighs it by Rec. 709 luminance:
+over halfway is `light`, under it is `default`. A terminal that does not know
+the escape says nothing, and `COLORFGBG` answers instead where the environment
+carries it. With neither, the answer is `default`, which is what amx painted
+for everybody before there was a choice.
 
-The ask happens once, at the moment the view takes the terminal and before it
-has read a key off it, because the answer arrives on stdin. Two hundred
-milliseconds is the whole of what a silent terminal costs, and a byte that
-cannot be a reply — a letter, which is somebody typing — ends the wait on the
-spot rather than being eaten by it.
+The ask happens once, when the view takes the terminal and before it has read
+a key off it, because the answer arrives on stdin. A silent terminal costs 200
+milliseconds at most. A byte that cannot be a reply, such as a letter somebody
+typed, ends the wait on the spot rather than being eaten by it.
 
 None of this runs unless the name is `auto`. A theme named by hand is a
 decision already made, and reading the screen to overrule it would make the
@@ -157,16 +154,16 @@ config key a suggestion.
 - **An agent's own paint.** The card and `amx logs` replay what a pane drew,
   in the colours it drew them. Theming that would be repainting the agent's
   output.
-- **The glyphs.** `✻` and `∙` are the view's vocabulary, not its palette: the
+- **The glyphs.** `✻` and `∙` are the view's vocabulary, not its palette. The
   shape is the one thing on a row that survives the colour being turned off,
   and a file that could set it is a file that can say an agent is still there
-  when it has gone.
+  after it has gone.
 - **amx's stderr.** Errors and warnings from the verbs land among git's and
   cargo's output and follow the terminal, not the view.
-- **Dim and bold.** Weight is meaning in the view — what an agent said is dim,
-  and a key somebody can press is bold — and a theme that could remove meaning
-  is a theme that can lie. What is left carrying it is the chrome around the
+- **Dim and bold.** Weight carries meaning in the view (what an agent said is
+  dim, and a key somebody can press is bold), and a theme that could remove
+  meaning is a theme that can lie. The weight lives in the chrome around the
   list: the corner's own name, the keys in the hints and in the help, the line
-  that would start an agent. The wall itself spends none — every name on it is
-  as quiet as the summary beside it, and the row being worked with is marked by
-  strength instead.
+  that would start an agent. The wall itself spends none. Every name on it is
+  as quiet as the summary beside it, and the row being worked with is marked
+  by strength instead.

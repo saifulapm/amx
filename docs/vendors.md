@@ -2,59 +2,53 @@
 
 amx runs coding agents it did not write, and everything it knows about one is
 an entry in a table: `src/vendor/`. This file says what an entry carries, what
-the rest of amx asks of it, and what adding one takes. pi is the second real
-vendor to land, and it cost more than the recipe at the end asks of a third:
-one new file, `src/vendor/pi.rs`, and beside it the machinery pi needed that
-the table did not have. `resume` and `fork` had claude's session flags written
-into them by hand, so those became a [`session`](#what-an-entry-carries)
-vocabulary in the table and both verbs were rewritten to read it; `spawn`
-learned to hand a vendor the id amx had already minted, because a vendor
-reporting through no hooks names no session of its own; and `rules` grew a
-per-vendor door for a second screens document. What is left for a third vendor
-is what the recipe describes: the measurement, the entry, and the laws that
-already hold both.
+the rest of amx asks of it, and what adding one takes.
 
-codex is that third vendor, and it tested the claim. Its entry is one file,
-`src/vendor/codex.rs`, and no verb learned codex's name. The table still grew
-seven things for it, each a shape neither claude nor pi had: a dial spelled as
-a setting (`DialSpec.key`), words every process starts with (`launch`), a fork
-that is a subcommand (`ForkSpec::Subcommand`), a model list printed as JSON
-(`Models::Json`), a third transcript shape (`Transcript::Codex`), a hooks file
-the vendor shares with the person (`Wire::Hooks`), and a catalog opened by
-something other than `/` (`Catalog.sigil`). The recipe holds, with the caveat
-that a third shape of program brings shapes of its own.
+Each vendor after claude is one file, and each brought shapes the table did
+not have yet:
 
-opencode is the fourth, again one file, `src/vendor/opencode.rs`. Its new
-shapes were a model carried in the environment (`DialSpec.env`), a task that
-is one flag's value (`prompt_flag`), a plugin file amx places in the vendor's
-config directory (`Wire::Placed`), a signal the plugin hears to end a turn
-before its pane goes (`interrupt_signal`), composer characters that open a
-popup (`popups`), a cancel that takes two presses (`cancel_presses`), and a
-message list the plugin writes (`Transcript::Opencode`).
+- pi (`src/vendor/pi.rs`): a [`session`](#what-an-entry-carries) vocabulary in
+  the table, which `resume` and `fork` read instead of claude's flags written
+  in by hand; `spawn` handing a vendor the id amx minted, for a vendor whose
+  reports name no session of their own; and a per-vendor screens document in
+  `rules`.
+- codex (`src/vendor/codex.rs`): a dial spelled as a setting (`DialSpec.key`),
+  words every process starts with (`launch`), a fork that is a subcommand
+  (`ForkSpec::Subcommand`), a model list printed as JSON (`Models::Json`), a
+  third transcript shape (`Transcript::Codex`), a hooks file the vendor shares
+  with the person (`Wire::Hooks`), and a catalog opened by something other
+  than `/` (`Catalog.sigil`). No verb learned codex's name.
+- opencode (`src/vendor/opencode.rs`): a model carried in the environment
+  (`DialSpec.env`), a task that is one flag's value (`prompt_flag`), a plugin
+  file amx places in the vendor's config directory (`Wire::Placed`), a signal
+  the plugin hears to end a turn before its pane goes (`interrupt_signal`),
+  composer characters that open a popup (`popups`), a cancel that takes two
+  presses (`cancel_presses`), and a message list the plugin writes
+  (`Transcript::Opencode`).
 
 ## The shape: a descriptor, not a trait
 
-A vendor is a `Vendor` value in a static table — no dynamic dispatch, no
+A vendor is a `Vendor` value in a static table: no dynamic dispatch, no
 second implementation of anything, and no place for a vendor to hide
 behaviour. What one declares is data a person can read in one sitting and
 diff against the vendor's own `--help`. Where a field would want a function
 is where to think again, and not before.
 
-Three real entries exist today: `claude`, in `src/vendor/claude.rs`, `pi`, in
-`src/vendor/pi.rs`, and `codex`, in `src/vendor/codex.rs` — see [pi](#pi) and
-[codex](#codex) for what each can do and what it cannot. A test-only vendor,
-`src/vendor/second.rs`, is nobody's agent and is not in the table; it exists so
-every law about the table is proved against a shape that is none of the real
-ones. It answers most questions the other way — resumable but not forkable, no
-hooks, no transcript, different flags for the same dials — which is what keeps
-the machinery honest against a shape no real entry happens to take.
+Four real entries exist: `claude`, `pi`, `codex` and `opencode`, each in
+`src/vendor/<name>.rs`. Their sections below say what each can do and what it
+cannot. A test-only vendor, `src/vendor/second.rs`, is nobody's agent and is
+not in the table. It exists so every law about the table is proved against a
+shape that is none of the real ones. It answers most questions the other way
+(resumable but not forkable, no hooks, no transcript, different flags for the
+same dials), which keeps the machinery honest against a shape no real entry
+happens to take.
 
 ## What an entry carries
 
-- **`name`** — the program, which is what the table is keyed by. `agent` in
+- **`name`**: the program, which is what the table is keyed by. `agent` in
   the config is a command line; the entry is found by the program it runs, so
   `agent = "claude --add-dir .."` still resolves.
-- **The dials** — `model`, `permission`, `effort`, each an optional
+- **The dials**: `model`, `permission`, `effort`, each an optional
   `DialSpec`: the values a cycle key offers, whether values off the cycle are
   legal, and the flag the vendor spells it with. The one place a dial becomes
   vendor argv is `inject`, and a flag the caller already wrote wins by the
@@ -71,7 +65,7 @@ the machinery honest against a shape no real entry happens to take.
   already carries that variable. opencode's model goes into
   `OPENCODE_CONFIG_CONTENT` as `{"model":"<value>"}`, on `new` only, since a
   resumed session keeps its own model.
-- **`models`** — where this vendor's models are written down, so that a model
+- **`models`**: where this vendor's models are written down, so that a model
   somebody named can be looked for without anything knowing a vendor's name.
   `Models::Cycle` says the model dial's own cycle is the whole list, which is
   claude's four aliases and the second vendor's two words; `Models::Printed`
@@ -82,7 +76,7 @@ the machinery honest against a shape no real entry happens to take.
   `visibility` is `list`, the ones codex's own picker offers. A listing costs a
   process, so when one is worth running is the reader's
   business and never the entry's.
-- **`session`** — a `SessionSpec`, the flags that decide which session a
+- **`session`**: a `SessionSpec`, the flags that decide which session a
   process opens, or `None` from a vendor amx has measured no session
   vocabulary for. `start` is the flag that opens a session under an id amx
   minted, and is `None` from a vendor whose own report already names the
@@ -101,20 +95,20 @@ the machinery honest against a shape no real entry happens to take.
   right after the program and then the origin's id, `codex fork <id>`, which is
   not a resume and never carries the resume words beside it. `new`, `resume`
   and `fork` build their session argv out of this and nothing else.
-- **`launch`** — words every process of this vendor is started with, whatever
+- **`launch`**: words every process of this vendor is started with, whatever
   amx starts it for. `new` writes them right after the program, once, and
   `resume` and `fork` keep them where they stand, since every resume and fork
   argv descends from the one `new` handed off. codex's is `--no-daemon`; claude
   and pi have none.
-- **`session_env`** — the variable the vendor puts in the environment of
+- **`session_env`**: the variable the vendor puts in the environment of
   every process it starts, naming the conversation. It is what lets `adopt`
   know which of the vendor's own agents it was typed inside, and it is on the
   `not_inherited` list too, because an agent that kept its spawner's session
   id would file its events under somebody else.
-- **`not_inherited`** — the vendor's own variables a fresh pane must not
+- **`not_inherited`**: the vendor's own variables a fresh pane must not
   inherit. The vendor's alone: what belongs to any pane is the caller's
   business.
-- **`capabilities`** — what amx may ask of this vendor. The whole list:
+- **`capabilities`**: what amx may ask of this vendor. The whole list:
   `Hooks`, `Transcript`, `Resume`, `Fork`, `Adopt`, `Trust`. A verb asks
   before it acts and refuses naming the gap. A vendor with no entry has none
   of these, which is the floor every unregistered command stands on: a pane
@@ -122,7 +116,7 @@ the machinery honest against a shape no real entry happens to take.
   and the `hooks` field below say the same thing, and `Transcript` needs
   `Hooks`: the file is named on a hook payload and nowhere else, so a vendor
   that reports nothing never puts one on a record.
-- **`hooks`** — which files amx writes and where (the `wire`: `Wire::Plugin`,
+- **`hooks`**: which files amx writes and where (the `wire`: `Wire::Plugin`,
   claude's plugin directory; `Wire::File`, pi's extension; `Wire::Hooks`,
   amx's groups merged into a hooks file the vendor and the person share and
   trusted in the config beside it, which is codex's; or `Wire::Placed`, one
@@ -140,53 +134,53 @@ the machinery honest against a shape no real entry happens to take.
   payloads have to carry is [the wire](#the-wire). `None` from a vendor that
   reports nothing, and then install has nothing to wire and leaves the
   machine alone.
-- **`transcript`** — the shape of the conversation file a report names,
+- **`transcript`**: the shape of the conversation file a report names,
   `Transcript::Claude`, `Transcript::Pi`, `Transcript::Codex` (the rollout
   jsonl codex appends under `$CODEX_HOME/sessions/`) or `Transcript::Opencode`
   (the message list opencode's plugin writes to
   `$AMX_DIR/opencode-messages.jsonl` at each turn's end), for
   `crate::conversation` to read it by. `None` from a vendor whose file nobody
   has sat down with.
-- **`ends_options`** — the word after which the vendor reads no word as a
+- **`ends_options`**: the word after which the vendor reads no word as a
   flag, put in front of a task, a resume's message or a fork's prompt, so a
   task opening with `-` is not read as one. pi's is `--`; `None` from a
   vendor that reads its last word as a prompt whatever it opens with.
-- **`attaches_at`** — whether the vendor reads a message word opening with
+- **`attaches_at`**: whether the vendor reads a message word opening with
   `@` as a file to attach even after `ends_options`. pi's does, so amx puts
   one space in front of such a task, message or prompt, which pi reads as
   words.
-- **`restores_queued_on_cancel`** — whether a cancel puts the messages the
+- **`restores_queued_on_cancel`**: whether a cancel puts the messages the
   vendor was holding behind the turn back in its composer. pi's does, so
   `amx interrupt` writes them down and `send` refuses to type after them
   until the next prompt.
-- **`prompt_flag`** — the flag a task, a resume's message or a fork's prompt
+- **`prompt_flag`**: the flag a task, a resume's message or a fork's prompt
   rides on as one `<flag>=<text>` word, for a vendor that reads no bare word
   as a prompt. opencode's is `--prompt`; `None` from a vendor whose last word
   is its prompt.
-- **`popups`** — the characters that open a popup in the vendor's composer
+- **`popups`**: the characters that open a popup in the vendor's composer
   when they open a word. A message whose last word opens with one gets one
   trailing space, or the popup takes the Enter. opencode's are `@` and `/`;
   empty from a vendor whose Enter always sends.
-- **`cancel_presses`** — how many Escapes, 300 ms apart, cut a turn. One for
+- **`cancel_presses`**: how many Escapes, 300 ms apart, cut a turn. One for
   claude, pi and codex; two for opencode, whose first press only arms.
-- **`interrupt_signal`** — the signal `stop` sends the pane's process to end a
+- **`interrupt_signal`**: the signal `stop` sends the pane's process to end a
   turn before it ends the pane. opencode's is `SIGUSR2`, which its plugin
   answers by interrupting the session; `None` from a vendor whose pane is
   ended as it stands.
-- **`screens`** — the document naming what this vendor's screens look like,
+- **`screens`**: the document naming what this vendor's screens look like,
   in the format of `assets/screen-rules.toml`: ordered rules, each built from
   measured anchors, with the capture, the version and the date each anchor
   was read at. `None` from a vendor nobody has sat in front of yet, and then
   its pane is watched and never named. Screens are measured against a running
   program; a document written from anywhere else is a transcription.
-- **`catalog`** — what this vendor can be asked for by name: the directories
+- **`catalog`**: what this vendor can be asked for by name: the directories
   it loads skills, commands and agents from, the commands it answers out of
   itself, the `sigil` that opens a word asking for one (`/` for claude and pi,
   `$` for codex, which runs a skill as `$name` and runs none as `/name`), and
   what stands between the sigil and a skill's name, which is nothing for
   claude and codex and `skill:` for pi. A directory is a
   `Place` under the person's home or under the project the agent is running
-  in, and a `*` segment in one stands for every directory at that level —
+  in, and a `*` segment in one stands for every directory at that level:
   claude keeps its plugins under a market, a plugin and a version, none of
   which is amx's to name in advance. `None` from a vendor whose layout nobody
   has measured, and then a word typed on a line for it is only ever the word
@@ -197,19 +191,19 @@ the machinery honest against a shape no real entry happens to take.
 Nothing outside the table spells a vendor's flags, events, sentences or
 variables. The questions the rest of amx puts to an entry:
 
-- `spawn` — which variables to strip, which flags the dials become, which
+- `spawn`: which variables to strip, which flags the dials become, which
   flag opens a session under the id amx just minted, and which words go right
   after the program every time.
-- `install` / `uninstall` / `doctor` — which files, which events.
-- `hook` — which moment a payload's event name is, which tool is the
+- `install` / `uninstall` / `doctor`: which files, which events.
+- `hook`: which moment a payload's event name is, which tool is the
   question tool, how the permission sentence reads.
-- `rules` / `derive` / the card — which screens document, whose chrome
+- `rules` / `derive` / the card: which screens document, whose chrome
   anchors cut the furniture. Through `rules::of` on the command the record
   kept, so a pane is read by the document of the vendor that drew it: see
   [pi](#pi).
-- `fork`, `resume`, `adopt`, `trust` — may I, before anything is spawned.
+- `fork`, `resume`, `adopt`, `trust`: may I, before anything is spawned.
   The refusal is immediate and says which capability is missing.
-- `logs` — whether this vendor keeps a conversation to read back, before it
+- `logs`: whether this vendor keeps a conversation to read back, before it
   opens a transcript path a record carries, and which gap to name when the
   pane has gone and nothing was recorded either. The chrome it cuts off a
   fallback capture comes off the same entry, like everybody else's: the
@@ -218,7 +212,7 @@ variables. The questions the rest of amx puts to an entry:
 One thing stays outside the table: `trust`'s store,
 `$CLAUDE_CONFIG_DIR/.claude.json`, is a literal in `trust.rs`, with a test
 tying that file to whichever vendors the table says can answer the screen by
-writing a store — `[claude]`, today. pi answers its own with a flag instead.
+writing a store, which is `[claude]` today. pi answers its own with a flag instead.
 The keys a hook payload carries are not the table's either, but they are not
 a vendor's: they are amx's, the contract every wire delivers, and the next
 section is that contract.
@@ -229,24 +223,24 @@ A vendor that reports runs `amx _hook` once per moment with one JSON object on
 stdin. The keys are amx's, whatever the vendor calls things inside its own
 process: claude's hook runner happens to send them as they are, and pi's
 extension, `assets/pi/amx.ts`, builds them out of pi's event arguments. pi is
-the reference for a third vendor, because its payload is one amx wrote and
-every key on it is one amx reads. A third vendor either sends these keys
+the reference for a new vendor, because its payload is one amx wrote and
+every key on it is one amx reads. A new vendor either sends these keys
 itself or gets a wire of amx's own that builds them, the way pi did.
 
 Every payload carries these, whatever the moment:
 
-- **`hook_event_name`** — the vendor's own name for the event, which is how
+- **`hook_event_name`**: the vendor's own name for the event, which is how
   the payload is found in the record's vendor's `Hooks.events`. A name the
   entry does not list is written to the log and moves nothing.
-- **`session_id`** — the conversation the report is about. It finds the
+- **`session_id`**: the conversation the report is about. It finds the
   record when the process has no `AMX_ID` (an agent somebody adopted), and a
   report about a session the record does not carry is another process's and
   moves nothing, except a session opening, below. Optional, and a report
   without it is the agent's own.
-- **`transcript_path`** — the file the conversation is written to. A record
+- **`transcript_path`**: the file the conversation is written to. A record
   with none takes it from the first report about its own session. Needed for
   `Transcript`, and the reason that capability needs `Hooks`.
-- **`agent_id`** — present and not null on a report about a subagent's work.
+- **`agent_id`**: present and not null on a report about a subagent's work.
   Such a report is logged and moves nothing on the record. pi sends none.
 
 Each moment reads these besides, and nothing else. What pi sends is the
@@ -266,10 +260,11 @@ reference; what claude sends past these keys is claude's and amx ignores it.
 pi also sends `cwd` on every report and `role` on `message_start`; amx reads
 neither. codex sends a `turn_id` and its own `model` and `permission_mode` on
 each, and no `stop_reason` on `Stop`, which it sends only for a turn that
-completed; amx reads none of those either. `amx events` shows one key per moment as the event's detail —
-Started's `source`, Prompted's `prompt`, Calling's `tool_name`, Notified's
-`message`, Ended's `last_assistant_message` — so a key a vendor leaves out
-is a blank there and nothing worse.
+completed; amx reads none of those either. `amx events` shows one key per
+moment as the event's detail (Started's `source`, Prompted's `prompt`,
+Calling's `tool_name`, Notified's `message`, Ended's
+`last_assistant_message`), so a key a vendor leaves out is a blank there and
+nothing worse.
 
 A vendor whose wire `listens()` (a `Wire::File` or a `Wire::Placed`, amx's own
 code inside the vendor) reads what `_hook` prints back: the record's directory, which is how
@@ -283,171 +278,138 @@ feeds it to the model.
 claude is the first entry, in `src/vendor/claude.rs`, and every value in it
 carries the version and the date it was read at. The dials come off 2.1.237's
 `--help`; the hooks, the question tool and the two notification types were
-measured against 2.1.240's own event list on 2026-08-25; the transcript shape
-above is 2.1.240's too. The screens were driven again against **2.1.259 on
-2026-09-05**, at 220, 54, 40, 30 and 24 columns, and `docs/claude-screens.md`
-is that pass: the capture for each screen, the verdict
-`assets/screen-rules.toml` gives it, and what every anchor read.
+measured against 2.1.240's own event list on 2026-08-25, and the transcript
+shape above is 2.1.240's too. `--help`, the hook list and the transcript shape
+have not been re-driven since.
 
-Three of the six rules moved, and every one of them broke narrow: two went
-quiet and one went confidently wrong. A claude on its own folder-trust gate
-read `unknown` at 24 columns, and an unclaimed screen is not a gate, so
-`doctor` had nothing to report about an agent that would sit there until
-somebody attached. A menu somebody was standing at read `unknown` there too,
-its box taller than the rows a rule may see. And a claude with a turn running
-read `idle` at 30 and at 24 — not the honest answer but the confident wrong
-one, on the failure the spinner rule's own comment calls the worst available,
-since naming a screen non-blocking also clears a pending question off the row.
-Four agents tiled on a 160-column terminal is 40 columns each and a fifth takes
-them under it, so these are widths amx reaches by itself.
+The screens were driven three more times, and `docs/claude-screens.md` holds
+each pass: the capture for every screen, the verdict `assets/screen-rules.toml`
+gives it, and what every anchor read.
 
-The rest of what the bump cost was above the screens. 2.1.259 draws the
-folder-trust gate as two rows with no number on either and the cursor on the
-one that ends the agent, so the question read back as an answer, every key
-`answer` was allowed to type there was inert or fatal, and the offer a waiting
-row printed named keys the screen would not take. `answer` has the cursor moves
-now and reads a walk and the take at the end of it as one line; the offer is
-worked out from what was read off the screen rather than from the kind of
-question; and a key whose effect amx cannot check leaves the record `waiting`,
-so the same screen can be answered again instead of being refused while it is
-still on the pane.
+- **2.1.259, 2026-09-05**, at 220, 54, 40, 30 and 24 columns. Three of the six
+  rules broke narrow. A claude on its folder-trust gate read `unknown` at 24
+  columns, so `doctor` had nothing to report about an agent that would sit
+  there until somebody attached. A menu read `unknown` there too, its box
+  taller than the rows a rule may see. A claude with a turn running read
+  `idle` at 30 and 24 columns, the confident wrong answer, which also clears a
+  pending question off the row. Four agents tiled on a 160-column terminal are
+  40 columns each, and a fifth takes them under it, so amx reaches these widths
+  by itself. The folder-trust gate also lost the numbers on its choices and put
+  the cursor on the row that ends the agent, so `answer` learned cursor moves,
+  the offer a waiting row prints is worked out from the screen, and a key whose
+  effect amx cannot check leaves the record `waiting`.
+- **2.1.270, 2026-09-14**, at 100, 54, 40, 30 and 24 columns. Nothing the
+  document knew had moved. Three screens it did not know were read wrong: the
+  transcript viewer and the answered `/btw` overlay were claimed as `idle`, and
+  the line claude leaves above the composer while a background subagent runs
+  (`✻ Waiting for 1 background agent to finish`) was claimed as `idle` at four
+  of the five widths. The first two are claimed by nobody now; the third has a
+  rule of its own.
+- **2.1.276, 2026-09-18**: the folder-trust gate again. amx now numbers its
+  unnumbered rows off the cursor glyph, so `amx answer <id> 2` trusts the
+  folder.
 
-The pass drove screens and nothing else. `--help`, the hook list and the
-transcript shape were not re-driven and still carry their 2.1.237 and 2.1.240
-dates. `[furniture] spinner`, which walked over the two punctuation fragments
-the `spinner` rule was moved off, was driven the day after and moved onto `ing…`
-with the rule.
+The 2.1.270 pass was driven beside herdr's claude manifest, version
+`2026.09.04.1`, the only other published measurement of these screens. herdr
+reads panes as amx does and keeps a TOML manifest per vendor. Two differences
+are deliberate:
 
-The screens were driven a third time against **2.1.270 on 2026-09-14**, at 100,
-54, 40, 30 and 24 columns, and the second half of `docs/claude-screens.md` is
-that pass. Nothing the document already knew had moved. Three screens it did not
-know were being read wrong: the transcript viewer and the answered `/btw`
-overlay were claimed as `idle` by the rule that stands on the mode row, and the
-line claude leaves above the composer while a background subagent runs — `✻
-Waiting for 1 background agent to finish` — was claimed as `idle` at four of the
-five widths. The first two are refused by name now and claimed by nobody; the
-third has a rule of its own.
+- amx takes no manifest from a website. A vendor's entry here is code with its
+  document beside it and a test tying the two together, and a string nobody on
+  this machine read off a live screen is not an anchor.
+- amx reads no pane title. herdr ranks two title rules above every screen rule
+  for claude, measured at 2.1.227 and 2.1.228, and a title is the one signal a
+  narrow pane cannot truncate. On 2.1.270 there is nothing on it to read:
+  seventy samples across two turns all opened with `✳`, and none changed while
+  the state did.
 
-That pass was driven beside herdr's claude manifest, version `2026.09.04.1`,
-which is the only other published measurement of these screens. herdr reads
-panes the way amx does and writes what it reads in TOML too: a manifest per
-vendor, five states on it (idle, working, blocked, done and unknown), a rule
-that can say a screen means nothing about the agent at all
-(`skip_state_update`), `blocked` claimed only on a widget it recognises, and the
-manifests themselves updated from its own website between releases.
-
-Three of those amx has under other names. Its rules claim `waiting`, `working`
-and `idle` and nothing else, because every other phase on the record comes from
-a hook or an exit status rather than from a picture. A screen that should say
-nothing needs no rule here at all: an unclaimed screen already leaves an idle or
-a waiting record its own word and reads `unknown` over a running one, which is
-what the viewer and the overlay were given. And claiming `blocked` only on a
-recognised widget is the anchor law with the emphasis somewhere else. The one
-thing amx will not take is the manifest from a website: a vendor's entry here is
-code with its document beside it and a test tying the two together, and a string
-nobody on this machine has read off a live screen is not an anchor.
-
-What amx leaves unknown, and means to: the pane title. herdr ranks two title
-rules above every screen rule in its claude entry, `osc_title_working` and
-`osc_title_idle`, measured at 2.1.227 and 2.1.228, and a title is the one signal
-a narrow pane cannot truncate — which made it the most attractive thing on that
-manifest. On 2.1.270 there is nothing on it to read: seventy samples of claude's
-own title across two turns, taken twice a second, every one of them opening with
-`✳` and none of them changing while the state did. Working, a menu, a permission
-box and idle all wear the same glyph, so amx reads no title and this bump gives
-it no reason to start. The `/model` picker is left unknown for a plainer reason
-— amx has no verb that answers it — and herdr's pi manifest, one rule measured
-in June against amx's nine, is where the comparison runs the other way.
+The `/model` picker is left unknown because amx has no verb that answers it.
 
 ## pi
 
-pi is the second real entry, in `src/vendor/pi.rs`, every value in it measured
+pi is the second entry, in `src/vendor/pi.rs`. Every value in it was measured
 against 0.84.4 on the date it carries and read again against 0.85.1 on
-2026-09-06 — `docs/pi-screens.md` says what that re-read moved.
+2026-09-06; `docs/pi-screens.md` says what that re-read moved.
 
-It can be resumed, forked and adopted. `--session-id <id>` is mint-or-open —
-it opens the session already under that id, or creates one if none exists —
-so the same flag serves as both `start` and `resume`; `pi --fork <origin>
---session-id <new>` branches into an id amx chose, which is `ForkSpec::Origin`
-rather than claude's marker; and `PI_SESSION_ID`, which pi puts in the
-environment of every command its bash tool runs, is what `adopt` reads to say
-which conversation it was typed inside, the same way claude's
+**Sessions.** pi can be resumed, forked and adopted. `--session-id <id>` is
+mint-or-open: it opens the session already under that id, or creates one if
+none exists, so the same flag serves as both `start` and `resume`. `pi --fork
+<origin> --session-id <new>` branches into an id amx chose, which is
+`ForkSpec::Origin` rather than claude's marker. `PI_SESSION_ID`, which pi puts
+in the environment of every command its bash tool runs, is what `adopt` reads
+to say which conversation it was typed inside, as claude's
 `CLAUDE_CODE_SESSION_ID` does.
 
-It reports through hooks, and amx reads its conversation back. pi's extension
-events are JS callbacks inside its own process, not entries in a settings
-file can name, so its wire is a file: `Wire::File` at
+**The wire.** pi's extension events are JS callbacks inside its own process,
+not entries a settings file can name, so its wire is a file: `Wire::File` at
 `.pi/agent/extensions/amx.ts`, whose body is `assets/pi/amx.ts`, written by
 `amx setup pi` where pi loads a global extension from and removed by `amx
-uninstall`. That file runs `amx _hook` once per moment with the payload on
-stdin, under pi's own event names — `session_start`, `agent_start`,
-`tool_execution_start`, `message_start` (a user message only, which lands as
-`Taken`: the word that a message steered into a running turn went in),
-`ui_prompt_start`, `ui_prompt_end`, `agent_settled` —
-and the keys [the wire](#the-wire) names, so `hook` reads it with no arm of its
-own. `ui_prompt_start` lands as `Notified` and `ui_prompt_end` as `Refused`;
-there is no `Asked`, because pi asks leave for nothing. `Transcript` comes
-with it: a report names the session jsonl pi appends to as a turn runs,
-`~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, and `Vendor.transcript`
-names the shape `crate::conversation` reads it by. While a turn runs the
-extension also streams the words of the answer being written to the record's
-`live` file, which the card shows under the conversation. It finds that record
-by `AMX_DIR` in a pane amx started, and otherwise by what the hook answers:
-`amx _hook` prints the record's directory on every report about a vendor wired
-through `Wire::File` (`Wire::listens`), which is how a pi `adopt` took over
-streams too. A vendor whose own hook runner runs the
-entries — claude, through the plugin amx writes — is never answered, because
-that runner shows what a hook prints. `Trust` is the one
-amx sends rather than writes: `--approve, -a` on the argv of a pane amx was
-starting anyway.
+uninstall`. It runs `amx _hook` once per moment with the payload on stdin,
+under pi's own event names (`session_start`, `agent_start`,
+`tool_execution_start`, `message_start`, `ui_prompt_start`, `ui_prompt_end`,
+`agent_settled`) and with the keys [the wire](#the-wire) names, so `hook`
+reads it with no arm of its own. `message_start` is sent for user messages
+only and lands as `Taken`: a message steered into a running turn went in.
+`ui_prompt_start` lands as `Notified` and `ui_prompt_end` as `Refused`. There
+is no `Asked`, because pi asks leave for nothing.
 
-The extension beats on that record as well. What a vendor reported is believed
-for `derive::FRESH` seconds and then the pane is read instead, and a turn
-sends nothing between its tool calls, so a call that runs for a minute leaves
-the record quiet for a minute. The screen under it is not always one a rule
-claims: the two things a mid-turn pi is recognised by are the braille frames
-and the stats-line footer, and an extension can redraw both. Measured on
-0.85.1 with throwaway extensions, a static dot alone left the wall right and a
-custom footer alone did too, but a pane with both read `unknown` from ten
-seconds in until the turn settled, for a forty-second tool call and a
-streaming answer alike. The answer is not another anchor. While a turn runs
-the extension is alive and knows it, so it says so on disk: `<record>/heartbeat`
-written when the turn starts and every three seconds after that, on an unref'd
-timer, and taken away at `agent_settled`. `derive` reads that file's mtime as
-one more thing heard from the agent, beside `last_event` and `since`, and the
-evidence stays `hooks` — a beat is the vendor's report that the turn goes on,
-which is what a hook is.
+**The transcript.** A report names the session jsonl pi appends to as a turn
+runs, `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl`, and
+`Vendor.transcript` names the shape `crate::conversation` reads it by.
 
-Nothing about that file names pi. It is the record's, the way `live` is, so
-any vendor whose wire can write there may beat; claude has no extension and its
-chrome is not extensible, so nothing changes for it.
+**The live stream.** While a turn runs the extension streams the words of the
+answer being written to the record's `live` file, which the card shows under
+the conversation. It finds the record by `AMX_DIR` in a pane amx started, and
+otherwise by what the hook answers: `amx _hook` prints the record's directory
+on every report about a vendor whose wire listens (`Wire::listens`), which is
+how an adopted pi streams too. A vendor whose own hook runner runs the entries
+(claude, through the plugin amx writes) is never answered, because that
+runner shows what a hook prints.
 
-A pi without the extension reads the way a claude with its hooks unwired
-reads: off its pane, against the screens document, with `doctor` naming the
-gap. The hookless machinery `derive` grew for a vendor that reports nothing —
-writing what a confident reading concluded, `read.prompt` and `read.turn-end`
-— is not what pi takes any more; it stands for a vendor that has no other
-account of itself, and the test-only second vendor keeps it proven.
+**The heartbeat.** What a vendor reported is believed for `derive::FRESH`
+seconds, and then the pane is read instead. A turn sends nothing between its
+tool calls, so a call that runs for a minute leaves the record quiet for a
+minute, and the screen under it is not always one a rule claims: a mid-turn pi
+is recognised by the braille frames and the stats-line footer, and an
+extension can redraw both. Measured on 0.85.1 with throwaway extensions, a
+static dot alone left the wall right and a custom footer alone did too, but a
+pane with both read `unknown` from ten seconds in until the turn settled. So
+the extension says on disk that the turn goes on: `<record>/heartbeat`,
+written when the turn starts and every three seconds after that on an unref'd
+timer, and removed at `agent_settled`. `derive` reads that file's mtime as one
+more thing heard from the agent, beside `last_event` and `since`, and the
+evidence stays `hooks`, since a beat is the vendor's report that the turn goes
+on. Nothing about the file names pi: any vendor whose wire can write to the
+record may beat, and opencode's plugin does.
 
-`screens` is where what amx can read off a pi pane is written down: eight
-rules — the first-run setup gate, the folder-trust question, a dialog, an
-editor, an input, the spinner, the login box and the prompt — plus the chrome
-that comes off a capture before anybody reads it, driven live against 0.84.4,
-re-driven against 0.85.1, and checked in as `assets/screen-rules-pi.toml`. The entry declares it with
+**Trust.** `Trust` is the capability amx sends rather than writes: `--approve`
+on the argv of a pane amx was starting anyway.
+
+**Without the extension.** A pi without it reads the way a claude with its
+hooks unwired reads: off its pane, against the screens document, with
+`doctor` naming the gap. The machinery `derive` grew for a vendor that reports
+nothing (writing what a confident reading concluded, `read.prompt` and
+`read.turn-end`) is not what pi takes any more. It stands for a vendor with no
+other account of itself, and the test-only second vendor keeps it proven.
+
+**The screens.** `assets/screen-rules-pi.toml` holds nine rules (the first-run
+setup gate, the `/trust` selector, the startup folder-trust question, a
+dialog, an editor, an input, the spinner, the login box and the prompt) plus
+the chrome that comes off a capture before anybody reads it, driven live
+against 0.84.4 and re-driven against 0.85.1. The entry declares it with
 `include_str!`, so it is in the binary; `rules::of("pi")` finds it, parses it
-and hands it back, and `rules.rs`'s own tests read pi's screens exactly that
-way. Which screen each rule was measured on, and what the rest of pi's screens
-read as beside them, is `docs/pi-screens.md`.
+and hands it back, and `rules.rs`'s own tests read pi's screens that way.
+Which screen each rule was measured on, and what the rest of pi's screens read
+as, is `docs/pi-screens.md`.
 
 Every reader asks for them. `furniture`, `derive`, `send`, `doctor`, `status`
 and the view all reach a document through `rules::of` on the command the
 record kept, which is where the vendor a spawn resolved survives: the flag and
 the config it came out of are gone by the time anybody reads one. So a pi pane
-is cut and claimed with pi's own anchors. A record naming no command — a shell
-command, or one written before amx kept that field — reads
-`registry::entries().first()`, claude by where the table lists it and a law
-holding that order, which is the reading every pane had before there was a
-second document to choose from.
+is cut and claimed with pi's own anchors. A record naming no command (a shell
+command, or one written before amx kept that field) reads
+`registry::entries().first()`: claude, by where the table lists it and a law
+holding that order.
 
 ## codex
 
@@ -543,35 +505,31 @@ only where it runs. A skill in any of those places is not offered.
 
 ### What the dogfood saw on codex 0.157.1, 2026-09-28
 
-The rig: amx built from the entry above and installed with `cargo install
---path .`; a scratch `CODEX_HOME` holding copies of `auth.json` and
-`config.toml`, with the scratch repository trusted in that copy; and a scratch
-repository with one commit whose `.amx/config.toml` said `agent = "codex"` and
-set `CODEX_HOME` to the scratch directory under `[codex.env]`, allowed with
-`amx allow`. The agents went on the real wall, beside every other agent on
-the machine, and the model was the account's default, GPT-6-Luna.
+The rig: amx built from the entry above; a scratch `CODEX_HOME` holding
+copies of `auth.json` and `config.toml`, with a scratch repository trusted in
+that copy; and that repository's `.amx/config.toml` saying `agent = "codex"`
+and pointing `CODEX_HOME` at the scratch directory under `[codex.env]`,
+allowed with `amx allow`. The model was the account's default, GPT-6-Luna.
 
-`CODEX_HOME=<scratch> amx setup codex` added the four groups to the scratch
-`hooks.json` and four `[hooks.state]` tables at indices `0:0` to its
-`config.toml`, with the copy of the file as it was named on the way out.
-`doctor`'s codex row came up green: *amx's hooks in …/hooks.json, trusted in
-…/config.toml*.
+**Setup.** `CODEX_HOME=<scratch> amx setup codex` added the four groups to the
+scratch `hooks.json` and four `[hooks.state]` tables at indices `0:0` to its
+`config.toml`, and named the copy it kept. `doctor`'s codex row passed: *amx's
+hooks in …/hooks.json, trusted in …/config.toml*.
 
-**The Show.** `amx new "list the files here"` ran `codex --no-daemon -- list
-the files here`, and codex came up with no hooks-review screen, in front of
-the composer or anywhere else. The row read `working` on the first look and
-`idle` four seconds later, and the events were codex's own: `SessionStart
-startup`, `UserPromptSubmit`, `PreToolUse Bash`, `Stop`. `amx result` printed
-the answer the `Stop` carried. `amx stop` and then `amx resume <id> "how many
-files did you find? one word"` ran `codex resume <session> --no-daemon --
-<message>`, the next event was `SessionStart resume` under the same session,
-and the answer, *Two*, came out of the turn before the stop. `amx fork <id>
-"reply with the word FORKED"` ran `codex fork <session> --no-daemon --
-<prompt>`, and its first turn fired `SessionStart fork` under a new session
-id, with a second rollout beside the first carrying it. A codex started by
+**Start, resume, fork.** `amx new "list the files here"` ran `codex
+--no-daemon -- list the files here`, and codex drew no hooks-review screen. The
+row read `working` on the first look and `idle` four seconds later, from
+codex's own events: `SessionStart startup`, `UserPromptSubmit`, `PreToolUse
+Bash`, `Stop`. `amx result` printed the answer the `Stop` carried. After `amx
+stop`, `amx resume <id> "how many files did you find? one word"` ran `codex
+resume <session> --no-daemon -- <message>`; the next event was `SessionStart
+resume` under the same session, and the answer came out of the turn before the
+stop. `amx fork <id> "reply with the word FORKED"` ran `codex fork <session>
+--no-daemon -- <prompt>`, and its first turn fired `SessionStart fork` under a
+new session id, with a second rollout beside the first. A codex started by
 hand in a tmux pane under the same `CODEX_HOME` drew no review screen either,
 and a spawn cut into a worktree of the trusted repository met no trust screen:
-codex keys that trust on the main checkout, as the entry says.
+codex keys that trust on the main checkout.
 
 **Two vendors on the wall.** A claude spawned from the same repository with
 `--agent claude` stopped on its folder-trust screen and read `waiting` on
@@ -584,12 +542,12 @@ offered `$demo` with the skill's description. `/` offered nothing there. The
 line at the foot of a codex agent's card offered the same, and so did a task
 line written `agent:codex $de` in a view whose default agent was claude.
 
-**The refusals came back in codex's words.** `--effort ultra`: *codex takes
-default, low, medium, high, xhigh, max*. `--permission plan`: *codex takes
-default, read-only, workspace-write, danger-full-access*. Both exit 64 before
-anything is spawned. `--model gpt-5.5 --effort low` picked codex out of its
-listing and ran `codex --no-daemon --model gpt-5.5 -c
-model_reasoning_effort=low -- <task>`.
+**Refusals in codex's words.** `--effort ultra`: *codex takes default, low,
+medium, high, xhigh, max*. `--permission plan`: *codex takes default,
+read-only, workspace-write, danger-full-access*. Both exit 64 before anything
+is spawned. `--model gpt-5.5 --effort low` picked codex out of its listing and
+ran `codex --no-daemon --model gpt-5.5 -c model_reasoning_effort=low --
+<task>`.
 
 **Esc, interrupt, logs.** `amx interrupt` in the middle of a `sleep 30` ended
 the turn at once: `interrupt` and `read.turn-end` in the same second, and the
@@ -597,9 +555,8 @@ row on `prompt`. The shell command kept running as codex's background
 terminal, as `docs/codex-screens.md` says it does. `amx logs` read the rollout
 back, a prompt and an answer per turn and a `› exec` row for each tool call.
 
-**What it found.** Seven things. None is a wrong value in the entry and none
-was fixed in this pass; each is here with its evidence and where a fix would
-go.
+**What it found.** Seven things, none a wrong value in the entry. Each is here
+with its evidence and where a fix would go.
 
 - **`send` of a message that ends in a `$word` does not submit.** `amx send
   <id> 'run $demo'` left `run $demo` staged in the composer and exited 1 with
@@ -625,36 +582,36 @@ go.
   sent no `Stop`, and `read.turn-end` came 53 seconds after the prompt.
   `result` said *the provider failed* and quoted codex. The listing is the one
   codex's own picker shows, so amx offers what codex offers.
-- **`adopt` from inside codex found the wrong amx.** codex runs its shell
-  tool, and a `!` command, through a snapshot of the login shell, and that
-  PATH put an older amx in `~/.local/bin` ahead of the one just installed. The
-  older amx has no codex entry, so the pane named no vendor it knew and the
-  environment answered alone. The tmux server running the codex was one the
-  driving claude session had started, so it held `CLAUDE_CODE_SESSION_ID`, and
-  the record came out `agent: claude` with that session on it. The driving
-  session's own hooks then filed onto the adopted row. `doctor` had already
-  failed the machine for having two amx on the PATH. Run by its full path, the
-  installed amx adopted the same kind of pane as `codex` under codex's own
-  session id. Its first state was `working`, read off the screen while the `!`
-  command ran, and it read `idle` 31 seconds later, the same wait as the Esc
-  above.
-- **`doctor` asks about the person's agent, not the project's.** In the
-  scratch repository, and under `amx --dir <repo> doctor`, the agent row said
-  claude and the trust check asked claude's store, though the repository's
-  allowed file says codex. `doctor` reads the person's file alone.
-- **The bare view is the person's file too.** `amx` from inside the
-  repository said `next claude`, and a task typed on its line started a claude
-  there. The README says the view reads a project's file only under `--dir`,
-  so this is the documented reading, and a person with `agent = "codex"` in
-  their own file meets none of it.
-- **A project may set `CODEX_HOME`.** A project's `[codex.env]` set it and
-  amx took it, where `[claude.env]` may not set `CLAUDE_CONFIG_DIR`. The two
-  do the same job: they pick which of the vendor's configs runs, and codex's
-  holds the hooks and the trust for them. And `amx setup codex`, `doctor` and
-  `uninstall` read `CODEX_HOME` from the environment they run in and never
-  from `[codex.env]`, so a home named only there is one setup never wired.
-  Closed the same day: a project file may no longer set `CODEX_HOME`, as it
-  may not set `CLAUDE_CONFIG_DIR`. A person's own `[codex.env]` still may,
+- **`adopt` from inside codex can find the wrong amx.** codex runs its shell
+  tool, and a `!` command, through a snapshot of the login shell. On the test
+  machine that PATH put an older amx with no codex entry ahead of the new one,
+  so the pane named no vendor that amx knew and the environment answered
+  alone. The tmux server running the codex had been started from a claude
+  session and carried `CLAUDE_CODE_SESSION_ID`, so the record came out `agent:
+  claude` with that session on it, and that claude session's hooks then filed
+  onto the adopted row. `doctor` had already failed the machine for having two
+  amx on the PATH. Run by its full path, the new amx adopted the same kind of
+  pane as `codex` under codex's own session id. Its first state was `working`,
+  read off the screen while the `!` command ran, and it read `idle` 31 seconds
+  later, the same wait as the Esc above.
+- **`doctor` asked about the person's agent, not the project's.** In the
+  scratch repository the agent row said claude and the trust check asked
+  claude's store, though the repository's allowed file says codex. Closed
+  since: `doctor` reads the config of the directory it is asked about (its
+  `--dir`, else the working directory), with the project's file laid over the
+  person's.
+- **The bare view is the person's file.** `amx` from inside the repository
+  said `next claude`, and a task typed on its line started a claude there. The
+  view reads a project's file only under `--dir`, so this is the documented
+  reading, and a person with `agent = "codex"` in their own file meets none of
+  it.
+- **A project could set `CODEX_HOME`.** A project's `[codex.env]` set it and
+  amx took it, where `[claude.env]` may not set `CLAUDE_CONFIG_DIR`. Both pick
+  which of the vendor's configs runs, and codex's holds the hooks and the trust
+  for them. `amx setup codex`, `doctor` and `uninstall` also read `CODEX_HOME`
+  from the environment they run in and never from `[codex.env]`, so a home
+  named only there is one setup never wired. Closed the same day: a project
+  file may no longer set `CODEX_HOME`. A person's own `[codex.env]` still may,
   and setup, doctor and uninstall still read only the environment.
 
 ## opencode
@@ -742,60 +699,52 @@ session's, the prompt's and the server's, aliases and all.
 
 ### What the dogfood saw on opencode 2.0.16
 
-On 2026-09-30. The rig: amx built from the entry above and installed with
-`cargo install --path . --root <scratch>`, that root first on the PATH; a
-scratch `OPENCODE_CONFIG_DIR` copied from `~/.config/opencode` and exported;
-and a scratch repository with one commit whose `.amx/config.toml` said
-`agent = "opencode"`, allowed with `amx allow`. The install went to a root of
-its own rather than `~/.cargo/bin`, which stands ahead of the machine's amx on
-the PATH, because another run was driving that amx at the time; for the same
-reason the agents went on a state directory and a tmux socket of their own
-(`AMX_STATE_DIR`, `AMX_TMUX_SOCKET`), beside a claude on the same wall.
+On 2026-09-30. The rig: amx built from the entry above and first on the PATH;
+a scratch `OPENCODE_CONFIG_DIR` copied from `~/.config/opencode` and exported;
+a scratch repository whose `.amx/config.toml` said `agent = "opencode"`,
+allowed with `amx allow`; and a state directory and tmux socket of the rig's
+own (`AMX_STATE_DIR`, `AMX_TMUX_SOCKET`), beside a claude on the same wall.
 `opencode service start` under the same environment put the shared service up
-first (`opencode serve --service`, on 49374), and the database was the
-person's own, `~/.local/share/opencode/opencode.db`, read only with
-`sqlite3 -readonly`.
+first (`opencode serve --service`, on 49374). opencode's database,
+`~/.local/share/opencode/opencode.db`, was only ever read, with `sqlite3
+-readonly`.
 
-`amx setup opencode` wrote the plugin to `<scratch>/plugins/amx/tui.js` and
-nothing else. `doctor`'s opencode row came up green: *the plugin at
-…/plugins/amx/tui.js*, and its agent row said opencode, read off the project's
-file. `doctor` failed only while the machine's own amx was still on the PATH
-behind the scratch one, which is its two-amx check doing its job; with that
-directory off the PATH (and claude linked in from a scratch bin) every row was
-green.
+**Setup.** `amx setup opencode` wrote the plugin to
+`<scratch>/plugins/amx/tui.js` and nothing else. `doctor`'s opencode row
+passed (*the plugin at …/plugins/amx/tui.js*) and its agent row said opencode,
+read off the project's file. `doctor` failed only while a second amx was on
+the PATH, which is its two-amx check doing its job.
 
-**The Show.** `amx new --model opencode/longcat-2.5-preview-free "list the
-files here"` was refused at first; see the first finding. With the model
-written under `[opencode] models` it ran `opencode --standalone --prompt=list
-the files here`, with `OPENCODE_CONFIG_CONTENT={"model":"opencode/longcat-2.5-preview-free"}`
-and the scratch `OPENCODE_CONFIG_DIR` in the pane's environment, and an
-`opencode serve --stdio --port 0` under it. The row read `starting`, `working`
-two seconds later, `Running read` at six, and `done` (idle, printed) at twelve.
+**Start.** `amx new --model opencode/longcat-2.5-preview-free "list the files
+here"` was refused at first; see the first finding. With the model written
+under `[opencode] models` it ran `opencode --standalone --prompt=list the
+files here`, with
+`OPENCODE_CONFIG_CONTENT={"model":"opencode/longcat-2.5-preview-free"}` and
+the scratch `OPENCODE_CONFIG_DIR` in the pane's environment, and an `opencode
+serve --stdio --port 0` under it. The row read `starting`, `working` two
+seconds later, `Running read` at six, and `done` (idle, printed) at twelve.
 The events were the plugin's own: `session.selected startup`,
 `session.execution.started`, `session.tool.called read`,
 `session.execution.ended`. `amx result` printed the answer, the four entries
 of the directory, out of the message list the plugin wrote to the record.
 
-`amx resume <id> "and count them"` refused an idle agent (*stop it before
-starting it again*), as it does for every vendor. After `amx stop` it ran
-`opencode --standalone --session ses_… --prompt=and count them`; the next
+**Resume.** `amx resume <id> "and count them"` refused an idle agent (*stop it
+before starting it again*), as it does for every vendor. After `amx stop` it
+ran `opencode --standalone --session ses_… --prompt=and count them`; the next
 events were `session.selected resume` and `session.execution.started` under
 the same session, and the free model took 33 seconds to answer: *There are
-**4** entries*, two directories and two files, the list from the turn before
-the stop.
+**4** entries*, the list from the turn before the stop.
 
-`amx new … "run the shell command sleep 60, then say finished"`, stopped
-fifteen seconds into the `sleep`: `amx stop` returned in 0.08 seconds, and
-`session.execution.ended` arrived in the same second, with no answer. The
-session's row in `opencode.db` read `idle_outcome` `interrupted`, the last
-message an `idle` row with outcome `interrupted`, and the `sleep 60` was gone.
-The pane's `opencode --standalone` and its `serve --stdio` were still in the
-process table the instant `stop` returned, and gone three seconds later; with
-the other opencode agent stopped too, `pgrep -f "serve --stdio"` found only
-the shells whose own command line carried those words, and no opencode.
-`opencode service restart` then came back on 49374, and thirty seconds later
-the stopped session still read `interrupted`, three messages, the last at the
-same `seq`: nothing resumed it.
+**Stop mid-turn.** `amx new … "run the shell command sleep 60, then say
+finished"`, stopped fifteen seconds into the `sleep`: `amx stop` returned in
+0.08 seconds, and `session.execution.ended` arrived in the same second, with
+no answer. The session's row in `opencode.db` read `idle_outcome`
+`interrupted`, the last message an `idle` row with outcome `interrupted`, and
+the `sleep 60` was gone. The pane's `opencode --standalone` and its `serve
+--stdio` were still in the process table the instant `stop` returned, and
+gone three seconds later. `opencode service restart` then came back on 49374,
+and thirty seconds later the stopped session still read `interrupted`, three
+messages, the last at the same `seq`: nothing resumed it.
 
 **Two vendors on the wall.** A claude spawned from the same repository with
 `--agent claude` stopped on its folder-trust screen and read `waiting` on
@@ -813,8 +762,8 @@ shell`), and `amx interrupt` eight seconds into it wrote `interrupt` and
 logs` read the message list back, a `› read a.txt` row for the tool, the
 answer, the message as `❯ now run sleep 40 in the shell` and `› shell sleep 40`.
 
-**What it found.** Three things. None is a wrong value in the entry, and none
-was fixed in this pass.
+**What it found.** Three things, none a wrong value in the entry, and none
+fixed in this pass.
 
 - **A typed opencode model is refused where opencode is the configured agent.**
   `amx new --model opencode/longcat-2.5-preview-free …` with `agent =
@@ -844,15 +793,13 @@ This is pi's pass. codex's is at the end of [codex](#codex), and opencode's at
 the end of [opencode](#opencode).
 
 pi 0.84.4, 2026-09-05, on a scratch repository with `agent = "pi"` in the
-config, amx built from the entry above and put on the PATH in front of whatever
-was there, and a state directory and a tmux socket of its own so nothing landed
-on anybody's real wall. The provider was
-opencode's muse-spark-1.3-contributor-free. This is the pass step 5 below asks
-for, written down where the measurements it tests are.
+config, amx built from the entry above and first on the PATH, and a state
+directory and a tmux socket of the rig's own. The provider was opencode's
+muse-spark-1.3-contributor-free. This is the pass step 5 below asks for.
 
-`doctor` came up green on all seven, and the hooks row said what the entry
-claims rather than that something was missing: *pi reports nothing amx can
-wire, so its pane is what amx reads.*
+It predates pi's extension: at the time pi reported through no hooks, and
+`doctor`'s hooks row said so (*pi reports nothing amx can wire, so its pane is
+what amx reads.*). Several findings below are that gap showing up.
 
 **The four capabilities.** `new` ran `pi --session-id <the id amx minted>`, and
 pi wrote its session to `~/.pi/agent/sessions/<encoded cwd>/<ts>_<id>.jsonl`
@@ -864,7 +811,7 @@ first, carrying the copy's own id, in the directory the original ran in. `adopt`
 was typed inside a pi started by hand, through the vendor's own bash tool,
 which is how `PI_SESSION_ID` and `$TMUX_PANE` reach it: the record came out
 `agent: pi` with pi's own session id on it, and its first state was read off
-the pane it took over. Asked a second time in the same pane it refused —
+the pane it took over. Asked a second time in the same pane it refused:
 `amx: %5 is agent the-pi-i-started-hnx already`. With `trust = true` the argv
 was `pi --session-id <id> --approve <task>`, the folder-trust screen was not
 drawn at all, `~/.pi/agent/trust.json` was never created, and no file of
@@ -882,15 +829,13 @@ and on `spinner`. No row carried the other vendor's rule.
 off, minimal, low, medium, high, xhigh, max*. Both exit 64, before anything is
 spawned.
 
-**What it found.** Seven things, and two of them are about which screen amx is
-looking at: pi's startup trust gate is not the screen `project_trust` was
-measured off, and pi's update notice takes every windowed rule off the pane.
-Those two are written down in `docs/pi-screens.md`, beside the rules they are
-about. The other five are verbs — four of them the hooks gap showing up in
-places the capability list does not obviously cover, and the fifth off the rig
-itself — and every one of the five is answered now. Each is here as it was
-found, with what closed it under it, so that what a partial entry cost stays
-readable after the cost has been paid:
+**What it found.** Seven things. Two are about which screen amx is looking at:
+pi's startup trust gate is not the screen `project_trust` was measured off,
+and pi's update notice takes every windowed rule off the pane. Those two are in
+`docs/pi-screens.md`, beside the rules they are about. The other five are
+verbs: four are the hooks gap showing up where the capability list does not
+obviously cover it, and the fifth came off the rig itself. All five are closed.
+Each is here as it was found, with what closed it:
 
 - **`send` always says the message may not have arrived.** It waits five
   seconds for the vendor's `UserPromptSubmit` and pi sends none, so every send
@@ -898,8 +843,8 @@ readable after the cost has been paid:
   message may not have reached it*. Measured four times, and the message had
   landed and the turn had run every time. Closed: the word the wait takes is a
   reader's as well as a vendor's. Where the vendor has no hooks to say it with,
-  the wait does its own looking, and the turn a look watched begin —
-  `read.prompt` in the log — confirms a send the way a `UserPromptSubmit` does.
+  the wait does its own looking, and the turn a look watched begin
+  (`read.prompt` in the log) confirms a send the way a `UserPromptSubmit` does.
   A message that genuinely reaches nothing still fails inside the same five
   seconds and still says so.
 - **`result` never returns to a pi agent that was sent a message.** It waits
@@ -911,16 +856,16 @@ readable after the cost has been paid:
   After a message it still exits on the deadline, with that same answer on the
   record it will not serve. Closed: the same word on the other edge, which is
   `read.turn-end`, and the wait takes one of those or a `Stop`. Which turn is
-  served has not moved — the log is read forward from the last message, so an
-  answer from before that message is still the turn before it — and a
+  served has not moved (the log is read forward from the last message, so an
+  answer from before that message is still the turn before it), and a
   `--timeout` on a turn nothing has watched end still exits 3.
 - **An adopted pi whose first reading was `working` stays there.** Nothing ever
   writes a pi record's phase again, and the `prompt` rule is quiescent: from a
   record that says a turn is running it may not decide until the screen has
   held still for thirty consecutive looks, and `still_looks` counts within one
   process. `amx ls` looks once per process, so the row said `working` at an
-  empty composer for as long as it was watched, while `amx result` — which
-  polls in one process — cleared the same pane in six seconds. `amx status` on
+  empty composer for as long as it was watched, while `amx result`, which
+  polls in one process, cleared the same pane in six seconds. `amx status` on
   it named *the vendor's hooks* as the evidence, on a vendor that has none.
   Closed: by two. A quiescent rule's patience is elapsed time on a clock every
   process reads rather than a run of looks one process counted, so a screen that
@@ -940,20 +885,20 @@ readable after the cost has been paid:
   reading was under followed the vendor's `Hooks`, and that held only while pi
   had none: once pi reported through its extension every question on a pi was
   pi's own word again, including the ones pi draws itself and fires no event
-  for — `/login`, `/trust`, `/model`, the startup trust gate. Those reach a
+  for: `/login`, `/trust`, `/model`, the startup trust gate. Those reach a
   record from the screen and from nowhere else, so a pi stopped on the trust
   selector was still asking for the API key the login box had wanted, with the
   selector's three answers grafted underneath. Closed: the law follows the
   question rather than the agent it is on. The record says whether a hook
   reported the question or a reader read it, a screen fills what a reported one
   left empty and corrects nothing, and a later reading of the pane replaces a
-  read one whole — the question and its choices together, and a screen with
+  read one whole (the question and its choices together), and a screen with
   nothing on it to answer clears both.
 - **`adopt` takes the first vendor in the table whose session variable is in the
   environment.** This one came off the rig rather than off pi. A pi started from
   a terminal that already had `CLAUDE_CODE_SESSION_ID` in it was adopted as
   claude, with claude's session id on the record and claude's document reading
-  the pane — `unknown`, and no rule. Unset that variable and the same pane
+  the pane: `unknown`, and no rule. Unset that variable and the same pane
   adopted as pi. Closed: the pane decides the vendor, because a session variable
   travels and the program on the other end of a pane cannot. tmux says which
   program is running there and the table is keyed by exactly that, so the
@@ -963,9 +908,9 @@ readable after the cost has been paid:
 
 **Three of those five turn on the edges of a turn, and whose edges they are is
 worth saying plainly.** A vendor that reports says where a turn began and where
-it ended, in its own words and at the moment each happened. This one says
-nothing ever, so the only thing that will ever place either edge is a reading of
-the pane — and that is what goes in the log, under amx's own names for them,
+it ended, in its own words and at the moment each happened. pi said nothing
+then, so the only thing that could place either edge was a reading of the
+pane, and that is what goes in the log, under amx's own names for them,
 `read.prompt` and `read.turn-end`, never a `UserPromptSubmit` or a `Stop` pi did
 not send. The reading that writes one leaves `last_event` where it was, so
 nothing amx wrote can have the next reader believe the vendor spoke: `amx
@@ -980,24 +925,23 @@ claimed the screen is worth.
    out of its `--help`; the screens come off its panes, captured the way
    `tmux.rs` captures them; the hook names come from its own documentation
    and are verified live. `docs/question-shapes.md` shows the standard a
-   measurement is owed — the capture, where it was taken, the payload beside
+   measurement is owed: the capture, where it was taken, the payload beside
    it. An anchor nobody measured is a guess wearing the format of a fact.
-2. **Write the entry** — a new file beside `claude.rs`, added to the table in
+2. **Write the entry**: a new file beside `claude.rs`, added to the table in
    `src/vendor/mod.rs`. Every field's doc comment says what it means and what
    a wrong value costs. Claim only the capabilities the program has: a
    capability is a promise a verb will act on.
 3. **Let the laws hold you.** The table's tests quantify over every entry:
    cycles start at the sentinel, dial flags are distinct and are flags, a
    vendor that reports names a moment at most once and always the three a
-   turn stands on — started, prompted, ended — the `Hooks` capability and
+   turn stands on (started, prompted, ended), the `Hooks` capability and
    the `hooks` field agree, a vendor that claims a transcript reports through
-   hooks, an adoptable vendor
-   names its session variable, a session variable never travels, a session's
-   own flags are flags too and none of them lists `resume` among what
-   conflicts with it, a vendor that resumes reads its own resume words back
-   through `names_a_session`, a vendor that can fork says how — and one that forks
-   through no hooks declares a start flag, since there is no report coming to
-   name the copy's session — declared screens parse, and a vendor that prints
+   hooks, an adoptable vendor names its session variable, a session variable
+   never travels, a session's own flags are flags too and none of them lists
+   `resume` among what conflicts with it, a vendor that resumes reads its own
+   resume words back through `names_a_session`, a vendor that can fork says
+   how (and one that forks through no hooks declares a start flag, since there
+   is no report coming to name the copy's session), declared screens parse, and a vendor that prints
    its models names an argv to print them with that is not empty and opens
    with a flag, a bare dial is closed with one value beside the sentinel,
    only a model dial is carried in the environment and then under a key and
@@ -1006,7 +950,7 @@ claimed the screen is worth.
    behaved before them: no prompt flag, no popups, one press, no signal and
    no bare or carried dial. A new entry inherits every one.
 4. **Prove the conformance.** `tests/mock_claude/` is a stand-in that replays
-   scenarios — hook payloads, transcripts, screens — against the real tmux.
+   scenarios (hook payloads, transcripts, screens) against the real tmux.
    A second vendor's harness takes the same shape: a fake that speaks the
    vendor's dialect, and the suite driven against it. pi's stand-in is
    `tests/mock_pi/pi`, a shell script reached through the PATH, since the
@@ -1041,8 +985,8 @@ claimed the screen is worth.
    seconds, which is a partial entry being honest. A finding is amx promising
    what the program does not honour, a pane read with another vendor's anchors,
    or a verb the missing capability costs more than an empty answer. Four of
-   pi's five above were the third kind and the fifth was the second — a pi pane
-   read with claude's anchors — which is why each is written up with what
+   pi's five above were the third kind and the fifth was the second (a pi pane
+   read with claude's anchors), which is why each is written up with what
    closed it. Write down what you saw beside the measurements it
    tests, with the version on it. An entry is measured on a date, and so is a
    dogfood.
@@ -1053,14 +997,14 @@ carries everything the floor already carries. `logs` is what asks the table
 whether such a vendor keeps a conversation to read back, and it names the gap
 rather than opening a path that was never going to be one. `result` asks the
 table nothing: it reads whatever is on the record, which is what a hook wrote
-there, the transcript path a hook named, or — where the vendor has neither —
+there, the transcript path a hook named, or, where the vendor has neither,
 what a reading of the pane put there.
 
 On a vendor with neither, what reaches the record is a reading. The screen a
 rule read as a finished turn is the only account of that turn there will ever
 be, and a pane is a picture the next repaint takes away, so the reader writes
-down what it saw — the rows the agent earned, with the vendor's own furniture
-cut off the bottom the way the card and `logs` cut it — and puts `screen` on
+down what it saw (the rows the agent earned, with the vendor's own furniture
+cut off the bottom the way the card and `logs` cut it) and puts `screen` on
 the record beside it as the source. That word is the whole of the honesty here:
 an answer that arrived that way is amx's reading of a picture and not the
 vendor's word for what it said, it is worth exactly what the screens document
@@ -1080,8 +1024,8 @@ project's own settings takes the indent off the prose and leaves it on the
 vendor's rows; a tool row too long for the pane wraps with no head on the
 continuation; and pi draws a model's thinking through the same component in the
 same column as an answer. Every candidate marker is the agent's to write or the
-person's to switch off, so the boundary was refused rather than guessed at —
-ruling #QQPQW2VZ — and the walk keeps the law it already had: a wrong number
+person's to switch off, so the boundary was refused rather than guessed at,
+and the walk keeps the law it already had: a wrong number
 costs furniture left on the screen and never a row of work taken off it. The
 reading that would carry the boundary is `capture-pane -e`, and that document
 costs it as an option nobody has taken. The one line a row shows takes the last
@@ -1094,4 +1038,4 @@ what says one ended is a `Stop` or a reader that watched it happen; a
 half of it, since a reader that never looked places no edge. The capabilities
 list is what keeps a partial entry truthful: nothing is promised that is not
 there, and where an unclaimed capability costs a verb more than an empty answer,
-the place to write that down is the pass above — with what closed it beside it.
+the place to write that down is the pass above, with what closed it beside it.
