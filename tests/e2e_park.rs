@@ -1,10 +1,9 @@
-//! Letting an idle agent's pane go, and giving it back.
+//! Parking: closing an idle agent's pane, and resuming it later.
 //!
-//! Nothing in amx watches for the moment to do this: a hook asks the tmux
-//! server holding the pane to run `_park` once, `park_after` seconds later, and
-//! the verb decides against whatever it finds then. Every part of that is
-//! somewhere else — the hook, the server, the record, the pane — so the whole
-//! of it is only true here, where all four are real.
+//! No amx process watches for idle agents. The hook that ends a turn asks the
+//! tmux server to run `_park` once, `park_after` seconds later, and `_park`
+//! decides from what it finds then. These tests run the real hook, server,
+//! record and pane.
 
 mod common;
 
@@ -12,27 +11,19 @@ use common::{Harness, clients_on, ls, now, something_else_on_the_server, watchin
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
-/// The id the vendor's stand-in announces for a session it was asked to
-/// continue, which is what says a resume reached the vendor.
+/// The session id mock-claude announces when asked to continue a session.
 const CONTINUED: &str = "b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42";
 
-/// A machine where an idle agent keeps its pane for a second.
-///
-/// The person's own file, which is where somebody sets this. One second is the
-/// shortest wait that is still the whole path: the hook sets a timer, the
-/// server fires it, and the verb reads the record again before it takes
-/// anything.
+/// Configure `park_after = 1`, the shortest timer that still exercises the
+/// whole path.
 fn parks_after_a_second(amx: &Harness) {
     amx.config("park_after = 1\n");
 }
 
-/// An agent started the way a person starts one, playing `scenario`.
+/// Start an agent with `amx new`, playing `scenario`.
 ///
-/// `new` rather than a pane of the harness's own: what a park leaves behind has
-/// to be an agent a resume can pick up, and the session and the command it
-/// picks up are `new`'s to write. Starting the server is `new`'s too, so
-/// everything the server hands the timer — the state directory, the home the
-/// config is read from — is this harness's and not the developer's.
+/// Uses `new` so the record holds the session and command a resume needs, and
+/// so the server that runs the timer gets this harness's state and home.
 fn start(amx: &Harness, id: &str, scenario: &str) {
     let out = amx
         .amx_command(&[
@@ -55,10 +46,7 @@ fn start(amx: &Harness, id: &str, scenario: &str) {
     );
 }
 
-/// What a view leaves behind when somebody pins a row with `ctrl+t`.
-///
-/// Written rather than typed into a view: a pin outlives the view that made it,
-/// and this file is where a verb that is not a view reads it.
+/// Pin agent `id` by writing the `view.json` a view's ctrl+t would write.
 fn pinned_over_the_wall(amx: &Harness, id: &str) {
     let path = amx
         .state_root()
@@ -70,7 +58,7 @@ fn pinned_over_the_wall(amx: &Harness, id: &str) {
         .expect("writing what a view remembers");
 }
 
-/// The one row this agent has in that listing.
+/// Agent `id`'s row in `amx ls --json`.
 fn row(amx: &Harness, id: &str) -> Value {
     ls(amx)
         .into_iter()
@@ -78,11 +66,10 @@ fn row(amx: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("{id} is not in the listing"))
 }
 
-/// Wait for the pane to go, and say so if it does not.
+/// Wait up to ten seconds for the pane to go.
 ///
-/// Ten seconds for a timer set for one: the wait is long enough that a loaded
-/// machine is not what fails it, and short enough that a pane nobody comes for
-/// is still a failure rather than the suite's own patience.
+/// The timer is set for one second; ten allows for a loaded machine while
+/// still failing well before the harness's general patience.
 fn until_the_pane_goes(amx: &Harness, pane: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -94,8 +81,8 @@ fn until_the_pane_goes(amx: &Harness, pane: &str) {
     panic!("{pane} was still there ten seconds after the turn ended");
 }
 
-/// Wait until the record has been idle for the second `park_after` asks for, so
-/// what `_park` decides on next is the pane rather than the clock.
+/// Wait until the record has been idle for `park_after`'s one second, so
+/// `_park` decides on the pane and not the clock.
 fn until_the_second_is_up(amx: &Harness, id: &str) {
     let since = amx.state(id)["since"]
         .as_u64()
@@ -113,8 +100,8 @@ fn an_idle_agent_nobody_is_watching_loses_its_pane_and_keeps_everything_else() {
     amx.until_state(id, "idle");
     let pane = amx.pane_of(id);
 
-    // Nobody typed anything and nobody is attached: the hook that ended the
-    // turn set the timer, and the server fired it.
+    // No input and no client: the turn's end hook set the timer, and the
+    // server fired it.
     until_the_pane_goes(&amx, &pane);
 
     let agent = row(&amx, id);
@@ -160,8 +147,7 @@ fn resume_gives_a_parked_agent_its_pane_back() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The vendor was handed the conversation the agent was parked on, and it
-    // is in a pane of its own again.
+    // The vendor resumes the parked conversation in a new pane.
     let pane = amx.pane_of(id);
     let called = amx.until("the vendor to say how it was called", || {
         let screen = amx.capture(&pane);
@@ -173,9 +159,8 @@ fn resume_gives_a_parked_agent_its_pane_back() {
     });
     assert!(amx.pane_alive(&pane));
 
-    // Nobody asked the conversation it picked up for anything, so the agent is
-    // back where parking found it: at its prompt, on the session the vendor
-    // announced, with the idle it was parked in belonging to the turn before.
+    // With no message sent, the agent is back at its prompt on the continued
+    // session, and no longer parked.
     let agent = row(&amx, id);
     assert_eq!(agent["state"], "idle", "{agent}");
     assert_ne!(
@@ -197,8 +182,7 @@ fn a_pane_somebody_is_looking_at_is_left_where_it_is() {
     start(&amx, id, "happy-turn");
     let pane = amx.pane_of(id);
 
-    // Attached before the turn ends, so the timer the hook sets has somebody
-    // to find at the pane it was set over.
+    // Attach a client before the turn ends, so `_park` finds one.
     let session = amx.tmux(&["display-message", "-p", "-t", &pane, "#{session_id}"]);
     watching(&amx, &session);
     amx.until("somebody looking at it", || {
@@ -230,9 +214,8 @@ fn an_agent_pinned_over_the_wall_is_left_where_it_is() {
     let amx = Harness::new();
     parks_after_a_second(&amx);
     let id = "fix-login-a1b";
-    // Pinned before the agent is started, so the timer the first idle sets has
-    // the pin to find: pinning a row is having said you want it in front of
-    // you, and the pane it is in is what that means.
+    // Pin before starting, so `_park` finds the pin. A pinned agent keeps its
+    // pane.
     pinned_over_the_wall(&amx, id);
     start(&amx, id, "happy-turn");
     let pane = amx.pane_of(id);
