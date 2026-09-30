@@ -4937,7 +4937,9 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             .unwrap();
         drop(writer);
 
-        have_a_line_written(root.path(), &agent, &meta(), &ended, "true", 1_000);
+        // A command slower than the assertion: `true` could finish on the ask
+        // thread first and settle the claim before it is read.
+        have_a_line_written(root.path(), &agent, &meta(), &ended, "sleep 1", 1_000);
 
         assert_eq!(
             asked(agent.dir()),
