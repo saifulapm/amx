@@ -1341,9 +1341,13 @@ impl Screen {
     /// The origin fetch covers every agent in scope, including rows a search
     /// hides, so `c` never judges against a stale upstream.
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        // Only the agents in scope: a project view fetches that project's
-        // origin.
-        let views = scope.narrow(derive::views(root, now())?);
+        // Narrowed before the reading, so an agent outside the scope costs no
+        // screen, and a project view fetches only that project's origin.
+        let records = derive::records(root)?
+            .into_iter()
+            .filter(|record| scope.covers(&record.meta))
+            .collect();
+        let views = derive::views_of(root, records, now());
         verbs::sweep::fetch_origins_again(&views);
         self.showing(views);
         self.read = Some(Instant::now());
