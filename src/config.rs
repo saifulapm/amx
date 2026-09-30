@@ -412,13 +412,23 @@ pub fn load_from(path: &Path) -> (Config, Vec<String>) {
     }
 }
 
-/// The person's config, read once per process, for code such as
-/// [`crate::derive`] that is not handed the config `main` loaded.
+/// The config [`current`] hands out, read at most once per process.
+static CURRENT: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
+
+/// Read the person's config into [`current`] and return its warnings.
 ///
-/// An edit is picked up by the next amx process. Warnings are dropped because
-/// `main` already printed them.
+/// `main` calls this before a verb that prints warnings runs.
+pub fn init() -> Vec<String> {
+    let (config, warnings) = load();
+    let _ = CURRENT.set(config);
+    warnings
+}
+
+/// The person's config, read once per process.
+///
+/// An edit is picked up by the next amx process. Warnings are dropped: `main`
+/// prints them from [`init`].
 pub fn current() -> &'static Config {
-    static CURRENT: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
     CURRENT.get_or_init(|| load().0)
 }
 

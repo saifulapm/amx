@@ -50,7 +50,8 @@ pub const NESTED_ENV: &str = "AMX_NESTED";
 const ENV_FILE: &str = "CLAUDE_ENV_FILE";
 
 /// Record one hook payload. Always returns `OK`.
-pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
+pub fn from_env(stdin: &mut impl Read) -> i32 {
+    // Before the config is read: a nested hook has nothing to record.
     if nested() {
         return exit::OK;
     }
@@ -64,7 +65,7 @@ pub fn from_env(stdin: &mut impl Read, config: &Config) -> i32 {
         &root,
         stdin,
         &mut std::io::stdout().lock(),
-        config,
+        crate::config::current(),
         env_file.as_deref(),
     )
 }

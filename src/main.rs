@@ -64,15 +64,15 @@ fn main() -> ExitCode {
     let code = match cli::Cli::try_parse_from(std::env::args_os()) {
         Ok(parsed) => {
             // Config problems are warnings and the verb still runs. The
-            // underscore verbs run inside agent panes and stay silent.
-            let (config, warnings) = config::load();
+            // underscore verbs run inside agent panes, stay silent, and read
+            // the config only when they need it: a nested hook never does.
             let internal = parsed.verb().is_some_and(|verb| verb.starts_with('_'));
             if !internal {
-                for warning in warnings {
+                for warning in config::init() {
                     warn!("amx: {warning}");
                 }
             }
-            run(&parsed, &config)
+            run(&parsed)
         }
         Err(err) => {
             let _ = err.print();
@@ -83,10 +83,12 @@ fn main() -> ExitCode {
 }
 
 /// Run the parsed command line and return its exit code.
-fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
+fn run(cli: &cli::Cli) -> i32 {
     match &cli.command {
-        Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock(), config),
-        Some(cli::Command::Exit { id, code }) => hook::exited_from_env(id, *code, config),
+        Some(cli::Command::Hook) => hook::from_env(&mut std::io::stdin().lock()),
+        Some(cli::Command::Exit { id, code }) => {
+            hook::exited_from_env(id, *code, config::current())
+        }
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(args)),
         Some(cli::Command::Sub(args)) => finish(verbs::sub::from_env(args)),
         Some(cli::Command::Ls { json, dir }) => finish(verbs::ls::from_env(
@@ -177,7 +179,7 @@ fn run(cli: &cli::Cli, config: &config::Config) -> i32 {
         }
         Some(cli::Command::Uninstall) => finish(verbs::uninstall::from_env()),
         Some(cli::Command::Completion { shell }) => finish(completion(*shell)),
-        None => finish(cockpit::from_env(config, cli.dir.as_deref())),
+        None => finish(cockpit::from_env(config::current(), cli.dir.as_deref())),
     }
 }
 
