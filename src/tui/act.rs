@@ -1163,7 +1163,10 @@ fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
 
     let status = std::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("{editor} {}", quoted(path)))
+        .arg(format!(
+            "{editor} {}",
+            spawn::quoted(&path.to_string_lossy())
+        ))
         .status()
         .with_context(|| format!("running {editor}"))?;
     let written = std::fs::read_to_string(path);
@@ -1178,11 +1181,6 @@ fn edited_in(editor: &str, path: &Path, text: &str) -> Result<Edited> {
     Ok(Edited::Line(
         written.trim_end_matches('\n').replace("\r\n", "\n"),
     ))
-}
-
-/// A path quoted as one `sh` word.
-fn quoted(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// Tasks shorter than this many characters are confirmed before starting.

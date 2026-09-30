@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::exit;
 use crate::notify::{self, Notice};
+use crate::spawn::quoted;
 use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
 use crate::tmux::Server;
 use crate::vendor::{Hooks, Moment};
@@ -426,11 +427,6 @@ fn park_command(root: &Path, id: &str) -> Option<String> {
         quoted(&exe.to_string_lossy()),
         quoted(id),
     ))
-}
-
-/// Quote `word` as one `sh` word.
-fn quoted(word: &str) -> String {
-    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// Record how the command ended, and notify if it is worth it.

@@ -536,7 +536,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
 /// same record. An agent's first [`BOOT_BYTES`] overwrite the file, since a
 /// resume is a new boot.
 fn keeping_output(meta: &Meta, dir: &Path) -> String {
-    let path = quoted(&dir.join(crate::store::OUTPUT));
+    let path = quoted(&dir.join(crate::store::OUTPUT).to_string_lossy());
     match meta.agent.is_none() {
         true => format!("cat >> {path}"),
         false => format!("head -c {BOOT_BYTES} > {path}"),
@@ -558,9 +558,9 @@ fn keep_output(meta: &Meta, command: &str) -> Result<()> {
     server.pipe_pane(&PaneId::new(pane)?, command)
 }
 
-/// `path` single-quoted as one shell word.
-fn quoted(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+/// `word` single-quoted as one `sh` word.
+pub(crate) fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// The pane's environment: the snapshot with amx's per-pane variables set
