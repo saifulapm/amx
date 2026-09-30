@@ -1,20 +1,10 @@
-//! `amx statusline` — the two numbers a status line has room for.
+//! `amx statusline`: two counts for a tmux status line, how many agents are
+//! running and how many need a person. Prints nothing when both are zero.
 //!
-//! Everything else amx prints is read by somebody who came looking for it.
-//! This is read by somebody who did not: it sits in a corner of a terminal
-//! they were already using, and the only question it answers is whether to go
-//! and look. So it answers in two numbers — how many agents are moving, and
-//! how many have stopped for a person — and it says nothing at all when there
-//! is nothing to say, rather than parking a pair of zeroes in the corner of
-//! somebody's screen for ever.
-//!
-//! It lands inside a line that is not amx's, so it is plain bytes: no colour,
-//! no escapes, and nothing tmux would take for a format of its own.
-//!
-//! The counts come from the same reading `ls` and the view are given, not a
-//! cheaper one of their own. A corner of the screen saying two agents are
-//! working while `ls` says both stopped is worse than no corner at all: the
-//! person now has to work out which of the two to believe.
+//! - The output is embedded in someone else's status line, so it is plain
+//!   bytes: no colour, no escapes, no `#` that tmux would read as a format.
+//! - The counts come from the same reading as `ls` and the view, so the three
+//!   never disagree.
 
 use anyhow::Result;
 use std::io::Write;
@@ -24,9 +14,9 @@ use crate::derive::{self, View};
 use crate::store::{Phase, now};
 use crate::{exit, paths};
 
-/// The whole of amx's vocabulary here: a pulse for the agents getting on with
-/// it, and the warning sign for the ones that cannot get any further alone.
+/// Agents that are running.
 const PULSE: char = '✽';
+/// Agents that need a person.
 const WARNING: char = '⚠';
 
 /// Run the verb against the machine.
@@ -38,12 +28,11 @@ pub fn from_env() -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 ///
-/// `ls` sweeps the finished agents away while it is here. This does not: a
-/// status line runs itself on a timer, and a chore on a timer is a background
-/// job amx never offered to be.
+/// Unlike `ls`, this does not sweep finished records: it runs on a timer, and
+/// housekeeping on a timer would make amx a background job.
 pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
-    // An ended record reads as its own phase, which counts under no glyph, so
-    // only the rest are worth a reading.
+    // An ended record reads as its own phase, which has no glyph, so only the
+    // live ones need a reading.
     let live = derive::records(root)?
         .into_iter()
         .filter(|record| !record.state.state.is_terminal())
@@ -54,9 +43,8 @@ pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
         .collect();
 
     let line = summary(&phases);
-    // Nothing is nothing. An empty line is still a line — it leaves the gap
-    // where the counts go, and hands anything reading amx down a pipe a blank
-    // to strip.
+    // No bytes at all when there is nothing to count: an empty line would
+    // still leave a gap in the status line.
     if !line.is_empty() {
         writeln!(out, "{line}")?;
     }
@@ -65,18 +53,9 @@ pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
 
 /// Which glyph an agent counts under, if any.
 ///
-/// Starting and working are one piece of news to somebody glancing at a corner
-/// of their screen: something of theirs is running. Waiting and unknown are one
-/// piece of news too: it is not running and it will not start again on its own.
-/// `unknown` belongs there because a reader that cannot say what a pane is
-/// doing is exactly the case worth walking over to.
-///
-/// The rest are quiet on purpose. Idle, done, failed and stopped have each
-/// finished whatever they were going to do, and a glyph that never goes out is
-/// one a person stops reading.
-///
-/// Matched to the phase and not to a group of them: a phase added later does
-/// not compile until somebody has said which of the three it is.
+/// `unknown` counts as needing a person: a pane amx cannot read is worth a
+/// look. Finished phases count under neither. Every phase is listed so a new
+/// one fails to compile until it is placed.
 fn glyph(phase: Phase) -> Option<char> {
     match phase {
         Phase::Starting | Phase::Working => Some(PULSE),
@@ -85,10 +64,7 @@ fn glyph(phase: Phase) -> Option<char> {
     }
 }
 
-/// The counts, in the order they are read: what is moving, then what is stuck.
-///
-/// A count of nobody prints no glyph, so the line is only ever as long as the
-/// news in it.
+/// The running count, then the needs-a-person count, each left out when zero.
 fn summary(phases: &[Phase]) -> String {
     let counted = |sign: char| {
         phases
@@ -182,8 +158,7 @@ mod tests {
     #[test]
     fn nothing_to_say_is_said_with_nothing() {
         assert_eq!(summary(&[]), "");
-        // A wall where every agent has finished is the same news to a corner
-        // of the screen as a machine with no agents on it.
+        // A wall of finished agents prints the same as no agents.
         assert_eq!(
             summary(&[Phase::Done, Phase::Failed, Phase::Stopped, Phase::Idle]),
             ""
@@ -192,8 +167,8 @@ mod tests {
 
     #[test]
     fn the_line_is_nothing_a_status_line_would_read_as_its_own() {
-        // It is embedded in somebody's tmux `status-right`: an escape would
-        // paint their line, and `#` is where tmux's own formats begin.
+        // Embedded in a tmux `status-right`: an escape would paint the line,
+        // and `#` starts a tmux format.
         let line = summary(&[Phase::Working, Phase::Waiting]);
         assert!(!line.contains('\u{1b}'), "an escape in {line:?}");
         assert!(!line.contains('#'), "a tmux format in {line:?}");
@@ -209,8 +184,7 @@ mod tests {
 
     #[test]
     fn a_wall_of_finished_agents_prints_no_bytes_either() {
-        // The records are read, and what they say is that there is nothing to
-        // report: silence here is the answer, not a verb that skipped the disk.
+        // Records exist, and none of them has anything to report.
         let root = TempDir::new().unwrap();
         for (id, phase) in [
             ("fix-login-a1b", Phase::Done),
@@ -243,8 +217,8 @@ mod tests {
                 .unwrap()
                 .update_state(|state| {
                     state.state = phase;
-                    // Parked, so the record's phase is what a reading
-                    // hands back with no pane to look at.
+                    // Parked, so with no pane the reading is the record's
+                    // phase.
                     state.parked_at = 1;
                 })
                 .unwrap();

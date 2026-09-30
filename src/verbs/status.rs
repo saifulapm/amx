@@ -1,14 +1,6 @@
-//! `amx status` — one agent, and which signal amx is trusting.
-//!
-//! The state on its own is half an answer. A reader that says `working`
-//! because a hook arrived a second ago and one that says `working` because
-//! nothing has been heard for two minutes are telling a person two different
-//! things, so this says which it is.
-//!
-//! An agent that is waiting gets the rest of the answer: what it is asking,
-//! the choices under that, and the command that answers it. That last line is
-//! the point of the other two — a person reading this is the one who has to
-//! unblock it.
+//! `amx status`: one agent's phase, the evidence it was read from and how old
+//! that evidence is. A waiting agent also gets its question, the numbered
+//! choices and the `amx answer` command that unblocks it.
 
 use anyhow::Result;
 use std::io::Write;
@@ -29,9 +21,9 @@ pub fn from_env(id: &str, json: bool) -> Result<i32> {
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) -> Result<i32> {
     let view = derive::view(root, id, now)?;
-    // What was sent and not yet taken, which a working agent holds behind its
-    // turn and an idle one holds where a turn cut short by hand left it. One
-    // that has ended will never take it.
+    // Messages sent and not yet taken: a working agent holds them behind its
+    // turn, an idle one after a turn cut short by hand. An ended agent never
+    // takes them.
     let queued = match view.phase() {
         Phase::Working | Phase::Idle => {
             send::still_queued(&view.meta, &Agent::open(root, id)?.events()?)
@@ -39,8 +31,7 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
         _ => Vec::new(),
     };
     if json {
-        // Always there, empty or not, so a caller reads it without asking
-        // first whether it is.
+        // Always present, empty or not, so callers need not check for it.
         let mut json = view.json();
         json["queued"] = serde_json::json!(queued);
         writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
@@ -50,7 +41,7 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     Ok(exit::OK)
 }
 
-/// What a person reads.
+/// The report for a person.
 fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}  {}", view.id(), view.phase().word())?;
     writeln!(out, "  evidence  {}", evidence(view, now))?;
@@ -66,8 +57,7 @@ fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Res
     if let Some(summary) = &view.state.summary {
         say(out, "doing", summary)?;
     }
-    // Held behind the turn under way, so a caller who sent it and sees the
-    // agent still working knows it arrived and knows it has not been read.
+    // Tells a caller its message arrived and has not been read yet.
     for message in queued {
         say(out, "queued", message.lines().next().unwrap_or_default())?;
     }
@@ -77,8 +67,7 @@ fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Res
     if let Some(role) = &view.meta.role {
         say(out, "role", role)?;
     }
-    // The task is free text typed by whoever spawned the agent, so it goes
-    // the way of every other word amx did not author.
+    // Free text from whoever spawned the agent, so it is sanitized too.
     say(out, "task", &view.meta.task)?;
     writeln!(out, "  dir       {}", view.meta.dir.display())?;
     if let Some(branch) = &view.meta.branch {
@@ -88,11 +77,8 @@ fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Res
     Ok(())
 }
 
-/// One field of the report, in words amx did not author.
-///
-/// The label is left blank on a line that continues the one above it: a
-/// question the vendor wrapped across a screen is one thing being asked, and
-/// so are the choices under it.
+/// One labelled field of text amx did not author, sanitized. Continuation
+/// lines get a blank label.
 fn say(out: &mut impl Write, label: &str, text: &str) -> Result<()> {
     for (at, line) in inert(text).lines().enumerate() {
         let label = match at {
@@ -104,21 +90,16 @@ fn say(out: &mut impl Write, label: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// A string amx did not author, as a person should receive it.
-///
-/// A terminal is an interpreter, and the same bytes that read as a question
-/// can retitle the window or clear the screen. What the vendor wrote arrives
-/// here inert, keeping only the line breaks the layout above is ready for.
+/// `text` with control and format characters replaced, keeping line breaks,
+/// so it cannot drive the terminal it is printed to.
 fn inert(text: &str) -> String {
     crate::tmux::sanitize(text).trim().to_string()
 }
 
-/// The sentence that says what amx is going on, and how old it is.
+/// What the reading is based on, and how old it is.
 ///
-/// The age is the reading's own, which is how long since the agent was heard
-/// from. A pane amx took away is dated from the record instead: an agent
-/// parked after an hour of quiet was heard from an hour ago and let go a
-/// moment ago, and the moment is the one a person is reading this for.
+/// The age is the time since the agent was last heard from, except for a
+/// parked agent, which is dated from when amx let its pane go.
 fn evidence(view: &View, now: u64) -> String {
     let age = view.verdict.age;
     match &view.verdict.evidence {
@@ -129,7 +110,7 @@ fn evidence(view: &View, now: u64) -> String {
             now.saturating_sub(view.state.parked_at)
         ),
         Evidence::Hooks => match &view.verdict.rule {
-            // The screen was read and was not allowed to end a running turn.
+            // A rule matched the screen but was not allowed to end the turn.
             Some(rule) => format!(
                 "the vendor's hooks, {age}s ago; the screen looks like `{rule}` but has not held still"
             ),
@@ -218,8 +199,8 @@ mod tests {
 
     #[test]
     fn reader_status_says_what_an_idle_agent_was_sent_and_has_not_taken() {
-        // A turn cut short by hand leaves the agent idle with a message still
-        // in front of it, and a caller who sent it wants to know it waits.
+        // A turn cut short by hand leaves the agent idle with the message
+        // still unread.
         let root = tempfile::TempDir::new().unwrap();
         let mut meta = view(Phase::Idle, Evidence::Record, None, 0).meta;
         meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
@@ -252,7 +233,6 @@ mod tests {
 
     #[test]
     fn reader_status_json_says_nothing_is_queued_as_an_empty_list() {
-        // A caller reads the key without asking first whether it is there.
         let root = tempfile::TempDir::new().unwrap();
         let mut meta = view(Phase::Idle, Evidence::Record, None, 0).meta;
         meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
@@ -264,8 +244,7 @@ mod tests {
         assert_eq!(json["queued"], serde_json::json!([]), "{json}");
     }
 
-    /// The same report, read at a given moment: what amx did to a pane is
-    /// dated from the record rather than from the last thing the agent said.
+    /// The report at a given `now`, for evidence dated from the record.
     fn printed_at(view: &View, now: u64) -> String {
         let mut out = Vec::new();
         report(view, &[], now, &mut out).unwrap();
@@ -309,8 +288,8 @@ mod tests {
 
     #[test]
     fn reader_status_says_a_parked_agent_is_still_there_to_come_back_to() {
-        // Its turn ended an hour ago, and amx took the pane away forty
-        // seconds ago. The one a person needs is the second.
+        // Last heard an hour ago, parked forty seconds ago: the age is the
+        // parking.
         let mut parked = view(Phase::Idle, Evidence::LetGo, None, 3_640);
         parked.state.parked_at = 5_000;
         let text = printed_at(&parked, 5_040);
