@@ -385,7 +385,7 @@ fn shows_a_shell(rules: &Ruleset, capture: &str) -> bool {
 /// at either end cut off: the same walk the card and `amx logs` use.
 fn said(screens: &Ruleset, capture: &str) -> Option<String> {
     let rows: Vec<&str> = capture.lines().collect();
-    let mut said = crate::furniture::cut(screens.furniture(), &rows);
+    let mut said = screens.furniture().cut(&rows);
     while said.first().is_some_and(|row| row.trim().is_empty()) {
         said = &said[1..];
     }

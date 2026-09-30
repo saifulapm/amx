@@ -24,7 +24,7 @@ use crate::store::Agent;
 use crate::tmux::{PaneId, Server};
 use crate::vendor::{Capability, Vendor};
 use crate::verbs::send;
-use crate::{complain, exit, furniture, paths, spawn, tmux, warn};
+use crate::{complain, exit, paths, spawn, tmux, warn};
 
 /// Default number of lines printed: a screenful and some context above it.
 pub const LINES: u32 = 100;
@@ -136,7 +136,7 @@ fn screen(
     // Cut the vendor's composer, statusline and footer before taking the tail.
     let sanitized = tmux::sanitize(&capture(server, pane, lines)?);
     let rows: Vec<&str> = sanitized.lines().collect();
-    let tail = tail_of(&furniture::cut(chrome, &rows).join("\n"), lines as usize);
+    let tail = tail_of(&chrome.cut(&rows).join("\n"), lines as usize);
     if tail.is_empty() {
         // Say so: an empty stdout alone looks like amx failed to read.
         warn!("amx: {id} has a pane, and it has printed nothing yet");
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn logs_cut_the_vendors_furniture_off_the_screen() {
         // claude's bottom chrome (composer box, statusline, mode footer) in
-        // the shapes `furniture::cut` recognises.
+        // the shapes `Furniture::cut` recognises.
         let server = TestServer::new();
         let pane = a_pane_for(
             &server,

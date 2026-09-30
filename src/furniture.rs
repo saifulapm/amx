@@ -76,11 +76,6 @@ pub struct Furniture {
     pub footer_hints: Vec<String>,
 }
 
-/// The rows of a capture above the vendor's chrome. See [`Furniture::cut`].
-pub fn cut<'a, 'b>(furniture: &Furniture, rows: &'a [&'b str]) -> &'a [&'b str] {
-    furniture.cut(rows)
-}
-
 impl Furniture {
     /// The rows above the vendor's chrome: the hint row over the composer, the
     /// composer box and whatever is staged in it, the statusline, the mode

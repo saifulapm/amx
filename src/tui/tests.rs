@@ -1354,7 +1354,7 @@ fn card_cuts_a_pane_with_the_furniture_of_the_vendor_the_record_names() {
     let ran = |agent: Option<&str>| {
         let mut view = reading("fix-login-a1b", Phase::Working, State::default());
         view.meta.agent = agent.map(str::to_string);
-        crate::furniture::cut(own_chrome(&view.meta), &pane).to_vec()
+        own_chrome(&view.meta).cut(&pane).to_vec()
     };
 
     assert_eq!(ran(Some("pi")), [" the work itself", ""]);

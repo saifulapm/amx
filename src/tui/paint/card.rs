@@ -28,7 +28,7 @@ use super::wall::icon;
 use crate::ansi::{self, Colour, Painted};
 use crate::conversation::Said;
 use crate::derive::{Evidence, View};
-use crate::furniture::{Furniture, cut};
+use crate::furniture::Furniture;
 use crate::pr::Pr;
 use crate::store::{Ask, Kind, Phase};
 use crate::theme::Theme;
@@ -374,7 +374,7 @@ impl Body {
         let said: Vec<String> = read.iter().map(|row| words(row)).collect();
         let plain: Vec<&str> = said.iter().map(String::as_str).collect();
         let drawn = match chrome {
-            Some(chrome) => cut(chrome, &plain).len(),
+            Some(chrome) => chrome.cut(&plain).len(),
             None => plain.len(),
         };
         // Trailing blank rows (pane padding) are dropped too.
@@ -3158,7 +3158,7 @@ index e69de29..0000000
         let mut screen = vec![SAID, "", "✻ Nesting… (15s · thinking)", ""];
         screen.extend_from_slice(&CHROME);
         assert_eq!(
-            cut(chrome(), &screen),
+            chrome().cut(&screen),
             [SAID, ""].as_slice(),
             "the spinner goes with the box it sits over"
         );
@@ -3173,10 +3173,10 @@ index e69de29..0000000
             "  call site that used to take the old",
             "  shape",
         ]);
-        assert_eq!(cut(chrome(), &wrapped), [SAID].as_slice());
+        assert_eq!(chrome().cut(&wrapped), [SAID].as_slice());
 
         let lines = staged(&["❯ first", "  second", "  third", "  fourth"]);
-        assert_eq!(cut(chrome(), &lines), [SAID].as_slice());
+        assert_eq!(chrome().cut(&lines), [SAID].as_slice());
     }
 
     #[test]
@@ -3192,11 +3192,11 @@ index e69de29..0000000
             "   2. No",
             " Esc to cancel · Tab to amend",
         ];
-        assert_eq!(cut(chrome(), &prompt), prompt.as_slice());
+        assert_eq!(chrome().cut(&prompt), prompt.as_slice());
 
         // A pane too short for the footer, ending on the composer's border.
         let short = [SAID, CHROME[0], CHROME[1], CHROME[2]];
-        assert_eq!(cut(chrome(), &short), short.as_slice());
+        assert_eq!(chrome().cut(&short), short.as_slice());
     }
 
     #[test]
@@ -3207,7 +3207,7 @@ index e69de29..0000000
             let mut tall = vec![SAID, CHROME[2]];
             tall.extend((0..rows).map(|_| "  status"));
             tall.push(CHROME[4]);
-            assert_eq!(cut(chrome(), &tall), &tall[..1], "{rows} rows");
+            assert_eq!(chrome().cut(&tall), &tall[..1], "{rows} rows");
         }
 
         // Nine rows is not a shape claude draws: the statusline step gives up
@@ -3215,7 +3215,7 @@ index e69de29..0000000
         let mut odd = vec![SAID, CHROME[2]];
         odd.extend((0..9).map(|_| "  status"));
         odd.push(CHROME[4]);
-        assert_eq!(cut(chrome(), &odd), &odd[..odd.len() - 1]);
+        assert_eq!(chrome().cut(&odd), &odd[..odd.len() - 1]);
 
         // Staged text taller than half the capture: the scan hits its cap
         // before a top border and gives the composer rows back.
@@ -3223,7 +3223,7 @@ index e69de29..0000000
         runaway.extend((0..8).map(|_| "  typed"));
         runaway.extend_from_slice(&CHROME[2..]);
         assert_eq!(
-            cut(chrome(), &runaway),
+            chrome().cut(&runaway),
             &runaway[..runaway.len() - 3],
             "the footer, the statusline and the bottom border keep their anchors"
         );
@@ -3253,7 +3253,7 @@ index e69de29..0000000
 
         // The warning flush against the composer's top border stays; a cut
         // that ran up to the nearest blank row would have taken it.
-        assert_eq!(cut(chrome(), &screen), &CAPTURED[..2]);
+        assert_eq!(chrome().cut(&screen), &CAPTURED[..2]);
     }
 
     #[test]
@@ -3276,7 +3276,7 @@ index e69de29..0000000
                 "  ⏵⏵ auto mode on (shift+tab to cycle)",
             ];
             // The blank row above the spinner is left; the body trims it.
-            assert_eq!(cut(chrome(), &screen), &screen[..2], "{spinner}");
+            assert_eq!(chrome().cut(&screen), &screen[..2], "{spinner}");
         }
 
         // A finished turn's summary line is output, and stays.
@@ -3291,7 +3291,7 @@ index e69de29..0000000
             "  Opus 5 (1M context) │ ◖ low",
             "  ⏵⏵ auto mode on (shift+tab to cycle)",
         ];
-        assert_eq!(cut(chrome(), &screen), &screen[..4]);
+        assert_eq!(chrome().cut(&screen), &screen[..4]);
     }
 
     /// The text of a card body's first `rows` rows.
