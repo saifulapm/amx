@@ -274,7 +274,7 @@ fn manifest_last<'a>(
 /// Remove amx's plugin from `dir`, restoring any backed-up files.
 ///
 /// Does nothing unless the manifest names amx. The manifest is removed last.
-pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)], _now: u64) -> Result<Report> {
+pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)]) -> Result<Report> {
     let mut report = Report {
         path: dir.to_path_buf(),
         backup: None,
@@ -313,11 +313,11 @@ fn prune(dir: &Path, files: &[(&str, &str)]) {
 }
 
 /// Remove `wire` from under `home`.
-pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env, now: u64) -> Result<Report> {
+pub fn uninstall_wire(wire: &Wire, home: &Path, env: Env) -> Result<Report> {
     let path = wire_path(wire, home, env);
     match *wire {
-        Wire::File { body, .. } | Wire::Placed { body, .. } => uninstall_file(&path, body, now),
-        Wire::Plugin { files, .. } => uninstall_plugin(&path, files, now),
+        Wire::File { body, .. } | Wire::Placed { body, .. } => uninstall_file(&path, body),
+        Wire::Plugin { files, .. } => uninstall_plugin(&path, files),
         Wire::Hooks { body, .. } => uninstall_hooks(&path, body),
     }
 }
@@ -753,8 +753,7 @@ pub fn install_file(path: &Path, body: &str, now: u64) -> Result<Report> {
 /// Remove amx's file at `path` and restore the latest backup, if any.
 ///
 /// A file without amx's first line is left alone.
-pub fn uninstall_file(path: &Path, body: &str, now: u64) -> Result<Report> {
-    let _ = now;
+pub fn uninstall_file(path: &Path, body: &str) -> Result<Report> {
     let Some(current) = read_text(path)? else {
         return Ok(Report {
             path: path.to_path_buf(),
@@ -1052,7 +1051,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), theirs);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), file_body());
 
-        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 8).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, Some(backup));
         assert_eq!(
@@ -1068,17 +1067,17 @@ mod tests {
         let path = wire_path(&FILE.wire, home.path(), &no_env);
 
         // Nothing there is nothing to do.
-        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env).unwrap();
         assert!(!report.changed);
 
         install_wire(&FILE.wire, home.path(), &no_env, 1).unwrap();
-        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 2).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env).unwrap();
         assert!(report.changed);
         assert_eq!(report.backup, None);
         assert!(!path.exists());
 
         std::fs::write(&path, "// theirs\n").unwrap();
-        let report = uninstall_wire(&FILE.wire, home.path(), &no_env, 3).unwrap();
+        let report = uninstall_wire(&FILE.wire, home.path(), &no_env).unwrap();
         assert!(!report.changed);
         assert!(path.exists());
     }
@@ -1168,7 +1167,7 @@ mod tests {
             "and amx's own is what stands there now"
         );
 
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 8).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).unwrap();
         assert!(report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -1184,13 +1183,13 @@ mod tests {
 
         // Nothing there is nothing to do.
         assert!(
-            !uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 1)
+            !uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env)
                 .unwrap()
                 .changed
         );
 
         install_wire(&claude::HOOKS.wire, home.path(), &no_env, 1).unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 2).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).unwrap();
         assert!(report.changed);
         assert!(!dir.exists(), "and the directory it emptied goes too");
 
@@ -1198,7 +1197,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
         std::fs::write(dir.join(MANIFEST), "{\"name\": \"theirs\"}\n").unwrap();
         std::fs::write(dir.join("SKILL.md"), "theirs\n").unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).unwrap();
         assert!(!report.changed);
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
@@ -1228,7 +1227,7 @@ mod tests {
             .unwrap()
             .expect("their file was copied aside");
         assert_eq!(std::fs::read_to_string(&kept).unwrap(), theirs);
-        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
+        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
             theirs,
@@ -1247,11 +1246,10 @@ mod tests {
         std::fs::remove_file(dir.join("SKILL.md")).unwrap();
         std::fs::create_dir_all(dir.join("SKILL.md/in-the-way")).unwrap();
 
-        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 2)
-            .expect_err("the skill cannot go");
+        uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).expect_err("the skill cannot go");
         std::fs::remove_dir_all(dir.join("SKILL.md")).unwrap();
         std::fs::write(dir.join("SKILL.md"), "amx's skill\n").unwrap();
-        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env, 3).unwrap();
+        let report = uninstall_wire(&claude::HOOKS.wire, home.path(), &no_env).unwrap();
 
         assert!(report.changed);
         assert!(!dir.exists(), "nothing of amx's is left behind");
@@ -1612,7 +1610,7 @@ mod tests {
         assert_eq!(std::fs::read(&hooks_path).unwrap(), hooks_then);
         assert_eq!(std::fs::read(&config_path).unwrap(), config_then);
 
-        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &env, 9).unwrap();
+        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &env).unwrap();
         assert!(report.changed);
         assert_eq!(std::fs::read_to_string(&hooks_path).unwrap(), theirs);
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), their_config);
@@ -1633,13 +1631,13 @@ mod tests {
             "no empty table above amx's: {config}"
         );
 
-        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
+        let report = uninstall_wire(&HOOKS_WIRE, home.path(), &no_env).unwrap();
         assert!(report.changed);
         assert!(!dir.join(HOOKS_FILE).exists());
         assert!(!dir.join(CONFIG_FILE).exists());
 
         assert!(
-            !uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 3)
+            !uninstall_wire(&HOOKS_WIRE, home.path(), &no_env)
                 .unwrap()
                 .changed
         );
@@ -1665,7 +1663,7 @@ mod tests {
         let config = std::fs::read_to_string(&config_path).unwrap();
         std::fs::write(&config_path, format!("model = \"gpt-5.5\"\n{config}")).unwrap();
 
-        uninstall_wire(&HOOKS_WIRE, home.path(), &no_env, 2).unwrap();
+        uninstall_wire(&HOOKS_WIRE, home.path(), &no_env).unwrap();
 
         let left: Value =
             serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
@@ -1808,7 +1806,7 @@ mod tests {
         );
         assert!(!would_keep_a_copy(&PLACED, home.path(), &env));
 
-        let report = uninstall_wire(&PLACED, home.path(), &env, 2).unwrap();
+        let report = uninstall_wire(&PLACED, home.path(), &env).unwrap();
         assert!(report.changed);
         assert!(!path.exists());
         assert_eq!(wired(&PLACED, home.path(), &env), absent);
@@ -1831,7 +1829,7 @@ mod tests {
 
         let report = install_wire(&PLACED, home.path(), &no_env, 1).unwrap();
         assert!(report.backup.is_some(), "somebody else's file is kept");
-        uninstall_wire(&PLACED, home.path(), &no_env, 2).unwrap();
+        uninstall_wire(&PLACED, home.path(), &no_env).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "their plugin\n");
     }
 }

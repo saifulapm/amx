@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(code, exit::OK, "{printed}");
         assert!(printed.contains("nothing to do"), "{printed}");
 
-        install::uninstall_wire(&hooks.opt_in[0], home.path(), &install::no_env, 4).unwrap();
+        install::uninstall_wire(&hooks.opt_in[0], home.path(), &install::no_env).unwrap();
         assert!(!tool.exists(), "and it comes back out on its own");
     }
 

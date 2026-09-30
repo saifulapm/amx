@@ -10,31 +10,19 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::vendor::Wire;
-use crate::{exit, install, paths, registry, store};
+use crate::{exit, install, paths, registry};
 
 /// Run the verb against the machine's own paths.
 pub fn from_env() -> Result<i32> {
     let state_root = paths::state_root()?;
     let home = install::home()?;
     let mut out = std::io::stdout().lock();
-    run(
-        &state_root,
-        &home,
-        &install::process_env,
-        store::now(),
-        &mut out,
-    )
+    run(&state_root, &home, &install::process_env, &mut out)
 }
 
 /// The verb, with the state root, the home the wiring lives under, and the
 /// environment a wire may name its directory in.
-pub fn run(
-    state_root: &Path,
-    home: &Path,
-    env: install::Env,
-    now: u64,
-    out: &mut impl Write,
-) -> Result<i32> {
+pub fn run(state_root: &Path, home: &Path, env: install::Env, out: &mut impl Write) -> Result<i32> {
     let still_there = crate::spawn::unfinished(state_root)?;
     if !still_there.is_empty() {
         writeln!(
@@ -49,7 +37,7 @@ pub fn run(
         let Some(hooks) = &vendor.hooks else { continue };
         // Opt-in wires go too, not only the reporting one.
         for wire in std::iter::once(&hooks.wire).chain(hooks.opt_in.iter()) {
-            let report = install::uninstall_wire(wire, home, env, now)?;
+            let report = install::uninstall_wire(wire, home, env)?;
             let path = report.path.display();
             match (wire, report.changed) {
                 (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,
@@ -201,7 +189,7 @@ mod tests {
         }
 
         let mut said = Vec::new();
-        let code = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), &install::no_env, &mut said).unwrap();
 
         assert_eq!(code, exit::FAILURE);
         let said = String::from_utf8(said).unwrap();
@@ -229,7 +217,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let code = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap();
+        let code = run(root.path(), home.path(), &install::no_env, &mut said).unwrap();
 
         assert_eq!(code, exit::OK);
         assert!(!root.path().exists(), "the records are gone");
@@ -257,7 +245,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        let why = run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap_err();
+        let why = run(root.path(), home.path(), &install::no_env, &mut said).unwrap_err();
 
         assert!(
             format!("{why:#}").starts_with("tmux could not be asked: "),
@@ -288,7 +276,7 @@ mod tests {
 
         let mut said = Vec::new();
         assert_eq!(
-            run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap(),
+            run(root.path(), home.path(), &install::no_env, &mut said).unwrap(),
             exit::OK,
             "{}",
             String::from_utf8_lossy(&said)
@@ -308,7 +296,7 @@ mod tests {
 
         let mut said = Vec::new();
         assert_eq!(
-            run(root.path(), home.path(), &install::no_env, 2, &mut said).unwrap(),
+            run(root.path(), home.path(), &install::no_env, &mut said).unwrap(),
             exit::OK
         );
         assert_eq!(
