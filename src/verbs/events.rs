@@ -1,18 +1,9 @@
-//! `amx events` — every agent's log, merged into one stream.
+//! `amx events`: every agent's event log merged into one stream, one line per
+//! event in time order, each labelled with its agent.
 //!
-//! Each agent appends to its own log, so watching four of them means watching
-//! four files. This verb is the merge: one line per event, in the order they
-//! happened, each saying whose it is — the one story all of them are part of.
-//!
-//! `--follow` keeps that merge running by re-reading what each log grew since
-//! the last look. No watcher, no daemon and nothing to leak if the person
-//! reading walks away, which is the same bargain the rest of amx makes: nothing
-//! amx runs stays resident.
-//!
-//! There are two streams, and which one a reader wants depends on who is
-//! reading. The table is drawn for a person: columns, a phrase per event, and
-//! nothing in it that can drive their terminal. `--json` is the same merge for
-//! a program, one object per line, payloads whole.
+//! `--follow` polls each log for what it grew since the last look; there is no
+//! watcher or daemon. The default output is a sanitized table for a person;
+//! `--json` prints one object per event with the payload whole.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -26,11 +17,10 @@ use crate::vendor::{Hooks, Moment};
 use crate::verbs::send::SEND;
 use crate::{exit, paths, store};
 
-/// How often `--follow` looks again. A second is the resolution of the
-/// timestamps amx records, so nothing can be reordered by having waited.
+/// How often `--follow` polls: the resolution of the recorded timestamps.
 const POLL: Duration = Duration::from_secs(1);
 
-/// The width of the kind column: the longest of the vendor's own event names.
+/// Width of the kind column: the longest vendor event name.
 const KIND: usize = 16;
 
 /// Run the verb against the machine.
@@ -48,8 +38,7 @@ pub fn run(
     as_json: bool,
     out: &mut impl Write,
 ) -> Result<i32> {
-    // A name that is not an agent's is said now, once. A stream that quietly
-    // watches nothing is the worst possible answer to a typed id.
+    // Refuse an unknown id up front rather than silently watching nothing.
     let mut named = ids.to_vec();
     named.sort();
     named.dedup();
@@ -65,8 +54,7 @@ pub fn run(
                 true => json(&id, &event),
                 false => line(&id, tails.hooks(&id), &event, tails.widest),
             };
-            // A reader that walked away — `amx events | head` — ends the
-            // stream, and that is nobody's failure to report.
+            // A closed pipe (`amx events | head`) ends the stream quietly.
             if writeln!(out, "{printed}").is_err() {
                 return Ok(exit::OK);
             }
@@ -82,17 +70,15 @@ pub fn run(
 #[derive(Default)]
 struct Tails {
     read: BTreeMap<String, u64>,
-    /// The longest name seen so far, which is what the id column is drawn to.
-    /// It only ever grows: a stream whose columns moved back and forth as
-    /// agents came and went would be harder to read than a ragged one.
+    /// Width of the id column: the longest id seen so far. It never shrinks,
+    /// so columns do not shift as agents come and go.
     widest: usize,
-    /// The words each agent's vendor reports in, read once per agent: a
-    /// record's vendor is written at spawn and never moves.
+    /// Each agent's vendor hooks, looked up once: the vendor is fixed at spawn.
     vendors: BTreeMap<String, Option<Hooks>>,
 }
 
 impl Tails {
-    /// Everything appended since the last look, merged across the agents.
+    /// Everything appended since the last look, merged across agents by time.
     fn appended(&mut self, root: &Path, named: &[String]) -> Vec<(String, Event)> {
         let mut batch: Vec<(String, Event)> = Vec::new();
         for id in watching(root, named) {
@@ -121,24 +107,19 @@ impl Tails {
             );
         }
 
-        // Timestamps are whole seconds, so ties are the rule rather than the
-        // exception. The sort is stable and the agents were read in name
-        // order, so a tie leaves each log in the order it was written — the
-        // only order any of it means anything in.
+        // Timestamps are whole seconds, so ties are common. The sort is stable
+        // and agents are read in id order, so ties keep each log's own order.
         batch.sort_by_key(|(_, event)| event.at);
         batch
     }
 
-    /// The words `id`'s vendor reports in, where it reports at all.
     fn hooks(&self, id: &str) -> Option<&Hooks> {
         self.vendors.get(id).and_then(Option::as_ref)
     }
 }
 
-/// Whose logs this look reads.
-///
-/// With nobody named it is every agent, read again each time: an agent started
-/// while the stream is running joins it.
+/// The ids whose logs this look reads: the named ones, or every agent, listed
+/// again each look so agents started mid-stream join it.
 fn watching(root: &Path, named: &[String]) -> Vec<String> {
     if !named.is_empty() {
         return named.to_vec();
@@ -148,16 +129,16 @@ fn watching(root: &Path, named: &[String]) -> Vec<String> {
     ids
 }
 
-/// Whatever `path` grew past `read`, and where the next look starts.
+/// The whole lines `path` grew past offset `read`, and the offset to read from
+/// next.
 ///
-/// The tail stops at the last newline: a line without one is a write still in
-/// progress, and the next look finds it whole.
+/// Stops at the last newline, so a line still being written is picked up by a
+/// later call. `None` when there is no file or no new whole line.
 pub(crate) fn grown(path: &Path, read: u64) -> Option<(String, u64)> {
     let mut file = std::fs::File::open(path).ok()?;
 
-    // A log with less in it than has already been read is not the log that was
-    // read: the record was swept and an agent of the same name made another.
-    // Starting it over beats watching a file that can never grow past itself.
+    // A file shorter than what was read is a new log (the record was swept and
+    // recreated under the same id), so read it from the start.
     let read = match file.metadata().ok()?.len() < read {
         true => 0,
         false => read,
@@ -172,19 +153,11 @@ pub(crate) fn grown(path: &Path, read: u64) -> Option<(String, u64)> {
     Some((fresh, read + whole as u64))
 }
 
-/// One event as a program reads it: the line the record holds, with the agent
-/// it came from added, because a merged stream nothing is labelled in cannot
-/// be read at all.
+/// One event as a JSON line: the logged event with an `id` key added.
 ///
-/// This is a contract. A key may be added here; renaming or dropping one
-/// breaks every script written against it, so the key set is spelled out in
-/// the tests rather than left to be discovered in somebody's `jq` weeks from
-/// now.
-///
-/// The payload goes out whole, which the stream a person reads cannot do. It
-/// is one line and there is nothing in it a terminal acts on for a different
-/// reason than over there: JSON escapes control characters, so the escaping is
-/// the sanitising.
+/// The key set is a contract: keys may be added, never renamed or removed. The
+/// payload is passed whole; JSON escaping already keeps control characters
+/// out of the terminal.
 fn json(id: &str, event: &Event) -> String {
     let mut value = serde_json::to_value(event).expect("an event is plain data");
     if let Some(object) = value.as_object_mut() {
@@ -193,8 +166,8 @@ fn json(id: &str, event: &Event) -> String {
     value.to_string()
 }
 
-/// One event as a person reads it: when, whose, what, and the one thing worth
-/// knowing about it, read in the words of `hooks`, the agent's own vendor's.
+/// One event as a table row: time, id, kind and a short detail, with the kind
+/// read in the words of the agent's own vendor `hooks`.
 fn line(id: &str, hooks: Option<&Hooks>, event: &Event, widest: usize) -> String {
     format!(
         "{}  {id:<widest$}  {:<KIND$}  {}",
@@ -206,21 +179,18 @@ fn line(id: &str, hooks: Option<&Hooks>, event: &Event, widest: usize) -> String
     .to_string()
 }
 
-/// The time of day an event was recorded, as UTC.
+/// The UTC time of day of an epoch second, as `HH:MM:SSZ`.
 ///
-/// amx records whole epoch seconds, and turning one into the reader's own local
-/// time needs a timezone database this binary does not carry. The `Z` says
-/// which clock it is rather than leaving a person to work that out.
+/// UTC because local time needs a timezone database the binary does not carry.
 fn clock(at: u64) -> String {
     let day = at % 86_400;
     format!("{:02}:{:02}:{:02}Z", day / 3600, day % 3600 / 60, day % 60)
 }
 
-/// The one thing worth knowing about an event, in a phrase.
+/// The one payload field worth showing for an event, or nothing.
 ///
-/// Every kind keeps what it is about somewhere different, and a payload amx has
-/// no phrase for shows nothing rather than a page of JSON. amx's own kinds are
-/// its own words; the rest are the vendor's, and mean what `hooks` says.
+/// amx's own kinds are matched by name; vendor kinds by the moment `hooks`
+/// maps them to. A kind with no known field shows nothing.
 fn detail(hooks: Option<&Hooks>, event: &Event) -> String {
     let payload = &event.payload;
     let about = match event.kind.as_str() {
@@ -240,16 +210,15 @@ fn detail(hooks: Option<&Hooks>, event: &Event) -> String {
         },
     };
 
-    // The vendor raises the same events for a subagent's work, and amx's own
-    // law is that those never move the agent's state. A second `Stop` a moment
-    // after the first, with nothing beside it, reads as the turn ending twice.
+    // Vendors raise the same events for a subagent's work. Without the label a
+    // subagent's `Stop` reads as the agent's turn ending twice.
     match payload["agent_id"].is_null() {
         true => about,
         false => format!("subagent {about}").trim_end().to_string(),
     }
 }
 
-/// One field of a payload, as a line of a stream can hold it.
+/// A payload string field as one sanitized line, or empty.
 fn text(value: &Value) -> String {
     value.as_str().map(super::inert_line).unwrap_or_default()
 }
@@ -290,7 +259,7 @@ mod tests {
         .expect("the record")
     }
 
-    /// One event on an agent's log, at a second of the test's choosing.
+    /// Append an event of `kind` at epoch second `at`.
     fn happened(agent: &Agent, at: u64, kind: &str) {
         agent
             .writer()
@@ -383,8 +352,7 @@ mod tests {
 
     #[test]
     fn events_a_pi_row_shows_the_one_thing_it_is_about() {
-        // pi reports under its own event names, and a row is read in the
-        // words of the vendor the record names.
+        // pi's own event names, read through the vendor the record names.
         let pi = crate::vendor::hooks_for("pi");
         let about = |kind, payload| detail(pi.as_ref(), &Event::new(kind, payload));
         assert_eq!(
@@ -426,8 +394,7 @@ mod tests {
 
     #[test]
     fn events_nothing_in_a_payload_can_add_a_line_to_the_stream() {
-        // The log is a document anything at this uid can write, and every line
-        // of this stream is meant to be one line.
+        // Anything running as this user can write the log.
         let shown = shown(
             "Stop\u{1b}]0;PWNED\u{7}",
             json!({ "last_assistant_message": "done\u{1b}[2Jand more\nfaked  line" }),
@@ -443,8 +410,8 @@ mod tests {
 
     #[test]
     fn events_the_json_line_is_the_record_with_whose_it_is_added() {
-        // The key set is the contract every script reading this stream is
-        // written against: a key may be added, never renamed or dropped.
+        // The key set is a contract: keys may be added, never renamed or
+        // dropped.
         let printed = json(
             "fix-login-a1b",
             &Event {
@@ -469,10 +436,8 @@ mod tests {
 
     #[test]
     fn events_the_json_line_hands_over_a_payload_whole() {
-        // The stream a person reads takes the first line of a phrase and
-        // strips it; this one is read by programs, and a payload cut down is a
-        // payload that lied. It is one line and inert for a different reason:
-        // JSON escapes the control characters a terminal acts on.
+        // Unlike the table, the payload is not cut down. JSON escaping keeps it
+        // on one line and free of raw control characters.
         let printed = json(
             "fix-login-a1b",
             &Event {
@@ -501,8 +466,7 @@ mod tests {
         let one = record(root.path(), "fix-login-a1b");
         let two = record(root.path(), "port-importer-c3d");
 
-        // Two events in the same second: their order is the log's, not a
-        // clock's, because the clock cannot tell them apart.
+        // Two events in the same second keep the log's order.
         happened(&one, 100, "SessionStart");
         happened(&one, 100, "UserPromptSubmit");
         happened(&one, 102, "Stop");
@@ -541,7 +505,7 @@ mod tests {
             "a short name does not pull the columns in: {drawn:?}"
         );
 
-        // The widest name is gone; the columns stay where the eye left them.
+        // The column keeps its width after the widest agent is gone.
         long.remove().unwrap();
         happened(&short, 101, "exit");
         tails.appended(root.path(), &[]);
@@ -591,7 +555,6 @@ mod tests {
         assert_eq!(fresh, written, "the half-written line is left for later");
         assert_eq!(next, written.len() as u64);
 
-        // The rest of it arrives, and the next look finds it whole.
         use std::io::Write;
         std::fs::OpenOptions::new()
             .append(true)

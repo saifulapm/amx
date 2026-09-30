@@ -1,34 +1,19 @@
-//! `amx logs` — what the agent has been up to, without taking this terminal
-//! for it.
+//! `amx logs`: the tail of what an agent has been doing, without attaching.
 //!
-//! `attach` hands the terminal over and keeps it until you leave. This is a
-//! look, and it reads the best account there is:
+//! Reads the best source available, in this order:
 //!
-//! * **The conversation**, where the vendor keeps one — which is a question
-//!   for the table, and asked there before a path off a record is opened. The
-//!   record holds the transcript's path from the session's own announcement,
-//!   and its tail is the agent's recent history whole — every prompt, answer
-//!   and tool call — where a pane could only ever hold one screen of it. A
-//!   full-screen vendor scrolls nothing into tmux's history, so the pane is a
-//!   keyhole and the transcript is the room.
-//! * **The screen**, when there is no conversation to read: a command row, an
-//!   agent adopted mid-session, a vendor whose hooks never announced a
-//!   transcript. The picture comes with the vendor's own furniture — composer,
-//!   statusline, mode footer — cut off the bottom, the same walk the card
-//!   takes, because none of it is the agent's work.
-//! * **The recorded answer**, once the pane is gone — or is another agent's,
-//!   which is the same loss — and the record is what is left, or **what the
-//!   pane printed**, which its own boot kept beside the record for the same
-//!   moment: a command exits rather than answers, and a vendor that dies
-//!   before its first hook leaves nothing else, and the file is what either
-//!   said where the pane held a screenful. Whether an agent is still running
-//!   is not something a caller should have to know before it can ask. An agent
-//!   that left not even that gets a line naming what was missing, the vendor's
-//!   own gap included.
+//! - The transcript, where the vendor keeps one. It holds every prompt, answer
+//!   and tool call; a full-screen vendor scrolls nothing into tmux's history,
+//!   so the pane only ever shows one screen.
+//! - The pane, when there is no transcript (a command, an adopted agent, a
+//!   vendor that never announced one), with the vendor's chrome cut off the
+//!   bottom the way the card cuts it.
+//! - Once the pane is gone or belongs to another agent: the recorded answer,
+//!   else what the pane printed (kept by its boot for commands and for vendors
+//!   that died before their first hook). With neither, a failure naming what
+//!   was missing.
 //!
-//! `amx result` is still the one that hands back a turn's answer alone,
-//! verbatim, and blocks for it. This is the other question: what has been
-//! going on over there?
+//! `amx result` is the verb for one turn's answer.
 
 use anyhow::Result;
 use std::io::Write;
@@ -41,9 +26,7 @@ use crate::vendor::{Capability, Vendor};
 use crate::verbs::send;
 use crate::{complain, exit, furniture, paths, spawn, tmux, warn};
 
-/// How much of the pane a reading shows when nobody says otherwise. A screenful
-/// and then some: enough to see what led to what is on the screen now, and
-/// little enough to read.
+/// Default number of lines printed: a screenful and some context above it.
 pub const LINES: u32 = 100;
 
 /// Run the verb against the machine.
@@ -66,12 +49,9 @@ pub fn run(
     let meta = agent.meta()?;
     let server = Server::from_socket(meta.socket.clone());
 
-    // Which vendor this agent runs: the record's own word first, which is the
-    // one an adopted agent has — adopt wrote down the program tmux found in
-    // the pane, and there is no recorded command to read it off. A record
-    // with no word for it is read off what it was started with, and a command
-    // amx has no entry for is one amx has measured nothing about: both come
-    // back as no vendor, and neither is a reason to hold a reading back.
+    // The vendor from the record first (the only source for an adopted agent,
+    // which has no handoff), else from the handoff's command. A command amx
+    // has no entry for comes back as no vendor.
     let started = spawn::read_handoff(agent.dir()).ok();
     let vendor = meta
         .agent
@@ -86,58 +66,45 @@ pub fn run(
         })
         .flatten();
 
-    // The conversation is the whole account with a pane or without one: a
-    // parked agent's session is still on disk, and its recorded answer is
-    // only the last turn of it.
+    // The transcript wins with or without a pane: a parked agent's session is
+    // still on disk, and its recorded answer is only the last turn.
     if let Some(said) = told {
         let tail = last_lines(&said, lines as usize);
         send::line(&send::rendered(&tail, to_terminal), out)?;
         return Ok(exit::OK);
     }
 
-    // Whether there is a screen to read is a question for tmux and not for the
-    // record: the phase says what amx was last told, and this verb is asking
-    // what has been going on over there right now. The pane has to answer for
-    // this agent, though — a number the record still names and another agent
-    // is standing at would hand back that agent's screen under this one's name.
+    // Ask tmux, not the recorded phase, whether there is a pane. It must answer
+    // for this agent: pane numbers are reused, and another agent's screen must
+    // not be printed under this id.
     match server.pane_answers_for(&meta.pane, &meta.id) {
         true => screen(&server, &meta.pane, id, lines, chrome(vendor), out),
         false => recorded(&agent, id, vendor, lines, to_terminal, out),
     }
 }
 
-/// Whether this vendor keeps the conversation in a file amx can read back.
+/// Whether this vendor keeps a transcript amx can read back.
 ///
-/// A transcript's path reaches a record on a hook payload, so a vendor that
-/// keeps none never puts one there — and asking the table first is what keeps
-/// a reading from opening a path that was never going to be a conversation,
-/// whatever a record carries. A command amx has no entry for is measured
-/// neither way, and its record is taken at its word.
+/// Checked against the vendor table before any path on the record is opened.
+/// With no known vendor, the record's transcript path is trusted.
 fn keeps_a_conversation(vendor: Option<&Vendor>) -> bool {
     vendor.is_none_or(|vendor| vendor.can(Capability::Transcript))
 }
 
-/// The chrome this vendor draws under its panes, which is what comes off a
-/// screen before it is printed.
+/// The chrome this vendor draws at the bottom of its pane, to cut off a
+/// capture.
 ///
-/// The vendor this reading already resolved, because every anchor the walk
-/// steps on is one vendor's own: pi's box and stats line are nothing claude
-/// draws, and a walk handed the wrong document finds no anchor and leaves the
-/// furniture on the screen. A command amx has no entry for is read with the
-/// vendor amx falls back to, which is the reading this verb has always had.
+/// Each vendor's anchors are its own, so the wrong vendor's furniture finds
+/// nothing to cut. An unknown vendor uses the default vendor's rules.
 fn chrome(vendor: Option<&Vendor>) -> &'static Furniture {
     crate::rules::of(vendor.map_or("", |vendor| vendor.name)).furniture()
 }
 
-/// The agent's recent conversation, read from the transcript the vendor keeps.
+/// The transcript at `path` rendered as plain text, in the format of vendor
+/// `agent` (see [`crate::conversation::plain`]).
 ///
-/// Read by the shape the record's own vendor writes — see
-/// [`crate::conversation::format_of`] — and printed the way that module
-/// prints one: a prompt wears the composer's `❯`, a tool call `›` and the
-/// argument worth a row, and what the agent said is its own words.
-///
-/// `None` when the file cannot be read or renders to nothing: a transcript
-/// with nothing in it to say is no transcript, and the screen is the fallback.
+/// `None` when the file cannot be read or renders to nothing, so the caller
+/// falls back to the pane.
 fn conversation(path: &Path, agent: &str) -> Option<String> {
     let raw = std::fs::read_to_string(path).ok()?;
     let format = crate::conversation::format_of(agent)?;
@@ -145,11 +112,10 @@ fn conversation(path: &Path, agent: &str) -> Option<String> {
     (!said.is_empty()).then(|| crate::conversation::plain(&said))
 }
 
-/// The last `lines` lines of a text, trailing blanks dropped first.
+/// The last `lines` lines of `text`, after dropping trailing blank lines.
 ///
-/// The sanitizing that [`tail_of`] folds in does not belong here: what this
-/// cuts goes on to [`send::rendered`], which is the one place that decides
-/// verbatim-down-a-pipe from inert-on-a-terminal.
+/// Does not sanitize: callers pass the result to [`send::rendered`], which
+/// decides between verbatim (pipe) and inert (terminal).
 fn last_lines(text: &str, lines: usize) -> String {
     let mut kept: Vec<&str> = text.lines().collect();
     while kept.last().is_some_and(|line| line.trim().is_empty()) {
@@ -158,7 +124,7 @@ fn last_lines(text: &str, lines: usize) -> String {
     kept[kept.len().saturating_sub(lines)..].join("\n")
 }
 
-/// What the pane has been saying.
+/// Print the tail of the live pane.
 fn screen(
     server: &Server,
     pane: &PaneId,
@@ -167,15 +133,12 @@ fn screen(
     chrome: &Furniture,
     out: &mut impl Write,
 ) -> Result<i32> {
-    // The vendor's furniture comes off the bottom before the tail is cut:
-    // composer, statusline and mode footer are the vendor's, not the agent's,
-    // and the walk is the same one the card takes.
+    // Cut the vendor's composer, statusline and footer before taking the tail.
     let sanitized = tmux::sanitize(&capture(server, pane, lines)?);
     let rows: Vec<&str> = sanitized.lines().collect();
     let tail = tail_of(&furniture::cut(chrome, &rows).join("\n"), lines as usize);
     if tail.is_empty() {
-        // A live pane with nothing on it is an answer, and an empty stdout on
-        // its own reads as amx having failed to look.
+        // Say so: an empty stdout alone looks like amx failed to read.
         warn!("amx: {id} has a pane, and it has printed nothing yet");
         return Ok(exit::OK);
     }
@@ -183,19 +146,11 @@ fn screen(
     Ok(exit::OK)
 }
 
-/// What is left of an agent whose pane has gone.
+/// Print what is left of an agent whose pane is gone: the recorded answer,
+/// else what the pane printed (see [`Agent::output`]), cut to `lines`.
 ///
-/// The answer on the record, which is the agent's own words rather than a
-/// picture of them, so it goes out the way `result` sends it: verbatim down a
-/// pipe, inert on a terminal.
-///
-/// A command leaves no answer — it exits rather than answers — so what is left
-/// of one is what it printed, kept beside the record by its own boot; so does
-/// a vendor that died before its first hook, whose record holds no session and
-/// no transcript either; see [`Agent::output`]. It goes out the same way, and
-/// either is cut to length the same way the readings above it are, because it
-/// is the same question asked of a row whose pane has gone. A file with nothing in it
-/// is a row that printed nothing, and that is nothing to hand back.
+/// Rendered like `result`: verbatim down a pipe, inert on a terminal. With
+/// neither, or an empty output file, exits `FAILURE`.
 fn recorded(
     agent: &Agent,
     id: &str,
@@ -219,12 +174,8 @@ fn recorded(
     Ok(exit::OK)
 }
 
-/// The line for an agent with a pane that has gone and nothing on its record.
-///
-/// Every account this verb has is exhausted here, so the line says which were
-/// missing rather than only the last of them. A vendor that keeps no
-/// conversation is named, because the transcript is the account somebody would
-/// otherwise go looking for by hand.
+/// The error for an agent with no pane and nothing recorded. Names a vendor
+/// that keeps no transcript, since that is where someone would look next.
 fn nothing_left(id: &str, vendor: Option<&Vendor>) -> String {
     let gap = match vendor.filter(|vendor| !vendor.can(Capability::Transcript)) {
         Some(vendor) => format!(", {} keeps no conversation to read back", vendor.name),
@@ -233,12 +184,9 @@ fn nothing_left(id: &str, vendor: Option<&Vendor>) -> String {
     format!("amx: {id} has no pane any more{gap}, and amx captured no answer from it")
 }
 
-/// Ask tmux for the pane's recent output.
+/// The visible pane plus `lines` lines of scrollback (`-S -<n>`), joined.
 ///
-/// `-S -<n>` starts the capture that many lines above the top of the screen, so
-/// what comes back is the screen and that much of what has scrolled off it. How
-/// tall the screen is is not something the caller asked about, so the reading is
-/// cut to length afterwards rather than here.
+/// The screen height is unknown here, so the caller cuts it to length.
 fn capture(server: &Server, pane: &PaneId, lines: u32) -> Result<String> {
     let start = format!("-{lines}");
     server.run(&[
@@ -252,17 +200,10 @@ fn capture(server: &Server, pane: &PaneId, lines: u32) -> Result<String> {
     ])
 }
 
-/// The last `lines` lines of a capture, made inert.
+/// The last `lines` non-padding lines of a capture, sanitized.
 ///
-/// A screen is padded out to its height with blank rows, so an agent that has
-/// printed three lines into a fifty-row pane has forty-seven of them under its
-/// output. Nobody asked to read those, and a tail measured through them is a
-/// tail of nothing, so the reading ends at the last line with anything on it.
-/// Blank lines inside the output are the pane's own and stay where they are.
-///
-/// Sanitized, like every other capture amx takes and unlike the one the view
-/// walks the paint of: this is going to somebody's terminal, and a terminal is
-/// an interpreter. What the pane looks like painted is what `attach` is for.
+/// tmux pads a capture to the pane height with blank rows, so trailing blanks
+/// are dropped before counting. Blank lines inside the output are kept.
 fn tail_of(capture: &str, lines: usize) -> String {
     last_lines(&tmux::sanitize(capture), lines)
 }
@@ -278,7 +219,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    /// A server of this test's own, gone when the test is.
+    /// A private tmux server, killed on drop.
     struct TestServer(Server);
 
     impl TestServer {
@@ -289,8 +230,7 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             );
-            // An empty conf, so nothing in the developer's ~/.tmux.conf can
-            // change what these tests measure.
+            // An empty conf keeps the developer's ~/.tmux.conf out of the test.
             Self(Server::named(name).with_conf("/dev/null"))
         }
     }
@@ -308,7 +248,7 @@ mod tests {
         }
     }
 
-    /// Poll until `f` is happy, rather than sleeping and hoping.
+    /// Poll until `f` returns true, panicking after ten seconds.
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -320,12 +260,8 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
-    /// A pane running `command`, in the session amx would have placed this
-    /// agent in.
-    ///
-    /// That name is what makes the pane answer for the agent whose reading the
-    /// test asks for — see [`Server::pane_answers_for`]. A pane in a session
-    /// nobody named answers for nobody, and a record naming one has lost it.
+    /// A pane running `command` in the session amx names after `id`, so the
+    /// pane answers for that agent (see [`Server::pane_answers_for`]).
     fn a_pane_for(server: &Server, id: &str, command: &[&str]) -> PaneId {
         let session = format!("{}{id}", tmux::SESSION_PREFIX);
         let (_, pane) = server
@@ -338,7 +274,7 @@ mod tests {
         pane
     }
 
-    /// A record of an agent, pointed at whichever pane the test has.
+    /// A record of an agent in `pane` on `socket`.
     fn record(root: &Path, id: &str, socket: Socket, pane: PaneId) -> Agent {
         Agent::create(
             root,
@@ -402,8 +338,7 @@ mod tests {
             server.socket().clone(),
             pane.clone(),
         );
-        // An answer on the record as well, so which of the two this prints is
-        // the question the test is asking.
+        // A recorded answer too, which the live pane must win over.
         agent
             .writer()
             .unwrap()
@@ -427,17 +362,15 @@ mod tests {
             "while there is a pane, the pane is what there is to read: {said:?}"
         );
 
-        // A shorter reading is the last of it and not the first of it.
+        // `--lines` keeps the end.
         let (_, said) = printed(root.path(), "fix-login-a1b", 1);
         assert_eq!(said, "line 3\n");
     }
 
     #[test]
     fn logs_cut_the_chrome_of_the_vendor_the_record_names() {
-        // An adopted agent has no recorded command: adopt wrote down the
-        // program tmux found in the pane. Driven on 2026-09-06 against a pi
-        // adopted mid-session, whose logs came back with pi's box, working
-        // directory and stats line on them.
+        // An adopted agent has no handoff, only the vendor adopt recorded.
+        // Its capture must lose pi's box, working directory and stats line.
         let box_rule = "─".repeat(40);
         let screen = format!(
             "the work\n\n{box_rule}\n\n{box_rule}\n~/srv/app (main)\n↑1.9k ↓1.7k R1.9k 0.3%/1.0M (auto)\n"
@@ -478,9 +411,9 @@ mod tests {
 
     #[test]
     fn logs_prefer_the_conversation_the_vendor_keeps() {
-        // Shapes measured from a live claude 2.1.240 transcript on
-        // 2026-08-25: a user entry's content is a string, an assistant's is
-        // an array of typed blocks, and the rest of the file is bookkeeping.
+        // Shapes from a claude 2.1.240 transcript: a user entry's content is
+        // a string, an assistant's is an array of typed blocks, and the other
+        // entries are bookkeeping.
         let transcript = TempDir::new().unwrap();
         let kept = transcript.path().join("session.jsonl");
         std::fs::write(
@@ -527,12 +460,10 @@ mod tests {
             "the conversation, not a picture of it: {said:?}"
         );
 
-        // A shorter reading is the tail of the conversation.
         let (_, said) = printed(root.path(), "fix-login-a1b", 2);
         assert_eq!(said, "2\n3\n");
 
-        // A transcript that renders to nothing is no transcript: the pane is
-        // what there is to read.
+        // A transcript that renders to nothing falls back to the pane.
         std::fs::write(&kept, "{\"type\":\"mode\"}\n").unwrap();
         until("the pane to say its piece", || {
             server
@@ -545,9 +476,8 @@ mod tests {
 
     #[test]
     fn logs_cut_the_vendors_furniture_off_the_screen() {
-        // A pane wearing claude's own bottom: composer box, statusline, mode
-        // footer. The rows are the measured shapes furniture::cut walks; what
-        // the agent printed above them is what a reading is for.
+        // claude's bottom chrome (composer box, statusline, mode footer) in
+        // the shapes `furniture::cut` recognises.
         let server = TestServer::new();
         let pane = a_pane_for(
             &server,
@@ -641,9 +571,8 @@ mod tests {
 
     #[test]
     fn logs_of_a_parked_agent_are_its_conversation() {
-        // Parking takes the pane and leaves the session: the transcript is
-        // still the whole account, and the answer on the record only its
-        // last turn.
+        // Parking takes the pane and keeps the session, so the transcript
+        // still wins over the recorded answer.
         let transcript = TempDir::new().unwrap();
         let kept = transcript.path().join("session.jsonl");
         std::fs::write(
@@ -681,9 +610,8 @@ mod tests {
 
     #[test]
     fn logs_of_a_command_that_has_ended_are_what_it_printed() {
-        // A command leaves no answer on its record: it exits, it does not
-        // answer. What it printed is in the file its own boot piped the pane
-        // into, and that file is the reading once the pane has gone.
+        // A command records no answer; its boot pipes the pane into the
+        // output file, which is read once the pane is gone.
         let root = TempDir::new().unwrap();
         let agent = without_a_pane(root.path(), "build-a1b");
         agent
@@ -700,12 +628,10 @@ mod tests {
         assert_eq!(code, exit::OK);
         assert_eq!(said, "one\ntwo\n");
 
-        // Cut to length from the end of it, like every other reading here.
         let (_, said) = printed(root.path(), "build-a1b", 1);
         assert_eq!(said, "two\n");
 
-        // A command that printed nothing has nothing to hand back, and an
-        // empty stdout on its own reads as amx having failed to look.
+        // An empty output file is a failure, so stdout is never silently empty.
         std::fs::write(agent.dir().join(crate::store::OUTPUT), "").unwrap();
         let (code, said) = printed(root.path(), "build-a1b", LINES);
         assert_eq!(code, exit::FAILURE);
@@ -714,9 +640,8 @@ mod tests {
 
     #[test]
     fn logs_of_a_record_that_has_spoken_do_not_read_its_boot_bytes() {
-        // A vendor that announced a transcript has one to answer with; the
-        // bytes its boot kept are a drawing, not an account, and `amx logs`
-        // must not hand them back as the answer.
+        // Once a vendor has announced a transcript, the boot output is just a
+        // picture of its screen and must not be printed as the answer.
         let root = TempDir::new().unwrap();
         let agent = without_a_pane(root.path(), "fix-login-a1b");
         agent
@@ -737,9 +662,7 @@ mod tests {
 
     #[test]
     fn logs_of_a_command_still_in_its_pane_are_that_pane() {
-        // The file is still being written to while the command runs, and what
-        // a caller asked is what is going on over there now. So the pane comes
-        // first for as long as there is one, as it does for every other row.
+        // While the command runs, its live pane wins over the output file.
         let server = TestServer::new();
         let pane = a_pane_for(
             &server,
@@ -769,8 +692,7 @@ mod tests {
 
     #[test]
     fn logs_of_an_agent_that_left_nothing_behind_say_so() {
-        // No pane and no answer: there is nothing to print, and printing
-        // nothing while exiting 0 would read as an agent that said nothing.
+        // No pane and no answer exits FAILURE with nothing on stdout.
         let root = TempDir::new().unwrap();
         without_a_pane(root.path(), "fix-login-a1b");
 
@@ -781,10 +703,6 @@ mod tests {
 
     #[test]
     fn logs_look_for_a_conversation_only_where_the_vendor_keeps_one() {
-        // The transcript's path arrives on a hook payload, so a vendor that
-        // keeps none never puts one on a record. Asking the table first is
-        // what keeps `amx logs` from looking for a file that was never going
-        // to be there, whatever a record says.
         assert!(keeps_a_conversation(crate::registry::entry("claude")));
         assert!(!keeps_a_conversation(Some(&SECOND)));
         assert!(
@@ -796,9 +714,7 @@ mod tests {
 
     #[test]
     fn logs_of_an_agent_that_left_nothing_behind_name_the_gap() {
-        // One agent with nothing left of it, read three ways. Only the vendor
-        // that keeps no conversation has anything to answer for: it is the
-        // account somebody would otherwise go looking for by hand.
+        // Only a vendor that keeps no transcript is named in the error.
         let said = nothing_left("fix-login-a1b", Some(&SECOND));
         assert!(said.contains("fix-login-a1b"), "{said}");
         assert!(said.contains(SECOND.name), "{said}");
@@ -816,26 +732,22 @@ mod tests {
 
     #[test]
     fn logs_end_at_the_last_line_with_anything_on_it() {
-        // The blank rows a screen is padded out to its height with are not
-        // output, and a tail measured through them is a tail of nothing.
+        // The blank rows tmux pads a capture with are not output.
         let screen = "first\nsecond\nthird\n\n   \n\n";
         assert_eq!(tail_of(screen, 100), "first\nsecond\nthird");
         assert_eq!(tail_of(screen, 2), "second\nthird");
 
-        // Blank lines inside the output are the pane's own.
+        // Blank lines inside the output are kept.
         assert_eq!(tail_of("first\n\nthird\n", 100), "first\n\nthird");
 
-        // A pane with nothing on it has nothing to show.
         assert_eq!(tail_of("", 100), "");
         assert_eq!(tail_of("\n\n   \n", 100), "");
     }
 
     #[test]
     fn logs_a_screen_cannot_drive_the_terminal_it_is_printed_into() {
-        // Every byte here was written by something that is not amx, and a
-        // terminal is an interpreter. The same sieve a captured pane goes
-        // through everywhere else in amx: replaced, never deleted, so the
-        // halves of a spelling cannot close up.
+        // Control and format characters are replaced with spaces, never
+        // deleted, so the halves of a word cannot join up.
         let painted = "done\u{1b}]0;PWNED\u{7}\n\u{9b}2J ad\u{200b}min\n";
         let shown = tail_of(painted, 100);
 
@@ -853,8 +765,8 @@ mod tests {
 
     #[test]
     fn logs_are_never_taken_through_something_that_is_not_an_id() {
-        // `root.join(id)` is not a lookup: an id shaped like a path would name
-        // a record anywhere on the machine, and then a pane to read.
+        // An id shaped like a path would otherwise reach a record, and a pane,
+        // outside the state directory.
         let root = TempDir::new().unwrap();
         let mut out = Vec::new();
         for not_one in ["../elsewhere", "never-made-abc"] {
