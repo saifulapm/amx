@@ -1,23 +1,10 @@
-//! The line somebody is typing when they are typing one, and the row of keys
-//! under it.
+//! The typed line and the keys row at the foot of the screen.
 //!
-//! A rule, a composer and the slot under them. The rule is the edge the whole
-//! mode hangs off: it names which of the four lines this is, says the one thing
-//! that is true of all of them — every letter is text until esc — and carries
-//! at its far end the one dial that is not on the header's row, what the next
-//! agent may do without asking, in reverse video where somebody about to press
-//! enter cannot miss it. Under the rule the composer grows a row at a time as
-//! the line does and stops before it takes the list, and under that go the
-//! keys, or whatever the view has to say for itself instead — with the words
-//! the cursor's own word could be, where there are any, standing between them
-//! in a band of [`super::complete`]'s.
-//!
-//! The wall the rule was drawn over goes dim for as long as the mode is on.
-//! Every row, heading, count and dial behind gives up its colour's weight in
-//! one pass, so the band below the rule — the line being typed, and the keys
-//! that are still keys under it — is the only thing on the screen carrying
-//! any, which is what says the wall has stopped answering to the keyboard
-//! without anybody reading a word of it.
+//! The typed line is a rule (the mode's name, a reminder that letters are
+//! text until esc, and the permission dial in reverse video) over a composer
+//! that grows a row at a time up to a cap. The same composer rows are drawn
+//! at the foot of a card. Everything above the rule is dimmed while a line is
+//! open. The keys row shows hints, a notice, the find line or a confirmation.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -34,89 +21,54 @@ use crate::tui::act::{Asking, Composer};
 use crate::tui::rows::Item;
 use crate::tui::{Mode, Screen};
 
-/// A key and what pressing it does, which is the shape every hint has.
+/// A key hint: the key (bold) and what it does (dim).
 ///
-/// Two pieces rather than one sentence because they are read differently: the
-/// key carries the weight and the words after it go dim, so a row of them
-/// reads as a keyboard at a glance and only as prose on a second look. That is
-/// also what stands between one hint and the next — the weight changing is a
-/// clearer edge than any character amx could put there, and it costs no cells.
-///
-/// The key is written down and the words after it are borrowed: what enter
-/// does on the card's line names the hunk under the cursor, and that is a
-/// number read off the card rather than a sentence anybody could write here.
+/// The description is borrowed because some are built at draw time, such as
+/// one naming the hunk under the cursor.
 pub(super) type Hint<'a> = (&'static str, &'a str);
 
-/// The key the hint row keeps whatever else it has to shed, because the
-/// overlay behind it is where every key is.
+/// The hint the list's keys row always keeps.
 const MORE: Hint<'static> = ("?", "keys");
 
-/// The key the row under a card keeps whatever else it sheds: a card is drawn
-/// over the list it was opened from, and one nobody can see the way out of is
-/// one they are stuck in.
+/// The hint the keys row under a card always keeps.
 const CLOSES: Hint<'static> = ("esc", "closes it");
 
-/// And what the row says while a `g` is standing there waiting for its second.
-///
-/// Both halves of it, because what somebody wants to know having pressed one
-/// key of two is what the other one would do and how to not do it.
+/// The keys row while a `g` waits for its second press.
 const WAITING_ON_A_G: [Hint<'static>; 2] = [
     ("g again", "the top of the list"),
     ("any other key", "carries on"),
 ];
 
-/// What the view has to say for itself, and how loudly.
-///
-/// Three channels in the one slot at the foot of the screen, a severity apart:
-/// an action that was attempted and failed is louder than something somebody
-/// asked for that did not happen, which is louder than a piece of advice. A
-/// view that paints "nothing was deleted" the same red as a git error is
-/// teaching people to read neither — and one that paints it the same dim as
-/// "started fix-login-a1b" is teaching them that what they just asked for went
-/// through.
+/// A message in the keys row, by severity: a failure (red), a refusal
+/// (amber), or advice (dim).
 pub enum Notice {
-    /// It was attempted and it failed.
+    /// An action was attempted and failed.
     Failed(String),
-    /// It was asked for and it did not happen, on purpose.
+    /// A request was deliberately not carried out.
     Refused(String),
-    /// Advice, or a thing that went the way it was asked to.
+    /// Advice, or confirmation that something worked.
     Advice(String),
 }
 
-/// How tall the composer may grow before it stops and scrolls instead: ten
-/// rows, or a third of the screen where that is less. A composer that could
-/// take the whole terminal would be a list nobody could see past the task
-/// they are typing at it.
+/// The most rows the composer grows to before scrolling (also capped at a
+/// third of the screen).
 pub(super) const COMPOSER_CAP: usize = 10;
 
-/// What the composer's rows begin with: the chevron on the first of them, and
-/// the same width of nothing under it, so a line that wrapped reads as one
-/// line.
-///
-/// The same two cells whichever of the four lines this is. Which one it is, and
-/// which agent it is aimed at, are on the rule above — so the line starts in
-/// the column the rule's own label starts in, and moving between lines does not
-/// move the words somebody is reading.
-///
-/// The band under the line takes its indent from this, so a word it is
-/// offering stands in the column the word it would replace is in.
+/// The composer's first-row prefix; later rows are indented to match. The
+/// completion band uses the same indent.
 pub(super) const GUTTER: &str = "❯ ";
 
-/// How wide the text itself is drawn, which is the same on every row of the
-/// composer whether the chevron or the indent is in front of it — and on the
-/// line at the foot of the card, which is the same line in another band.
+/// The composer's text width at this band width.
 pub(super) fn composer_room(width: u16) -> usize {
     (width as usize)
         .saturating_sub(GUTTER.chars().count())
         .max(1)
 }
 
-/// The line being typed, cut into the rows a screen this wide draws it on.
+/// `text` word-wrapped into rows `room` cells wide.
 ///
-/// A newline starts a row, pasted or typed, and anything past the width
-/// carries onto the next one. An empty paragraph is a row of its own: it is
-/// where the cursor sits after a newline, and a row nobody drew would put the
-/// cursor on the line above.
+/// Every `\n` starts a row, and an empty paragraph is an empty row (where the
+/// cursor sits after a newline).
 pub(super) fn composer_lines(text: &str, room: usize) -> Vec<String> {
     text.split('\n')
         .flat_map(|paragraph| cut(paragraph, room))
@@ -154,18 +106,10 @@ fn cut(paragraph: &str, room: usize) -> Vec<String> {
     rows
 }
 
-/// The row of the composer the cursor is on and how far along it it stands,
-/// counted in the rows [`composer_lines`] cuts the line into.
+/// The cursor's (row, char offset) in the rows [`composer_lines`] produces.
 ///
-/// The row is the point of it: a line wrapped at the width has as many rows as
-/// it needs, and a cursor a person walked back into the second word of the
-/// first of them is on that row and nowhere else.
-///
-/// A row filled to the width has no cell of its own for the end of it, so the
-/// cursor stands one past where the row was drawn, and the band puts the block
-/// on the last cell it has instead — the cell the next character will push
-/// onto the row below is off the screen, and a cursor nobody can see is worse
-/// than one standing a cell short.
+/// At the end of a full row the offset is one past the last char, which is
+/// off screen; [`last_cell`] moves the block back onto the row.
 pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
     let mut left = composer.at.min(composer.text.chars().count());
     let mut row = 0;
@@ -179,26 +123,20 @@ pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
             }
             left -= length;
         }
-        // The newline between one paragraph and the next is a character of the
-        // line like any other, and the cursor is past it.
+        // Step over the newline between paragraphs.
         left -= 1;
         row += rows.len();
     }
     (row.saturating_sub(1) as u16, 0)
 }
 
-/// The rule's own row, which the band holds whatever the line is holding: an
-/// edge that came and went with the length of what somebody was typing would
-/// not read as an edge.
+/// The rule's row above the composer.
 const RULE_ROW: usize = 1;
 
-/// How many rows the band takes on this screen: the rule, and under it as many
-/// rows as the line needs, up to the cap, and never so many that the list it
-/// was opened from is gone.
+/// Rows the typed-line band takes: the rule plus the composer's rows, capped,
+/// leaving the list at least one row.
 ///
-/// `chrome` is every other band already spoken for — the header, the keys, the
-/// closer look — and one row over that is the list's, which the composer may
-/// not have.
+/// `chrome` is the rows every other band already takes.
 pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u16 {
     let room = (area.height.saturating_sub(chrome + 1) as usize).saturating_sub(RULE_ROW);
     let cap = COMPOSER_CAP.min(area.height as usize / 3).min(room).max(1);
@@ -206,30 +144,19 @@ pub(super) fn composer_height(composer: &Composer, area: Rect, chrome: u16) -> u
     (rows + RULE_ROW) as u16
 }
 
-/// How many rows the line needs on a band this wide, before any cap: one at
-/// the least, and one more for every row it wraps onto or breaks onto.
+/// Rows the composer's text needs at this width, uncapped, at least one.
 pub(super) fn rows_of(composer: &Composer, width: u16) -> usize {
     composer_lines(&composer.text, composer_room(width))
         .len()
         .max(1)
 }
 
-/// The rule the mode hangs off, and everything said on it.
+/// The rule over the composer.
 ///
-/// Its front is what this line is — the mode's own word, in the accent and
-/// carrying weight, and after it which agent the line is aimed at where it is
-/// aimed at one. Then the one thing true of every one of the four: while the
-/// mode is on, a letter is a letter and not the key it is bound to, and esc is
-/// the way out. Then the rule itself to the far end, where what the next agent
-/// may do without asking is set in reverse video: the one dial that is not on
-/// the header's row, promoted to the border somebody about to press enter is
-/// looking straight at, costing no row of its own.
-///
-/// A screen with no room sheds the sentence first and the dial after it. The
-/// label and the edge are what a rule cannot be without: one says which mode
-/// this is and the other is the whole of why the rule is drawn. The agent goes
-/// with the label, because a line aimed at the wrong agent is worse than a
-/// line whose mode nobody can read.
+/// The mode label (and its target, see [`Composer::about`]) styled as
+/// [`prospective`], then [`GLOSS`], then dashes to the edge with the
+/// permission dial in reverse video near the end. When space runs out the
+/// gloss goes first, then the dial; the label is only cut.
 fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
     let label = match composer.about() {
         Some(about) => format!("{}{SEPARATOR}{about} ", composer.label()),
@@ -243,8 +170,7 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
         width_of(&label)
             + width_of(gloss)
             + match dial.is_empty() {
-                // The tail is what closes the dial into the edge, so it costs
-                // nothing on a rule that is not carrying one.
+                // No dial, no tail.
                 true => 0,
                 false => width_of(dial) + TAIL,
             }
@@ -271,23 +197,14 @@ fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// What the rule says after the mode's own word.
+/// The reminder after the mode label.
 const GLOSS: &str = "· letters are text until esc ";
 
-/// How much rule closes the edge past the dial, so the dial reads as set into
-/// it rather than as the end of it.
+/// Dashes after the dial, so it sits inside the rule.
 const TAIL: usize = 2;
 
-/// What the rule's dashes and the chevron under them are drawn in.
-///
-/// Dim on a line that will start an agent, which is what an edge is for: it
-/// holds the band together and asks to be read after everything inside it. A
-/// line led with a bang takes the accent instead, the whole rule and the
-/// chevron below it, because that one runs a shell where every other one asks
-/// an agent something — and the label saying COMMAND is a word at one end of a
-/// row somebody typing is not looking at. The same accent the label wears,
-/// without its weight: the mode's word is still the thing to read, and an edge
-/// in bold would be an edge shouting.
+/// The style of the rule's dashes and the chevron: dim, or the accent (not
+/// bold) on a `!` command line, which runs a shell instead of an agent.
 fn edge_colour(composer: &Composer, theme: Theme) -> Style {
     match composer.commanding() {
         true => Style::new().fg(theme.accent),
@@ -295,24 +212,11 @@ fn edge_colour(composer: &Composer, theme: Theme) -> Style {
     }
 }
 
-/// The rule and, under it, the line somebody is typing.
+/// The typed-line band: dims everything above, then draws the rule and the
+/// composer rows.
 ///
-/// The line is drawn at the weight anything else typed into a terminal is,
-/// with a block for the cursor. What says where somebody is is the block; the
-/// weight never was, and a line set in bold reads as words asking to be
-/// stressed rather than as the ones they are about to send. What lifts the
-/// band off the screen is the dimming behind it, which is one call and takes
-/// the whole wall.
-///
-/// The block is the only cursor there is: nothing is asked of the terminal's
-/// own, which is hidden for as long as the view holds the screen, so what
-/// somebody is looking at is a cell amx painted rather than one a terminal
-/// blinks on and off under it.
-///
-/// Past the cap it is the rows around the cursor that are drawn, because the
-/// cursor is where somebody is typing — but the chevron stays on the top row
-/// however far the rest has scrolled. It is what says a line is being typed at
-/// all, and that is worth a gutter wherever the text has got to.
+/// The terminal's cursor stays hidden; the block drawn by [`typed_rows`] is
+/// the only cursor.
 pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect, theme: Theme) {
     behind(frame, area.y);
     let [edge, band] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
@@ -330,15 +234,13 @@ pub(super) fn composing_line(frame: &mut Frame, composer: &Composer, area: Rect,
     );
 }
 
-/// The rows of the line itself, which are the same rows wherever the line
-/// stands: under the rule of a band of its own, or at the foot of the card.
+/// The composer rows, in their own band or at the foot of a card.
 ///
-/// The chevron on the first row in `chevron`, the indent under it on every
-/// row after, the block on the cell the cursor stands in, and `hint` as ghost
-/// text on an empty line — cut where the screen ends, with the block on the
-/// first cell of it: the letter under it is read straight through the reverse
-/// video, so the lesson costs nothing and the line still says where the next
-/// character lands.
+/// The first row starts with [`GUTTER`] in `chevron`, later rows with its
+/// width of spaces. The cursor is a reversed cell. On an empty line `hint` is
+/// shown dim, with the block on its first cell. When the rows overflow the
+/// band, the rows ending at the cursor are shown; the chevron stays on the top
+/// shown row.
 pub(super) fn typed_rows(
     frame: &mut Frame,
     composer: &Composer,
@@ -352,9 +254,7 @@ pub(super) fn typed_rows(
     let rows = composer_lines(&composer.text, room);
     let (row, column) = cursor_cell(composer, room);
     let (row, column) = (row as usize, column as usize);
-    // The end of the line, because the end is where somebody is typing —
-    // unless they have walked the cursor back above it, in which case that is
-    // what they are reading and the rows below it are the ones that scroll.
+    // Show the last rows, unless the cursor is above them.
     let from = rows.len().saturating_sub(band.height as usize).min(row);
     let shown = &rows[from..];
 
@@ -411,16 +311,10 @@ fn last_cell(text: &str, column: usize, room: usize) -> usize {
     }
 }
 
-/// A row of the line, drawn in `paint`, with the block on the cell the cursor
-/// stands in: that one cell in `block` reversed.
+/// `text` in `paint`, with the char at `column` reversed in `block` as the
+/// cursor. Past the end, a reversed space.
 ///
-/// The cell is turned over rather than drawn on. Over a character that leaves
-/// the character where it was — a cursor that hid the letter it was on would
-/// have somebody moving it to read what they had typed — and past the last
-/// character it turns over a space, which is a whole block, which is what the
-/// end of a line being typed has always looked like. Both of them are one
-/// cell wide and neither is a glyph, so the block never has to be told apart
-/// from something typed.
+/// Reversing keeps the char under the cursor readable.
 pub(super) fn under_the_block(
     text: &str,
     column: usize,
@@ -439,22 +333,13 @@ pub(super) fn under_the_block(
     ]
 }
 
-/// What the block turns over past the last character, where the row has no
-/// character of its own for it to stand on.
+/// The cursor cell past the end of the text.
 const PAST_THE_END: &str = " ";
 
-/// Everything above the rule, dimmed for as long as the mode is on.
+/// Dim every row above `until` and strip its bold and reverse video, to show
+/// the keyboard now belongs to the line (or card) below.
 ///
-/// The card's band calls this too: a card is a modal the way a line being
-/// typed is — every letter is its line's until esc — and the wall says so the
-/// same way under both, by going quiet above the rule.
-///
-/// One pass over what has already been drawn rather than a flag every surface
-/// carries: the rows, the headings, the counts and the dials are each painted
-/// for what they mean, and a mode is not one of the things they mean. What
-/// this takes is the weight and the reverse video — the badge included, which
-/// is the loudest thing up there — and what it leaves is the colours, dimmed,
-/// so the wall is still readable as the wall it was a keystroke ago.
+/// Applied to the drawn buffer, so the other bands need no mode flag.
 pub(super) fn behind(frame: &mut Frame, until: u16) {
     let wall = Rect {
         height: until,
@@ -466,24 +351,11 @@ pub(super) fn behind(frame: &mut Frame, until: u16) {
     );
 }
 
-/// What the next agent may do without asking, left on the line for the rule
-/// over it to carry.
+/// Store the permission dial's text on the composer for [`rule`] to draw.
 ///
-/// It belongs to a line that will start an agent: not to a reply, which goes to
-/// one already running under whatever it was started with, not to a find
-/// line, and not to a command row, which runs a shell and has no agent to
-/// permit anything. At the sentinel it names the layer rather than a
-/// mode, because amx does not know which mode the vendor is configured for and
-/// a guess at it is the same lie the model dial refuses. A vendor whose entry
-/// declares no permission dial has nothing to say and nothing to turn, so the
-/// rule ends bare.
-///
-/// The reading is taken here and left on the line because this is where the
-/// view is in hand: [`rule`] is handed the line and the theme, which is how
-/// every other band in this file is drawn, and which permission the dial is
-/// resting on is a fact about neither. Nothing comes back for the band under
-/// the composer — the dial had a row of its own there and has the far end of
-/// the rule instead, and the row it gave up goes back to the list.
+/// Only a task line gets one, not a `!` command, and only when the vendor
+/// declares a permission dial. At the default it reads "vendor default",
+/// since amx does not know the vendor's configured mode.
 pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
     let Mode::Typing(composer) = &screen.mode else {
         return None;
@@ -500,19 +372,8 @@ pub(super) fn permission(screen: &Screen) -> Option<Line<'static>> {
     None
 }
 
-/// The words the task line reads at its front, said on the line itself while
-/// there is nothing on it.
-///
-/// The prefixes are amx's own grammar and nothing else on the screen teaches
-/// them: a dial turned by `m:` looks exactly like a task that happens to open
-/// with one. So the empty line holds them the way a form field holds its
-/// ghost text — dim, after the prompt, and gone at the first character typed,
-/// because whoever is typing has stopped reading it. A reply and a rename
-/// read no prefixes, so their lines teach none — and neither does this line
-/// teach `s:`, which narrows the wall from `/` and starts an agent from here.
-///
-/// The bang leads the sentence because it leads the line: it is the one mark
-/// here that changes what enter does rather than what the agent is given.
+/// Placeholder text for an empty task line, listing the prefixes it accepts.
+/// Other lines accept no prefixes and get none.
 fn placeholder(composer: &Composer) -> Option<&'static str> {
     if !matches!(composer.asking, Asking::Task) || !composer.text.is_empty() {
         return None;
@@ -520,32 +381,21 @@ fn placeholder(composer: &Composer) -> Option<&'static str> {
     Some("!command · m:model · p:permission · w:on|off|changes · d:directory · agent:command")
 }
 
-/// The keys with nowhere else to be said, as the line under the cursor makes
-/// them true.
-///
-/// Enter brings a window forward on a row, shuts a group on a heading and
-/// gives back the fold's rows on the fold; a row of hints that named one of
-/// those over the other two would be teaching somebody to press the wrong key.
-/// So what the cursor is standing on decides the front of the row, and the
-/// keys that mean the same thing wherever it is standing follow.
+/// The list's key hints, led by what the keys do on the item under the
+/// cursor.
 fn hints(screen: &Screen) -> Vec<Hint<'static>> {
     let list = &screen.list;
     let mut said = match list.items().get(list.cursor()) {
         Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
         Some(Item::Fold(..) | Item::Sub(..)) => vec![enters(screen)],
-        // The cursor never rests on a blank; the arm is for the compiler.
+        // The cursor never rests on a blank.
         Some(Item::Blank) => Vec::new(),
-        // An agent whose command has ended has no window to bring forward and
-        // nothing left to stop, and the same key that would have stopped it
-        // forgets it instead.
+        // An ended agent cannot be attached or stopped; ctrl+x forgets it.
         Some(Item::Agent(_)) => {
             let card = match screen.card.is_some() {
                 true => ("space", "closes it"),
                 false => ("space", "card"),
             };
-            // What the key does to this row rather than what it is for: on a
-            // row already over the wall the press is the one that puts it back
-            // in the group amx had it in.
             let pin = match list.selected().is_some_and(|view| list.holding(view)) {
                 true => ("ctrl+t", "unpin"),
                 false => ("ctrl+t", "pin"),
@@ -558,22 +408,15 @@ fn hints(screen: &Screen) -> Vec<Hint<'static>> {
                 false => vec![card, enters(screen), ("ctrl+x", "stop"), pin],
             }
         }
-        // A wall with nothing on it has no line under the cursor, and the one
-        // key that changes that is the one worth the room.
         None => vec![("n", "starts one")],
     };
     said.extend([("ctrl+s", "axis"), ("q", "quit")]);
     said
 }
 
-/// What enter does where the cursor is standing, which is three things: a
-/// heading opens and shuts the group under it, the fold gives back the rows it
-/// is holding, and a row brings its agent forward.
-///
-/// Read in one place because it is said in two — the row under the list, and
-/// the row under a card, where an enter on an empty line goes straight back to
-/// the wall. A hint that named one of the three over the other two would be
-/// teaching somebody to press the wrong key.
+/// What enter does on the item under the cursor: open or shut a heading's
+/// group, unfold a fold, or attach to an agent. Used under the list and under
+/// a card's empty line.
 fn enters(screen: &Screen) -> Hint<'static> {
     match screen.list.items().get(screen.list.cursor()) {
         Some(Item::Heading(_, tally)) => match tally.shut {
@@ -585,25 +428,12 @@ fn enters(screen: &Screen) -> Hint<'static> {
     }
 }
 
-/// The keys under a card, which are the card's own for as long as its line is
-/// standing there.
+/// The keys row under a card.
 ///
-/// Two rows in one, a character apart. With nothing typed the line has no use
-/// for space or enter, so both are the wall's and the row says what they do
-/// down here: the enter of the line under the cursor, and the key that puts the
-/// card away — with the page key beside them where the body holds more than the
-/// card is showing, and nothing said about a page there is not. The first
-/// character typed takes both back, and the row says what sending the line will
-/// do instead.
-///
-/// alt+enter is named only on the second of them: a newline is worth the room
-/// once there is a paragraph being written, and a line with nothing on it has
-/// nothing to break.
-///
-/// A review being written changes both ends of the row, because it outlives the
-/// line it is typed on: enter counts the notes it would send rather than naming
-/// the one hunk, and esc says how many it would drop. What a key costs is worth
-/// more than what it does, and esc down here costs a review.
+/// With the line empty, space and enter act on the list, plus `pgup` when the
+/// body has more than one page. Once something is typed the row says what
+/// enter will send, and adds alt+enter. While a review is being written,
+/// enter counts the notes it would send and esc says how many it would drop.
 fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static> {
     let going = screen.noted(&composer.text);
     let kept = screen.scroll.noted().len();
@@ -614,15 +444,8 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
     };
 
     if !composer.text.is_empty() {
-        // The same key reaching the agent three ways: a question is answered,
-        // an agent that is asking nothing is told something, and words typed
-        // while a patch is being read go as the review they are part of. The
-        // last is the one nobody can see from the line itself, so the row
-        // counts it the way the rule over the card counts it — naming the hunk
-        // instead where this line's words are the whole of what would go,
-        // which is the one note somebody cannot see the number of.
-        // And on an agent whose turn is over, the words start it again, which
-        // the row says in the word the empty line said it in.
+        // Enter answers a question, resumes an ended agent, sends a message,
+        // or sends the review (naming the hunk when it is the only note).
         let resumes = screen
             .card
             .as_ref()
@@ -637,17 +460,14 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
             },
         };
         let mut said = vec![("enter", does.as_str()), ("alt+enter", "newline")];
-        // And the key that keeps the words for the hunk they are about, which
-        // is how a review of several is written. Last, so a narrow row sheds
-        // it first: it is the one key here somebody can reach by stepping.
+        // Keeps the words as a note on this hunk. Last, so it is shed first.
         if screen.card.as_ref().is_some_and(|card| card.changes) {
             said.push(("ctrl+n", "keeps it"));
         }
         return fitted(&said, closes, width);
     }
 
-    // An empty line over a review is still a line with something to send, so
-    // enter says that rather than what it does down on the wall.
+    // With notes kept, enter on an empty line sends them.
     let sends = format!("sends {}", notes(going.len()));
     let mut said = match going.is_empty() {
         true => vec![enters(screen), ("space", "closes it")],
@@ -663,15 +483,9 @@ fn card_keys(screen: &Screen, composer: &Composer, width: usize) -> Line<'static
     fitted(&said, closes, width)
 }
 
-/// Those keys on one row, cut to what a screen this wide can hold, with
-/// `last` pinned to the end of it.
-///
-/// What goes is what is furthest from the pinned one, and the pinned one never
-/// does: a hint clipped by the terminal reads as a key that ends where the
-/// screen does. Walking the list, the one worth that place is `?`, which leads
-/// to all the others; on a line being typed `?` is a character like any other
-/// and there is no overlay to shed into, so the place goes to esc, because a
-/// mode nobody can see the way out of is a mode they are stuck in.
+/// Hints on one row within `width`, dropping from the end of `said` until
+/// they fit. `last` is always kept at the end: `?` on the list, the way out
+/// elsewhere.
 fn fitted<'a>(said: &[Hint<'a>], last: Hint<'a>, width: usize) -> Line<'static> {
     let with = |kept: &[Hint<'a>]| -> Vec<Hint<'a>> {
         let mut all = kept.to_vec();
@@ -686,8 +500,7 @@ fn fitted<'a>(said: &[Hint<'a>], last: Hint<'a>, width: usize) -> Line<'static> 
     row(&with(&kept))
 }
 
-/// Those hints drawn: each key carrying the weight, what it does dim behind
-/// it, and a gap of plain wall between one and the next.
+/// Hints drawn on one row, separated by [`GAP`].
 pub(super) fn row(hints: &[Hint<'_>]) -> Line<'static> {
     let mut spans = Vec::new();
     for (key, does) in hints {
@@ -700,7 +513,7 @@ pub(super) fn row(hints: &[Hint<'_>]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The cells that row takes, which is what the shedding is measured against.
+/// Columns [`row`] would take for these hints.
 fn spent(hints: &[Hint<'_>]) -> usize {
     let said: usize = hints
         .iter()
@@ -709,12 +522,10 @@ fn spent(hints: &[Hint<'_>]) -> usize {
     said + GAP.len() * hints.len().saturating_sub(1)
 }
 
-/// What stands between one hint and the next: wall, because the weight on the
-/// key is already the edge and a character there would be a third thing to
-/// read on a row that is meant to be glanced at.
+/// Gap between hints.
 const GAP: &str = "   ";
 
-/// The find line, where the view is holding one.
+/// The find line, if one is open.
 pub(super) fn finding(screen: &Screen) -> Option<&Composer> {
     match &screen.mode {
         Mode::Typing(composer) if matches!(composer.asking, Asking::Find) => Some(composer),
@@ -722,27 +533,18 @@ pub(super) fn finding(screen: &Screen) -> Option<&Composer> {
     }
 }
 
-/// What that line begins with, which is the key that opened it.
+/// The find line's prefix, the key that opens it.
 const FIND: &str = "/";
 
-/// What it says while there is nothing on it: what it takes, and what the two
-/// keys out of it do. Dim and after the caret, the way the task line teaches
-/// its own prefixes.
-///
-/// It says `name or task` rather than listing the four things a search
-/// actually reaches, because the id and the pull request number are words
-/// somebody would type without being told they could. The task is the one
-/// worth naming: it is not on the row, so nobody would guess a search reaches
-/// it. And the row has to fit a narrow terminal whole.
+/// Placeholder for an empty find line. It also matches ids and pull request
+/// numbers; the task is named because it is not shown on the row. Must fit a
+/// 60-column terminal whole.
 const FINDING: &str = "a name or task, or s:state · enter keeps · esc clears";
 
-/// The find line drawn: the key that opened it, what has been typed, and a
-/// block where the next character lands.
+/// The find line, drawn in the keys row with a cursor block.
 ///
-/// No rule over it and no dimming behind it. Every other line amx takes is one
-/// somebody is composing and then sending, so the wall goes quiet under it;
-/// this one is answered by the wall itself, on every keystroke, and dimming
-/// the answer would be the one thing it must not do.
+/// No rule and no dimming: the list narrows as it is typed and must stay
+/// readable.
 fn find_row(line: &Composer, width: usize) -> Line<'static> {
     let mut spans = vec![Span::styled(FIND, dim())];
     match line.text.is_empty() {
@@ -760,16 +562,11 @@ fn find_row(line: &Composer, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The keys, or whatever the view has to say for itself instead.
-///
-/// The row under a card is the card's for as long as its line is standing
-/// there, because down there the same keys are two different things a
-/// character apart — see [`card_keys`].
+/// The keys row. In priority order: a pending `g`, a notice, the card's keys
+/// (see [`card_keys`]), the find line, a confirmation question, then the
+/// mode's hints.
 pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
-    // A half-pressed `gg` before anything else, because it is the last thing
-    // that happened and the one thing on the screen a keystroke has changed
-    // without moving anything. A key that lands and draws nothing is a key
-    // nobody can tell was read.
+    // A pending `g` changes nothing else on screen, so it must show here.
     if screen.going {
         return row(&WAITING_ON_A_G);
     }
@@ -778,9 +575,7 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
             Notice::Failed(said) => {
                 Line::styled(said.clone(), Style::new().fg(screen.theme.failed))
             }
-            // The amber an armed row wears, because both of them are the
-            // view standing where somebody meant to go: what they asked for
-            // is on the other side of this line.
+            // The waiting colour, as on an armed row.
             Notice::Refused(said) => {
                 Line::styled(said.clone(), Style::new().fg(screen.theme.waiting))
             }
@@ -790,57 +585,38 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
     if let Some(composer) = screen.answering() {
         return card_keys(screen, composer, width as usize);
     }
-    // A find line is drawn here rather than in a band of its own, because the
-    // list is the thing being read while it narrows: a band would take rows
-    // off it and dim what was left, and both of those are the answer somebody
-    // is watching for.
+    // The find line takes no band, so the list keeps all its rows.
     if let Some(line) = finding(screen) {
         return find_row(line, width as usize);
     }
-    // A question of the view's own is not advice and not a key: it is the one
-    // thing on the screen, in the colour of something waiting on a person.
     if let Mode::Confirming(asked) = &screen.mode {
         return Line::styled(asked.question(), Style::new().fg(screen.theme.waiting));
     }
     let width = width as usize;
     match &screen.mode {
         Mode::List => fitted(&hints(screen), MORE, width),
-        // The keys that work on the screen of keys, which is the one screen
-        // where somebody not knowing them has nowhere else to look it up. A
-        // line being typed at is its own answer: every letter is the search,
-        // so the two keys that are not are what the row says.
         Mode::Keys => match screen.keymap.finding() {
+            // Letters go to the search; only enter and esc do anything else.
             true => row(&[("enter", "keeps it"), ("esc", "drops it")]),
-            // The way out is what this row keeps whatever else it sheds, and
-            // `? keys` is not it: somebody reading this row is already here.
             false => fitted(
                 &[("j k", "scroll"), ("/", "finds one"), ("q", "quits")],
                 ("any key", "goes back"),
                 width,
             ),
         },
-        // A question up is the whole of this row, and is drawn above.
+        // Unreachable: a confirmation is drawn above.
         Mode::Confirming(_) => fitted(&hints(screen), MORE, width),
         Mode::Typing(composer) => match composer.asking {
             Asking::Task => {
-                // What enter does, which is not the same thing on a line led
-                // with a bang: that one runs a command where this one starts
-                // an agent.
                 let enter = match composer.commanding() {
                     true => ("enter", "runs it"),
                     false => ("enter", "starts it"),
                 };
                 let mut said = vec![enter, ("alt+enter", "newline")];
-                // The dial on the rule above wears no label and says nothing
-                // about the key that turns it, so this row does: a setting
-                // nobody can find the key for is a setting nobody can change.
-                // A vendor that declares no dial has none to name, and neither
-                // has a command row, which runs no vendor at all.
+                // The dial on the rule has no label, so name its key here.
                 if !composer.commanding() && screen.profile.permission_dial().is_some() {
                     said.push(("shift+tab", "permission"));
                 }
-                // And the way out of the line for anybody whose task wants
-                // more room than a row, which is nowhere else on the screen.
                 said.push(("ctrl+g", "$EDITOR"));
                 fitted(&said, ("esc", "cancels"), width)
             }
@@ -854,15 +630,13 @@ pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
                 ("esc", "leaves it alone"),
                 width,
             ),
-            // On nothing as well as on a task, which is the one thing about
-            // this line a person could not guess: enter on an empty one is a
-            // copy with no first turn.
+            // Enter on an empty fork line starts a copy with no first turn.
             Asking::Fork { .. } => fitted(
                 &[("enter", "starts the copy"), ("empty", "no first turn")],
                 ("esc", "cancels"),
                 width,
             ),
-            // Drawn above, on the row this one would have taken.
+            // Unreachable: the find line is drawn above.
             Asking::Find => find_row(composer, width),
         },
     }
@@ -880,8 +654,7 @@ mod tests {
     };
     use ratatui::style::{Color, Modifier};
 
-    /// The weight and the strength a word on the wall was drawn at, for the
-    /// tests about what a line being typed does to what it is drawn over.
+    /// The modifiers of `word`'s first cell, on the first row that has it.
     fn word_modifier(screen: &Screen, size: (u16, u16), word: &str) -> Modifier {
         let lines = painted(screen, size);
         let (row, line) = lines
@@ -893,12 +666,12 @@ mod tests {
         cells(screen, size)[(line[..at].chars().count() as u16, row as u16)].modifier
     }
 
-    /// The row the keys are drawn on, which is the last one on the screen.
+    /// The keys row, the screen's last.
     fn hint_row(screen: &Screen, size: (u16, u16)) -> String {
         painted(screen, size).pop().expect("a row for the keys")
     }
 
-    /// The view with somebody part way through a find.
+    /// The view with `text` typed on the find line.
     fn seeking(text: &str) -> Screen {
         let mut screen = showing(a_fleet(), None);
         let mut composer = Composer::new(Asking::Find);
@@ -909,8 +682,6 @@ mod tests {
 
     #[test]
     fn find_stands_on_the_keys_row_and_leaves_the_wall_alone() {
-        // Empty, it says its whole grammar: what it takes and what the two
-        // keys out of it do.
         let empty = painted(&seeking(""), TALL);
         assert_eq!(
             empty[29], "/a name or task, or s:state · enter keeps · esc clears",
@@ -926,8 +697,7 @@ mod tests {
             "with the block turning over the cell the next character lands in"
         );
 
-        // No rule, and no band: the list is what somebody typing here is
-        // reading, so nothing takes its rows.
+        // No rule and no band of its own.
         assert!(
             !typed.iter().any(|row| row.starts_with("FIND")),
             "no rule over it: {typed:?}"
@@ -937,10 +707,7 @@ mod tests {
             "and the agents are still on the wall: {typed:?}"
         );
 
-        // Nor its strength. Every other line amx takes dims the wall behind it,
-        // because the wall has stopped answering to the keyboard; this one is
-        // answered by the wall on every keystroke, so the name under the cursor
-        // stands where it stood.
+        // And no dimming, unlike every other typed line.
         assert!(
             !word_modifier(&seeking("port"), TALL, "ask-a1b").contains(Modifier::DIM),
             "the wall keeps its strength while a find is open"
@@ -956,8 +723,6 @@ mod tests {
             "nothing is waiting yet"
         );
 
-        // The one press that changes nothing on the wall, so the one press
-        // that has nowhere else to say it landed.
         screen.going = true;
         let row = hint_row(&screen, wide);
         assert!(row.starts_with("g again the top of the list"), "{row:?}");
@@ -967,19 +732,17 @@ mod tests {
         );
     }
 
-    /// A fleet with nothing left to finish and more of them than one group
-    /// shows, so there is a fold to walk onto.
+    /// Finished agents, two more than the fold shows.
     fn all_done() -> Vec<View> {
         (0..crate::tui::rows::FOLD_AT + 2)
             .map(|n| view(&format!("done-{n:02}"), Phase::Done, Some("did it"), 60))
             .collect()
     }
 
-    /// A screen with room for the composer to reach its cap and a list above
-    /// it: ten rows is a third of thirty.
+    /// Tall enough for the composer to reach its cap (a third of 30 rows).
     const TALL: (u16, u16) = (60, 30);
 
-    /// The view with somebody part way through typing this line.
+    /// An empty view with `text` typed on a task line.
     fn typing(text: &str) -> Screen {
         let mut screen = showing(Vec::new(), None);
         let mut composer = Composer::new(Asking::Task);
@@ -988,7 +751,7 @@ mod tests {
         screen
     }
 
-    /// A line long enough to need more rows than any screen will give it.
+    /// Twenty paragraphs, more rows than the cap.
     fn twenty_rows() -> String {
         (1..=20)
             .map(|n| format!("row-{n:02}"))
@@ -996,7 +759,7 @@ mod tests {
             .join("\n")
     }
 
-    /// The rule over the line, wherever the band it heads has ended up.
+    /// The rule over the task line.
     fn edge(screen: &Screen, size: (u16, u16)) -> String {
         painted(screen, size)
             .into_iter()
@@ -1015,8 +778,7 @@ mod tests {
             );
         }
 
-        // Room for all of it: which mode this is, the one law of it, and what
-        // the next agent may do without asking.
+        // Wide enough for label, gloss and dial.
         let whole = edge(&typing("port it"), (80, 30));
         assert!(
             whole.starts_with("TASK · letters are text until esc "),
@@ -1024,8 +786,7 @@ mod tests {
         );
         assert!(whole.ends_with(" vendor default ┈┈"), "{whole:?}");
 
-        // The sentence is what goes first as the room runs out, and the dial
-        // after it; the word the rule is named for never does.
+        // The gloss goes first, then the dial; the label stays.
         let tight = edge(&typing("port it"), (40, 30));
         assert!(tight.starts_with("TASK ┈"), "{tight:?}");
         assert!(tight.ends_with(" vendor default ┈┈"), "{tight:?}");
@@ -1047,9 +808,8 @@ mod tests {
 
     #[test]
     fn input_mode_takes_the_strength_off_the_wall_it_is_drawn_over() {
-        // Everything above the band the line is drawn in, which on a screen
-        // this tall holding one line is every row but the last four: the rule,
-        // the line, the blank row over the keys, and the keys.
+        // Every row above the band: all but the rule, the line, the blank row
+        // and the keys.
         let weighty = |screen: &Screen| {
             let cells = cells(screen, TALL);
             (0..26).any(|row| {
@@ -1080,8 +840,7 @@ mod tests {
             "and the row somebody was working with goes quiet with the rest"
         );
 
-        // Dimmed rather than taken away: the wall is still the wall it was a
-        // keystroke ago, and the rows are still on it to be read.
+        // Dimmed, not hidden.
         let cells = cells(&screen, TALL);
         assert!(
             (0..TALL.0).all(|column| cells[(column, 0)].modifier.contains(Modifier::DIM)),
@@ -1102,9 +861,7 @@ mod tests {
         composer.insert("s:waiting");
         screen.mode = Mode::Typing(composer);
 
-        // The tokens narrow the wall from `/` and nowhere else now, so this
-        // line is a task with a colon in it and both the rule and the row
-        // under it say the one thing enter is about to do.
+        // `s:` only narrows on the find line; here it is part of a task.
         let painted = painted(&screen, (60, 6));
         assert!(
             painted[3].starts_with("TASK ·"),
@@ -1125,21 +882,20 @@ mod tests {
         let wide = (80, 12);
         let mut screen = showing(a_fleet(), None);
 
-        // The view opens on an agent's row, where those keys reach the agent.
+        // On an agent's row.
         assert_eq!(
             hint_row(&screen, wide),
             "space card   enter attach   ctrl+x stop   ctrl+t pin   ctrl+s axis   ? keys"
         );
 
-        // One line up is the heading over it, where the same two keys do
-        // something else entirely.
+        // On its heading.
         screen.list.up();
         assert_eq!(
             hint_row(&screen, wide),
             "enter shuts it   ctrl+x clears the group   ctrl+s axis   q quit   ? keys"
         );
 
-        // And a group somebody has shut is opened by the key that shut it.
+        // On a shut heading.
         screen.list.shut_or_open();
         assert!(
             hint_row(&screen, wide).starts_with("enter opens it"),
@@ -1152,7 +908,7 @@ mod tests {
     fn keymap_hints_offer_nothing_the_line_under_the_cursor_cannot_do() {
         let wide = (80, 12);
 
-        // A card is put away by the key that opened it.
+        // With a card up, space closes it.
         let mut screen = showing(a_fleet(), None);
         screen.card = Some(asking(&[], None).read());
         assert!(
@@ -1161,15 +917,13 @@ mod tests {
             hint_row(&screen, wide)
         );
 
-        // An agent whose command has ended has no window to bring forward and
-        // nothing left to stop.
+        // An ended agent cannot be attached or stopped.
         let mut screen = showing(all_done(), None);
         let row = hint_row(&screen, wide);
         assert!(row.starts_with("space card   ctrl+x forget"), "{row:?}");
         assert!(!row.contains("attach"), "{row:?}");
 
-        // The fold is not an agent either: what enter does there is give back
-        // the rows it is holding.
+        // On the fold, enter unfolds.
         for _ in 0..crate::tui::rows::FOLD_AT {
             screen.list.down();
         }
@@ -1179,14 +933,13 @@ mod tests {
             hint_row(&screen, wide)
         );
 
-        // A row already over the wall is one that key puts back, so that is
-        // what it offers there.
+        // On a pinned row, ctrl+t unpins.
         let mut screen = showing(a_fleet(), None);
         assert!(screen.list.hold_or_let_go());
         let row = hint_row(&screen, wide);
         assert!(row.contains("ctrl+t unpin"), "{row:?}");
 
-        // And a wall with nothing on it has no line under the cursor at all.
+        // An empty list.
         let screen = showing(Vec::new(), None);
         assert!(
             hint_row(&screen, wide).starts_with("n starts one"),
@@ -1195,8 +948,7 @@ mod tests {
         );
     }
 
-    /// The view with a card up and somebody standing at the line at its foot,
-    /// which is how every card is drawn.
+    /// The view with `card` up and `typed` on its line.
     fn carded(card: Card, typed: &str) -> Screen {
         let mut screen = showing(a_fleet(), Some(card));
         let mut composer = Composer::new(Asking::Reply);
@@ -1205,8 +957,7 @@ mod tests {
         screen
     }
 
-    /// A card whose body is longer than any card will ever have room for, so
-    /// that there is something under it to page to.
+    /// A card whose body is longer than any card, so it pages.
     fn a_long_answer() -> Card {
         Card {
             phase: Phase::Done,
@@ -1225,27 +976,20 @@ mod tests {
     fn keymap_the_keys_under_a_card_are_the_cards_while_its_line_is_empty() {
         let wide = (80, 14);
 
-        // Nothing typed, so the two keys the line has no use for are the
-        // list's and the row says what they do down here: enter is the enter
-        // of the row under the cursor, and space is the key that opened the
-        // card. Esc is pinned to the end, because a card nobody can see the
-        // way out of is a card they are stuck in.
+        // Empty line: enter and space act on the list; esc stays pinned last.
         let mut screen = carded(asking(&[], None), "");
         assert_eq!(
             hint_row(&screen, wide),
             "enter attach   space closes it   esc closes it"
         );
 
-        // A card whose body holds more than the card is showing names the key
-        // that reaches the rest of it; one that fits says nothing about a page
-        // there is not.
+        // `pgup` only when the body has more than a page.
         assert_eq!(
             hint_row(&carded(a_long_answer(), ""), wide),
             "enter attach   space closes it   pgup pages it   esc closes it"
         );
 
-        // And on a heading the row says the heading's own word, because that
-        // is what the key does where the cursor is standing.
+        // On a heading, enter shuts it.
         screen.list.up();
         assert!(
             hint_row(&screen, wide).starts_with("enter shuts it   space closes it"),
@@ -1258,9 +1002,7 @@ mod tests {
     fn keymap_the_keys_under_a_card_are_the_lines_the_moment_it_holds_a_word() {
         let wide = (80, 14);
 
-        // What enter will do is what the line is for: an answer at a question,
-        // and a message anywhere else. Nothing on that row is the list's any
-        // more, because none of those keys is.
+        // Enter answers a question.
         assert_eq!(
             hint_row(
                 &carded(asking(&["the sqlite one"], Some(Kind::Question)), "keep it"),
@@ -1268,8 +1010,7 @@ mod tests {
             ),
             "enter answers it   alt+enter newline   esc closes it"
         );
-        // A message to an agent still there is sent; the same words at one
-        // whose turn is over start it again, and the row says which.
+        // It sends to a live agent and resumes an ended one.
         let between_turns = Card {
             phase: Phase::Idle,
             ..a_long_answer()
@@ -1284,9 +1025,7 @@ mod tests {
         );
     }
 
-    /// A card holding what an agent has changed, which is the one body a hunk
-    /// can be under the cursor on. Two files, so there are two hunks to write
-    /// a review across.
+    /// A patch card with two files, one hunk each.
     fn a_patch() -> Card {
         Card {
             phase: Phase::Working,
@@ -1314,17 +1053,15 @@ mod tests {
     fn keymap_the_line_under_a_patch_says_the_hunk_the_words_will_go_with() {
         let wide = (80, 14);
 
-        // Nothing stepped to yet, so the words go as they were typed and the
-        // row says so. The key that keeps them for a hunk is named here and
-        // nowhere else, because a patch is the one thing read a hunk at a time.
+        // No hunk selected: the words are sent as typed. ctrl+n only appears
+        // on a patch.
         let screen = carded(a_patch(), "why this row?");
         assert_eq!(
             hint_row(&screen, wide),
             "enter sends it   alt+enter newline   ctrl+n keeps it   esc closes it"
         );
 
-        // Stepped to a hunk, the key names the one it will carry: which hunk
-        // a comment is about is the one thing the line itself cannot show.
+        // On a hunk, enter names it.
         let card = screen.card.as_ref().expect("the card");
         screen.scroll.to_hunk(card.body.hunks(), true);
         assert_eq!(
@@ -1332,9 +1069,7 @@ mod tests {
             "enter sends it with hunk 1   alt+enter newline   ctrl+n keeps it   esc closes it"
         );
 
-        // With a note behind it the row counts what would go instead, because
-        // the hunk under the cursor is no longer the whole of the message. Esc
-        // says what it would cost, whatever is on the line.
+        // With a kept note, enter counts the notes and esc says what it drops.
         screen.scroll.remark(Some(1), "this file can go");
         assert_eq!(
             hint_row(&screen, wide),
@@ -1346,17 +1081,14 @@ mod tests {
     fn keymap_an_empty_line_over_a_review_says_enter_sends_it() {
         let wide = (80, 14);
 
-        // Nothing kept, so the two keys the empty line has no use for are the
-        // list's, exactly as under any other card.
+        // No notes: the same row as under any card.
         let screen = carded(a_patch(), "");
         assert_eq!(
             hint_row(&screen, wide),
             "enter attach   space closes it   pgup pages it   esc closes it"
         );
 
-        // A review kept behind an empty line is still a review to send, and
-        // both keys say so: one what it would send, the other what it would
-        // drop.
+        // With notes kept, enter sends them and esc drops them.
         screen.scroll.remark(Some(0), "why this row?");
         screen.scroll.remark(Some(1), "this file can go");
         assert_eq!(
@@ -1380,8 +1112,7 @@ mod tests {
             );
         }
 
-        // What is shed is what is furthest from it, and what is kept is what
-        // the line under the cursor answers to.
+        // Hints go from the far end.
         assert_eq!(
             hint_row(&screen, (60, 12)),
             "space card   enter attach   ctrl+x stop   ? keys"
@@ -1409,9 +1140,7 @@ mod tests {
              the one that takes the line somewhere with room to write it"
         );
 
-        // Where they will not all fit, the editor goes before the dial does:
-        // a line can be typed without ever leaving for one, and the dial is
-        // the only thing on the rule that a key changes.
+        // The editor hint goes before the permission hint.
         let tight = hint_row(&typing("port it"), (80, 12));
         assert!(tight.contains("shift+tab permission"), "{tight:?}");
         assert!(!tight.contains("ctrl+g"), "{tight:?}");
@@ -1430,7 +1159,7 @@ mod tests {
 
     #[test]
     fn glyphs_and_notices_tell_a_failure_from_advice() {
-        // The first cell of the row the two of them share.
+        // The first cell of the keys row.
         let said = |notice| {
             let mut screen = showing(Vec::new(), None);
             screen.notice = Some(notice);
@@ -1461,8 +1190,7 @@ mod tests {
 
     #[test]
     fn composer_an_empty_task_line_names_its_own_prefixes() {
-        // Wide enough for the whole sentence; a narrow screen clips it with
-        // the ellipsis every other row wears.
+        // Wide enough for the whole placeholder.
         let empty = painted(&typing(""), (110, 30));
         let hint = empty
             .iter()
@@ -1501,23 +1229,18 @@ mod tests {
         assert!(clipped.starts_with("❯ !command"), "{clipped}");
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
 
-        // The next keystroke lands where the prompt ends, over the
-        // placeholder, the way a browser draws a field's ghost text — and the
-        // block says so by turning that cell over rather than by standing in
-        // it, so the first letter of the lesson is still there to read.
+        // The block reverses the placeholder's first cell.
         assert_eq!(block(&typing(""), TALL, 27), Some(2));
         assert!(!clipped.contains('█'), "{clipped}");
 
-        // The first character typed takes the placeholder away: whoever is
-        // typing has stopped reading it.
+        // The first character typed removes it.
         let typed = painted(&typing("p"), TALL);
         assert!(
             !typed.iter().any(|row| row.contains("m:model")),
             "{typed:?}"
         );
 
-        // A reply goes to an agent already running, where a dial means
-        // nothing, so the line would be teaching keys it does not read.
+        // A reply takes no prefixes.
         let mut replying = showing(Vec::new(), Some(asking(&[], None)));
         replying.mode = Mode::Typing(Composer::new(Asking::Reply));
         let reply = painted(&replying, TALL);
@@ -1605,11 +1328,11 @@ mod tests {
 
     #[test]
     fn wide_text_wraps_where_its_cells_run_out_with_the_block_after_it() {
-        // Forty-eight characters two cells each are ninety-six cells, and the
-        // fifty-eight a sixty-column line has for text take twenty-nine.
+        // 48 wide chars are 96 cells; a 60-column line has 58 for text, so
+        // 29 chars per row.
         let line = "日本語の文章".repeat(8);
         let painted = painted(&typing(&line), TALL);
-        // A wide character's second cell reads back as a space.
+        // A wide char's second cell reads back as a space.
         let cells = |chars: Vec<char>| {
             let row: String = chars.iter().map(|one| format!("{one} ")).collect();
             row.trim_end().to_string()
@@ -1625,8 +1348,7 @@ mod tests {
         );
     }
 
-    /// The same line with the cursor walked back into it, which is where the
-    /// block has somewhere of its own to stand.
+    /// [`typing`] with the cursor moved `back` chars left.
     fn typing_at(text: &str, back: usize) -> Screen {
         let mut screen = typing(text);
         if let Mode::Typing(composer) = &mut screen.mode {
@@ -1639,7 +1361,7 @@ mod tests {
 
     #[test]
     fn composer_stands_the_block_on_the_character_the_cursor_is_on() {
-        // Four back from the end of it, which is the r of "rter".
+        // On the "r" of "rter".
         let screen = typing_at("port the importer", 4);
         let painted = painted(&screen, TALL);
         assert_eq!(
@@ -1661,8 +1383,7 @@ mod tests {
             "in the colour the block has at the end of a line"
         );
 
-        // And a line that wrapped is walked back a row at a time: the block
-        // goes where the character it is on was drawn, which is the row above.
+        // Across a wrap the block moves to the row above.
         assert_eq!(
             block(&typing_at(&"x".repeat(116), 58), TALL, 27),
             Some(2),
@@ -1677,9 +1398,7 @@ mod tests {
 
     #[test]
     fn composer_draws_the_line_at_the_weight_the_rest_of_the_view_is_typed_at() {
-        // Three rows with the cursor walked back into the last of them, so the
-        // row it stands on and the rows drawn whole above it are both on the
-        // screen.
+        // Three rows, cursor inside the last, so both kinds of row are drawn.
         let screen = typing_at("port the importer\nand its tests\nand the docs", 4);
         let cells = cells(&screen, TALL);
         for row in 25..=27 {
@@ -1689,8 +1408,7 @@ mod tests {
             );
         }
 
-        // The block is what says where the next character lands, and it says
-        // it the way it always has: the cell turned over, in the accent.
+        // The block is reversed, in the accent.
         let cell = cells[(10, 27)].clone();
         assert_eq!(cell.symbol(), "d");
         assert!(
@@ -1700,8 +1418,7 @@ mod tests {
         );
         assert_eq!(cell.fg, theme().accent);
 
-        // And the keys under the line keep theirs, which is what makes that
-        // row read as a keyboard rather than as prose.
+        // The keys row keeps its bold keys.
         assert!(
             (0..TALL.0).any(|column| cells[(column, 29)].modifier.contains(Modifier::BOLD)),
             "the keys under the line are still keys"
@@ -1710,14 +1427,12 @@ mod tests {
 
     #[test]
     fn composer_wrapping_past_the_width_grows_it_the_same_way_a_newline_does() {
-        // Twice the room a sixty-column screen leaves beside the chevron.
+        // Two rows' worth of text at 60 columns.
         let painted = painted(&typing(&"x".repeat(116)), TALL);
         assert_eq!(painted[26], format!("❯ {}", "x".repeat(58)));
         assert_eq!(painted[27], format!("  {}", "x".repeat(58)));
 
-        // A row filled to the width leaves the block no cell of its own past
-        // the end of it, so it stands on the last cell the row has rather than
-        // off the screen where nobody can see it.
+        // At the end of a full row the block sits on its last cell.
         assert_eq!(block(&typing(&"x".repeat(58)), TALL, 27), Some(59));
     }
 
@@ -1741,8 +1456,7 @@ mod tests {
 
     #[test]
     fn composer_leaves_the_list_it_was_opened_from_on_the_screen() {
-        // A third of eight rows is two, whatever the line is holding, and the
-        // agents are what the view is for.
+        // A third of eight rows is two.
         let painted = painted(&typing(&twenty_rows()), (60, 8));
         assert_eq!(painted[5], "❯ row-19");
         assert_eq!(painted[6], "  row-20");
@@ -1799,9 +1513,7 @@ mod tests {
 
     #[test]
     fn composer_a_task_line_says_on_its_rule_which_project_it_will_run_in() {
-        // Beside the label, where a reply says which agent it is going to: a
-        // line opened under a project heading starts its agent there, and the
-        // one thing to be sure of before pressing enter is where that is.
+        // A line opened under a project heading starts its agent there.
         let mut screen = launching(Vec::new());
         let mut composer = Composer::new(Asking::Task);
         composer.under = Some(std::path::PathBuf::from("/src/api"));
@@ -1842,9 +1554,8 @@ mod tests {
         );
     }
 
-    /// The colour of the rule's first dash and of the chevron under it, on the
-    /// screen a line of this text is being typed on. Both of them are edge
-    /// rather than word, and the one thing they say is which of them it is.
+    /// The colours of the rule's first dash and of the chevron, with `text`
+    /// typed.
     fn edges(asking: Asking, text: &str) -> (Color, Color) {
         let mut screen = launching(Vec::new());
         let mut composer = Composer::new(asking);
@@ -1860,17 +1571,13 @@ mod tests {
 
     #[test]
     fn composer_a_command_row_lights_its_rule_and_the_chevron_under_it() {
-        // The label is already in the accent and says COMMAND; the edge it is
-        // set into says the same thing without a word, so a glance at the foot
-        // of the screen is enough to tell a shell from a spawn.
         assert_eq!(
             edges(Asking::Task, "!cargo test"),
             (theme().accent, theme().accent),
             "the dashes and the chevron take the accent while the bang stands"
         );
 
-        // And give it straight back: the bang is the whole of what lit them,
-        // and a task line looks like every other task line.
+        // Without the `!` they are dim again.
         assert_eq!(
             edges(Asking::Task, "cargo test"),
             (Color::Reset, Color::Reset),
@@ -1880,52 +1587,42 @@ mod tests {
 
     #[test]
     fn header_keeps_the_permission_dial_to_the_lines_that_start_an_agent() {
-        // The dial, and the key that turns it: the rule carries the one and
-        // the row under the line names the other, and neither is said about a
-        // line that will not start anything.
+        // Whether the dial or its key is shown anywhere.
         let turned = |screen: &Screen| {
             painted(screen, (60, 8))
                 .iter()
                 .any(|line| line.contains("default ┈┈") || line.contains("shift+tab"))
         };
 
-        // A reply goes to an agent that is already running under whatever it
-        // was started with, so the dial has nothing to say about it — and it
-        // is typed at the foot of the card, where there is no rule of its own
-        // for a dial to stand on at all.
+        // Not on a reply, which goes to an agent already running.
         let mut screen = launching(Vec::new());
         screen.card = Some(asking(&[], None).read());
         screen.mode = Mode::Typing(Composer::new(Asking::Reply));
         assert!(!turned(&screen), "a reply is not a spawn");
 
-        // Nor about a find line, which sends nothing anywhere.
+        // Not on the find line.
         screen.mode = Mode::Typing(Composer::new(Asking::Find));
         assert!(!turned(&screen));
 
-        // Nor about a command row: it runs a shell, and there is no agent on
-        // it for a permission to be about.
+        // Not on a `!` command.
         let mut commanding = Composer::new(Asking::Task);
         commanding.insert("!cargo test");
         screen.mode = Mode::Typing(commanding);
         assert!(!turned(&screen));
 
-        // A vendor amx has no entry for declares no permission dial: there is
-        // nothing to say and nothing to turn, so the rule ends bare.
+        // Not for a vendor that declares no permission dial.
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
         screen.profile.agent = "mock-claude".to_string();
         assert!(!turned(&screen));
 
-        // And nothing is being typed at all, which is most of the time.
+        // Not when nothing is being typed.
         let screen = launching(Vec::new());
         assert!(!turned(&screen));
     }
 
     #[test]
     fn header_leaves_the_list_a_row_with_every_other_band_open() {
-        // Four bands of chrome at once: the header, a closer look, a line
-        // being typed and the row under it. The list is what the view is for,
-        // so the band it is drawn in keeps a row whatever else is open — the
-        // card covers the foot of that band rather than taking rows off it.
+        // Header, card, typed line and keys all open at once.
         let mut screen = launching(vec![view("ask-a1b", Phase::Waiting, None, 30)]);
         screen.card = Some(asking(&["the sqlite one"], Some(Kind::Question)).read());
         screen.mode = Mode::Typing(Composer::new(Asking::Task));
@@ -1941,8 +1638,7 @@ mod tests {
         );
         assert!(painted[9].contains("enter starts it"), "{:?}", painted[9]);
 
-        // In that order down the screen: what is left of the list, the card
-        // over the foot of it, and the line under the card.
+        // Top to bottom: the list, the card over its foot, the typed line.
         let at = |front: &str| {
             painted
                 .iter()
@@ -1954,8 +1650,7 @@ mod tests {
             "{painted:?}"
         );
         assert!(at("✻ ask-a1b · claude ┈") < at("TASK"), "{painted:?}");
-        // And the row the card was opened from is one of the rows it is
-        // standing on, so the rule is the only thing left naming that agent.
+        // The card covers the agent's own row; its rule names the agent.
         assert!(
             !painted.iter().any(|line| line.starts_with(" ✻ ask-a1b")),
             "{painted:?}"
