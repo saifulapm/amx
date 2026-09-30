@@ -1,0 +1,806 @@
+/* amx website: the homepage and the docs share this file. */
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/fonts/literata-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/fonts/literata-400-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/fonts/literata-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/fonts/plex-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/fonts/plex-mono-500.woff2") format("woff2");
+}
+
+/* Prose is set in Literata; anything a terminal prints or you type is in
+   Plex Mono. The one colour is amx's own "waiting" amber, spent on what
+   wants a person: links, focus, the primary action. */
+:root {
+  color-scheme: dark;
+  --ground: #1e1f22;
+  --sunk: #17181b;
+  --ink: #e2e0da;
+  --ink-2: #b0afa9;
+  --dim: #898a8f;
+  --rule: #323438;
+  --accent: #eab04a;
+  --on-accent: #1a1b1d;
+  --link: #eab04a;
+  --tint: rgb(226 224 218 / 0.07);
+
+  --serif: "Literata", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --gutter: 11.5rem;
+  --gap: 3.5rem;
+  --pad: clamp(1.25rem, 4vw, 2.5rem);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --ground: #fafaf9;
+    --sunk: #f1f1ee;
+    --ink: #1d1e21;
+    --ink-2: #4a4b50;
+    --dim: #6b6d72;
+    --rule: #dfdfda;
+    --link: #8a5a00;
+    --tint: rgb(29 30 33 / 0.06);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 1.125rem/1.6 var(--serif);
+  font-kerning: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: var(--link);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+}
+
+a:hover {
+  color: var(--link);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+code,
+pre {
+  font-family: var(--mono);
+}
+
+code {
+  font-size: 0.9em;
+}
+
+.wrap {
+  width: min(70rem, 100% - 2 * var(--pad));
+  margin-inline: auto;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Top bar and footer */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1.5rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--ink);
+  font: 500 1.0625rem/1 var(--mono);
+  text-decoration: none;
+}
+
+.brand:hover {
+  color: var(--ink);
+}
+
+.mark {
+  flex: none;
+  width: 1.3rem;
+  height: 1.3rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.mark .lit {
+  fill: var(--accent);
+  stroke: none;
+}
+
+.topnav {
+  display: flex;
+  gap: 1.75rem;
+  font-size: 1rem;
+}
+
+.topnav a {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.topnav a:hover,
+.topnav a[aria-current] {
+  color: var(--ink);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+  margin-top: 3rem;
+  padding-block: 2rem 3rem;
+  border-top: 1px solid var(--rule);
+  color: var(--dim);
+  font-size: 0.9375rem;
+}
+
+.footer p {
+  margin: 0;
+}
+
+.footer .brand {
+  font-size: 0.9375rem;
+}
+
+/* Homepage: a man page's grid, section names hanging in the left column and
+   everything else on one line to the right of it. */
+
+.hero,
+.section {
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  column-gap: var(--gap);
+}
+
+.hero > *,
+.section > * {
+  grid-column: 2;
+}
+
+.hero {
+  padding-block: clamp(3rem, 8vw, 6.5rem) clamp(2.5rem, 5vw, 4rem);
+}
+
+.hero h1 {
+  max-width: 13em;
+  margin: 0 0 1.75rem;
+  font-size: clamp(2.5rem, 5.6vw, 4.25rem);
+  font-weight: 400;
+  line-height: 1.04;
+  letter-spacing: -0.022em;
+  text-wrap: balance;
+}
+
+.lede {
+  max-width: 33em;
+  margin: 0 0 2.5rem;
+  color: var(--ink-2);
+  font-size: 1.25rem;
+  line-height: 1.55;
+}
+
+.install {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font: 400 0.9375rem/1.5 var(--mono);
+}
+
+.install .prompt {
+  padding: 0.9rem 0 0.9rem 1.1rem;
+  color: var(--dim);
+  user-select: none;
+}
+
+.install code {
+  flex: 1;
+  min-width: 0;
+  padding: 0.9rem 1rem 0.9rem 0.65rem;
+  overflow-x: auto;
+  color: var(--ink);
+  font-size: inherit;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.copy {
+  flex: none;
+  min-width: 5.5rem;
+  padding: 0 1rem;
+  border: 0;
+  border-left: 1px solid var(--rule);
+  border-radius: 0 7px 7px 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: 400 0.9375rem/1 var(--serif);
+  cursor: pointer;
+}
+
+.copy:hover {
+  background: var(--tint);
+  color: var(--ink);
+}
+
+.note {
+  max-width: 40rem;
+  margin: 0.9rem 0 2.25rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.note code {
+  color: var(--ink-2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.75rem;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.button {
+  padding: 0.55rem 1rem;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.button:hover {
+  background: color-mix(in srgb, var(--accent) 85%, white);
+  color: var(--on-accent);
+}
+
+.demo figure {
+  margin: 0;
+}
+
+.demo video,
+.screen {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #141518;
+}
+
+.demo figcaption {
+  max-width: 40rem;
+  margin-top: 1rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.section {
+  padding-block: clamp(3.5rem, 8vw, 6rem) 0;
+}
+
+.section > h2 {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.section > p {
+  max-width: 36em;
+  margin: 0 0 1.5rem;
+  color: var(--ink-2);
+}
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2.75rem 3.25rem;
+}
+
+.features h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.features p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 1rem;
+  line-height: 1.62;
+}
+
+.features code {
+  color: var(--ink);
+}
+
+.term {
+  margin: 0;
+  padding: 1.1rem 1.3rem;
+  overflow-x: auto;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  color: var(--ink-2);
+  font: 400 0.875rem/1.7 var(--mono);
+}
+
+.term code {
+  font-size: inherit;
+}
+
+.term .p {
+  color: var(--dim);
+  user-select: none;
+}
+
+.term .c {
+  color: var(--ink);
+}
+
+/* The view, drawn as text until the demo video is in place. Its colours are
+   amx's default theme, on a terminal, whatever this page's scheme is. */
+
+.screen {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  padding: 2.6% 3%;
+  overflow: hidden;
+  color: #d6d5d0;
+}
+
+.screen pre {
+  margin: 0;
+  font: 400 2.07cqi/1.42 var(--mono);
+}
+
+.screen .keys {
+  margin-top: auto;
+}
+
+.screen b {
+  font-weight: 500;
+}
+
+.screen .d {
+  color: #85868b;
+}
+
+.screen .s {
+  color: #b9b8b3;
+}
+
+.screen .w {
+  color: #ffc107;
+}
+
+.screen .ok {
+  color: #4eba65;
+}
+
+.screen .ac {
+  color: #56b6c2;
+}
+
+.screen .badge {
+  background: #ffc107;
+  color: #141518;
+  font-weight: 500;
+}
+
+.screen .cur {
+  display: block;
+  background: #373737;
+}
+
+/* The glyphs are outside the latin subset, so they come from whichever font
+   has them; a fixed cell keeps the columns straight whatever that font is. */
+.screen .g {
+  display: inline-block;
+  width: 1ch;
+  font-family: "Zapf Dingbats", "Apple Symbols", "Segoe UI Symbol", "DejaVu Sans Mono", "Noto Sans Symbols 2", var(--mono);
+  line-height: 1;
+  text-align: center;
+}
+
+.screen .br {
+  animation: breathe 1.4s steps(5, jump-none) infinite alternate;
+}
+
+@keyframes breathe {
+  from {
+    transform: scale(0.5);
+  }
+  to {
+    transform: scale(1.05);
+  }
+}
+
+/* Docs */
+
+.docs {
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  column-gap: var(--gap);
+  padding-top: 2rem;
+}
+
+.sidebar {
+  position: sticky;
+  top: 1.5rem;
+  align-self: start;
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
+  font-size: 0.9375rem;
+}
+
+.sidebar ul,
+.pages ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar a,
+.pages a {
+  display: block;
+  padding: 0.32rem 0 0.32rem 0.9rem;
+  border-left: 2px solid var(--rule);
+  color: var(--ink-2);
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.sidebar a:hover,
+.pages a:hover {
+  color: var(--ink);
+}
+
+.sidebar a[aria-current="page"],
+.pages a[aria-current="page"] {
+  border-left-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pages {
+  display: none;
+}
+
+.doc {
+  min-width: 0;
+  max-width: 43rem;
+}
+
+.prose {
+  font-size: 1.0625rem;
+  line-height: 1.66;
+}
+
+.prose h1 {
+  margin: 0 0 1.5rem;
+  font-size: clamp(2rem, 4vw, 2.5rem);
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+}
+
+.prose h2,
+.prose h3,
+.prose h4 {
+  position: relative;
+  scroll-margin-top: 1.5rem;
+  font-weight: 600;
+}
+
+.prose h2 {
+  margin: 3rem 0 0.9rem;
+  font-size: 1.5rem;
+  line-height: 1.3;
+}
+
+.prose h3 {
+  margin: 2.25rem 0 0.6rem;
+  font-size: 1.1875rem;
+  line-height: 1.4;
+}
+
+.prose h4 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.0625rem;
+}
+
+.anchor {
+  position: absolute;
+  right: 100%;
+  padding-right: 0.35em;
+  color: var(--dim);
+  font-weight: 400;
+  text-decoration: none;
+  opacity: 0;
+}
+
+.prose :is(h2, h3, h4):hover .anchor,
+.anchor:focus-visible {
+  opacity: 1;
+}
+
+.prose p,
+.prose ul,
+.prose ol,
+.prose pre,
+.prose blockquote,
+.prose .table {
+  margin: 0 0 1.15rem;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.35rem;
+}
+
+.prose li + li {
+  margin-top: 0.3rem;
+}
+
+.prose li > p {
+  margin-bottom: 0.5rem;
+}
+
+.prose li::marker {
+  color: var(--dim);
+}
+
+.prose a {
+  text-decoration-color: color-mix(in srgb, var(--link) 75%, transparent);
+}
+
+.prose :not(pre) > code {
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--tint);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Sized so an 80-column terminal fits the column without scrolling. */
+.prose pre {
+  padding: 1rem 1.2rem;
+  overflow-x: auto;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.62;
+}
+
+.prose pre code {
+  font-size: inherit;
+}
+
+.prose blockquote {
+  padding-left: 1.1rem;
+  border-left: 2px solid var(--rule);
+  color: var(--ink-2);
+}
+
+.prose .table {
+  overflow-x: auto;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.prose th {
+  font-weight: 600;
+  text-align: left;
+}
+
+.prose th,
+.prose td {
+  padding: 0.55rem 1.25rem 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+.prose td:first-child code {
+  white-space: nowrap;
+}
+
+.prose hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+.pager a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: var(--ink);
+  font-size: 1.0625rem;
+  text-decoration: none;
+}
+
+.pager a span {
+  color: var(--dim);
+  font-size: 0.875rem;
+}
+
+.pager a:hover {
+  color: var(--link);
+}
+
+.pager .next {
+  margin-left: auto;
+  text-align: right;
+}
+
+/* Narrow screens: one column, and the docs pages behind a disclosure. */
+
+@media (max-width: 54rem) {
+  .hero,
+  .section,
+  .docs {
+    display: block;
+  }
+
+  .section > h2 {
+    margin-bottom: 1.25rem;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .pages {
+    display: block;
+    margin-bottom: 2.25rem;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    font-size: 0.9375rem;
+  }
+
+  .pages summary {
+    padding: 0.7rem 1rem;
+    cursor: pointer;
+  }
+
+  .pages nav {
+    padding: 0 1rem 0.8rem;
+  }
+
+  .anchor {
+    display: none;
+  }
+}
+
+/* A phone: one column of features, and the install command wraps at its
+   slashes, with the copy button under it, rather than hiding its end. */
+
+@media (max-width: 34rem) {
+  .features {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+
+  .install {
+    flex-wrap: wrap;
+  }
+
+  .install code {
+    flex: 1 1 0;
+    white-space: normal;
+  }
+
+  .copy {
+    flex-basis: 100%;
+    padding: 0.7rem 1rem;
+    border-top: 1px solid var(--rule);
+    border-left: 0;
+    border-radius: 0 0 7px 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screen .br {
+    animation: none;
+  }
+}

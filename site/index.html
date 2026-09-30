@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>amx: run coding agents as tmux panes</title>
+  <meta name="description" content="amx starts claude, pi, codex or opencode in tmux sessions of their own, keeps them in one list you can answer from, and gives scripts exit codes.">
+  <meta name="theme-color" content="#1e1f22" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)">
+  <link rel="canonical" href="https://saifulapm.github.io/amx/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="preload" href="assets/fonts/literata-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="amx">
+  <meta property="og:title" content="amx: run coding agents as tmux panes">
+  <meta property="og:description" content="Start claude, pi, codex or opencode in tmux sessions of their own, keep them in one list you can answer from, and script them with exit codes.">
+  <meta property="og:url" content="https://saifulapm.github.io/amx/">
+  <meta property="og:image" content="https://saifulapm.github.io/amx/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+  <header class="topbar wrap">
+    <a class="brand" href="./"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="1" y="1" width="22" height="22" rx="3"/><path d="M12 1v22M12 12h11"/><rect class="lit" x="13" y="2" width="9" height="9"/></svg>amx</a>
+    <nav class="topnav" aria-label="Site">
+      <a href="docs/quick-start/">Docs</a>
+      <a href="https://github.com/saifulapm/amx">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero wrap">
+      <h1>Run coding agents as tmux panes.</h1>
+      <p class="lede">Each agent is an ordinary program in a tmux session of its own. amx starts it, watches it from outside, and leaves no process of its own running. You get one list to look in on, answer and stop your agents from, and a script gets commands that say what happened in an exit code.</p>
+      <div class="install">
+        <span class="prompt" aria-hidden="true">$</span>
+        <code id="install">curl -fsSL https://<wbr>saifulapm.github.io/amx/<wbr>install.sh | sh</code>
+        <button type="button" class="copy" data-copy="install">Copy</button>
+      </div>
+      <p class="note">Prebuilt for Linux and macOS, on x86_64 and arm64. amx needs tmux 3.2 or newer. Then run <code>amx setup claude</code> (or <code>pi</code>, <code>codex</code>, <code>opencode</code>) and <code>amx doctor</code>.</p>
+      <p class="actions">
+        <a class="button" href="docs/quick-start/">Read the docs</a>
+        <a href="https://github.com/saifulapm/amx">Source on GitHub</a>
+      </p>
+    </section>
+
+    <section class="demo wrap" aria-label="Demo">
+      <figure>
+        <!-- demo:video -->
+        <video controls muted playsinline preload="none" poster="assets/poster.png" width="1920" height="1080">
+          <source src="assets/amx-demo.mp4" type="video/mp4">
+        </video>
+        <!-- /demo:video -->
+        <!-- demo:placeholder -->
+        <div class="screen" role="img" aria-label="The amx view: agents grouped under Pinned, Ready for review, Needs input, Working and Completed, with one agent waiting on a question.">
+<pre><b>AMX</b>          <span class="d">1 pinned   1 review   1 working   27 done   3 running</span>   <span class="badge"> 1 WAITING </span>
+<span class="d"><span class="g">└</span> next</span>  <span class="ac">claude</span>   <span class="d">model</span>  <span class="ac">default</span>   <span class="d">permission</span>  <span class="ac">default</span>   <span class="d">worktree</span>  <span class="ac">new</span>
+
+<span class="d"> Pinned</span>
+  <span class="g br">✻</span> <span class="d">bump-deps-e5f</span>          <span class="s">Running Bash</span>                                      <span class="d">12s</span>
+
+<span class="d"> Ready for review</span>
+  <span class="g ok">∙</span> <span class="d">fix-login-a1b</span>     <span class="ok">#12</span>  <span class="s">the login bug is fixed</span>                             <span class="d">4m</span>
+
+<span class="w"> Needs input</span>
+<span class="cur">  <span class="g w">✻</span> <b class="w">port-import-b2c</b>        <span class="s">Which fixture should the port keep?</span>               <span class="d">29s</span></span>
+<span class="d"> Working</span>
+  <span class="g br">✻</span> <span class="d">ship-docs-a7d</span>          <span class="s">Running cargo test</span>                                 <span class="d">3s</span>
+
+<span class="d"> Completed 27</span></pre>
+<pre class="keys">space <span class="d">card</span>   enter <span class="d">attach</span>   ctrl+x <span class="d">stop</span>   ctrl+t <span class="d">pin</span>   ctrl+s <span class="d">axis</span>   ? <span class="d">keys</span></pre>
+        </div>
+        <!-- /demo:placeholder -->
+        <figcaption>The view, opened by typing <code>amx</code>. Agents are grouped by what they need from you, and the block at the top right counts the ones waiting on you.</figcaption>
+      </figure>
+    </section>
+
+    <section class="section wrap" aria-labelledby="how">
+      <h2 id="how">How it works</h2>
+      <div class="features">
+        <div>
+          <h3>Each agent is a tmux session</h3>
+          <p><code>amx new</code> starts the agent in a detached session named <code>amx-&lt;id&gt;</code>, prints the id and exits. There is no daemon: attaching is tmux attaching, and killing amx kills nothing.</p>
+        </div>
+        <div>
+          <h3>One list for all of them</h3>
+          <p>Type <code>amx</code> to open the view. Agents are grouped under ready for review, needs input, working and completed. <code>space</code> opens an agent's conversation and <code>enter</code> attaches to it.</p>
+        </div>
+        <div>
+          <h3>Answer prompts from the list</h3>
+          <p>A permission prompt or a question shows on the agent's row. Answer it on the line under the agent's card, or from any shell with <code>amx answer &lt;id&gt; y</code>, without attaching.</p>
+        </div>
+        <div>
+          <h3>Exit codes for scripts</h3>
+          <p><code>amx result</code> waits for the turn to end and prints the answer: exit 0 answered, 1 failed, 2 asking a question, 3 timed out. <code>amx sub</code> starts a subagent and waits for it in one call.</p>
+        </div>
+        <div>
+          <h3>A worktree per agent</h3>
+          <p>In a git repository each agent works in its own worktree on <code>amx/&lt;id&gt;</code>. <code>amx diff</code> shows what it changed, the row shows its pull request, and <code>amx sweep</code> clears the ones that landed.</p>
+        </div>
+        <div>
+          <h3>claude, pi, codex and opencode</h3>
+          <p><code>amx setup &lt;agent&gt;</code> wires the agent's hooks so it reports each turn and question. Any other command still gets a pane and a row, read off its screen.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section wrap" aria-labelledby="shell">
+      <h2 id="shell">From a shell</h2>
+      <p><code>amx new</code> prints the new agent's id and nothing else, and every other command takes that id. <code>amx ls</code> prints a line per agent: its state, its id, how long it has worked, and what it is doing or asking.</p>
+      <pre class="term"><code><span class="p">$ </span><span class="c">amx new "port the importer"</span>
+port-the-importer-k3f
+<span class="p">$ </span><span class="c">amx ls</span>
+working  port-the-importer-k3f     4s  Running Bash
+waiting  fix-the-login-bug-a1b    12s  Claude needs your permission to use Bash
+done     tidy-the-imports-d4e      2m  the imports are sorted</code></pre>
+    </section>
+  </main>
+
+  <footer class="footer wrap">
+    <a class="brand" href="./"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="1" y="1" width="22" height="22" rx="3"/><path d="M12 1v22M12 12h11"/><rect class="lit" x="13" y="2" width="9" height="9"/></svg>amx</a>
+    <p>MIT or Apache-2.0, at your option. <a href="https://github.com/saifulapm/amx">Source on GitHub</a>.</p>
+  </footer>
+
+  <span class="sr-only" role="status" id="copied"></span>
+  <script>
+    for (const button of document.querySelectorAll('[data-copy]')) {
+      button.addEventListener('click', async () => {
+        const code = document.getElementById(button.dataset.copy);
+        const status = document.getElementById('copied');
+        try {
+          await navigator.clipboard.writeText(code.textContent);
+          button.textContent = status.textContent = 'Copied';
+        } catch {
+          getSelection().selectAllChildren(code);
+          button.textContent = status.textContent = 'Selected';
+        }
+        clearTimeout(button.reset);
+        button.reset = setTimeout(() => { button.textContent = 'Copy'; status.textContent = ''; }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>
