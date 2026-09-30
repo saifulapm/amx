@@ -1,8 +1,7 @@
-//! Driving an agent from outside: waiting for its answer, sending it more
-//! work, and answering the question it stopped on.
+//! `amx result`, `send` and `answer`: driving an agent from a script, and how
+//! `status` and `ls` show the question it is waiting on.
 //!
-//! These three verbs are the whole of amx's machine-facing surface, and the
-//! exit code is what a caller reads. Every test here asserts the code first.
+//! Callers branch on the exit code, so every test asserts it first.
 
 mod common;
 
@@ -10,14 +9,12 @@ use common::{Harness, code, stderr, stdout};
 use serde_json::json;
 use std::process::{Output, Stdio};
 
-/// Every wait in this file is bounded, so a verb that never returns fails the
-/// test it is in rather than the whole suite.
+/// `amx result` with a timeout, so a hang fails only the test it is in.
 fn result(amx: &Harness, id: &str) -> Output {
     amx.amx(&["result", id, "--timeout", "20"])
 }
 
-/// The command a surface offers for the question an agent is waiting on, off
-/// the line that says what answers it.
+/// The command on the `answer ...` line of `said`.
 fn offered(said: &str) -> String {
     said.lines()
         .find_map(|line| line.trim().strip_prefix("answer "))
@@ -26,10 +23,8 @@ fn offered(said: &str) -> String {
         .to_string()
 }
 
-/// The keys an offer names, as a person reads them off it.
-///
-/// A range of digits is as many keys as it spans: `1-2` is two rows to choose
-/// between and `1-2` is not itself a key anybody can press.
+/// The keys in an offer's `<...>`, with a digit range such as `1-2` expanded
+/// to one key per digit.
 fn keys_offered(offer: &str) -> Vec<String> {
     offer
         .split_once('<')
@@ -41,7 +36,6 @@ fn keys_offered(offer: &str) -> Vec<String> {
         .collect()
 }
 
-/// One offered key, or every digit of a range written as one.
 fn each_key(offered: &str) -> Vec<String> {
     let range = offered
         .split_once('-')
@@ -57,8 +51,7 @@ fn result_waits_for_the_turn_to_end_and_prints_the_answer() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
 
-    // Asked straight away: the agent is still working, and this call is the
-    // wait a caller would otherwise have written itself.
+    // No `until_state` first: `result` itself waits out the turn.
     let out = result(&amx, "fix-login-a1b");
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out).trim(), "the tests pass now");
@@ -136,8 +129,8 @@ fn the_answer_from_before_a_send_is_not_the_answer_to_it() {
     amx.play("fix-login-a1b", "happy-turn");
     amx.until_state("fix-login-a1b", "idle");
 
-    // This agent will never take the message — happy-turn has finished. What
-    // matters is that the send is on the record before anybody asks again.
+    // happy-turn never takes the message. The test only needs the send
+    // recorded before `result` runs.
     let mut sending = amx
         .amx_command(&["send", "fix-login-a1b", "and now the linter"])
         .stdout(Stdio::piped())
@@ -187,9 +180,7 @@ fn send_confirms_that_the_agent_took_the_message_and_result_waits_for_its_answer
 
 #[test]
 fn send_takes_the_text_from_a_file() {
-    // The follow-up too long to quote into a shell: the file is the message,
-    // and what reaches the pane is its text rather than an instruction to go
-    // and read it.
+    // The pane gets the file's contents, not its path.
     let amx = Harness::new();
     amx.play("fix-login-a1b", "takes-a-message");
     amx.until_state("fix-login-a1b", "idle");
@@ -243,8 +234,8 @@ fn send_refuses_a_file_it_cannot_read_before_anything_reaches_the_pane() {
     let named = empty.to_string_lossy().into_owned();
     let missing = amx.home().join("nowhere.md").to_string_lossy().into_owned();
 
-    // A file with nothing in it is an empty message, and a file that is not
-    // there is named, because the name is what was mistyped.
+    // An empty file is an empty message. A missing file is named in the
+    // error.
     let out = amx.amx(&["send", "fix-login-a1b", "--file", &named]);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
 
@@ -252,7 +243,7 @@ fn send_refuses_a_file_it_cannot_read_before_anything_reaches_the_pane() {
     assert_eq!(code(&out), 64, "{}", stderr(&out));
     assert!(stderr(&out).contains("nowhere.md"), "{}", stderr(&out));
 
-    // And a message typed beside a file is two messages, which is none.
+    // Text and `--file` together are ambiguous.
     let out = amx.amx(&["send", "fix-login-a1b", "carry on", "--file", &named]);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
 
@@ -361,11 +352,10 @@ fn a_key_that_is_not_an_answer_never_reaches_the_agent() {
     );
 }
 
-/// Park an agent in front of the permission box its scenario draws, with the
-/// hooks put back far enough that a reader takes the choices off the screen.
+/// Park an agent on its scenario's permission box, with a stale record so the
+/// reader takes the choices off the screen.
 ///
-/// The hook carried the words and nothing else — no hook has ever carried the
-/// choices — so this is the only way the record gets both.
+/// No hook carries the choices, only the question text.
 fn parked_on_the_box(amx: &Harness, id: &str) {
     amx.play(id, "asks-a-question");
     amx.until_state(id, "waiting");
@@ -385,12 +375,11 @@ fn parked_on_the_box(amx: &Harness, id: &str) {
     );
 }
 
-/// Park an agent on a menu of the vendor's own, which is the one question that
-/// takes words rather than a key.
+/// Park an agent on the vendor's own `AskUserQuestion` menu, the one kind of
+/// question that also takes free text.
 ///
-/// The record is written straight out and left fresh, so the reading answers
-/// from the hooks: what an `AskUserQuestion` hook leaves behind is the words,
-/// the tool's own choices and the kind, and no screen is read over the top.
+/// The record is written fresh, as that hook leaves it (text, options and
+/// kind), so the reader trusts it and does not read the screen.
 fn parked_on_a_menu(amx: &Harness, id: &str) {
     amx.play(id, "works-without-end");
     amx.until_state(id, "working");
@@ -474,8 +463,8 @@ fn surfaces_status_prints_the_question_with_the_choices_under_it() {
 
 #[test]
 fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
-    // A box amx read two choices off is not answered by `7`, so a row offering
-    // `1-9` at one is naming seven keys that do nothing to it.
+    // A box with two choices read off the screen ignores `7`, so the offer is
+    // `1-2`, not `1-9`.
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -485,8 +474,7 @@ fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
     assert!(offer.contains("1-2"), "{offer:?}");
     assert!(!offer.contains("1-9"), "{offer:?}");
 
-    // And the same on a question of the vendor's own, where the digits run to
-    // the choices it named and the words are the rest of the offer.
+    // Same for a vendor menu: digits up to its options, plus words.
     parked_on_a_menu(&amx, "pick-a1b");
     let out = amx.amx(&["send", "pick-a1b", "carry on"]);
     assert_eq!(code(&out), 2, "{}", stderr(&out));
@@ -498,9 +486,8 @@ fn surfaces_the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
 
 #[test]
 fn surfaces_status_neutralises_the_task_it_quotes() {
-    // The task is free text typed by whoever spawned the agent, and status
-    // hands it to a terminal: an escape or a bidi override in it must arrive
-    // neutralised, like every other word amx did not author.
+    // The task is untrusted text printed to a terminal, so escapes and bidi
+    // overrides in it must be neutralised.
     let amx = Harness::new();
     let id = "sly-task-a1b";
     amx.play(id, "works-without-end");
@@ -537,13 +524,11 @@ fn surfaces_the_table_carries_the_choices_beside_the_question() {
     assert_eq!(row.lines().count(), 1, "and a row is still a row: {row:?}");
 }
 
-/// Park an agent on the vendor's own folder-trust gate, as claude 2.1.259
-/// draws it: two choices, no number on either, and the cursor on the one that
-/// ends the agent.
+/// Park an agent on claude 2.1.259's folder-trust gate: two unnumbered
+/// choices, with the cursor on `No, exit`.
 ///
-/// There are no hooks under this screen. The vendor puts it in front of a
-/// session rather than inside one, so the pane is the whole of what a reader
-/// has to go on and the record is what the reader writes off it.
+/// No hooks fire on this screen because it comes before the session starts,
+/// so the reader has only the pane to go on.
 fn parked_on_the_gate(amx: &Harness, id: &str) -> String {
     let pane = amx.play(id, "stops-on-trust");
     amx.until("the gate to be drawn", || {
@@ -556,10 +541,9 @@ fn parked_on_the_gate(amx: &Harness, id: &str) -> String {
 
 #[test]
 fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
-    // docs/claude-screens.md, driven against a live 2.1.259 on 2026-09-05:
-    // `1`, `2` and `y` do nothing at this gate, `n` and `enter` end the agent,
-    // and the only thing that reaches `Yes, I trust this folder` is a walk
-    // down and the key that takes what it lands on.
+    // Per docs/claude-screens.md (claude 2.1.259): `1`, `2` and `y` do nothing
+    // at this gate, `n` and `enter` exit, and only `down` then `enter` reaches
+    // `Yes, I trust this folder`.
     let amx = Harness::new();
     parked_on_the_gate(&amx, "trusts-b2c");
 
@@ -579,11 +563,9 @@ fn surfaces_a_screen_that_numbers_nothing_is_answered_by_walking_to_the_row() {
 
 #[test]
 fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numbered() {
-    // The cursor opens on `No, exit`, so `enter` here is the key that ends the
-    // agent. The numbers on this screen are amx's own, read off the cursor
-    // glyph, and none of them says where the vendor left that cursor standing.
-    // Refusing it is what keeps the grammar off the row the vendor happened to
-    // highlight, and the two rows amx counted are offered in its place.
+    // The cursor opens on `No, exit`, so `enter` here exits. Where the vendor
+    // numbers no row, amx refuses `enter` and offers the two rows it numbered
+    // from the cursor glyph.
     let amx = Harness::new();
     let pane = parked_on_the_gate(&amx, "trusts-b2c");
 
@@ -600,8 +582,8 @@ fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numb
         "a refused key is not an answer, and the question is still there to be answered"
     );
 
-    // A walk that takes nothing leaves the prompt standing, so it is not an
-    // answer either: the walk and the take go in one line.
+    // `down` alone answers nothing, so it is refused too: the walk and the
+    // `enter` go in one call.
     let out = amx.amx(&["answer", "trusts-b2c", "down"]);
     assert_eq!(code(&out), 64, "{}", stderr(&out));
     assert!(stderr(&out).contains("down enter"), "{}", stderr(&out));
@@ -609,11 +591,10 @@ fn surfaces_the_key_that_takes_the_highlighted_row_is_refused_where_none_is_numb
 
 #[test]
 fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
-    // The row a walk lands on carries no number, so nothing amx holds says
-    // what the take took — and there are no hooks under this screen to say it
-    // afterwards. A record moved to `working` off the keystroke alone would
-    // have `answer` refuse the next caller while the gate is still on the pane,
-    // and `status` read that same pane moments later and say `waiting` again.
+    // amx cannot tell which row a walk selected, and no hook fires on this
+    // screen to say. Moving the record to `working` on the keystroke would make
+    // `answer` refuse the next caller while `status` still reads the gate as
+    // `waiting`.
     let amx = Harness::new();
     let pane = parked_on_the_gate(&amx, "trusts-b2c");
 
@@ -627,20 +608,16 @@ fn surfaces_a_walk_leaves_the_screen_it_walked_answerable_again() {
     let said = stdout(&amx.amx(&["status", "trusts-b2c"]));
     assert!(said.contains("trusts-b2c  waiting"), "{said:?}");
 
-    // And what status says is pending is what answer takes: the same screen,
-    // answered again, rather than a caller told there is nothing to answer.
+    // `answer` accepts what `status` reports as pending.
     let out = amx.amx(&["answer", "trusts-b2c", "down enter"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 }
 
 #[test]
 fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_amx_counted() {
-    // The same gate, from the other side: what a person is told to type at it.
-    // The vendor numbers neither row, so the numbers are amx's own, read off
-    // the cursor glyph — two rows, two digits, and each digit the walk that
-    // reaches the row it stands for. An offer of `y|n|1-9|enter|esc` named
-    // eight keys, seven of which do nothing to this screen and one of which is
-    // the exit.
+    // amx numbers the gate's two rows itself from the cursor glyph, each digit
+    // standing for the walk to its row. An offer of `y|n|1-9|enter|esc` would
+    // list keys that do nothing here and one that exits.
     let amx = Harness::new();
     parked_on_the_gate(&amx, "trusts-b2c");
 
@@ -651,9 +628,7 @@ fn surfaces_a_row_waiting_on_a_screen_that_numbers_nothing_is_offered_the_rows_a
     assert!(offer.contains("1-2"), "the rows it counted: {offer:?}");
     assert!(!offer.contains("1-9"), "and no digit past them: {offer:?}");
 
-    // And every key it does offer is one `amx answer` takes. An offer amx then
-    // refuses is worse than none: it is the sentence a person reads before
-    // they type.
+    // Every offered key must be one `amx answer` accepts.
     for (at, key) in keys_offered(&offer).iter().enumerate() {
         let id = format!("gate-{at}-a1b");
         parked_on_the_gate(&amx, &id);
@@ -705,10 +680,9 @@ fn surfaces_answer_refuses_words_at_a_prompt_that_takes_a_key() {
 
 #[test]
 fn surfaces_a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
-    // `y` at a box is a key amx types and cannot check: this vendor says
-    // nothing when a prompt is dismissed, and the screens it draws where the
-    // key does nothing at all look exactly the same from here. So the record
-    // keeps what amx typed and says nothing about what it did.
+    // amx cannot confirm what `y` did at a box: claude fires no hook when a
+    // prompt is dismissed, and a screen where `y` did nothing looks the same.
+    // So the record keeps the key and stays `waiting`.
     let amx = Harness::new();
     parked_on_the_box(&amx, "ask-a1b");
 
@@ -725,12 +699,12 @@ fn surfaces_a_key_amx_cannot_see_the_effect_of_leaves_the_question_standing() {
         .expect("the answer on the record");
     assert_eq!(typed["payload"]["key"], "y", "{typed}");
 
-    // So the same screen is answered again rather than refused.
+    // The same screen can be answered again.
     let out = amx.amx(&["answer", "ask-a1b", "1"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
-    // And a choice is the other half of it: amx knows what that answered, so
-    // the question comes off the record and the agent is back at work.
+    // A numbered choice has a known effect, so the question is cleared and
+    // the agent is `working`.
     let recorded = amx.state("ask-a1b");
     assert_eq!(recorded["state"], "working", "{recorded}");
     assert_eq!(recorded["question"], json!(null), "{recorded}");

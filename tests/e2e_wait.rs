@@ -1,24 +1,20 @@
-//! `amx wait` end to end: one clock over several agents, against real panes.
+//! `amx wait` and `amx result --children`: one timeout over several agents,
+//! against real panes.
 //!
-//! What a coordinator does with this verb is branch on the exit code and read
-//! the lines as they arrive, so every test here asserts the code first and then
-//! the whole of what was printed — the lines and their order are the answer.
-//!
-//! Every wait is bounded by `--timeout`, so a verb that never comes back fails
-//! the test it is in rather than the suite it is in.
+//! Callers branch on the exit code and read the lines as they arrive, so each
+//! test asserts the code first and then the full output, order included. Every
+//! wait has a `--timeout`, so a wait that never returns fails only its test.
 
 mod common;
 
 use common::{Harness, code, stderr, stdout};
 use serde_json::json;
 
-/// Stamp an agent's record the way `amx new` stamps the one it writes.
+/// Stamp `since` and `last_event` on the agent's state, as `amx new` does.
 ///
-/// A record made by hand here carries no stamp at all, so it is stale from
-/// birth: until the agent's first hook lands, a reader believes the blank pane
-/// over it and calls an agent that has not started yet a turn that is over.
-/// `amx new` writes `since` as it creates the record, and an agent that is only
-/// just starting is what these tests are waiting on.
+/// A hand-made record has no stamp and is stale from the start: until the
+/// first hook lands, the reader trusts the blank pane and reports an agent
+/// that has not started yet as having finished its turn.
 fn started(id: &str, amx: &Harness) {
     let now = common::now();
     amx.set_state(
@@ -30,14 +26,11 @@ fn started(id: &str, amx: &Harness) {
 #[test]
 fn every_agent_is_named_as_it_settles_and_the_wait_ends_with_the_last() {
     let amx = Harness::new();
-    // `b` has finished its turn before anybody waits on anything; `a` is only
-    // just starting, and ends while the wait is already running.
+    // `b` is idle before the wait starts; `a` ends while the wait runs.
     //
-    // `a` plays the scenario that ends with no Stop hook, so the phase a sweep
-    // catches it in is `working` or `done` and never anything in between. A
-    // scenario that announces the end of its turn and then exits is `idle` for
-    // as long as it takes the pane to go, and a sweep landing in there reads a
-    // settled agent whose phase is not the one it is about to keep.
+    // `a` exits without a Stop hook, so a sweep sees it `working` or `done`. A
+    // scenario that sends Stop and then exits reads `idle` until its pane goes,
+    // and a sweep in that gap would print a phase the agent does not keep.
     amx.play("b", "happy-turn");
     amx.until_state("b", "idle");
     amx.play("a", "ends-without-an-answer");
@@ -54,8 +47,6 @@ fn every_agent_is_named_as_it_settles_and_the_wait_ends_with_the_last() {
 
 #[test]
 fn any_comes_back_with_the_first_and_leaves_the_rest_working() {
-    // One agent whose turn is over and one whose turn never ends: what `--any`
-    // is for is not waiting out the second to hear about the first.
     let amx = Harness::new();
     amx.play("watch-log-e5f", "works-without-end");
     amx.until_state("watch-log-e5f", "working");
@@ -89,9 +80,8 @@ fn any_comes_back_with_the_first_and_leaves_the_rest_working() {
 
 #[test]
 fn for_a_phase_comes_back_when_the_agent_reaches_it() {
-    // Nothing is waited for first: the agent is `starting` when the wait
-    // begins, so what this proves is the wait holding out for `working` — a
-    // caller confirming its fleet got off the ground.
+    // No `until_state` first: the agent is still `starting` when the wait
+    // begins.
     let amx = Harness::new();
     amx.play("watch-log-e5f", "works-without-end");
 
@@ -120,9 +110,8 @@ fn a_wait_gives_up_when_the_caller_says_when() {
 
 #[test]
 fn an_agent_stopped_on_a_question_is_one_the_caller_can_act_on() {
-    // A wait that went through a question would be the wait `result` refuses to
-    // be: the question arrives while the wait is running, and the caller cannot
-    // answer what it is not told about.
+    // `waiting` counts as settled: the question arrives mid-wait, and a caller
+    // that is not told about it cannot answer it.
     let amx = Harness::new();
     amx.play("ask-a1b", "asks-a-question");
     started("ask-a1b", &amx);
@@ -134,9 +123,8 @@ fn an_agent_stopped_on_a_question_is_one_the_caller_can_act_on() {
 
 #[test]
 fn an_id_that_names_no_agent_is_refused_before_the_wait_starts() {
-    // A wait on an agent nobody has could never end, and the caller can still
-    // fix what it typed: the refusal comes before the first sweep, so not even
-    // the agent that is ready is named.
+    // A wait on an unknown id could never end. It is refused before the first
+    // sweep, so even the agent that is ready is not printed.
     let amx = Harness::new();
     amx.play("say-hello-b2c", "finishes");
     amx.until_state("say-hello-b2c", "done");
@@ -172,8 +160,8 @@ fn a_state_nobody_knows_is_a_command_line_to_fix() {
 
 #[test]
 fn wait_children_covers_a_parents_whole_family_with_one_clock() {
-    // The fan-in for a parent that fanned out with `amx sub --bg`: the records
-    // that name the parent are the ids, in the order they were made.
+    // The fan-in after `amx sub --bg`: every record whose `parent` is the
+    // given agent, in creation order.
     let amx = Harness::new();
     amx.play("parent-a1b", "happy-turn");
     amx.until_state("parent-a1b", "idle");
@@ -229,7 +217,7 @@ fn result_children_hands_every_childs_answer_back() {
         "kid-one-b2c idle\nthe tests pass now\nkid-two-c3d idle\nthe tests pass now\n"
     );
 
-    // The program's reading: one object keyed by child id.
+    // `--json` prints one object keyed by child id.
     let out = amx.amx(&[
         "result",
         "--children",
@@ -276,7 +264,7 @@ fn result_children_surfaces_a_waiting_childs_question() {
     );
 }
 
-/// Put an event on an agent's log the way amx's own verbs put theirs there.
+/// Append a `kind` event to the agent's events.jsonl, as amx's verbs do.
 fn happened(amx: &Harness, id: &str, kind: &str) {
     use std::io::Write;
     let line = json!({ "at": 1, "kind": kind, "payload": { "text": "and now the linter" } });
@@ -289,9 +277,9 @@ fn happened(amx: &Harness, id: &str, kind: &str) {
 
 #[test]
 fn a_message_a_hand_interrupt_left_open_keeps_the_family_from_settling() {
-    // Esc in the pane ends the turn and says nothing, so the child reads idle
-    // with the message amx sent it still unanswered. Its answer on the record
-    // is the turn before's, and handing it back as this one's is the mistake.
+    // Esc in the pane ends the turn without recording anything, so the child
+    // reads idle with amx's message unanswered. The answer on record belongs
+    // to the previous turn and must not be returned for this one.
     let amx = Harness::new();
     amx.play("parent-a1b", "happy-turn");
     amx.until_state("parent-a1b", "idle");
@@ -306,7 +294,8 @@ fn a_message_a_hand_interrupt_left_open_keeps_the_family_from_settling() {
     let out = amx.amx(&["result", "--children", "parent-a1b", "--timeout", "2"]);
     assert_eq!(code(&out), 3, "{}", stderr(&out));
 
-    // `amx interrupt` does say so, and the turn it cut short has no answer.
+    // `amx interrupt` records an event, so the family settles, and the turn it
+    // cut short has no answer.
     happened(&amx, "kid-one-b2c", "interrupt");
     let out = amx.amx(&["wait", "--children", "parent-a1b", "--timeout", "5"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));

@@ -1,9 +1,9 @@
-//! The card: the closer look floated over the wall, and the answer typed on
-//! it.
+//! The view's card: the panel under the list that shows one agent up close,
+//! and the reply line at its foot. Driven in a real tmux pane, since what the
+//! card draws and what reaches the agent's pane need a real terminal.
 //!
-//! Driven in a real tmux pane like the rest of the view, because what the card
-//! draws over the list and what reaches the agent's own pane are questions a
-//! pty answers and nothing else does.
+//! - The view has no synchronized output, so a capture can land mid-frame.
+//!   Each wait's predicate includes every row the assertions after it read.
 
 mod common;
 
@@ -14,11 +14,9 @@ use common::{
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// The five rows claude draws at the bottom of every pane it has the room
-/// for, in the vendor's own order: the composer's top border with its
-/// right-anchored label, whatever is staged in the box, the composer's bottom
-/// border, the statusline, and the mode footer. Transcribed from a live
-/// 2.1.237 on 2026-08-21.
+/// The five rows claude 2.1.237 draws at the foot of its pane, in order: the
+/// composer's top border with its right-aligned label, the composer line, the
+/// composer's bottom border, the statusline and the mode footer.
 const CHROME: [&str; 5] = [
     "──────────────────────────── execute amx-v2 ─",
     "❯ ",
@@ -27,18 +25,14 @@ const CHROME: [&str; 5] = [
     "  ⏵⏵ accept edits on (shift+tab to cycle)",
 ];
 
-/// Where the card's rule stands, which is where the card starts: the band at
-/// the foot of the list, opened by the one rule the view draws down there.
-/// Nothing where no card is up.
+/// The line index of the card's rule, the only `┈` rule the view draws, or
+/// `None` when no card is open.
 fn card_rule(drawn: &str) -> Option<usize> {
     drawn.lines().position(|line| line.contains('┈'))
 }
 
-/// The card as it stands on the screen, top to bottom: its rule, and every row
-/// under it down to the blank one the keys stand off on.
-///
-/// The last two rows of a screen this tall belong to the screen rather than to
-/// the card: the keys, and the row of air over them.
+/// The card's rows, from its rule down to the screen's last two rows (a blank
+/// row and the key hints), which are not part of the card.
 fn card_lines(drawn: &str) -> Vec<&str> {
     let lines: Vec<&str> = drawn.lines().collect();
     let foot = lines.len().saturating_sub(2);
@@ -48,10 +42,8 @@ fn card_lines(drawn: &str) -> Vec<&str> {
     }
 }
 
-/// The same rows without the line at the foot of them, which is what the card
-/// is showing: every card ends with the line it is replied on, standing off
-/// what the card says by one blank row, so a test about what the card says
-/// reads the rows above both.
+/// The card's rows without the reply line at its foot and the blank row above
+/// it, asserting both are there.
 fn card_body(drawn: &str) -> Vec<&str> {
     let mut rows = card_lines(drawn);
     let line = rows.pop().unwrap_or_default();
@@ -64,9 +56,10 @@ fn card_body(drawn: &str) -> Vec<&str> {
     rows
 }
 
-/// Which line of the screen holds this text, the card's own lines aside: the
-/// line the list drew for it. The card names the agent it is a look at on its
-/// rule, so the two are told apart by where the card starts.
+/// The index of the first line above the card that holds `text`.
+///
+/// The card's rule names its agent too, so lines from the rule down are
+/// skipped.
 fn line_holding(drawn: &str, text: &str) -> usize {
     drawn
         .lines()
@@ -87,8 +80,8 @@ fn card_stands_at_the_foot_and_moves_no_row_of_the_list() {
         let drawn = amx.capture(&view);
         (drawn.contains("ask-a1b") && drawn.contains("old-job-b2c")).then_some(drawn)
     });
-    // The waiting agent is the first row, so it is the one the view opens on,
-    // with a heading and a finished row under it.
+    // The waiting agent is the first row, so the view opens on it, with a
+    // heading and a finished row below.
     let rows: Vec<usize> = ["ask-a1b", "Completed", "old-job-b2c"]
         .iter()
         .map(|text| line_holding(&before, text))
@@ -130,8 +123,6 @@ fn card_space_on_its_empty_line_closes_it_and_leaves_the_list_alone() {
     });
     let was = line_holding(&before, "old-job-a1b");
 
-    // The card opens with its line at the foot, and the row under it names the
-    // key that puts it away.
     let carded = card_on(&amx, &view, "old-job-a1b");
     assert!(
         carded
@@ -141,9 +132,7 @@ fn card_space_on_its_empty_line_closes_it_and_leaves_the_list_alone() {
         "the keys under the card say which key closes it:\n{carded}"
     );
 
-    // The same key again. Nothing has been typed on the line, so there is
-    // nothing for a space to stand between and it is still what it was a
-    // press ago.
+    // The line is empty, so space closes the card instead of typing.
     press(&amx, &view, "Space");
     let closed = amx.until("the card to go, with the list's keys back", || {
         let drawn = amx.capture(&view);
@@ -179,7 +168,6 @@ fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
         (drawn.contains("old-job-a1b") && drawn.contains("older-job-b2c")).then_some(())
     });
 
-    // The card opens on the first row and leaves the second one where it is.
     let before = amx.capture(&view);
     let was = before
         .lines()
@@ -192,8 +180,8 @@ fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
         "the row the click is for has not moved:\n{carded}"
     );
 
-    // A click on it lands on it rather than a row off, and the card follows
-    // the cursor onto that agent, which its rule is what says.
+    // The click must land on that row, not one off, and the card's rule then
+    // names that agent.
     click(&amx, &view, 5, was as u16 + 1);
     amx.until("the card to move to the row that was clicked", || {
         let drawn = amx.capture(&view);
@@ -207,8 +195,7 @@ fn a_click_on_a_row_with_a_card_open_lands_on_the_row_it_was_aimed_at() {
 #[test]
 fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
     let amx = Harness::new();
-    // The two kinds of row the rule has anything to say about: a spawn that
-    // turned both dials, and a shell command, which runs no vendor at all.
+    // A spawn with model and effort set, and a shell command with no vendor.
     finished(&amx, "fix-login-a1b", "done", 30);
     amx.set_meta(
         "fix-login-a1b",
@@ -224,7 +211,7 @@ fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
     });
     let command = line_holding(&before, "build-c3d");
 
-    // The newer row is the one the view opens on, so its card is the first.
+    // The newer row is first, so the view opens on it.
     card_on(&amx, &view, "fix-login-a1b");
     amx.until("the rule to say what the agent runs", || {
         let drawn = amx.capture(&view);
@@ -234,8 +221,7 @@ fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
             .then_some(())
     });
 
-    // And the row no vendor runs says what it is instead, in the words its
-    // column on the wall says them in.
+    // A command's rule says `sh`, as the wall's column does.
     click(&amx, &view, 5, command as u16 + 1);
     amx.until("the rule over the command", || {
         let drawn = amx.capture(&view);
@@ -249,9 +235,8 @@ fn card_rule_names_the_vendor_model_and_effort_the_row_runs() {
 #[test]
 fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
     let amx = Harness::new();
-    // A turn under way as a reader finds one: the vendor spinning a line over
-    // its composer, and a record whose account of the same turn is older than
-    // the pane by ten minutes.
+    // A turn in progress: claude's spinner line above the composer, and a
+    // record last updated ten minutes ago.
     let mut rows = vec![
         "● Read(src/importer.rs)",
         "  ⎿  Read 210 lines",
@@ -276,16 +261,16 @@ fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
     card_on(&amx, &view, "port-cli-b2c");
     let ruled = amx.until("the rule to say how the turn is going", || {
         let drawn = amx.capture(&view);
+        // The rule is whole once it spans all 80 columns.
         card_lines(&drawn)
             .first()
             .map(|rule| (*rule).to_string())
             .filter(|rule| rule.contains("Nesting") && rule.chars().count() == 80)
     });
 
-    // The vendor's own spinner line at the far end of the rule, and never the
-    // row's summary — the record names `Running Read` and the rule does not
-    // say so: the card under it is what the agent is doing, and the rule says
-    // how the turn is going in the vendor's words (Saiful, 2026-09-18).
+    // The rule ends with claude's spinner line, not the record's summary: the
+    // card body shows what the agent is doing, and the rule says how the turn
+    // is going.
     assert!(
         ruled.trim_end().ends_with("Nesting… (15s · ↓ 1.3k tokens)"),
         "the vendor's line whole, at the far end of the rule:\n{ruled}"
@@ -294,8 +279,7 @@ fn card_rule_pulses_and_says_what_the_agent_is_doing_while_a_turn_runs() {
         !ruled.contains("Running Read"),
         "and not the record's summary: {ruled:?}"
     );
-    // And the mark the row wears in front of the name, a frame of the pulse a
-    // working row breathes through.
+    // The rule's mark is a frame of the working pulse.
     let mark = ruled.chars().next().expect("a mark on the rule");
     assert!(
         "·✢*✶✻✽".contains(mark),
@@ -316,10 +300,8 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
     let view = amx.in_a_terminal(&[], &[]);
     let carded = card_on(&amx, &view, "ask-a1b");
 
-    // The question the agent stopped on — which is on its row as well, so the
-    // card is the second of the two. The pane it stopped on is not under it:
-    // the prompt there is the same question behind an echo of the command,
-    // and every row of it is noise below the answer line.
+    // The question shows twice, on the row and on the card. The pane's prompt
+    // is not drawn: it repeats the question behind an echo of the command.
     assert_eq!(
         carded.matches("Claude needs your permission").count(),
         2,
@@ -330,8 +312,8 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
         "the question block is the whole of the card:\n{carded}"
     );
 
-    // Not a box. A rule with the agent's name on it, and what the card says
-    // hanging off the same edge the rule's mark and the line's chevron do.
+    // No border: a rule naming the agent, and the content left-aligned with
+    // the rule's mark and the line's `❯`.
     let card = card_lines(&carded);
     let [ruled, asked, ..] = card.as_slice() else {
         panic!("no card in:\n{carded}")
@@ -363,7 +345,6 @@ fn card_stands_a_rule_and_rows_with_the_question_alone_on_them() {
         "and so is the group the row is under:\n{carded}"
     );
 
-    // Esc puts it away and leaves the wall as it was.
     press(&amx, &view, "Escape");
     amx.until("the card to go", || {
         let drawn = amx.capture(&view);
@@ -400,10 +381,8 @@ fn card_tail_cuts_the_chrome_claude_draws_under_its_pane() {
             "{furniture} is claude's, not the agent's:\n{carded}"
         );
     }
-    // The spinner line is claude's too and is cut from the card with the rest
-    // of the chrome. What says the agent is still at it is the row, and the
-    // card's own rule, which reads that line rather than drawing it again;
-    // what the card is showing is what the agent said.
+    // The spinner line is chrome too. The row and the card's rule carry it;
+    // the card body shows only what the agent said.
     let showing = card_lines(&carded)[1..].join("\n");
     assert!(
         !showing.contains("still thinking"),
@@ -414,8 +393,8 @@ fn card_tail_cuts_the_chrome_claude_draws_under_its_pane() {
 #[test]
 fn card_tail_cuts_a_composer_a_message_was_typed_into() {
     let amx = Harness::new();
-    // Wrapped over three rows, because a composer holding one row of text is
-    // the state a walk that cut exactly one input row would pass.
+    // Wrapped over three rows: with one row of text, code that always cuts
+    // exactly one input row would also pass.
     let mut pane_rows = vec!["i ported the importer", CHROME[0]];
     pane_rows.extend_from_slice(&[
         "❯ and now check every call site that",
@@ -448,8 +427,7 @@ fn card_tail_cuts_a_composer_a_message_was_typed_into() {
 #[test]
 fn card_tail_keeps_the_paint_the_agent_drew_its_screen_in() {
     let amx = Harness::new();
-    // A row claude wrote in bold and in a colour of its own, which is what a
-    // heading in one of its answers looks like on a real pane.
+    // Bold and 256-colour, as claude draws a heading in an answer.
     let mut pane_rows = vec!["\\033[1m\\033[38;5;208mI ported the importer\\033[0m"];
     pane_rows.extend_from_slice(&CHROME);
     let pane = a_pane_showing(&amx, &pane_rows);
@@ -475,10 +453,9 @@ fn card_tail_keeps_the_paint_the_agent_drew_its_screen_in() {
         painted.contains("38;5;208"),
         "the colour claude chose is the colour the card draws it in:\n{painted:?}"
     );
-    // Either spelling of bold: a row that opens in the band's own first
-    // column opens on tmux's whole state for that cell — `0;1` — where one
-    // that began two cells in had the reset behind it already and wrote the
-    // weight on its own.
+    // tmux writes bold as `0;1` when the row starts in the card's first
+    // column, where it emits the cell's full state, and as a bare `1` when a
+    // reset already came earlier on the line.
     assert!(
         painted.contains("\u{1b}[1m") || painted.contains("\u{1b}[0;1m"),
         "and so is the weight:\n{painted:?}"
@@ -496,8 +473,6 @@ fn card_answers_the_question_the_agent_stopped_on() {
         amx.capture(&view).contains("ask-a1b").then_some(())
     });
 
-    // One key: the card is where somebody decides what to answer and where
-    // they type it.
     press(&amx, &view, "Space");
     amx.until("the card, with a line to answer on", || {
         let drawn = amx.capture(&view);
@@ -505,8 +480,8 @@ fn card_answers_the_question_the_agent_stopped_on() {
             .then_some(())
     });
 
-    // A key of the grammar that is nowhere on the agent's own screen, so what
-    // reaches the pane is what was typed here and not what was already drawn.
+    // `9` is a valid key that is not on the agent's screen, so seeing it on
+    // the pane proves it came from the card.
     types(&amx, &view, "9");
     amx.until("the key on the line", || {
         amx.capture(&view).contains("❯ 9").then_some(())
@@ -523,8 +498,8 @@ fn card_answers_the_question_the_agent_stopped_on() {
     });
 }
 
-/// Park an agent on a menu of the vendor's own: the one question that takes
-/// words as well as a key, with the choices it drew recorded beside it.
+/// Park an agent on a vendor `AskUserQuestion` menu, which takes free text as
+/// well as a key, with its options on the record.
 fn parked_on_a_menu(amx: &Harness, id: &str) {
     amx.play(id, "works-without-end");
     amx.until_state(id, "working");
@@ -543,23 +518,18 @@ fn parked_on_a_menu(amx: &Harness, id: &str) {
     );
 }
 
-/// Park an agent on a whole call of the vendor's own: every question it holds,
-/// the sentences under their choices and the flag saying how many may be
-/// taken, as a hook that carried the payload leaves them.
-///
-/// The question showing is the first with no answer on it, and it goes where
-/// every reader has always found the question — which is what `asks_all` does
-/// in the record's own code, done here by hand because a test writes the
-/// document rather than the struct.
+/// Park an agent on a whole `AskUserQuestion` call as the hook records it:
+/// every question, with option descriptions and the `multi` flag.
 fn parked_on_a_call(amx: &Harness, id: &str, asking: &[Value]) {
     amx.play(id, "works-without-end");
     amx.until_state(id, "working");
     showing_the_pending_one(amx, id, asking);
 }
 
-/// Write the call down with the question it is showing where the question
-/// goes, without starting anything: the record moving on under a card that is
-/// already open.
+/// Write `asking` to the agent's state, with the first unanswered question as
+/// the top-level `question`, as `asks_all` in src/store.rs does.
+///
+/// Starts nothing, so a test can move the record on under an open card.
 fn showing_the_pending_one(amx: &Harness, id: &str, asking: &[Value]) {
     let pending = asking
         .iter()
@@ -588,10 +558,8 @@ fn showing_the_pending_one(amx: &Harness, id: &str, asking: &[Value]) {
     );
 }
 
-/// The three questions of one `AskUserQuestion` call, as the payload measured
-/// against claude 2.1.240 on 2026-08-24 records them in
-/// `docs/question-shapes.md`: a question that takes one choice, a checkbox
-/// question behind it, and a third that takes one.
+/// A three-question `AskUserQuestion` call in claude 2.1.240's payload shape
+/// (`docs/question-shapes.md`): single choice, checkboxes, single choice.
 fn a_call_of_three() -> Vec<Value> {
     vec![
         json!({
@@ -625,9 +593,8 @@ fn a_call_of_three() -> Vec<Value> {
     ]
 }
 
-/// The one question that carries a preview beside each choice, from the same
-/// measurement: the layout the vendor draws a notes field for and no row for
-/// words of your own.
+/// A question whose options carry previews, from the same source. claude
+/// draws a notes field for this layout and no free-text row.
 fn a_previewed_question() -> Vec<Value> {
     vec![json!({
         "header": "Layout",
@@ -648,10 +615,9 @@ fn a_previewed_question() -> Vec<Value> {
     })]
 }
 
-/// The vendor's own checkbox menu, row for row as claude 2.1.240 draws one
-/// (`docs/question-shapes.md` § 1): the full-width rule the box opens with,
-/// the tab strip, the question, the boxes with their descriptions, the two rows
-/// no payload carries, and the footer every question screen ends in.
+/// A checkbox menu as claude 2.1.240 draws it (`docs/question-shapes.md`
+/// § 1): opening rule, tab strip, question, boxes with descriptions, the two
+/// rows no payload carries, and the footer.
 const MENU: [&str; 17] = [
     "────────────────────────────────────────────────────────────",
     "←  ☐ Features  ✔ Submit  →",
@@ -672,8 +638,7 @@ const MENU: [&str; 17] = [
     "Enter to select · ↑/↓ to navigate · Esc to cancel",
 ];
 
-/// The call that drew it, as the tool made it: one question, three choices and
-/// the flag that says the boxes take more than one.
+/// The `AskUserQuestion` payload behind `MENU`.
 fn the_menus_call() -> Vec<Value> {
     vec![json!({
         "header": "Features",
@@ -687,8 +652,8 @@ fn the_menus_call() -> Vec<Value> {
     })]
 }
 
-/// An agent standing at that menu: the screen live on a pane of its own, with
-/// what it said before it asked above the box, and the call on its record.
+/// A pane showing `MENU` under a line of agent output, recorded as agent `id`
+/// with the menu's call pending. Answers with the pane.
 fn parked_at_a_live_menu(amx: &Harness, id: &str) -> String {
     let mut rows = vec!["i wired the logging up", ""];
     rows.extend_from_slice(&MENU);
@@ -701,8 +666,7 @@ fn parked_at_a_live_menu(amx: &Harness, id: &str) -> String {
 #[test]
 fn card_line_brings_back_the_message_sent_on_alt_up_and_the_plain_arrows_still_move_the_card() {
     let amx = Harness::new();
-    // Two agents at their prompts, each showing a screen of its own, so the
-    // card says which of them it is on.
+    // Two idle agents, so the plain arrows have another card to move to.
     let alpha = a_pane_showing(&amx, &["alpha at work"]);
     amx.record("alpha-a1b", &alpha);
     reported(&amx, "alpha-a1b", "idle");
@@ -718,7 +682,7 @@ fn card_line_brings_back_the_message_sent_on_alt_up_and_the_plain_arrows_still_m
         amx.capture(&alpha).contains("ship it").then_some(())
     });
 
-    // A fresh card, and alt+up on its empty line is the message just sent.
+    // Reopen the card: alt+up on its empty line recalls the sent message.
     press(&amx, &view, "Escape");
     card_on(&amx, &view, "alpha-a1b");
     press(&amx, &view, "M-Up");
@@ -730,8 +694,7 @@ fn card_line_brings_back_the_message_sent_on_alt_up_and_the_plain_arrows_still_m
         (!amx.capture(&view).contains("❯ ship it")).then_some(())
     });
 
-    // The plain arrows are the card's: they move it to the other agent and
-    // bring nothing back onto the line.
+    // Plain arrows move the card to the other agent.
     press(&amx, &view, "Down");
     let moved = amx.until("the card on the other agent", || {
         let drawn = amx.capture(&view);
@@ -752,9 +715,8 @@ fn card_says_which_question_of_the_call_it_is_showing() {
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
 
-    // A call of three questions. Nothing on the pane says how many there are:
-    // the vendor's tab strip elides its own headers as the pane narrows, so
-    // this is amx saying what only the payload knows.
+    // claude's tab strip drops headers as the pane narrows, so only the
+    // payload says how many questions the call has.
     let mut call = a_call_of_three();
     parked_on_a_call(&amx, "pick-a1b", &call);
     let carded = card_on(&amx, &view, "pick-a1b");
@@ -763,8 +725,8 @@ fn card_says_which_question_of_the_call_it_is_showing() {
         "which question of the call, and what its tab is called:\n{carded}"
     );
 
-    // Answering one does not end the call: the vendor moves to the tab after
-    // it and the prompt is still up, so the card moves with it.
+    // Answering one question does not end the call: claude moves to the next
+    // tab and the card follows.
     call[0]["answer"] = json!("Node");
     showing_the_pending_one(&amx, "pick-a1b", &call);
     let moved = amx.until("the card to move to the tab behind it", || {
@@ -804,10 +766,10 @@ fn card_draws_a_box_beside_the_choices_of_a_question_that_takes_several() {
         "and the line says how to check more than one:\n{carded}"
     );
 
-    // The question in front of it takes one choice, and a box beside those
-    // would be a screen offering something the vendor will not take.
+    // The first question takes one choice, so it gets no boxes.
     showing_the_pending_one(&amx, "pick-a1b", &a_call_of_three());
-    // The line is below the choices, so it is waited for too.
+    // The line is drawn after the choices and a capture can land mid-frame,
+    // so the wait covers it too.
     let drawn = amx.until("the card on the plain question", || {
         let drawn = amx.capture(&view);
         (drawn.contains("1. Node") && !drawn.contains("for several")).then_some(drawn)
@@ -825,8 +787,8 @@ fn card_names_the_rows_the_vendor_adds_that_no_payload_carries() {
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
 
-    // Every menu the tool draws carries one free-text row as its last choice,
-    // and nothing in the payload accounts for it.
+    // claude adds a free-text row as the last choice of every menu, and the
+    // payload does not list it.
     parked_on_a_call(&amx, "pick-a1b", &a_call_of_three());
     let carded = card_on(&amx, &view, "pick-a1b");
     assert!(
@@ -834,8 +796,7 @@ fn card_names_the_rows_the_vendor_adds_that_no_payload_carries() {
         "the row the vendor adds under the choices:\n{carded}"
     );
 
-    // A previewed question has no such row, and has a field for a note
-    // instead.
+    // A previewed question has a notes field in place of that row.
     showing_the_pending_one(&amx, "pick-a1b", &a_previewed_question());
     let previewed = amx.until("the card on the previewed question", || {
         let drawn = amx.capture(&view);
@@ -880,7 +841,7 @@ fn card_takes_words_where_the_question_asks_for_them() {
         "the row asks it and the card asks it again:\n{carded}"
     );
 
-    // Words of somebody's own, which is what this one question takes.
+    // This kind of question takes free text.
     types(&amx, &view, "neither, keep both");
     amx.until("the answer on the line", || {
         amx.capture(&view)
@@ -899,7 +860,8 @@ fn card_takes_words_where_the_question_asks_for_them() {
     });
 }
 
-/// The last answer amx wrote down for this agent, once it has written one.
+/// Wait for an `answer` event on the agent, and answer with the last one's
+/// payload.
 fn answered(amx: &Harness, id: &str) -> Value {
     amx.until(&format!("{id} to be answered"), || {
         amx.events(id)
@@ -925,8 +887,8 @@ fn card_answers_the_tab_it_is_showing_and_leaves_the_one_behind_it_standing() {
         "1",
         "the key the vendor takes for that choice"
     );
-    // Answering one question of a call does not end it: the vendor records the
-    // answer, moves to the tab after it, and the prompt is still up.
+    // The call is not over: claude moves to the next tab and the prompt stays
+    // up.
     let moved = amx.until("the card to move to the tab behind it", || {
         let drawn = amx.capture(&view);
         (drawn.contains("Rollout · 2 of 3") && drawn.contains("1. [ ] Canary")).then_some(drawn)
@@ -960,8 +922,7 @@ fn card_answers_a_question_that_takes_one_choice_on_the_digit_alone() {
         "the line says the numbers answer on the press:\n{carded}"
     );
 
-    // No enter after it: one of these choices is the whole answer, and the
-    // number pressed is that choice.
+    // No enter: on a single-choice question the digit is the whole answer.
     types(&amx, &view, "2");
     assert_eq!(answered(&amx, "pick-a1b")["key"], "2");
     amx.until("the choice to reach the agent's pane", || {
@@ -970,8 +931,8 @@ fn card_answers_a_question_that_takes_one_choice_on_the_digit_alone() {
             .then_some(())
     });
 
-    // The tab behind it takes more than one choice, so a digit there is one
-    // box being named and the line waits for the rest of them.
+    // The next tab is a checkbox question, so a digit there stays on the line
+    // and waits for more.
     let moved = amx.until("the card to move to the tab behind it", || {
         let drawn = amx.capture(&view);
         (drawn.contains("Rollout · 2 of 3") && drawn.contains("press 1-3, 1,3 for several"))
@@ -1004,8 +965,8 @@ fn card_checks_the_boxes_of_a_question_that_takes_more_than_one() {
     types(&amx, &view, "1,3");
     press(&amx, &view, "Enter");
 
-    // Two boxes and the key that leaves the choices, which is the only way off
-    // them: on this shape every digit and every enter is a toggle.
+    // On a checkbox menu every digit and every enter toggles a box, so amx
+    // sends the two digits and then the key that leaves the choices.
     let said = answered(&amx, "pick-a1b");
     assert_eq!(said["key"], "1,3");
     assert_eq!(
@@ -1042,8 +1003,8 @@ fn card_over_a_live_menu_draws_the_question_once() {
         );
     }
 
-    // The rows the vendor adds are the vendor's, and the card names them in its
-    // own words rather than drawing the menu they are on.
+    // The card names the vendor's extra rows in its own words and does not
+    // copy the menu.
     for furniture in ["Chat about this", "Enter to select", "☐ Features"] {
         assert!(
             !carded.contains(furniture),
@@ -1055,9 +1016,8 @@ fn card_over_a_live_menu_draws_the_question_once() {
         "with the free-text row named:\n{carded}"
     );
 
-    // And nothing of the pane at all, what the agent said before it asked
-    // included: the question block is the whole of the card, and the work is
-    // still on the pane for the enter that brings it forward.
+    // Nothing from the pane either, not even the agent's text above the menu:
+    // the question block is the whole card, and enter brings the pane forward.
     assert!(
         !carded.contains("i wired the logging up"),
         "the card spends no window on the pane:\n{carded}"
@@ -1070,9 +1030,9 @@ fn card_answers_a_live_checkbox_menu_in_the_grammar_the_screen_takes() {
     let view = amx.in_a_terminal(&[], &[]);
     until_empty(&amx, &view);
     let pane = parked_at_a_live_menu(&amx, "pick-a1b");
-    // An older amx wrote `permission` over every menu it saw, and records
-    // outlive the amx that wrote them. What the screen is showing is a menu,
-    // and a permission box's one key at a menu answers a question nobody chose.
+    // Older amx recorded every menu as `permission`, and such records outlive
+    // an upgrade. The screen decides: a permission box's single key at a menu
+    // would pick a choice nobody made.
     let mut state = amx.state("pick-a1b");
     state["question"]["kind"] = json!("permission");
     amx.set_state("pick-a1b", state);
@@ -1153,8 +1113,8 @@ fn card_refuses_words_at_a_prompt_that_reads_one_key() {
     types(&amx, &view, "neither, keep both");
     press(&amx, &view, "Enter");
 
-    // The verb's own refusal, in the verb's own words: the card and a shell
-    // prompt are two callers reading one line against one record.
+    // The card shows `amx answer`'s own refusal, since the card and the verb
+    // check the line against the same record.
     let refused = amx.until("the refusal", || {
         let drawn = amx.capture(&view);
         (drawn.contains("is not an answer") && drawn.contains("use y, n, 1-9, enter or esc"))
@@ -1274,8 +1234,8 @@ fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
         amx.capture(&view).contains("+after").then_some(())
     });
 
-    // Stepped onto the one hunk the patch has, the row under the line says
-    // which one the words will carry.
+    // With the cursor on the only hunk, the key row says which hunk the words
+    // go with.
     press(&amx, &view, "C-n");
     amx.until("the hunk under the cursor", || {
         amx.capture(&view).contains("hunk 1 of 1").then_some(())
@@ -1291,8 +1251,7 @@ fn card_line_sends_the_words_with_the_hunk_under_the_cursor() {
         "and the keys say what enter will send: {asked}"
     );
 
-    // What reached the agent is where the comment is pointed, the hunk as git
-    // wrote it, and then the words.
+    // The message is `file:line`, the hunk as git wrote it, then the words.
     press(&amx, &view, "Enter");
     let sent = amx.until("the message on the record", || {
         amx.events("fix-login-a1b")
@@ -1329,7 +1288,7 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Three files changed, which is three hunks to read and write about.
+    // Three changed files give three hunks.
     let tree = PathBuf::from(
         amx.meta("fix-login-a1b")["worktree"]
             .as_str()
@@ -1348,15 +1307,14 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
         amx.capture(&view).contains("+after").then_some(())
     });
 
-    // The top of the patch, where a review opens: the words written here are
-    // its opening and are a note on nothing.
+    // Words typed at the top of the patch, before any hunk, open the review.
     types(&amx, &view, "looks close");
     amx.until("the opening on the line", || {
         amx.capture(&view).contains("❯ looks close").then_some(())
     });
 
-    // A hunk at a time from there, the line carrying what was typed under each
-    // one to the hunk it was about.
+    // ctrl+n keeps what is on the line, as the opening or as a note on the
+    // current hunk, and moves to the next hunk with an empty line.
     press(&amx, &view, "C-n");
     let stepped = amx.until("the first hunk", || {
         let drawn = amx.capture(&view);
@@ -1375,8 +1333,7 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
     types(&amx, &view, "spaces or tabs?");
     press(&amx, &view, "C-n");
 
-    // Standing on a hunk with nothing to say about it, the empty line under
-    // the card still has the review to send, and the row says so.
+    // On a hunk with no note and an empty line, enter still sends the review.
     let kept = amx.until("the third hunk, with the review behind it", || {
         let drawn = amx.capture(&view);
         let whole = drawn.contains("hunk 3 of 3 · 2 notes")
@@ -1389,8 +1346,8 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
         "the keys say what the review would cost either way: {kept}"
     );
 
-    // One message, in patch order: the opening, then each noted hunk as the
-    // card has always written one.
+    // One message in patch order: the opening, then each noted hunk in the
+    // single-hunk format.
     press(&amx, &view, "Enter");
     let sent = amx.until("the message on the record", || {
         amx.events("fix-login-a1b")
@@ -1406,8 +1363,8 @@ fn card_line_sends_a_review_of_several_hunks_as_one_message() {
         )
     );
 
-    // And the card is back at the top of the patch it was a review of, with
-    // nothing kept and no hunk under the cursor.
+    // After sending, the card is back at the top of the patch with no notes
+    // and no hunk selected.
     let after = amx.until("the card put back", || {
         let drawn = amx.capture(&view);
         (!drawn.contains("note") && !drawn.contains("hunk")).then_some(drawn)
@@ -1449,8 +1406,7 @@ fn alt_d_hands_the_terminal_to_the_viewer_the_config_names() {
     );
     std::fs::write(tree.join("README.md"), "after\n").expect("the changed file");
 
-    // A viewer that keeps what it was handed, and only where it was handed the
-    // terminal with it: without one there is no file to read afterwards.
+    // The viewer saves the patch only if its stdout is a terminal.
     let read = amx.home().join("read.patch");
     amx.config(&format!(
         "diff = \"test -t 1 && cat > {}\"\n",
@@ -1469,8 +1425,7 @@ fn alt_d_hands_the_terminal_to_the_viewer_the_config_names() {
     });
     assert!(patch.contains("-before"), "git's own patch: {patch}");
 
-    // And the terminal comes back: the view is drawn again and the keys reach
-    // it, which is the whole of what a borrow owes whoever lent it.
+    // After the viewer exits, the view redraws and takes keys again.
     types(&amx, &view, "d");
     let shown = amx.until("the card after it", || {
         let drawn = amx.capture(&view);
@@ -1490,8 +1445,7 @@ fn alt_d_on_a_row_with_no_tree_says_what_the_verb_says() {
         amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
-    // A directory in no repository has nothing to compare, which is the answer
-    // `amx diff` gives it, in the words it gives it in.
+    // A directory outside any repository gets `amx diff`'s own error.
     press(&amx, &view, "M-d");
     amx.until("what the verb says of it", || {
         amx.capture(&view).contains("no git worktree").then_some(())
@@ -1522,8 +1476,7 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // A patch far taller than the card: forty added lines against a box of
-    // about ten rows.
+    // Forty added lines, far taller than the card.
     let tree = PathBuf::from(
         amx.meta("fix-login-a1b")["worktree"]
             .as_str()
@@ -1537,7 +1490,6 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
         amx.capture(&view).contains("fix-login-a1b").then_some(())
     });
 
-    // The card opens on the top of the patch, with nothing said to be hidden.
     types(&amx, &view, "d");
     let top = amx.until("the diff", || {
         let drawn = amx.capture(&view);
@@ -1545,7 +1497,6 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     });
     assert!(!top.contains("more"), "{top}");
 
-    // A page forward leaves the top, and the card's own frame says how far.
     press(&amx, &view, "NPage");
     let paged = amx.until("the paged diff", || {
         let drawn = amx.capture(&view);
@@ -1570,7 +1521,6 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
          top: {paged}"
     );
 
-    // A page back is the top again, with the indicator gone.
     press(&amx, &view, "PPage");
     let back = amx.until("the top again", || {
         let drawn = amx.capture(&view);
@@ -1578,9 +1528,8 @@ fn page_keys_page_a_long_diff_and_the_frame_says_how_far() {
     });
     assert!(!back.contains("more"), "{back}");
 
-    // Paged away and put down, `d` takes the patch afresh from its top. The
-    // letter is a character of the line while the card is up, so the way back
-    // round to it is esc and then the key that asked for it.
+    // Reopening with `d` starts at the top again. While the card is up `d`
+    // types on its line, so esc closes the card first.
     press(&amx, &view, "NPage");
     amx.until("the paged diff", || {
         amx.capture(&view).contains("more").then_some(())
@@ -1617,9 +1566,8 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     let view = amx.in_a_terminal(&[], &[]);
     card_on(&amx, &view, "short-a1b");
 
-    // Two pages up on a body that fits, then a character onto the card's own
-    // line and back off it: what lands on the line proves both presses before
-    // it were read by the frame this asserts on.
+    // Page up twice on a body that fits, then type and delete a character.
+    // Once the character shows, both page presses have been handled.
     press(&amx, &view, "PPage");
     press(&amx, &view, "PPage");
     types(&amx, &view, "x");
@@ -1633,16 +1581,15 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
     });
     assert!(!unmoved.contains("more"), "nothing is hidden: {unmoved}");
 
-    // The arrows keep walking the list, card in tow: the next agent's
-    // recorded answer opens on its first words, over the row whose summary
-    // is that same first line.
+    // Down moves the card to the next agent. Its answer opens at the top, so
+    // `said 0` shows twice: on the card and in the row's summary.
     press(&amx, &view, "Down");
     amx.until("the next card", || {
         let drawn = amx.capture(&view);
         (drawn.matches("said 0").count() == 2).then_some(())
     });
 
-    // This body overflows, so the page key now pages it, down from its top.
+    // This body overflows, so page down scrolls it.
     press(&amx, &view, "NPage");
     let paged = amx.until("the paged card", || {
         let drawn = amx.capture(&view);
@@ -1666,7 +1613,7 @@ fn page_keys_leave_a_fitting_card_alone_and_the_arrows_still_walk() {
          runs, pointing at the top: {paged}"
     );
 
-    // And walking off the agent puts the next card on its own edge.
+    // Moving back up shows the first card unscrolled.
     press(&amx, &view, "Up");
     let followed = amx.until("the first card again", || {
         let drawn = amx.capture(&view);
@@ -1699,8 +1646,7 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
         "the top of the answer, over the row saying the same:\n{carded}"
     );
 
-    // ctrl+f is pgdn: on into the recorded answer, with the how-far
-    // indicator up.
+    // ctrl+f pages down like pgdn.
     press(&amx, &view, "C-f");
     let paged = amx.until("the paged card", || {
         let drawn = amx.capture(&view);
@@ -1712,10 +1658,8 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
         "the top is behind, and only the row still says it:\n{paged}"
     );
 
-    // And ctrl+b is pgup: the page back to the edge. A lone ctrl+b never
-    // reaches a view inside a default tmux — the prefix eats it — but
-    // injected keys go to the pane, which is exactly what ctrl+b ctrl+b
-    // delivers there.
+    // ctrl+b pages up. Under a default tmux the prefix eats a lone ctrl+b,
+    // and ctrl+b ctrl+b sends one to the pane, which is what send-keys does.
     press(&amx, &view, "C-b");
     let back = amx.until("the edge again", || {
         let drawn = amx.capture(&view);
@@ -1724,8 +1668,8 @@ fn ctrl_f_and_ctrl_b_page_the_card_like_the_page_keys() {
     assert!(!back.contains("more"), "{back}");
 }
 
-/// A claude-shaped transcript of these turns, each a prompt and the answer to
-/// it, written where the record can name it — and named there.
+/// Write a claude-shaped transcript of `turns` (prompt, answer) and point the
+/// agent's meta at it.
 fn a_transcript(amx: &Harness, id: &str, turns: &[(&str, &str)]) {
     let path = amx.transcript(id);
     let mut lines = String::new();
@@ -1742,8 +1686,8 @@ fn a_transcript(amx: &Harness, id: &str, turns: &[(&str, &str)]) {
     amx.set_meta(id, json!({ "transcript": path }));
 }
 
-/// A record fresh from its vendor's own report, so a reader believes the phase
-/// it names over the pane for the next few seconds.
+/// Set a fresh `state`, so the reader trusts it over the pane for the next
+/// few seconds.
 fn reported(amx: &Harness, id: &str, state: &str) {
     let at = now();
     amx.set_state(id, json!({ "state": state, "since": at, "last_event": at }));
@@ -1756,8 +1700,8 @@ fn card_is_the_whole_conversation_opened_on_the_end_of_its_last_answer() {
     pane_rows.extend_from_slice(&CHROME);
     let pane = a_pane_showing(&amx, &pane_rows);
     amx.record("port-cli-b2c", &pane);
-    // Paragraphs rather than lines, so each is a row of the card and the
-    // conversation is taller than any card: where it opens is then a choice.
+    // Blank-line-separated paragraphs, one card row each, so the conversation
+    // is taller than the card and where it opens matters.
     let first: String = (1..=20).map(|n| format!("first line {n}\n\n")).collect();
     let second: String = (1..=15)
         .map(|n| format!("**second** line {n}\n\n"))
@@ -1794,9 +1738,8 @@ fn card_is_the_whole_conversation_opened_on_the_end_of_its_last_answer() {
         "and says how much stands above:\n{carded}"
     );
 
-    // Everything above is still reachable a page at a time, up to the row the
-    // conversation begins on. Pressing past the top is a press that does
-    // nothing, so this walks up until the first question is on the card.
+    // Page up until the first turn shows. A press at the top does nothing, so
+    // pressing inside the poll is safe.
     let top = amx.until("the first turn", || {
         let drawn = amx.capture(&view);
         if drawn.contains("❯ first ask") && drawn.contains("first line 1") {
@@ -1833,11 +1776,8 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
     for said in ["❯ port it", "on it"] {
         assert!(card.contains(said), "{said} in:\n{carded}");
     }
-    // The pane is not under the record: what it shows is the same turn in
-    // the vendor's dress, and the words of it are on the record already. The
-    // spinner line is on the row and at the far end of the card's rule,
-    // because both say how the turn is going in the vendor's words, and the
-    // body under the rule is the record's alone.
+    // The body comes from the transcript only, since the pane shows the same
+    // turn. The spinner line may be on the row and the rule, not in the body.
     let body = card_lines(&carded)[1..].join("\n");
     for pictured in [
         "i ported the importer",
@@ -1851,7 +1791,7 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
         );
     }
 
-    // Where the vendor streams what it is saying, that is the tail.
+    // Text streamed to the agent's `live` file goes under the transcript.
     std::fs::write(
         amx.agent_dir("port-cli-b2c").join("live"),
         "now **streaming** words\n",
@@ -1874,11 +1814,9 @@ fn card_over_a_working_conversation_ends_on_what_is_being_said_now() {
 
 #[test]
 fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
-    // The vendor has been started, has announced the transcript it is going to
-    // write, and has not written a turn to it yet. The card is the task the
-    // agent was given, drawn as the prompt it is, and nothing under it — the
-    // same shape the card will keep once the first turn lands, and no look at
-    // the pane in the meantime.
+    // The transcript is named but has no turns yet. The card shows only the
+    // task as a prompt, the shape it keeps once turns land, and does not fall
+    // back to the pane.
     let amx = Harness::new();
     let mut pane_rows = vec!["reading the importer", ""];
     pane_rows.extend_from_slice(&CHROME);
@@ -1903,16 +1841,15 @@ fn card_over_a_transcript_with_nothing_on_it_yet_is_the_task_alone() {
     );
 }
 
-/// What one row of the card says, the column it stands in aside.
+/// A card row's text without its indentation.
 fn card_says(line: &str) -> &str {
     line.trim()
 }
 
 #[test]
 fn card_on_a_command_that_has_ended_is_what_it_printed() {
-    // A command has no vendor, no conversation and no answer on its record,
-    // and its pane goes when it does. What it printed is in the file its boot
-    // piped the pane into, and that file is the card.
+    // A command has no transcript or answer, and its pane closes when it
+    // exits. The card shows the log file its pane output was piped into.
     let amx = Harness::new();
     let id = "print-two-b2c";
     let ran = amx.amx(&["new", "--name", id, "--exec", r#"printf "one\ntwo\n""#]);
@@ -1926,8 +1863,8 @@ fn card_on_a_command_that_has_ended_is_what_it_printed() {
     let view = amx.in_a_terminal(&[], &[]);
     amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
     press(&amx, &view, "Space");
-    // Both lines, on the card's own rows: the row above it is the command
-    // itself, and the command has both words in it.
+    // Match whole card rows: the list row shows the command, which contains
+    // both words.
     let carded = amx.until("the card to hold what the command printed", || {
         let drawn = amx.capture(&view);
         let said: Vec<&str> = card_lines(&drawn).into_iter().map(card_says).collect();
@@ -1941,16 +1878,16 @@ fn card_on_a_command_that_has_ended_is_what_it_printed() {
     );
 }
 
-/// The id the vendor's stand-in announces for a session it was asked to
-/// continue. A resume changes exactly this about an agent, so it is what says
-/// the line reached one.
+/// The session id mock-claude reports for a resumed session.
+///
+/// A resume changes only the session id, so seeing it recorded proves the
+/// resume ran.
 const CONTINUED: &str = "b7d2a5c8-3e14-4f9a-8c26-0d5b1a7e3f42";
 
 #[test]
 fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
-    // A real agent rather than a record written by hand, because what the
-    // line does to one is a resume: the session it was carried on and the
-    // command that carries it are both written down by the start it had.
+    // A real `amx new` agent, since a resume needs the session and command
+    // its start recorded.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     let started = amx
@@ -1980,8 +1917,8 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
     amx.amx(&["stop", id, "--force"]);
     assert_eq!(amx.state(id)["state"], "stopped");
 
-    // The resume runs in the view's own process, so the stand-in it starts is
-    // the one this terminal was opened with.
+    // The view runs the resume itself, so mock-claude's scenario comes from
+    // the view's environment.
     let scenario = amx.scenario("continues-a-session");
     let view = amx.in_a_terminal(
         &[
@@ -2008,8 +1945,8 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
         (amx.meta(id)["session"] == CONTINUED).then_some(())
     });
 
-    // On the session it already had, with the line as its first turn: the
-    // agent is the one that ended, carrying on from where it was.
+    // mock-claude was started with `--resume` on the old session and the
+    // line as its prompt.
     let pane = amx.pane_of(id);
     let called = amx.until("the vendor to say how it was called", || {
         let drawn = amx.capture(&pane);
@@ -2024,10 +1961,9 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
 
 #[test]
 fn card_says_a_reply_is_queued_until_the_agent_takes_it() {
-    // A reply typed at an agent mid-turn is held by the vendor until the turn
-    // ends, in the composer band the card cuts off — so the card says it from
-    // the record, and stops saying it the moment the vendor reports the
-    // prompt went in (Saiful, 2026-09-18: people thought the reply was lost).
+    // A reply sent mid-turn waits in the vendor's composer, which the card
+    // cuts, so the card shows it as queued from the record. Without the row,
+    // people thought the reply was lost.
     let amx = Harness::new();
     amx.play("port-cli-b2c", "takes-a-message-mid-turn");
     amx.until_state("port-cli-b2c", "working");
@@ -2046,7 +1982,6 @@ fn card_says_a_reply_is_queued_until_the_agent_takes_it() {
         let drawn = amx.capture(&view);
         drawn.contains("❯ and the linter · queued").then_some(drawn)
     });
-    // Under the rule, as a row of the card, and above the line.
     let rule = card_rule(&carded).expect("the rule");
     let queued = carded
         .lines()
@@ -2063,7 +1998,7 @@ fn card_says_a_reply_is_queued_until_the_agent_takes_it() {
         "between the rule and the line:\n{carded}"
     );
 
-    // The vendor's own word that the prompt went in takes the row away.
+    // The row goes once the agent takes the message.
     amx.until("the row to go once the agent takes it", || {
         let drawn = amx.capture(&view);
         (!drawn.contains("· queued")).then_some(())
@@ -2072,9 +2007,7 @@ fn card_says_a_reply_is_queued_until_the_agent_takes_it() {
 
 #[test]
 fn card_line_on_a_command_that_has_ended_says_nothing_is_listening() {
-    // A command amx ran has no vendor to take a first turn, so there is
-    // nothing a line typed at it could do — and the card says so rather than
-    // inviting one.
+    // A command has no vendor to resume, so a typed line could do nothing.
     let amx = Harness::new();
     let id = "print-one-b2c";
     let ran = amx.amx(&["new", "--name", id, "--exec", r#"printf "one\n""#]);
