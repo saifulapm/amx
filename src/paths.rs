@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Test-only override of the state root.
 const STATE_DIR_ENV: &str = "AMX_STATE_DIR";
@@ -31,6 +32,16 @@ pub const FILE_MODE: u32 = 0o600;
 pub fn keep_to_the_owner(path: &Path, mode: u32) -> Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("keeping {} to its owner", path.display()))
+}
+
+/// A file's length and mtime, or `None` if it does not exist.
+///
+/// Compared against an earlier stamp to tell whether the file changed. The
+/// length catches a second write within one mtime tick on filesystems with
+/// coarse timestamps.
+pub(crate) fn stamped(path: &Path) -> Option<(u64, SystemTime)> {
+    let file = std::fs::metadata(path).ok()?;
+    Some((file.len(), file.modified().ok()?))
 }
 
 /// The directory holding one subdirectory per agent.

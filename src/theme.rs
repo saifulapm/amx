@@ -4,6 +4,7 @@
 //! Like [`crate::config`], a theme never blocks the view: a file that cannot
 //! be read or parsed falls back to the built-in palette with a warning.
 
+use crate::paths::stamped;
 use crate::shade::Shade;
 use anyhow::{Context, Result, anyhow};
 use ratatui::style::Color;
@@ -162,30 +163,9 @@ pub struct Watch {
     themes: PathBuf,
     /// The file to stat; `None` for a shipped palette.
     file: Option<PathBuf>,
-    /// The file's stamp at the last read. `None` means no file existed, so
-    /// one appearing counts as a change.
-    seen: Option<Stamp>,
-}
-
-/// A theme file's mtime and length.
-///
-/// The length catches a second edit within the same mtime tick on filesystems
-/// with coarse timestamps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    modified: Option<SystemTime>,
-    len: u64,
-}
-
-impl Stamp {
-    /// The stamp of `path`, or `None` if nothing is there.
-    fn of(path: &Path) -> Option<Stamp> {
-        let about = std::fs::metadata(path).ok()?;
-        Some(Stamp {
-            modified: about.modified().ok(),
-            len: about.len(),
-        })
-    }
+    /// The file's length and mtime at the last read. `None` means no file
+    /// existed, so one appearing counts as a change.
+    seen: Option<(u64, SystemTime)>,
 }
 
 impl Watch {
@@ -204,7 +184,7 @@ impl Watch {
     /// [`Watch::of`] with an explicit themes directory.
     pub fn of_in(themes: &Path, named: &str) -> Watch {
         let file = source_in(themes, named).path().map(Path::to_path_buf);
-        let seen = file.as_deref().and_then(Stamp::of);
+        let seen = file.as_deref().and_then(stamped);
         Watch {
             named: named.to_string(),
             themes: themes.to_path_buf(),
@@ -217,7 +197,7 @@ impl Watch {
     /// `None`.
     pub fn reread(&mut self) -> Option<(Theme, Vec<String>)> {
         let file = self.file.as_deref()?;
-        let now = Stamp::of(file);
+        let now = stamped(file);
         if now == self.seen {
             return None;
         }

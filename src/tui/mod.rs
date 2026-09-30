@@ -44,6 +44,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::Config;
 use crate::derive::{self, View};
+use crate::paths::stamped;
 use crate::store::{Agent, Phase, now};
 use crate::theme::{Theme, Watch};
 use crate::tmux::{PaneId, Server, SessionId};
@@ -557,12 +558,6 @@ impl Freshness {
             Freshness::Files(files) => files.iter().any(|(path, at)| stamped(path) != *at),
         }
     }
-}
-
-/// A file's length and mtime, or `None` if it does not exist.
-fn stamped(path: &Path) -> Option<(u64, SystemTime)> {
-    let file = std::fs::metadata(path).ok()?;
-    Some((file.len(), file.modified().ok()?))
 }
 
 /// A path with its current stamp, taken before the file is read.

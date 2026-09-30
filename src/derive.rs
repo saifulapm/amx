@@ -642,9 +642,7 @@ fn logged_work(agent: &Agent, meta: &Meta) -> Option<u64> {
     let path = agent.events_path();
     // Taken before the log is read, so an append in between reads as a change
     // next time rather than being cached under the newer stamp.
-    let Ok((len, modified)) =
-        std::fs::metadata(&path).and_then(|file| Ok((file.len(), file.modified()?)))
-    else {
+    let Some((len, modified)) = crate::paths::stamped(&path) else {
         return worked_off_the_log(agent, meta);
     };
     let mut logs = LOGS.lock().unwrap_or_else(PoisonError::into_inner);
