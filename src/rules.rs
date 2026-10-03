@@ -4140,7 +4140,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert_eq!(
             gates(&codex()),
             ["update", "hooks_review", "folder_trust", "cwd_prompt"],
-            "Ruling 7: amx answers none of them, the person does"
+            "gates are the person's to answer: amx answers none of them"
         );
     }
 
