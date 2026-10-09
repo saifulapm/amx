@@ -652,6 +652,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             // injected itself keeps it.
             if !injected(hooks, payload) {
                 state.result = None;
+                state.provisional = false;
                 state.source = None;
             }
             Screen::Clear
@@ -813,12 +814,16 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
                 state.summary = None;
             }
             // Keep the answer whether or not tasks remain, but not a cut-off
-            // or failed one, and not over an answer an injected turn kept.
+            // or failed one, and not over an answer an injected turn kept,
+            // unless that answer was given with tasks still out and this turn
+            // leaves none.
+            let settles = state.provisional && state.background == 0;
             if let Some(answer) = payload["last_assistant_message"].as_str()
                 && !matches!(payload["stop_reason"].as_str(), Some("aborted" | "error"))
-                && state.result.is_none()
+                && (state.result.is_none() || settles)
             {
                 state.result = Some(answer.to_string());
+                state.provisional = state.background > 0;
                 state.source = Some(Source::Payload);
             }
             Screen::Clear
@@ -2368,6 +2373,81 @@ mod tests {
             "background_tasks": [{ "id": "a1", "type": "local_agent", "status": "running" }]
         }));
         assert_eq!(agents.summary.as_deref(), Some("1 agent running"));
+    }
+
+    #[test]
+    fn hook_the_turn_that_ends_a_run_of_background_work_gives_the_answer() {
+        // An orchestrator answers once while its implementers run, then works
+        // through their notices. The answer that stands is the one given when
+        // nothing is left running, not the status from the start.
+        let mut state = State::default();
+        let mut meta = meta();
+        let out = json!([{ "id": "a1", "type": "subagent", "status": "running" }]);
+
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "land m6b" }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "t1 is running on an implementer.",
+                "background_tasks": out,
+            }),
+            &mut state,
+            &mut meta,
+        );
+        let notice = "<task-notification>\n<task-id>a0</task-id>\n<status>completed</status>";
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": notice }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "Only t7 is still running.",
+                "background_tasks": out,
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(
+            state.result.as_deref(),
+            Some("t1 is running on an implementer."),
+            "a turn with tasks still out does not replace it"
+        );
+
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": notice }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "m6b is landed.",
+                "background_tasks": [],
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result.as_deref(), Some("m6b is landed."));
+
+        // Settled: the next notice's reply is not the answer.
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": notice }),
+            &mut state,
+            &mut meta,
+        );
+        apply(
+            &json!({ "hook_event_name": "Stop", "last_assistant_message": "Noted." }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.result.as_deref(), Some("m6b is landed."));
     }
 
     #[test]

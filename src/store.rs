@@ -370,6 +370,10 @@ pub struct State {
     pub reported: bool,
     /// The answer from the last turn that ended.
     pub result: Option<String>,
+    /// Whether that answer was given while tasks the agent started were
+    /// still running. The first turn to end with none left replaces it,
+    /// even one the vendor started itself; see [`crate::hook::apply`].
+    pub provisional: bool,
     /// Where that answer came from.
     pub source: Option<Source>,
     /// The exit code of the agent's command, once it has one.
@@ -616,6 +620,7 @@ struct Wire {
     agents: u32,
     question: Option<Asked>,
     result: Option<String>,
+    provisional: bool,
     source: Option<Source>,
     exit: Option<i32>,
     last_event: u64,
@@ -717,6 +722,7 @@ impl From<State> for Wire {
             kind,
             reported,
             result,
+            provisional,
             source,
             exit,
             last_event,
@@ -767,6 +773,7 @@ impl From<State> for Wire {
                 })),
             },
             result,
+            provisional,
             source,
             exit,
             last_event,
@@ -814,6 +821,7 @@ impl From<Wire> for State {
             kind,
             reported,
             result: wire.result,
+            provisional: wire.provisional,
             source: wire.source,
             exit: wire.exit,
             last_event: wire.last_event,
