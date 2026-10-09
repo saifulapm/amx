@@ -3742,6 +3742,25 @@ fn ctrl_x_arms_a_finished_row_and_the_press_after_it_forgets_it() {
     assert_eq!(left(), 1);
 }
 
+#[test]
+fn ctrl_x_leaves_the_cursor_on_the_next_row_after_forgetting_one() {
+    let root = TempDir::new().unwrap();
+    finished(root.path(), "first-a1b", "wrote the parser", 60);
+    finished(root.path(), "second-b2c", "wrote the tests", 120);
+    finished(root.path(), "third-c3d", "wrote the docs", 180);
+
+    // The third press lands on the row that took the forgotten one's line and
+    // arms it alone. On the heading it would arm both rows left.
+    let (_, after) = pressing(root.path(), vec![ctrl('x'), ctrl('x'), ctrl('x')]);
+    assert!(!after.contains("first-a1b"), "{after}");
+    assert_eq!(after.matches("ctrl+x again").count(), 1, "{after}");
+    assert!(!after.contains("wrote the tests"), "the armed row: {after}");
+    assert!(
+        after.contains("wrote the docs"),
+        "the row below it: {after}"
+    );
+}
+
 /// Records an agent whose state still reads live, behind a socket with no
 /// server; the test hands the wall its phase.
 fn idle(root: &Path, id: &str) {

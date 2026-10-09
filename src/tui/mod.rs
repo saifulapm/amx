@@ -2529,7 +2529,9 @@ impl Screen {
         // heading, and a press on one of them is that row's first press.
         if !self.swept() && self.forgetting().iter().any(|id| id == view.id()) {
             self.arm = None;
+            let id = view.id().to_string();
             self.notice = kept_a_tree(act::forget(root, view));
+            self.list.let_go(&id);
             self.acted();
             return;
         }

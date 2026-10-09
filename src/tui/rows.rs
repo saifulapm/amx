@@ -327,6 +327,9 @@ pub struct List {
     /// Whether the cursor has been placed since the list was last empty. The
     /// first placement lands on an agent rather than a heading.
     landed: bool,
+    /// The agent the user just removed, so the next reading puts the cursor
+    /// on the agent after it rather than on the heading. See [`List::let_go`].
+    let_go: Option<String>,
     /// Headings whose fold the user opened.
     unfolded: HashSet<Key>,
     /// Headings the user shut.
@@ -387,6 +390,7 @@ impl Default for List {
             items: Vec::new(),
             cursor: 0,
             landed: false,
+            let_go: None,
             unfolded: HashSet::new(),
             shut: HashSet::new(),
             held: BTreeSet::new(),
@@ -455,6 +459,15 @@ impl List {
         self.views = views;
         self.rebuild(on.agent());
         self.follow(&on);
+        // Only the next reading: later ones were not asked for.
+        self.let_go = None;
+    }
+
+    /// Note that the user removed agent `id`, so that when the next reading
+    /// drops it the cursor goes to the agent after it, or the one above if
+    /// it was the last.
+    pub fn let_go(&mut self, id: &str) {
+        self.let_go = Some(id.to_string());
     }
 
     /// Read every agent's pull requests again. Unlike project roots these are
@@ -1560,6 +1573,15 @@ impl List {
         };
         match (found, held) {
             (Some(at), _) => self.cursor = at,
+            // The user removed it, and meant to: no key was aimed past it.
+            (None, On::Agent(id)) if self.let_go.as_ref() == Some(id) && !self.items.is_empty() => {
+                let at = self.cursor.min(self.items.len() - 1);
+                let agent = |item: &Item| matches!(item, Item::Agent(_));
+                let next = self.items[at..].iter().position(agent).map(|n| at + n);
+                if let Some(to) = next.or_else(|| self.items[..at].iter().rposition(agent)) {
+                    self.cursor = to;
+                }
+            }
             // The agent left the list. Its old line now holds another agent,
             // which a key meant for the gone one would hit, so move to the
             // heading above instead. No single key on a heading is destructive.
@@ -2557,6 +2579,49 @@ mod tests {
         list.show(vec![view("ask-a1b", Phase::Idle, 10)]);
         assert!(list.on_heading(), "a heading, not the agent below it");
         assert!(list.selected().is_none());
+    }
+
+    #[test]
+    fn view_puts_the_cursor_on_the_next_agent_when_the_user_removed_its_own() {
+        let fleet = || {
+            vec![
+                view("busy-a1b", Phase::Working, 10),
+                view("busy-b2c", Phase::Working, 20),
+                view("done-c3d", Phase::Idle, 30),
+            ]
+        };
+        let without = |gone: &str| -> Vec<View> {
+            fleet()
+                .into_iter()
+                .filter(|view| view.id() != gone)
+                .collect()
+        };
+
+        // The row that takes the removed one's line.
+        let mut list = listed(fleet());
+        assert!(list.land_on("busy-a1b"));
+        list.let_go("busy-a1b");
+        list.show(without("busy-a1b"));
+        assert_eq!(list.selected().unwrap().id(), "busy-b2c");
+
+        // The last of its group: the next agent, under the next heading.
+        let mut list = listed(fleet());
+        assert!(list.land_on("busy-b2c"));
+        list.let_go("busy-b2c");
+        list.show(without("busy-b2c"));
+        assert_eq!(list.selected().unwrap().id(), "done-c3d");
+
+        // The last of all: the one above.
+        let mut list = listed(fleet());
+        assert!(list.land_on("done-c3d"));
+        list.let_go("done-c3d");
+        list.show(without("done-c3d"));
+        assert_eq!(list.selected().unwrap().id(), "busy-b2c");
+
+        // Only the next reading: a later one that loses the cursor's agent
+        // goes to the heading as before.
+        list.show(vec![view("busy-a1b", Phase::Working, 10)]);
+        assert!(list.on_heading());
     }
 
     #[test]
