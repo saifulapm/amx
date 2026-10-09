@@ -383,6 +383,8 @@ fn unanswered<'a>(
             _ if event.kind == derive::READ_TURN_END => Some(false),
             // claude writes no `Stop` for an interrupted turn.
             _ if event.kind == crate::verbs::interrupt::INTERRUPT => Some(false),
+            // Nor for a turn its last life left open.
+            _ if event.kind == crate::verbs::resume::RESUMED => Some(false),
             _ => None,
         };
         if let Some(began) = edge {
@@ -752,6 +754,18 @@ mod tests {
             Event::new(SUBMITTED, json!({})),
         ];
         assert!(queued(claude.as_ref(), &cut).is_empty());
+
+        // A turn the last life never ended does not run on into a resumed one.
+        // The first message after the resume was listed as held all turn.
+        let resumed = vec![
+            Event::new(SUBMITTED, json!({})),
+            Event::new("Notification", json!({})),
+            Event::new(crate::verbs::resume::RESUMED, json!({})),
+            Event::new("SessionStart", json!({})),
+            sent("go ahead"),
+            Event::new(SUBMITTED, json!({})),
+        ];
+        assert!(queued(claude.as_ref(), &resumed).is_empty());
 
         // pi's `Taken` means it started on the message, whenever it arrives.
         let steered = vec![
