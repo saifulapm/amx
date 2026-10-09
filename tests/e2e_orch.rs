@@ -179,6 +179,27 @@ fn send_confirms_that_the_agent_took_the_message_and_result_waits_for_its_answer
 }
 
 #[test]
+fn send_to_an_agent_working_only_on_its_background_agents_is_not_queued() {
+    // The turn ended with an agent still out, so the record reads working,
+    // but claude is at its prompt and starts a turn on the message at once.
+    let amx = Harness::new();
+    amx.play("review-diff-c3d", "takes-a-message-with-an-agent-out");
+    amx.until_state("review-diff-c3d", "working");
+
+    let out = amx.amx(&["send", "review-diff-c3d", "and now the linter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!stderr(&out).contains("queued"), "{}", stderr(&out));
+    assert!(
+        amx.event_kinds("review-diff-c3d")
+            .iter()
+            .filter(|kind| *kind == "UserPromptSubmit")
+            .count()
+            == 2,
+        "the send waited for the prompt it started"
+    );
+}
+
+#[test]
 fn send_takes_the_text_from_a_file() {
     // The pane gets the file's contents, not its path.
     let amx = Harness::new();

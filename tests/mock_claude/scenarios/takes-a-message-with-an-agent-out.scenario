@@ -1,0 +1,15 @@
+# An agent whose turn ended with a background agent still running. claude is
+# at its prompt, so a sent message starts a turn at once instead of queueing.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "review the diff"}
+hook Stop {"last_assistant_message": "a reviewer is reading the diff", "background_tasks": [{"id": "a1", "type": "subagent", "status": "running"}]}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle)
+await Enter
+hook UserPromptSubmit {"prompt": "and now the linter"}
+print working on the linter
+sleep 1000
+hook Stop {"last_assistant_message": "the linter is clean", "background_tasks": [{"id": "a1", "type": "subagent", "status": "running"}]}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle)
+sleep 600000

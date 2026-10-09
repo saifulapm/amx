@@ -119,8 +119,11 @@ pub fn run(
         }
     }
 
-    // A working agent takes the message only when its current turn ends.
-    if phase == Phase::Working {
+    // A working agent takes the message only when its current turn ends. One
+    // whose turn ended with background tasks still running is at its prompt
+    // and starts a turn on it, which the wait below confirms.
+    let at_its_prompt = view.state.background > 0 && !view.state.turn_open;
+    if phase == Phase::Working && !at_its_prompt {
         warn!("amx: {id} is working; the message is queued until the current turn ends");
         return Ok(exit::OK);
     }
