@@ -784,10 +784,11 @@ pub fn read(
         // `State::background`). Nothing is sent when somebody stops a shell in
         // the pane, so the count goes stale, but claude's footer says how many
         // shells it still has. A vendor that never says is taken at the count.
+        // Agents are taken at the count too; see `State::agents`.
         Claim::Ruled(rule)
             if rule.state == Phase::Idle
-                && state.background > 0
-                && still_has_a_shell(rules, &screen) =>
+                && (state.agents > 0
+                    || state.background > 0 && still_has_a_shell(rules, &screen)) =>
         {
             told(Phase::Working, Evidence::Hooks, Some(&rule.name))
         }
@@ -1154,6 +1155,7 @@ fn hear_what_went_unsaid(
             if to == Phase::Idle {
                 the_line_goes_with_the_turn(current);
                 current.background = 0;
+                current.agents = 0;
             }
         })?;
         let ended = (to == Phase::Idle).then(|| {
@@ -1970,6 +1972,18 @@ mod tests {
 ✻ Worked for 2m 26s
 ❯
   ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+    /// claude 2.1.295 at its prompt with a background agent running. The agent
+    /// is in the panel under the footer, not on it, and its row stays there,
+    /// the same, after the agent finishes.
+    const A_SCREEN_WITH_AN_AGENT: &str = "\
+● Main is green at df863af. Only t7 is still running.
+❯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+  ● main
+  ◯ implementer  Running format and lint checks          4m 54s · ↓ 83.8k tokens
 ";
 
     /// claude 2.1.278 after esc in the pane: its row for an interrupted tool
@@ -3765,6 +3779,27 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let verdict = settled(&state(Phase::Working, 1_000), IDLE_SCREEN, 1_100);
         assert_eq!(verdict.phase, Phase::Idle);
         assert_eq!(verdict.evidence, Evidence::Screen);
+    }
+
+    #[test]
+    fn reader_leaves_a_turn_whose_agents_are_still_running_at_work() {
+        // claude 2.1.295 draws background agents in a panel whose rows outlive
+        // them, so the screen cannot say an agent finished. claude starts a
+        // turn for every agent that finishes or is stopped, and that turn's
+        // Stop hook writes the count again, so the count holds.
+        let mut running = state(Phase::Working, 1_000);
+        running.background = 1;
+        running.agents = 1;
+
+        let verdict = settled(&running, A_SCREEN_WITH_AN_AGENT, 1_100);
+        assert_eq!(verdict.phase, Phase::Working);
+        assert_eq!(verdict.evidence, Evidence::Hooks);
+
+        // Shells are still counted off the footer: a stopped shell leaves
+        // only the agent to hold the turn.
+        running.background = 2;
+        let verdict = settled(&running, A_SCREEN_WITH_NO_SHELL, 1_100);
+        assert_eq!(verdict.phase, Phase::Working);
     }
 
     #[test]

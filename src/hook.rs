@@ -646,6 +646,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.asks(None);
             // The shell count belonged to the previous turn.
             state.background = 0;
+            state.agents = 0;
             // A new turn clears the last answer, so a turn that ends without
             // one does not hand the old answer to `result`. A prompt the vendor
             // injected itself keeps it.
@@ -663,6 +664,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             // The menu is what it is doing.
             state.summary = None;
             state.background = 0;
+            state.agents = 0;
             state.asks_all(asked(&payload["tool_input"]));
             state.kind = Some(Kind::Question);
             // Nothing else will report the wait: the vendor sends its idle
@@ -673,6 +675,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         Moment::Calling => {
             state.state = Phase::Working;
             state.background = 0;
+            state.agents = 0;
             if let Some(tool) = payload["tool_name"].as_str() {
                 state.summary = Some(format!("Running {tool}"));
             }
@@ -797,6 +800,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.asks(None);
             let (shells, agents) = running(payload);
             state.background = shells + agents;
+            state.agents = agents;
             // The model finished but its tasks have not. Callers wait on the
             // turn and the park timer ends it, and both are about the agent:
             // `_park` once took a pane whose shells were still running ten
@@ -2349,6 +2353,7 @@ mod tests {
         }));
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.background, 3);
+        assert_eq!(state.agents, 2, "the reader holds the turn on these");
         assert_eq!(
             state.summary.as_deref(),
             Some("1 shell and 2 agents running")

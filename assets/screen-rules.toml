@@ -89,7 +89,9 @@ placeholders = [
 # running, which only holds the count. The reverse error would end a live turn.
 # claude 2.1.278 ends every footer with `· ← for agents`, so `footer_hints`
 # strips that tail before `shells` is matched. `← 5 agents` is left on and still
-# reads as running.
+# reads as running. claude 2.1.295 moved agents off the footer into a panel
+# whose rows outlive them, so agents are taken at the Stop hook's count
+# (`State::agents`) and never read off the screen.
 [furniture]
 mode = ["⏵⏵", "⏸"]
 spinner = ["ing…"]

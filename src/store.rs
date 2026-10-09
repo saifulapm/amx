@@ -336,6 +336,12 @@ pub struct State {
     /// see [`crate::hook::apply`] and [`crate::derive::read`]. Cleared by the
     /// agent's next action.
     pub background: u32,
+    /// How many of [`State::background`] are agents rather than shells.
+    ///
+    /// claude 2.1.295 shows a shell count on the pane's footer but no
+    /// reliable sign of a running agent, so only the hooks can say an agent
+    /// is still running.
+    pub agents: u32,
     /// The question it is waiting on.
     pub question: Option<String>,
     /// The choices that question offers, in screen order. They belong to the
@@ -607,6 +613,7 @@ struct Wire {
     since: u64,
     summary: Option<String>,
     background: u32,
+    agents: u32,
     question: Option<Asked>,
     result: Option<String>,
     source: Option<Source>,
@@ -702,6 +709,7 @@ impl From<State> for Wire {
             since,
             summary,
             background,
+            agents,
             question,
             options,
             walked,
@@ -731,6 +739,7 @@ impl From<State> for Wire {
             since,
             summary,
             background,
+            agents,
             question: match (question, kind) {
                 // Nothing outstanding. Options without a question are dropped.
                 (None, None) => None,
@@ -797,6 +806,7 @@ impl From<Wire> for State {
             since: wire.since,
             summary: wire.summary,
             background: wire.background,
+            agents: wire.agents,
             question,
             options,
             walked,
