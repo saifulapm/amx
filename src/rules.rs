@@ -4007,6 +4007,35 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 0.0%/1.0M (auto)                                   (opencode) muse-spark-1.3-contributor-free • high
 ";
 
+    /// A turn under `/goal` thinking with no tool call (claude 2.1.29x, 208
+    /// columns, borders cut): the goal's clock takes the row the effort hint
+    /// takes elsewhere, between the spinner and the composer.
+    const A_GOAL_TURN_THINKING: &str = "\
+● Oriented on the plan and the outline code; now reading the read tool.
+
+  Searched for 1 pattern, ran 5 shell commands
+
+● Advising using Fable 5.1
+
+● Stewing… (4m 27s · ↓ 6.1k tokens)
+                                                                                                                                                                                         ◎ /goal active (4m)
+────────────────────────────────────────
+❯\u{a0}
+────────────────────────────────────────
+  Opus 5.5 (1M context) │ ◈ 8% │ eco (main) │ ◖ high
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+    #[test]
+    fn rules_a_goals_clock_over_the_composer_does_not_hide_the_spinner() {
+        // The reader once ended this turn while claude advised: the walk
+        // stopped at the clock, missed the spinner, and the prompt was all it
+        // could claim.
+        let claimed = claim(claude(), A_GOAL_TURN_THINKING, Phase::Working);
+        assert_eq!(claimed.rule_name(), Some("spinner"));
+        assert_eq!(claimed.phase(), Some(Phase::Working));
+    }
+
     #[test]
     fn rules_claudes_spinner_is_the_row_over_its_composer_and_no_other() {
         // `ing…` is also the vendor's elision after a gerund: on a tool result

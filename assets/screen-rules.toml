@@ -53,9 +53,11 @@ placeholders = [
 # - `beneath`, `panel`: the agents panel claude 2.1.270 draws under the footer
 #   (a blank row, `● main`, one `◯ ` row per agent). `panel` caps the rows,
 #   blanks included, the walk steps over before it must meet the footer.
-# - `hint`: the right-aligned effort row on the composer's top border,
-#   `● high · /effort`. Optional, so the walk steps over it but never requires
-#   it. Matched as a fragment because right alignment moves its start.
+# - `hint`: the right-aligned row on the composer's top border: the effort,
+#   `● high · /effort`, or under `/goal` the goal's clock, `◎ /goal active
+#   (4m)`, which stood between the spinner and the box and hid it. Optional, so
+#   the walk steps over it but never requires it. Matched as a fragment because
+#   right alignment moves its start; the glyph keeps a `❯ /goal` prompt out.
 # - `tip`: the `⎿  Tip:` row claude 2.1.226 drew between the spinner and the
 #   composer.
 #
@@ -100,7 +102,7 @@ statusline = 8
 bottom = 2
 beneath = ["● ", "◯ "]
 panel = 8
-hint = ["/effort"]
+hint = ["/effort", "◎ /goal"]
 tip = ["⎿  Tip:"]
 interrupted = ["⎿  Interrup"]
 shells = ["shell", "·"]
