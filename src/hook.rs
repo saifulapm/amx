@@ -508,14 +508,16 @@ fn injected(hooks: &Hooks, payload: &Value) -> bool {
 /// Background shells and other tasks the vendor reports still running.
 ///
 /// The list includes finished tasks, so only those marked running count. A
-/// task of type `shell` is a shell; anything else is an agent it started.
+/// task of type `shell` is a shell; anything else is an agent it started,
+/// except a `monitor`. claude arms one on every artifact it publishes, and it
+/// runs as long as the session, so it would hold every later turn open.
 fn running(payload: &Value) -> (u32, u32) {
     let Some(tasks) = payload["background_tasks"].as_array() else {
         return (0, 0);
     };
     tasks
         .iter()
-        .filter(|task| task["status"] == "running")
+        .filter(|task| task["status"] == "running" && task["type"] != "monitor")
         .fold((0, 0), |(shells, agents), task| {
             if task["type"] == "shell" {
                 (shells + 1, agents)
@@ -2373,6 +2375,27 @@ mod tests {
             "background_tasks": [{ "id": "a1", "type": "local_agent", "status": "running" }]
         }));
         assert_eq!(agents.summary.as_deref(), Some("1 agent running"));
+    }
+
+    #[test]
+    fn hook_a_monitor_left_running_does_not_hold_the_turn() {
+        // claude arms a monitor on every artifact it publishes, and the monitor
+        // runs as long as the session. Counted as an agent, it held the row at
+        // `working` after the last turn ended.
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "Stop",
+            "last_assistant_message": "m8 has landed.",
+            "background_tasks": [{
+                "id": "s4cxtlse6",
+                "type": "monitor",
+                "status": "running",
+                "description": "live updates for artifact https://claude.ai/artifact/MECnTVtu4SWYWq2MD1xUf8 (auto-armed on publish)"
+            }]
+        }));
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.agents, 0);
+        assert_eq!(state.background, 0);
+        assert_eq!(state.result.as_deref(), Some("m8 has landed."));
     }
 
     #[test]
