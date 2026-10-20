@@ -949,6 +949,9 @@ fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
         .env("AMX_STATE_DIR", &state_dir)
         .env("HOME", amx.home())
         .env("CLAUDE_CODE_CHILD_SESSION", "1")
+        // A server started from an agent's shell also carries amx's own
+        // nested mark, which would silence every hook of every agent on it.
+        .env("AMX_NESTED", "1")
         .status()
         .expect("running tmux");
     assert!(status.success(), "starting the harness's server");
@@ -975,6 +978,10 @@ fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
     assert!(
         !env.contains_key("CLAUDE_CODE_CHILD_SESSION"),
         "a marker sitting in the server's own environment reached the agent: {env:?}"
+    );
+    assert!(
+        !env.contains_key("AMX_NESTED"),
+        "the server's nested mark reached the agent, so its hooks record nothing: {env:?}"
     );
     for kept in ["TMUX", "TMUX_PANE", "PATH", "HOME"] {
         assert!(

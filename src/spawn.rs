@@ -531,10 +531,12 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
 
     // The pane inherits the tmux server's environment, which can hold a
     // vendor's session markers from whenever the server started. The snapshot
-    // never saw them, so strip them here.
+    // never saw them, so strip them here. A server started from an agent's
+    // shell also holds amx's nested mark, which would silence every hook.
     for marker in session_markers() {
         command.env_remove(marker);
     }
+    command.env_remove(crate::hook::NESTED_ENV);
 
     let parent = meta
         .parent
