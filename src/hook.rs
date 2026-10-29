@@ -565,9 +565,10 @@ fn still_running(shells: u32, agents: u32) -> String {
 ///   (the transcript lags). If it lists background tasks still running, the
 ///   agent stays working; see [`crate::store::State`]'s `background`.
 /// - A subagent's payload (`agent_id` set) changes nothing, except its
-///   permission box, which waits on the person, and that subagent's next call
-///   or refusal, which says the box closed. A payload for an ended record
-///   changes nothing.
+///   permission box, which waits on the person, and that subagent's next
+///   call, refusal or finish, which says the box closed. The agent's own calls
+///   leave that box up, and so does its turn ending while subagents still run.
+///   A payload for an ended record changes nothing.
 /// - Any event about the agent clears the interrupt and park stamps, since
 ///   the vendor spoke.
 ///
@@ -594,8 +595,10 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         match moment(hooks, payload)? {
             // Its box is drawn on the agent's screen: the Asked arm below.
             Moment::Asked if !menu(hooks, payload) => {}
-            // The subagent that asked moved on, so its box closed.
-            Moment::Calling | Moment::Refused if state.asked_by.as_deref() == Some(sub) => {
+            // The subagent that asked moved on or finished, so its box closed.
+            Moment::Calling | Moment::Refused | Moment::Returned
+                if state.asked_by.as_deref() == Some(sub) =>
+            {
                 state.state = Phase::Working;
                 state.summary = None;
                 state.asks(None);
@@ -678,6 +681,9 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Taken => Screen::Clear,
 
+        // Only a subagent finishes, and it is not the agent.
+        Moment::Returned => return None,
+
         Moment::Calling if menu(hooks, payload) => {
             state.state = Phase::Waiting;
             // The menu is what it is doing.
@@ -690,6 +696,9 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             // notice only when nothing is open, and a menu is.
             Screen::Fresh
         }
+
+        // The agent works on while a subagent's box waits on the person.
+        Moment::Calling if state.asked_by.is_some() => return None,
 
         Moment::Calling => {
             state.state = Phase::Working;
@@ -817,8 +826,13 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Ended => {
             state.turn_open = false;
-            state.asks(None);
             let (shells, agents) = running(payload);
+            // A subagent's box outlives the turn that started the subagent,
+            // but only while some subagent still runs.
+            let held = state.asked_by.is_some() && agents > 0;
+            if !held {
+                state.asks(None);
+            }
             state.background = shells + agents;
             state.agents = agents;
             // The model finished but its tasks have not. Callers wait on the
@@ -831,6 +845,9 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             } else {
                 state.state = Phase::Idle;
                 state.summary = None;
+            }
+            if held {
+                state.state = Phase::Waiting;
             }
             // Keep the answer whether or not tasks remain, but not a cut-off
             // or failed one, and not over an answer an injected turn kept,
@@ -2751,11 +2768,13 @@ mod tests {
 
     #[test]
     fn hook_only_the_subagent_that_asked_answers_its_box() {
-        // Subagents run side by side, so another one's tool call says nothing
-        // about the box. The asker's next word means the box closed.
+        // Subagents and the agent itself run side by side, so another one's
+        // tool call says nothing about the box. The asker's next word means
+        // the box closed.
         for closed in [
             json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "agent_id": "sub-1" }),
             json!({ "hook_event_name": "PermissionDenied", "tool_name": "Bash", "agent_id": "sub-1" }),
+            json!({ "hook_event_name": "SubagentStop", "agent_id": "sub-1", "agent_type": "general-purpose" }),
         ] {
             let root = TempDir::new().unwrap();
             let agent = an_agent(root.path());
@@ -2768,16 +2787,75 @@ mod tests {
                     "notification_type": "permission_prompt"
                 }),
                 json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub-2" }),
+                json!({ "hook_event_name": "PreToolUse", "tool_name": "Grep" }),
+                json!({ "hook_event_name": "SubagentStop", "agent_id": "sub-2", "agent_type": "general-purpose" }),
             ] {
                 hook(root.path(), agent.id(), &payload.to_string());
             }
-            assert_eq!(agent.state().unwrap().state, Phase::Waiting, "{closed}");
+            let state = agent.state().unwrap();
+            assert_eq!(state.state, Phase::Waiting, "{closed}");
+            assert_eq!(
+                state.question.as_deref(),
+                Some("Claude needs your permission"),
+                "{closed}"
+            );
 
             hook(root.path(), agent.id(), &closed.to_string());
             let state = agent.state().unwrap();
             assert_eq!(state.state, Phase::Working, "{closed}");
             assert_eq!(state.question, None, "{closed}");
         }
+    }
+
+    #[test]
+    fn hook_a_subagents_box_outlives_the_turn_while_subagents_run() {
+        // A turn that started subagents in the background ends with them still
+        // running, and the box one of them raised is still on the screen.
+        let asked = json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash", "agent_id": "sub-1" });
+        let mut state = State {
+            state: Phase::Working,
+            turn_open: true,
+            ..State::default()
+        };
+        let mut meta = meta();
+        apply(&asked, &mut state, &mut meta);
+        apply(
+            &json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "Both subagents are launched.",
+                "background_tasks": [
+                    { "type": "local_agent", "status": "running" },
+                    { "type": "local_agent", "status": "running" }
+                ]
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert_eq!(state.agents, 2);
+        assert_eq!(
+            state.result.as_deref(),
+            Some("Both subagents are launched.")
+        );
+
+        // With no subagent left running, no subagent's box can be up.
+        let mut state = State {
+            state: Phase::Working,
+            turn_open: true,
+            ..State::default()
+        };
+        apply(&asked, &mut state, &mut meta);
+        apply(
+            &json!({ "hook_event_name": "Stop", "last_assistant_message": "Done." }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.question, None);
     }
 
     #[test]

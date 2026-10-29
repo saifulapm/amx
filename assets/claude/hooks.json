@@ -37,6 +37,11 @@
       {
         "hooks": [{ "type": "command", "command": "amx _hook" }]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [{ "type": "command", "command": "amx _hook" }]
+      }
     ]
   }
 }

@@ -184,6 +184,8 @@ pub const HOOKS: Hooks = Hooks {
         Wiring::with_matcher(Moment::Refused, "PermissionDenied"),
         Wiring::new(Moment::Notified, "Notification"),
         Wiring::new(Moment::Ended, "Stop"),
+        // The only word from a subagent whose approved call was its last.
+        Wiring::new(Moment::Returned, "SubagentStop"),
     ],
     // Every tool: the hook reads the payload to decide what a call means.
     matcher: "*",
@@ -349,6 +351,7 @@ mod tests {
                 (Moment::Refused, "PermissionDenied", true),
                 (Moment::Notified, "Notification", false),
                 (Moment::Ended, "Stop", false),
+                (Moment::Returned, "SubagentStop", false),
             ]
         );
         assert_eq!(hooks.matcher, "*", "every tool, on the three that ask");

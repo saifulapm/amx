@@ -104,12 +104,14 @@ pub enum Moment {
     Notified,
     /// The turn ended.
     Ended,
+    /// A subagent the agent started finished.
+    Returned,
 }
 
 #[cfg(test)]
 impl Moment {
     /// Every moment amx listens for.
-    pub const ALL: [Moment; 8] = [
+    pub const ALL: [Moment; 9] = [
         Moment::Started,
         Moment::Prompted,
         Moment::Taken,
@@ -118,6 +120,7 @@ impl Moment {
         Moment::Refused,
         Moment::Notified,
         Moment::Ended,
+        Moment::Returned,
     ];
 }
 
