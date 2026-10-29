@@ -564,8 +564,10 @@ fn still_running(shells: u32, agents: u32) -> String {
 /// - [`Ended`](Moment::Ended) ends the turn and carries the freshest answer
 ///   (the transcript lags). If it lists background tasks still running, the
 ///   agent stays working; see [`crate::store::State`]'s `background`.
-/// - A subagent's payload (`agent_id` set) and any payload for an ended record
-///   change nothing.
+/// - A subagent's payload (`agent_id` set) changes nothing, except its
+///   permission box, which waits on the person, and that subagent's next call
+///   or refusal, which says the box closed. A payload for an ended record
+///   changes nothing.
 /// - Any event about the agent clears the interrupt and park stamps, since
 ///   the vendor spoke.
 ///
@@ -585,8 +587,22 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 
 /// [`apply`], read through `hooks`.
 fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
-    if !payload["agent_id"].is_null() || state.state.is_terminal() {
+    if state.state.is_terminal() {
         return None;
+    }
+    if let Some(sub) = payload["agent_id"].as_str() {
+        match moment(hooks, payload)? {
+            // Its box is drawn on the agent's screen: the Asked arm below.
+            Moment::Asked if !menu(hooks, payload) => {}
+            // The subagent that asked moved on, so its box closed.
+            Moment::Calling | Moment::Refused if state.asked_by.as_deref() == Some(sub) => {
+                state.state = Phase::Working;
+                state.summary = None;
+                state.asks(None);
+                return None;
+            }
+            _ => return None,
+        }
     }
     // The vendor spoke, so the interrupt stamp comes off regardless of the
     // event (see [`crate::derive::cut_short`]). Comparing timestamps does not
@@ -723,6 +739,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
                     .and_then(|tool| hooks.permission_sentence(tool)),
             );
             state.kind = Some(Kind::Permission);
+            state.asked_by = payload["agent_id"].as_str().map(str::to_string);
             Screen::Waiting
         }
 
@@ -2700,6 +2717,66 @@ mod tests {
             assert_eq!(state.state, Phase::Waiting, "{payload}");
             assert_eq!(state.question.as_deref(), Some("Run the migration?"));
             assert_eq!(notice, None);
+        }
+    }
+
+    #[test]
+    fn hook_a_subagents_permission_box_is_the_agents_question() {
+        // claude draws a subagent's box on the agent's own screen, where it
+        // waits on the person like the agent's own.
+        let mut state = State {
+            state: Phase::Working,
+            turn_open: true,
+            ..State::default()
+        };
+        let notice = apply(
+            &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash", "agent_id": "sub-1" }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Waiting);
+        assert_eq!(state.kind, Some(Kind::Permission));
+        assert_eq!(
+            state.question.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        assert_eq!(
+            notice,
+            Some(Notice::waiting(
+                "fix-login-a1b",
+                Some("Claude needs your permission to use Bash")
+            ))
+        );
+    }
+
+    #[test]
+    fn hook_only_the_subagent_that_asked_answers_its_box() {
+        // Subagents run side by side, so another one's tool call says nothing
+        // about the box. The asker's next word means the box closed.
+        for closed in [
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "agent_id": "sub-1" }),
+            json!({ "hook_event_name": "PermissionDenied", "tool_name": "Bash", "agent_id": "sub-1" }),
+        ] {
+            let root = TempDir::new().unwrap();
+            let agent = an_agent(root.path());
+            for payload in [
+                json!({ "hook_event_name": "PreToolUse", "tool_name": "Agent" }),
+                json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash", "agent_id": "sub-1" }),
+                json!({
+                    "hook_event_name": "Notification",
+                    "message": "Claude needs your permission",
+                    "notification_type": "permission_prompt"
+                }),
+                json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub-2" }),
+            ] {
+                hook(root.path(), agent.id(), &payload.to_string());
+            }
+            assert_eq!(agent.state().unwrap().state, Phase::Waiting, "{closed}");
+
+            hook(root.path(), agent.id(), &closed.to_string());
+            let state = agent.state().unwrap();
+            assert_eq!(state.state, Phase::Working, "{closed}");
+            assert_eq!(state.question, None, "{closed}");
         }
     }
 

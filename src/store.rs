@@ -427,6 +427,11 @@ pub struct State {
     /// until the vendor's next prompt clears it. Written with
     /// [`Writer::observe`].
     pub composer_holds: Vec<String>,
+    /// The subagent whose permission box the agent is waiting on.
+    ///
+    /// claude draws a subagent's box on the agent's screen, and only that
+    /// subagent's next event says the box closed. Cleared with the question.
+    pub asked_by: Option<String>,
 }
 
 /// A screen a reader saw, and when it first appeared.
@@ -459,6 +464,7 @@ impl State {
         self.reported = self.question.is_some();
         if self.question.is_none() {
             self.kind = None;
+            self.asked_by = None;
         }
     }
 
@@ -633,6 +639,8 @@ struct Wire {
     opens_idle: bool,
     turn_open: bool,
     composer_holds: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asked_by: Option<String>,
 }
 
 /// A known phase, or [`Phase::Unknown`] for one this build does not know.
@@ -735,6 +743,7 @@ impl From<State> for Wire {
             opens_idle,
             turn_open,
             composer_holds,
+            asked_by,
         } = state;
 
         Wire {
@@ -786,6 +795,7 @@ impl From<State> for Wire {
             opens_idle,
             turn_open,
             composer_holds,
+            asked_by,
         }
     }
 }
@@ -834,6 +844,7 @@ impl From<Wire> for State {
             opens_idle: wire.opens_idle,
             turn_open: wire.turn_open,
             composer_holds: wire.composer_holds,
+            asked_by: wire.asked_by,
         }
     }
 }
