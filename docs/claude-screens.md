@@ -1139,3 +1139,41 @@ where the cursor already stands there, `Up Enter` back. Only a pane amx cannot
 read falls back to the top-first walk, which is still right for pi's clamped
 lists. Bursts of arrows in one `send-keys` call were also tried and are not
 the cause: one call and a call each landed alike.
+
+## What the 2.1.311 pass found
+
+### The agents panel and a subagent's screen
+
+Driven by hand on 2026-10-30 against 2.1.311, Haiku 5.5, at 160, 80, 54, 40
+and 24 columns. The agent started one general-purpose subagent on `sleep`, and
+its turn ended with the subagent still running, so the record read `working`
+with a shell on its count.
+
+`Down` from an empty composer moves the focus into the agents panel. The
+panel's key hint takes the mode footer's row: `↑/↓ to select` with the panel's
+cursor on `● main`, `Enter to view · x to stop` with it on a subagent. `Enter`
+on a subagent opens its screen: its own transcript, a composer reading
+`❯ Message @general-purpose…` under a border titled with its task, and the
+panel with the viewed agent marked `●`, so `main` reads `◯ main`. `Esc` there
+moves the focus to the subagent's composer and brings the mode footer back,
+`⏵⏵ auto mode on (shift+tab to cycle)`, still over `◯ main`.
+
+Once the hooks went quiet past the freshness window, every one of these
+screens misread the agent:
+
+- with the panel focused, on either screen, no rule held, and `amx status`
+  read `unknown` (*no hooks for 14s, and no rule matches the screen*), which
+  `amx statusline` counts under `⚠` with the agents waiting on a person;
+- with the subagent's composer focused, `idle_prompt` held on its mode footer,
+  and would have ended the running turn once the screen held still.
+
+Neither screen says anything the record does not: the agent's turn may be
+running or over behind it, and the panel's hint hides the footer's count of
+running shells. Two rules now name them and decide nothing: a rule with
+`defers` claims its screen as `Claim::Unsettled`, so the record stands.
+`subagent_view` is anchored on `◯ main`, present at every width driven in both
+focuses, and sits after the blocking prompts, which a subagent's screen can
+carry. `agents_panel` takes the panel's hint with `● main` two rows under it,
+after the spinner, which still says a turn on the agent's own screen is
+running. A settled record already stood on an unclaimed screen, and a finished
+subagent left the record at `done` throughout.

@@ -275,6 +275,33 @@ any = ["❯ 1."]
 within = 16
 not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 
+# A subagent's screen, opened from the agents panel (down to the panel, down
+# to the subagent, enter). claude 2.1.311 draws the subagent's transcript over a
+# `Message @<agent>…` composer, and the panel marks the viewed agent with `●`,
+# so `main` takes `◯` (80 and 24 columns, panel and composer focused):
+#
+#   ──────────────────────────────────────────── Run sleep 240 ─
+#   ❯ Message @general-purpose…
+#   ────────────────────────────────────────────────────────────
+#     Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium
+#     ↑/↓ to select · Enter to view
+#
+#   ❯ ◯ main
+#     ● general-purpose  Run sleep 240          4m 11s · ↓ 28.6k tokens
+#
+# With the composer focused the panel's hint gives way to the mode footer, the
+# idle prompt's anchor. On the agent's own screen the panel reads `● main`.
+# `◯ main` follows the panel's `❯` while the panel has focus, so it is matched
+# anywhere in its row. The screen says nothing about the agent, whose turn may
+# be running or over, so `defers` leaves the record standing, and `state` is
+# never reported. It comes after the blocking prompts, which a subagent's
+# screen can carry, and before the spinner and the idle prompt.
+[[rule]]
+name = "subagent_view"
+state = "unknown"
+defers = true
+all = ["◯ main"]
+
 # A running turn. claude spins one row over the composer: a cycling glyph (`✻ ✽
 # ✢ ✶ · *`), a gerund, `…`, then a parenthesised tail it drops from the right as
 # the pane narrows (claude 2.1.259):
@@ -328,6 +355,30 @@ state = "working"
 all = ["✻ waiting for"]
 any = ["background"]
 within = 3
+
+# The agent's own screen with the agents panel focused, as down from an empty
+# composer leaves it. claude 2.1.311 puts the panel's key hint on the mode
+# footer's row, `↑/↓ to select` with the panel's cursor on `main` and `Enter to
+# view · x to stop` with it on a subagent (80, 40 and 24 columns):
+#
+#     Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium
+#     ↑/↓ to select
+#
+#   ❯ ● main
+#     ◯ general-purpose  Run sleep 150          10s · ↓ 28.2k tokens
+#
+# Neither the idle prompt's anchor nor the footer's count of running shells is
+# on screen, so the screen cannot end a turn, and `defers` leaves the record
+# standing until the focus goes back. A running turn still spins over the
+# composer, so this comes after the spinner. `within` is 2: the hint, a blank
+# row, then `● main`.
+[[rule]]
+name = "agents_panel"
+state = "unknown"
+defers = true
+all = ["● main"]
+any = ["↑/↓ to select", "enter to view"]
+within = 2
 
 # At the prompt, waiting for input: the mode footer's glyph, present in every
 # mode and width (see `permission_prompt`). The cycle hint alone missed manual

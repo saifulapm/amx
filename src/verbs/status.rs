@@ -110,6 +110,9 @@ fn evidence(view: &View, now: u64) -> String {
             now.saturating_sub(view.state.parked_at)
         ),
         Evidence::Hooks => match &view.verdict.rule {
+            Some(rule) if defers(view, rule) => format!(
+                "the vendor's hooks, {age}s ago; the screen matches `{rule}`, which leaves it to the record"
+            ),
             // A rule matched the screen but was not allowed to end the turn.
             Some(rule) => format!(
                 "the vendor's hooks, {age}s ago; the screen matches `{rule}` but is still changing"
@@ -124,6 +127,15 @@ fn evidence(view: &View, now: u64) -> String {
             format!("none: no hooks for {age}s, and no rule matches the screen")
         }
     }
+}
+
+/// Whether the named rule of the agent's vendor never decides (see
+/// [`crate::rules::Rule::defers`]).
+fn defers(view: &View, rule: &str) -> bool {
+    crate::rules::of(view.meta.agent.as_deref().unwrap_or_default())
+        .rules()
+        .iter()
+        .any(|it| it.name == rule && it.defers)
 }
 
 #[cfg(test)]
@@ -284,6 +296,20 @@ mod tests {
         ));
         assert!(held.contains("idle_prompt"), "{held}");
         assert!(held.contains("still changing"), "{held}");
+    }
+
+    #[test]
+    fn reader_status_says_a_screen_about_another_agent_leaves_the_record_standing() {
+        let deferred = printed(&view(
+            Phase::Working,
+            Evidence::Hooks,
+            Some("subagent_view"),
+            40,
+        ));
+        assert!(
+            deferred.contains("the screen matches `subagent_view`, which leaves it to the record"),
+            "{deferred}"
+        );
     }
 
     #[test]

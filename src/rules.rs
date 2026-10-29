@@ -98,6 +98,10 @@ pub struct Rule {
     /// turn.
     #[serde(default)]
     pub quiescent: bool,
+    /// Whether this screen never decides: the vendor's own, but about another
+    /// agent, so it says nothing about this one and the record stands.
+    #[serde(default)]
+    pub defers: bool,
     /// Where this screen keeps its question, when not in the usual place.
     #[serde(default)]
     pub asks: Asks,
@@ -128,7 +132,8 @@ pub enum Claim<'a> {
     /// This rule claims the screen and may decide.
     Ruled(&'a Rule),
     /// This rule claims the screen, but a turn is on the record as running and
-    /// the screen has not held still long enough to end it.
+    /// the screen has not held still long enough to end it, or the rule
+    /// defers to the record.
     Unsettled(&'a Rule),
     /// No rule accounts for this screen.
     Unclaimed,
@@ -390,8 +395,12 @@ impl Rule {
     ///
     /// A quiescent rule may end a turn only after [`SETTLED_LOOKS`] seconds of
     /// stillness. From `starting` or `unknown` there is no turn to end, so it
-    /// decides at once; that is what names a parked agent.
+    /// decides at once; that is what names a parked agent. A deferring rule
+    /// never decides.
     fn may_decide(&self, recorded: Phase, held: u64) -> bool {
+        if self.defers {
+            return false;
+        }
         if !self.quiescent {
             return true;
         }
@@ -979,6 +988,121 @@ mod tests {
 
   ● main
   ◯ general-purpose 51s
+";
+
+    /// A subagent opened from the agents panel (Down to the panel, Down to the
+    /// subagent, Enter), claude 2.1.311 at 80 columns with the panel still
+    /// focused. The screen is the subagent's: its composer reads `Message
+    /// @<agent>…`, the footer is the panel's key hint, and the panel draws the
+    /// viewed agent with `●` and `main` with `◯`.
+    const SUBAGENT_VIEW_311_80: &str = "\
+──────────────────────────────────────────────────────────────── Run sleep 240 ─
+❯ Message @general-purpose…
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium │ cache 92% │ 5h 2% · 7d 1%
+  ↑/↓ to select · Enter to view
+
+❯ ◯ main
+  ● general-purpose  Run sleep 240                     4m 11s · ↓ 28.6k tokens
+";
+
+    /// The same at 24 columns.
+    const SUBAGENT_VIEW_311_24: &str = "\
+──────── Run sleep 240 ─
+❯ Message @general-purp…
+────────────────────────
+  Haiku 5.5 │ ◈ 4% │ …
+  ↑/↓ to select · Ent…
+
+❯ ◯ main
+  ● general-purpose 4m
+";
+
+    /// The subagent's screen after esc moves the focus from the panel to its
+    /// composer: the mode footer is back, as on the agent's own prompt.
+    const SUBAGENT_COMPOSER_311_80: &str = "\
+──────────────────────────────────────────────────────────────── Run sleep 240 ─
+❯ Message @general-purpose…
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium │ cache 92% │ 5h 2% · 7d 1%
+  ⏵⏵ auto mode on (shift+tab to cycle)
+
+  ◯ main
+  ● general-purpose  Run sleep 240                     4m 11s · ↓ 28.6k tokens
+";
+
+    /// The same at 24 columns.
+    const SUBAGENT_COMPOSER_311_24: &str = "\
+──────── Run sleep 240 ─
+❯ Message @general-purp…
+────────────────────────
+  Haiku 5.5 │ ◈ 4% │ …
+  ⏵⏵ auto mode on
+
+  ◯ main
+  ● general-purpose 4m
+";
+
+    /// The agent's own screen with the agents panel focused (down from an
+    /// empty composer), claude 2.1.311 at 80 columns: the panel's key hint
+    /// takes the mode footer's row. The turn left a shell running.
+    const AGENTS_PANEL_311_80: &str = "\
+✻ Worked for 20s · done 2:05 AM · 1 shell still running
+
+────────────────────────────────────────────────────────────────────────────────
+❯ wait for the sleep to finish
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium │ cache 92% │ 5h 3% · 7d 1%
+  ↑/↓ to select
+
+❯ ● main
+  ◯ general-purpose  Run sleep 150                        10s · ↓ 28.2k tokens
+";
+
+    /// The same at 24 columns.
+    const AGENTS_PANEL_311_24: &str = "\
+✻ Worked for 20s · done
+  2:05 AM · 1 shell
+  still running
+
+────────────────────────
+❯ wait for the sleep to…
+────────────────────────
+  Haiku 5.5 │ ◈ 4% │ …
+  ↑/↓ to select
+
+❯ ● main
+  ◯ general-purpose 10s
+";
+
+    /// The panel's cursor moved down onto the subagent, at 80 columns.
+    const AGENTS_PANEL_ON_A_SUBAGENT_311_80: &str = "\
+✻ Worked for 20s · done 2:05 AM · 1 shell still running
+
+────────────────────────────────────────────────────────────────────────────────
+❯ wait for the sleep to finish
+────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 │ ◈ 4% │ workflow (main) │ ◖ medium │ cache 92% │ 5h 3% · 7d 1%
+  Enter to view · x to stop
+
+  ● main
+❯ ◯ general-purpose  Run sleep 150                        10s · ↓ 28.2k tokens
+";
+
+    /// The same at 24 columns.
+    const AGENTS_PANEL_ON_A_SUBAGENT_311_24: &str = "\
+✻ Worked for 20s · done
+  2:05 AM · 1 shell
+  still running
+
+────────────────────────
+❯ wait for the sleep to…
+────────────────────────
+  Haiku 5.5 │ ◈ 4% │ …
+  Enter to view · x t…
+
+  ● main
+❯ ◯ general-purpose 10s
 ";
 
     /// The folder-trust screen, v2.1.226, 220 columns.
@@ -2568,8 +2692,10 @@ Only showing models from configured providers. Use /login to add providers.
                 "permission_prompt",
                 "ask_menu",
                 "plan_approval",
+                "subagent_view",
                 "spinner",
                 "background_agents",
+                "agents_panel",
                 "idle_prompt"
             ],
             "order decides, so it is part of the data"
@@ -2987,6 +3113,61 @@ Only showing models from configured providers. Use /login to add providers.
                 "{what} must rule working, ruled {claimed:?}"
             );
             assert_eq!(claimed.rule_name(), Some(named), "{what}");
+        }
+    }
+
+    #[test]
+    fn rules_a_subagents_screen_leaves_the_agent_to_its_record() {
+        // Looking at a subagent says nothing about the agent: its turn may be
+        // running or over. The panel names the screen, and the record stands.
+        // Unclaimed, a running record read `unknown`; with the composer
+        // focused, the mode footer read idle once the screen held still.
+        let rules = claude();
+        for (what, screen) in [
+            ("panel focused, 80 columns", SUBAGENT_VIEW_311_80),
+            ("panel focused, 24 columns", SUBAGENT_VIEW_311_24),
+            ("composer focused, 80 columns", SUBAGENT_COMPOSER_311_80),
+            ("composer focused, 24 columns", SUBAGENT_COMPOSER_311_24),
+        ] {
+            for recorded in [Phase::Working, Phase::Idle] {
+                let claimed = claim(rules, screen, recorded);
+                assert_eq!(
+                    claimed.rule_name(),
+                    Some("subagent_view"),
+                    "{what}, recorded {recorded:?}"
+                );
+                assert_eq!(claimed.phase(), None, "{what}: the record decides");
+            }
+        }
+    }
+
+    #[test]
+    fn rules_the_agents_panel_in_focus_leaves_the_agent_to_its_record() {
+        // The panel's key hint takes the mode footer's row, so neither the
+        // idle prompt's anchor nor the footer's count of running shells is on
+        // screen. The record stands until the focus goes back.
+        let rules = claude();
+        for (what, screen) in [
+            ("on main, 80 columns", AGENTS_PANEL_311_80),
+            ("on main, 24 columns", AGENTS_PANEL_311_24),
+            (
+                "on a subagent, 80 columns",
+                AGENTS_PANEL_ON_A_SUBAGENT_311_80,
+            ),
+            (
+                "on a subagent, 24 columns",
+                AGENTS_PANEL_ON_A_SUBAGENT_311_24,
+            ),
+        ] {
+            for recorded in [Phase::Working, Phase::Idle] {
+                let claimed = claim(rules, screen, recorded);
+                assert_eq!(
+                    claimed.rule_name(),
+                    Some("agents_panel"),
+                    "{what}, recorded {recorded:?}"
+                );
+                assert_eq!(claimed.phase(), None, "{what}: the record decides");
+            }
         }
     }
 
