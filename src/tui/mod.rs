@@ -1260,6 +1260,9 @@ impl Screen {
     /// The read clock stays unset, so the next pass takes a full reading.
     fn recall(&mut self, root: &Path, scope: &Scope) -> Result<()> {
         self.showing(scope.narrow(derive::recorded(root, now())?));
+        // The records alone read a gone pane as its last phase, so the first
+        // agent here may move once a reading has looked at the panes.
+        self.list.land_again();
         Ok(())
     }
 

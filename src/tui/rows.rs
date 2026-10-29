@@ -455,12 +455,22 @@ impl List {
     /// between groups from one reading to the next.
     pub fn show(&mut self, views: Vec<View>) {
         let on = self.on();
+        let placed = self.landed;
         self.remember_the_requests(&views);
         self.views = views;
-        self.rebuild(on.agent());
-        self.follow(&on);
+        self.rebuild(on.agent().filter(|_| placed));
+        if placed {
+            self.follow(&on);
+        }
         // Only the next reading: later ones were not asked for.
         self.let_go = None;
+    }
+
+    /// Place the cursor afresh on the next reading, as if the list had just
+    /// opened. For a reading of the records alone, which may sort an agent
+    /// whose pane is gone where the next reading will not.
+    pub fn land_again(&mut self) {
+        self.landed = false;
     }
 
     /// Note that the user removed agent `id`, so that when the next reading
@@ -3223,6 +3233,36 @@ mod tests {
 
         list.narrow(vec![Narrow::Name(None)]);
         assert!(list.selected().is_some(), "and it comes back on an agent");
+    }
+
+    #[test]
+    fn the_first_reading_that_saw_the_panes_places_the_cursor() {
+        // The records alone read a gone pane as its last phase, so the agent
+        // heading the first frame may belong lower down once a reading has
+        // looked. Nobody has moved the cursor yet, so it opens on the first
+        // agent that reading draws, not wherever the stale one went.
+        let mut list = listed(vec![
+            view("gone-a1b", Phase::Working, 10),
+            view("done-b2c", Phase::Idle, 20),
+            view("done-c3d", Phase::Idle, 30),
+        ]);
+        assert_eq!(list.selected().unwrap().id(), "gone-a1b");
+
+        list.land_again();
+        list.show(vec![
+            view("gone-a1b", Phase::Stopped, 10),
+            view("done-b2c", Phase::Idle, 20),
+            view("done-c3d", Phase::Idle, 30),
+        ]);
+        assert_eq!(list.selected().unwrap().id(), "done-c3d");
+
+        // From then on the cursor stays with its agent as rows move.
+        list.show(vec![
+            view("gone-a1b", Phase::Stopped, 10),
+            view("done-b2c", Phase::Working, 20),
+            view("done-c3d", Phase::Idle, 30),
+        ]);
+        assert_eq!(list.selected().unwrap().id(), "done-c3d");
     }
 
     #[test]
