@@ -1760,6 +1760,24 @@ mod tests {
     }
 
     #[test]
+    fn docs_the_configuration_table_has_a_row_for_every_key() {
+        let page = include_str!("../site/docs/configuration.md");
+        let row = |key: &str| {
+            page.lines()
+                .find(|line| line.starts_with(&format!("| `{key}` |")))
+                .unwrap_or_else(|| panic!("configuration.md's table has no row for `{key}`"))
+        };
+        for key in crate::config::KNOWN_KEYS {
+            row(key);
+        }
+        assert!(
+            row("shelve_after").starts_with("| `shelve_after` | `259200` |"),
+            "with its default: {}",
+            row("shelve_after")
+        );
+    }
+
+    #[test]
     fn docs_the_docs_names_every_config_key() {
         for key in crate::config::KNOWN_KEYS {
             assert!(
