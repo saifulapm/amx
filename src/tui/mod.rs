@@ -18,6 +18,7 @@ mod clip;
 mod grid;
 mod keyname;
 mod paint;
+mod wake;
 // Crate-visible because pins outlive the view and the verb that parks idle
 // agents must honour them. See `rows::Arrangement::from_disk`.
 pub(crate) mod rows;
