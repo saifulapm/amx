@@ -1873,8 +1873,12 @@ mod tests {
         let live = dir.path().join("default");
         let _listening = std::os::unix::net::UnixListener::bind(&live).unwrap();
         let dead = dir.path().join("amx-count-4242");
-        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
-        assert!(dead.exists(), "the file outlives the listener");
+        // Not a stream listener that is then dropped: a child another test
+        // forks first holds a copy of it until it execs, and it answers.
+        let bound = std::os::unix::net::UnixDatagram::bind(&dead).unwrap();
+        let _forked = bound.try_clone().unwrap();
+        drop(bound);
+        assert!(dead.exists(), "the file outlives the socket");
 
         let mut sockets = sockets_in(dir.path());
         sockets.sort();
