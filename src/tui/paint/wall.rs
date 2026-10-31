@@ -321,8 +321,13 @@ fn row(
         column => column + GAP,
     });
     // A wake time is wider than the age column. It takes the difference from
-    // the summary so the text still ends where every other row's does.
-    let room = room.saturating_sub(width_of(&worked).saturating_sub(widths.age));
+    // the summary so the text still ends where every other row's does. A
+    // worked time is cut to the column instead.
+    let age = match wakes {
+        Some(_) => widths.age.max(width_of(&worked)),
+        None => widths.age,
+    };
+    let room = room.saturating_sub(age - widths.age);
     let armed = moment.armed.iter().position(|id| id == view.id());
     let said = match armed {
         Some(at) => match moment.why.get(at) {
@@ -399,10 +404,7 @@ fn row(
         format!("{}{}", grid::pad(&said, room), " ".repeat(GAP)),
         summary,
     ));
-    spans.push(Span::styled(
-        grid::padl(&worked, widths.age.max(width_of(&worked))),
-        dim(),
-    ));
+    spans.push(Span::styled(grid::padl(&worked, age), dim()));
     Line::from(spans)
 }
 
