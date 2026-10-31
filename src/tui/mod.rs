@@ -533,6 +533,8 @@ struct Arm {
     /// Rows among `ids` whose tree holds uncommitted work, checked on the first
     /// press. The second press skips them, so the rows say so up front.
     held: Vec<String>,
+    /// Whether the notice is this arm's, to be taken back when it lapses.
+    told: bool,
     at: Instant,
 }
 
@@ -1029,6 +1031,7 @@ where
             screen.adopt_the_view();
         }
         screen.step();
+        screen.let_a_lapsed_arm_go();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
 
         let title = paint::title(&screen.list);
@@ -2496,6 +2499,18 @@ impl Screen {
     ///
     /// Checked against the clock on every call rather than cleared on expiry,
     /// since nothing runs at the moment the window closes.
+    /// Take back the notice of an arm whose window has lapsed, since it
+    /// promises a second press that no longer does anything.
+    fn let_a_lapsed_arm_go(&mut self) {
+        if let Some(arm) = self.arm.as_mut()
+            && arm.told
+            && arm.at.elapsed() >= ARMED
+        {
+            arm.told = false;
+            self.notice = None;
+        }
+    }
+
     fn arming(&self) -> Option<&Arm> {
         self.arm.as_ref().filter(|arm| arm.at.elapsed() < ARMED)
     }
@@ -2579,6 +2594,7 @@ impl Screen {
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
+            told: false,
             at: Instant::now(),
         });
     }
@@ -2648,6 +2664,7 @@ impl Screen {
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
+            told: false,
             at: Instant::now(),
         });
     }
@@ -2686,8 +2703,6 @@ impl Screen {
             return;
         }
 
-        // The rows show the warning; clear the old notice.
-        self.notice = None;
         let (mut ids, mut why, mut held) = (Vec::new(), Vec::new(), Vec::new());
         for (at, reason) in finished {
             let view = &wall[at];
@@ -2697,6 +2712,17 @@ impl Screen {
             ids.push(view.id().to_string());
             why.push(reason);
         }
+        // The rows show the warning, but a row under a shut heading, such as
+        // the shelf, cannot: the second press must not take what nobody saw
+        // marked.
+        let unseen = ids.iter().filter(|id| !self.list.shows(id)).count();
+        self.notice = (unseen > 0).then(|| {
+            Notice::Advice(format!(
+                "c again clears {} · {unseen} under a shut heading",
+                ids.len()
+            ))
+        });
+        let told = self.notice.is_some();
         self.arm = Some(Arm {
             ids,
             swept: false,
@@ -2704,6 +2730,7 @@ impl Screen {
             cleared: true,
             why,
             held,
+            told,
             at: Instant::now(),
         });
         self.acted();

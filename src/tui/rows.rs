@@ -1132,6 +1132,14 @@ impl List {
             .collect()
     }
 
+    /// Whether the agent with this id has a line of its own, rather than
+    /// sitting under a shut heading, a fold or a narrowing.
+    pub fn shows(&self, id: &str) -> bool {
+        self.items
+            .iter()
+            .any(|item| matches!(item, Item::Agent(n) if self.views[*n].id() == id))
+    }
+
     /// The current view of the agent with this id.
     pub fn agent_by_id(&self, id: &str) -> Option<&View> {
         self.views.iter().find(|view| view.id() == id)

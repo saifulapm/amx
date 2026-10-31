@@ -430,6 +430,8 @@ second press stops and forgets the whole group.
 
 `c` marks every finished agent on the wall, each row saying why it is on the
 list. A row whose worktree holds uncommitted work says so and will be kept.
+Shelved agents count too; when any marked row sits under a shut heading, the
+footer says how many, such as `c again clears 3 · 2 under a shut heading`.
 A second `c` within five seconds clears them, the same as `amx clear`: agents
 whose work has landed lose their branch too, the rest keep it.
 

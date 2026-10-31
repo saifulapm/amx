@@ -1094,6 +1094,7 @@ mod tests {
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
+            told: false,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1151,6 +1152,7 @@ mod tests {
             cleared: true,
             why: vec!["#12 merged".to_string()],
             held: Vec::new(),
+            told: false,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1203,6 +1205,7 @@ mod tests {
             cleared: true,
             why: vec!["#12 merged".to_string(), "#13 merged".to_string()],
             held: vec!["fix-login-a1b".to_string()],
+            told: false,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);
@@ -1250,6 +1253,7 @@ mod tests {
             cleared: false,
             why: Vec::new(),
             held: Vec::new(),
+            told: false,
             at: Instant::now(),
         });
         let drawn = painted(&screen, size);

@@ -4511,6 +4511,77 @@ fn keys_c_says_nothing_has_finished_over_a_wall_that_is_still_at_work() {
 }
 
 #[test]
+fn keys_c_says_how_many_of_the_rows_it_armed_are_out_of_sight() {
+    // The shelf opens shut and a merged request puts a row on it, so the rows
+    // `c` arms may not be on screen to say so themselves.
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    for id in ["first-a1b", "second-b2c"] {
+        idle(root.path(), id);
+    }
+    let mut screen = watching(vec![was_stopped("first-a1b"), was_stopped("second-b2c")]);
+    screen.list.land_on("first-a1b");
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('s')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+
+    screen.act(c(), root.path(), &config, None).unwrap();
+    assert_eq!(screen.arm.as_ref().map(|arm| arm.ids.len()), Some(2));
+    assert_eq!(
+        notice(&screen),
+        (false, "c again clears 2 · 1 under a shut heading")
+    );
+
+    screen.act(c(), root.path(), &config, None).unwrap();
+    assert!(crate::store::list(root.path()).unwrap().is_empty());
+}
+
+#[test]
+fn keys_c_takes_its_word_back_when_the_window_lapses() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    idle(root.path(), "first-a1b");
+    let mut screen = watching(vec![was_stopped("first-a1b")]);
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('s')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    screen.act(c(), root.path(), &config, None).unwrap();
+    assert_eq!(
+        notice(&screen),
+        (false, "c again clears 1 · 1 under a shut heading")
+    );
+
+    screen.let_a_lapsed_arm_go();
+    assert_ne!(notice(&screen), (false, ""), "still in the window");
+    let arm = screen.arm.as_mut().unwrap();
+    arm.at -= std::time::Duration::from_secs(6);
+    screen.let_a_lapsed_arm_go();
+    assert_eq!(notice(&screen), (false, ""));
+}
+
+#[test]
+fn keys_c_says_nothing_of_its_own_when_every_row_it_armed_is_on_screen() {
+    let root = TempDir::new().unwrap();
+    idle(root.path(), "first-a1b");
+    let mut screen = watching(vec![was_stopped("first-a1b")]);
+    screen
+        .act(c(), root.path(), &Config::default(), None)
+        .unwrap();
+    assert!(screen.arm.is_some());
+    assert_eq!(notice(&screen), (false, ""), "the row says it");
+}
+
+#[test]
 fn keys_c_arms_every_finished_row_with_its_reason_and_the_press_after_takes_them() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
