@@ -812,10 +812,13 @@ impl List {
     }
 
     /// Seconds until this agent's timed sleep wakes it, while the sleep holds.
-    /// `None` for an agent awake or asleep with no wake time.
+    /// `None` for an agent awake or asleep with no wake time. Counted from the
+    /// press at the earliest, since the last reading can be older than it.
     pub fn sleeps_for(&self, view: &View) -> Option<u64> {
-        let wake = self.asleep.get(view.id())?.wake?;
-        self.sleeping(view).then(|| wake.saturating_sub(self.now))
+        let mark = self.asleep.get(view.id())?;
+        let wake = mark.wake?;
+        self.sleeping(view)
+            .then(|| wake.saturating_sub(self.now.max(mark.since)))
     }
 
     /// Whether this agent's shelve mark still holds. See [`shelves`].

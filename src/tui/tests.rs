@@ -5902,6 +5902,8 @@ fn keys_z_opens_the_picker_and_its_digit_sleeps_the_row_it_opened_on() {
         finished_saying("done-b2c", "another"),
     ]);
     let first = screen.list.selected().unwrap().id().to_string();
+    // The last reading was a while ago.
+    screen.list.time_is(1);
 
     press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
     assert!(
@@ -5918,6 +5920,12 @@ fn keys_z_opens_the_picker_and_its_digit_sleeps_the_row_it_opened_on() {
     assert!(matches!(screen.mode, Mode::List), "the picker closed");
     assert!(screen.list.arrangement().has_asleep(&first));
     assert_eq!(slept_for(&screen, &first), Some(3600), "an hour");
+    let slept = screen.list.agent_by_id(&first).unwrap();
+    assert_eq!(
+        screen.list.sleeps_for(slept),
+        Some(3600),
+        "an hour to go from the press, not from the last reading"
+    );
     assert_eq!(wall(&screen)[2], "Asleep");
     assert_eq!(wall(&screen)[3], first);
 
