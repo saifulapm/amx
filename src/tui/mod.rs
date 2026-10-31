@@ -3262,7 +3262,8 @@ fn card_of(
     // A finished turn with a recorded answer shows the whole answer rather than
     // the pane, a viewport claude scrolls on its own. The group is judged from
     // the phase alone, ignoring pins and requests.
-    let answered = rows::Group::of(view.phase(), false, false, false) == rows::Group::Completed
+    let answered = rows::Group::of(view.phase(), false, false, false, false)
+        == rows::Group::Completed
         && view.state.result.is_some();
     let screen = (!asks && !answered && !view.phase().is_terminal())
         .then(|| server.capture_painted(&view.meta.pane).ok())

@@ -1,7 +1,8 @@
 //! The view's list of agents: grouping, ordering, folding, narrowing, and the
 //! cursor over the resulting lines.
 //!
-//! - Groups read Pinned, Review, NeedsInput, Working, Completed, Asleep. Inside
+//! - Groups read Pinned, Review, NeedsInput, Working, Completed, Asleep,
+//!   Shelved. Inside
 //!   a group, agents keep start order, except Completed, newest ending first.
 //!   A hand-made order for a group overrides both.
 //! - The state, project and repo axes draw agents in the same order, so
@@ -43,29 +44,37 @@ pub enum Group {
     Completed,
     /// Put to sleep by the user, whatever its phase. The opposite of a pin.
     Asleep,
+    /// Turn over, and put away by the user since. See [`shelves`].
+    Shelved,
 }
 
 impl Group {
     /// Every group, in display order.
-    pub const ALL: [Group; 6] = [
+    pub const ALL: [Group; 7] = [
         Group::Pinned,
         Group::Review,
         Group::NeedsInput,
         Group::Working,
         Group::Completed,
         Group::Asleep,
+        Group::Shelved,
     ];
 
     /// The group for an agent with this phase and these marks.
     ///
-    /// A pin or a sleep wins over the phase. An open pull request only moves an
-    /// agent whose turn is over, never one that is asking or working.
-    pub fn of(phase: Phase, held: bool, asleep: bool, reviewable: bool) -> Group {
+    /// A pin, then a sleep, then a shelve win over the phase. A shelve only
+    /// holds while the turn is over (see [`shelves`]). An open pull request
+    /// only moves an agent whose turn is over, never one that is asking or
+    /// working.
+    pub fn of(phase: Phase, held: bool, asleep: bool, shelved: bool, reviewable: bool) -> Group {
         if held {
             return Group::Pinned;
         }
         if asleep {
             return Group::Asleep;
+        }
+        if shelved {
+            return Group::Shelved;
         }
         match phase {
             Phase::Waiting => Group::NeedsInput,
@@ -84,6 +93,7 @@ impl Group {
             Group::Working => "Working",
             Group::Completed => "Completed",
             Group::Asleep => "Asleep",
+            Group::Shelved => "Shelved",
         }
     }
 
@@ -99,6 +109,7 @@ impl Group {
             Group::Working => "working",
             Group::Completed => "done",
             Group::Asleep => "asleep",
+            Group::Shelved => "shelved",
         }
     }
 }
@@ -117,8 +128,27 @@ pub enum Axis {
     Repo,
 }
 
-/// The user's persisted arrangement of the list: axis, pins, sleeps and
-/// hand-made group orders.
+/// When the user shelved an agent by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shelf {
+    /// Epoch seconds of the press.
+    pub at: u64,
+}
+
+/// Whether a shelve mark puts the agent on the shelf: its turn is over, and
+/// the mark is no older than the agent's last phase change (`since`), so
+/// replying to it, or anything else that moves its phase, brings it back.
+/// A mark set in the second the agent finished still holds.
+pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
+    let over = matches!(
+        phase,
+        Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
+    );
+    over && mark.is_some_and(|mark| mark.at >= since)
+}
+
+/// The user's persisted arrangement of the list: axis, pins, sleeps, shelve
+/// marks and hand-made group orders.
 ///
 /// Keyed by agent id and group name so a later view can apply it. Ids of
 /// agents that no longer exist are harmless misses.
@@ -128,6 +158,7 @@ pub struct Arrangement {
     axis: Axis,
     held: BTreeSet<String>,
     asleep: BTreeSet<String>,
+    shelved: BTreeMap<String, Shelf>,
     order: BTreeMap<Group, Vec<String>>,
 }
 
@@ -146,8 +177,8 @@ impl Arrangement {
     /// `disk` with this view's changes since `published` applied on top.
     ///
     /// Several views can write the same file. Only fields that differ between
-    /// `published` and `local` (the axis, each pin and sleep, each group's
-    /// order) are taken, so another view's changes survive.
+    /// `published` and `local` (the axis, each pin, sleep and shelve mark,
+    /// each group's order) are taken, so another view's changes survive.
     pub fn merged(published: &Arrangement, local: &Arrangement, disk: &Arrangement) -> Arrangement {
         let mut merged = disk.clone();
         if local.axis != published.axis {
@@ -164,6 +195,18 @@ impl Arrangement {
         }
         for id in local.asleep.difference(&published.asleep) {
             merged.asleep.insert(id.clone());
+        }
+        let marked = published.shelved.keys().chain(local.shelved.keys());
+        for id in marked {
+            match local.shelved.get(id) {
+                mark if mark == published.shelved.get(id) => {}
+                Some(mark) => {
+                    merged.shelved.insert(id.clone(), *mark);
+                }
+                None => {
+                    merged.shelved.remove(id);
+                }
+            }
         }
         for (group, order) in &local.order {
             if published.order.get(group) != Some(order) {
@@ -338,6 +381,8 @@ pub struct List {
     held: BTreeSet<String>,
     /// Sleeping agent ids.
     asleep: BTreeSet<String>,
+    /// Shelve marks by agent id, kept whether or not they still hold.
+    shelved: BTreeMap<String, Shelf>,
     /// Hand-made group orders, as the ids in the group when it was arranged.
     order: BTreeMap<Group, Vec<String>>,
     axis: Axis,
@@ -395,6 +440,7 @@ impl Default for List {
             shut: HashSet::new(),
             held: BTreeSet::new(),
             asleep: BTreeSet::new(),
+            shelved: BTreeMap::new(),
             order: BTreeMap::new(),
             axis: Axis::default(),
             last_path: Axis::Repo,
@@ -528,6 +574,7 @@ impl List {
             axis: self.axis,
             held: self.held.clone(),
             asleep: self.asleep.clone(),
+            shelved: self.shelved.clone(),
             order: self.order.clone(),
         }
     }
@@ -544,6 +591,7 @@ impl List {
         self.axis = arrangement.axis;
         self.held = arrangement.held;
         self.asleep = arrangement.asleep;
+        self.shelved = arrangement.shelved;
         self.order = arrangement.order;
         self.rebuild(on.agent());
         self.follow(&on);
@@ -557,6 +605,11 @@ impl List {
     /// Whether this agent is asleep.
     pub fn sleeping(&self, view: &View) -> bool {
         self.asleep.contains(view.id())
+    }
+
+    /// Whether this agent's shelve mark still holds. See [`shelves`].
+    fn shelving(&self, view: &View) -> bool {
+        shelves(self.shelved.get(view.id()), view.phase(), view.state.since)
     }
 
     /// Toggle the pin on the agent under the cursor.
@@ -819,6 +872,7 @@ impl List {
             view.phase(),
             self.holding(view),
             self.sleeping(view),
+            self.shelving(view),
             self.reviewable(view),
         )
     }
@@ -3459,6 +3513,129 @@ mod tests {
     }
 
     #[test]
+    fn arranged_a_shelve_in_one_view_and_a_pin_in_another_both_survive() {
+        // Two views share one file: this one shelves busy-a1b while the other
+        // has pinned the same agent and shelved done-b2c.
+        let published = Arrangement::default();
+        let local = Arrangement {
+            shelved: [("busy-a1b".to_string(), Shelf { at: 50 })].into(),
+            ..Arrangement::default()
+        };
+        let disk = Arrangement {
+            held: ["busy-a1b".to_string()].into_iter().collect(),
+            shelved: [("done-b2c".to_string(), Shelf { at: 40 })].into(),
+            ..Arrangement::default()
+        };
+
+        let merged = Arrangement::merged(&published, &local, &disk);
+        assert!(merged.has_pinned("busy-a1b"), "their pin stays");
+        assert_eq!(
+            merged.shelved,
+            [
+                ("busy-a1b".to_string(), Shelf { at: 50 }),
+                ("done-b2c".to_string(), Shelf { at: 40 }),
+            ]
+            .into(),
+            "this view's shelve joins theirs"
+        );
+
+        // This view returning done-b2c takes it off the file's shelf.
+        let returned = Arrangement::merged(&disk, &Arrangement::default(), &disk);
+        assert!(returned.shelved.is_empty(), "{returned:?}");
+
+        // On the wall the pin wins.
+        let mut list = listed(vec![view("busy-a1b", Phase::Done, 10)]);
+        list.arrange(merged);
+        assert_eq!(lines(&list), ["Pinned (1)", "busy-a1b"]);
+    }
+
+    #[test]
+    fn arranged_a_shelve_holds_until_the_agent_next_changes_phase() {
+        let mark = Shelf { at: 100 };
+        assert!(
+            shelves(Some(&mark), Phase::Done, 99),
+            "set after it finished"
+        );
+        assert!(
+            shelves(Some(&mark), Phase::Idle, 100),
+            "set the same second"
+        );
+        assert!(
+            !shelves(Some(&mark), Phase::Idle, 101),
+            "older than its last phase change"
+        );
+        assert!(
+            !shelves(Some(&mark), Phase::Working, 99),
+            "working again, before the record says so"
+        );
+        assert!(!shelves(None, Phase::Done, 99), "never shelved");
+        for phase in [Phase::Idle, Phase::Done, Phase::Failed, Phase::Stopped] {
+            assert!(
+                shelves(Some(&mark), phase, 0),
+                "{phase:?} is a finished turn"
+            );
+        }
+        for phase in [
+            Phase::Starting,
+            Phase::Working,
+            Phase::Waiting,
+            Phase::Unknown,
+        ] {
+            assert!(!shelves(Some(&mark), phase, 0), "{phase:?} is not");
+        }
+    }
+
+    #[test]
+    fn arranged_a_pin_then_a_sleep_then_a_shelve_win_over_the_phase() {
+        assert_eq!(
+            Group::of(Phase::Done, true, true, true, true),
+            Group::Pinned
+        );
+        assert_eq!(
+            Group::of(Phase::Done, false, true, true, true),
+            Group::Asleep
+        );
+        assert_eq!(
+            Group::of(Phase::Done, false, false, true, true),
+            Group::Shelved,
+            "over an open pull request too"
+        );
+        assert_eq!(
+            Group::of(Phase::Done, false, false, false, false),
+            Group::Completed
+        );
+    }
+
+    #[test]
+    fn arranged_a_shelved_agent_is_listed_last_under_shelved() {
+        let mut list = listed(vec![
+            view("done-a1b", Phase::Done, 10),
+            view("done-b2c", Phase::Done, 20),
+            view("nap-c3d", Phase::Done, 30),
+        ]);
+        list.arrange(Arrangement {
+            asleep: ["nap-c3d".to_string()].into_iter().collect(),
+            shelved: [("done-a1b".to_string(), Shelf { at: 50 })].into(),
+            ..Arrangement::default()
+        });
+        assert_eq!(
+            lines(&list),
+            [
+                "Completed (1)",
+                "done-b2c",
+                "",
+                "Asleep (1)",
+                "nap-c3d",
+                "",
+                "Shelved (1)",
+                "done-a1b",
+            ]
+        );
+        assert_eq!(Group::ALL.last(), Some(&Group::Shelved));
+        assert_eq!(Group::Shelved.state(), "shelved");
+    }
+
+    #[test]
     fn arranged_the_axis_is_taken_only_where_this_view_turned_it() {
         let published = Arrangement {
             axis: Axis::Project,
@@ -4018,7 +4195,8 @@ mod tests {
                 "Needs input",
                 "Working",
                 "Completed",
-                "Asleep"
+                "Asleep",
+                "Shelved"
             ]
         );
     }
@@ -4035,6 +4213,7 @@ mod tests {
                 view("busy-d4e", Phase::Working, 40),
                 view("done-e5f", Phase::Done, 50),
                 view("nap-f6g", Phase::Working, 60),
+                view("away-g7h", Phase::Done, 70),
             ]
         };
         let one_of_each = [
@@ -4044,6 +4223,7 @@ mod tests {
             (Group::Working, "busy-d4e"),
             (Group::Completed, "done-e5f"),
             (Group::Asleep, "nap-f6g"),
+            (Group::Shelved, "away-g7h"),
         ];
         assert_eq!(
             one_of_each.len(),
@@ -4053,6 +4233,10 @@ mod tests {
 
         for (group, id) in one_of_each {
             let mut list = sleeping(pinning(over_the_forge(fleet()), "pinned-a1b"), "nap-f6g");
+            list.arrange(Arrangement {
+                shelved: [("away-g7h".to_string(), Shelf { at: 80 })].into(),
+                ..list.arrangement()
+            });
             list.narrow(vec![Narrow::State(Some(group.state().to_string()))]);
             assert_eq!(
                 lines(&list),
