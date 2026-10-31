@@ -536,6 +536,38 @@ fn s_shelves_a_finished_row_under_a_shut_heading_and_moves_on() {
 }
 
 #[test]
+fn a_finished_row_moves_under_shelved_once_it_idles_past_shelve_after() {
+    let amx = Harness::new();
+    amx.config("shelve_after = 4\n");
+    // Ended just now, so it is under Completed until four seconds have passed.
+    finished(&amx, "idle-a1b", "done", 0);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let first = amx.until("the row under Completed", || {
+        let drawn = amx.capture(&view);
+        drawn.contains("idle-a1b").then_some(drawn)
+    });
+    assert!(first.contains("Completed"), "{first}");
+    assert!(!first.contains("Shelved"), "{first}");
+
+    // No key is pressed: the view's own clock moves the row.
+    let shelved = amx.until("the row under a shut Shelved heading", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Shelved 1")
+            && drawn.contains("1 shelved")
+            && !drawn.contains("idle-a1b"))
+        .then_some(drawn)
+    });
+    assert!(!shelved.contains("Completed"), "{shelved}");
+
+    assert!(
+        agents(&amx).contains(&"idle-a1b".to_string()),
+        "shelving keeps the record: {:?}",
+        agents(&amx)
+    );
+}
+
+#[test]
 fn a_shelved_row_comes_back_under_working_when_the_agent_works_again() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "takes-a-message");
