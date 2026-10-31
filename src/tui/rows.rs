@@ -165,7 +165,8 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
 
 /// When a rule put the agent on the shelf, if one did. Only a turn that is
 /// over is shelved, never while the mark's `keep` is no older than its last
-/// phase change (`since`), and never while a request on its branch asks for
+/// phase change (`since`), never while one of its descendants is working or
+/// waiting (`busy`), and never while a request on its branch asks for
 /// review. Then a merged or closed request shelves it as of `since`, since
 /// the cache keeps no merge time. Failing that, so does being over for longer
 /// than `after` seconds at `now`, as of when it passed `after`. An `after` of
@@ -176,6 +177,7 @@ pub fn ruled(
     phase: Phase,
     since: u64,
     requests: &[Pr],
+    busy: bool,
     after: u64,
     now: u64,
 ) -> Option<u64> {
@@ -186,7 +188,7 @@ pub fn ruled(
     let kept = mark
         .and_then(|mark| mark.keep)
         .is_some_and(|at| at >= since);
-    if !over || kept || requests.iter().any(|pr| asking(pr.standing)) {
+    if !over || kept || busy || requests.iter().any(|pr| asking(pr.standing)) {
         return None;
     }
     if requests.iter().any(|pr| pr.standing.settled()) {
@@ -733,6 +735,7 @@ impl List {
             view.phase(),
             view.state.since,
             self.requests(view),
+            self.busy(n).is_some(),
             after,
             self.now,
         )
@@ -4415,6 +4418,38 @@ mod tests {
         to(&mut list, "old-a1b");
         assert_eq!(list.shelve_or_return(1100), Shelving::Returned);
         assert_eq!(list.counts(), [(Group::Completed, 1)]);
+    }
+
+    #[test]
+    fn auto_a_parent_waits_for_its_family_to_finish() {
+        let family = |kid: Phase, at: u64| {
+            vec![
+                view("lead-a1b", Phase::Done, 10),
+                child_of(view("kid-b2c", kid, at), "lead-a1b"),
+            ]
+        };
+        let mut list = idling(|_| 60, 10 * DAY, family(Phase::Working, 20));
+        assert_eq!(list.counts(), [(Group::Working, 1)]);
+        to(&mut list, "lead-a1b");
+        assert_eq!(
+            list.shelve_or_return(10 * DAY),
+            Shelving::Refused("still working; z sleeps it"),
+            "the parent is not on the shelf, so s has nothing to take back"
+        );
+        assert!(list.arrangement().shelved.is_empty());
+
+        list.show(family(Phase::Waiting, 20));
+        assert_eq!(list.counts(), [(Group::NeedsInput, 1)]);
+
+        list.show(family(Phase::Done, 20));
+        assert_eq!(list.counts(), [(Group::Shelved, 1)]);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["Shelved (1)", "lead-a1b", "└─kid-b2c"],
+            "parent and child together"
+        );
     }
 
     #[test]
