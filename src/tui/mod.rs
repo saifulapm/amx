@@ -2606,6 +2606,8 @@ impl Screen {
         // heading, and a press on one of them is that row's first press.
         if !self.swept() && self.forgetting().iter().any(|id| id == view.id()) {
             self.arm = None;
+            // Forgetting is final, and nothing before it is undone over it.
+            self.undo = None;
             let id = view.id().to_string();
             self.notice = kept_a_tree(act::forget(root, view));
             self.list.let_go(&id);
@@ -2671,6 +2673,7 @@ impl Screen {
             }
 
             let forgotten = act::forget_all(root, &views);
+            self.undo = None;
             // One line for both outcomes, shown as a failure if any stop
             // failed.
             self.notice = match trouble.len() {
@@ -2784,6 +2787,7 @@ impl Screen {
     /// again, since the row has said so since the first press. Kept rows are
     /// counted rather than named, since a wall can keep many.
     fn clear(&mut self, root: &Path, ids: &[String], held: &[String]) {
+        self.undo = None;
         let (mut cleared, mut kept) = (0, 0);
         let mut trouble = None;
         for id in ids {

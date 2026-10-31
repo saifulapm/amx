@@ -127,7 +127,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "mark the finished",
         "rename it",
         "pin it to the top",
-        "undo the last of these, within 5 s",
+        "undo a pin, sleep, shelve or move, within 5 s",
         "ctrl+x",
         "a base ref · a pull request to start on",
         "an existing branch to start on",

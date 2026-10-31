@@ -66,7 +66,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 57] = [
     ("s", "shelve it once it has finished · again puts it back"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),
-    ("u", "undo the last of these, within 5 s"),
+    ("u", "undo a pin, sleep, shelve or move, within 5 s"),
     ("ctrl+r", "rename it"),
     ("i", "interrupt the turn it is on"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),

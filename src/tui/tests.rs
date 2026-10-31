@@ -8185,3 +8185,50 @@ fn u_in_one_view_keeps_what_another_view_changed_meanwhile() {
     assert_eq!(notice(&opened), (false, "nothing to undo"));
     assert_eq!(shelved_on_disk(root.path()), ["done-b2c"]);
 }
+
+#[test]
+fn a_forget_after_a_change_leaves_nothing_to_undo() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let quiet = |id: &str| {
+        reading(
+            id,
+            Phase::Idle,
+            State {
+                state: Phase::Idle,
+                since: 1,
+                last_event: 1,
+                ..State::default()
+            },
+        )
+    };
+    idle(root.path(), "quiet-a1b");
+    idle(root.path(), "quiet-b2c");
+    let mut screen = Screen {
+        root: root.path().to_path_buf(),
+        remembering: Some(root.path().join("view.json")),
+        ..watching(vec![quiet("quiet-a1b"), quiet("quiet-b2c")])
+    };
+    screen.list.land_on("quiet-a1b");
+    screen.act(ctrl('t'), root.path(), &config, None).unwrap();
+
+    // Forgetting is final, and it ends the window of what came before it.
+    screen.list.land_on("quiet-a1b");
+    for _ in 0..2 {
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+    }
+    assert!(
+        !crate::store::list(root.path())
+            .unwrap()
+            .contains(&"quiet-a1b".to_string())
+    );
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('u')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert_eq!(notice(&screen), (false, "nothing to undo"));
+}
