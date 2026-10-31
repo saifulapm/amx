@@ -169,7 +169,8 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
 /// review. Then a merged or closed request shelves it as of `since`, since
 /// the cache keeps no merge time. Failing that, so does being over for longer
 /// than `after` seconds at `now`, as of when it passed `after`. An `after` of
-/// 0 never shelves for idling, and a `since` ahead of `now` is not idle.
+/// 0 never shelves for idling, and a `since` of 0 (no time recorded) or ahead
+/// of `now` is not idle.
 pub fn ruled(
     mark: Option<&Shelf>,
     phase: Phase,
@@ -192,7 +193,7 @@ pub fn ruled(
         return Some(since);
     }
     let due = since.saturating_add(after);
-    (after > 0 && now > due).then_some(due)
+    (after > 0 && since > 0 && now > due).then_some(due)
 }
 
 /// The `shelve_after` of the project the agent works in.
@@ -4249,6 +4250,14 @@ mod tests {
             vec![view("far-a1b", Phase::Done, 10)],
         );
         assert_eq!(list.counts(), [(Group::Completed, 1)], "no overflow");
+    }
+
+    #[test]
+    fn auto_a_record_with_no_phase_change_time_is_not_idle() {
+        // A state file without `since` reads as 0, which is no time at all
+        // rather than 1970.
+        let list = idling(|_| 60, 10 * DAY, vec![view("odd-a1b", Phase::Stopped, 0)]);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
     }
 
     /// A fake forge with a request of every settled and unsettled kind.
