@@ -2829,6 +2829,25 @@ fn two_agents_whose_work_landed(amx: &Harness, repo: &Path) -> (String, String) 
     (landed, merged)
 }
 
+/// Wait for the two rows of [`two_agents_whose_work_landed`] to be drawn. The
+/// one with a merged request is shelved, so open the shelf to show it.
+fn both_rows_with_the_shelf_open(amx: &Harness, view: &str) {
+    amx.until("the merged request's row on the shelf", || {
+        let drawn = amx.capture(view);
+        (drawn.contains("tidy-b2c") && heading_reads(&drawn, "Shelved 1")).then_some(())
+    });
+    // The shut shelf is the last line of the list.
+    press(amx, view, "G");
+    amx.until("the bar on the shelf's heading", || {
+        bar_on(amx, view, "Shelved").then_some(())
+    });
+    press(amx, view, "Enter");
+    amx.until("both rows", || {
+        let drawn = amx.capture(view);
+        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
+    });
+}
+
 /// Wait until both rows armed by `c` show their reason, and answer with the
 /// screen.
 fn until_armed(amx: &Harness, view: &str) -> String {
@@ -2847,10 +2866,7 @@ fn c_clears_the_agents_whose_work_has_landed_and_says_why_on_each_row() {
     let (landed, merged) = two_agents_whose_work_landed(&amx, &repo);
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("both rows", || {
-        let drawn = amx.capture(&view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
-    });
+    both_rows_with_the_shelf_open(&amx, &view);
 
     // One press arms every row the sweep found, wherever the cursor is, and
     // each row shows its reason in place of its summary.
@@ -2889,10 +2905,7 @@ fn c_whose_window_lapses_keeps_every_agent_it_marked() {
     let (landed, merged) = two_agents_whose_work_landed(&amx, &repo);
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("both rows", || {
-        let drawn = amx.capture(&view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
-    });
+    both_rows_with_the_shelf_open(&amx, &view);
     press(&amx, &view, "c");
     until_armed(&amx, &view);
 
@@ -2931,10 +2944,7 @@ fn c_keeps_back_the_landed_agent_whose_tree_holds_work_and_counts_it() {
         .expect("a file nobody committed");
 
     let view = amx.in_a_terminal(&[], &[]);
-    amx.until("both rows", || {
-        let drawn = amx.capture(&view);
-        (drawn.contains("fix-login-a1b") && drawn.contains("tidy-b2c")).then_some(())
-    });
+    both_rows_with_the_shelf_open(&amx, &view);
 
     // The first press checks each tree with git. The held row says why it
     // will be kept where the others say what the next press does.
