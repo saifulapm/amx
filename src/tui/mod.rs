@@ -1953,7 +1953,7 @@ impl Screen {
             }
             // Sleep the selected agent below the wall.
             KeyCode::Char('z') if plain => {
-                let slept = self.list.sleep_or_wake();
+                let slept = self.list.sleep_or_wake(crate::store::now());
                 self.keep(slept);
             }
             // Shelve a finished agent out of the way, or put it back.

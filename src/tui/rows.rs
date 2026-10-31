@@ -201,6 +201,46 @@ fn shelve_after_of(meta: &Meta) -> u64 {
     crate::config::for_project(&crate::spawn::project_dir(meta)).shelve_after
 }
 
+/// A sleep the user put an agent to with `z`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sleep {
+    /// Epoch seconds of the press, 0 for a sleep saved before wake times.
+    pub since: u64,
+    /// Epoch seconds it wakes by itself at, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<u64>,
+}
+
+/// Sleep marks by agent id, read from either shape the file has held: the
+/// marks, or the list of ids saved before wake times, which are sleeps with
+/// no wake.
+fn sleeps_of_either_shape<'de, D>(reading: D) -> Result<BTreeMap<String, Sleep>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Sleeps {
+        Marks(BTreeMap<String, Sleep>),
+        Ids(Vec<String>),
+    }
+    Ok(match Sleeps::deserialize(reading)? {
+        Sleeps::Marks(marks) => marks,
+        Sleeps::Ids(ids) => ids
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Sleep {
+                        since: 0,
+                        wake: None,
+                    },
+                )
+            })
+            .collect(),
+    })
+}
+
 /// What `s` did to the row under the cursor. See [`List::shelve_or_return`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shelving {
@@ -222,7 +262,8 @@ pub enum Shelving {
 pub struct Arrangement {
     axis: Axis,
     held: BTreeSet<String>,
-    asleep: BTreeSet<String>,
+    #[serde(deserialize_with = "sleeps_of_either_shape")]
+    asleep: BTreeMap<String, Sleep>,
     shelved: BTreeMap<String, Shelf>,
     order: BTreeMap<Group, Vec<String>>,
 }
@@ -255,30 +296,20 @@ impl Arrangement {
         for id in local.held.difference(&published.held) {
             merged.held.insert(id.clone());
         }
-        for id in published.asleep.difference(&local.asleep) {
-            merged.asleep.remove(id);
-        }
-        for id in local.asleep.difference(&published.asleep) {
-            merged.asleep.insert(id.clone());
-        }
-        let marked = published.shelved.keys().chain(local.shelved.keys());
-        for id in marked {
-            match local.shelved.get(id) {
-                mark if mark == published.shelved.get(id) => {}
-                Some(mark) => {
-                    merged.shelved.insert(id.clone(), *mark);
-                }
-                None => {
-                    merged.shelved.remove(id);
-                }
-            }
-        }
+        changed_marks(&published.asleep, &local.asleep, &mut merged.asleep);
+        changed_marks(&published.shelved, &local.shelved, &mut merged.shelved);
         for (group, order) in &local.order {
             if published.order.get(group) != Some(order) {
                 merged.order.insert(*group, order.clone());
             }
         }
         merged
+    }
+
+    /// Whether the agent with this id is asleep. See [`List::sleeping`].
+    #[cfg(test)]
+    pub fn has_asleep(&self, id: &str) -> bool {
+        self.asleep.contains_key(id)
     }
 
     /// Drop the shelve marks of agents for which `recorded` is false, so the
@@ -291,11 +322,25 @@ impl Arrangement {
     pub fn has_pinned(&self, id: &str) -> bool {
         self.held.contains(id)
     }
+}
 
-    /// Whether the agent with this id is asleep. See [`List::sleeping`].
-    #[cfg(test)]
-    pub fn has_asleep(&self, id: &str) -> bool {
-        self.asleep.contains(id)
+/// Apply to `merged` each mark that differs between `published` and `local`,
+/// set or dropped, so the marks no view changed stay as `merged` has them.
+fn changed_marks<T: Copy + PartialEq>(
+    published: &BTreeMap<String, T>,
+    local: &BTreeMap<String, T>,
+    merged: &mut BTreeMap<String, T>,
+) {
+    for id in published.keys().chain(local.keys()) {
+        match local.get(id) {
+            mark if mark == published.get(id) => {}
+            Some(mark) => {
+                merged.insert(id.clone(), *mark);
+            }
+            None => {
+                merged.remove(id);
+            }
+        }
     }
 }
 
@@ -450,8 +495,8 @@ pub struct List {
     shut: HashSet<Key>,
     /// Pinned agent ids.
     held: BTreeSet<String>,
-    /// Sleeping agent ids.
-    asleep: BTreeSet<String>,
+    /// Sleep marks by agent id.
+    asleep: BTreeMap<String, Sleep>,
     /// Shelve marks by agent id, kept whether or not they still hold.
     shelved: BTreeMap<String, Shelf>,
     /// Hand-made group orders, as the ids in the group when it was arranged.
@@ -520,7 +565,7 @@ impl Default for List {
             // away.
             shut: HashSet::from([Key::Group(Group::Shelved)]),
             held: BTreeSet::new(),
-            asleep: BTreeSet::new(),
+            asleep: BTreeMap::new(),
             shelved: BTreeMap::new(),
             order: BTreeMap::new(),
             axis: Axis::default(),
@@ -716,7 +761,7 @@ impl List {
 
     /// Whether this agent is asleep.
     pub fn sleeping(&self, view: &View) -> bool {
-        self.asleep.contains(view.id())
+        self.asleep.contains_key(view.id())
     }
 
     /// Whether this agent's shelve mark still holds. See [`shelves`].
@@ -788,18 +833,24 @@ impl List {
         true
     }
 
-    /// Toggle sleep on the agent under the cursor.
+    /// Toggle sleep on the agent under the cursor, a sleep set at `now`.
     ///
     /// Sleep holds across phase changes, and a sleeping agent still counts in
     /// [`List::waiting`]. Sleeping a pinned agent unpins it. Returns false when
     /// the cursor is not on an agent.
-    pub fn sleep_or_wake(&mut self) -> bool {
+    pub fn sleep_or_wake(&mut self, now: u64) -> bool {
         let Some(id) = self.selected().map(|view| view.id().to_string()) else {
             return false;
         };
-        if !self.asleep.remove(&id) {
+        if self.asleep.remove(&id).is_none() {
             self.held.remove(&id);
-            self.asleep.insert(id);
+            self.asleep.insert(
+                id,
+                Sleep {
+                    since: now,
+                    wake: None,
+                },
+            );
         }
         let on = self.on();
         self.rebuild(on.agent());
@@ -2354,7 +2405,7 @@ mod tests {
             list.down();
             assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
         }
-        assert!(list.sleep_or_wake());
+        assert!(list.sleep_or_wake(0));
         list
     }
 
@@ -3953,6 +4004,112 @@ mod tests {
     }
 
     #[test]
+    fn arranged_a_sleep_list_from_before_wake_times_reads_as_sleeps_with_none() {
+        let old: Arrangement = serde_json::from_str(r#"{"asleep": ["nap-c3d"]}"#).unwrap();
+        assert_eq!(
+            old.asleep,
+            [(
+                "nap-c3d".to_string(),
+                Sleep {
+                    since: 0,
+                    wake: None
+                }
+            )]
+            .into()
+        );
+        let mut list = listed(vec![view("nap-c3d", Phase::Done, 10)]);
+        list.arrange(old.clone());
+        assert_eq!(lines(&list), ["Asleep (1)", "nap-c3d"]);
+
+        // Written back in the new shape, which reads the same again.
+        let written = serde_json::to_value(&old).unwrap();
+        assert_eq!(
+            written["asleep"],
+            serde_json::json!({"nap-c3d": {"since": 0}})
+        );
+        let again: Arrangement = serde_json::from_value(written).unwrap();
+        assert_eq!(again, old);
+
+        let timed: Arrangement =
+            serde_json::from_str(r#"{"asleep": {"nap-c3d": {"since": 5, "wake": 3605}}}"#).unwrap();
+        assert_eq!(
+            timed.asleep["nap-c3d"],
+            Sleep {
+                since: 5,
+                wake: Some(3605)
+            }
+        );
+    }
+
+    #[test]
+    fn arranged_a_sleep_is_merged_by_agent_and_the_later_mark_wins() {
+        // The other view slept nap-a1b with no time; this one gave it an
+        // hour, and woke late-b2c, which both had asleep.
+        let published = Arrangement {
+            asleep: [(
+                "late-b2c".to_string(),
+                Sleep {
+                    since: 1,
+                    wake: None,
+                },
+            )]
+            .into(),
+            ..Arrangement::default()
+        };
+        let timed = Sleep {
+            since: 9,
+            wake: Some(3609),
+        };
+        let local = Arrangement {
+            asleep: [("nap-a1b".to_string(), timed)].into(),
+            ..Arrangement::default()
+        };
+        let disk = Arrangement {
+            asleep: [
+                (
+                    "nap-a1b".to_string(),
+                    Sleep {
+                        since: 4,
+                        wake: None,
+                    },
+                ),
+                (
+                    "late-b2c".to_string(),
+                    Sleep {
+                        since: 1,
+                        wake: None,
+                    },
+                ),
+                (
+                    "theirs-c3d".to_string(),
+                    Sleep {
+                        since: 2,
+                        wake: None,
+                    },
+                ),
+            ]
+            .into(),
+            ..Arrangement::default()
+        };
+
+        let merged = Arrangement::merged(&published, &local, &disk);
+        assert_eq!(
+            merged.asleep,
+            [
+                ("nap-a1b".to_string(), timed),
+                (
+                    "theirs-c3d".to_string(),
+                    Sleep {
+                        since: 2,
+                        wake: None
+                    }
+                ),
+            ]
+            .into()
+        );
+    }
+
+    #[test]
     fn arranged_a_pin_then_a_sleep_then_a_shelve_win_over_the_phase() {
         assert_eq!(
             Group::of(Phase::Done, true, true, true, true),
@@ -3981,7 +4138,14 @@ mod tests {
             view("nap-c3d", Phase::Done, 30),
         ]);
         list.arrange(Arrangement {
-            asleep: ["nap-c3d".to_string()].into_iter().collect(),
+            asleep: [(
+                "nap-c3d".to_string(),
+                Sleep {
+                    since: 0,
+                    wake: None,
+                },
+            )]
+            .into(),
             shelved: [("done-a1b".to_string(), Shelf::by_hand(50))].into(),
             ..Arrangement::default()
         });
@@ -4757,7 +4921,7 @@ mod tests {
         ]);
         assert_eq!(list.selected().unwrap().id(), "ask-a1b");
 
-        assert!(list.sleep_or_wake());
+        assert!(list.sleep_or_wake(0));
         assert_eq!(
             lines(&list),
             [
@@ -4800,7 +4964,7 @@ mod tests {
         );
 
         // The same key wakes it.
-        assert!(list.sleep_or_wake());
+        assert!(list.sleep_or_wake(0));
         assert_eq!(
             lines(&list),
             [
@@ -4821,7 +4985,7 @@ mod tests {
             view("busy-b2c", Phase::Working, 20),
         ]);
 
-        assert!(list.sleep_or_wake());
+        assert!(list.sleep_or_wake(0));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
@@ -4836,7 +5000,7 @@ mod tests {
         assert!(!list.sleeping(list.agent_by_id("busy-a1b").unwrap()));
 
         // Sleeping a pinned agent unpins it.
-        assert!(list.sleep_or_wake());
+        assert!(list.sleep_or_wake(0));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
@@ -4846,7 +5010,7 @@ mod tests {
         // A heading cannot be put to sleep or pinned.
         list.top();
         assert!(list.on_heading());
-        assert!(!list.sleep_or_wake());
+        assert!(!list.sleep_or_wake(0));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
