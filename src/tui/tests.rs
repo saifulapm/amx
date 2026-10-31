@@ -7380,3 +7380,94 @@ fn theme_a_silent_terminal_leaves_the_kept_colours_as_they_were() {
         assert_eq!(std::fs::read_to_string(&kept).unwrap(), "#010203\n");
     }
 }
+
+/// The keys row's words and whether they are a refusal.
+fn notice(screen: &Screen) -> (bool, &str) {
+    match &screen.notice {
+        Some(Notice::Refused(said)) => (true, said.as_str()),
+        Some(Notice::Failed(said) | Notice::Advice(said)) => (false, said.as_str()),
+        None => (false, ""),
+    }
+}
+
+#[test]
+fn s_shelves_a_finished_row_and_the_other_view_has_it_shelved_too() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("view.json");
+    let config = Config::default();
+    let fleet = || {
+        vec![
+            reading("busy-a1b", Phase::Working, State::default()),
+            reading("done-b2c", Phase::Done, State::default()),
+        ]
+    };
+    let mut left = Screen {
+        remembering: Some(path.clone()),
+        ..watching(fleet())
+    };
+    let mut right = Screen {
+        remembering: Some(path.clone()),
+        ..watching(fleet())
+    };
+    let s = KeyEvent::from(KeyCode::Char('s'));
+
+    left.list.land_on("busy-a1b");
+    left.act(s, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&left), (true, "still working; z sleeps it"));
+    assert_eq!(
+        left.list.counts(),
+        [(rows::Group::Working, 1), (rows::Group::Completed, 1)]
+    );
+
+    left.list.land_on("done-b2c");
+    left.act(s, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&left), (false, "shelved"));
+    assert_eq!(
+        left.list.counts(),
+        [(rows::Group::Working, 1), (rows::Group::Shelved, 1)]
+    );
+
+    right.adopt_the_view();
+    assert_eq!(
+        right.list.counts(),
+        [(rows::Group::Working, 1), (rows::Group::Shelved, 1)],
+        "the other view reads the mark off the file"
+    );
+
+    // On the open shelf, s puts it back, for both views.
+    let (at, _) = left
+        .list
+        .heading_at(&rows::Key::Group(rows::Group::Shelved))
+        .unwrap();
+    left.list.land(at);
+    left.act(s, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&left), (false, "no agent here to shelve"));
+    left.act(KeyEvent::from(KeyCode::Enter), root.path(), &config, None)
+        .unwrap();
+    left.list.land_on("done-b2c");
+    left.act(s, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&left), (false, "back on the wall"));
+    right.adopt_the_view();
+    assert_eq!(
+        right.list.counts(),
+        [(rows::Group::Working, 1), (rows::Group::Completed, 1)]
+    );
+}
+
+#[test]
+fn s_on_a_row_waiting_on_a_question_says_so_in_the_refusal_colour() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = watching(vec![reading("ask-a1b", Phase::Waiting, State::default())]);
+    screen.list.land_on("ask-a1b");
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('s')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert_eq!(notice(&screen), (true, "waiting on you; z sleeps it"));
+    assert_eq!(screen.list.counts(), [(rows::Group::NeedsInput, 1)]);
+}

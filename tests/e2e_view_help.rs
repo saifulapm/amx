@@ -189,7 +189,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     let first = amx.until("the keys, the count and the foot", || {
         let drawn = amx.capture(&view);
         (drawn.contains("walk the agents")
-            && drawn.contains(" of 55")
+            && drawn.contains(" of 56")
             && drawn.contains("j k scroll"))
         .then_some(drawn)
     });
@@ -207,7 +207,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
             .then_some(drawn)
     });
     assert!(
-        last.contains(&format!(" of {}", 55)),
+        last.contains(&format!(" of {}", 56)),
         "which says where in the document it is:\n{last}"
     );
     assert!(

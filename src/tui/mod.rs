@@ -58,7 +58,7 @@ use act::{Asking, Composer, Renamed, Replied, Started};
 pub use act::{Edited, edited};
 use keyname::Bound;
 use paint::{Body, Card, Hunk, Keymap, Notice};
-use rows::{Arrangement, List, Narrow};
+use rows::{Arrangement, List, Narrow, Shelving};
 
 /// How often the agents are re-read.
 const REFRESH: Duration = Duration::from_millis(1000);
@@ -1948,6 +1948,19 @@ impl Screen {
             KeyCode::Char('z') if plain => {
                 let slept = self.list.sleep_or_wake();
                 self.keep(slept);
+            }
+            // Shelve a finished agent out of the way, or put it back.
+            KeyCode::Char('s') if plain => {
+                let (said, changed) = match self.list.shelve_or_return(crate::store::now()) {
+                    Shelving::Shelved => (Notice::Advice("shelved".to_string()), true),
+                    Shelving::Returned => (Notice::Advice("back on the wall".to_string()), true),
+                    Shelving::Refused(why) => (Notice::Refused(why.to_string()), false),
+                    Shelving::Nothing => {
+                        (Notice::Advice("no agent here to shelve".to_string()), false)
+                    }
+                };
+                self.notice = Some(said);
+                self.keep(changed);
             }
             // Config-bound keys come last, so they never shadow a built-in
             // key. They need a selected agent, whose tree the command runs in.

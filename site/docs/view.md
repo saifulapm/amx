@@ -62,6 +62,7 @@ when nothing waits.
 | Working | Agents starting up or in the middle of a turn. |
 | Completed | Everything that has ended: idle at its prompt, done, failed, stopped, or unknown. |
 | Asleep | Agents you put to sleep with `z`. They still count as waiting if they are. |
+| Shelved | Finished agents you put away with `s`. Opens shut in every view. |
 
 `enter` on a heading shuts the group and shows a count in its place, such as
 `Completed 27`. A group holding failures says so either way:
@@ -70,8 +71,9 @@ behind a `… N more` line.
 
 An agent with subagents is drawn with its children under it, and the family
 sits under the most urgent group any of them is in. A child waiting on a
-question pulls the whole family under Needs input. Pins and sleep are the
-exception: they apply to the one row you pressed them on.
+question pulls the whole family under Needs input. Pins, sleep and shelving
+are the exception: they apply to the one row you pressed them on. A shelved
+row with a child still working or waiting sits where that child pulls it.
 
 ## Rows
 
@@ -353,7 +355,7 @@ s:failed
 ```
 
 `s:` takes the header's words (`pinned`, `review`, `waiting`, `working`,
-`done`, `asleep`) and the record's states (`idle`, `failed`, `stopped`, and so
+`done`, `asleep`, `shelved`) and the record's states (`idle`, `failed`, `stopped`, and so
 on).
 
 ## Arranging
@@ -362,11 +364,21 @@ on).
 | --- | --- |
 | `ctrl+t` | Pin the agent at the top of the list. Again to unpin. |
 | `z` | Put it to sleep at the bottom. Again to wake it. |
+| `s` | Shelve a finished agent under Shelved. Again to put it back. |
 | `shift+↑` `shift+↓` | Move it within its group. |
 | `ctrl+r` | Rename it on the wall, like `amx rename`. |
 
 Pinning a sleeping agent wakes it, and sleeping a pinned one unpins it. Once
 you reorder a group by hand, new agents join its bottom.
+
+`s` puts away an agent whose turn is over: idle, done, failed or stopped. The
+row leaves its group and the cursor stays where it was, on the row that
+followed. Nothing is deleted: the record, branch and worktree stay, and `amx
+ls` still lists it. The agent comes back by itself when its state next
+changes, for example when you reply to it. `s` on a working agent, or one
+waiting on you, refuses and points at `z`. Shelving a pinned or sleeping
+agent unpins or wakes it. Shelved rows are newest first, and a find or `s:`
+narrowing shows them even while the heading is shut.
 
 The arrangement is saved to `~/.local/state/amx/view.json` as you go. The next
 view opens on it, and another view open at the same time picks it up within a
@@ -467,6 +479,7 @@ returns to the list, `q` closes the view.
 | `ctrl+s` | Group by state, directory, state, repository. |
 | `ctrl+t` | Pin or unpin. |
 | `z` | Sleep or wake. |
+| `s` | Shelve or put back. |
 | `shift+↑` `shift+↓` | Move within the group. |
 | `ctrl+r` | Rename. |
 | `i` | Interrupt the turn. |

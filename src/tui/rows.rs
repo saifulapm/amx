@@ -147,6 +147,17 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
     over && mark.is_some_and(|mark| mark.at >= since)
 }
 
+/// What `s` did to the row under the cursor. See [`List::shelve_or_return`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shelving {
+    Shelved,
+    Returned,
+    /// Not finished, and why, for the keys row.
+    Refused(&'static str),
+    /// The cursor is not on an agent.
+    Nothing,
+}
+
 /// The user's persisted arrangement of the list: axis, pins, sleeps, shelve
 /// marks and hand-made group orders.
 ///
@@ -437,7 +448,9 @@ impl Default for List {
             landed: false,
             let_go: None,
             unfolded: HashSet::new(),
-            shut: HashSet::new(),
+            // Shelved opens shut in every view: it holds what the user put
+            // away.
+            shut: HashSet::from([Key::Group(Group::Shelved)]),
             held: BTreeSet::new(),
             asleep: BTreeSet::new(),
             shelved: BTreeMap::new(),
@@ -647,6 +660,86 @@ impl List {
         self.rebuild(on.agent());
         self.follow(&on);
         true
+    }
+
+    /// Shelve the agent under the cursor at `now`, or put a shelved one back.
+    ///
+    /// Only a finished turn is shelved, and only when no one in its family is
+    /// working or waiting, which would pull the row back under Working or
+    /// Needs input. Shelving unpins and wakes the agent. Either way the row
+    /// leaves the cursor, which goes to the line that followed it.
+    pub fn shelve_or_return(&mut self, now: u64) -> Shelving {
+        let Some(Item::Agent(n)) = self.items.get(self.cursor).copied() else {
+            return Shelving::Nothing;
+        };
+        let id = self.views[n].id().to_string();
+        let done = match self.group(n) {
+            Group::Shelved => {
+                self.shelved.remove(&id);
+                Shelving::Returned
+            }
+            _ => {
+                if let Some(why) = self.unfinished(n) {
+                    return Shelving::Refused(why);
+                }
+                self.held.remove(&id);
+                self.asleep.remove(&id);
+                self.shelved.insert(id, Shelf { at: now });
+                Shelving::Shelved
+            }
+        };
+        let next = self.after(self.cursor);
+        self.rebuild(next.agent());
+        self.follow(&next);
+        done
+    }
+
+    /// Why the agent's row cannot be shelved, if it cannot: its own turn, or
+    /// a descendant's, is not over.
+    fn unfinished(&self, n: usize) -> Option<&'static str> {
+        let pulled = match self.views[n].phase() {
+            Phase::Waiting => Some(Group::NeedsInput),
+            Phase::Starting | Phase::Working => Some(Group::Working),
+            Phase::Unknown => return Some("cannot tell it finished; z sleeps it"),
+            _ => self.pulled(n),
+        };
+        match pulled {
+            Some(Group::NeedsInput) => Some("waiting on you; z sleeps it"),
+            Some(Group::Working) => Some("still working; z sleeps it"),
+            _ => None,
+        }
+    }
+
+    /// What is on the first line below the row on line `at` and the rows
+    /// drawn under it, or failing that the nearest line above.
+    fn after(&self, at: usize) -> On {
+        let Some(Item::Agent(n)) = self.items.get(at).copied() else {
+            return self.on();
+        };
+        let under = |m: usize| {
+            let mut here = Some(m);
+            while let Some(row) = here {
+                if row == n {
+                    return true;
+                }
+                here = self.parents[row];
+            }
+            false
+        };
+        let below = self.items[at + 1..]
+            .iter()
+            .position(|item| match item {
+                Item::Agent(m) | Item::Sub(m, _) => !under(*m),
+                _ => true,
+            })
+            .map(|skip| at + 1 + skip);
+        let line = below
+            .and_then(|from| (from..self.items.len()).find(|&i| self.items[i] != Item::Blank))
+            .or_else(|| (0..at).rev().find(|&i| self.items[i] != Item::Blank));
+        match line {
+            Some(line) => self.on_line(line),
+            None => On::Nothing,
+        }
     }
 
     /// Move the agent under the cursor `by` rows within its group.
@@ -882,18 +975,28 @@ impl List {
     /// A parent whose turn ended while a child still works must not land in
     /// Completed, where `c` would clear the running family unseen. A child's
     /// pin or sleep applies to that child only and does not move the family.
+    /// A shelved parent is pulled back only by a child working or waiting.
     fn family(&self, n: usize) -> Group {
         let mine = self.group(n);
-        if self.children[n].is_empty() || matches!(mine, Group::Pinned | Group::Asleep) {
+        if matches!(mine, Group::Pinned | Group::Asleep) {
             return mine;
         }
-        let urgency = |group: &Group| Group::ALL.iter().position(|other| other == group);
-        self.nested(&[n])
+        match (mine, self.pulled(n)) {
+            (Group::Shelved, Some(group @ (Group::NeedsInput | Group::Working))) => group,
+            (Group::Shelved, _) => mine,
+            (_, Some(group)) => group.min(mine),
+            (_, None) => mine,
+        }
+    }
+
+    /// The most urgent group among the row's descendants, leaving out pinned
+    /// and sleeping ones. `None` for a row with no such descendant.
+    fn pulled(&self, n: usize) -> Option<Group> {
+        self.nested(&self.children[n])
             .into_iter()
             .map(|at| self.group(at))
             .filter(|group| !matches!(group, Group::Pinned | Group::Asleep))
-            .min_by_key(urgency)
-            .unwrap_or(mine)
+            .min()
     }
 
     /// Whether the agent's turn is over and a pull request on its branch is
@@ -1349,6 +1452,10 @@ impl List {
             let view = &self.views[n];
             let ending = match self.family(n) {
                 Group::Completed => Some((Reverse(ended(view)), view.id())),
+                Group::Shelved => self
+                    .shelved
+                    .get(view.id())
+                    .map(|mark| (Reverse(mark.at), view.id())),
                 // The sort is stable, so other groups keep reading order,
                 // which is start order.
                 _ => None,
@@ -1394,7 +1501,10 @@ impl List {
                 continue;
             }
             let members = self.nested(&roots);
-            let shut = self.shut.contains(&Key::Group(group));
+            // A narrowing reaches into the shelf, or it could find nothing
+            // there to show.
+            let shut = self.shut.contains(&Key::Group(group))
+                && !(group == Group::Shelved && self.filters.label().is_some());
             if !items.is_empty() {
                 items.push(Item::Blank);
             }
@@ -1612,7 +1722,12 @@ impl List {
     }
 
     fn on(&self) -> On {
-        match self.items.get(self.cursor) {
+        self.on_line(self.cursor)
+    }
+
+    /// What is on line `at`, by stable identity.
+    fn on_line(&self, at: usize) -> On {
+        match self.items.get(at) {
             Some(Item::Agent(n)) => match self.views.get(*n) {
                 Some(view) => On::Agent(view.id().to_string()),
                 None => On::Nothing,
@@ -1998,6 +2113,22 @@ mod tests {
         }
         assert!(list.hold_or_let_go());
         list
+    }
+
+    /// Walk the cursor to `id`.
+    fn to(list: &mut List, id: &str) {
+        list.top();
+        while list.selected().is_none_or(|view| view.id() != id) {
+            let at = list.cursor();
+            list.down();
+            assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
+        }
+    }
+
+    /// Walk the cursor to the heading for `group`.
+    fn to_heading(list: &mut List, group: Group) {
+        let (at, _) = list.heading_at(&Key::Group(group)).expect("a heading");
+        assert!(list.land(at));
     }
 
     /// Put `id` to sleep by walking the cursor to it and pressing the key.
@@ -3627,12 +3758,208 @@ mod tests {
                 "Asleep (1)",
                 "nap-c3d",
                 "",
-                "Shelved (1)",
-                "done-a1b",
+                "Shelved (1) shut",
             ]
         );
         assert_eq!(Group::ALL.last(), Some(&Group::Shelved));
         assert_eq!(Group::Shelved.state(), "shelved");
+    }
+
+    /// Three finished rows listed a, b, c: Completed lists the newest ending
+    /// first.
+    fn three_done() -> Vec<View> {
+        vec![
+            view("done-a1b", Phase::Done, 30),
+            view("done-b2c", Phase::Done, 20),
+            view("done-c3d", Phase::Done, 10),
+        ]
+    }
+
+    #[test]
+    fn shelving_a_finished_row_puts_it_under_a_shut_heading_and_moves_on() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-b2c");
+
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+        assert_eq!(list.selected().unwrap().id(), "done-c3d");
+        assert_eq!(
+            lines(&list),
+            [
+                "Completed (2)",
+                "done-a1b",
+                "done-c3d",
+                "",
+                "Shelved (1) shut"
+            ]
+        );
+        assert_eq!(
+            list.counts(),
+            [(Group::Completed, 2), (Group::Shelved, 1)],
+            "the header counts it as shelved"
+        );
+
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        assert_eq!(lines(&list)[4..], ["Shelved (1)", "done-b2c"]);
+
+        // A view opened afterwards has the heading shut again.
+        let mut again = listed(three_done());
+        again.arrange(list.arrangement());
+        assert_eq!(lines(&again)[4..], ["Shelved (1) shut"]);
+    }
+
+    #[test]
+    fn shelving_lists_the_newest_shelved_first() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-b2c");
+        list.shelve_or_return(100);
+        to(&mut list, "done-a1b");
+        list.shelve_or_return(101);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            [
+                "Completed (1)",
+                "done-c3d",
+                "",
+                "Shelved (2)",
+                "done-a1b",
+                "done-b2c"
+            ]
+        );
+    }
+
+    #[test]
+    fn shelving_a_pinned_or_sleeping_row_lets_go_of_the_pin_or_the_sleep() {
+        let mut list = sleeping(pinning(listed(three_done()), "done-a1b"), "done-c3d");
+        to(&mut list, "done-a1b");
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+        to(&mut list, "done-c3d");
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+
+        let arranged = list.arrangement();
+        assert!(!arranged.has_pinned("done-a1b"));
+        assert!(!arranged.has_asleep("done-c3d"));
+        assert_eq!(list.counts(), [(Group::Completed, 1), (Group::Shelved, 2)]);
+    }
+
+    #[test]
+    fn shelving_a_shelved_row_puts_it_back() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-b2c");
+        list.shelve_or_return(100);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "done-b2c");
+
+        assert_eq!(list.shelve_or_return(101), Shelving::Returned);
+        assert_eq!(list.counts(), [(Group::Completed, 3)]);
+        assert_eq!(
+            lines(&list),
+            ["Completed (3)", "done-a1b", "done-b2c", "done-c3d"]
+        );
+    }
+
+    #[test]
+    fn shelving_comes_undone_when_the_agent_moves_on() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-b2c");
+        list.shelve_or_return(100);
+
+        // A reply: the agent works again, and the record says so later.
+        let mut replied = three_done();
+        replied[1] = view("done-b2c", Phase::Working, 100);
+        list.show(replied);
+        assert_eq!(list.counts(), [(Group::Working, 1), (Group::Completed, 2)]);
+
+        let mut finished = three_done();
+        finished[1] = view("done-b2c", Phase::Idle, 140);
+        list.show(finished);
+        assert_eq!(
+            list.counts(),
+            [(Group::Completed, 3)],
+            "finished again, it stays out: its mark is older than the change"
+        );
+    }
+
+    #[test]
+    fn shelving_refuses_a_row_that_is_not_finished() {
+        let fleet = vec![
+            view("ask-a1b", Phase::Waiting, 10),
+            view("busy-b2c", Phase::Working, 20),
+            view("odd-c3d", Phase::Unknown, 30),
+        ];
+        let mut list = listed(fleet);
+        let before = lines(&list);
+        for (id, said) in [
+            ("ask-a1b", "waiting on you; z sleeps it"),
+            ("busy-b2c", "still working; z sleeps it"),
+            ("odd-c3d", "cannot tell it finished; z sleeps it"),
+        ] {
+            to(&mut list, id);
+            assert_eq!(list.shelve_or_return(100), Shelving::Refused(said));
+            assert_eq!(list.selected().unwrap().id(), id, "the cursor stays");
+        }
+        assert_eq!(lines(&list), before);
+
+        to_heading(&mut list, Group::Working);
+        assert_eq!(list.shelve_or_return(100), Shelving::Nothing);
+        assert_eq!(lines(&list), before);
+    }
+
+    #[test]
+    fn shelving_a_parent_waits_for_its_family() {
+        // A parent whose turn is over while its child works sits under
+        // Working, and s says why it stays there.
+        let mut list = listed(vec![
+            view("lead-a1b", Phase::Done, 10),
+            child_of(view("busy-b2c", Phase::Working, 20), "lead-a1b"),
+        ]);
+        to(&mut list, "lead-a1b");
+        assert_eq!(
+            list.shelve_or_return(100),
+            Shelving::Refused("still working; z sleeps it")
+        );
+
+        // Shelved while the child was done, the family goes where a child
+        // that starts working again pulls it.
+        let mut list = listed(vec![
+            view("lead-a1b", Phase::Done, 10),
+            child_of(view("kid-b2c", Phase::Done, 20), "lead-a1b"),
+        ]);
+        to(&mut list, "lead-a1b");
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+        assert_eq!(list.counts(), [(Group::Shelved, 1)], "child and all");
+        list.show(vec![
+            view("lead-a1b", Phase::Done, 10),
+            child_of(view("kid-b2c", Phase::Working, 101), "lead-a1b"),
+        ]);
+        assert_eq!(list.counts(), [(Group::Working, 1)]);
+    }
+
+    #[test]
+    fn shelving_the_row_over_a_shut_shelf_lands_on_its_heading() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-c3d");
+        list.shelve_or_return(100);
+        assert_eq!(list.selected().unwrap().id(), "done-b2c", "the line above");
+        to(&mut list, "done-b2c");
+
+        list.shelve_or_return(101);
+        assert_eq!(list.heading(), Some(Under::Group(Group::Shelved)));
+        assert_eq!(lines(&list)[list.cursor()], "Shelved (2) shut");
+    }
+
+    #[test]
+    fn shelving_opens_the_shelf_to_a_narrowing() {
+        let mut list = listed(three_done());
+        to(&mut list, "done-b2c");
+        list.shelve_or_return(100);
+        list.narrow(vec![Narrow::Name(Some("b2c".to_string()))]);
+        assert_eq!(lines(&list), ["Shelved (1)", "done-b2c"]);
+        list.narrow(vec![Narrow::Name(None)]);
+        assert_eq!(lines(&list)[3..], ["", "Shelved (1) shut"]);
     }
 
     #[test]
