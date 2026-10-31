@@ -240,12 +240,6 @@ where
     use serde::de::IgnoredAny;
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum Read<T> {
-        Good(T),
-        Bad(IgnoredAny),
-    }
-    #[derive(Deserialize)]
-    #[serde(untagged)]
     enum Sleeps {
         Marks(BTreeMap<String, Read<Sleep>>),
         Ids(Vec<Read<String>>),
@@ -278,6 +272,73 @@ where
     })
 }
 
+/// An entry of the view file, read if it can be. One that does not read is
+/// skipped, so it costs that entry and not every pin in the file.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Read<T> {
+    Good(T),
+    Bad(serde::de::IgnoredAny),
+}
+
+impl<T> Read<T> {
+    fn good(self) -> Option<T> {
+        match self {
+            Read::Good(read) => Some(read),
+            Read::Bad(_) => None,
+        }
+    }
+}
+
+/// A field of the view file, or its default if it does not read.
+fn or_default<'de, D, T>(reading: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Read::<T>::deserialize(reading)?.good().unwrap_or_default())
+}
+
+/// The pinned ids that read.
+fn readable_ids<'de, D>(reading: D) -> Result<BTreeSet<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let ids: Vec<Read<String>> = or_default(reading)?;
+    Ok(ids.into_iter().filter_map(Read::good).collect())
+}
+
+/// The shelve marks that read.
+fn readable_shelves<'de, D>(reading: D) -> Result<BTreeMap<String, Shelf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let marks: BTreeMap<String, Read<Shelf>> = or_default(reading)?;
+    Ok(marks
+        .into_iter()
+        .filter_map(|(id, mark)| Some((id, mark.good()?)))
+        .collect())
+}
+
+/// The hand-made orders of groups that exist, each with the ids that read.
+fn readable_orders<'de, D>(reading: D) -> Result<BTreeMap<Group, Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::value::{Error, StrDeserializer};
+    let orders: BTreeMap<String, Read<Vec<Read<String>>>> = or_default(reading)?;
+    Ok(orders
+        .into_iter()
+        .filter_map(|(group, ids)| {
+            let group = Group::deserialize(StrDeserializer::<Error>::new(&group)).ok()?;
+            Some((
+                group,
+                ids.good()?.into_iter().filter_map(Read::good).collect(),
+            ))
+        })
+        .collect())
+}
+
 /// What `s` did to the row under the cursor. See [`List::shelve_or_return`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shelving {
@@ -297,11 +358,15 @@ pub enum Shelving {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Arrangement {
+    #[serde(deserialize_with = "or_default")]
     axis: Axis,
+    #[serde(deserialize_with = "readable_ids")]
     held: BTreeSet<String>,
     #[serde(deserialize_with = "sleeps_of_either_shape")]
     asleep: BTreeMap<String, Sleep>,
+    #[serde(deserialize_with = "readable_shelves")]
     shelved: BTreeMap<String, Shelf>,
+    #[serde(deserialize_with = "readable_orders")]
     order: BTreeMap<Group, Vec<String>>,
 }
 
@@ -4401,6 +4466,45 @@ mod tests {
             serde_json::from_str(r#"{"held": ["pin-a1b"], "asleep": 7}"#).unwrap();
         assert!(neither.has_pinned("pin-a1b"));
         assert!(neither.asleep.is_empty());
+    }
+
+    #[test]
+    fn arranged_a_field_that_does_not_read_costs_that_field_and_not_the_file() {
+        let read: Arrangement = serde_json::from_str(
+            r#"{"axis": "sideways", "held": ["pin-a1b", 7],
+                "shelved": {"done-b2c": {"at": 5}, "text-c3d": "soon"},
+                "asleep": {"nap-d4e": {"since": 5}},
+                "order": {"completed": 7, "working": ["busy-e5f", 3], "nowhere": ["x"],
+                          "asleep": ["nap-d4e"]}}"#,
+        )
+        .expect("a bad field is no reason to lose the file");
+        assert_eq!(read.axis, Axis::State);
+        assert_eq!(read.held, ["pin-a1b".to_string()].into());
+        assert_eq!(
+            read.shelved,
+            [(
+                "done-b2c".to_string(),
+                Shelf {
+                    at: Some(5),
+                    keep: None
+                }
+            )]
+            .into()
+        );
+        assert!(read.has_asleep("nap-d4e"));
+        assert_eq!(
+            read.order,
+            [
+                (Group::Working, vec!["busy-e5f".to_string()]),
+                (Group::Asleep, vec!["nap-d4e".to_string()]),
+            ]
+            .into()
+        );
+
+        for whole in [r#"{"held": 7}"#, r#"{"shelved": 7}"#, r#"{"order": 7}"#] {
+            let read: Arrangement = serde_json::from_str(whole).unwrap();
+            assert_eq!(read, Arrangement::default(), "{whole}");
+        }
     }
 
     #[test]
