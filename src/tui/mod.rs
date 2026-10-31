@@ -1259,7 +1259,9 @@ impl Screen {
     /// and a capture per quiet agent, while the records are one file read each.
     /// The read clock stays unset, so the next pass takes a full reading.
     fn recall(&mut self, root: &Path, scope: &Scope) -> Result<()> {
-        self.showing(scope.narrow(derive::recorded(root, now())?));
+        let now = now();
+        self.list.time_is(now);
+        self.showing(scope.narrow(derive::recorded(root, now)?));
         // The records alone read a gone pane as its last phase, so the first
         // agent here may move once a reading has looked at the panes.
         self.list.land_again();
@@ -1349,8 +1351,10 @@ impl Screen {
             .into_iter()
             .filter(|record| scope.covers(&record.meta))
             .collect();
-        let views = derive::views_of(root, records, now());
+        let now = now();
+        let views = derive::views_of(root, records, now);
         verbs::sweep::fetch_origins_again(&views);
+        self.list.time_is(now);
         self.showing(views);
         self.read = Some(Instant::now());
         self.keep_the_sweep();

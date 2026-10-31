@@ -163,6 +163,24 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
     over && mark.and_then(|mark| mark.at).is_some_and(|at| at >= since)
 }
 
+/// When a rule put the agent on the shelf, if one did: its turn has been over
+/// for longer than `after` seconds at `now`, counted from its last phase change
+/// (`since`). An `after` of 0 never shelves, and a `since` ahead of `now` is not
+/// idle.
+pub fn ruled(phase: Phase, since: u64, after: u64, now: u64) -> Option<u64> {
+    let over = matches!(
+        phase,
+        Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
+    );
+    let due = since.saturating_add(after);
+    (over && after > 0 && now > due).then_some(due)
+}
+
+/// The `shelve_after` of the project the agent works in.
+fn shelve_after_of(meta: &Meta) -> u64 {
+    crate::config::for_project(&crate::spawn::project_dir(meta)).shelve_after
+}
+
 /// What `s` did to the row under the cursor. See [`List::shelve_or_return`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shelving {
@@ -457,6 +475,14 @@ pub struct List {
     prs: HashMap<String, Vec<Pr>>,
     /// Source of `prs`. Injected for tests.
     asks: fn(&Meta) -> Vec<Pr>,
+    /// The time the rules judge idleness by. 0 until the view says, so a list
+    /// that is never told the time shelves nothing for idling.
+    now: u64,
+    /// `shelve_after` per agent id, read once per agent because the project it
+    /// works in does not change. Pruned to the current fleet on each reading.
+    afters: HashMap<String, u64>,
+    /// Source of `afters`. Injected for tests.
+    after: fn(&Meta) -> u64,
     /// `$HOME`, read once, for abbreviating heading paths to `~`.
     home: Option<PathBuf>,
 }
@@ -493,6 +519,9 @@ impl Default for List {
             branches: HashMap::new(),
             prs: HashMap::new(),
             asks: pr::of,
+            now: 0,
+            afters: HashMap::new(),
+            after: shelve_after_of,
             home: std::env::home_dir(),
         }
     }
@@ -530,6 +559,17 @@ impl List {
         self.asks = asks;
     }
 
+    /// Replace the `shelve_after` source with a fake.
+    #[cfg(test)]
+    pub(super) fn shelving_after(&mut self, after: fn(&Meta) -> u64) {
+        self.after = after;
+    }
+
+    /// Judge idleness at `now` from the next rebuild on.
+    pub fn time_is(&mut self, now: u64) {
+        self.now = now;
+    }
+
     /// Replace the views with a fresh reading and rebuild the lines.
     ///
     /// The cursor follows the agent or heading it was on, since rows move
@@ -538,6 +578,7 @@ impl List {
         let on = self.on();
         let placed = self.landed;
         self.remember_the_requests(&views);
+        self.remember_the_afters(&views);
         self.views = views;
         self.rebuild(on.agent().filter(|_| placed));
         if placed {
@@ -567,6 +608,22 @@ impl List {
         self.prs = views
             .iter()
             .map(|view| (view.id().to_string(), (self.asks)(&view.meta)))
+            .collect();
+    }
+
+    /// Look up the `shelve_after` of every agent not yet seen, and forget the
+    /// agents that left.
+    fn remember_the_afters(&mut self, views: &[View]) {
+        let mut known = std::mem::take(&mut self.afters);
+        self.afters = views
+            .iter()
+            .map(|view| {
+                let id = view.id().to_string();
+                let after = known
+                    .remove(&id)
+                    .unwrap_or_else(|| (self.after)(&view.meta));
+                (id, after)
+            })
             .collect();
     }
 
@@ -645,6 +702,24 @@ impl List {
     /// Whether this agent's shelve mark still holds. See [`shelves`].
     fn shelving(&self, view: &View) -> bool {
         shelves(self.shelved.get(view.id()), view.phase(), view.state.since)
+    }
+
+    /// When a rule put agent `n` on the shelf, if one did. See [`ruled`].
+    fn ruling(&self, n: usize) -> Option<u64> {
+        let view = &self.views[n];
+        let after = self.afters.get(view.id()).copied().unwrap_or(0);
+        ruled(view.phase(), view.state.since, after, self.now)
+    }
+
+    /// When agent `n` went on the shelf: the press of `s`, while it holds,
+    /// else when a rule first held.
+    fn shelved_at(&self, n: usize) -> Option<u64> {
+        let view = &self.views[n];
+        self.shelved
+            .get(view.id())
+            .and_then(|mark| mark.at)
+            .filter(|_| self.shelving(view))
+            .or_else(|| self.ruling(n))
     }
 
     /// Toggle the pin on the agent under the cursor.
@@ -995,7 +1070,7 @@ impl List {
             view.phase(),
             self.holding(view),
             self.sleeping(view),
-            self.shelving(view),
+            self.shelving(view) || self.ruling(n).is_some(),
             self.reviewable(view),
         )
     }
@@ -1497,11 +1572,7 @@ impl List {
             let view = &self.views[n];
             let ending = match self.family(n) {
                 Group::Completed => Some((Reverse(ended(view)), view.id())),
-                Group::Shelved => self
-                    .shelved
-                    .get(view.id())
-                    .and_then(|mark| mark.at)
-                    .map(|at| (Reverse(at), view.id())),
+                Group::Shelved => self.shelved_at(n).map(|at| (Reverse(at), view.id())),
                 // The sort is stable, so other groups keep reading order,
                 // which is start order.
                 _ => None,
@@ -4039,6 +4110,102 @@ mod tests {
             child_of(view("kid-b2c", Phase::Working, 101), "lead-a1b"),
         ]);
         assert_eq!(list.counts(), [(Group::Working, 1)]);
+    }
+
+    /// A list judging idleness at `now`, with `after` as every agent's
+    /// `shelve_after`.
+    fn idling(after: fn(&Meta) -> u64, now: u64, views: Vec<View>) -> List {
+        let mut list = List::default();
+        list.shelving_after(after);
+        list.time_is(now);
+        list.show(views);
+        list
+    }
+
+    const DAY: u64 = 86_400;
+
+    #[test]
+    fn auto_a_finished_row_idle_past_shelve_after_is_shelved_without_a_key() {
+        let mut list = idling(
+            |_| 60,
+            1061,
+            vec![
+                view("old-a1b", Phase::Done, 1000),
+                view("new-b2c", Phase::Done, 1002),
+            ],
+        );
+        assert_eq!(list.counts(), [(Group::Completed, 1), (Group::Shelved, 1)]);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["Completed (1)", "new-b2c", "", "Shelved (1)", "old-a1b"],
+            "61 s idle is shelved, 59 s is not"
+        );
+    }
+
+    #[test]
+    fn auto_shelve_after_zero_never_shelves_for_idling() {
+        let list = idling(|_| 0, 30 * DAY, vec![view("old-a1b", Phase::Done, 10)]);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
+    }
+
+    #[test]
+    fn auto_the_default_shelve_after_is_three_days() {
+        let list = idling(
+            |_| crate::config::Config::default().shelve_after,
+            1000 + 259_201,
+            vec![
+                view("old-a1b", Phase::Idle, 1000),
+                view("new-b2c", Phase::Idle, 1002),
+            ],
+        );
+        assert_eq!(list.counts(), [(Group::Completed, 1), (Group::Shelved, 1)]);
+    }
+
+    #[test]
+    fn auto_a_working_or_waiting_row_is_never_shelved_however_old() {
+        let list = idling(
+            |_| 60,
+            10 * DAY,
+            vec![
+                view("busy-a1b", Phase::Working, 10),
+                view("ask-b2c", Phase::Waiting, 10),
+                view("odd-c3d", Phase::Unknown, 10),
+            ],
+        );
+        assert_eq!(
+            list.counts(),
+            [
+                (Group::NeedsInput, 1),
+                (Group::Working, 1),
+                (Group::Completed, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_a_pinned_row_is_never_shelved() {
+        let mut list = pinning(
+            idling(|_| 60, 20, vec![view("done-a1b", Phase::Done, 10)]),
+            "done-a1b",
+        );
+        list.time_is(10 * DAY);
+        list.show(vec![view("done-a1b", Phase::Done, 10)]);
+        assert_eq!(list.counts(), [(Group::Pinned, 1)]);
+    }
+
+    #[test]
+    fn auto_a_phase_change_in_the_future_is_not_idle() {
+        // A clock set back, or a record from a machine ahead of this one.
+        let list = idling(|_| 60, 1000, vec![view("ahead-a1b", Phase::Done, 5000)]);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
+        let list = idling(
+            |_| u64::MAX,
+            u64::MAX,
+            vec![view("far-a1b", Phase::Done, 10)],
+        );
+        assert_eq!(list.counts(), [(Group::Completed, 1)], "no overflow");
     }
 
     #[test]
