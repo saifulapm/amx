@@ -242,12 +242,24 @@ fn path_heading(
     };
     let said = format!("{path}{}", count(tally));
     let stood = width_of(&said) + width_of(&failed) + width_of(&doing);
-    Line::from(vec![
+    let mut line = vec![
         Span::styled(said, label),
         Span::styled(failed, Style::new().fg(theme.failed)),
         Span::raw(" ".repeat(width.saturating_sub(stood))),
-        Span::styled(doing, dim()),
-    ])
+    ];
+    // Dim, but for what waits on the user, which a shut heading would
+    // otherwise hide.
+    for (at, (group, count)) in tally.doing().into_iter().enumerate() {
+        if at > 0 {
+            line.push(Span::styled(" ".repeat(APART), dim()));
+        }
+        let style = match group {
+            Group::NeedsInput => Style::new().fg(theme.waiting),
+            _ => dim(),
+        };
+        line.push(Span::styled(format!("{count} {}", group.state()), style));
+    }
+    Line::from(line)
 }
 
 /// Per-state counts of a heading's rows, in the header's words (which are also
@@ -536,7 +548,7 @@ mod tests {
         theme, view,
     };
     use crate::tui::paint::text::fit;
-    use crate::tui::rows::{FOLD_AT, Narrow};
+    use crate::tui::rows::{Axis, FOLD_AT, Narrow};
     use crate::tui::{Arm, Screen};
     use ratatui::style::{Color, Modifier};
     use std::path::PathBuf;
@@ -1748,6 +1760,46 @@ mod tests {
             painted(&screen, size)[2],
             "/src/api 2 · 1 failed                     1 waiting   1 done"
         );
+    }
+
+    #[test]
+    fn path_headings_draw_the_waiting_count_in_the_waiting_colour() {
+        let size = (60, 10);
+        let mut screen = by_project(vec![
+            at(view("ask-a1b", Phase::Waiting, None, 30), "/src/api"),
+            at(
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+                "/src/api",
+            ),
+            at(
+                view("busy-c3d", Phase::Working, Some("Running Bash"), 3),
+                "/src/api",
+            ),
+            at(
+                view("done-d4e", Phase::Done, Some("did it"), 60),
+                "/src/web",
+            ),
+        ]);
+        for axis in [Axis::Project, Axis::Repo] {
+            assert_eq!(screen.list.axis(), axis);
+            let lines = painted(&screen, size);
+            assert!(lines[2].ends_with("1 waiting   2 working"), "{lines:?}");
+            assert_eq!(word_colour(&screen, size, 2, "1 waiting"), theme().waiting);
+            assert!(!word_modifier(&screen, size, 2, "1 waiting").contains(Modifier::DIM));
+            assert_eq!(word_colour(&screen, size, 2, "2 working"), Color::Reset);
+            assert!(word_modifier(&screen, size, 2, "2 working").contains(Modifier::DIM));
+
+            // With nothing waiting, every count stays dim.
+            let web = lines
+                .iter()
+                .position(|line| line.starts_with("/src/web"))
+                .unwrap() as u16;
+            assert_eq!(word_colour(&screen, size, web, "1 done"), Color::Reset);
+            assert!(word_modifier(&screen, size, web, "1 done").contains(Modifier::DIM));
+
+            screen.list.turn();
+            screen.list.turn();
+        }
     }
 
     #[test]

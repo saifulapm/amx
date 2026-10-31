@@ -121,8 +121,9 @@ repository:
 - directory: one heading per project directory.
 - repository: one heading per git repository, with all its worktrees under it.
 
-On the path axes each heading ends with counts in the header's words, and each
-row gets a state column:
+On the path axes each heading ends with counts in the header's words, dim but
+for the waiting count, which is in the waiting colour so a shut heading still
+shows that something in it waits on you. Each row gets a state column:
 
 ```
  ~/code/amx                                              1 waiting     1 done
