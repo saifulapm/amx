@@ -8130,3 +8130,58 @@ fn u_takes_back_a_move_within_a_group_even_its_first() {
         serde_json::json!({})
     );
 }
+
+#[test]
+fn u_in_one_view_keeps_what_another_view_changed_meanwhile() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut left = three_done(root.path());
+    let mut right = Screen {
+        root: root.path().to_path_buf(),
+        remembering: Some(root.path().join("view.json")),
+        ..watching(vec![
+            reading("done-a1b", Phase::Done, State::default()),
+            reading("done-b2c", Phase::Done, State::default()),
+            reading("done-c3d", Phase::Done, State::default()),
+        ])
+    };
+    let s = KeyEvent::from(KeyCode::Char('s'));
+    let u = KeyEvent::from(KeyCode::Char('u'));
+
+    left.list.land_on("done-a1b");
+    left.act(s, root.path(), &config, None).unwrap();
+    right.adopt_the_view();
+    right.list.land_on("done-c3d");
+    right.act(ctrl('t'), root.path(), &config, None).unwrap();
+
+    // The left view reads the pin on its next pass, then takes back its shelve.
+    left.adopt_the_view();
+    left.act(u, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&left), (false, "undid shelve"));
+    assert!(shelved_on_disk(root.path()).is_empty());
+    assert_eq!(
+        arranged_on_disk(root.path(), "held"),
+        serde_json::json!(["done-c3d"]),
+        "the other view's pin stays"
+    );
+    right.adopt_the_view();
+    for screen in [&left, &right] {
+        assert_eq!(
+            screen.list.counts(),
+            [(rows::Group::Pinned, 1), (rows::Group::Completed, 2)]
+        );
+    }
+
+    // A view opened after a change in another has nothing of its own to undo.
+    left.list.land_on("done-b2c");
+    left.act(s, root.path(), &config, None).unwrap();
+    let mut opened = Screen {
+        root: root.path().to_path_buf(),
+        remembering: Some(root.path().join("view.json")),
+        ..watching(vec![reading("done-b2c", Phase::Done, State::default())])
+    };
+    opened.adopt_the_view();
+    opened.act(u, root.path(), &config, None).unwrap();
+    assert_eq!(notice(&opened), (false, "nothing to undo"));
+    assert_eq!(shelved_on_disk(root.path()), ["done-b2c"]);
+}
