@@ -57,9 +57,10 @@ use crate::{exit, models, registry, spawn, verbs};
 use act::{Asking, Composer, Renamed, Replied, Started};
 /// The editor prompt, shared with `amx new --edit`.
 pub use act::{Edited, edited};
+use jiff::tz::TimeZone;
 use keyname::Bound;
 use paint::{Body, Card, Hunk, Keymap, Notice};
-use rows::{Arrangement, List, Narrow, Shelving};
+use rows::{Arrangement, List, Narrow, Shelving, Sleep};
 
 /// How often the agents are re-read.
 const REFRESH: Duration = Duration::from_millis(1000);
@@ -228,18 +229,23 @@ enum Mode {
     Confirming(Asked),
 }
 
-/// A question the view asks before acting.
-///
-/// Only `y` answers yes, because yes is the expensive answer: it starts a
-/// program.
+/// A question the view asks before acting, answered by one key.
+// One question is up at a time, so the size of the largest costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Asked {
     /// A task short enough to be a mistake, and the line it was typed on.
     /// `follow` is whether the key that asked also goes to the new agent.
+    ///
+    /// Only `y` answers yes, because yes is the expensive answer: it starts a
+    /// program.
     Slight {
         task: String,
         line: Composer,
         follow: bool,
     },
+    /// How long to sleep agent `id`: the picker `z` opens on a row, drawn by
+    /// the keys row.
+    Sleep { id: String },
 }
 
 impl Asked {
@@ -249,6 +255,8 @@ impl Asked {
             Asked::Slight { task, .. } => {
                 format!("start an agent on \"{task}\"? y starts it · anything else keeps the line")
             }
+            // Drawn as key hints by the keys row instead.
+            Asked::Sleep { .. } => String::new(),
         }
     }
 }
@@ -1955,11 +1963,20 @@ impl Screen {
                 let held = self.list.hold_or_let_go();
                 self.keep(held);
             }
-            // Sleep the selected agent below the wall.
-            KeyCode::Char('z') if plain => {
-                let slept = self.list.sleep_or_wake(crate::store::now());
-                self.keep(slept);
-            }
+            // Wake a sleeping agent, or ask how long to sleep this one below
+            // the wall.
+            KeyCode::Char('z') if plain => match self.list.selected() {
+                Some(view) if self.list.sleeping(view) => {
+                    let id = view.id().to_string();
+                    let woke = self.list.wake(&id);
+                    self.keep(woke);
+                }
+                Some(view) => {
+                    let id = view.id().to_string();
+                    self.mode = Mode::Confirming(Asked::Sleep { id });
+                }
+                None => {}
+            },
             // Shelve a finished agent out of the way, or put it back.
             KeyCode::Char('s') if plain => {
                 let (said, changed) = match self.list.shelve_or_return(crate::store::now()) {
@@ -2782,8 +2799,8 @@ impl Screen {
 
     /// Handle the key that answers a question of the view's own.
     ///
-    /// Only `y` is yes. A chord is never an answer: it is a key meant for
-    /// something else.
+    /// A chord is never an answer: it is a key meant for something else, so
+    /// the question stays up and the chord does nothing.
     fn answered(
         &mut self,
         key: KeyEvent,
@@ -2811,6 +2828,22 @@ impl Screen {
                 Ok(Doing::Carry)
             }
             Asked::Slight { line, follow, .. } => self.starting(root, config, line, follow, here),
+            // A digit sleeps until its time, z with none; any other key
+            // leaves the row as it was and is not acted on.
+            Asked::Sleep { id } => {
+                let now = now();
+                let wake = match key.code {
+                    KeyCode::Char('z') => Some(None),
+                    KeyCode::Char(digit) => wake::Choice::of(digit)
+                        .map(|choice| Some(wake::wake_at(choice, now, &TimeZone::system()))),
+                    _ => None,
+                };
+                if let Some(wake) = wake {
+                    let slept = self.list.sleep(&id, Sleep { since: now, wake });
+                    self.keep(slept);
+                }
+                Ok(Doing::Carry)
+            }
         }
     }
 

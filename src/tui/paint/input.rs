@@ -19,7 +19,7 @@ use crate::registry::DEFAULT;
 use crate::theme::Theme;
 use crate::tui::act::{Asking, Composer};
 use crate::tui::rows::Item;
-use crate::tui::{Mode, Screen};
+use crate::tui::{Asked, Mode, Screen};
 
 /// A key hint: the key (bold) and what it does (dim).
 ///
@@ -559,10 +559,28 @@ fn find_row(line: &Composer, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The keys row. In priority order: a pending `g`, a notice, the card's keys
+/// The sleep picker `z` opens, in key order. Esc follows, alone.
+const PICKER: [Hint<'static>; 6] = [
+    ("1", "1h"),
+    ("2", "3h"),
+    ("3", "evening"),
+    ("4", "tomorrow"),
+    ("5", "next week"),
+    ("z", "until I wake it"),
+];
+
+/// The keys row. In priority order: the sleep picker, a pending `g`, a notice, the card's keys
 /// (see [`card_keys`]), the find line, a confirmation question, then the
 /// mode's hints.
 pub(super) fn footer(screen: &Screen, width: u16) -> Line<'static> {
+    // Nothing else while the picker is up, since every key answers it.
+    if let Mode::Confirming(Asked::Sleep { .. }) = &screen.mode {
+        let mut picker = row(&PICKER);
+        picker
+            .spans
+            .extend([Span::raw(GAP), Span::styled("esc", bold())]);
+        return picker;
+    }
     // A pending `g` changes nothing else on screen, so it must show here.
     if screen.going {
         return row(&WAITING_ON_A_G);
@@ -671,6 +689,21 @@ mod tests {
         composer.insert(text);
         screen.mode = Mode::Typing(composer);
         screen
+    }
+
+    #[test]
+    fn keys_the_sleep_picker_has_the_keys_row_to_itself() {
+        let mut screen = showing(a_fleet(), None);
+        screen.notice = Some(Notice::Advice("shelved".to_string()));
+        screen.mode = Mode::Confirming(Asked::Sleep {
+            id: "ask-a1b".to_string(),
+        });
+        let wide = (100, 12);
+        assert_eq!(
+            hint_row(&screen, wide).trim_end(),
+            "1 1h   2 3h   3 evening   4 tomorrow   5 next week   z until I wake it   esc"
+        );
+        assert_eq!(word_modifier(&screen, wide, "evening"), Modifier::DIM);
     }
 
     #[test]

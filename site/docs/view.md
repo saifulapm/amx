@@ -61,7 +61,7 @@ when nothing waits.
 | Needs input | Agents stopped on a question or a permission prompt. |
 | Working | Agents starting up or in the middle of a turn. |
 | Completed | Everything that has ended: idle at its prompt, done, failed, stopped, or unknown. |
-| Asleep | Agents you put to sleep with `z`. They still count as waiting if they are. |
+| Asleep | Agents you put to sleep with `z`, for a time or until you wake them. They still count as waiting if they are. |
 | Shelved | Finished agents you put away with `s`, or that the view put away: a merged or closed pull request, or idle past `shelve_after`. Opens shut in every view. |
 
 `enter` on a heading shuts the group and shows a count in its place, such as
@@ -363,10 +363,18 @@ on).
 | Key | Does |
 | --- | --- |
 | `ctrl+t` | Pin the agent at the top of the list. Again to unpin. |
-| `z` | Put it to sleep at the bottom. Again to wake it. |
+| `z` | Put it to sleep at the bottom, for a time or until you wake it. Again to wake it. |
 | `s` | Shelve a finished agent under Shelved. Again to put it back. |
 | `shift+↑` `shift+↓` | Move it within its group. |
 | `ctrl+r` | Rename it on the wall, like `amx rename`. |
+
+`z` asks how long on the keys row: `1` an hour, `2` three hours, `3` the
+evening (the next 18:00), `4` tomorrow (09:00), `5` next week (09:00 on the next
+Monday), or `z` until you wake it. Any other key leaves the row awake. Times are
+local. A timed sleep reads how long it has left, such as `in 2h`, where the row
+shows its age, and the row comes back by itself when the time is up, or sooner
+if the agent asks a question or fails after you put it to sleep. A sleep with
+no time holds until you wake it, even over a question.
 
 Pinning a sleeping agent wakes it, and sleeping a pinned one unpins it. Once
 you reorder a group by hand, new agents join its bottom.

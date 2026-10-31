@@ -588,7 +588,13 @@ mod tests {
 
         // The cursor opens on the waiting agent, so that is the one put to
         // sleep.
-        assert!(screen.list.sleep_or_wake(0));
+        assert!(screen.list.sleep(
+            "ask-a1b",
+            crate::tui::rows::Sleep {
+                since: 0,
+                wake: None
+            }
+        ));
         assert!(
             screen_line(&screen, WIDE, 0)
                 .ends_with("1 working   1 asleep   2/5 running    1 WAITING"),

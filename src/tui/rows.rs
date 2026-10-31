@@ -880,24 +880,29 @@ impl List {
         true
     }
 
-    /// Toggle sleep on the agent under the cursor, a sleep set at `now`.
+    /// Put agent `id` to sleep under `mark`, in place of any sleep it had.
     ///
-    /// Sleep holds across phase changes, and a sleeping agent still counts in
-    /// [`List::waiting`]. Sleeping a pinned agent unpins it. Returns false when
-    /// the cursor is not on an agent.
-    pub fn sleep_or_wake(&mut self, now: u64) -> bool {
-        let Some(id) = self.selected().map(|view| view.id().to_string()) else {
+    /// Sleep holds across phase changes (see [`sleeps`]), and a sleeping agent
+    /// still counts in [`List::waiting`]. Sleeping a pinned agent unpins it.
+    /// By id rather than the cursor, since a reading can move the cursor
+    /// between the press that asked and the one that chose. Returns false
+    /// when no such agent is on the list.
+    pub fn sleep(&mut self, id: &str, mark: Sleep) -> bool {
+        if self.agent_by_id(id).is_none() {
             return false;
-        };
-        if self.asleep.remove(&id).is_none() {
-            self.held.remove(&id);
-            self.asleep.insert(
-                id,
-                Sleep {
-                    since: now,
-                    wake: None,
-                },
-            );
+        }
+        self.held.remove(id);
+        self.asleep.insert(id.to_string(), mark);
+        let on = self.on();
+        self.rebuild(on.agent());
+        self.follow(&on);
+        true
+    }
+
+    /// Wake agent `id`, dropping its sleep. Returns false when it had none.
+    pub fn wake(&mut self, id: &str) -> bool {
+        if self.asleep.remove(id).is_none() {
+            return false;
         }
         let on = self.on();
         self.rebuild(on.agent());
@@ -2452,8 +2457,27 @@ mod tests {
             list.down();
             assert_ne!(list.cursor(), at, "no row for {id} to put the cursor on");
         }
-        assert!(list.sleep_or_wake(0));
+        assert!(z(&mut list));
         list
+    }
+
+    /// What `z` does to the row under the cursor, with `z` again in the
+    /// picker: wakes a sleeping agent, or sleeps it with no time.
+    fn z(list: &mut List) -> bool {
+        let Some(view) = list.selected() else {
+            return false;
+        };
+        let id = view.id().to_string();
+        match list.sleeping(view) {
+            true => list.wake(&id),
+            false => list.sleep(
+                &id,
+                Sleep {
+                    since: 0,
+                    wake: None,
+                },
+            ),
+        }
     }
 
     fn over_the_forge(views: Vec<View>) -> List {
@@ -5126,7 +5150,7 @@ mod tests {
         ]);
         assert_eq!(list.selected().unwrap().id(), "ask-a1b");
 
-        assert!(list.sleep_or_wake(0));
+        assert!(z(&mut list));
         assert_eq!(
             lines(&list),
             [
@@ -5169,7 +5193,7 @@ mod tests {
         );
 
         // The same key wakes it.
-        assert!(list.sleep_or_wake(0));
+        assert!(z(&mut list));
         assert_eq!(
             lines(&list),
             [
@@ -5190,7 +5214,7 @@ mod tests {
             view("busy-b2c", Phase::Working, 20),
         ]);
 
-        assert!(list.sleep_or_wake(0));
+        assert!(z(&mut list));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
@@ -5205,7 +5229,7 @@ mod tests {
         assert!(!list.sleeping(list.agent_by_id("busy-a1b").unwrap()));
 
         // Sleeping a pinned agent unpins it.
-        assert!(list.sleep_or_wake(0));
+        assert!(z(&mut list));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]
@@ -5215,7 +5239,7 @@ mod tests {
         // A heading cannot be put to sleep or pinned.
         list.top();
         assert!(list.on_heading());
-        assert!(!list.sleep_or_wake(0));
+        assert!(!z(&mut list));
         assert_eq!(
             lines(&list),
             ["Working (1)", "busy-b2c", "", "Asleep (1)", "busy-a1b"]

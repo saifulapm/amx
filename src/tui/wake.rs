@@ -4,9 +4,6 @@
 //! converted through the zone, never as `now + 86400`, so a daylight-saving
 //! change moves the length of the day but not the wall-clock hour.
 
-// The picker consumes this next.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use jiff::Timestamp;
 use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;

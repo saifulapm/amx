@@ -381,7 +381,12 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
         (drawn.contains("Needs input") && drawn.contains("Working")).then_some(())
     });
 
-    // The cursor starts on ask-a1b, the waiting agent.
+    // The cursor starts on ask-a1b, the waiting agent. z asks how long, and z
+    // again sleeps it until it is woken.
+    press(&amx, &view, "z");
+    amx.until("the picker", || {
+        amx.capture(&view).contains("until I wake it").then_some(())
+    });
     press(&amx, &view, "z");
     let drawn = amx.until("the sleeping group", || {
         let drawn = amx.capture(&view);

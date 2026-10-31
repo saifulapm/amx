@@ -62,7 +62,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 56] = [
     // arrange
     ("ctrl+s", "group by state, directory, state, repo"),
     ("ctrl+t", "pin it to the top · again unpins it"),
-    ("z", "put it to sleep · again wakes it"),
+    ("z", "sleep it, for a time or not · again wakes it"),
     ("s", "shelve it once it has finished · again puts it back"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),

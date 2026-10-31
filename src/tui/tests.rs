@@ -5845,7 +5845,9 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
         ["Needs input", "ask-a1b", "Completed", "done-b2c"]
     );
 
-    // Moved under everything, even though it is the one agent asking.
+    // Moved under everything, even though it is the one agent asking: z,
+    // then z in the picker for a sleep with no time.
+    press(&mut screen, z);
     press(&mut screen, z);
     assert_eq!(
         wall(&screen),
@@ -5859,21 +5861,137 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
         "and the cursor went with it"
     );
 
-    // The same key wakes it.
+    // The same key wakes it, with no picker.
     press(&mut screen, z);
     assert_eq!(
         wall(&screen),
         ["Needs input", "ask-a1b", "Completed", "done-b2c"]
     );
+    assert!(matches!(screen.mode, Mode::List));
 
     // A heading is not a row to put away.
     screen.list.up();
     assert!(screen.list.on_heading(), "the cursor is on the heading");
     press(&mut screen, z);
+    assert!(matches!(screen.mode, Mode::List), "no picker for a heading");
     assert_eq!(
         wall(&screen),
         ["Needs input", "ask-a1b", "Completed", "done-b2c"]
     );
+}
+
+/// The wake time, less the time it was set, of the sleep on agent `id`, or
+/// `None` for one with no time. Panics if the agent is not asleep.
+fn slept_for(screen: &Screen, id: &str) -> Option<u64> {
+    let marks = serde_json::to_value(screen.list.arrangement()).unwrap();
+    let mark = &marks["asleep"][id];
+    assert!(mark.is_object(), "{id} is not asleep: {marks}");
+    let since = mark["since"].as_u64().unwrap();
+    mark["wake"].as_u64().map(|wake| wake - since)
+}
+
+#[test]
+fn keys_z_opens_the_picker_and_its_digit_sleeps_the_row_it_opened_on() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let press = |screen: &mut Screen, key: KeyEvent| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+    let mut screen = watching(vec![
+        finished_saying("done-a1b", "the answer"),
+        finished_saying("done-b2c", "another"),
+    ]);
+    let first = screen.list.selected().unwrap().id().to_string();
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+    assert!(
+        matches!(&screen.mode, Mode::Confirming(Asked::Sleep { id }) if *id == first),
+        "the picker is up for the row under the cursor"
+    );
+    assert_eq!(wall(&screen), ["Completed", "done-a1b", "done-b2c"]);
+
+    // A reading moved the cursor while the picker was up: the digit still
+    // goes to the row the picker opened on.
+    screen.list.down();
+    assert_ne!(screen.list.selected().unwrap().id(), first);
+    press(&mut screen, KeyEvent::from(KeyCode::Char('1')));
+    assert!(matches!(screen.mode, Mode::List), "the picker closed");
+    assert!(screen.list.arrangement().has_asleep(&first));
+    assert_eq!(slept_for(&screen, &first), Some(3600), "an hour");
+    assert_eq!(wall(&screen)[2], "Asleep");
+    assert_eq!(wall(&screen)[3], first);
+
+    // 2 is three hours.
+    screen.list.top();
+    while screen.list.selected().is_none_or(|view| view.id() == first) {
+        screen.list.down();
+    }
+    let second = screen.list.selected().unwrap().id().to_string();
+    press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+    press(&mut screen, KeyEvent::from(KeyCode::Char('2')));
+    assert_eq!(slept_for(&screen, &second), Some(10800));
+}
+
+#[test]
+fn keys_the_picker_lets_no_key_through_and_leaves_the_row_awake() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let press = |screen: &mut Screen, key: KeyEvent| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+    let z = KeyEvent::from(KeyCode::Char('z'));
+    let mut screen = watching(vec![
+        finished_saying("done-a1b", "the answer"),
+        finished_saying("done-b2c", "another"),
+    ]);
+    let on = screen.list.selected().unwrap().id().to_string();
+    let vendor = screen.profile.agent.clone();
+
+    for key in [
+        KeyEvent::from(KeyCode::Esc),
+        KeyEvent::from(KeyCode::Char('j')),
+        KeyEvent::from(KeyCode::Char('6')),
+        KeyEvent::from(KeyCode::Enter),
+    ] {
+        press(&mut screen, z);
+        press(&mut screen, key);
+        assert!(matches!(screen.mode, Mode::List), "{key:?} closes it");
+        assert_eq!(screen.list.selected().unwrap().id(), on, "{key:?} moved");
+        assert!(
+            !screen.list.arrangement().has_asleep(&on),
+            "{key:?} slept it"
+        );
+    }
+
+    // A chord is not a choice: alt+1 jumps nowhere and alt+a turns no dial.
+    press(&mut screen, z);
+    for chord in [
+        KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT),
+    ] {
+        press(&mut screen, chord);
+        assert!(matches!(screen.mode, Mode::Confirming(Asked::Sleep { .. })));
+        assert!(screen.notice.is_none(), "{chord:?} said something");
+        assert_eq!(screen.profile.agent, vendor);
+    }
+    assert!(!screen.list.arrangement().has_asleep(&on));
+}
+
+#[test]
+fn keys_a_pinned_row_slept_for_an_hour_lets_go_of_its_pin() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let press = |screen: &mut Screen, key: KeyEvent| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+    let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+    assert!(screen.list.hold_or_let_go());
+    assert_eq!(wall(&screen), ["Pinned", "done-a1b"]);
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+    press(&mut screen, KeyEvent::from(KeyCode::Char('1')));
+    assert_eq!(wall(&screen), ["Asleep", "done-a1b"]);
+    assert!(!screen.list.arrangement().has_pinned("done-a1b"));
 }
 
 #[test]
