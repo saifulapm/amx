@@ -568,6 +568,9 @@ pub struct List {
     home: Option<PathBuf>,
     /// Whether the last reading dropped a timed sleep that stopped holding.
     woke: bool,
+    /// Each agent's phase in the previous reading, to see a question or a
+    /// failure begin that only the screen shows. Not persisted.
+    phases: HashMap<String, Phase>,
 }
 
 impl Default for List {
@@ -607,6 +610,7 @@ impl Default for List {
             after: shelve_after_of,
             home: std::env::home_dir(),
             woke: false,
+            phases: HashMap::new(),
         }
     }
 }
@@ -680,18 +684,37 @@ impl List {
     }
 
     /// Drop the mark of each agent in the reading whose timed sleep stopped
-    /// holding. Kept, it would put the row back to sleep once the question
-    /// that woke it is answered. Returns whether any went.
+    /// holding, or that began asking or failed since the previous reading. A
+    /// prompt only the screen shows leaves the record's `since` from before
+    /// the sleep, so [`sleeps`] alone cannot see it begin. Kept, the mark
+    /// would put the row back to sleep once the question that woke it is
+    /// answered. Returns whether any went.
     fn drop_the_lapsed(&mut self) -> bool {
+        let needs_you = |phase: Phase| matches!(phase, Phase::Waiting | Phase::Failed);
         let lapsed: Vec<String> = self
             .views
             .iter()
-            .filter(|view| self.asleep.contains_key(view.id()) && !self.sleeping(view))
+            .filter(|view| {
+                let Some(mark) = self.asleep.get(view.id()) else {
+                    return false;
+                };
+                let began = needs_you(view.phase())
+                    && self
+                        .phases
+                        .get(view.id())
+                        .is_some_and(|&before| !needs_you(before));
+                !self.sleeping(view) || mark.wake.is_some() && began
+            })
             .map(|view| view.id().to_string())
             .collect();
         for id in &lapsed {
             self.asleep.remove(id);
         }
+        self.phases = self
+            .views
+            .iter()
+            .map(|view| (view.id().to_string(), view.phase()))
+            .collect();
         !lapsed.is_empty()
     }
 
@@ -4199,6 +4222,43 @@ mod tests {
         assert!(!list.woke(), "only the reading that dropped it says so");
         list.show(vec![view("busy-a1b", Phase::Done, 170)]);
         assert_eq!(lines(&list), ["Completed (1)", "busy-a1b"]);
+    }
+
+    #[test]
+    fn arranged_a_question_read_off_the_screen_ends_a_timed_sleep_too() {
+        // A vendor whose prompt only the screen shows: the record still says
+        // working since before the sleep, and only the verdict waits.
+        let read_off_the_screen = |phase| {
+            let mut view = view("busy-a1b", phase, 50);
+            view.state.state = Phase::Working;
+            view
+        };
+        let hour = || Arrangement {
+            asleep: [(
+                "busy-a1b".to_string(),
+                Sleep {
+                    since: 100,
+                    wake: Some(3700),
+                },
+            )]
+            .into(),
+            ..Arrangement::default()
+        };
+
+        let mut list = listed(vec![read_off_the_screen(Phase::Working)]);
+        list.time_is(200);
+        list.arrange(hour());
+        list.show(vec![read_off_the_screen(Phase::Waiting)]);
+        assert_eq!(lines(&list), ["Needs input (1)", "busy-a1b"]);
+        assert!(list.woke());
+
+        // Already on its prompt when slept: it sleeps the hour out.
+        let mut list = listed(vec![read_off_the_screen(Phase::Waiting)]);
+        list.time_is(200);
+        list.arrange(hour());
+        list.show(vec![read_off_the_screen(Phase::Waiting)]);
+        assert_eq!(lines(&list), ["Asleep (1)", "busy-a1b"]);
+        assert!(!list.woke());
     }
 
     #[test]
