@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// Every top-level key the file may set, besides `[keys]` and the harness
 /// tables. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 25] = [
+pub const KNOWN_KEYS: [&str; 26] = [
     "agent",
     "max_agents",
     "max_total",
@@ -28,6 +28,7 @@ pub const KNOWN_KEYS: [&str; 25] = [
     "summary_command",
     "theme",
     "park_after",
+    "shelve_after",
     "copy",
     "link",
     "setup",
@@ -186,6 +187,12 @@ pub struct Config {
     /// An idle vendor still holds a few hundred megabytes. The record stays, and
     /// the next enter, attach or resume starts the agent again.
     pub park_after: u64,
+    /// Seconds a finished agent's row stays out of the view's Shelved group;
+    /// 0 means it is never shelved for idling.
+    ///
+    /// Counted from the agent's last phase change. A merged or closed request
+    /// shelves the row whatever this says.
+    pub shelve_after: u64,
     /// Files such as `.env` copied from the repository root into a new
     /// worktree before the agent starts.
     ///
@@ -257,6 +264,7 @@ impl Default for Config {
             summary_command: None,
             theme: crate::theme::AUTO.to_string(),
             park_after: 3600,
+            shelve_after: 259_200,
             copy: Vec::new(),
             link: Vec::new(),
             setup: Vec::new(),
@@ -718,6 +726,7 @@ mod tests {
         // The theme's default is a name, `auto`, which follows the terminal.
         assert_eq!(c.theme, crate::theme::AUTO);
         assert_eq!(c.park_after, 3600);
+        assert_eq!(c.shelve_after, 259200, "three days");
         assert!(c.copy.is_empty());
         assert!(c.link.is_empty());
         assert!(c.setup.is_empty());
@@ -846,6 +855,13 @@ mod tests {
         assert_eq!(c.park_after, 0);
         assert!(w.is_empty(), "{w:?}");
 
+        let (c, w) = parse("shelve_after = 60").unwrap();
+        assert_eq!(c.shelve_after, 60);
+        assert!(w.is_empty(), "{w:?}");
+        let (c, w) = parse("shelve_after = 0").unwrap();
+        assert_eq!(c.shelve_after, 0, "never, not the default");
+        assert!(w.is_empty(), "{w:?}");
+
         let (c, w) = parse("copy = [\".env\", \"config/local.toml\"]").unwrap();
         assert_eq!(c.copy, [".env", "config/local.toml"]);
         assert!(c.link.is_empty());
@@ -955,6 +971,7 @@ mod tests {
                 summary_command = "summarise"
                 theme = "terminal"
                 park_after = 900
+                shelve_after = 120
                 copy = [".env"]
                 link = ["node_modules"]
                 setup = ["pnpm install"]
@@ -983,6 +1000,7 @@ mod tests {
         assert_eq!(c.summary_command.as_deref(), Some("summarise"));
         assert_eq!(c.theme, "terminal");
         assert_eq!(c.park_after, 900);
+        assert_eq!(c.shelve_after, 120);
         assert_eq!(c.copy, [".env"]);
         assert_eq!(c.link, ["node_modules"]);
         assert_eq!(c.setup, ["pnpm install"]);
@@ -999,7 +1017,7 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            25,
+            26,
             "a key this file does not name is a key nothing here proves"
         );
     }
@@ -1294,6 +1312,28 @@ mod tests {
     }
 
     #[test]
+    fn a_project_file_sets_how_long_its_finished_agents_stay_out() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(dir.path(), "person.toml", "shelve_after = 3600\n");
+        let project = wrote(dir.path(), "project.toml", "shelve_after = 120\n");
+
+        let (c, w) = layered(&[person, project]);
+        assert_eq!(c.shelve_after, 120);
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_shelve_after_in_words_is_blamed_on_its_file_and_the_default_applies() {
+        let dir = TempDir::new().unwrap();
+        let person = wrote(dir.path(), "person.toml", "shelve_after = \"3d\"\n");
+
+        let (c, w) = layered(std::slice::from_ref(&person));
+        assert_eq!(c.shelve_after, 259200);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains(&*person.to_string_lossy()), "{w:?}");
+    }
+
+    #[test]
     fn a_project_files_table_replaces_the_persons_whole_table() {
         // A harness table is one key, so the project's replaces the person's
         // whole, args included.
@@ -1579,6 +1619,16 @@ mod tests {
         let repo = a_project();
         let (_state, root) = allowing(repo.path());
         assert_eq!(for_dir_in(repo.path(), &root).0.max_agents, 42);
+    }
+
+    #[test]
+    fn an_allowed_project_file_may_set_shelve_after() {
+        let repo = a_project();
+        std::fs::write(repo.path().join(".amx/config.toml"), "shelve_after = 120\n").unwrap();
+        let (_state, root) = allowing(repo.path());
+        let (config, warnings) = for_dir_in(repo.path(), &root);
+        assert_eq!(config.shelve_after, 120);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

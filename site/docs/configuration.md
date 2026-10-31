@@ -39,6 +39,7 @@ A config problem never stops an agent from starting:
 | `summary_command` | none | Command that writes the one-line summary of a turn. |
 | `theme` | `"auto"` | Colour theme for the view. |
 | `park_after` | `3600` | Seconds an idle, unwatched agent keeps its pane. `0` never parks. |
+| `shelve_after` | `259200` | Seconds a finished agent stays under Completed before the view shelves it. `0` never shelves for idling. |
 | `copy` | `[]` | Files copied from the repository root into a new worktree. |
 | `link` | `[]` | Directories in a new worktree symlinked to the repository's own. |
 | `setup` | `[]` | Commands run in a new worktree before the agent starts. |

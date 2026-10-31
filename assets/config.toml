@@ -91,6 +91,12 @@ theme = "auto"
 # left off. Attached and pinned agents are never parked. 0 turns this off.
 park_after = 3600
 
+# Seconds a finished agent's row stays under Completed in the view before it
+# moves under Shelved on its own. A merged or closed pull request shelves it at
+# once, an open one keeps it under Ready for review, and nothing is deleted.
+# Counted from its last change; a reply brings it back. 0 turns this off.
+shelve_after = 259200
+
 # What a new worktree gets before its agent starts, so the first turn goes on
 # the task and not on setup. Paths are relative to the repository root, with no
 # globs. A path that does not exist is warned about and skipped.
