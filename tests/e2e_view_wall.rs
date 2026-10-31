@@ -449,6 +449,84 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
     );
 }
 
+#[test]
+fn z_then_1_sleeps_a_row_for_an_hour_until_its_agent_asks_and_it_stays_awake_after() {
+    let amx = Harness::new();
+    amx.play("port-import-b2c", "works-without-end");
+    amx.until_state("port-import-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the working row", || {
+        bar_on(&amx, &view, "port-import-b2c").then_some(())
+    });
+    press(&amx, &view, "z");
+    amx.until("the picker on the keys row", || {
+        amx.capture(&view)
+            .contains(
+                "1 1h   2 3h   3 evening   4 tomorrow   5 next week   z until I wake it   esc",
+            )
+            .then_some(())
+    });
+    press(&amx, &view, "1");
+    let slept = amx.until("the row under Asleep with its hour", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Asleep") && !drawn.contains("Working")).then_some(drawn)
+    });
+    let row = row_of(&amx, &view, "port-import-b2c").expect("the row");
+    assert!(
+        row.trim_end().ends_with("in 60m") || row.trim_end().ends_with("in 59m"),
+        "an hour to go, where the age was: {row:?}"
+    );
+    assert_eq!(
+        line_of(&slept, "port-import-b2c"),
+        line_of(&slept, "Asleep") + 1,
+        "{slept}"
+    );
+
+    // What the question's hook writes: waiting, later than the sleep.
+    let mut state = amx.state("port-import-b2c");
+    state["state"] = json!("waiting");
+    state["question"] = json!("Which fixture should the port keep?");
+    state["since"] = json!(now() + 1);
+    amx.set_state("port-import-b2c", state);
+    let asked = amx.until("the row under Needs input", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Needs input") && !drawn.contains("Asleep")).then_some(drawn)
+    });
+    assert_eq!(
+        line_of(&asked, "port-import-b2c"),
+        line_of(&asked, "Needs input") + 1,
+        "{asked}"
+    );
+
+    // Answered, it works its turn out and finishes, and no sleep is left to
+    // put it back.
+    for (phase, heading) in [("working", "Working"), ("done", "Completed")] {
+        let mut state = amx.state("port-import-b2c");
+        state["state"] = json!(phase);
+        state["question"] = Value::Null;
+        state["since"] = json!(now() + 2);
+        amx.set_state("port-import-b2c", state);
+        let drawn = amx.until(heading, || {
+            let drawn = amx.capture(&view);
+            (heading_reads(&drawn, heading) && drawn.contains("port-import-b2c")).then_some(drawn)
+        });
+        assert!(!drawn.contains("Asleep"), "{drawn}");
+    }
+    let kept = std::fs::read_to_string(
+        amx.state_root()
+            .parent()
+            .expect("the state root sits under the state directory")
+            .join("view.json"),
+    )
+    .expect("the view's file");
+    let kept: Value = serde_json::from_str(&kept).expect("json");
+    assert!(
+        kept["arrangement"]["asleep"]["port-import-b2c"].is_null(),
+        "the woken sleep is gone from the file: {kept}"
+    );
+}
+
 /// Whether `drawn` has a line that reads `heading` and nothing else, so a
 /// capture that landed partway through the line does not count.
 fn heading_reads(drawn: &str, heading: &str) -> bool {
