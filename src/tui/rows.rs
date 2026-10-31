@@ -340,6 +340,12 @@ impl Arrangement {
                 merged.order.insert(*group, order.clone());
             }
         }
+        // Only an undo of a group's first move drops its order.
+        for group in published.order.keys() {
+            if !local.order.contains_key(group) {
+                merged.order.remove(group);
+            }
+        }
         merged
     }
 

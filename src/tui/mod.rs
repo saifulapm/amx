@@ -1751,14 +1751,8 @@ impl Screen {
         match key.code {
             KeyCode::Char('q') if plain => return Ok(Doing::Close),
             // Shift+arrow moves the selected agent within its group.
-            KeyCode::Down if shift => {
-                let moved = self.list.move_by(1);
-                self.keep(moved);
-            }
-            KeyCode::Up if shift => {
-                let moved = self.list.move_by(-1);
-                self.keep(moved);
-            }
+            KeyCode::Down if shift => self.reorder(1),
+            KeyCode::Up if shift => self.reorder(-1),
             // vim's j and k beside the arrows.
             KeyCode::Down | KeyCode::Char('j') if plain => {
                 self.list.down();
@@ -1975,16 +1969,27 @@ impl Screen {
             }
             // Pin the selected agent above the wall.
             KeyCode::Char('t') if ctrl => {
-                let held = self.list.hold_or_let_go();
-                self.keep(held);
+                let before = self.list.arrangement();
+                let pinning = self
+                    .list
+                    .selected()
+                    .is_some_and(|view| !self.list.holding(view));
+                if self.list.hold_or_let_go() {
+                    match pinning {
+                        true => self.changed(before, "pin", "pinned"),
+                        false => self.changed(before, "unpin", "unpinned"),
+                    }
+                }
             }
             // Wake a sleeping agent, or ask how long to sleep this one below
             // the wall.
             KeyCode::Char('z') if plain => match self.list.selected() {
                 Some(view) if self.list.sleeping(view) => {
                     let id = view.id().to_string();
-                    let woke = self.list.wake(&id);
-                    self.keep(woke);
+                    let before = self.list.arrangement();
+                    if self.list.wake(&id) {
+                        self.changed(before, "wake", "awake");
+                    }
                 }
                 Some(view) => {
                     let id = view.id().to_string();
@@ -2855,8 +2860,10 @@ impl Screen {
                     _ => None,
                 };
                 if let Some(wake) = wake {
-                    let slept = self.list.sleep(&id, Sleep { since: now, wake });
-                    self.keep(slept);
+                    let before = self.list.arrangement();
+                    if self.list.sleep(&id, Sleep { since: now, wake }) {
+                        self.changed(before, "sleep", "asleep");
+                    }
                 }
                 Ok(Doing::Carry)
             }
@@ -3223,6 +3230,14 @@ impl Screen {
         });
         self.notice = Some(Notice::Advice(format!("{said} · u undoes")));
         self.keep(true);
+    }
+
+    /// Move the agent under the cursor `by` rows within its group.
+    fn reorder(&mut self, by: isize) {
+        let before = self.list.arrangement();
+        if self.list.move_by(by) {
+            self.changed(before, "order", "moved");
+        }
     }
 
     /// Put back the fields the last change set, if it was made within

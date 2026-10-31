@@ -8010,3 +8010,123 @@ fn u_on_a_line_or_over_the_keys_is_not_an_undo() {
     press(&mut screen, KeyCode::Char('u'));
     assert_eq!(notice(&screen), (false, "undid shelve"));
 }
+
+/// What the view file holds under `arrangement.<field>`.
+fn arranged_on_disk(root: &Path, field: &str) -> serde_json::Value {
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("view.json")).unwrap()).unwrap();
+    written["arrangement"][field].clone()
+}
+
+#[test]
+fn u_takes_back_a_pin_and_an_unpin() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, key| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+    let u = KeyEvent::from(KeyCode::Char('u'));
+    screen.list.land_on("done-b2c");
+
+    press(&mut screen, ctrl('t'));
+    assert_eq!(notice(&screen), (false, "pinned · u undoes"));
+    press(&mut screen, u);
+    assert_eq!(notice(&screen), (false, "undid pin"));
+    assert_eq!(screen.list.counts(), [(rows::Group::Completed, 3)]);
+    assert_eq!(arranged_on_disk(root.path(), "held"), serde_json::json!([]));
+
+    press(&mut screen, ctrl('t'));
+    screen.list.land_on("done-b2c");
+    press(&mut screen, ctrl('t'));
+    assert_eq!(notice(&screen), (false, "unpinned · u undoes"));
+    press(&mut screen, u);
+    assert_eq!(notice(&screen), (false, "undid unpin"));
+    assert_eq!(
+        arranged_on_disk(root.path(), "held"),
+        serde_json::json!(["done-b2c"])
+    );
+}
+
+#[test]
+fn u_takes_back_a_timed_sleep_and_leaves_no_mark() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, code| {
+        screen
+            .act(KeyEvent::from(code), root.path(), &config, None)
+            .unwrap();
+    };
+    screen.list.land_on("done-b2c");
+
+    press(&mut screen, KeyCode::Char('z'));
+    press(&mut screen, KeyCode::Char('1'));
+    assert_eq!(notice(&screen), (false, "asleep · u undoes"));
+    assert!(arranged_on_disk(root.path(), "asleep")["done-b2c"]["wake"].is_u64());
+
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "undid sleep"));
+    assert_eq!(screen.list.counts(), [(rows::Group::Completed, 3)]);
+    assert_eq!(
+        arranged_on_disk(root.path(), "asleep"),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn u_puts_a_woken_agent_back_to_sleep_as_it_was() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, code| {
+        screen
+            .act(KeyEvent::from(code), root.path(), &config, None)
+            .unwrap();
+    };
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('z'));
+    press(&mut screen, KeyCode::Char('z'));
+    let slept = arranged_on_disk(root.path(), "asleep");
+
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('z'));
+    assert_eq!(notice(&screen), (false, "awake · u undoes"));
+    assert_eq!(
+        arranged_on_disk(root.path(), "asleep"),
+        serde_json::json!({})
+    );
+
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "undid wake"));
+    assert_eq!(arranged_on_disk(root.path(), "asleep"), slept);
+    assert_eq!(
+        screen.list.counts(),
+        [(rows::Group::Completed, 2), (rows::Group::Asleep, 1)]
+    );
+}
+
+#[test]
+fn u_takes_back_a_move_within_a_group_even_its_first() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, key| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+    let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+    let was = ordered(&screen);
+    screen.list.land_on(&was[0]);
+
+    press(&mut screen, shift(KeyCode::Down));
+    assert_eq!(notice(&screen), (false, "moved · u undoes"));
+    assert_ne!(ordered(&screen), was);
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char('u')));
+    assert_eq!(notice(&screen), (false, "undid order"));
+    assert_eq!(ordered(&screen), was, "the group's order before any move");
+    assert_eq!(
+        arranged_on_disk(root.path(), "order"),
+        serde_json::json!({})
+    );
+}

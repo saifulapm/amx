@@ -366,6 +366,7 @@ on).
 | `z` | Put it to sleep at the bottom, for a time or until you wake it. Again to wake it. |
 | `s` | Shelve a finished agent under Shelved. Again to put it back. |
 | `shift+↑` `shift+↓` | Move it within its group. |
+| `u` | Undo the last of these, within 5 seconds. |
 | `ctrl+r` | Rename it on the wall, like `amx rename`. |
 
 `z` asks how long on the keys row: `1` an hour, `2` three hours, `3` the
@@ -378,6 +379,13 @@ no time holds until you wake it, even over a question.
 
 Pinning a sleeping agent wakes it, and sleeping a pinned one unpins it. Once
 you reorder a group by hand, new agents join its bottom.
+
+After a pin, sleep, wake, shelve or move, the keys row says what happened and
+that `u` undoes it. `u` within 5 seconds puts back what that key changed and
+nothing else, so a change made in another view meanwhile stays. Only the last
+change is kept, and only by the view that made it; after that, or once the 5
+seconds are up, `u` reads `nothing to undo`. Stopping, forgetting and clearing
+cannot be undone.
 
 `s` puts away an agent whose turn is over: idle, done, failed or stopped. The
 row leaves its group and the cursor stays where it was, on the row that
@@ -498,6 +506,7 @@ returns to the list, `q` closes the view.
 | `z` | Sleep or wake. |
 | `s` | Shelve or put back. |
 | `shift+↑` `shift+↓` | Move within the group. |
+| `u` | Undo the last arrangement change. |
 | `ctrl+r` | Rename. |
 | `i` | Interrupt the turn. |
 | `ctrl+x` | Stop; again to forget. On a heading, the group. |
