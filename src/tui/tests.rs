@@ -5853,6 +5853,7 @@ fn keys_z_puts_the_row_under_everything_and_again_wakes_it() {
         wall(&screen),
         ["Completed", "done-b2c", "Asleep", "ask-a1b"]
     );
+    assert_eq!(slept_for(&screen, "ask-a1b"), None, "with no time");
     assert!(
         screen
             .list
@@ -5928,6 +5929,15 @@ fn keys_z_opens_the_picker_and_its_digit_sleeps_the_row_it_opened_on() {
     );
     assert_eq!(wall(&screen)[2], "Asleep");
     assert_eq!(wall(&screen)[3], first);
+
+    // z on the timed row wakes it at once, with no picker.
+    assert!(screen.list.land_on(&first));
+    press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+    assert!(matches!(screen.mode, Mode::List), "no picker");
+    assert!(!screen.list.arrangement().has_asleep(&first));
+    assert_eq!(wall(&screen), ["Completed", "done-a1b", "done-b2c"]);
+    press(&mut screen, KeyEvent::from(KeyCode::Char('z')));
+    press(&mut screen, KeyEvent::from(KeyCode::Char('1')));
 
     // 2 is three hours.
     screen.list.top();
