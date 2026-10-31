@@ -164,18 +164,28 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
 }
 
 /// When a rule put the agent on the shelf, if one did. Only a turn that is
-/// over is shelved, and never while a request on its branch asks for review.
-/// Then a merged or closed request shelves it as of its last phase change
-/// (`since`), since the cache keeps no merge time. Failing that, so does
-/// being over for longer than `after` seconds at `now`, as of when it passed
-/// `after`. An `after` of 0 never shelves for idling, and a `since` ahead of
-/// `now` is not idle.
-pub fn ruled(phase: Phase, since: u64, requests: &[Pr], after: u64, now: u64) -> Option<u64> {
+/// over is shelved, never while the mark's `keep` is no older than its last
+/// phase change (`since`), and never while a request on its branch asks for
+/// review. Then a merged or closed request shelves it as of `since`, since
+/// the cache keeps no merge time. Failing that, so does being over for longer
+/// than `after` seconds at `now`, as of when it passed `after`. An `after` of
+/// 0 never shelves for idling, and a `since` ahead of `now` is not idle.
+pub fn ruled(
+    mark: Option<&Shelf>,
+    phase: Phase,
+    since: u64,
+    requests: &[Pr],
+    after: u64,
+    now: u64,
+) -> Option<u64> {
     let over = matches!(
         phase,
         Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
     );
-    if !over || requests.iter().any(|pr| asking(pr.standing)) {
+    let kept = mark
+        .and_then(|mark| mark.keep)
+        .is_some_and(|at| at >= since);
+    if !over || kept || requests.iter().any(|pr| asking(pr.standing)) {
         return None;
     }
     if requests.iter().any(|pr| pr.standing.settled()) {
@@ -718,6 +728,7 @@ impl List {
         let view = &self.views[n];
         let after = self.afters.get(view.id()).copied().unwrap_or(0);
         ruled(
+            self.shelved.get(view.id()),
             view.phase(),
             view.state.since,
             self.requests(view),
@@ -775,6 +786,8 @@ impl List {
     }
 
     /// Shelve the agent under the cursor at `now`, or put a shelved one back.
+    /// Putting back drops a press of `s`, and holds a rule off until the
+    /// agent's next phase change.
     ///
     /// Only a finished turn is shelved, and only when no one in its family is
     /// working or waiting, which would pull the row back under Working or
@@ -787,7 +800,16 @@ impl List {
         let id = self.views[n].id().to_string();
         let done = match self.group(n) {
             Group::Shelved => {
-                self.shelved.remove(&id);
+                match self.ruling(n) {
+                    Some(_) => self.shelved.insert(
+                        id,
+                        Shelf {
+                            at: None,
+                            keep: Some(now),
+                        },
+                    ),
+                    None => self.shelved.remove(&id),
+                };
                 Shelving::Returned
             }
             _ => {
@@ -4338,6 +4360,52 @@ mod tests {
             "the press, then the merge as of its last phase change, then the \
              idle row as of when it passed shelve_after"
         );
+    }
+
+    #[test]
+    fn auto_s_on_a_row_a_rule_shelved_keeps_it_out_until_it_next_moves() {
+        let done = || vec![view("old-a1b", Phase::Done, 1000)];
+        let mut list = idling(|_| 60, 1061, done());
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "old-a1b");
+        assert_eq!(list.shelve_or_return(1061), Shelving::Returned);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
+        assert_eq!(
+            list.arrangement().shelved.get("old-a1b"),
+            Some(&Shelf {
+                at: None,
+                keep: Some(1061)
+            }),
+            "persisted, so another view keeps it out too"
+        );
+
+        list.time_is(1061 + 120);
+        list.show(done());
+        assert_eq!(list.counts(), [(Group::Completed, 1)], "still out");
+
+        // Its next turn lets the rule have it again once that turn idles.
+        list.time_is(1300);
+        list.show(vec![view("old-a1b", Phase::Done, 1250)]);
+        assert_eq!(list.counts(), [(Group::Completed, 1)], "49 s idle");
+        list.time_is(1312);
+        list.show(vec![view("old-a1b", Phase::Done, 1250)]);
+        assert_eq!(list.counts(), [(Group::Shelved, 1)], "61 s idle");
+    }
+
+    #[test]
+    fn auto_s_on_a_row_shelved_by_hand_and_by_a_rule_keeps_it_out() {
+        let done = || vec![view("old-a1b", Phase::Done, 1000)];
+        let mut list = idling(|_| 60, 1010, done());
+        to(&mut list, "old-a1b");
+        assert_eq!(list.shelve_or_return(1010), Shelving::Shelved);
+        list.time_is(1100);
+        list.show(done());
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "old-a1b");
+        assert_eq!(list.shelve_or_return(1100), Shelving::Returned);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
     }
 
     #[test]
