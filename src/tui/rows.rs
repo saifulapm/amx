@@ -227,6 +227,12 @@ impl Arrangement {
         merged
     }
 
+    /// Drop the shelve marks of agents for which `recorded` is false, so the
+    /// file does not keep marks for every agent ever forgotten.
+    pub fn forget_the_gone(&mut self, recorded: impl Fn(&str) -> bool) {
+        self.shelved.retain(|id, _| recorded(id));
+    }
+
     /// Whether the agent with this id is pinned. See [`List::holding`].
     pub fn has_pinned(&self, id: &str) -> bool {
         self.held.contains(id)

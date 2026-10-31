@@ -7401,11 +7401,16 @@ fn s_shelves_a_finished_row_and_the_other_view_has_it_shelved_too() {
             reading("done-b2c", Phase::Done, State::default()),
         ]
     };
+    for view in fleet() {
+        a_record(root.path(), view.id(), None, no_pane(), &view.state);
+    }
     let mut left = Screen {
+        root: root.path().to_path_buf(),
         remembering: Some(path.clone()),
         ..watching(fleet())
     };
     let mut right = Screen {
+        root: root.path().to_path_buf(),
         remembering: Some(path.clone()),
         ..watching(fleet())
     };
@@ -7470,4 +7475,51 @@ fn s_on_a_row_waiting_on_a_question_says_so_in_the_refusal_colour() {
         .unwrap();
     assert_eq!(notice(&screen), (true, "waiting on you; z sleeps it"));
     assert_eq!(screen.list.counts(), [(rows::Group::NeedsInput, 1)]);
+}
+
+#[test]
+fn a_write_drops_the_shelve_marks_of_agents_with_no_record_and_keeps_the_rest() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("view.json");
+    let config = Config::default();
+    let done = reading("done-b2c", Phase::Done, State::default());
+    a_record(root.path(), "done-b2c", None, no_pane(), &done.state);
+    // Recorded, but outside what this view reads, as in a scoped view.
+    a_record(root.path(), "else-c3d", None, no_pane(), &State::default());
+    std::fs::write(
+        &path,
+        br#"{"arrangement": {"shelved": {"else-c3d": {"at": 5}, "gone-d4e": {"at": 5}}}}"#,
+    )
+    .unwrap();
+    let mut screen = Screen {
+        root: root.path().to_path_buf(),
+        remembering: Some(path.clone()),
+        ..watching(vec![done])
+    };
+    screen.adopt_the_view();
+
+    screen.list.land_on("done-b2c");
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('s')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut marked: Vec<&str> = written["arrangement"]["shelved"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    marked.sort();
+    assert_eq!(
+        marked,
+        ["done-b2c", "else-c3d"],
+        "gone-d4e was forgotten; else-c3d is only out of sight"
+    );
 }

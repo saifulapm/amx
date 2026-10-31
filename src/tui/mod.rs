@@ -3112,6 +3112,11 @@ impl Screen {
         let disk = remembered.arrangement.clone();
         remembered.arrangement =
             Arrangement::merged(&self.published, &self.list.arrangement(), &disk);
+        // Asked of the store, not this reading: a scoped view does not read
+        // every agent that has a record.
+        remembered
+            .arrangement
+            .forget_the_gone(|id| crate::store::Agent::open(&self.root, id).is_ok());
         remembered.vendor = self.vendor;
         // A failed write is not worth the notice line.
         let _ = remembered.write(&path);
