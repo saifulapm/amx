@@ -619,6 +619,48 @@ fn s_shelves_a_finished_row_under_a_shut_heading_and_moves_on() {
 }
 
 #[test]
+fn u_takes_back_a_shelve_and_a_second_u_has_nothing_to_undo() {
+    let amx = Harness::new();
+    finished(&amx, "one-a1b", "done", 30);
+    finished(&amx, "two-b2c", "done", 60);
+    finished(&amx, "three-c3d", "done", 90);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the three rows", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("one-a1b") && drawn.contains("two-b2c") && drawn.contains("three-c3d"))
+            .then_some(())
+    });
+    press(&amx, &view, "Down");
+    amx.until("the bar on the middle row", || {
+        bar_on(&amx, &view, "two-b2c").then_some(())
+    });
+    press(&amx, &view, "s");
+    amx.until("the row shelved, and u offered", || {
+        let drawn = amx.capture(&view);
+        (!drawn.contains("two-b2c") && drawn.contains("shelved · u undoes")).then_some(())
+    });
+
+    press(&amx, &view, "u");
+    let back = amx.until("the row back", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("two-b2c") && drawn.contains("undid shelve")).then_some(drawn)
+    });
+    assert!(
+        line_of(&back, "one-a1b") < line_of(&back, "two-b2c")
+            && line_of(&back, "two-b2c") < line_of(&back, "three-c3d")
+            && !heading_reads(&back, "Shelved 1"),
+        "back in Completed where it was, and the shelf gone:\n{back}"
+    );
+
+    press(&amx, &view, "u");
+    amx.until("nothing left to take back", || {
+        amx.capture(&view).contains("nothing to undo").then_some(())
+    });
+    assert!(amx.capture(&view).contains("two-b2c"));
+}
+
+#[test]
 fn a_finished_row_moves_under_shelved_once_it_idles_past_shelve_after() {
     let amx = Harness::new();
     amx.config("shelve_after = 4\n");
@@ -1594,6 +1636,30 @@ fn a_path_heading_reads_the_way_a_group_heading_does() {
             "{segment} carries no more weight than the rest of the path:\n{painted:?}"
         );
     }
+}
+
+#[test]
+fn a_path_heading_draws_its_waiting_count_in_the_waiting_colour() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    amx.play("ask-a1b", "asks-a-question");
+    amx.until_state("ask-a1b", "waiting");
+    running_in(&amx, "ask-a1b", &repo);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the agents", || {
+        amx.capture(&view).contains("Needs input").then_some(())
+    });
+    press(&amx, &view, "C-s");
+    let line = amx.until("the heading over the repository", || {
+        let line = coloured_line(&amx, &view, "~/repo");
+        line.contains("1 waiting").then_some(line)
+    });
+    let counts = &line[line.find("~/repo").unwrap()..line.find("1 waiting").unwrap()];
+    assert!(
+        counts.contains(&foreground("waiting")),
+        "the waiting count is in the waiting colour:\n{line:?}"
+    );
 }
 
 #[test]
