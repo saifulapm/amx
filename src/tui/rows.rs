@@ -128,11 +128,27 @@ pub enum Axis {
     Repo,
 }
 
-/// When the user shelved an agent by hand.
+/// What the user said about an agent's place on the shelf. Each field lapses
+/// once the agent's phase changes after it was set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shelf {
-    /// Epoch seconds of the press.
-    pub at: u64,
+    /// Epoch seconds of a press of `s` that shelved it by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// Epoch seconds of a press of `s` that took it off the shelf when a rule
+    /// had put it there, holding the rules off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<u64>,
+}
+
+impl Shelf {
+    /// Shelved by hand at `at`.
+    pub fn by_hand(at: u64) -> Shelf {
+        Shelf {
+            at: Some(at),
+            keep: None,
+        }
+    }
 }
 
 /// Whether a shelve mark puts the agent on the shelf: its turn is over, and
@@ -144,7 +160,7 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
         phase,
         Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
     );
-    over && mark.is_some_and(|mark| mark.at >= since)
+    over && mark.and_then(|mark| mark.at).is_some_and(|at| at >= since)
 }
 
 /// What `s` did to the row under the cursor. See [`List::shelve_or_return`].
@@ -690,7 +706,7 @@ impl List {
                 }
                 self.held.remove(&id);
                 self.asleep.remove(&id);
-                self.shelved.insert(id, Shelf { at: now });
+                self.shelved.insert(id, Shelf::by_hand(now));
                 Shelving::Shelved
             }
         };
@@ -1484,7 +1500,8 @@ impl List {
                 Group::Shelved => self
                     .shelved
                     .get(view.id())
-                    .map(|mark| (Reverse(mark.at), view.id())),
+                    .and_then(|mark| mark.at)
+                    .map(|at| (Reverse(at), view.id())),
                 // The sort is stable, so other groups keep reading order,
                 // which is start order.
                 _ => None,
@@ -3678,12 +3695,12 @@ mod tests {
         // has pinned the same agent and shelved done-b2c.
         let published = Arrangement::default();
         let local = Arrangement {
-            shelved: [("busy-a1b".to_string(), Shelf { at: 50 })].into(),
+            shelved: [("busy-a1b".to_string(), Shelf::by_hand(50))].into(),
             ..Arrangement::default()
         };
         let disk = Arrangement {
             held: ["busy-a1b".to_string()].into_iter().collect(),
-            shelved: [("done-b2c".to_string(), Shelf { at: 40 })].into(),
+            shelved: [("done-b2c".to_string(), Shelf::by_hand(40))].into(),
             ..Arrangement::default()
         };
 
@@ -3692,8 +3709,8 @@ mod tests {
         assert_eq!(
             merged.shelved,
             [
-                ("busy-a1b".to_string(), Shelf { at: 50 }),
-                ("done-b2c".to_string(), Shelf { at: 40 }),
+                ("busy-a1b".to_string(), Shelf::by_hand(50)),
+                ("done-b2c".to_string(), Shelf::by_hand(40)),
             ]
             .into(),
             "this view's shelve joins theirs"
@@ -3711,7 +3728,7 @@ mod tests {
 
     #[test]
     fn arranged_a_shelve_holds_until_the_agent_next_changes_phase() {
-        let mark = Shelf { at: 100 };
+        let mark = Shelf::by_hand(100);
         assert!(
             shelves(Some(&mark), Phase::Done, 99),
             "set after it finished"
@@ -3746,6 +3763,26 @@ mod tests {
     }
 
     #[test]
+    fn arranged_a_mark_from_before_keep_reads_as_a_hand_shelve() {
+        let old: Shelf = serde_json::from_str(r#"{"at": 50}"#).unwrap();
+        assert_eq!(old, Shelf::by_hand(50));
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"at":50}"#,
+            "an unset field is not written"
+        );
+        let kept: Shelf = serde_json::from_str(r#"{"keep": 70}"#).unwrap();
+        assert_eq!(
+            kept,
+            Shelf {
+                at: None,
+                keep: Some(70)
+            }
+        );
+        assert!(!shelves(Some(&kept), Phase::Done, 0), "keep is no shelve");
+    }
+
+    #[test]
     fn arranged_a_pin_then_a_sleep_then_a_shelve_win_over_the_phase() {
         assert_eq!(
             Group::of(Phase::Done, true, true, true, true),
@@ -3775,7 +3812,7 @@ mod tests {
         ]);
         list.arrange(Arrangement {
             asleep: ["nap-c3d".to_string()].into_iter().collect(),
-            shelved: [("done-a1b".to_string(), Shelf { at: 50 })].into(),
+            shelved: [("done-a1b".to_string(), Shelf::by_hand(50))].into(),
             ..Arrangement::default()
         });
         assert_eq!(
@@ -4642,7 +4679,7 @@ mod tests {
         for (group, id) in one_of_each {
             let mut list = sleeping(pinning(over_the_forge(fleet()), "pinned-a1b"), "nap-f6g");
             list.arrange(Arrangement {
-                shelved: [("away-g7h".to_string(), Shelf { at: 80 })].into(),
+                shelved: [("away-g7h".to_string(), Shelf::by_hand(80))].into(),
                 ..list.arrangement()
             });
             list.narrow(vec![Narrow::State(Some(group.state().to_string()))]);
