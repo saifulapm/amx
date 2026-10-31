@@ -165,8 +165,7 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
 
 /// When a rule put the agent on the shelf, if one did. Only a turn that is
 /// over is shelved, never while the mark's `keep` is no older than its last
-/// phase change (`since`), never while one of its descendants is working or
-/// waiting (`busy`), and never while a request on its branch asks for
+/// phase change (`since`), and never while a request on its branch asks for
 /// review. Then a merged or closed request shelves it as of `since`, since
 /// the cache keeps no merge time. Failing that, so does being over for longer
 /// than `after` seconds at `now`, as of when it passed `after`. An `after` of
@@ -177,7 +176,6 @@ pub fn ruled(
     phase: Phase,
     since: u64,
     requests: &[Pr],
-    busy: bool,
     after: u64,
     now: u64,
 ) -> Option<u64> {
@@ -188,7 +186,7 @@ pub fn ruled(
     let kept = mark
         .and_then(|mark| mark.keep)
         .is_some_and(|at| at >= since);
-    if !over || kept || busy || requests.iter().any(|pr| asking(pr.standing)) {
+    if !over || kept || requests.iter().any(|pr| asking(pr.standing)) {
         return None;
     }
     if requests.iter().any(|pr| pr.standing.settled()) {
@@ -726,8 +724,21 @@ impl List {
         shelves(self.shelved.get(view.id()), view.phase(), view.state.since)
     }
 
-    /// When a rule put agent `n` on the shelf, if one did. See [`ruled`].
+    /// When a rule put agent `n` on the shelf, if one did. A family goes on
+    /// the shelf whole: the rule holds for one member only when every other
+    /// member is on the shelf too, by a rule of its own or by hand, which no
+    /// member working or waiting is.
     fn ruling(&self, n: usize) -> Option<u64> {
+        let own = self.ruled_alone(n)?;
+        self.family_of(n)
+            .into_iter()
+            .filter(|&m| m != n)
+            .all(|m| self.ruled_alone(m).is_some() || self.shelving(&self.views[m]))
+            .then_some(own)
+    }
+
+    /// [`ruled`] for agent `n` on its own, family aside.
+    fn ruled_alone(&self, n: usize) -> Option<u64> {
         let view = &self.views[n];
         let after = self.afters.get(view.id()).copied().unwrap_or(0);
         ruled(
@@ -735,10 +746,17 @@ impl List {
             view.phase(),
             view.state.since,
             self.requests(view),
-            self.busy(n).is_some(),
             after,
             self.now,
         )
+    }
+
+    /// Agent `n`'s top-level ancestor and every agent under it.
+    fn family_of(&self, n: usize) -> Vec<usize> {
+        let anchor = self.anchor_of(n);
+        let mut family = vec![anchor];
+        family.extend(self.nested(&self.children[anchor]));
+        family
     }
 
     /// When agent `n` went on the shelf: the press of `s`, while it holds,
@@ -790,8 +808,9 @@ impl List {
     }
 
     /// Shelve the agent under the cursor at `now`, or put a shelved one back.
-    /// Putting back drops a press of `s`, and holds a rule off until the
-    /// agent's next phase change.
+    /// Putting back takes the row's whole family off the shelf: it drops each
+    /// press of `s` that holds, and holds each rule off until that agent's
+    /// next phase change.
     ///
     /// Only a finished turn is shelved, and only when no one in its family is
     /// working or waiting, which would pull the row back under Working or
@@ -802,21 +821,37 @@ impl List {
             return Shelving::Nothing;
         };
         let id = self.views[n].id().to_string();
-        let done = match self.group(n) {
-            Group::Shelved => {
-                match self.ruling(n) {
-                    Some(_) => self.shelved.insert(
-                        id,
-                        Shelf {
-                            at: None,
-                            keep: Some(now),
-                        },
-                    ),
-                    None => self.shelved.remove(&id),
-                };
+        let on_the_shelf =
+            self.group(n) == Group::Shelved || self.family(self.anchor_of(n)) == Group::Shelved;
+        let done = match on_the_shelf {
+            true => {
+                // Judged before any mark changes, since each member's rule
+                // reads the others'.
+                let family: Vec<(String, bool, bool)> = self
+                    .family_of(n)
+                    .into_iter()
+                    .map(|m| {
+                        let view = &self.views[m];
+                        let by_hand = self.shelving(view);
+                        (view.id().to_string(), by_hand, self.ruling(m).is_some())
+                    })
+                    .collect();
+                for (id, by_hand, ruled) in family {
+                    if ruled {
+                        self.shelved.insert(
+                            id,
+                            Shelf {
+                                at: None,
+                                keep: Some(now),
+                            },
+                        );
+                    } else if by_hand {
+                        self.shelved.remove(&id);
+                    }
+                }
                 Shelving::Returned
             }
-            _ => {
+            false => {
                 if let Some(why) = self.unfinished(n) {
                     return Shelving::Refused(why);
                 }
@@ -833,14 +868,20 @@ impl List {
     }
 
     /// Why the agent's row cannot be shelved, if it cannot: its own turn, or
-    /// a descendant's, is not over.
+    /// that of anyone in its family, is not over.
     fn unfinished(&self, n: usize) -> Option<&'static str> {
-        let pulled = match self.views[n].phase() {
-            Phase::Waiting => Some(Group::NeedsInput),
-            Phase::Starting | Phase::Working => Some(Group::Working),
-            Phase::Unknown => return Some("cannot tell it finished; z sleeps it"),
-            _ => self.busy(n),
-        };
+        if self.views[n].phase() == Phase::Unknown {
+            return Some("cannot tell it finished; z sleeps it");
+        }
+        let pulled = self
+            .family_of(n)
+            .into_iter()
+            .filter_map(|m| match self.views[m].phase() {
+                Phase::Waiting => Some(Group::NeedsInput),
+                Phase::Starting | Phase::Working => Some(Group::Working),
+                _ => None,
+            })
+            .min();
         match pulled {
             Some(Group::NeedsInput) => Some("waiting on you; z sleeps it"),
             Some(Group::Working) => Some("still working; z sleeps it"),
@@ -4486,6 +4527,82 @@ mod tests {
             "the default three days have passed for one of them"
         );
         assert_eq!(needing_you(&order).as_deref(), Some("new-b2c"));
+    }
+
+    #[test]
+    fn auto_a_finished_child_of_a_working_parent_is_not_on_the_shelf() {
+        // The child's request merged, but it is drawn under its parent at work:
+        // nothing about it is shelved, and s says why it cannot be.
+        let mut list = settling(
+            10 * DAY,
+            vec![
+                view("lead-a1b", Phase::Working, 10),
+                child_of(view("merged-a1b", Phase::Done, 20), "lead-a1b"),
+            ],
+        );
+        assert_eq!(list.counts(), [(Group::Working, 1)]);
+        to(&mut list, "merged-a1b");
+        assert_eq!(
+            list.shelve_or_return(10 * DAY),
+            Shelving::Refused("still working; z sleeps it")
+        );
+        assert!(list.arrangement().shelved.is_empty());
+    }
+
+    #[test]
+    fn auto_a_family_waits_for_its_youngest_member_and_s_brings_it_all_back() {
+        let family = || {
+            vec![
+                view("lead-a1b", Phase::Done, 10),
+                child_of(view("kid-b2c", Phase::Done, 10 * DAY - 5), "lead-a1b"),
+            ]
+        };
+        let mut list = idling(|_| 60, 10 * DAY, family());
+        assert_eq!(
+            list.counts(),
+            [(Group::Completed, 1)],
+            "the child's fresh result is not hidden with its parent"
+        );
+
+        list.time_is(10 * DAY + 100);
+        list.show(family());
+        assert_eq!(list.counts(), [(Group::Shelved, 1)], "both idle past");
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "kid-b2c");
+        assert_eq!(list.shelve_or_return(10 * DAY + 100), Shelving::Returned);
+        assert_eq!(list.counts(), [(Group::Completed, 1)], "the whole family");
+        let kept = Shelf {
+            at: None,
+            keep: Some(10 * DAY + 100),
+        };
+        assert_eq!(
+            list.arrangement().shelved,
+            [
+                ("kid-b2c".to_string(), kept),
+                ("lead-a1b".to_string(), kept)
+            ]
+            .into()
+        );
+    }
+
+    #[test]
+    fn shelving_back_a_child_of_a_parent_shelved_by_hand_brings_the_family_back() {
+        let family = || {
+            vec![
+                view("lead-a1b", Phase::Done, 10),
+                child_of(view("kid-b2c", Phase::Done, 20), "lead-a1b"),
+            ]
+        };
+        let mut list = listed(family());
+        to(&mut list, "lead-a1b");
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "kid-b2c");
+        assert_eq!(list.shelve_or_return(101), Shelving::Returned);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
+        assert!(list.arrangement().shelved.is_empty());
     }
 
     #[test]
