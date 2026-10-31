@@ -312,6 +312,19 @@ mod tests {
     }
 
     #[test]
+    fn the_suite_builds_outside_tmp() {
+        // A build under /tmp, a scratchpad included, runs out of the quota
+        // part way and reads as a page of unrelated failures.
+        let exe = std::env::current_exe().unwrap_or_default();
+        assert!(
+            !exe.starts_with("/tmp"),
+            "the suite is built under /tmp ({}); build it with \
+             CARGO_TARGET_DIR=$HOME/.cache/amx-wave-target",
+            exe.display()
+        );
+    }
+
+    #[test]
     fn a_complaint_says_nothing_a_terminal_will_act_on() {
         // The id is quoted back as typed, escape sequences included.
         let line = said(
