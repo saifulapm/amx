@@ -318,8 +318,8 @@ mod tests {
         let exe = std::env::current_exe().unwrap_or_default();
         assert!(
             !exe.starts_with("/tmp"),
-            "the suite is built under /tmp ({}); build it with \
-             CARGO_TARGET_DIR=$HOME/.cache/amx-wave-target",
+            "the suite is built under /tmp ({}); point CARGO_TARGET_DIR \
+             somewhere with room, such as ~/.cache",
             exe.display()
         );
     }
