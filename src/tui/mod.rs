@@ -547,6 +547,18 @@ struct Arm {
     at: Instant,
 }
 
+/// The last change a key made to the arrangement, for `u` to take back within
+/// [`ARMED`].
+struct Undo {
+    /// The arrangement before the change and just after it. Only the fields
+    /// that differ go back, so what another view changed since stays.
+    before: Arrangement,
+    after: Arrangement,
+    /// What was done, for `undid <label>`.
+    label: &'static str,
+    at: Instant,
+}
+
 /// What a card was built from, to tell whether rebuilding it would change it.
 ///
 /// Building a card reads and renders a transcript or forks `capture-pane`,
@@ -638,6 +650,9 @@ struct Screen {
     selection: Option<((u16, u16), (u16, u16))>,
     /// The rows a first press has armed, if any.
     arm: Option<Arm>,
+    /// The last arrangement change, if any. Not saved: a new view has nothing
+    /// to undo.
+    undo: Option<Undo>,
     /// When the agents were last read.
     read: Option<Instant>,
     /// The view state file, if there is one.
@@ -1979,17 +1994,18 @@ impl Screen {
             },
             // Shelve a finished agent out of the way, or put it back.
             KeyCode::Char('s') if plain => {
-                let (said, changed) = match self.list.shelve_or_return(crate::store::now()) {
-                    Shelving::Shelved => (Notice::Advice("shelved".to_string()), true),
-                    Shelving::Returned => (Notice::Advice("back on the wall".to_string()), true),
-                    Shelving::Refused(why) => (Notice::Refused(why.to_string()), false),
+                let before = self.list.arrangement();
+                match self.list.shelve_or_return(crate::store::now()) {
+                    Shelving::Shelved => self.changed(before, "shelve", "shelved"),
+                    Shelving::Returned => self.changed(before, "unshelve", "back on the wall"),
+                    Shelving::Refused(why) => self.notice = Some(Notice::Refused(why.to_string())),
                     Shelving::Nothing => {
-                        (Notice::Advice("no agent here to shelve".to_string()), false)
+                        self.notice = Some(Notice::Advice("no agent here to shelve".to_string()));
                     }
-                };
-                self.notice = Some(said);
-                self.keep(changed);
+                }
             }
+            // Take back the last arrangement change.
+            KeyCode::Char('u') if plain => self.undo(),
             // Config-bound keys come last, so they never shadow a built-in
             // key. They need a selected agent, whose tree the command runs in.
             _ => {
@@ -3193,6 +3209,34 @@ impl Screen {
         self.published = remembered.arrangement.clone();
         self.viewed_at = stamped(&path);
         self.list.arrange(remembered.arrangement);
+    }
+
+    /// Save a change a key just made to the arrangement, and keep it for `u`.
+    /// `before` is the arrangement the key found. The keys row says `said`
+    /// and that `u` takes it back.
+    fn changed(&mut self, before: Arrangement, label: &'static str, said: &str) {
+        self.undo = Some(Undo {
+            before,
+            after: self.list.arrangement(),
+            label,
+            at: Instant::now(),
+        });
+        self.notice = Some(Notice::Advice(format!("{said} · u undoes")));
+        self.keep(true);
+    }
+
+    /// Put back the fields the last change set, if it was made within
+    /// [`ARMED`], and save that through the same merge as any change.
+    fn undo(&mut self) {
+        let Some(undo) = self.undo.take().filter(|undo| undo.at.elapsed() < ARMED) else {
+            self.notice = Some(Notice::Advice("nothing to undo".to_string()));
+            return;
+        };
+        let now = self.list.arrangement();
+        self.list
+            .arrange(Arrangement::merged(&undo.after, &undo.before, &now));
+        self.notice = Some(Notice::Advice(format!("undid {}", undo.label)));
+        self.keep(true);
     }
 
     /// Take in another view's arrangement if the view file changed since this

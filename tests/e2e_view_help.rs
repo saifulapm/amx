@@ -103,7 +103,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     // Tall enough for the whole help document: every key, five group headings
     // with a blank row above each, the position row and the blank under it,
     // and the view's chrome. A key added to the table needs a row added here.
-    resize(&amx, &view, 100, 72);
+    resize(&amx, &view, 100, 73);
 
     types(&amx, &view, "?");
     // Wait for the last key of the last group. The view has no synchronized
@@ -127,6 +127,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "mark the finished",
         "rename it",
         "pin it to the top",
+        "undo the last of these, within 5 s",
         "ctrl+x",
         "a base ref · a pull request to start on",
         "an existing branch to start on",
@@ -189,7 +190,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     let first = amx.until("the keys, the count and the foot", || {
         let drawn = amx.capture(&view);
         (drawn.contains("walk the agents")
-            && drawn.contains(" of 56")
+            && drawn.contains(" of 57")
             && drawn.contains("j k scroll"))
         .then_some(drawn)
     });
@@ -207,7 +208,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
             .then_some(drawn)
     });
     assert!(
-        last.contains(&format!(" of {}", 56)),
+        last.contains(&format!(" of {}", 57)),
         "which says where in the document it is:\n{last}"
     );
     assert!(

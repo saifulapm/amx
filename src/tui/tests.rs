@@ -7684,7 +7684,7 @@ fn s_shelves_a_finished_row_and_the_other_view_has_it_shelved_too() {
 
     left.list.land_on("done-b2c");
     left.act(s, root.path(), &config, None).unwrap();
-    assert_eq!(notice(&left), (false, "shelved"));
+    assert_eq!(notice(&left), (false, "shelved · u undoes"));
     assert_eq!(
         left.list.counts(),
         [(rows::Group::Working, 1), (rows::Group::Shelved, 1)]
@@ -7709,7 +7709,7 @@ fn s_shelves_a_finished_row_and_the_other_view_has_it_shelved_too() {
         .unwrap();
     left.list.land_on("done-b2c");
     left.act(s, root.path(), &config, None).unwrap();
-    assert_eq!(notice(&left), (false, "back on the wall"));
+    assert_eq!(notice(&left), (false, "back on the wall · u undoes"));
     right.adopt_the_view();
     assert_eq!(
         right.list.counts(),
@@ -7780,4 +7780,233 @@ fn a_write_drops_the_shelve_marks_of_agents_with_no_record_and_keeps_the_rest() 
         ["done-b2c", "else-c3d"],
         "gone-d4e was forgotten; else-c3d is only out of sight"
     );
+}
+
+/// A screen over three finished rows that saves its arrangement to
+/// `view.json` under `root`, with a record for each row so a write keeps
+/// their marks.
+fn three_done(root: &Path) -> Screen {
+    let fleet = vec![
+        reading("done-a1b", Phase::Done, State::default()),
+        reading("done-b2c", Phase::Done, State::default()),
+        reading("done-c3d", Phase::Done, State::default()),
+    ];
+    for view in &fleet {
+        a_record(root, view.id(), None, no_pane(), &view.state);
+    }
+    Screen {
+        root: root.to_path_buf(),
+        remembering: Some(root.join("view.json")),
+        ..watching(fleet)
+    }
+}
+
+/// The ids the view file holds shelve marks for.
+fn shelved_on_disk(root: &Path) -> Vec<String> {
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("view.json")).unwrap()).unwrap();
+    written["arrangement"]["shelved"]
+        .as_object()
+        .map(|marks| marks.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn u_within_the_window_puts_a_shelved_row_back_where_it_was() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, code| {
+        screen
+            .act(KeyEvent::from(code), root.path(), &config, None)
+            .unwrap();
+    };
+    let was = ordered(&screen);
+
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('s'));
+    assert_eq!(notice(&screen), (false, "shelved · u undoes"));
+    assert_eq!(shelved_on_disk(root.path()), ["done-b2c"]);
+
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "undid shelve"));
+    assert_eq!(screen.list.counts(), [(rows::Group::Completed, 3)]);
+    assert_eq!(ordered(&screen), was, "back in its old place");
+    assert!(shelved_on_disk(root.path()).is_empty(), "and off the file");
+
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "nothing to undo"));
+    assert_eq!(screen.list.counts(), [(rows::Group::Completed, 3)]);
+}
+
+#[test]
+fn u_after_the_window_leaves_the_shelf_as_it_is() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    screen.list.land_on("done-b2c");
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('s')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+
+    // Move the change's clock past the window without a press.
+    let undo = screen.undo.as_mut().expect("the change the press kept");
+    undo.at = undo
+        .at
+        .checked_sub(ARMED)
+        .expect("a machine that has been up longer than the window");
+
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('u')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert_eq!(notice(&screen), (false, "nothing to undo"));
+    assert_eq!(
+        screen.list.counts(),
+        [(rows::Group::Completed, 2), (rows::Group::Shelved, 1)]
+    );
+    assert_eq!(shelved_on_disk(root.path()), ["done-b2c"]);
+}
+
+#[test]
+fn u_takes_back_only_the_last_of_two_shelves() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let s = KeyEvent::from(KeyCode::Char('s'));
+    for id in ["done-a1b", "done-b2c"] {
+        screen.list.land_on(id);
+        screen.act(s, root.path(), &config, None).unwrap();
+    }
+
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('u')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert_eq!(shelved_on_disk(root.path()), ["done-a1b"]);
+    assert_eq!(
+        screen.list.counts(),
+        [(rows::Group::Completed, 2), (rows::Group::Shelved, 1)]
+    );
+}
+
+#[test]
+fn u_puts_a_row_taken_off_the_shelf_back_on_it() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = three_done(root.path());
+    let press = |screen: &mut Screen, code| {
+        screen
+            .act(KeyEvent::from(code), root.path(), &config, None)
+            .unwrap();
+    };
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('s'));
+    let (at, _) = screen
+        .list
+        .heading_at(&rows::Key::Group(rows::Group::Shelved))
+        .unwrap();
+    screen.list.land(at);
+    press(&mut screen, KeyCode::Enter);
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('s'));
+    assert_eq!(notice(&screen), (false, "back on the wall · u undoes"));
+    assert!(shelved_on_disk(root.path()).is_empty());
+
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "undid unshelve"));
+    assert_eq!(shelved_on_disk(root.path()), ["done-b2c"]);
+    assert_eq!(
+        screen.list.counts(),
+        [(rows::Group::Completed, 2), (rows::Group::Shelved, 1)]
+    );
+}
+
+#[test]
+fn u_after_a_forget_has_nothing_to_undo_and_the_agent_stays_forgotten() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    idle(root.path(), "quiet-a1b");
+    let mut screen = watching(vec![reading(
+        "quiet-a1b",
+        Phase::Idle,
+        State {
+            state: Phase::Idle,
+            since: 1,
+            last_event: 1,
+            ..State::default()
+        },
+    )]);
+    screen.list.land_on("quiet-a1b");
+    for _ in 0..2 {
+        screen.act(ctrl('x'), root.path(), &config, None).unwrap();
+    }
+    assert!(crate::store::list(root.path()).unwrap().is_empty());
+
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('u')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert_eq!(notice(&screen), (false, "nothing to undo"));
+    assert!(crate::store::list(root.path()).unwrap().is_empty());
+}
+
+#[test]
+fn u_on_a_line_or_over_the_keys_is_not_an_undo() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = watching(vec![
+        reading("done-b2c", Phase::Done, State::default()),
+        stopped_on_a_question("ask-a1b"),
+    ]);
+    let press = |screen: &mut Screen, code| {
+        screen
+            .act(KeyEvent::from(code), root.path(), &config, None)
+            .unwrap();
+    };
+    let shelved = [(rows::Group::NeedsInput, 1), (rows::Group::Shelved, 1)];
+    screen.list.land_on("done-b2c");
+    press(&mut screen, KeyCode::Char('s'));
+    assert_eq!(screen.list.counts(), shelved);
+
+    // On a card's line, u is a letter of the reply.
+    screen.list.land_on("ask-a1b");
+    press(&mut screen, KeyCode::Char(' '));
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(screen.answering().expect("still typing").text, "u");
+    assert_eq!(screen.list.counts(), shelved);
+    press(&mut screen, KeyCode::Esc);
+
+    // On the find line, a letter of the search.
+    press(&mut screen, KeyCode::Char('/'));
+    press(&mut screen, KeyCode::Char('u'));
+    assert!(matches!(&screen.mode, Mode::Typing(line) if line.text == "u"));
+    press(&mut screen, KeyCode::Esc);
+    assert_eq!(screen.list.counts(), shelved);
+
+    // Over the keys, a key that only leaves them.
+    press(&mut screen, KeyCode::Char('?'));
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(screen.list.counts(), shelved);
+
+    // The change is still there to take back.
+    press(&mut screen, KeyCode::Char('u'));
+    assert_eq!(notice(&screen), (false, "undid shelve"));
 }

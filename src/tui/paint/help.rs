@@ -23,7 +23,7 @@ use crate::tui::keyname::Bound;
 /// acted is listed here. Ordered by [`GROUPS`], which cuts it into runs, so
 /// each key is in exactly one group. The README test reads this file as text,
 /// since the table is not visible outside the crate's `tui` module.
-pub(in crate::tui) const HELP: [(&str, &str); 56] = [
+pub(in crate::tui) const HELP: [(&str, &str); 57] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "top and bottom of the list"),
@@ -66,6 +66,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 56] = [
     ("s", "shelve it once it has finished · again puts it back"),
     ("shift+↑", "move it up its group"),
     ("shift+↓", "move it down its group"),
+    ("u", "undo the last of these, within 5 s"),
     ("ctrl+r", "rename it"),
     ("i", "interrupt the turn it is on"),
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
@@ -92,7 +93,7 @@ pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 8),
     ("look", 12),
     ("start", 12),
-    ("arrange", 12),
+    ("arrange", 13),
     ("dials", 12),
 ];
 
@@ -593,9 +594,9 @@ mod tests {
         // An emptied group loses its heading; the count is against the table.
         assert!(!drawn.contains("WALK"), "{drawn}");
         assert!(
-            drawn.contains("5 of 56"),
+            drawn.contains("5 of 57"),
             "and it is said against the whole of the table, because `5 keys` \
-             about a table of fifty-six reads as a program with five:\n{drawn}"
+             about a table of fifty-seven reads as a program with five:\n{drawn}"
         );
 
         // Backspace removes a letter; esc drops the search.
