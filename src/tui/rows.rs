@@ -707,7 +707,7 @@ impl List {
             Phase::Waiting => Some(Group::NeedsInput),
             Phase::Starting | Phase::Working => Some(Group::Working),
             Phase::Unknown => return Some("cannot tell it finished; z sleeps it"),
-            _ => self.pulled(n),
+            _ => self.busy(n),
         };
         match pulled {
             Some(Group::NeedsInput) => Some("waiting on you; z sleeps it"),
@@ -717,7 +717,8 @@ impl List {
     }
 
     /// What is on the first line below the row on line `at` and the rows
-    /// drawn under it, or failing that the nearest line above.
+    /// drawn under it, or failing that the nearest line above it under the
+    /// same heading, or failing that the row itself, wherever it goes.
     fn after(&self, at: usize) -> On {
         let Some(Item::Agent(n)) = self.items.get(at).copied() else {
             return self.on();
@@ -739,12 +740,19 @@ impl List {
                 _ => true,
             })
             .map(|skip| at + 1 + skip);
+        // Not past the heading: it may go with the row, and the line above it
+        // belongs to another group.
         let line = below
             .and_then(|from| (from..self.items.len()).find(|&i| self.items[i] != Item::Blank))
-            .or_else(|| (0..at).rev().find(|&i| self.items[i] != Item::Blank));
+            .or_else(|| {
+                (0..at)
+                    .rev()
+                    .take_while(|&i| !matches!(self.items[i], Item::Heading(..)))
+                    .find(|&i| self.items[i] != Item::Blank)
+            });
         match line {
             Some(line) => self.on_line(line),
-            None => On::Nothing,
+            None => On::Agent(self.views[n].id().to_string()),
         }
     }
 
@@ -981,18 +989,33 @@ impl List {
     /// A parent whose turn ended while a child still works must not land in
     /// Completed, where `c` would clear the running family unseen. A child's
     /// pin or sleep applies to that child only and does not move the family.
-    /// A shelved parent is pulled back only by a child working or waiting.
+    /// A shelved parent is pulled back only by a child working or waiting,
+    /// pinned or asleep or not.
     fn family(&self, n: usize) -> Group {
         let mine = self.group(n);
         if matches!(mine, Group::Pinned | Group::Asleep) {
             return mine;
         }
         match (mine, self.pulled(n)) {
-            (Group::Shelved, Some(group @ (Group::NeedsInput | Group::Working))) => group,
-            (Group::Shelved, _) => mine,
+            (Group::Shelved, _) => self.busy(n).unwrap_or(mine),
             (_, Some(group)) => group.min(mine),
             (_, None) => mine,
         }
+    }
+
+    /// NeedsInput or Working, for the most urgent of the row's descendants
+    /// that is waiting or working by its phase, whatever its marks. A shelve
+    /// must not hide one of those, since it would be drawn under the shut
+    /// heading with its parent.
+    fn busy(&self, n: usize) -> Option<Group> {
+        self.nested(&self.children[n])
+            .into_iter()
+            .filter_map(|at| match self.views[at].phase() {
+                Phase::Waiting => Some(Group::NeedsInput),
+                Phase::Starting | Phase::Working => Some(Group::Working),
+                _ => None,
+            })
+            .min()
     }
 
     /// The most urgent group among the row's descendants, leaving out pinned
@@ -3942,6 +3965,58 @@ mod tests {
             child_of(view("kid-b2c", Phase::Working, 101), "lead-a1b"),
         ]);
         assert_eq!(list.counts(), [(Group::Working, 1)]);
+    }
+
+    #[test]
+    fn shelving_a_parent_waits_for_a_pinned_or_sleeping_child_too() {
+        // A child's pin or sleep keeps it out of the family's group, but a
+        // shelve would still hide it while it works or asks.
+        for phase in [Phase::Working, Phase::Waiting] {
+            let mut list = sleeping(
+                listed(vec![
+                    view("lead-a1b", Phase::Done, 10),
+                    child_of(view("kid-b2c", phase, 20), "lead-a1b"),
+                ]),
+                "kid-b2c",
+            );
+            to(&mut list, "lead-a1b");
+            assert!(
+                matches!(list.shelve_or_return(100), Shelving::Refused(_)),
+                "{phase:?}"
+            );
+        }
+
+        // Shelved while the pinned child was done, the family comes back
+        // when that child works again.
+        let mut list = pinning(
+            listed(vec![
+                view("lead-a1b", Phase::Done, 10),
+                child_of(view("kid-b2c", Phase::Done, 20), "lead-a1b"),
+            ]),
+            "kid-b2c",
+        );
+        to(&mut list, "lead-a1b");
+        assert_eq!(list.shelve_or_return(100), Shelving::Shelved);
+        list.show(vec![
+            view("lead-a1b", Phase::Done, 10),
+            child_of(view("kid-b2c", Phase::Working, 101), "lead-a1b"),
+        ]);
+        assert_eq!(list.counts(), [(Group::Working, 1)]);
+    }
+
+    #[test]
+    fn shelving_back_the_last_shelved_row_follows_it_off_the_shelf() {
+        // Nothing below it, and the line above is the shelf's heading, which
+        // goes with it: the cursor must not land on a row of another group.
+        let mut list = sleeping(listed(three_done()), "done-c3d");
+        to(&mut list, "done-b2c");
+        list.shelve_or_return(100);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        to(&mut list, "done-b2c");
+
+        assert_eq!(list.shelve_or_return(101), Shelving::Returned);
+        assert_eq!(list.selected().unwrap().id(), "done-b2c");
     }
 
     #[test]
