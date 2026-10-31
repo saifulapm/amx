@@ -1970,9 +1970,12 @@ impl List {
 /// Builds a [`List`] with the saved arrangement, always on the state axis,
 /// with no narrowing and no folding. Pull requests come from what was last
 /// written down ([`pr::written`]), since a verb exits before a forge answers.
-pub fn wall_order(views: &[View], arrangement: &Arrangement) -> Vec<(Group, String)> {
+/// The rules judge idleness at `now`, so the verb sees the shelf the view
+/// draws.
+pub fn wall_order(views: &[View], arrangement: &Arrangement, now: u64) -> Vec<(Group, String)> {
     let mut list = List {
         asks: pr::written,
+        now,
         ..List::default()
     };
     list.arrange(Arrangement {
@@ -4453,6 +4456,39 @@ mod tests {
     }
 
     #[test]
+    fn auto_shelve_after_is_read_once_per_agent_however_often_the_wall_is_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READ: AtomicUsize = AtomicUsize::new(0);
+        let mut list = List::default();
+        list.shelving_after(|_| {
+            READ.fetch_add(1, Ordering::SeqCst);
+            60
+        });
+        for now in 1000..1100 {
+            list.time_is(now);
+            list.show(three_done());
+        }
+        assert_eq!(READ.load(Ordering::SeqCst), 3, "one read per agent");
+    }
+
+    #[test]
+    fn auto_a_verb_stepping_the_wall_sees_the_shelf_the_view_draws() {
+        let fleet = || {
+            vec![
+                view("old-a1b", Phase::Done, 1000),
+                view("new-b2c", Phase::Done, 1000 + 4 * DAY),
+            ]
+        };
+        let order = wall_order(&fleet(), &Arrangement::default(), 1001 + 4 * DAY);
+        assert_eq!(
+            walled(&order),
+            ["Completed new-b2c", "Shelved old-a1b"],
+            "the default three days have passed for one of them"
+        );
+        assert_eq!(needing_you(&order).as_deref(), Some("new-b2c"));
+    }
+
+    #[test]
     fn shelving_back_the_last_shelved_row_follows_it_off_the_shelf() {
         // Nothing below it, and the line above is the shelf's heading, which
         // goes with it: the cursor must not land on a row of another group.
@@ -4925,7 +4961,7 @@ mod tests {
         );
 
         assert_eq!(
-            walled(&wall_order(&fleet(), &list.arrangement())),
+            walled(&wall_order(&fleet(), &list.arrangement(), 0)),
             [
                 "Pinned busy-d4e",
                 "Working busy-b2c",
@@ -4952,7 +4988,7 @@ mod tests {
             ["Completed (2)", "done-b2c", "done-a1b"]
         );
         assert_eq!(
-            walled(&wall_order(&fleet(), &Arrangement::default())),
+            walled(&wall_order(&fleet(), &Arrangement::default(), 0)),
             ["Completed done-b2c", "Completed done-a1b"],
             "history reads newest first outside the view as it does in it"
         );
@@ -4975,7 +5011,7 @@ mod tests {
         );
 
         assert_eq!(
-            walled(&wall_order(&fleet(), &list.arrangement())),
+            walled(&wall_order(&fleet(), &list.arrangement(), 0)),
             ["Working busy-b2c", "Working busy-a1b", "Working busy-c3d"],
             "the order a hand put the group in, not the order they started in"
         );
@@ -5005,7 +5041,7 @@ mod tests {
         );
 
         assert_eq!(
-            walled(&wall_order(&fleet(), &list.arrangement())),
+            walled(&wall_order(&fleet(), &list.arrangement(), 0)),
             [
                 "Needs input ask-b2c",
                 "Working busy-a1b",

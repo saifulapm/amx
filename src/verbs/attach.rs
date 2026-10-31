@@ -58,8 +58,9 @@ pub fn from_env(aim: &Aim) -> Result<i32> {
         Aim::Id(id) => id.clone(),
         _ => {
             // Every agent, read now, in the order the view draws them.
-            let views = derive::views(&root, now())?;
-            let order = rows::wall_order(&views, &Arrangement::from_disk(&root));
+            let now = now();
+            let views = derive::views(&root, now)?;
+            let order = rows::wall_order(&views, &Arrangement::from_disk(&root), now);
             if order.is_empty() {
                 bail!(EMPTY);
             }
