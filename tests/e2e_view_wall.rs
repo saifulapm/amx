@@ -603,7 +603,7 @@ fn s_leaves_a_working_row_where_it_is_and_says_why() {
 }
 
 #[test]
-fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
+fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open_and_a_merged_one_is_shelved() {
     let amx = Harness::new();
     finished(&amx, "fix-login-a1b", "done", 60);
     a_request(&amx, "fix-login-a1b", 12, "open");
@@ -612,9 +612,12 @@ fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
     finished(&amx, "old-job-c3d", "done", 90);
 
     let view = amx.in_a_terminal(&[], &[]);
-    let drawn = amx.until("both groups", || {
+    let drawn = amx.until("both groups and the shelf", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("Ready for review") && drawn.contains("Completed")).then_some(drawn)
+        (drawn.contains("Ready for review")
+            && drawn.contains("Completed")
+            && heading_reads(&drawn, "Shelved 1"))
+        .then_some(drawn)
     });
 
     assert!(
@@ -630,13 +633,14 @@ fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
         row_of(&amx, &view, "fix-login-a1b").is_some_and(|row| row.contains("#12")),
         "with the number the review is happening under:\n{drawn}"
     );
-    for id in ["port-import-b2c", "old-job-c3d"] {
-        assert!(
-            line_of(&drawn, id) > line_of(&drawn, "Completed"),
-            "a merged request and a branch nobody opened one for are both \
-             over, so {id} is completed:\n{drawn}"
-        );
-    }
+    assert!(
+        line_of(&drawn, "old-job-c3d") > line_of(&drawn, "Completed"),
+        "a branch nobody opened a request for is completed:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("port-import-b2c") && drawn.contains("1 shelved"),
+        "a merged request is shelved, under the shut shelf:\n{drawn}"
+    );
 }
 
 #[test]

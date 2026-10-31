@@ -163,17 +163,26 @@ pub fn shelves(mark: Option<&Shelf>, phase: Phase, since: u64) -> bool {
     over && mark.and_then(|mark| mark.at).is_some_and(|at| at >= since)
 }
 
-/// When a rule put the agent on the shelf, if one did: its turn has been over
-/// for longer than `after` seconds at `now`, counted from its last phase change
-/// (`since`). An `after` of 0 never shelves, and a `since` ahead of `now` is not
-/// idle.
-pub fn ruled(phase: Phase, since: u64, after: u64, now: u64) -> Option<u64> {
+/// When a rule put the agent on the shelf, if one did. Only a turn that is
+/// over is shelved, and never while a request on its branch asks for review.
+/// Then a merged or closed request shelves it as of its last phase change
+/// (`since`), since the cache keeps no merge time. Failing that, so does
+/// being over for longer than `after` seconds at `now`, as of when it passed
+/// `after`. An `after` of 0 never shelves for idling, and a `since` ahead of
+/// `now` is not idle.
+pub fn ruled(phase: Phase, since: u64, requests: &[Pr], after: u64, now: u64) -> Option<u64> {
     let over = matches!(
         phase,
         Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped
     );
+    if !over || requests.iter().any(|pr| asking(pr.standing)) {
+        return None;
+    }
+    if requests.iter().any(|pr| pr.standing.settled()) {
+        return Some(since);
+    }
     let due = since.saturating_add(after);
-    (over && after > 0 && now > due).then_some(due)
+    (after > 0 && now > due).then_some(due)
 }
 
 /// The `shelve_after` of the project the agent works in.
@@ -708,7 +717,13 @@ impl List {
     fn ruling(&self, n: usize) -> Option<u64> {
         let view = &self.views[n];
         let after = self.afters.get(view.id()).copied().unwrap_or(0);
-        ruled(view.phase(), view.state.since, after, self.now)
+        ruled(
+            view.phase(),
+            view.state.since,
+            self.requests(view),
+            after,
+            self.now,
+        )
     }
 
     /// When agent `n` went on the shelf: the press of `s`, while it holds,
@@ -2201,7 +2216,8 @@ mod tests {
         view
     }
 
-    /// A fake forge: two branches with an open pull request and one merged.
+    /// A fake forge: two branches with an open pull request, one merged and
+    /// one draft.
     fn a_forge(meta: &Meta) -> Vec<Pr> {
         match meta.branch.as_deref() {
             Some("amx/fix-login-a1b") => vec![Pr {
@@ -2215,6 +2231,10 @@ mod tests {
             Some("amx/merged-f6g") => vec![Pr {
                 number: 7,
                 standing: Standing::Merged,
+            }],
+            Some("amx/draft-g7h") => vec![Pr {
+                number: 8,
+                standing: Standing::Draft,
             }],
             _ => Vec::new(),
         }
@@ -2509,13 +2529,14 @@ mod tests {
                 "Working (1)",
                 "busy-c3d",
                 "",
-                "Completed (2)",
+                "Completed (1)",
                 "done-e5f",
-                "merged-d4e",
+                "",
+                "Shelved (1) shut",
             ],
             "an agent that is asking or working has something of its own left \
              to do, whatever its branch has open, and a request that was \
-             merged is asking nobody for anything"
+             merged is asking nobody for anything: it is shelved"
         );
     }
 
@@ -2791,8 +2812,8 @@ mod tests {
             .collect();
         views.push(view("broke-e5f", Phase::Failed, 2));
         views.push(on_a_branch(
-            view("merged-f6g", Phase::Done, 1),
-            "amx/merged-f6g",
+            view("draft-g7h", Phase::Done, 1),
+            "amx/draft-g7h",
         ));
         list.show(views);
 
@@ -2800,7 +2821,7 @@ mod tests {
         standing.extend((0..FOLD_AT - 2).map(|n| format!("done-{:02}", FOLD_AT + 2 - n)));
         standing.extend([
             "broke-e5f".to_string(),
-            "merged-f6g".to_string(),
+            "draft-g7h".to_string(),
             "… 4 more".to_string(),
         ]);
         assert_eq!(lines(&list), standing);
@@ -4206,6 +4227,117 @@ mod tests {
             vec![view("far-a1b", Phase::Done, 10)],
         );
         assert_eq!(list.counts(), [(Group::Completed, 1)], "no overflow");
+    }
+
+    /// A fake forge with a request of every settled and unsettled kind.
+    fn a_settled_forge(meta: &Meta) -> Vec<Pr> {
+        let one = |number, standing| vec![Pr { number, standing }];
+        match meta.branch.as_deref() {
+            Some("amx/merged-a1b") => one(1, Standing::Merged),
+            Some("amx/closed-b2c") => one(2, Standing::Closed),
+            Some("amx/open-c3d") => one(3, Standing::Open),
+            Some("amx/draft-d4e") => one(4, Standing::Draft),
+            Some("amx/both-e5f") => vec![
+                Pr {
+                    number: 5,
+                    standing: Standing::Merged,
+                },
+                Pr {
+                    number: 6,
+                    standing: Standing::Failing,
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// [`idling`] over [`a_settled_forge`], each view on `amx/<its id>`.
+    fn settling(now: u64, views: Vec<View>) -> List {
+        let mut list = List::default();
+        list.asking(a_settled_forge);
+        list.shelving_after(|_| 259_200);
+        list.time_is(now);
+        list.show(
+            views
+                .into_iter()
+                .map(|view| {
+                    let branch = format!("amx/{}", view.id());
+                    on_a_branch(view, &branch)
+                })
+                .collect(),
+        );
+        list
+    }
+
+    #[test]
+    fn auto_a_merged_or_closed_request_shelves_a_row_whatever_its_age() {
+        let list = settling(
+            1005,
+            vec![
+                view("merged-a1b", Phase::Done, 1000),
+                view("closed-b2c", Phase::Idle, 1000),
+                view("plain-f6g", Phase::Done, 1000),
+            ],
+        );
+        assert_eq!(list.counts(), [(Group::Completed, 1), (Group::Shelved, 2)]);
+    }
+
+    #[test]
+    fn auto_an_open_request_keeps_a_row_in_review_and_a_draft_does_not() {
+        let list = settling(
+            1000 + 4 * DAY,
+            vec![
+                view("open-c3d", Phase::Done, 1000),
+                view("draft-d4e", Phase::Done, 1000),
+                view("both-e5f", Phase::Done, 1000),
+            ],
+        );
+        assert_eq!(
+            list.counts(),
+            [(Group::Review, 2), (Group::Shelved, 1)],
+            "open-c3d and both-e5f, whose open request outweighs its merged one"
+        );
+    }
+
+    #[test]
+    fn auto_with_no_request_a_young_row_stays_under_completed() {
+        let list = settling(1005, vec![view("plain-f6g", Phase::Done, 1000)]);
+        assert_eq!(list.counts(), [(Group::Completed, 1)]);
+    }
+
+    #[test]
+    fn auto_a_merged_row_still_at_work_is_not_shelved() {
+        // Replied to after its request merged: working again, it is back at
+        // work, and once idle the merged request shelves it again.
+        let list = settling(1005, vec![view("merged-a1b", Phase::Working, 1000)]);
+        assert_eq!(list.counts(), [(Group::Working, 1)]);
+        let list = settling(1010, vec![view("merged-a1b", Phase::Idle, 1009)]);
+        assert_eq!(list.counts(), [(Group::Shelved, 1)]);
+    }
+
+    #[test]
+    fn auto_shelved_rows_sort_by_when_they_went_on_the_shelf() {
+        let mut list = settling(
+            1000 + 4 * DAY,
+            vec![
+                view("plain-f6g", Phase::Done, 1000),
+                view("merged-a1b", Phase::Done, 500 + 4 * DAY),
+                view("hand-g7h", Phase::Done, 1000),
+            ],
+        );
+        list.shelved
+            .insert("hand-g7h".to_string(), Shelf::by_hand(900 + 4 * DAY));
+        list.time_is(1000 + 4 * DAY);
+        let views = list.views.clone();
+        list.show(views);
+        to_heading(&mut list, Group::Shelved);
+        list.shut_or_open();
+        assert_eq!(
+            lines(&list),
+            ["Shelved (3)", "hand-g7h", "merged-a1b", "plain-f6g"],
+            "the press, then the merge as of its last phase change, then the \
+             idle row as of when it passed shelve_after"
+        );
     }
 
     #[test]

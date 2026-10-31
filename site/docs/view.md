@@ -62,7 +62,7 @@ when nothing waits.
 | Working | Agents starting up or in the middle of a turn. |
 | Completed | Everything that has ended: idle at its prompt, done, failed, stopped, or unknown. |
 | Asleep | Agents you put to sleep with `z`. They still count as waiting if they are. |
-| Shelved | Finished agents you put away with `s`. Opens shut in every view. |
+| Shelved | Finished agents you put away with `s`, or that the view put away: a merged or closed pull request, or idle past `shelve_after`. Opens shut in every view. |
 
 `enter` on a heading shuts the group and shows a count in its place, such as
 `Completed 27`. A group holding failures says so either way:
@@ -379,6 +379,13 @@ changes, for example when you reply to it. `s` on a working agent, or one
 waiting on you, refuses and points at `z`. Shelving a pinned or sleeping
 agent unpins or wakes it. Shelved rows are newest first, and a find or `s:`
 narrowing shows them even while the heading is shut.
+
+The view shelves a finished agent by itself when its branch's pull request is
+merged or closed, or when it has sat finished for longer than `shelve_after`
+seconds (three days by default; see [Configuration](configuration.md)). A
+pull request still open for review keeps it under Ready for review, and a
+pinned agent stays pinned. It comes back the same way a shelved one does.
+Nothing is deleted.
 
 The arrangement is saved to `~/.local/state/amx/view.json` as you go. The next
 view opens on it, and another view open at the same time picks it up within a
