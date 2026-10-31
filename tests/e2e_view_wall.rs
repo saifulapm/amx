@@ -8,9 +8,9 @@
 mod common;
 
 use common::{
-    Harness, a_merged_request, a_pane_showing, agents, an_ended_agent, bar, card_on, click,
-    clients_on, coloured, coloured_line, finished, foreground, git, merged_by_hand, mouse, now,
-    pane_field, press, rgb, sgr_at, text_in, types, until_empty, watching, work_on_the_branch,
+    Harness, a_merged_request, a_pane_showing, a_project, agents, an_ended_agent, bar, card_on,
+    click, clients_on, coloured, coloured_line, finished, foreground, git, merged_by_hand, mouse,
+    now, pane_field, press, rgb, sgr_at, text_in, types, until_empty, watching, work_on_the_branch,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -565,6 +565,31 @@ fn a_finished_row_moves_under_shelved_once_it_idles_past_shelve_after() {
         "shelving keeps the record: {:?}",
         agents(&amx)
     );
+}
+
+#[test]
+fn a_projects_own_shelve_after_wins_over_the_persons_for_its_agents() {
+    let amx = Harness::new();
+    amx.config("shelve_after = 3600\n");
+    let project = a_project(&amx, "quick", "shelve_after = 4\n");
+    finished(&amx, "in-quick-a1b", "done", 0);
+    amx.set_meta("in-quick-a1b", json!({ "dir": project }));
+    finished(&amx, "elsewhere-b2c", "done", 0);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let first = amx.until("both rows under Completed", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("in-quick-a1b") && drawn.contains("elsewhere-b2c")).then_some(drawn)
+    });
+    assert!(!first.contains("Shelved"), "{first}");
+
+    // No key is pressed: the project's four seconds pass, the person's hour
+    // does not.
+    let shelved = amx.until("the project's agent on the shelf", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Shelved 1") && !drawn.contains("in-quick-a1b")).then_some(drawn)
+    });
+    assert!(shelved.contains("elsewhere-b2c"), "{shelved}");
 }
 
 #[test]
