@@ -230,30 +230,51 @@ pub fn sleeps(mark: Option<&Sleep>, phase: Phase, since: u64, now: u64) -> bool 
 /// Sleep marks by agent id, read from either shape the file has held: the
 /// marks, or the list of ids saved before wake times, which are sleeps with
 /// no wake.
+///
+/// A mark that does not read, or that was set after it wakes, is skipped, so
+/// one bad entry costs that sleep and not every pin in the file.
 fn sleeps_of_either_shape<'de, D>(reading: D) -> Result<BTreeMap<String, Sleep>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
+    use serde::de::IgnoredAny;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read<T> {
+        Good(T),
+        Bad(IgnoredAny),
+    }
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Sleeps {
-        Marks(BTreeMap<String, Sleep>),
-        Ids(Vec<String>),
+        Marks(BTreeMap<String, Read<Sleep>>),
+        Ids(Vec<Read<String>>),
+        Neither(IgnoredAny),
     }
     Ok(match Sleeps::deserialize(reading)? {
-        Sleeps::Marks(marks) => marks,
+        Sleeps::Marks(marks) => marks
+            .into_iter()
+            .filter_map(|(id, mark)| match mark {
+                Read::Good(mark) if mark.wake.is_none_or(|wake| mark.since <= wake) => {
+                    Some((id, mark))
+                }
+                _ => None,
+            })
+            .collect(),
         Sleeps::Ids(ids) => ids
             .into_iter()
-            .map(|id| {
-                (
+            .filter_map(|id| match id {
+                Read::Good(id) => Some((
                     id,
                     Sleep {
                         since: 0,
                         wake: None,
                     },
-                )
+                )),
+                Read::Bad(_) => None,
             })
             .collect(),
+        Sleeps::Neither(_) => BTreeMap::new(),
     })
 }
 
@@ -4338,6 +4359,42 @@ mod tests {
         assert!(list.woke());
         assert!(!list.arrangement().has_asleep("ask-a1b"));
         assert!(list.arrangement().has_asleep("nap-c3d"));
+    }
+
+    #[test]
+    fn arranged_a_sleep_mark_that_makes_no_sense_is_skipped_and_the_rest_stand() {
+        let read: Arrangement = serde_json::from_str(
+            r#"{"held": ["pin-a1b"], "asleep": {
+                "nap-b2c": {"since": 5, "wake": 3605},
+                "text-c3d": {"since": 5, "wake": "soon"},
+                "minus-d4e": {"since": 5, "wake": -5},
+                "none-e5f": null,
+                "later-f6a": {"since": 99999999999, "wake": 3605}
+            }}"#,
+        )
+        .expect("a bad mark is no reason to lose the file");
+        assert!(read.has_pinned("pin-a1b"), "the pin stands");
+        assert_eq!(
+            read.asleep,
+            [(
+                "nap-b2c".to_string(),
+                Sleep {
+                    since: 5,
+                    wake: Some(3605)
+                }
+            )]
+            .into(),
+            "set after it wakes is no sleep either"
+        );
+
+        let old: Arrangement =
+            serde_json::from_str(r#"{"held": ["pin-a1b"], "asleep": [1, "nap-b2c"]}"#).unwrap();
+        assert!(old.has_pinned("pin-a1b"));
+        assert!(old.has_asleep("nap-b2c"));
+        let neither: Arrangement =
+            serde_json::from_str(r#"{"held": ["pin-a1b"], "asleep": 7}"#).unwrap();
+        assert!(neither.has_pinned("pin-a1b"));
+        assert!(neither.asleep.is_empty());
     }
 
     #[test]
