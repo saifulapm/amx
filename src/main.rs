@@ -278,6 +278,39 @@ fn broke_the_pipe(e: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
 
+    /// The scrub every run of this suite needs, quoted by the guard below.
+    const CLEAN_ROOM: &str = "env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID \
+        -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=~/.cargo RUSTUP_HOME=~/.rustup cargo test";
+
+    #[test]
+    fn the_suite_runs_outside_an_amx_pane_over_an_empty_home() {
+        // From an agent's pane the suite reads that pane's variables and the
+        // person's own home, and a dozen unrelated tests fail with no hint
+        // why. This one names the cause.
+        let leaked: Vec<&str> = [
+            "AMX_BIN",
+            "AMX_AGENT_DIR",
+            "AMX_NESTED",
+            "AMX_DIR",
+            "AMX_ID",
+            "TMUX",
+            "TMUX_PANE",
+        ]
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+        .collect();
+        let home = std::env::home_dir().unwrap_or_default();
+        let lived_in: Vec<&str> = [".local/state/amx", ".claude"]
+            .into_iter()
+            .filter(|dir| home.join(dir).exists())
+            .collect();
+        assert!(
+            leaked.is_empty() && lived_in.is_empty(),
+            "the suite is not isolated: set {leaked:?}, {} holds {lived_in:?}; run it as `{CLEAN_ROOM}`",
+            home.display()
+        );
+    }
+
     #[test]
     fn a_complaint_says_nothing_a_terminal_will_act_on() {
         // The id is quoted back as typed, escape sequences included.
