@@ -811,6 +811,13 @@ impl List {
         )
     }
 
+    /// Seconds until this agent's timed sleep wakes it, while the sleep holds.
+    /// `None` for an agent awake or asleep with no wake time.
+    pub fn sleeps_for(&self, view: &View) -> Option<u64> {
+        let wake = self.asleep.get(view.id())?.wake?;
+        self.sleeping(view).then(|| wake.saturating_sub(self.now))
+    }
+
     /// Whether this agent's shelve mark still holds. See [`shelves`].
     fn shelving(&self, view: &View) -> bool {
         shelves(self.shelved.get(view.id()), view.phase(), view.state.since)

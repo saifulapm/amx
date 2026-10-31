@@ -165,6 +165,7 @@ fn line(
             Some(view) => row(
                 view,
                 list.requests(view),
+                list.sleeps_for(view),
                 list.gutter(item),
                 widths.name.saturating_sub(grid::NEST * list.depth(item)),
                 at,
@@ -294,6 +295,7 @@ fn failures(tally: Tally) -> String {
 fn row(
     view: &View,
     prs: &[Pr],
+    wakes: Option<u64>,
     gutter: String,
     name_room: usize,
     at: At,
@@ -305,7 +307,10 @@ fn row(
     let phase = view.phase();
     // Worked time, not age: an idle agent's age keeps climbing. Formatted by
     // `derive` so `ls` and the view agree.
-    let worked = derive::in_words(view.verdict.worked);
+    let worked = match wakes {
+        Some(left) => wakes_in(left),
+        None => derive::in_words(view.verdict.worked),
+    };
     // A user can rename an agent, so the name is made inert. `name_room` is
     // already short by a child's connector indent.
     let name = grid::pad(&inert(rows::called(view)), name_room);
@@ -315,6 +320,9 @@ fn row(
         0 => 0,
         column => column + GAP,
     });
+    // A wake time is wider than the age column. It takes the difference from
+    // the summary so the text still ends where every other row's does.
+    let room = room.saturating_sub(width_of(&worked).saturating_sub(widths.age));
     let armed = moment.armed.iter().position(|id| id == view.id());
     let said = match armed {
         Some(at) => match moment.why.get(at) {
@@ -391,8 +399,24 @@ fn row(
         format!("{}{}", grid::pad(&said, room), " ".repeat(GAP)),
         summary,
     ));
-    spans.push(Span::styled(grid::padl(&worked, widths.age), dim()));
+    spans.push(Span::styled(
+        grid::padl(&worked, widths.age.max(width_of(&worked))),
+        dim(),
+    ));
     Line::from(spans)
+}
+
+/// How long until a timed sleep wakes, as a row's age column reads it.
+///
+/// Rounded down to the largest unit, as the age is. The minute band runs to
+/// an hour inclusive, so a sleep of one hour reads `in 60m` from the press.
+fn wakes_in(left: u64) -> String {
+    match left {
+        0..60 => format!("in {left}s"),
+        60..=3600 => format!("in {}m", left / 60),
+        3601..86400 => format!("in {}h", left / 3600),
+        _ => format!("in {}d", left / 86400),
+    }
 }
 
 /// The state word's style (project axis only): the phase's colour once it has
@@ -993,6 +1017,114 @@ mod tests {
             at(0)
         );
         assert_ne!(at(0), at(LIVE), "a working row moves");
+    }
+
+    /// A screen with a sleeping agent beside an awake one, the clock at 100.
+    fn sleeping_beside_awake(mark: &str) -> Screen {
+        let mut screen = showing(
+            vec![
+                view("nap-a1b", Phase::Idle, Some("Rested"), 5),
+                view("busy-b2c", Phase::Working, Some("Running Bash"), 3),
+            ],
+            None,
+        );
+        screen.list.time_is(100);
+        screen.list.arrange(
+            serde_json::from_str::<rows::Arrangement>(&format!(
+                r#"{{"asleep":{{"nap-a1b":{mark}}}}}"#
+            ))
+            .unwrap(),
+        );
+        screen
+    }
+
+    /// The row an agent has on this screen: its line number and its text.
+    fn row_of(screen: &Screen, name: &str) -> (usize, String) {
+        let lines = painted(screen, (60, 12));
+        let at = lines.iter().position(|line| line.contains(name)).unwrap();
+        (at, lines[at].clone())
+    }
+
+    #[test]
+    fn rows_under_a_timed_sleep_read_how_long_until_they_wake() {
+        let ahead = |wake: u64, now: u64| {
+            let mut screen = sleeping_beside_awake(&format!(r#"{{"since":100,"wake":{wake}}}"#));
+            screen.list.time_is(now);
+            row_of(&screen, "nap-a1b").1
+        };
+
+        assert!(
+            ahead(3700, 100).ends_with("in 60m"),
+            "{:?}",
+            ahead(3700, 100)
+        );
+        assert!(
+            ahead(3700, 160).ends_with("in 59m"),
+            "{:?}",
+            ahead(3700, 160)
+        );
+        assert!(
+            ahead(10900, 100).ends_with("in 3h"),
+            "{:?}",
+            ahead(10900, 100)
+        );
+    }
+
+    #[test]
+    fn rows_under_a_timed_sleep_read_dim() {
+        let screen = sleeping_beside_awake(r#"{"since":100,"wake":3700}"#);
+        let (at, line) = row_of(&screen, "nap-a1b");
+        let cells = cells(&screen, (60, 12));
+        let last = line.chars().count() as u16 - 1;
+
+        assert_eq!(cells[(last, at as u16)].symbol(), "m");
+        // A cell holds a style's modifiers, and resets the colours it leaves.
+        assert_eq!(cells[(last, at as u16)].modifier, dim().add_modifier);
+    }
+
+    #[test]
+    fn rows_under_an_untimed_sleep_keep_their_worked_time() {
+        let screen = sleeping_beside_awake(r#"{"since":100,"wake":null}"#);
+
+        assert!(row_of(&screen, "nap-a1b").1.ends_with("5s"));
+    }
+
+    #[test]
+    fn rows_under_a_timed_sleep_take_the_room_from_their_summary() {
+        let timed = sleeping_beside_awake(r#"{"since":100,"wake":3700}"#);
+        let untimed = sleeping_beside_awake(r#"{"since":100,"wake":null}"#);
+
+        assert_eq!(
+            row_of(&timed, "nap-a1b").1.chars().count(),
+            row_of(&timed, "busy-b2c").1.chars().count(),
+            "the text ends at the awake row's right edge"
+        );
+        assert_eq!(
+            row_of(&timed, "busy-b2c").1,
+            row_of(&untimed, "busy-b2c").1,
+            "and the awake row does not move"
+        );
+    }
+
+    #[test]
+    fn rows_read_a_wake_time_to_the_largest_unit_below_it() {
+        for (left, said) in [
+            (0, "in 0s"),
+            (30, "in 30s"),
+            (59, "in 59s"),
+            (60, "in 1m"),
+            (3540, "in 59m"),
+            (3599, "in 59m"),
+            (3600, "in 60m"),
+            (3601, "in 1h"),
+            (10799, "in 2h"),
+            (10800, "in 3h"),
+            (86399, "in 23h"),
+            (86400, "in 1d"),
+            (518400, "in 6d"),
+        ] {
+            assert_eq!(wakes_in(left), said, "{left} seconds left");
+        }
     }
 
     #[test]
