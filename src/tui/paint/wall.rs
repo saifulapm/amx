@@ -417,7 +417,8 @@ fn wakes_in(left: u64) -> String {
         0..60 => format!("in {left}s"),
         60..=3600 => format!("in {}m", left / 60),
         3601..86400 => format!("in {}h", left / 3600),
-        _ => format!("in {}d", left / 86400),
+        // As far as the age column ever reads.
+        _ => format!("in {}d", (left / 86400).min(365)),
     }
 }
 
@@ -1124,6 +1125,8 @@ mod tests {
             (86399, "in 23h"),
             (86400, "in 1d"),
             (518400, "in 6d"),
+            (365 * 86400, "in 365d"),
+            (u64::MAX, "in 365d"),
         ] {
             assert_eq!(wakes_in(left), said, "{left} seconds left");
         }
