@@ -444,6 +444,164 @@ fn z_puts_the_row_under_the_cursor_below_every_group_and_wakes_it_again() {
     );
 }
 
+/// Whether `drawn` has a line that reads `heading` and nothing else, so a
+/// capture that landed partway through the line does not count.
+fn heading_reads(drawn: &str, heading: &str) -> bool {
+    drawn.lines().any(|line| line.trim_end() == heading)
+}
+
+/// Whether the cursor's bar is on the first line of the view holding `text`.
+///
+/// The first line, since the footer can name the agent under the cursor too.
+fn bar_on(amx: &Harness, view: &str, text: &str) -> bool {
+    coloured(amx, view)
+        .lines()
+        .find(|line| line.contains(text))
+        .is_some_and(|line| line.contains(&bar()))
+}
+
+#[test]
+fn s_shelves_a_finished_row_under_a_shut_heading_and_moves_on() {
+    let amx = Harness::new();
+    // Completed lists the newest ending first.
+    finished(&amx, "one-a1b", "done", 30);
+    finished(&amx, "two-b2c", "done", 60);
+    finished(&amx, "three-c3d", "done", 90);
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let drawn = amx.until("the three rows", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("one-a1b") && drawn.contains("two-b2c") && drawn.contains("three-c3d"))
+            .then_some(drawn)
+    });
+    assert!(
+        line_of(&drawn, "one-a1b") < line_of(&drawn, "two-b2c")
+            && line_of(&drawn, "two-b2c") < line_of(&drawn, "three-c3d"),
+        "{drawn}"
+    );
+
+    // The cursor starts on the first row.
+    press(&amx, &view, "Down");
+    amx.until("the bar on the middle row", || {
+        bar_on(&amx, &view, "two-b2c").then_some(())
+    });
+    press(&amx, &view, "s");
+    let shelved = amx.until("the row put on a shut shelf", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Shelved 1")
+            && drawn.contains("1 shelved")
+            && !drawn.contains("two-b2c"))
+        .then_some(drawn)
+    });
+    assert!(
+        line_of(&shelved, "Completed") < line_of(&shelved, "one-a1b")
+            && line_of(&shelved, "one-a1b") < line_of(&shelved, "three-c3d")
+            && line_of(&shelved, "three-c3d") < line_of(&shelved, "Shelved 1"),
+        "Completed keeps the other two, and the shelf is the last group on \
+         the wall:\n{shelved}"
+    );
+    amx.until("the bar on the row that followed", || {
+        bar_on(&amx, &view, "three-c3d").then_some(())
+    });
+
+    // The shut heading is the last line of the list, so G reaches it.
+    press(&amx, &view, "G");
+    amx.until("the bar on the shelf's heading", || {
+        bar_on(&amx, &view, "Shelved").then_some(())
+    });
+    press(&amx, &view, "Enter");
+    let opened = amx.until("the shelf open", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Shelved") && drawn.contains("two-b2c")).then_some(drawn)
+    });
+    assert_eq!(
+        line_of(&opened, "two-b2c"),
+        line_of(&opened, "Shelved") + 1,
+        "the shelved row is under the shelf's heading:\n{opened}"
+    );
+
+    // The mark is persisted, and a new view opens the shelf shut.
+    let again = amx.in_a_terminal(&[], &[]);
+    let reopened = amx.until("the second view with its shelf shut", || {
+        let drawn = amx.capture(&again);
+        (heading_reads(&drawn, "Shelved 1") && drawn.contains("three-c3d")).then_some(drawn)
+    });
+    assert!(!reopened.contains("two-b2c"), "{reopened}");
+
+    assert!(
+        agents(&amx).contains(&"two-b2c".to_string()),
+        "shelving keeps the record: {:?}",
+        agents(&amx)
+    );
+}
+
+#[test]
+fn a_shelved_row_comes_back_under_working_when_the_agent_works_again() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    // The scenario takes its second message on a timer, not on a key, so no
+    // reply typed in the view can be what moves it. Wait for its answer to
+    // that message: after it the agent sits idle for good.
+    amx.until("the second turn's answer", || {
+        let state = amx.state("fix-login-a1b");
+        (state["state"] == "idle" && state["result"] == "the linter is clean").then_some(())
+    });
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the bar on the row", || {
+        bar_on(&amx, &view, "fix-login-a1b").then_some(())
+    });
+    press(&amx, &view, "s");
+    amx.until("the row on the shelf", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Shelved 1") && !drawn.contains("fix-login-a1b")).then_some(())
+    });
+
+    // What a reply's hook writes: working, later than the mark.
+    let mut state = amx.state("fix-login-a1b");
+    state["state"] = json!("working");
+    state["since"] = json!(now() + 1);
+    amx.set_state("fix-login-a1b", state);
+
+    let back = amx.until("the row under Working, and no shelf", || {
+        let drawn = amx.capture(&view);
+        (heading_reads(&drawn, "Working")
+            && drawn.contains("fix-login-a1b")
+            && !drawn.contains("Shelved"))
+        .then_some(drawn)
+    });
+    assert_eq!(
+        line_of(&back, "fix-login-a1b"),
+        line_of(&back, "Working") + 1,
+        "{back}"
+    );
+    assert!(!back.contains("1 shelved"), "{back}");
+}
+
+#[test]
+fn s_leaves_a_working_row_where_it_is_and_says_why() {
+    let amx = Harness::new();
+    amx.play("port-import-b2c", "works-with-a-spinner");
+    amx.until_state("port-import-b2c", "working");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    amx.until("the bar on the row", || {
+        bar_on(&amx, &view, "port-import-b2c").then_some(())
+    });
+    press(&amx, &view, "s");
+    let refused = amx.until("the refusal, with the row still under Working", || {
+        let drawn = amx.capture(&view);
+        (drawn.contains("still working; z sleeps it") && heading_reads(&drawn, "Working"))
+            .then_some(drawn)
+    });
+    assert_eq!(
+        line_of(&refused, "port-import-b2c"),
+        line_of(&refused, "Working") + 1,
+        "{refused}"
+    );
+    assert!(!refused.contains("Shelved"), "{refused}");
+}
+
 #[test]
 fn ready_for_review_takes_an_ended_agent_whose_request_is_still_open() {
     let amx = Harness::new();
