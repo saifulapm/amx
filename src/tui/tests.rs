@@ -1896,6 +1896,57 @@ fn remembered_keeps_the_lines_sent_for_the_next_view() {
 }
 
 #[test]
+fn a_timed_sleep_its_question_woke_is_written_out_for_every_view() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("view.json");
+    std::fs::write(
+        &path,
+        br#"{"arrangement":{"asleep":{"ask-a1b":{"since":100,"wake":99999}}}}"#,
+    )
+    .unwrap();
+    let at = |phase, since| {
+        vec![reading(
+            "ask-a1b",
+            phase,
+            State {
+                state: phase,
+                since,
+                last_event: since,
+                ..State::default()
+            },
+        )]
+    };
+    let open = || {
+        let mut screen = Screen {
+            remembering: Some(path.clone()),
+            ..Screen::default()
+        };
+        screen.list.time_is(200);
+        screen.adopt_the_view();
+        screen.showing(at(Phase::Working, 90));
+        screen
+    };
+    let mut left = open();
+    let mut right = open();
+    assert_eq!(wall(&left), ["Asleep", "ask-a1b"]);
+
+    // The agent asks after it was slept: the left view reads it first.
+    left.showing(at(Phase::Waiting, 150));
+    assert_eq!(wall(&left), ["Needs input", "ask-a1b"]);
+    assert!(
+        !Remembered::read(&path).arrangement.has_asleep("ask-a1b"),
+        "the woken mark is gone from the file"
+    );
+
+    // Answered before the right view ever saw the question.
+    right.adopt_the_view();
+    right.showing(at(Phase::Working, 160));
+    assert_eq!(wall(&right), ["Working", "ask-a1b"]);
+    left.showing(at(Phase::Working, 160));
+    assert_eq!(wall(&left), ["Working", "ask-a1b"]);
+}
+
+#[test]
 fn a_pin_in_one_view_lands_in_the_other_on_the_next_reading() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("view.json");

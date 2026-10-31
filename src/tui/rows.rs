@@ -211,6 +211,22 @@ pub struct Sleep {
     pub wake: Option<u64>,
 }
 
+/// Whether a sleep mark puts the agent to sleep at `now`. A sleep with no
+/// wake always does. A timed one does until its wake, or until the agent
+/// asks or fails after the mark was set (`since`, its last phase change, is
+/// newer), since then it needs the user. Asking before the sleep was set does
+/// not count: that sleep was asked for over the question.
+pub fn sleeps(mark: Option<&Sleep>, phase: Phase, since: u64, now: u64) -> bool {
+    let Some(mark) = mark else {
+        return false;
+    };
+    let Some(wake) = mark.wake else {
+        return true;
+    };
+    let needs_you = matches!(phase, Phase::Waiting | Phase::Failed) && since > mark.since;
+    now < wake && !needs_you
+}
+
 /// Sleep marks by agent id, read from either shape the file has held: the
 /// marks, or the list of ids saved before wake times, which are sleeps with
 /// no wake.
@@ -550,6 +566,8 @@ pub struct List {
     after: fn(&Meta) -> u64,
     /// `$HOME`, read once, for abbreviating heading paths to `~`.
     home: Option<PathBuf>,
+    /// Whether the last reading dropped a timed sleep that stopped holding.
+    woke: bool,
 }
 
 impl Default for List {
@@ -588,6 +606,7 @@ impl Default for List {
             afters: HashMap::new(),
             after: shelve_after_of,
             home: std::env::home_dir(),
+            woke: false,
         }
     }
 }
@@ -645,12 +664,35 @@ impl List {
         self.remember_the_requests(&views);
         self.remember_the_afters(&views);
         self.views = views;
+        self.woke = self.drop_the_lapsed();
         self.rebuild(on.agent().filter(|_| placed));
         if placed {
             self.follow(&on);
         }
         // Only the next reading: later ones were not asked for.
         self.let_go = None;
+    }
+
+    /// Whether the last reading woke a timed sleep, dropping its mark, which
+    /// the view must then write out so no view reads it again.
+    pub fn woke(&self) -> bool {
+        self.woke
+    }
+
+    /// Drop the mark of each agent in the reading whose timed sleep stopped
+    /// holding. Kept, it would put the row back to sleep once the question
+    /// that woke it is answered. Returns whether any went.
+    fn drop_the_lapsed(&mut self) -> bool {
+        let lapsed: Vec<String> = self
+            .views
+            .iter()
+            .filter(|view| self.asleep.contains_key(view.id()) && !self.sleeping(view))
+            .map(|view| view.id().to_string())
+            .collect();
+        for id in &lapsed {
+            self.asleep.remove(id);
+        }
+        !lapsed.is_empty()
     }
 
     /// Place the cursor afresh on the next reading, as if the list had just
@@ -759,9 +801,14 @@ impl List {
         self.held.contains(view.id())
     }
 
-    /// Whether this agent is asleep.
+    /// Whether this agent is asleep. See [`sleeps`].
     pub fn sleeping(&self, view: &View) -> bool {
-        self.asleep.contains_key(view.id())
+        sleeps(
+            self.asleep.get(view.id()),
+            view.phase(),
+            view.state.since,
+            self.now,
+        )
     }
 
     /// Whether this agent's shelve mark still holds. See [`shelves`].
@@ -4039,6 +4086,164 @@ mod tests {
                 wake: Some(3605)
             }
         );
+    }
+
+    #[test]
+    fn arranged_a_timed_sleep_holds_until_its_time_or_a_question_after_it() {
+        let hour = Sleep {
+            since: 100,
+            wake: Some(3700),
+        };
+        assert!(
+            sleeps(Some(&hour), Phase::Working, 90, 200),
+            "set while it works"
+        );
+        assert!(
+            sleeps(Some(&hour), Phase::Done, 150, 3699),
+            "a turn that ended"
+        );
+        assert!(
+            !sleeps(Some(&hour), Phase::Done, 150, 3700),
+            "its time came"
+        );
+        assert!(
+            !sleeps(Some(&hour), Phase::Waiting, 150, 200),
+            "asked after it"
+        );
+        assert!(
+            !sleeps(Some(&hour), Phase::Failed, 150, 200),
+            "failed after it"
+        );
+        assert!(
+            sleeps(Some(&hour), Phase::Waiting, 100, 200),
+            "asked the second it was set: not after it"
+        );
+        assert!(
+            sleeps(Some(&hour), Phase::Waiting, 50, 200),
+            "already waiting when slept"
+        );
+        assert!(!sleeps(None, Phase::Done, 150, 200), "never slept");
+
+        let untimed = Sleep {
+            since: 100,
+            wake: None,
+        };
+        for phase in [Phase::Waiting, Phase::Failed, Phase::Done] {
+            assert!(
+                sleeps(Some(&untimed), phase, 150, u64::MAX),
+                "{phase:?}: a sleep with no time holds"
+            );
+        }
+    }
+
+    #[test]
+    fn arranged_a_row_woken_by_its_question_does_not_fall_back_asleep() {
+        let mut list = listed(vec![view("busy-a1b", Phase::Working, 90)]);
+        list.time_is(200);
+        list.arrange(Arrangement {
+            asleep: [(
+                "busy-a1b".to_string(),
+                Sleep {
+                    since: 100,
+                    wake: Some(3700),
+                },
+            )]
+            .into(),
+            ..Arrangement::default()
+        });
+        assert_eq!(lines(&list), ["Asleep (1)", "busy-a1b"]);
+        assert!(!list.woke(), "nothing lapsed yet");
+
+        list.show(vec![view("busy-a1b", Phase::Waiting, 150)]);
+        assert_eq!(lines(&list), ["Needs input (1)", "busy-a1b"]);
+        assert!(list.woke(), "the view must write the drop out");
+        assert!(!list.arrangement().has_asleep("busy-a1b"));
+
+        // Answered, it works and finishes, both after the mark was set.
+        list.show(vec![view("busy-a1b", Phase::Working, 160)]);
+        assert_eq!(lines(&list), ["Working (1)", "busy-a1b"]);
+        assert!(!list.woke(), "only the reading that dropped it says so");
+        list.show(vec![view("busy-a1b", Phase::Done, 170)]);
+        assert_eq!(lines(&list), ["Completed (1)", "busy-a1b"]);
+    }
+
+    #[test]
+    fn arranged_a_timed_sleep_ends_on_time_and_a_failure_ends_it_early() {
+        let marks = |since| Arrangement {
+            asleep: [
+                (
+                    "ask-a1b".to_string(),
+                    Sleep {
+                        since,
+                        wake: Some(since + 3600),
+                    },
+                ),
+                (
+                    "bad-b2c".to_string(),
+                    Sleep {
+                        since,
+                        wake: Some(since + 3600),
+                    },
+                ),
+                ("nap-c3d".to_string(), Sleep { since, wake: None }),
+            ]
+            .into(),
+            ..Arrangement::default()
+        };
+        let mut list = listed(vec![
+            view("ask-a1b", Phase::Waiting, 50),
+            view("bad-b2c", Phase::Working, 50),
+            view("nap-c3d", Phase::Waiting, 150),
+        ]);
+        list.time_is(200);
+        list.arrange(marks(100));
+        assert_eq!(
+            lines(&list),
+            ["Asleep (3)", "ask-a1b", "bad-b2c", "nap-c3d"],
+            "waiting before the sleep, or slept with no time"
+        );
+        assert_eq!(list.waiting(), 2, "the header still counts both waiting");
+
+        list.show(vec![
+            view("ask-a1b", Phase::Waiting, 50),
+            view("bad-b2c", Phase::Failed, 160),
+            view("nap-c3d", Phase::Waiting, 150),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "Completed (1)",
+                "bad-b2c",
+                "",
+                "Asleep (2)",
+                "ask-a1b",
+                "nap-c3d"
+            ]
+        );
+
+        list.time_is(3700);
+        list.show(vec![
+            view("ask-a1b", Phase::Waiting, 50),
+            view("bad-b2c", Phase::Failed, 160),
+            view("nap-c3d", Phase::Waiting, 150),
+        ]);
+        assert_eq!(
+            lines(&list),
+            [
+                "Needs input (1)",
+                "ask-a1b",
+                "",
+                "Completed (1)",
+                "bad-b2c",
+                "",
+                "Asleep (1)",
+                "nap-c3d"
+            ],
+            "the hour is up"
+        );
+        assert!(list.woke());
+        assert!(!list.arrangement().has_asleep("ask-a1b"));
+        assert!(list.arrangement().has_asleep("nap-c3d"));
     }
 
     #[test]

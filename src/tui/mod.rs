@@ -1288,6 +1288,9 @@ impl Screen {
         let on = self.list.selected().map(|view| view.id().to_string());
         let pointed = self.hover.and_then(|at| self.line_named(at));
         self.list.show(views);
+        // A timed sleep the reading woke is dropped from the file too, or a
+        // view reading it later would put the row back to sleep.
+        self.keep(self.list.woke());
         let still = self.list.selected().map(|view| view.id());
         if on.is_some() && on.as_deref() != still {
             self.wall.follow.set(true);
