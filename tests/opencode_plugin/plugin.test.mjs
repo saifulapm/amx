@@ -34,19 +34,26 @@ const messages = (scenario) => lines(join(OPENCODE, "messages", `${scenario}.jso
 
 const saved = { env: { ...process.env }, argv: process.argv };
 let undo = [];
+// The timers go back first, so a cleanup that throws cannot leave them
+// mocked for the next test.
 afterEach(() => {
-  for (const step of undo.reverse()) step();
-  undo = [];
-  process.env = { ...saved.env };
-  process.argv = saved.argv;
   mock.timers.reset();
+  try {
+    for (const step of undo.reverse()) step();
+  } finally {
+    undo = [];
+    process.env = { ...saved.env };
+    process.argv = saved.argv;
+  }
 });
 
 // One pane: a scratch record, the stub on AMX_BIN, and a ctx whose route the
 // test sets. `amx: false` is a pane amx did not start.
 function pane({ scenario = "turn", argv = [], amx = true, bin = STUB } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "amx-oc-plugin-"));
-  undo.push(() => rmSync(dir, { recursive: true, force: true }));
+  // A report still on its way when the test ends can add to `dir` while it
+  // is emptied (ENOTEMPTY, seen in a cloud session); the removal tries again.
+  undo.push(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
   const record = join(dir, "record");
   mkdirSync(record);
   const rec = join(dir, "reports");
