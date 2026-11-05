@@ -1036,29 +1036,31 @@ mod tests {
         assert!(pane.server.pane_answers_for(&pane.pane, &ids[0]));
     }
 
+    /// An agents root no record directory fits under: the root itself is
+    /// one byte short of the longest path the system takes, so it opens,
+    /// lists and locks, but no `<root>/<id>` can be made. Unlike a read-only
+    /// directory this holds for root too, as in a cloud session.
+    fn a_root_too_deep_for_a_record(base: &Path) -> PathBuf {
+        let longest = nix::libc::PATH_MAX as usize - 1;
+        let mut root = base.to_path_buf();
+        while root.as_os_str().len() < longest {
+            let room = longest - root.as_os_str().len() - 1;
+            root.push("d".repeat(room.clamp(1, 200)));
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
     #[test]
     fn adopt_leaves_the_pane_unstamped_when_the_record_cannot_be_written() {
-        let root = TempDir::new().unwrap();
+        let base = TempDir::new().unwrap();
+        let root = a_root_too_deep_for_a_record(base.path());
         let pane = APane::showing(&A_PERMISSION_BOX);
-        std::fs::set_permissions(
-            root.path(),
-            std::os::unix::fs::PermissionsExt::from_mode(0o500),
-        )
-        .unwrap();
 
-        let refused = adopt(
-            root.path(),
-            &pane,
-            &pane.env("abc-123"),
-            &AdoptArgs::default(),
-        );
-        std::fs::set_permissions(
-            root.path(),
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        )
-        .unwrap();
+        let refused = adopt(&root, &pane, &pane.env("abc-123"), &AdoptArgs::default());
 
-        assert!(refused.is_err());
+        let why = format!("{:#}", refused.unwrap_err());
+        assert!(why.contains("File name too long"), "{why}");
         assert_eq!(
             pane.server
                 .pane_option(&pane.pane, crate::tmux::ID_OPTION)
