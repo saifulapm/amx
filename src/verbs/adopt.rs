@@ -1041,14 +1041,34 @@ mod tests {
     /// lists and locks, but no `<root>/<id>` can be made. Unlike a read-only
     /// directory this holds for root too, as in a cloud session.
     fn a_root_too_deep_for_a_record(base: &Path) -> PathBuf {
-        let longest = nix::libc::PATH_MAX as usize - 1;
+        let root = deepest_under(base, nix::libc::PATH_MAX as usize - 1);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// `base` with `d` folders under it, `longest` bytes in all. One byte
+    /// short leaves no room for a `/d`, so the last folder takes the `d`.
+    fn deepest_under(base: &Path, longest: usize) -> PathBuf {
         let mut root = base.to_path_buf();
         while root.as_os_str().len() < longest {
             let room = longest - root.as_os_str().len() - 1;
-            root.push("d".repeat(room.clamp(1, 200)));
+            if room == 0 {
+                root.as_mut_os_string().push("d");
+            } else {
+                root.push("d".repeat(room.min(200)));
+            }
         }
-        std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn the_deep_root_is_exactly_as_long_as_asked_from_any_base() {
+        for n in 1..=600 {
+            let base = PathBuf::from(format!("/{}", "b".repeat(n)));
+            let root = deepest_under(&base, 4095);
+            assert_eq!(root.as_os_str().len(), 4095, "base of {n}");
+            assert!(root.starts_with(&base), "base of {n}");
+        }
     }
 
     #[test]
