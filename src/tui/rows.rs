@@ -291,7 +291,7 @@ impl<T> Read<T> {
 }
 
 /// A field of the view file, or its default if it does not read.
-fn or_default<'de, D, T>(reading: D) -> Result<T, D::Error>
+pub(super) fn or_default<'de, D, T>(reading: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Default,
@@ -306,6 +306,15 @@ where
 {
     let ids: Vec<Read<String>> = or_default(reading)?;
     Ok(ids.into_iter().filter_map(Read::good).collect())
+}
+
+/// The lines that read, in order.
+pub(super) fn readable_lines<'de, D>(reading: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let lines: Vec<Read<String>> = or_default(reading)?;
+    Ok(lines.into_iter().filter_map(Read::good).collect())
 }
 
 /// The shelve marks that read.
@@ -5643,7 +5652,7 @@ mod tests {
             statusline: true,
             arrangement: list.arrangement(),
             vendor: false,
-            sent: Default::default(),
+            ..Default::default()
         }
         .write(&kept)
         .unwrap();
@@ -5677,6 +5686,15 @@ mod tests {
         let older = Arrangement::from_disk(&root);
         assert!(older.has_pinned("fix-login-a1b"));
         assert!(!older.has_asleep("fix-login-a1b"));
+
+        // One top-level field that does not read keeps the pins `park` asks
+        // about.
+        std::fs::write(
+            &kept,
+            br#"{"arrangement":{"held":["fix-login-a1b"]},"vendor":"on","sent":7}"#,
+        )
+        .unwrap();
+        assert!(Arrangement::from_disk(&root).has_pinned("fix-login-a1b"));
 
         std::fs::write(&kept, b"{\"arrangement\":").unwrap();
         assert_eq!(

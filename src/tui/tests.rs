@@ -1874,6 +1874,105 @@ fn replied_keeps_the_line_it_sent_and_not_one_refused() {
     );
 }
 
+/// A view file with two pins, a sleep and a shelve mark, its other fields
+/// set to `rest`.
+fn four_marks_and(rest: &str) -> String {
+    format!(
+        r#"{{"arrangement":{{"held":["one-a1b","two-b2c"],"asleep":{{"zzz-c3d":{{"since":5}}}},"shelved":{{"off-d4e":{{"at":5}}}}}}{rest}}}"#
+    )
+}
+
+#[test]
+fn remembered_a_field_that_does_not_read_costs_that_field_and_not_the_marks() {
+    let state = TempDir::new().unwrap();
+    let path = state.path().join("view.json");
+    for id in ["one-a1b", "two-b2c", "zzz-c3d", "off-d4e", "new-e5f"] {
+        std::fs::create_dir_all(state.path().join(id)).unwrap();
+    }
+    let fleet = || {
+        vec![
+            reading("one-a1b", Phase::Working, State::default()),
+            reading("two-b2c", Phase::Working, State::default()),
+            reading("zzz-c3d", Phase::Working, State::default()),
+            reading("off-d4e", Phase::Done, State::default()),
+            reading("new-e5f", Phase::Working, State::default()),
+        ]
+    };
+
+    for rest in [
+        r#","vendor":"on""#,
+        r#","statusline":"yes""#,
+        r#","sent":{"tasks":["fix it",42]}"#,
+        r#","sent":7"#,
+    ] {
+        std::fs::write(&path, four_marks_and(rest)).unwrap();
+        let mut screen = Screen {
+            root: state.path().to_path_buf(),
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        screen.adopt_the_view();
+        assert_eq!(
+            wall(&screen),
+            [
+                "Pinned", "one-a1b", "two-b2c", "Working", "new-e5f", "Asleep", "zzz-c3d",
+                "Shelved"
+            ],
+            "every mark is drawn over {rest}, off-d4e under the shut shelf"
+        );
+        assert!(!screen.vendor, "and the vendor column is at its default");
+        if rest.contains("fix it") {
+            assert_eq!(
+                screen.sent.lines_for(&Asking::Task),
+                ["fix it"],
+                "and the sent line that reads is offered"
+            );
+        }
+
+        // A third pin writes the file whole again, with every mark in it.
+        while screen.list.selected().map(View::id) != Some("new-e5f") {
+            screen.list.down();
+        }
+        assert!(screen.list.hold_or_let_go());
+        screen.keep(true);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let arrangement = &written["arrangement"];
+        assert_eq!(
+            arrangement["held"],
+            serde_json::json!(["new-e5f", "one-a1b", "two-b2c"]),
+            "{rest}"
+        );
+        assert_eq!(
+            arrangement["asleep"].as_object().unwrap().len(),
+            1,
+            "{rest}"
+        );
+        assert_eq!(
+            arrangement["shelved"].as_object().unwrap().len(),
+            1,
+            "{rest}"
+        );
+    }
+}
+
+#[test]
+fn remembered_a_key_this_build_does_not_know_is_written_back() {
+    let state = TempDir::new().unwrap();
+    let path = state.path().join("view.json");
+    std::fs::write(&path, four_marks_and(r#","later":{"kept":1}"#)).unwrap();
+    let mut screen = Screen {
+        root: state.path().to_path_buf(),
+        remembering: Some(path.clone()),
+        ..watching(vec![reading("one-a1b", Phase::Working, State::default())])
+    };
+    screen.adopt_the_view();
+    screen.remember_line(&Asking::Task, "port the importer");
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["later"], serde_json::json!({"kept": 1}));
+}
+
 #[test]
 fn remembered_keeps_the_lines_sent_for_the_next_view() {
     let root = TempDir::new().unwrap();

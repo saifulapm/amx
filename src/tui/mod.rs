@@ -933,18 +933,25 @@ fn offer_the_statusline(path: &Path) -> Option<String> {
 }
 
 /// What the view keeps between runs. Every field defaults, so a file written
-/// by an older amx still reads.
+/// by an older amx still reads, and a field that does not read costs only
+/// itself (see [`rows::or_default`]).
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Remembered {
     /// Whether the status line has been offered.
+    #[serde(deserialize_with = "rows::or_default")]
     statusline: bool,
     /// Pins, sleeping rows, order and axis.
     arrangement: Arrangement,
     /// Whether rows show the vendor column.
+    #[serde(deserialize_with = "rows::or_default")]
     vendor: bool,
     /// Lines sent, for recall in a later view.
+    #[serde(deserialize_with = "rows::or_default")]
     sent: act::Backlog,
+    /// Keys a newer amx wrote, written back as they were.
+    #[serde(flatten)]
+    later: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Remembered {

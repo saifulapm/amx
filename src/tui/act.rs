@@ -72,7 +72,9 @@ pub struct Walking {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Backlog {
+    #[serde(deserialize_with = "super::rows::readable_lines")]
     tasks: Vec<String>,
+    #[serde(deserialize_with = "super::rows::readable_lines")]
     replies: Vec<String>,
 }
 
