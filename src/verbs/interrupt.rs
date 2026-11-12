@@ -94,7 +94,7 @@ fn cut(root: &Path, view: &View) -> Result<Cut> {
     }
     let agent = Agent::open(root, view.id())?;
     let writer = agent.writer()?;
-    let now = writer.state()?;
+    let now = derive::as_a_view_reads(&view.meta, view.verdict.phase, writer.state()?);
     // `_park` stamps its mark without moving the record's last event.
     let cut = match send::moved(&view.state, &now) || now.parked_at > 0 {
         true => running_now(&now),

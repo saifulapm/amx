@@ -117,11 +117,8 @@ impl View {
     /// the verdict is waiting or `unknown` (which cannot tell the question was
     /// answered). A placeholder question is dropped too; see
     /// [`forget_the_placeholder`].
-    pub fn new(meta: Meta, mut state: State, verdict: Verdict) -> View {
-        if !matches!(verdict.phase, Phase::Waiting | Phase::Unknown) {
-            state.asks(None);
-        }
-        forget_the_placeholder(own_screens(&meta), &mut state);
+    pub fn new(meta: Meta, state: State, verdict: Verdict) -> View {
+        let state = as_a_view_reads(&meta, verdict.phase, state);
         View {
             meta,
             state,
@@ -335,6 +332,20 @@ fn forget_the_placeholder(screens: &Ruleset, state: &mut State) {
         state.options.clear();
         state.walked = false;
     }
+}
+
+/// `state` as a [`View`] with a `phase` verdict holds it: the question
+/// dropped unless the verdict is waiting or `unknown`, and a placeholder
+/// question dropped always.
+///
+/// A caller that compares a record read later with a view's state reads the
+/// record through this first, or the view's own edits read as a change.
+pub(crate) fn as_a_view_reads(meta: &Meta, phase: Phase, mut state: State) -> State {
+    if !matches!(phase, Phase::Waiting | Phase::Unknown) {
+        state.asks(None);
+    }
+    forget_the_placeholder(own_screens(meta), &mut state);
+    state
 }
 
 /// The vendor's spinner line, e.g. `✽ Nesting… (15s · still thinking)`.

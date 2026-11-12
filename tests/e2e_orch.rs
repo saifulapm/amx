@@ -249,6 +249,7 @@ fn two_answers_started_together_answer_one_box_and_never_the_next() {
         })
     };
 
+    let mut lost = 0;
     for round in 0..rounds {
         let first = round * 2 + 1;
         showing(first);
@@ -279,6 +280,7 @@ fn two_answers_started_together_answer_one_box_and_never_the_next() {
         match codes[..] {
             // The loser saw the record move and typed nothing.
             [0, 2] => {
+                lost += 1;
                 showing(first + 1);
                 let out = amx.amx(&["answer", id, "1"]);
                 assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -288,6 +290,7 @@ fn two_answers_started_together_answer_one_box_and_never_the_next() {
             _ => panic!("round {round}: {outs:?}"),
         }
     }
+    assert!(lost > 0, "no round had a loser, so the refusal went unseen");
     amx.until_state(id, "idle");
 
     // Every answer is logged against the box that was up when it went in,

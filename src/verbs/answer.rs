@@ -728,7 +728,9 @@ fn reply(
     shape: Shape,
 ) -> Result<Answered> {
     let writer = agent.writer()?;
-    if send::moved(read, &writer.state()?) || send::told_since(agent, read, from)? {
+    // Read as the caller's view read it, which was waiting.
+    let now = derive::as_a_view_reads(&agent.meta()?, Phase::Waiting, writer.state()?);
+    if send::moved(read, &now) || send::told_since(agent, read, from)? {
         return Ok(Answered::Moved);
     }
     if !keyboard.answers_for(agent.id()) {
@@ -2128,6 +2130,38 @@ mod tests {
     }
 
     #[test]
+    fn a_placeholder_the_view_dropped_is_not_a_question_that_moved() {
+        // claude 2.1.240's permission notice says only "Claude needs your
+        // permission", which the view drops and the record keeps.
+        let root = tempfile::TempDir::new().unwrap();
+        let mut meta = recorded(root.path(), &State::default()).meta().unwrap();
+        meta.agent = Some("claude".to_string());
+        let records = root.path().join("records");
+        let agent = Agent::create(&records, &meta).unwrap();
+        let mut asked = a_permission_box();
+        asked.question = Some("Claude needs your permission".to_string());
+        let record = agent
+            .writer()
+            .unwrap()
+            .update_state(|state| *state = asked)
+            .unwrap();
+        let from = send::logged(&agent);
+        let verdict = derive::Verdict {
+            phase: Phase::Waiting,
+            evidence: derive::Evidence::Hooks,
+            rule: None,
+            age: 1,
+            worked: 0,
+        };
+        let view = derive::View::new(meta, record, verdict);
+        assert_eq!(view.state.question, None, "the view drops it");
+
+        let (replied, typist) = answer_at(&agent, &view.state, from, "1");
+        assert!(matches!(replied, Answered::Yes));
+        assert_eq!(*typist.0.borrow(), vec![vec!["1"]]);
+    }
+
+    #[test]
     fn a_pane_that_went_away_since_the_reading_is_sent_nothing() {
         let root = tempfile::TempDir::new().unwrap();
         let agent = recorded(root.path(), &a_plain_question());
@@ -2194,7 +2228,7 @@ mod tests {
 
         let [first, words, second] = ['x', 'y', 'z'].map(|c| c.to_string().repeat(200));
         let mut landed = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..30 {
             let idle = agent
                 .writer()
                 .unwrap()
@@ -2234,6 +2268,10 @@ mod tests {
             }
             assert!(sent && again, "both sends are taken");
         }
+        assert!(
+            landed.contains(&words),
+            "the answer's words raced the sends at least once"
+        );
 
         let started = std::time::Instant::now();
         let mut arrived = Vec::new();
