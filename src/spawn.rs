@@ -703,10 +703,22 @@ fn going(root: &Path) -> Result<Vec<Meta>> {
 /// skipped. A tmux that cannot be asked is an error, since the record may be a
 /// running agent.
 fn answering(root: &Path, wanted: impl Fn(Phase, &Meta) -> bool) -> Result<Vec<Meta>> {
+    answering_among(root, crate::store::list(root)?, wanted)
+}
+
+/// [`answering`] over the ids a listing gave. One removed since, by another
+/// amx stopping or clearing its own agent, is skipped.
+fn answering_among(
+    root: &Path,
+    ids: Vec<String>,
+    wanted: impl Fn(Phase, &Meta) -> bool,
+) -> Result<Vec<Meta>> {
     let mut kept = Vec::new();
     let mut listings = Listings::default();
-    for id in crate::store::list(root)? {
-        let agent = Agent::open(root, &id)?;
+    for id in ids {
+        let Ok(agent) = Agent::open(root, &id) else {
+            continue;
+        };
         let Ok(state) = agent.state() else { continue };
         let Ok(meta) = agent.meta() else { continue };
         if !wanted(state.state, &meta) {
@@ -1581,6 +1593,24 @@ mod tests {
     fn placed(server: &Server, id: &str) -> PaneId {
         let command = ["sh", "-c", "while :; do sleep 0.05; done"].map(str::to_string);
         place(server, id, Path::new("/"), &command).expect("a pane for it")
+    }
+
+    #[test]
+    fn spawn_counting_the_caps_passes_over_a_record_removed_meanwhile() {
+        // Other agents come and go while a spawn counts: a record listed and
+        // removed before it is opened is not this spawn's failure.
+        let root = TempDir::new().unwrap();
+        let socket = crate::tmux::Socket::Name("amx-spawn-tests-nobody".to_string());
+        Agent::create(
+            root.path(),
+            &meta("still-a1b", socket, PaneId::new("%1").unwrap()),
+        )
+        .unwrap();
+        let listed = vec!["gone-b2c".to_string(), "still-a1b".to_string()];
+
+        let counted = answering_among(root.path(), listed, |_, _| true)
+            .expect("a count over somebody else's removed record");
+        assert!(counted.is_empty(), "no pane answers on that server");
     }
 
     #[test]
