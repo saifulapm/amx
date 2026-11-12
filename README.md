@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/a4dac175-5291-4f8e-b8fe-1f94594e24ab
 curl -fsSL https://saifulapm.github.io/amx/install.sh | sh
 ```
 
-or `cargo install --git https://github.com/saifulapm/amx` · [binaries](https://github.com/saifulapm/amx/releases)
+or `cargo install --locked --git https://github.com/saifulapm/amx` · [binaries](https://github.com/saifulapm/amx/releases)
 
 amx needs tmux 3.2 or newer. Wire up the agents you use, then check the machine:
 

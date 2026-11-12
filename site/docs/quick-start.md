@@ -43,7 +43,7 @@ Two variables change what it does:
 With a Rust toolchain you can build it instead:
 
 ```sh
-cargo install --git https://github.com/saifulapm/amx
+cargo install --locked --git https://github.com/saifulapm/amx
 ```
 
 Or from a checkout:
@@ -51,7 +51,7 @@ Or from a checkout:
 ```sh
 git clone https://github.com/saifulapm/amx
 cd amx
-cargo install --path .
+cargo install --locked --path .
 ```
 
 Keep exactly one `amx` on your PATH. The agents' hooks call whichever `amx`

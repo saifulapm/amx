@@ -18,13 +18,13 @@ die() { printf 'amx install: %s\n' "$*" >&2; exit 1; }
 case "$(uname -s)" in
   Linux) os="unknown-linux-musl" ;;
   Darwin) os="apple-darwin" ;;
-  *) die "no prebuilt binary for $(uname -s); build from source with: cargo install --git https://github.com/$repo" ;;
+  *) die "no prebuilt binary for $(uname -s); build from source with: cargo install --locked --git https://github.com/$repo" ;;
 esac
 
 case "$(uname -m)" in
   x86_64 | amd64) arch="x86_64" ;;
   aarch64 | arm64) arch="aarch64" ;;
-  *) die "no prebuilt binary for $(uname -m); build from source with: cargo install --git https://github.com/$repo" ;;
+  *) die "no prebuilt binary for $(uname -m); build from source with: cargo install --locked --git https://github.com/$repo" ;;
 esac
 
 # A shell running under Rosetta reports x86_64 on Apple silicon.
