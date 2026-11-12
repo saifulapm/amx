@@ -35,14 +35,20 @@ pub fn allowed_bytes_in(root: &Path, project_file: &Path) -> Option<Vec<u8>> {
 }
 
 /// Allow the file as it stands now by keeping a copy of its bytes.
+#[cfg(test)]
 pub fn allow_in(root: &Path, project_file: &Path) -> Result<()> {
-    let copy =
-        copy_of(root, project_file).context("no directory to record allowed project files in")?;
     let bytes = std::fs::read(project_file)
         .with_context(|| format!("reading {}", project_file.display()))?;
+    allow_bytes_in(root, project_file, &bytes)
+}
+
+/// Allow `project_file` as `bytes`, which the caller read and showed.
+pub fn allow_bytes_in(root: &Path, project_file: &Path, bytes: &[u8]) -> Result<()> {
+    let copy =
+        copy_of(root, project_file).context("no directory to record allowed project files in")?;
     let dir = copy.parent().expect("the copy sits in a directory");
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    crate::store::write_atomic(&copy, &bytes)
+    crate::store::write_atomic(&copy, bytes)
 }
 
 /// Revoke consent for the file. Returns whether there was a copy to remove.
