@@ -2826,3 +2826,38 @@ fn a_spawned_pane_has_no_background_to_answer_with_before_the_view_kept_one() {
 
     assert!(!heard.contains("rgb:"), "{heard:?}");
 }
+
+#[test]
+fn a_project_agent_loses_its_skip_permissions_flag_and_keeps_the_rest() {
+    // An allowed project file names the program and its ordinary arguments;
+    // a flag that skips the vendor's permission prompt is dropped with a
+    // warning naming the file and the key.
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let project = a_project(
+        &amx,
+        "fenced",
+        &format!("agent = \"{mock} --dangerously-skip-permissions --verbose\"\n"),
+    );
+
+    let out = new(
+        &amx,
+        "happy-turn",
+        &["--dir", &project.to_string_lossy(), "--no-worktree", "hi"],
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains(
+            "ignoring `agent` `--dangerously-skip-permissions`: only your own config can set it"
+        ),
+        "{said}"
+    );
+    let command = command_of(&amx, &id_of(&out));
+    assert!(command.iter().any(|arg| arg == "--verbose"), "{command:?}");
+    assert!(
+        !command
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"),
+        "{command:?}"
+    );
+}

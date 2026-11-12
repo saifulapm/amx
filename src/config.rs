@@ -581,7 +581,39 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
             ));
         }
     }
+    if let Some(toml::Value::String(agent)) = keys.get_mut("agent") {
+        let words: Vec<String> = agent.split_whitespace().map(String::from).collect();
+        let (kept, dropped) = crate::vendor::without_unasked(crate::vendor::find(agent), &words);
+        for spelling in dropped {
+            said.push(format!(
+                "{}: ignoring `agent` `{spelling}`: only your own config can set it",
+                file.display()
+            ));
+        }
+        *agent = kept.join(" ");
+    }
     for (harness, value) in keys.iter_mut() {
+        if let Some(args) = value
+            .as_table_mut()
+            .and_then(|table| table.get_mut("args"))
+            .and_then(toml::Value::as_array_mut)
+        {
+            let words: Vec<String> = args
+                .iter()
+                .filter_map(|arg| arg.as_str().map(String::from))
+                .collect();
+            let vendor = crate::vendor::table()
+                .iter()
+                .find(|vendor| vendor.name == harness);
+            let (kept, dropped) = crate::vendor::without_unasked(vendor, &words);
+            for spelling in dropped {
+                said.push(format!(
+                    "{}: ignoring `{harness}.args` `{spelling}`: only your own config can set it",
+                    file.display()
+                ));
+            }
+            *args = kept.into_iter().map(toml::Value::String).collect();
+        }
         let Some(env) = value
             .as_table_mut()
             .and_then(|table| table.get_mut("env"))
@@ -1807,6 +1839,99 @@ mod tests {
         }
         assert_eq!(warnings.len(), refused.len(), "{warnings:?}");
         assert_eq!(env.get("FOO").and_then(toml::Value::as_str), Some("1"));
+    }
+
+    /// The keys left and the warnings, after the project filter runs over
+    /// `text`.
+    fn fenced(text: &str) -> (toml::Table, Vec<String>) {
+        let mut keys: toml::Table = toml::from_str(text).unwrap();
+        let warnings = only_what_a_project_may_set(Path::new("/p/.amx/config.toml"), &mut keys);
+        (keys, warnings)
+    }
+
+    fn args_of(keys: &toml::Table, harness: &str) -> Vec<String> {
+        keys[harness]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_project_file_never_passes_a_flag_that_skips_permissions() {
+        let (keys, warnings) =
+            fenced("[claude]\nargs = [\"--dangerously-skip-permissions\", \"--verbose\"]\n");
+        assert_eq!(args_of(&keys, "claude"), ["--verbose"]);
+        assert_eq!(
+            warnings,
+            [
+                "/p/.amx/config.toml: ignoring `claude.args` `--dangerously-skip-permissions`: \
+              only your own config can set it"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_project_agent_keeps_its_program_and_loses_its_permission_flag() {
+        let (keys, warnings) = fenced("agent = \"claude --permission-mode bypassPermissions\"\n");
+        assert_eq!(keys["agent"].as_str(), Some("claude"));
+        assert_eq!(
+            warnings,
+            [
+                "/p/.amx/config.toml: ignoring `agent` `--permission-mode bypassPermissions`: \
+              only your own config can set it"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_project_file_never_settles_trust_for_pi() {
+        let (keys, warnings) = fenced("[pi]\nargs = [\"--approve\", \"--offline\"]\n");
+        assert_eq!(args_of(&keys, "pi"), ["--offline"]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_flag_and_its_value_go_together_however_they_are_written() {
+        let (keys, warnings) = fenced(
+            "[claude]\nargs = [\"--permission-mode=plan\", \"--permission-mode\", \"auto\", \"-x\"]\n\
+             [codex]\nargs = [\"-c\", \"approval_policy=never\", \"-c\", \"model=\\\"o3\\\"\", \"-c=sandbox_mode=danger-full-access\"]\n",
+        );
+        assert_eq!(args_of(&keys, "claude"), ["-x"]);
+        assert_eq!(args_of(&keys, "codex"), ["-c", "model=\"o3\""]);
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("`codex.args` `-c approval_policy=never`")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapper_amx_does_not_know_loses_every_vendors_flags() {
+        let (keys, warnings) =
+            fenced("agent = \"my-claude --dangerously-skip-permissions --yolo --approve hi\"\n");
+        assert_eq!(keys["agent"].as_str(), Some("my-claude hi"));
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+    }
+
+    #[test]
+    fn the_persons_own_config_keeps_its_permission_flags() {
+        let dir = TempDir::new().unwrap();
+        let mine = wrote(
+            dir.path(),
+            "config.toml",
+            "agent = \"claude --permission-mode plan\"\n[claude]\nargs = [\"--dangerously-skip-permissions\"]\n",
+        );
+        let (config, warnings) = layered(&[mine]);
+        assert_eq!(config.agent, "claude --permission-mode plan");
+        assert_eq!(
+            config.harness("claude").args,
+            ["--dangerously-skip-permissions"]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

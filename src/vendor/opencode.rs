@@ -185,6 +185,8 @@ pub const VENDOR: Vendor = Vendor {
     // service, which runs with the caller's env, and a killed pane's turn
     // keeps running (cli/src/services/standalone.ts:22-24).
     launch: &["--standalone"],
+    // `--auto` is the permission dial's own flag.
+    unasked: &[],
 };
 
 /// opencode's plugin events and the words its payloads use.

@@ -6,7 +6,7 @@
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
-    SessionSpec, Transcript, Vendor, Wire, Wiring,
+    SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -148,6 +148,14 @@ pub const VENDOR: Vendor = Vendor {
     cancel_presses: 1,
     interrupt_signal: None,
     launch: &[],
+    // Each skips the permission prompt whatever `--permission-mode` says, or
+    // approves tools before they are asked about (`--help`, 2.1.263).
+    unasked: &[
+        Unasked::bare("--dangerously-skip-permissions"),
+        Unasked::bare("--allow-dangerously-skip-permissions"),
+        Unasked::valued("--allowedTools"),
+        Unasked::valued("--allowed-tools"),
+    ],
 };
 
 /// claude's hook events and the words its payloads use.

@@ -7,7 +7,7 @@
 
 use super::{
     Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
-    SessionSpec, Transcript, Vendor, Wire, Wiring,
+    SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
 };
 
 /// codex's entry in the table.
@@ -143,6 +143,33 @@ pub const VENDOR: Vendor = Vendor {
     // killed pane's turn keeps running (tui/src/cli.rs:85,
     // hooks/src/engine/command_runner.rs:426-432).
     launch: &["--no-daemon"],
+    // The short sandbox flag, the approval policy that is the other half of
+    // codex's permissions, the two shortcuts past both, and the same two
+    // settings written as config overrides (utils/cli/src/shared_options.rs).
+    unasked: &[
+        Unasked::valued("-s"),
+        Unasked::valued("-a"),
+        Unasked::valued("--ask-for-approval"),
+        Unasked::bare("--full-auto"),
+        Unasked::bare("--dangerously-bypass-approvals-and-sandbox"),
+        Unasked::bare("--yolo"),
+        Unasked {
+            key: Some("approval_policy"),
+            ..Unasked::valued("-c")
+        },
+        Unasked {
+            key: Some("sandbox_mode"),
+            ..Unasked::valued("-c")
+        },
+        Unasked {
+            key: Some("approval_policy"),
+            ..Unasked::valued("--config")
+        },
+        Unasked {
+            key: Some("sandbox_mode"),
+            ..Unasked::valued("--config")
+        },
+    ],
 };
 
 /// codex's hook events and the words its payloads use.

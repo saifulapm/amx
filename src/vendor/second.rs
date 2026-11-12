@@ -5,8 +5,8 @@
 //! a field is added to [`Vendor`], give it a non-claude value here.
 
 use super::{
-    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Resume, SessionSpec, Vendor,
-    Wire, Wiring,
+    Capability, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Resume, SessionSpec, Unasked,
+    Vendor, Wire, Wiring,
 };
 
 /// The base fixture: no hooks, no transcript, no fork and no trust screen.
@@ -39,6 +39,7 @@ pub const SECOND: Vendor = Vendor {
     cancel_presses: 1,
     interrupt_signal: None,
     launch: &[],
+    unasked: &[Unasked::bare("--unasked")],
 };
 
 /// [`SECOND`] with a fork subcommand, hooks, a JSON model listing, a keyed

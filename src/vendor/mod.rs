@@ -472,6 +472,115 @@ pub struct Vendor {
     /// Flags every process of this vendor is started with. `new` writes them
     /// right after the program; `resume` and `fork` keep them in place.
     pub launch: &'static [&'static str],
+    /// Flags that let the vendor act without asking, besides its permission
+    /// dial's flag and its trust flags, which count without being listed here.
+    /// See [`unasked`].
+    pub unasked: &'static [Unasked],
+}
+
+/// A flag that lowers what a vendor asks before acting, or settles its
+/// folder-trust screen. Only the person's own config may pass one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unasked {
+    pub flag: &'static str,
+    /// Whether the flag takes the next word as its value when it is not
+    /// written `flag=value`.
+    pub value: bool,
+    /// For a flag shared with harmless settings (codex's `-c key=value`), the
+    /// setting that makes it one of these.
+    pub key: Option<&'static str>,
+}
+
+impl Unasked {
+    /// A flag that takes no value.
+    pub const fn bare(flag: &'static str) -> Unasked {
+        Unasked {
+            flag,
+            value: false,
+            key: None,
+        }
+    }
+
+    /// A flag that takes the next word, or `=value`.
+    pub const fn valued(flag: &'static str) -> Unasked {
+        Unasked {
+            flag,
+            value: true,
+            key: None,
+        }
+    }
+
+    /// How many words from the start of `words` this flag spells, or 0.
+    fn spells(&self, words: &[String]) -> usize {
+        let Some(first) = words.first() else {
+            return 0;
+        };
+        let equals = format!("{}=", self.flag);
+        let joined = first.strip_prefix(&equals);
+        let Some(key) = self.key else {
+            return match (first == self.flag, joined) {
+                (true, _) if self.value => words.len().min(2),
+                (true, _) | (false, Some(_)) => 1,
+                (false, None) => 0,
+            };
+        };
+        let setting = format!("{key}=");
+        match joined {
+            Some(rest) if rest.starts_with(&setting) => 1,
+            Some(_) => 0,
+            None if first == self.flag
+                && words.get(1).is_some_and(|next| next.starts_with(&setting)) =>
+            {
+                2
+            }
+            None => 0,
+        }
+    }
+}
+
+/// Every spelling `vendor` takes that lets it act unasked or trust a folder:
+/// its permission dial's flag, its trust flags and [`Vendor::unasked`].
+pub fn unasked(vendor: &Vendor) -> Vec<Unasked> {
+    let mut all: Vec<Unasked> = vendor.unasked.to_vec();
+    if let Some(dial) = vendor.permission.filter(|dial| !dial.flag.is_empty()) {
+        all.push(Unasked {
+            flag: dial.flag,
+            value: !dial.bare,
+            key: dial.key,
+        });
+    }
+    if let Some(crate::trust::Answer::Flag(flag)) = crate::trust::answers_for(vendor) {
+        all.extend(flag.settled.iter().map(|word| Unasked::bare(word)));
+    }
+    all
+}
+
+/// `words` split into those kept and the spellings dropped, each dropped
+/// spelling one string of its words.
+///
+/// The spellings are `vendor`'s, or every vendor's when the program is none
+/// amx knows, since a wrapper may pass any of them on.
+pub fn without_unasked(vendor: Option<&Vendor>, words: &[String]) -> (Vec<String>, Vec<String>) {
+    let spellings: Vec<Unasked> = match vendor {
+        Some(vendor) => unasked(vendor),
+        None => TABLE.iter().flat_map(unasked).collect(),
+    };
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    let mut at = 0;
+    while at < words.len() {
+        let rest = &words[at..];
+        match spellings.iter().map(|one| one.spells(rest)).max() {
+            Some(taken) if taken > 0 => {
+                dropped.push(rest[..taken].join(" "));
+                at += taken;
+            }
+            _ => {
+                kept.push(words[at].clone());
+                at += 1;
+            }
+        }
+    }
+    (kept, dropped)
 }
 
 /// A directory a vendor loads from, relative to one of two roots.
@@ -720,6 +829,32 @@ fn already(carried: &[String], vendor_args: &[String], dial: &DialSpec) -> bool 
 mod tests {
     use super::second::{BRANCHING, ELSEWHERE, SECOND};
     use super::*;
+
+    fn words(text: &str) -> Vec<String> {
+        text.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_vendors_permission_dial_and_listed_flags_are_unasked_without_a_second_list() {
+        // ELSEWHERE lists nothing of its own beyond SECOND's, yet its bare
+        // permission dial's flag counts.
+        let (kept, dropped) = without_unasked(Some(&ELSEWHERE), &words("--loose --unasked -x"));
+        assert_eq!(kept, ["-x"]);
+        assert_eq!(dropped, ["--loose", "--unasked"]);
+        // A valued dial takes its value with it, in either spelling.
+        let (kept, dropped) = without_unasked(
+            Some(&claude::VENDOR),
+            &words("--permission-mode plan --permission-mode=auto hi"),
+        );
+        assert_eq!(kept, ["hi"]);
+        assert_eq!(
+            dropped,
+            ["--permission-mode plan", "--permission-mode=auto"]
+        );
+        // A trust flag counts from the trust table alone.
+        let (kept, _) = without_unasked(Some(&pi::VENDOR), &words("-na --approve"));
+        assert!(kept.is_empty(), "{kept:?}");
+    }
 
     fn v(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
