@@ -3,21 +3,15 @@
   "writes": [
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T15:14:15.550401356Z\"\nid = \"01M7855RYXVQ2C56CDD7J4F8MK\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.550401356Z\"\nproject = \"amx\"\ntitle = \"review: [blocks] placeholder question read as moved fixed; [later] test-strength findings fixed i…\"\n+++\n\nreview: [blocks] placeholder question read as moved fixed; [later] test-strength findings fixed in the same commit\n",
-      "id": "01M7855RYX1V8V8VE57JG7AT3G",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855RYXVQ2C56CDD7J4F8MK.md"
+      "body": "+++\ncreated = \"2026-11-12T15:17:08.447532935Z\"\nid = \"01M785B1T13E71WACY457D4W9V\"\nkind = \"handoff\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:17:08.447532935Z\"\nproject = \"amx\"\ntitle = \"Next: quiet-waits. keys-under-lock landed on main. Built in the cloud in 57 min: 4 tasks solo (an…\"\n+++\n\nNext: quiet-waits. keys-under-lock landed on main. Built in the cloud in 57 min: 4 tasks solo (answer and interrupt re-read the record under the writer and hold it through their keys; a failed paste or Enter logs unsent so result, wait and the queue see no send, and a failed Enter keeps the words as held text; two-box answer race over the stand-in for 20 rounds and a three-paste race on one pane, both red without the lock), 0 failed attempts. Review: 1 [blocks] fixed (a placeholder question the view drops read as a moved record, refusing every answer), 2 test-strength [later] fixed, 2 [later] filed as ideas (a prompt hook clears every held text; moved ignores asked_by). Walk: Show path passed (send exit 1, result answers in 0.01 s); 1 finding fixed (held-text refusal blamed an interrupt). Also made e2e_smoke wait for the whole permission box after one wave flake. Suite 2659 passed in the clean room at a8ac347. Corrections recorded: held-text refusal stays exit 1, as after an interrupt; the answer event now names its question.\n",
+      "id": "01M785B1T1C0NM6P09PV54KADR",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M785B1T13E71WACY457D4W9V.md"
     },
     {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T15:14:15.683643277Z\"\nid = \"01M7855S3DVWYME2HD8H72WYK7\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.683643277Z\"\nproject = \"amx\"\ntitle = \"A prompt hook clears composer_holds whatever it submitted (hook.rs Moment::Prompted): a queued se…\"\n+++\n\nA prompt hook clears composer_holds whatever it submitted (hook.rs Moment::Prompted): a queued send A taken at turn end releases text B a failed Enter left, so the next send is pasted onto B. Clear only the held text the prompt carried.\n",
-      "id": "01M7855S3ENE4A59N7HNG2HV7Z",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855S3DVWYME2HD8H72WYK7.md"
-    },
-    {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T15:14:15.827248522Z\"\nid = \"01M7855S7FRA5CBYXD2Q16GD3P\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.827248522Z\"\nproject = \"amx\"\ntitle = \"send::moved ignores asked_by and told_since ignores another subagent's events: a subagent's same-…\"\n+++\n\nsend::moved ignores asked_by and told_since ignores another subagent's events: a subagent's same-words box put up in the same second as the main box is not seen, and answered() then clears the record's question until a reader sees the subagent's box (up to FRESH).\n",
-      "id": "01M7855S7GY6CDXPXJS9FQYF3V",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855S7FRA5CBYXD2Q16GD3P.md"
+      "base": "01M783Z825FM7EPFF3V81J70KE",
+      "body": null,
+      "id": "01M785B1V9MZH0K0F5GEBN13TQ",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     }
   ]
 }
