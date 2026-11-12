@@ -71,10 +71,12 @@ fn a_question_reaches_the_record_with_its_answer_outstanding() {
         "the question is what a person is being asked, verbatim"
     );
 
+    // The stand-in prints the box a line at a time, so wait for its last line.
     let screen = amx.until("the permission box", || {
         let screen = amx.capture(&pane);
-        screen.contains("Do you want to proceed?").then_some(screen)
+        screen.contains("Esc to cancel").then_some(screen)
     });
+    assert!(screen.contains("Do you want to proceed?"), "{screen}");
     assert!(screen.contains("❯ 1. Yes"), "{screen}");
 }
 
