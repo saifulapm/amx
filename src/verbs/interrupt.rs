@@ -8,6 +8,10 @@
 //! - A command row (exit 1): no vendor reads the key. `amx stop` ends it.
 //! - A parked, idle or ended agent (exit 1): there is no turn to cut short.
 //!
+//! The reading is taken without the lock and checked again under the writer,
+//! which is held until the last press: a record that moved to waiting or idle
+//! in between gets no key.
+//!
 //! The interrupt is logged before the key is sent, as `send` logs a message,
 //! so a `result` in another shell never returns the previous turn's answer.
 //! The event also ends the turn for [`crate::verbs::result`], since vendors
@@ -20,7 +24,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::derive::{self, Evidence, View};
-use crate::store::{Agent, Event, Phase};
+use crate::store::{Agent, Event, Phase, State, Writer};
 use crate::tmux::Server;
 use crate::verbs::send;
 use crate::{complain, exit, paths, store, warn};
@@ -53,6 +57,10 @@ pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Re
             complain!("amx: {}", end_the_command(id));
             Ok(exit::FAILURE)
         }
+        Cut::Gone => {
+            complain!("amx: {}", send::no_pane(id));
+            Ok(exit::FAILURE)
+        }
         Cut::Nothing => {
             complain!(
                 "amx: {}",
@@ -69,18 +77,55 @@ pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Re
 /// outcomes touch nothing. The view calls this too, so both apply the same
 /// rules.
 pub fn cut_the_turn(root: &Path, id: &str) -> Result<Cut> {
-    let view = reading(root, id)?;
-    let cut = what_is_running(&view);
-    if cut == Cut::Turn {
-        let agent = Agent::open(root, id)?;
-        recorded(&agent, view.meta.agent.as_deref())?;
-        let server = Server::from_socket(view.meta.socket.clone());
-        // An unknown vendor gets one press.
-        let presses = crate::registry::entry(view.meta.agent.as_deref().unwrap_or_default())
-            .map_or(1, |vendor| vendor.cancel_presses);
-        pressed(presses, || server.send_keys(&view.meta.pane, &[CANCELS]))?;
+    cut(root, &reading(root, id)?)
+}
+
+/// [`cut_the_turn`] on a reading taken earlier, without the lock.
+///
+/// The record is read again under the writer. One that moved since the
+/// reading is classified by what it says now ([`running_now`]); one that did
+/// not keeps the reading's verdict, which may come off the screen. The writer
+/// is held through the last press, so no hook can put a question up under
+/// the key.
+fn cut(root: &Path, view: &View) -> Result<Cut> {
+    let read = what_is_running(view);
+    if read != Cut::Turn {
+        return Ok(read);
     }
-    Ok(cut)
+    let agent = Agent::open(root, view.id())?;
+    let writer = agent.writer()?;
+    let now = writer.state()?;
+    // `_park` stamps its mark without moving the record's last event.
+    let cut = match send::moved(&view.state, &now) || now.parked_at > 0 {
+        true => running_now(&now),
+        false => read,
+    };
+    if cut != Cut::Turn {
+        return Ok(cut);
+    }
+    let server = Server::from_socket(view.meta.socket.clone());
+    if !server.pane_answers_for(&view.meta.pane, view.id()) {
+        return Ok(Cut::Gone);
+    }
+    recorded(&writer, &agent, view.meta.agent.as_deref())?;
+    // An unknown vendor gets one press.
+    let presses = crate::registry::entry(view.meta.agent.as_deref().unwrap_or_default())
+        .map_or(1, |vendor| vendor.cancel_presses);
+    pressed(presses, || server.send_keys(&view.meta.pane, &[CANCELS]))?;
+    Ok(Cut::Turn)
+}
+
+/// What a record that moved since the reading says is at the pane.
+///
+/// A parked one has let its pane go. A phase that is neither waiting nor
+/// over is still a turn: the reading already saw it working.
+fn running_now(now: &State) -> Cut {
+    match now.state {
+        _ if now.parked_at > 0 => Cut::Nothing,
+        Phase::Waiting => Cut::Question,
+        phase if phase == Phase::Idle || phase.is_terminal() => Cut::Nothing,
+        _ => Cut::Turn,
+    }
 }
 
 /// Press the key `presses` times, [`BETWEEN_PRESSES`] apart.
@@ -109,6 +154,8 @@ pub enum Cut {
     Command,
     /// No turn to cut short.
     Nothing,
+    /// The pane went away since the reading.
+    Gone,
 }
 
 /// Classify one reading.
@@ -137,8 +184,7 @@ fn what_is_running(view: &View) -> Cut {
 /// For a vendor that puts queued messages back in its composer on cancel, the
 /// queue is read off the log first and kept in
 /// [`crate::store::State::composer_holds`], which `send` refuses to type after.
-fn recorded(agent: &Agent, vendor: Option<&str>) -> Result<()> {
-    let writer = agent.writer()?;
+fn recorded(writer: &Writer, agent: &Agent, vendor: Option<&str>) -> Result<()> {
     let holds = match crate::registry::entry(vendor.unwrap_or_default())
         .is_some_and(|vendor| vendor.restores_queued_on_cancel)
     {
@@ -386,7 +432,7 @@ mod tests {
             .update_state(|state| state.state = Phase::Working)
             .unwrap();
 
-        recorded(&agent, None).unwrap();
+        recorded(&agent.writer().unwrap(), &agent, None).unwrap();
 
         let events = agent.events().unwrap();
         assert_eq!(events.len(), 1);
@@ -422,7 +468,7 @@ mod tests {
                 .unwrap();
             drop(writer);
 
-            recorded(&agent, meta.agent.as_deref()).unwrap();
+            recorded(&agent.writer().unwrap(), &agent, meta.agent.as_deref()).unwrap();
             assert_eq!(agent.state().unwrap().composer_holds, held, "{vendor}");
         }
 
@@ -433,7 +479,140 @@ mod tests {
             ..reading(Phase::Working, Evidence::Hooks).meta
         };
         let agent = Agent::create(root.path(), &meta).unwrap();
-        recorded(&agent, meta.agent.as_deref()).unwrap();
+        recorded(&agent.writer().unwrap(), &agent, meta.agent.as_deref()).unwrap();
         assert!(agent.state().unwrap().composer_holds.is_empty());
+    }
+
+    /// A `cat` pane on a private tmux server that answers for `fix-login-a1b`.
+    /// Killed on drop.
+    struct Listening {
+        server: Server,
+        pane: PaneId,
+    }
+
+    impl Listening {
+        fn new(test: &str) -> Listening {
+            let name = format!("amx-test-interrupt-{test}-{}", std::process::id());
+            let server = Server::named(&name).with_conf("/dev/null");
+            let (_, pane) = server
+                .new_session(&crate::tmux::Spawn {
+                    name: Some(&format!("{}fix-login-a1b", crate::tmux::SESSION_PREFIX)),
+                    command: &["cat"],
+                    ..crate::tmux::Spawn::default()
+                })
+                .expect("a pane for it");
+            Listening { server, pane }
+        }
+
+        /// How many Escapes reached the pane, as the tty echoes them.
+        fn escapes(&self) -> usize {
+            let screen = self.server.capture(&self.pane).unwrap_or_default();
+            screen.matches("^[").count()
+        }
+    }
+
+    impl Drop for Listening {
+        fn drop(&mut self) {
+            let _ = self.server.kill();
+        }
+    }
+
+    /// A working agent of `vendor` on `socket` and `pane`, and the reading a
+    /// caller took of it before the lock.
+    fn working(root: &Path, vendor: &str, socket: Socket, pane: PaneId) -> (Agent, View) {
+        let mut view = reading(Phase::Working, Evidence::Hooks);
+        view.meta.agent = Some(vendor.to_string());
+        view.meta.socket = socket;
+        view.meta.pane = pane;
+        let agent = Agent::create(root, &view.meta).unwrap();
+        view.state = agent
+            .writer()
+            .unwrap()
+            .update_state(|state| state.state = Phase::Working)
+            .unwrap();
+        (agent, view)
+    }
+
+    /// A socket no tmux server listens on.
+    fn nobody() -> (Socket, PaneId) {
+        (
+            Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            PaneId::new("%404").unwrap(),
+        )
+    }
+
+    #[test]
+    fn interrupt_a_record_that_moved_since_the_reading_is_judged_by_what_it_says_now() {
+        // A hook landed between the reading and the lock.
+        type Hook = fn(&mut State);
+        let cases: [(Hook, Cut); 3] = [
+            (
+                |state| {
+                    state.state = Phase::Waiting;
+                    state.question = Some("Claude needs your permission to use Bash".to_string());
+                },
+                Cut::Question,
+            ),
+            (|state| state.state = Phase::Idle, Cut::Nothing),
+            (|state| state.parked_at = 4_600, Cut::Nothing),
+        ];
+        for (hook, cut_to) in cases {
+            let root = tempfile::TempDir::new().unwrap();
+            let (socket, pane) = nobody();
+            let (agent, view) = working(root.path(), "claude", socket, pane);
+            agent.writer().unwrap().observe(hook).unwrap();
+
+            assert_eq!(cut(root.path(), &view).unwrap(), cut_to);
+            assert!(
+                agent.events().unwrap().is_empty(),
+                "{cut_to:?}: none logged"
+            );
+            assert_eq!(agent.state().unwrap().interrupted_at, 0, "{cut_to:?}");
+        }
+    }
+
+    #[test]
+    fn interrupt_a_turn_still_running_under_the_lock_gets_every_press() {
+        // opencode needs two presses, claude one; a hook that only moved the
+        // record along inside the turn leaves it a turn.
+        for (vendor, presses) in [("claude", 1), ("opencode", 2)] {
+            let root = tempfile::TempDir::new().unwrap();
+            let pane = Listening::new(vendor);
+            let (agent, view) = working(
+                root.path(),
+                vendor,
+                pane.server.socket().clone(),
+                pane.pane.clone(),
+            );
+            agent
+                .writer()
+                .unwrap()
+                .observe(|state| state.last_event += 1)
+                .unwrap();
+
+            assert_eq!(cut(root.path(), &view).unwrap(), Cut::Turn, "{vendor}");
+            let kinds: Vec<_> = agent
+                .events()
+                .unwrap()
+                .into_iter()
+                .map(|e| e.kind)
+                .collect();
+            assert_eq!(kinds, [INTERRUPT], "{vendor}");
+            let started = std::time::Instant::now();
+            while pane.escapes() < presses && started.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(pane.escapes(), presses, "{vendor}");
+        }
+    }
+
+    #[test]
+    fn interrupt_a_pane_gone_since_the_reading_is_the_no_pane_refusal() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (socket, pane) = nobody();
+        let (agent, view) = working(root.path(), "claude", socket, pane);
+
+        assert_eq!(cut(root.path(), &view).unwrap(), Cut::Gone);
+        assert!(agent.events().unwrap().is_empty(), "nothing is logged");
     }
 }

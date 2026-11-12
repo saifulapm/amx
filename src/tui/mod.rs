@@ -1940,6 +1940,7 @@ impl Screen {
                             "{name} is {}; nothing is running to interrupt",
                             interrupt::doing(view)
                         )),
+                        Ok(Cut::Gone) => Notice::Refused(format!("{name} no longer has a pane")),
                         Err(e) => Notice::Failed(format!("{e:#}")),
                     });
                 }
