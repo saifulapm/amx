@@ -1,0 +1,23 @@
+{
+  "machine": "cloud-vm",
+  "writes": [
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T15:14:15.550401356Z\"\nid = \"01M7855RYXVQ2C56CDD7J4F8MK\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.550401356Z\"\nproject = \"amx\"\ntitle = \"review: [blocks] placeholder question read as moved fixed; [later] test-strength findings fixed i…\"\n+++\n\nreview: [blocks] placeholder question read as moved fixed; [later] test-strength findings fixed in the same commit\n",
+      "id": "01M7855RYX1V8V8VE57JG7AT3G",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855RYXVQ2C56CDD7J4F8MK.md"
+    },
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T15:14:15.683643277Z\"\nid = \"01M7855S3DVWYME2HD8H72WYK7\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.683643277Z\"\nproject = \"amx\"\ntitle = \"A prompt hook clears composer_holds whatever it submitted (hook.rs Moment::Prompted): a queued se…\"\n+++\n\nA prompt hook clears composer_holds whatever it submitted (hook.rs Moment::Prompted): a queued send A taken at turn end releases text B a failed Enter left, so the next send is pasted onto B. Clear only the held text the prompt carried.\n",
+      "id": "01M7855S3ENE4A59N7HNG2HV7Z",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855S3DVWYME2HD8H72WYK7.md"
+    },
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T15:14:15.827248522Z\"\nid = \"01M7855S7FRA5CBYXD2Q16GD3P\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:14:15.827248522Z\"\nproject = \"amx\"\ntitle = \"send::moved ignores asked_by and told_since ignores another subagent's events: a subagent's same-…\"\n+++\n\nsend::moved ignores asked_by and told_since ignores another subagent's events: a subagent's same-words box put up in the same second as the main box is not seen, and answered() then clears the record's question until a reader sees the subagent's box (up to FRESH).\n",
+      "id": "01M7855S7GY6CDXPXJS9FQYF3V",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7855S7FRA5CBYXD2Q16GD3P.md"
+    }
+  ]
+}
