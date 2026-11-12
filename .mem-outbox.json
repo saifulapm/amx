@@ -3,9 +3,15 @@
   "writes": [
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T08:11:06.851595532Z\"\nid = \"01M77CYZAV743HZDA1NBQFZKFB\"\nkind = \"handoff\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T08:11:06.851595532Z\"\nproject = \"amx\"\ntitle = \"Next: safe-sweep. project-fence landed on main. 6 tasks (5 solo, 1 delegated: t3 role stem), no f…\"\n+++\n\nNext: safe-sweep. project-fence landed on main. 6 tasks (5 solo, 1 delegated: t3 role stem), no failed attempts; review found 5 blocks (args element with a space, attached short value -anever, claude --settings, lone --, relative XDG not pinned end to end), all fixed in one pass, 6 [later] filed as mem ideas; Show path walked by hand with no defects. Base suite flaked once on e2e_view_wall a_path_heading_draws_its_waiting_count_in_the_waiting_colour under load (passes alone).\n",
-      "id": "01M77CYZAWRPS1ZA140R6XHPRG",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77CYZAV743HZDA1NBQFZKFB.md"
+      "body": "+++\ncreated = \"2026-11-12T08:46:14.405515418Z\"\nid = \"01M77EZ9GXB4SD6EXG5G05QHXY\"\nkind = \"handoff\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T08:46:14.405515418Z\"\nproject = \"amx\"\ntitle = \"parked: question #MC13EXSD waits on Saiful: may amx's verify key become the clean-room line (env …\"\n+++\n\nparked: question #MC13EXSD waits on Saiful: may amx's verify key become the clean-room line (env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup sh -c 'cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check')? workflow land ran plain cargo test with HOME=/root, and main.rs the_suite_runs_outside_an_amx_pane_over_an_empty_home plus tui::act composer_offers_the_cards_line... and tui::tests card_line_offers_the_words... failed because /root/.claude exists; origin/main 03036bf fails the same 3. Branch cloud/amx-project-fence at d72c312: every task in mem plan ticked (no open task), review blocks fixed in 419c2a5, walk clean, clean-room suite + clippy + fmt green at d72c312. Left: set verify per the answer, then run workflow land. Numbers: 6 tasks (5 solo, 1 delegated), 5 review blocks fixed, 6 [later] ideas filed, walk no defects.\n",
+      "id": "01M77EZ9GXGFZFRFZSP3E5GGZG",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77EZ9GXB4SD6EXG5G05QHXY.md"
+    },
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T08:46:14.618780232Z\"\nid = \"01M77EZ9RDW29P8EA18F0EG0TT\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T08:46:14.618780232Z\"\nproject = \"amx\"\ntitle = \"parked: land refused by unscrubbed verify; question #MC13EXSD\"\n+++\n\nparked: land refused by unscrubbed verify; question #MC13EXSD\n",
+      "id": "01M77EZ9RD9AZ5AYR3C1ZT5ZG0",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77EZ9RDW29P8EA18F0EG0TT.md"
     }
   ]
 }
