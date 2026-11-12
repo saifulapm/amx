@@ -19,6 +19,7 @@
 //!   find the state stale fall back to the pane.
 
 use anyhow::{Context, Result, bail};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -1215,6 +1216,15 @@ impl Agent {
     }
 }
 
+/// A record's document read for the keys of it that `T` does not know.
+#[derive(Deserialize)]
+struct Carried<T> {
+    #[serde(flatten)]
+    _known: T,
+    #[serde(flatten)]
+    later: serde_json::Map<String, serde_json::Value>,
+}
+
 /// The right to change one agent's record. At most one exists at a time
 /// across all amx processes.
 pub struct Writer<'a> {
@@ -1223,6 +1233,28 @@ pub struct Writer<'a> {
 }
 
 impl Writer<'_> {
+    /// Write `value` over the record's `file`, keeping the keys of the old
+    /// document that `T` does not know: a newer amx wrote them, and its next
+    /// read expects them.
+    fn rewrite<T: Serialize + DeserializeOwned>(&self, file: &str, value: &T) -> Result<()> {
+        let path = self.agent.dir.join(file);
+        let later = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Carried<T>>(&bytes).ok())
+            .map(|old| old.later)
+            .unwrap_or_default();
+        if later.is_empty() {
+            return write_atomic(&path, &to_json(value)?);
+        }
+        let mut document = serde_json::to_value(value).context("writing a record")?;
+        if let Some(known) = document.as_object_mut() {
+            for (key, kept) in later {
+                known.entry(key).or_insert(kept);
+            }
+        }
+        write_atomic(&path, &to_json(&document)?)
+    }
+
     /// Read the state this writer is about to change.
     pub fn state(&self) -> Result<State> {
         self.agent.state()
@@ -1297,7 +1329,7 @@ impl Writer<'_> {
         }
         after.last_event = at;
 
-        write_atomic(&self.agent.dir.join(STATE), &to_json(&after)?)?;
+        self.rewrite::<State>(STATE, &after)?;
         Ok(after)
     }
 
@@ -1315,7 +1347,7 @@ impl Writer<'_> {
         change(&mut after);
 
         if after != before {
-            write_atomic(&self.agent.dir.join(STATE), &to_json(&after)?)?;
+            self.rewrite::<State>(STATE, &after)?;
         }
         Ok(after)
     }
@@ -1325,7 +1357,7 @@ impl Writer<'_> {
     pub fn update_meta(&self, change: impl FnOnce(&mut Meta)) -> Result<Meta> {
         let mut meta = self.agent.meta()?;
         change(&mut meta);
-        write_atomic(&self.agent.dir.join(META), &to_json(&meta)?)?;
+        self.rewrite::<Meta>(META, &meta)?;
         Ok(meta)
     }
 
@@ -1542,6 +1574,70 @@ mod tests {
         assert_eq!(reopened.meta().unwrap(), written);
         assert_eq!(reopened.state().unwrap().state, Phase::Starting);
         assert!(reopened.events().unwrap().is_empty());
+    }
+
+    /// Add `"later":{"kept":1}` to a record's document, as a newer amx
+    /// writing a field this build does not know.
+    fn written_later(agent: &Agent, file: &str) {
+        let path = agent.dir().join(file);
+        let mut document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        document["later"] = serde_json::json!({"kept": 1});
+        std::fs::write(&path, document.to_string()).unwrap();
+    }
+
+    fn still_later(agent: &Agent, file: &str) -> bool {
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.dir().join(file)).unwrap())
+                .unwrap();
+        document["later"] == serde_json::json!({"kept": 1})
+    }
+
+    #[test]
+    fn store_a_rewrite_keeps_the_keys_a_newer_amx_wrote() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        written_later(&agent, STATE);
+        written_later(&agent, META);
+
+        let writer = agent.writer().unwrap();
+        writer
+            .update_state(|state| {
+                state.state = Phase::Waiting;
+                state.asks(Some("which fixture?".to_string()));
+                state.asked_by = Some("sub-b2c".to_string());
+            })
+            .unwrap();
+        assert!(still_later(&agent, STATE), "through a hook's write");
+        writer
+            .observe(|state| state.options = vec!["sqlite".to_string()])
+            .unwrap();
+        assert!(still_later(&agent, STATE), "through a reading");
+        writer
+            .update_state_heard(None, |state| {
+                state.state = Phase::Stopped;
+                state.asks(None);
+            })
+            .unwrap();
+        assert!(still_later(&agent, STATE), "through a stop");
+        writer
+            .update_meta(|meta| meta.session = Some("s-1".to_string()))
+            .unwrap();
+        assert!(
+            still_later(&agent, META),
+            "and through a change to the meta"
+        );
+
+        let read = agent.state().unwrap();
+        assert_eq!(
+            read.question, None,
+            "a key this build knows is still its own"
+        );
+        let text = std::fs::read_to_string(agent.dir().join(STATE)).unwrap();
+        assert!(
+            !text.contains("which fixture") && !text.contains("asked_by"),
+            "and nothing it dropped comes back with the carried keys: {text}"
+        );
     }
 
     #[test]

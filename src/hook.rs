@@ -2980,6 +2980,28 @@ mod tests {
     }
 
     #[test]
+    fn hook_keeps_the_keys_a_newer_amx_wrote_in_both_files() {
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        for file in ["state.json", "meta.json"] {
+            let path = agent.dir().join(file);
+            let mut document: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            document["later"] = json!(1);
+            std::fs::write(&path, document.to_string()).unwrap();
+        }
+
+        let started = r#"{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup","transcript_path":"/t/s-1.jsonl"}"#;
+        assert_eq!(hook(root.path(), agent.id(), started), exit::OK);
+        assert_eq!(agent.meta().unwrap().session.as_deref(), Some("s-1"));
+        for file in ["state.json", "meta.json"] {
+            let text = std::fs::read_to_string(agent.dir().join(file)).unwrap();
+            let document: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(document["later"], json!(1), "{file}: {text}");
+        }
+    }
+
+    #[test]
     fn hook_a_permission_and_a_question_reach_the_record_as_different_kinds() {
         let root = TempDir::new().unwrap();
         let asked = an_agent(root.path());
