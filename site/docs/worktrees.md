@@ -200,7 +200,8 @@ questions.
 finished or idle, has a branch, and one of these holds:
 
 - its pull request merged or closed,
-- git sees the branch as merged into the main branch,
+- git sees the branch as merged into the main branch, and the branch holds a
+  commit of its own (one made on it, not one it took from main),
 - the branch is gone from origin (what a squash merge on the forge leaves).
 
 ```
@@ -227,7 +228,9 @@ to vouch for it, is kept. `sweep` and `clear` only delete branches amx named
 (`amx/<id>` or `pr-<n>`), never one you passed with `--branch`.
 
 A worktree with uncommitted work is kept, and its record with it, whatever the
-flags say.
+flags say. An agent that went back to work after the list was printed (sent a
+message, resumed) is kept with `kept <id>: it is working again`, and the rest
+of the list is still taken.
 
 ## Clear
 
@@ -243,7 +246,8 @@ clear 3? [y/N]
 ```
 
 Agents whose work landed go as `sweep` takes them, branch and all. The rest
-lose their record and worktree and keep their branch. Idle agents are not on
+lose their record and worktree and keep their branch, unless amx cut the
+branch and it holds no commit of its own. Idle agents are not on
 the list: they still have a session you can send a turn to.
 
 In the view, `c` does the same for the whole wall, and `ctrl+x` twice does it

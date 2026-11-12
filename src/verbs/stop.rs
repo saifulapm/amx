@@ -4,9 +4,9 @@
 //! The pane's process group gets SIGTERM and a grace period before SIGKILL, so
 //! the vendor can finish flushing its transcript. The defaults lose nothing:
 //! the worktree is removed, the branch and record are kept. `--delete` removes
-//! the record; `--force` takes every default without asking. The two are
-//! separate so a finished agent can be cleared without also waiving the
-//! worktree questions.
+//! the record, and with it a branch amx cut that holds no commit of its own;
+//! `--force` takes every default without asking. The two are separate so a
+//! finished agent can be cleared without also waiving the worktree questions.
 //!
 //! - A worktree holding uncommitted work is never deleted, and a record is
 //!   never removed while its worktree still exists.

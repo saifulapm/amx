@@ -294,7 +294,8 @@ pub enum Command {
     /// Remove finished agents whose work has landed.
     ///
     /// An agent qualifies when its pull request merged or closed, its branch
-    /// was merged into the main line, or the origin no longer has its branch.
+    /// holds a commit of its own that was merged into the main line, or the
+    /// origin no longer has its branch.
     /// Lists them with the reason, asks once, then removes each one's record,
     /// worktree and branch. A worktree with uncommitted work is kept, and so
     /// is its record.
@@ -309,7 +310,7 @@ pub enum Command {
     /// Lists every agent whose turn is over (done, failed or stopped) with the
     /// reason, asks once, then removes each one's record and worktree. Work
     /// that landed goes the way `sweep` removes it, branch included; other
-    /// branches are kept. A worktree with uncommitted work is kept, and so is
+    /// branches are kept, except one amx cut that holds no commit of its own. A worktree with uncommitted work is kept, and so is
     /// its record. An agent idle at its prompt is not finished and is not
     /// listed.
     Clear {
@@ -749,7 +750,8 @@ pub struct StopArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Remove the agent's record too.
+    /// Remove the agent's record too, and a branch amx cut for it that holds
+    /// no commit of its own.
     #[arg(long)]
     pub delete: bool,
 

@@ -439,7 +439,8 @@ Other ways to move:
 `ctrl+x` on a row stops a running agent (its pane goes, nothing else) and arms
 the row: it reads `ctrl+x again forgets` for about five seconds. A second press
 in that window forgets the agent: its record goes, and its worktree too if the
-tree holds no uncommitted work. The branch stays. On an agent that has already
+tree holds no uncommitted work. The branch stays, unless amx cut it and it
+holds no commit of its own. On an agent that has already
 ended, the first press only arms.
 
 `ctrl+x` on a heading arms every row under it without stopping anything. The

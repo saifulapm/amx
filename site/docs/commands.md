@@ -418,7 +418,8 @@ amx stop <ID> [--force] [--delete] [--worktree keep|delete] [--branch keep|delet
 `stop` asks the agent's process group to stop, waits up to five seconds, then
 kills it. A worktree with uncommitted work is always kept, and a branch with
 commits on no other branch is always kept. `--delete` keeps the record while
-its worktree still exists.
+its worktree still exists, and deletes a branch amx cut that holds no commit
+of its own unless `--branch keep` says otherwise.
 
 ```
 $ amx stop fix-login-a1b
@@ -502,7 +503,8 @@ amx sweep [--force]
 
 An agent qualifies when it is finished or idle, has a branch, and one of
 these is true: its pull request merged or closed, git sees the branch as
-merged into the main branch, or the branch is gone from origin. `sweep` lists
+merged into the main branch and it holds a commit of its own, or the branch
+is gone from origin. `sweep` lists
 them with the reason, asks once, then removes each one. `--force` skips the
 question. See [Worktrees](worktrees.md#sweep).
 
@@ -522,7 +524,8 @@ amx clear [--force]
 ```
 
 Agents whose work landed go as `sweep` takes them. The rest lose their record
-and worktree and keep their branch. Idle agents are not finished and are not
+and worktree and keep their branch, unless amx cut it and it holds no commit
+of its own. Idle agents are not finished and are not
 cleared. See [Worktrees](worktrees.md#clear).
 
 ## allow
