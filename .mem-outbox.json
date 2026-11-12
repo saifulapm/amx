@@ -2,16 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": "01M77STDA9Q8MASSJMG81A62AA",
-      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [x] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [x] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [x] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [ ] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
-      "id": "01M77T225NTQC7S1K4HJ0RZHVQ",
+      "base": "01M77T225NTQC7S1K4HJ0RZHVQ",
+      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [x] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [x] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [x] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [x] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
+      "id": "01M77T88MXMKQG9N9ZAEXMY9J9",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T11:59:59.722077162Z\"\nid = \"01M77T22CS3GK924TC4N2AQN9Q\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:59:59.722077162Z\"\nproject = \"amx\"\ntitle = \"t4 landed: Kind::Unknown (record-only, rules strict), Source::Unknown; kind() prefers the screen …\"\n+++\n\nt4 landed: Kind::Unknown (record-only, rules strict), Source::Unknown; kind() prefers the screen over an unknown record kind\n",
-      "id": "01M77T22CT2HGV4M6FA3HM1F31",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77T22CS3GK924TC4N2AQN9Q.md"
+      "body": "+++\ncreated = \"2026-11-12T12:03:22.966811417Z\"\nid = \"01M77T88WKZWG7F3YSEF63BTAR\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T12:03:22.966811417Z\"\nproject = \"amx\"\ntitle = \"t5 landed: Writer::rewrite carries unknown keys of state.json and meta.json through every writer\"\n+++\n\nt5 landed: Writer::rewrite carries unknown keys of state.json and meta.json through every writer\n",
+      "id": "01M77T88WM8V1HNAMGD6RJ0C8W",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77T88WKZWG7F3YSEF63BTAR.md"
     }
   ]
 }
