@@ -527,9 +527,11 @@ cleared. See [Worktrees](worktrees.md#clear).
 
 ## allow
 
-Let amx read the current project's `.amx/config.toml`. It prints the file and
-keeps a copy. If the file changes later, amx ignores it until you allow it
-again.
+Let amx read the current project's `.amx/config.toml`. It prints the file, with
+control and bidi characters escaped, and keeps a copy of those bytes. If the
+file changes later, amx ignores it until you allow it again. Even allowed, a
+project cannot set permission or trust, pass a vendor's permission or trust
+flag, or move a tool's config through `env`.
 
 ```sh
 amx allow [--dir <PATH>] [--forget]

@@ -243,7 +243,9 @@ amx allow --forget     # stops allowing it
 amx allow --dir ~/code/other
 ```
 
-amx keeps a copy of exactly what it showed you, under
+It shows control characters and characters that reorder text as `\u{..}`, so
+a comment cannot hide what the file says. amx keeps a copy of exactly what it
+showed you, under
 `~/.local/state/amx/allowed/`. If the file changes afterwards (your edit, a
 pull, or an agent's), amx warns once and ignores it until you run `amx allow`
 again.
@@ -251,12 +253,22 @@ again.
 Even when allowed, a project file cannot set:
 
 - `permission`, `trust` or `subagents_may_escalate`,
-- in a vendor's `env`: `PATH`, `HOME`, `SHELL`, `CLAUDE_CONFIG_DIR`,
-  `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG`,
-  `OPENCODE_CONFIG_CONTENT`, or any `LD_*`, `DYLD_*` or `AMX_*` variable.
+- in `agent` or a vendor's `args`: a flag that skips or lowers what the vendor
+  asks before acting, or settles its folder trust, such as
+  `--dangerously-skip-permissions`, `--permission-mode`, codex's `--sandbox`
+  and `-a`, opencode's `--auto` or pi's `--approve`. The flag and its value
+  are dropped; the program and its other arguments stay,
+- in a vendor's `env`: `PATH`, `HOME`, `SHELL`, `BASH_ENV`, `ENV`,
+  `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`,
+  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, or any `XDG_*`, `GIT_*`,
+  `LD_*`, `DYLD_*` or `AMX_*` variable.
+
+amx warns once for each one it ignores. amx also ignores a relative
+`XDG_CONFIG_HOME`, as the XDG spec says.
 
 A project's roles in `.amx/agents/` need no `allow`, but cannot set `agent` or
-`permission`.
+`permission`. A role name is one file name without `.md`; a name with a `/` or
+a `..` is refused.
 
 ### Which file the view reads
 

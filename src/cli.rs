@@ -160,9 +160,14 @@ pub enum Command {
     /// Allow amx to use this project's `.amx/config.toml`.
     ///
     /// A project config can name the program a pane runs and shell commands
-    /// amx runs, so amx ignores it until it is allowed. This prints the file
-    /// and records exactly what it printed; any later edit, including one by
-    /// an agent, has to be allowed again.
+    /// amx runs, so amx ignores it until it is allowed. This prints the file,
+    /// control and bidi characters escaped, and records exactly what it
+    /// printed; any later edit, including one by an agent, has to be allowed
+    /// again. Even allowed, a project cannot set `permission`, `trust` or
+    /// `subagents_may_escalate`, pass a vendor's permission or trust flag in
+    /// `agent` or `args`, or set PATH, HOME, SHELL, BASH_ENV, ENV,
+    /// NODE_OPTIONS, a vendor's config directory, or any XDG_*, GIT_*, LD_*,
+    /// DYLD_* or AMX_* variable in `env`.
     Allow {
         /// The project directory, if not the current one.
         #[arg(long, value_name = "PATH")]
