@@ -4,7 +4,8 @@
 //! takes every ended row (stopped, failed, done), lists each with its reason,
 //! and asks once for the whole list. A row whose work landed goes the sweep's
 //! way (tree, branch and record); any other goes the way the view's `ctrl+x`
-//! takes it (record and tree, branch kept). An idle agent is not ended: its
+//! takes it (record and tree, and the branch only when amx cut it and it holds
+//! no commit of its own). An idle agent is not ended: its
 //! session can still take a turn.
 //!
 //! - A worktree holding uncommitted work is never removed, and neither is the
@@ -129,7 +130,8 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     })
 }
 
-/// Remove a row whose work did not land: its record and the tree amx cut.
+/// Remove a row whose work did not land: its record, the tree amx cut, and
+/// the branch amx cut when it holds no commit of its own.
 ///
 /// A tree holding uncommitted work keeps both, since the record is what names
 /// its branch and base.
@@ -145,15 +147,26 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
     if let Some(tree) = holding(&meta) {
         return Ok(Taken::Holding(tree));
     }
-    if let Some(tree) = &meta.worktree
-        && tree.exists()
-    {
-        let repo = worktree::main_repo(tree).unwrap_or_else(|_| tree.clone());
-        if worktree::remove(&repo, tree).is_err() {
-            return Ok(Taken::Holding(tree.clone()));
+    if let Some(tree) = &meta.worktree {
+        let repo = worktree::main_repo(tree)
+            .ok()
+            .or_else(|| worktree::repo_of(tree))
+            .unwrap_or_else(|| tree.clone());
+        if tree.exists() {
+            if worktree::remove(&repo, tree).is_err() {
+                return Ok(Taken::Holding(tree.clone()));
+            }
+            // And the tree's entry in the vendor's store, as `stop` does.
+            stop::forget(&meta, tree, &mut std::io::sink())?;
         }
-        // And the tree's entry in the vendor's store, as `stop` does.
-        stop::forget(&meta, tree, &mut std::io::sink())?;
+        // A branch amx cut that holds no commit of its own loses nothing and
+        // would be named by nothing once the record goes. A failed delete
+        // leaves only an empty branch behind.
+        if let Some(branch) = &meta.branch
+            && stop::holds_no_commit(&repo, &meta, branch)
+        {
+            let _ = worktree::delete_branch(&repo, branch, &[]);
+        }
     }
 
     spawn::end_session(&Server::from_socket(meta.socket.clone()), &meta.id)?;

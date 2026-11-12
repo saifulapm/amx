@@ -339,8 +339,13 @@ fn dispositions(
         return Ok(());
     }
 
+    // With the record going, a branch amx cut that holds no commit of its own
+    // goes too: nothing on it can be lost, and nothing else would name it.
+    let told = args
+        .branch
+        .or((args.delete && holds_no_commit(&repo, meta, branch)).then_some(Disposition::Delete));
     if !asked(
-        args.branch,
+        told,
         args.force,
         Disposition::Keep,
         &format!("delete the branch {branch}?"),
@@ -357,6 +362,17 @@ fn dispositions(
         writeln!(out, "kept {branch}")?;
     }
     Ok(())
+}
+
+/// Whether `branch` is one amx named for this agent and holds no commit
+/// beyond the base the record names. No base, or a git that cannot say, is
+/// false.
+pub(crate) fn holds_no_commit(repo: &Path, meta: &Meta, branch: &str) -> bool {
+    worktree::named_by_amx(&meta.id, branch)
+        && meta
+            .base
+            .as_deref()
+            .is_some_and(|base| matches!(worktree::commits_since(repo, base, branch), Ok(0)))
 }
 
 /// Whether `tree` is there and holds work no commit has. A tree git cannot

@@ -123,6 +123,31 @@ fn clear_keeps_the_branch_of_a_row_whose_work_went_nowhere() {
 }
 
 #[test]
+fn clear_takes_the_branch_of_a_row_that_made_no_commit_and_sweep_leaves_it() {
+    // A branch at its base holds nothing to lose, but has landed nothing
+    // either: sweep passes it by, and clear lists it by its phase and takes
+    // the branch along with the tree and the record.
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+
+    assert_eq!(
+        said(&amx.amx_with_input(&["sweep"], "y\n")),
+        "nothing to sweep\n"
+    );
+
+    let out = said(&amx.amx_with_input(&["clear"], "y\n"));
+    assert!(out.contains("fix-login-a1b  done"), "{out}");
+    assert!(!out.contains("merged into main"), "{out}");
+    assert!(!Path::new(&tree).exists(), "the tree goes: {out}");
+    assert!(
+        !branches(&repo).contains("amx/fix-login-a1b"),
+        "and the branch, which holds no commit of its own: {out}"
+    );
+    assert!(!amx.agent_dir("fix-login-a1b").exists(), "{out}");
+}
+
+#[test]
 fn clear_says_nothing_to_clear_where_no_row_has_finished() {
     let amx = Harness::new();
     amx.play("watch-log-d4e", "works-without-end");

@@ -4479,12 +4479,29 @@ fn a_repo() -> TempDir {
 /// branch holds one commit that main has since merged, so git reads the work
 /// as landed.
 fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
-    let tree = crate::worktree::create(repo, id, None).unwrap();
+    let view = did_nothing(root, repo, id);
+    let tree = view.meta.worktree.as_deref().unwrap();
     let file = format!("{id}.rs");
-    std::fs::write(tree.path.join(&file), "fn landed() {}\n").unwrap();
-    git(&tree.path, &["add", &file]);
-    git(&tree.path, &["commit", "-m", "the agent's work"]);
-    git(repo, &["merge", "--no-ff", "-m", "merge", &tree.branch]);
+    std::fs::write(tree.join(&file), "fn landed() {}\n").unwrap();
+    git(tree, &["add", &file]);
+    git(tree, &["commit", "-m", "the agent's work"]);
+    git(
+        repo,
+        &[
+            "merge",
+            "--no-ff",
+            "-m",
+            "merge",
+            view.meta.branch.as_deref().unwrap(),
+        ],
+    );
+    view
+}
+
+/// Records an ended agent with a tree cut from `repo` and left in place, its
+/// branch still at the base it was cut from.
+fn did_nothing(root: &Path, repo: &Path, id: &str) -> View {
+    let tree = crate::worktree::create(repo, id, None).unwrap();
     let meta = Meta {
         role: None,
         parent: None,
@@ -4714,6 +4731,29 @@ fn keys_c_reaches_the_finished_rows_the_fold_is_holding_back() {
         rows::FOLD_AT + 2,
         "every ended row on the wall, drawn or folded away: {:?}",
         arm.ids
+    );
+}
+
+#[test]
+fn keys_c_lists_a_row_that_made_no_commit_by_its_phase_and_takes_its_branch() {
+    let root = TempDir::new().unwrap();
+    let repo = a_repo();
+    let config = Config::default();
+    let view = did_nothing(root.path(), repo.path(), "fix-login-a1b");
+    let tree = view.meta.worktree.clone().unwrap();
+    let mut screen = watching(vec![view]);
+
+    screen.act(c(), root.path(), &config, None).unwrap();
+    let arm = screen.arm.as_ref().expect("the arm the press left");
+    assert_eq!(arm.why, ["done"], "not merged into main: it landed nothing");
+
+    screen.act(c(), root.path(), &config, None).unwrap();
+    assert!(crate::store::list(root.path()).unwrap().is_empty());
+    assert!(!tree.exists(), "the tree goes");
+    assert_eq!(
+        git(repo.path(), &["branch", "--list", "amx/fix-login-a1b"]),
+        "",
+        "and the branch, which held no commit of its own"
     );
 }
 

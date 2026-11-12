@@ -461,12 +461,32 @@ fn delete_takes_the_record_away_with_the_agent() {
         !amx.agent_dir("fix-login-a1b").exists(),
         "the row goes, and everything under it: {out}"
     );
+    assert!(out.contains("deleted amx/fix-login-a1b"), "{out}");
+    assert!(
+        !branches(&repo).contains("amx/fix-login-a1b"),
+        "with the branch amx cut for it, which held no commit of its own: {out}"
+    );
 
     let listed = amx.amx(&["ls"]);
     assert!(
         !String::from_utf8_lossy(&listed.stdout).contains("fix-login-a1b"),
         "and nothing lists it any more"
     );
+}
+
+#[test]
+fn delete_keeps_a_branch_it_was_told_to_keep() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    with_a_worktree(&amx, "fix-login-a1b", &repo, "happy-turn");
+    amx.until_state("fix-login-a1b", "idle");
+
+    let out = said(&stop(
+        &amx,
+        &["fix-login-a1b", "--force", "--delete", "--branch", "keep"],
+    ));
+    assert!(out.contains("kept amx/fix-login-a1b"), "{out}");
+    assert!(branches(&repo).contains("amx/fix-login-a1b"), "{out}");
 }
 
 #[test]
