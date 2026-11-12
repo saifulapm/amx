@@ -280,7 +280,20 @@ mod tests {
 
     /// The scrub every run of this suite needs, quoted by the guard below.
     const CLEAN_ROOM: &str = "env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID \
-        -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=~/.cargo RUSTUP_HOME=~/.rustup cargo test";
+        -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test";
+
+    #[test]
+    fn the_readme_gives_the_clean_room_line_the_guard_names() {
+        // A person who pastes README's command gets the run the guard below
+        // asks for, the whole suite and the unit tests alone.
+        let readme = include_str!("../README.md");
+        for line in [CLEAN_ROOM.to_string(), format!("{CLEAN_ROOM} --bin amx")] {
+            assert!(
+                readme.lines().any(|said| said.trim() == line),
+                "README.md does not give `{line}` on a line of its own"
+            );
+        }
+    }
 
     #[test]
     fn the_suite_runs_outside_an_amx_pane_over_an_empty_home() {

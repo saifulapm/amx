@@ -69,8 +69,21 @@ Everything is at [saifulapm.github.io/amx/docs](https://saifulapm.github.io/amx/
 git clone https://github.com/saifulapm/amx
 cd amx
 cargo build --release
-cargo test          # the end-to-end suites drive real tmux servers
 ```
+
+The end-to-end suites drive real tmux servers and need tmux 3.5 or newer. The suite must not see your own agents, so run it outside an amx pane over an empty home, as the suite's own guard asks:
+
+```sh
+env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test
+```
+
+For the unit tests alone:
+
+```sh
+env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test --bin amx
+```
+
+Keep the build out of `/tmp`: a target directory there runs out of room part way through. Point `CARGO_TARGET_DIR` somewhere with space, such as `~/.cache`, if the checkout itself sits under `/tmp`.
 
 ## License
 
