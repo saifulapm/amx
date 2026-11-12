@@ -2,16 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": "01M77KBAPC80XW8A0S9SDXDAZ8",
-      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [x] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [x] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [ ] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
-      "id": "01M77KHR701R8KR880SRSW1917",
+      "base": "01M77KHR701R8KR880SRSW1917",
+      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [x] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [x] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [x] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
+      "id": "01M77KP5HJYZRABEP09SDSX3AC",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:06:13.768796396Z\"\nid = \"01M77KHRBD5JGKD6EJRH794MFM\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:06:13.768796396Z\"\nproject = \"amx\"\ntitle = \"t3 landed: sweep re-reads each candidate under its writer (b1659ab)\"\n+++\n\nt3 landed: sweep re-reads each candidate under its writer (b1659ab)\n",
-      "id": "01M77KHRBE3FZAWVP9TYDEJ5MT",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KHRBD5JGKD6EJRH794MFM.md"
+      "body": "+++\ncreated = \"2026-11-12T10:08:38.497993702Z\"\nid = \"01M77KP5P0VKA9GJ63MXWKPS3S\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:08:38.497993702Z\"\nproject = \"amx\"\ntitle = \"t4 landed: gc and clear keep records when tmux cannot be asked (b6736d9)\"\n+++\n\nt4 landed: gc and clear keep records when tmux cannot be asked (b6736d9)\n",
+      "id": "01M77KP5P1JP951BWVHQS421S7",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KP5P0VKA9GJ63MXWKPS3S.md"
     }
   ]
 }
