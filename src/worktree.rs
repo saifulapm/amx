@@ -304,6 +304,22 @@ pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
     Ok(!git(repo, &["branch", "--merged", &main, "--list", branch])?.is_empty())
 }
 
+/// How many commits `branch` holds that `base` does not.
+pub fn commits_since(repo: &Path, base: &str, branch: &str) -> Result<usize> {
+    let count = git(
+        repo,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{base}..refs/heads/{branch}"),
+        ],
+    )?;
+    count
+        .trim()
+        .parse()
+        .with_context(|| format!("counting the commits on {branch} since {base}"))
+}
+
 /// The repository's main line: `origin/HEAD` when set, else `main` if it
 /// exists, else `master`.
 ///

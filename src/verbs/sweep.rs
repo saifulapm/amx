@@ -178,11 +178,16 @@ fn settled(prs: &[Pr]) -> Option<String> {
 }
 
 /// The branch was merged into the main line without a request.
+///
+/// git lists a branch still at its base as merged, so the branch must also
+/// hold a commit beyond the base the record names; a record with no base
+/// cannot show one. The cheap `--merged` check runs first, since the view
+/// asks this on every reading.
 fn in_the_main_line(meta: &Meta, branch: &str) -> Option<String> {
     let repo = repository(meta);
-    worktree::is_merged(&repo, branch)
-        .ok()?
-        .then(|| format!("{branch} merged into {}", worktree::main_branch(&repo)))
+    let merged = worktree::is_merged(&repo, branch).ok()?
+        && worktree::commits_since(&repo, meta.base.as_deref()?, branch).ok()? > 0;
+    merged.then(|| format!("{branch} merged into {}", worktree::main_branch(&repo)))
 }
 
 /// The origin deleted the branch. The only check that catches a squash merge,
@@ -315,9 +320,25 @@ mod tests {
         bare
     }
 
-    /// A done agent with a fresh tree cut in `repo`. Its branch has no commits
-    /// of its own, so git reads it as merged into main.
+    /// A done agent with a tree cut in `repo`, whose one commit main has
+    /// since taken, so its branch reads as merged into main.
     fn a_swept_agent(root: &Path, repo: &Path, id: &str) -> Meta {
+        let meta = a_fresh_agent(root, repo, id);
+        let tree = meta.worktree.as_deref().unwrap();
+        let file = format!("{id}.rs");
+        std::fs::write(tree.join(&file), "fn landed() {}\n").unwrap();
+        git(tree, &["add", &file]);
+        git(tree, &["commit", "-m", "the agent's work"]);
+        git(repo, &["merge", "-q", "--ff-only", &tree_branch(&meta)]);
+        meta
+    }
+
+    fn tree_branch(meta: &Meta) -> String {
+        meta.branch.clone().unwrap()
+    }
+
+    /// A done agent with a fresh tree cut in `repo` and no commit of its own.
+    fn a_fresh_agent(root: &Path, repo: &Path, id: &str) -> Meta {
         let tree = worktree::create(repo, id, None).unwrap();
         let meta = Meta {
             role: None,
@@ -612,6 +633,44 @@ mod tests {
 
         let said = swept(root.path(), false, "y\n");
         assert_eq!(said, "nothing to sweep\n");
+    }
+
+    #[test]
+    fn sweep_never_reads_a_branch_with_no_commit_of_its_own_as_merged() {
+        // git lists a branch still at its base as merged into main, but an
+        // agent that made no commit has landed nothing.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_fresh_agent(root.path(), repo.path(), "fix-login-a1b");
+
+        assert_eq!(swept(root.path(), false, "y\n"), "nothing to sweep\n");
+        assert!(
+            Agent::open(root.path(), &meta.id).is_ok(),
+            "the record stays"
+        );
+        assert!(meta.worktree.as_deref().unwrap().exists(), "and the tree");
+
+        let mut no_base = meta.clone();
+        no_base.base = None;
+        assert_eq!(
+            in_the_main_line(&no_base, "amx/fix-login-a1b"),
+            None,
+            "a record that names no base cannot show a commit of its own"
+        );
+
+        let tree = meta.worktree.as_deref().unwrap();
+        std::fs::write(tree.join("login.rs"), "fn login() {}\n").unwrap();
+        git(tree, &["add", "login.rs"]);
+        git(tree, &["commit", "-m", "the agent's own commit"]);
+        git(
+            repo.path(),
+            &["merge", "-q", "--ff-only", "amx/fix-login-a1b"],
+        );
+        let said = swept(root.path(), false, "n\n");
+        assert!(
+            said.contains("fix-login-a1b  amx/fix-login-a1b merged into main"),
+            "one commit that main took is work that landed: {said}"
+        );
     }
 
     #[test]

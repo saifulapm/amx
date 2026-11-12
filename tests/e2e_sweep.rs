@@ -53,6 +53,13 @@ fn a_forge_saying(amx: &Harness, said: &str) -> PathBuf {
     bin
 }
 
+/// One commit on the agent's branch, merged into main by hand: the smallest
+/// work git reads as landed.
+fn landed_by_hand(repo: &Path, id: &str, tree: &str) {
+    work_on_the_branch(tree, &format!("{id}.rs"));
+    merged_by_hand(repo, id);
+}
+
 /// A bare origin next to `repo`, with `main` pushed to it.
 fn an_origin(repo: &Path) -> PathBuf {
     let bare = repo.with_file_name("origin.git");
@@ -192,6 +199,12 @@ fn sweep_never_deletes_a_branch_a_person_named() {
         String::from_utf8_lossy(&out.stderr)
     );
     amx.until_state("fix-login-a1b", "done");
+    let tree = amx.meta("fix-login-a1b")["worktree"]
+        .as_str()
+        .expect("the agent's tree")
+        .to_string();
+    work_on_the_branch(&tree, "login.rs");
+    git(&repo, &["merge", "--no-ff", "-m", "merge", "develop"]);
 
     let out = said(&sweep(&amx, &["--force"]));
     assert!(
@@ -241,8 +254,8 @@ fn sweep_takes_the_agent_whose_branch_the_origin_no_longer_has() {
 fn sweep_keeps_a_tree_that_holds_work_no_commit_has_and_the_record_with_it() {
     let amx = Harness::new();
     let repo = amx.a_repo();
-    // An untouched tree matches main, so git reads the branch as merged.
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    landed_by_hand(&repo, "fix-login-a1b", &tree);
     // Then an untracked file.
     std::fs::write(Path::new(&tree).join("login.rs"), "fn login() {}\n").unwrap();
 
@@ -273,6 +286,7 @@ fn sweep_ends_an_agent_that_is_somehow_still_running_before_it_takes_the_tree() 
     let tree = with_a_worktree(&amx, "watch-log-c3d", &repo, "works-without-end");
     amx.until_state("watch-log-c3d", "working");
     let pane = amx.pane_of("watch-log-c3d");
+    landed_by_hand(&repo, "watch-log-c3d", &tree);
     amx.set_state("watch-log-c3d", json!({ "state": "done" }));
 
     let out = said(&sweep(&amx, &["--force"]));
@@ -293,6 +307,7 @@ fn sweep_says_what_it_would_take_and_takes_none_of_it_when_the_answer_is_no() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    landed_by_hand(&repo, "fix-login-a1b", &tree);
 
     let out = said(&amx.amx_with_input(&["sweep"], "n\n"));
     assert!(
@@ -315,6 +330,7 @@ fn sweep_with_force_asks_nothing_and_a_no_typed_at_it_changes_nothing() {
     let amx = Harness::new();
     let repo = amx.a_repo();
     let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    landed_by_hand(&repo, "fix-login-a1b", &tree);
 
     let out = said(&amx.amx_with_input(&["sweep", "--force"], "n\n"));
     assert!(!out.contains("[y/N]"), "nothing was asked: {out}");

@@ -234,9 +234,17 @@ mod tests {
     }
 
     /// A done agent in a clean tree cut in `repo`. With `landed`, its branch is
-    /// on the record and already in main, so the row goes the sweep's way.
+    /// on the record and its one commit already merged into main, so the row
+    /// goes the sweep's way.
     fn a_finished_agent(root: &Path, repo: &Path, id: &str, landed: bool) -> PathBuf {
         let tree = worktree::create(repo, id, None).unwrap();
+        if landed {
+            let file = format!("{id}.rs");
+            std::fs::write(tree.path.join(&file), "fn landed() {}\n").unwrap();
+            git(&tree.path, &["add", &file]);
+            git(&tree.path, &["commit", "-m", "the agent's work"]);
+            git(repo, &["merge", "--no-ff", "-m", "merge", &tree.branch]);
+        }
         let agent = Agent::create(
             root,
             &Meta {

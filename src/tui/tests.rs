@@ -4476,9 +4476,15 @@ fn a_repo() -> TempDir {
 }
 
 /// Records an ended agent with a tree cut from `repo` and left in place. Its
-/// branch holds exactly what main holds, so git reads the work as landed.
+/// branch holds one commit that main has since merged, so git reads the work
+/// as landed.
 fn has_landed(root: &Path, repo: &Path, id: &str) -> View {
     let tree = crate::worktree::create(repo, id, None).unwrap();
+    let file = format!("{id}.rs");
+    std::fs::write(tree.path.join(&file), "fn landed() {}\n").unwrap();
+    git(&tree.path, &["add", &file]);
+    git(&tree.path, &["commit", "-m", "the agent's work"]);
+    git(repo, &["merge", "--no-ff", "-m", "merge", &tree.branch]);
     let meta = Meta {
         role: None,
         parent: None,
