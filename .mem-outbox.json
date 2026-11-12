@@ -1,0 +1,11 @@
+{
+  "machine": "cloud-vm",
+  "writes": [
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T08:11:06.851595532Z\"\nid = \"01M77CYZAV743HZDA1NBQFZKFB\"\nkind = \"handoff\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T08:11:06.851595532Z\"\nproject = \"amx\"\ntitle = \"Next: safe-sweep. project-fence landed on main. 6 tasks (5 solo, 1 delegated: t3 role stem), no f…\"\n+++\n\nNext: safe-sweep. project-fence landed on main. 6 tasks (5 solo, 1 delegated: t3 role stem), no failed attempts; review found 5 blocks (args element with a space, attached short value -anever, claude --settings, lone --, relative XDG not pinned end to end), all fixed in one pass, 6 [later] filed as mem ideas; Show path walked by hand with no defects. Base suite flaked once on e2e_view_wall a_path_heading_draws_its_waiting_count_in_the_waiting_colour under load (passes alone).\n",
+      "id": "01M77CYZAWRPS1ZA140R6XHPRG",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77CYZAV743HZDA1NBQFZKFB.md"
+    }
+  ]
+}
