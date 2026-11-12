@@ -547,20 +547,24 @@ const NEVER_FROM_A_PROJECT: [&str; 3] = ["permission", "trust", "subagents_may_e
 /// Whether a project's `[<harness>.env]` may set `name`.
 ///
 /// Refuses variables that change what runs rather than how it is configured:
-/// the search path, home and shell, a vendor's config location, dynamic
-/// linker settings, and amx's own variables.
+/// the search path, home and shell, a shell's or node's startup code, a
+/// vendor's config location, the XDG layout (which holds amx's own config),
+/// git's settings, dynamic linker settings, and amx's own variables.
 fn a_project_may_set_env(name: &str) -> bool {
     !matches!(
         name,
         "PATH"
             | "HOME"
             | "SHELL"
+            | "BASH_ENV"
+            | "ENV"
+            | "NODE_OPTIONS"
             | "CLAUDE_CONFIG_DIR"
             | "CODEX_HOME"
             | "OPENCODE_CONFIG_DIR"
             | "OPENCODE_CONFIG"
             | "OPENCODE_CONFIG_CONTENT"
-    ) && !["LD_", "DYLD_", "AMX_"]
+    ) && !["LD_", "DYLD_", "AMX_", "XDG_", "GIT_"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
 }
@@ -1767,6 +1771,42 @@ mod tests {
             );
         }
         assert!(env.contains_key("OPENCODE_DISABLE_AUTOUPDATE"), "{env:?}");
+    }
+
+    #[test]
+    fn a_project_file_never_moves_a_tools_config_or_startup_through_env() {
+        // Each of these points a shell, node, git or the XDG layout (and with
+        // it amx's own config) at a file the repository chose.
+        let file = Path::new("/p/.amx/config.toml");
+        let mut keys: toml::Table = toml::from_str(
+            "[claude.env]\nXDG_CONFIG_HOME = \"evil\"\nXDG_DATA_HOME = \"/evil\"\n\
+             BASH_ENV = \"/evil.sh\"\nENV = \"/evil.sh\"\nNODE_OPTIONS = \"--require /evil.js\"\n\
+             GIT_SSH_COMMAND = \"evil\"\nGIT_CONFIG_COUNT = \"1\"\nFOO = \"1\"\n",
+        )
+        .unwrap();
+
+        let warnings = only_what_a_project_may_set(file, &mut keys);
+        let env = keys["claude"]["env"].as_table().unwrap();
+        let refused = [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "BASH_ENV",
+            "ENV",
+            "NODE_OPTIONS",
+            "GIT_SSH_COMMAND",
+            "GIT_CONFIG_COUNT",
+        ];
+        for name in refused {
+            assert!(!env.contains_key(name), "{env:?}");
+            assert!(
+                warnings.iter().any(|w| w.ends_with(&format!(
+                    "ignoring `claude.env.{name}`: only your own config can set it"
+                ))),
+                "{warnings:?}"
+            );
+        }
+        assert_eq!(warnings.len(), refused.len(), "{warnings:?}");
+        assert_eq!(env.get("FOO").and_then(toml::Value::as_str), Some("1"));
     }
 
     #[test]

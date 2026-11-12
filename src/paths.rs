@@ -101,8 +101,14 @@ const MODELS: &str = "models";
 
 /// The config file amx reads, whether or not it exists.
 pub fn config_file() -> Result<PathBuf> {
-    let xdg = env_path(std::env::var_os("XDG_CONFIG_HOME"));
+    let xdg = xdg_dir(std::env::var_os("XDG_CONFIG_HOME"));
     Ok(config_file_from(xdg.as_deref(), &home()?))
+}
+
+/// An XDG base directory from its variable: unset when empty or relative, as
+/// the XDG spec says, so a relative one never reads the working directory.
+fn xdg_dir(value: Option<OsString>) -> Option<PathBuf> {
+    env_path(value).filter(|dir| dir.is_absolute())
 }
 
 /// A project's config file, relative to the project root.
@@ -317,6 +323,24 @@ mod tests {
             config_file_from(None, Path::new("/home/dev")),
             Path::new("/home/dev/.config/amx/config.toml")
         );
+    }
+
+    #[test]
+    fn a_relative_xdg_config_home_reads_as_unset() {
+        // The XDG spec says to ignore a relative path, and a relative one would
+        // read the config out of whatever directory amx was started in.
+        assert_eq!(
+            config_file_from(
+                xdg_dir(Some(OsString::from("evil"))).as_deref(),
+                Path::new("/home/dev")
+            ),
+            Path::new("/home/dev/.config/amx/config.toml")
+        );
+        assert_eq!(
+            xdg_dir(Some(OsString::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(xdg_dir(Some(OsString::new())), None);
     }
 
     #[test]
