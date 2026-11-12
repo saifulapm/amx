@@ -985,8 +985,11 @@ fn a_wait_on_a_working_agent_whose_hooks_are_fresh_captures_no_pane() {
     // The card still reads the spinner line off the same pane.
     let view = amx.in_a_terminal(&[], &[]);
     common::card_on(&amx, &view, id);
-    amx.until("the spinner line on the card", || {
-        amx.capture(&view).contains("Porting").then_some(())
+    amx.until("the spinner line on the card's rule", || {
+        amx.capture(&view)
+            .lines()
+            .any(|line| line.contains(&format!("{id} · claude ┈")) && line.contains("Porting"))
+            .then_some(())
     });
 }
 

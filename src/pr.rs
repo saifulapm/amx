@@ -400,16 +400,18 @@ pub fn asked_now(meta: &Meta) -> Vec<Pr> {
     let Some((dir, at, branch)) = about(meta) else {
         return Vec::new();
     };
-    ask_now(&dir, &at, branch, crate::store::now())
+    ask_now(&dir, &at, branch, crate::store::now(), &Forges::installed())
 }
 
 /// [`asked_now`] with the record directory and the working directory given.
-fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
+fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64, forges: &Forges) -> Vec<Pr> {
     let held = held(dir);
-    if still_good(held.as_ref(), branch, now) {
+    // Asked by name, a `pr-<N>` branch reads as having no request, since its
+    // head is a fork's name; what the view found by number stands.
+    if still_good(held.as_ref(), branch, now) || numbered(branch).is_some() {
         return theirs(held, branch);
     }
-    let Some(looked) = ask(at, branch) else {
+    let Some(looked) = ask_with(at, branch, forges) else {
         return theirs(held, branch);
     };
     let _ = write(dir, branch, looked.prs.clone(), &looked.merged_heads, now);
@@ -1308,7 +1310,13 @@ mod tests {
         }];
         write(dir.path(), "amx/fix-login-a1b", over.clone(), &[], 1_000).unwrap();
         assert_eq!(
-            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
+            ask_now(
+                dir.path(),
+                dir.path(),
+                "amx/fix-login-a1b",
+                90_000,
+                &Forges::installed()
+            ),
             over,
             "a request that is over stays over, so no forge is asked about it"
         );
@@ -1327,7 +1335,13 @@ mod tests {
         .unwrap();
         let before = std::fs::read(dir.path().join(CACHE)).unwrap();
         assert_eq!(
-            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
+            ask_now(
+                dir.path(),
+                dir.path(),
+                "amx/fix-login-a1b",
+                90_000,
+                &Forges::installed()
+            ),
             going,
             "and a stale one is asked about here and now, rather than in a \
              thread this reader will not be around for: no forge answers in a \
@@ -1507,6 +1521,24 @@ mod tests {
         let calls = forge.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(calls[1].contains("--head amx/old-a1b"), "{calls:?}");
+    }
+
+    #[test]
+    fn sweep_keeps_a_fork_request_the_view_found_by_its_number() {
+        let dir = TempDir::new().unwrap();
+        let open = vec![Pr {
+            number: 12,
+            standing: Standing::Open,
+        }];
+        write(dir.path(), "pr-12", open.clone(), &[], 1_000).unwrap();
+        // Asked by name, the forge knows no request on pr-12: its head is the
+        // fork's own name.
+        let forge = Fake::new("[]", "[]");
+        assert_eq!(
+            ask_now(dir.path(), dir.path(), "pr-12", 90_000, &forge.forges),
+            open
+        );
+        assert_eq!(kept(dir.path(), "pr-12"), open, "and it stays written down");
     }
 
     #[test]
@@ -1694,7 +1726,13 @@ mod tests {
         assert_eq!(forge.calls().len(), 1);
         assert!(!dir.path().join(CACHE).exists());
         assert_eq!(
-            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 1_000),
+            ask_now(
+                dir.path(),
+                dir.path(),
+                "amx/fix-login-a1b",
+                1_000,
+                &Forges::installed()
+            ),
             Vec::new()
         );
         assert!(!dir.path().join(CACHE).exists());
