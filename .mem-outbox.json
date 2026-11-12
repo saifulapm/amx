@@ -3,21 +3,21 @@
   "writes": [
     {
       "base": null,
-      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T09:59:29.301993363Z\"\nid = \"01M77K5DBMRG20CHMSXQA2AE8K\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T09:59:29.301993363Z\"\nproject = \"amx\"\ntitle = \"safe-sweep t1: a record with no base never reads as merged into main, since it cannot show a comm…\"\n+++\n\nsafe-sweep t1: a record with no base never reads as merged into main, since it cannot show a commit of its own; --merged runs first and the base count only when it says yes\n",
-      "id": "01M77K5DBMAPAXYFE69WJW8E3V",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77K5DBMRG20CHMSXQA2AE8K.md"
+      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T10:02:43.141829164Z\"\nid = \"01M77KBAN7TMJ9Q0Q8N7FBN3WK\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:02:43.141829164Z\"\nproject = \"amx\"\ntitle = \"safe-sweep t2: the view's ctrl+x shares clear::forget_row, so it also deletes an empty amx branch…\"\n+++\n\nsafe-sweep t2: the view's ctrl+x shares clear::forget_row, so it also deletes an empty amx branch; an explicit --branch keep on stop --delete wins\n",
+      "id": "01M77KBAN7XNQ4N2FSGGX5CMAG",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KBAN7TMJ9Q0Q8N7FBN3WK.md"
     },
     {
-      "base": "01M77JXV9WMR92K6MFZ4FKB249",
-      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [ ] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [ ] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [ ] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
-      "id": "01M77K5DCRTR5K4MF6V8WHQ73D",
+      "base": "01M77K5DCRTR5K4MF6V8WHQ73D",
+      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [x] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [ ] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [ ] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
+      "id": "01M77KBAPC80XW8A0S9SDXDAZ8",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T09:59:29.473417273Z\"\nid = \"01M77K5DH283BNPEB27ED587JG\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T09:59:29.473417273Z\"\nproject = \"amx\"\ntitle = \"t1 landed: merged into main needs a commit beyond the base (eadf8ea)\"\n+++\n\nt1 landed: merged into main needs a commit beyond the base (eadf8ea)\n",
-      "id": "01M77K5DH234WSS9MTRPCBZNPX",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77K5DH283BNPEB27ED587JG.md"
+      "body": "+++\ncreated = \"2026-11-12T10:02:43.320793205Z\"\nid = \"01M77KBATX70WSV7KEBH502DVJ\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:02:43.320793205Z\"\nproject = \"amx\"\ntitle = \"t2 landed: clear and stop --delete delete an empty amx branch (f51bd2d)\"\n+++\n\nt2 landed: clear and stop --delete delete an empty amx branch (f51bd2d)\n",
+      "id": "01M77KBATXQ1PC9YPNG4TBRAXW",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KBATX70WSV7KEBH502DVJ.md"
     }
   ]
 }
