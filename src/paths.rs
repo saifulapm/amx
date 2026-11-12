@@ -75,6 +75,12 @@ pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
 
 const VISITED: &str = "visited.json";
 
+/// When the view last asked the forge about each repository; see
+/// [`crate::pr::refresh`].
+pub fn schedule_file(state_root: &Path) -> Option<PathBuf> {
+    beside_the_agents(state_root, crate::pr::SCHEDULE)
+}
+
 /// The terminal colours the view last read, as a tmux style
 /// (`fg=#rrggbb,bg=#rrggbb` or `bg=#rrggbb`) for new agent panes.
 pub fn background_file(state_root: &Path) -> PathBuf {

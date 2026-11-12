@@ -628,7 +628,7 @@ mod tests {
         &'static str,
     );
 
-    const READ_BACK: [ReadBack; 12] = [
+    const READ_BACK: [ReadBack; 13] = [
         (
             "view.json",
             &[(
@@ -652,6 +652,14 @@ mod tests {
                 "a_request_that_does_not_read_costs_that_request_and_not_the_others",
             )],
             "each request reads on its own",
+        ),
+        (
+            "forge.json",
+            &[(
+                "src/pr.rs",
+                "a_schedule_entry_that_does_not_read_costs_that_repository_and_not_the_others",
+            )],
+            "each repository's entry reads on its own",
         ),
         (
             "state.json",

@@ -29,6 +29,16 @@ const CACHE: &str = "pr.json";
 /// answer leaves out may have a request beyond it, so it is asked about alone.
 const LIMIT: usize = 100;
 
+/// The longest gap between asks about a repository whose forge keeps failing.
+const LONGEST: u64 = 16 * 60;
+
+/// Seconds an ended agent's branch with no request goes between asks: a
+/// request opened after the work ended is rare, and nothing is waiting on it.
+const ENDED: u64 = 10 * 60;
+
+/// The schedule of asks every view shares, beside the agents directory.
+pub(crate) const SCHEDULE: &str = "forge.json";
+
 /// One pull request, as much of it as a row shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pr {
@@ -290,24 +300,32 @@ fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
     (dir.is_dir() && at.is_dir()).then(|| (dir, at.to_path_buf(), branch))
 }
 
-/// Ask about the branches of `metas` whose written-down requests are stale,
-/// one ask per repository, on detached threads, so the next reading shows
-/// the answers. Never waits on a forge.
+/// Ask about the branches of `agents` whose written-down requests are stale,
+/// one ask per repository when its turn on the schedule has come, on
+/// detached threads, so the next reading shows the answers. Never waits on a
+/// forge. Each agent comes with whether it has ended.
 ///
 /// What is written down stays shown while an ask runs, so the column does
 /// not blink.
-pub fn refresh(metas: &[&Meta], now: u64) {
-    let agents = metas.iter().filter_map(|meta| asked_about(meta)).collect();
-    refresh_with(agents, now, &Forges::installed());
+pub fn refresh(agents: &[(&Meta, bool)], now: u64) {
+    let Some(schedule) = crate::paths::state_root()
+        .ok()
+        .and_then(|root| crate::paths::schedule_file(&root))
+    else {
+        return;
+    };
+    let agents = agents
+        .iter()
+        .filter_map(|(meta, ended)| asked_about(meta, *ended))
+        .collect();
+    refresh_with(agents, now, &Forges::installed(), &schedule);
 }
 
-/// [`refresh`] over agents already found, each with its repository, and the
-/// forge programs given.
-fn refresh_with(agents: Vec<(PathBuf, Asked)>, now: u64, forges: &Forges) {
+/// [`refresh`] over agents already found, each with its repository, with
+/// the forge programs and the schedule file given.
+fn refresh_with(agents: Vec<(PathBuf, Asked)>, now: u64, forges: &Forges, schedule: &Path) {
     for (repo, agents) in stale(agents, now) {
-        if asks_again(&repo, now) {
-            ask_again(repo, agents, now, forges.clone());
-        }
+        ask_again(repo, agents, now, forges.clone(), schedule.to_path_buf());
     }
 }
 
@@ -317,16 +335,18 @@ struct Asked {
     /// The record directory, where `pr.json` goes.
     dir: PathBuf,
     branch: String,
+    /// Whether the agent has ended; see [`ENDED`].
+    ended: bool,
 }
 
 /// The agent's repository and where its answer goes, for an agent on a
 /// branch of amx's whose repository is still there.
-fn asked_about(meta: &Meta) -> Option<(PathBuf, Asked)> {
+fn asked_about(meta: &Meta, ended: bool) -> Option<(PathBuf, Asked)> {
     let (dir, _, branch) = about(meta)?;
     let repo = repository(meta);
     repo.is_dir().then(|| {
         let branch = branch.to_string();
-        (repo, Asked { dir, branch })
+        (repo, Asked { dir, branch, ended })
     })
 }
 
@@ -335,7 +355,7 @@ fn asked_about(meta: &Meta) -> Option<(PathBuf, Asked)> {
 fn stale(agents: Vec<(PathBuf, Asked)>, now: u64) -> Vec<(PathBuf, Vec<Asked>)> {
     let mut by_repository: Vec<(PathBuf, Vec<Asked>)> = Vec::new();
     for (repo, asked) in agents {
-        if still_good(held(&asked.dir).as_ref(), &asked.branch, now) {
+        if !worth_asking(held(&asked.dir).as_ref(), &asked.branch, asked.ended, now) {
             continue;
         }
         match by_repository.iter_mut().find(|(known, _)| *known == repo) {
@@ -344,6 +364,21 @@ fn stale(agents: Vec<(PathBuf, Asked)>, now: u64) -> Vec<(PathBuf, Vec<Asked>)> 
         }
     }
     by_repository
+}
+
+/// Whether what is written down about `branch` is worth asking about again:
+/// it is not [`still_good`], and an ended agent's branch with no request was
+/// last asked about [`ENDED`] seconds ago or more.
+fn worth_asking(held: Option<&Recorded>, branch: &str, ended: bool, now: u64) -> bool {
+    if still_good(held, branch, now) {
+        return false;
+    }
+    match held {
+        Some(held) if ended && held.branch == branch && held.prs.is_empty() => {
+            now.saturating_sub(held.asked) >= ENDED
+        }
+        _ => true,
+    }
 }
 
 /// The repository an agent's tree was cut from, read off the tree's path; its
@@ -491,24 +526,9 @@ fn write(
 /// Repositories with an ask in flight, so each has at most one.
 static ASKING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
-/// When each repository was last asked about, answered or not. What a forge
-/// that did not answer left written down stands, so without this every
-/// reading would ask again.
-static ASKED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
-
-/// Whether `repo` may be asked about at `now`: it was not asked about in the
-/// last [`FRESH`] seconds.
-fn asks_again(repo: &Path, now: u64) -> bool {
-    ASKED.lock().map_or(true, |asked| {
-        asked
-            .get(repo)
-            .is_none_or(|&at| now.saturating_sub(at) >= FRESH)
-    })
-}
-
-/// Ask about `repo` on a detached thread that is never joined, and note the
-/// ask as of `now`.
-fn ask_again(repo: PathBuf, agents: Vec<Asked>, now: u64, forges: Forges) {
+/// Ask about `repo` on a detached thread that is never joined, when its turn
+/// on the schedule has come, and note on the schedule how the ask went.
+fn ask_again(repo: PathBuf, agents: Vec<Asked>, now: u64, forges: Forges, schedule: PathBuf) {
     {
         let Ok(mut asking) = ASKING.lock() else {
             return;
@@ -517,20 +537,110 @@ fn ask_again(repo: PathBuf, agents: Vec<Asked>, now: u64, forges: Forges) {
             return;
         }
     }
-    if let Ok(mut asked) = ASKED.lock() {
-        asked.insert(repo.clone(), now);
+    if !claim(&schedule, &repo, now) {
+        forget(&repo);
+        return;
     }
 
     let asking = repo.clone();
     let done = std::thread::Builder::new()
         .name("amx-pr".to_string())
         .spawn(move || {
-            look_over(&asking, &agents, &forges, now);
+            let answered = look_over(&asking, &agents, &forges, now);
+            settle(&schedule, &asking, answered);
             forget(&asking);
         });
     if done.is_err() {
         forget(&repo);
     }
+}
+
+/// When a repository was last asked about, and how many asks in a row no
+/// forge answered: its entry on the schedule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Tried {
+    asked: u64,
+    #[serde(default)]
+    failures: u32,
+}
+
+impl Tried {
+    /// Seconds from this ask to the next: a minute, and from the second
+    /// failure in a row on twice the gap before, up to [`LONGEST`].
+    fn gap(self) -> u64 {
+        (FRESH << self.failures.saturating_sub(1).min(4)).min(LONGEST)
+    }
+
+    fn due(self, now: u64) -> bool {
+        now.saturating_sub(self.asked) >= self.gap()
+    }
+}
+
+/// The schedule, one entry per repository. An entry that does not read
+/// costs that repository its place, which reads as due, and not the others.
+fn scheduled(file: &Path) -> BTreeMap<PathBuf, Tried> {
+    let Ok(said) = std::fs::read_to_string(file) else {
+        return BTreeMap::new();
+    };
+    let Ok(serde_json::Value::Object(entries)) = serde_json::from_str(&said) else {
+        return BTreeMap::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|(repo, tried)| {
+            Some((PathBuf::from(repo), serde_json::from_value(tried).ok()?))
+        })
+        .collect()
+}
+
+/// Change the schedule under its lock, so two views never both take one
+/// turn, and write it back when it changed. `None` when the lock cannot be
+/// had, which asks nothing.
+fn rescheduled<T>(
+    file: &Path,
+    change: impl FnOnce(&mut BTreeMap<PathBuf, Tried>) -> T,
+) -> Option<T> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(crate::paths::FILE_MODE)
+        .open(file.with_extension("lock"))
+        .ok()?;
+    let _held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive).ok()?;
+    let mut tried = scheduled(file);
+    let before = tried.clone();
+    let answer = change(&mut tried);
+    if tried != before {
+        let said = serde_json::to_string(&tried).ok()?;
+        crate::store::write_atomic(file, said.as_bytes()).ok()?;
+    }
+    Some(answer)
+}
+
+/// Take `repo`'s turn at `now` if it has come: whether to ask.
+fn claim(file: &Path, repo: &Path, now: u64) -> bool {
+    rescheduled(file, |tried| {
+        let entry = tried.entry(repo.to_path_buf()).or_default();
+        let due = entry.due(now);
+        if due {
+            entry.asked = now;
+        }
+        due
+    })
+    .unwrap_or(false)
+}
+
+/// Note whether the ask about `repo` was answered.
+fn settle(file: &Path, repo: &Path, answered: bool) {
+    rescheduled(file, |tried| {
+        let entry = tried.entry(repo.to_path_buf()).or_default();
+        entry.failures = match answered {
+            true => 0,
+            false => entry.failures.saturating_add(1),
+        };
+    });
 }
 
 fn forget(repo: &Path) {
@@ -1073,19 +1183,30 @@ mod tests {
                 .collect()
         }
 
-        /// One [`refresh_with`] at `now`, waited out.
+        /// The schedule this forge's asks go through.
+        fn schedule(&self) -> PathBuf {
+            self.dir.path().join(SCHEDULE)
+        }
+
+        /// One [`refresh_with`] at `now` over agents still going, waited out.
         fn refresh(&self, agents: &[(&Path, &Path, &str)], now: u64) {
+            self.refresh_as(agents, false, now);
+        }
+
+        /// [`Fake::refresh`] over agents that have `ended` or not.
+        fn refresh_as(&self, agents: &[(&Path, &Path, &str)], ended: bool, now: u64) {
             let asked = agents
                 .iter()
                 .map(|(repo, dir, branch)| {
                     let asked = Asked {
                         dir: dir.to_path_buf(),
                         branch: branch.to_string(),
+                        ended,
                     };
                     (repo.to_path_buf(), asked)
                 })
                 .collect();
-            refresh_with(asked, now, &self.forges);
+            refresh_with(asked, now, &self.forges, &self.schedule());
             for (repo, _, _) in agents {
                 asked_by_now(repo);
             }
@@ -1389,6 +1510,121 @@ mod tests {
     }
 
     #[test]
+    fn a_forge_that_fails_is_asked_at_doubling_gaps_until_it_answers() {
+        let repo = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let forge = Fake::new(&listed(&[(7, "amx/fix-login-a1b")]), "[]");
+        forge.fails();
+        let agents = [(repo.path(), dir.path(), "amx/fix-login-a1b")];
+
+        let mut at = 1_000;
+        forge.refresh(&agents, at);
+        assert_eq!(forge.calls().len(), 1);
+        for (asks, gap) in (2..).zip([60, 120, 240, 480, 960, 960, 960]) {
+            forge.refresh(&agents, at + gap - 1);
+            assert_eq!(forge.calls().len(), asks - 1, "not before {gap} s");
+            at += gap;
+            forge.refresh(&agents, at);
+            assert_eq!(forge.calls().len(), asks, "but at {gap} s");
+        }
+        assert!(
+            kept(dir.path(), "amx/fix-login-a1b").is_empty(),
+            "nothing came of the failures"
+        );
+
+        // The first answer puts the gap back to a minute.
+        std::fs::remove_file(forge.dir.path().join("fails")).unwrap();
+        at += 960;
+        forge.refresh(&agents, at);
+        let answered = forge.calls().len();
+        assert_eq!(numbers(dir.path(), "amx/fix-login-a1b"), [7]);
+        forge.refresh(&agents, at + 59);
+        assert_eq!(forge.calls().len(), answered);
+        forge.refresh(&agents, at + 60);
+        assert_eq!(forge.calls().len(), answered + 1);
+    }
+
+    #[test]
+    fn an_ended_agent_with_no_request_is_asked_about_every_ten_minutes() {
+        let repo = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let forge = Fake::new("[]", "[]");
+        write(dir.path(), "amx/fix-login-a1b", Vec::new(), &[], 1_000).unwrap();
+        let agents = [(repo.path(), dir.path(), "amx/fix-login-a1b")];
+
+        for now in [1_060, 1_300, 1_599] {
+            forge.refresh_as(&agents, true, now);
+        }
+        assert_eq!(forge.calls().len(), 0, "{:?}", forge.calls());
+        forge.refresh_as(&agents, true, 1_600);
+        assert_eq!(forge.calls().len(), 1);
+
+        // One still going is asked about once a minute.
+        let going = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "amx/port-importer-b2c", Vec::new(), &[], 1_000).unwrap();
+        forge.refresh_as(
+            &[(going.path(), dir.path(), "amx/port-importer-b2c")],
+            false,
+            1_060,
+        );
+        assert_eq!(forge.calls().len(), 2);
+    }
+
+    #[test]
+    fn a_turn_another_view_took_is_not_taken_again() {
+        let repo = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let forge = Fake::new(&listed(&[(7, "amx/fix-login-a1b")]), "[]");
+        forge.refresh(&[(repo.path(), dir.path(), "amx/fix-login-a1b")], 1_000);
+        assert_eq!(forge.calls().len(), 1);
+
+        // Another view reads the same schedule.
+        assert!(!claim(&forge.schedule(), repo.path(), 1_030));
+        assert!(claim(&forge.schedule(), repo.path(), 1_060));
+        assert!(
+            !claim(&forge.schedule(), repo.path(), 1_060),
+            "and a turn is taken once"
+        );
+    }
+
+    #[test]
+    fn a_schedule_entry_that_does_not_read_costs_that_repository_and_not_the_others() {
+        let at = TempDir::new().unwrap();
+        let file = at.path().join(SCHEDULE);
+        std::fs::write(
+            &file,
+            r#"{"/srv/one":{"asked":"soon"},"/srv/two":{"asked":1000,"failures":2},"/srv/three":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scheduled(&file),
+            BTreeMap::from([(
+                PathBuf::from("/srv/two"),
+                Tried {
+                    asked: 1_000,
+                    failures: 2,
+                },
+            )])
+        );
+        assert!(
+            claim(&file, Path::new("/srv/one"), 1_010),
+            "the one that does not read is due"
+        );
+        assert!(
+            !claim(&file, Path::new("/srv/two"), 1_010),
+            "and the one that does keeps its gap"
+        );
+        assert_eq!(scheduled(&file)[Path::new("/srv/two")].failures, 2);
+
+        std::fs::write(&file, "half a doc").unwrap();
+        assert!(
+            scheduled(&file).is_empty(),
+            "and so is a file nothing reads"
+        );
+    }
+
+    #[test]
     fn a_forge_that_cannot_be_asked_leaves_the_requests_written_down() {
         let repo = TempDir::new().unwrap();
         let forge = Fake::new("[]", "[]");
@@ -1560,7 +1796,10 @@ mod tests {
             transcript: None,
             created: 1,
         };
-        assert!(asked_about(&meta).is_none(), "and nothing asks about it");
+        assert!(
+            asked_about(&meta, false).is_none(),
+            "and nothing asks about it"
+        );
         assert!(
             written(&meta).is_empty(),
             "an agent working in a directory has no branch of amx's making, \
