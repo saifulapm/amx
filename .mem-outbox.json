@@ -2,22 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": null,
-      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T15:45:21.448426201Z\"\nid = \"01M786YQ5D8HZDXTAGCSD9PET9\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:45:21.448426201Z\"\nproject = \"amx\"\ntitle = \"The view asks the forge once per repository: gh pr list --state all --limit 100 (glab mr list --a…\"\n+++\n\nThe view asks the forge once per repository: gh pr list --state all --limit 100 (glab mr list --all --per-page 100) run in the repository the agent's tree was cut from, and each branch's requests are cut out of that answer by head name. A pr-<N> branch (new --pr on a fork's request, or a taken name) is matched to request N by number, which the old per-branch --head ask never found. A branch a full answer of 100 leaves out is asked about alone with --head; a pr-<N> branch is not, since by name it would read as having no request. sweep's asked_now stays per branch. The schedule is in memory per repository in t3; t4 moves it to disk\n",
-      "id": "01M786YQ5D00787HDMFCG78MJB",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M786YQ5D8HZDXTAGCSD9PET9.md"
-    },
-    {
-      "base": "01M786EWG005TYSDN4NK0SBEPW",
-      "body": "# plan: quiet-waits\n\n- [x] t1 result and wait read the phase without capturing a pane for the spinner line\n- [x] t2 Pin one listing and one capture call per server for a reading, and one listing for ls\n- [x] t3 The view asks the forge once per repository and matches each branch from that answer\n- [ ] t4 A failing forge is asked at doubling gaps up to 16 minutes, and an ended agent with no request every 10 minutes  [after: t3]\n",
-      "id": "01M786YQ71SDD8FXRBDWA8XP2W",
+      "base": "01M786YQ71SDD8FXRBDWA8XP2W",
+      "body": "# plan: quiet-waits\n\n- [x] t1 result and wait read the phase without capturing a pane for the spinner line\n- [x] t2 Pin one listing and one capture call per server for a reading, and one listing for ls\n- [x] t3 The view asks the forge once per repository and matches each branch from that answer\n- [x] t4 A failing forge is asked at doubling gaps up to 16 minutes, and an ended agent with no request every 10 minutes  [after: t3]\n",
+      "id": "01M787B74GDJXXQCW29P89XKWP",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T15:45:21.690289488Z\"\nid = \"01M786YQCP48KR5KP9VAY186FR\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:45:21.690289488Z\"\nproject = \"amx\"\ntitle = \"t3 landed: the view asks the forge once per repository (pr::refresh from the view's reading), eac…\"\n+++\n\nt3 landed: the view asks the forge once per repository (pr::refresh from the view's reading), each agent's pr.json cut from that answer\n",
-      "id": "01M786YQCPKVA8RRCCF9MDR2A3",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M786YQCP48KR5KP9VAY186FR.md"
+      "body": "+++\ncreated = \"2026-11-12T15:52:11.198200014Z\"\nid = \"01M787B7A466XMH5KYYB3ENZ1H\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T15:52:11.198200014Z\"\nproject = \"amx\"\ntitle = \"t4 landed: forge.json schedule shared by views, gaps 60/120/240/480/960 on failure, ended agents …\"\n+++\n\nt4 landed: forge.json schedule shared by views, gaps 60/120/240/480/960 on failure, ended agents with no request every 600 s; suite 2673 passed\n",
+      "id": "01M787B7A4ZE1K32XXXS92CN9M",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M787B7A466XMH5KYYB3ENZ1H.md"
     }
   ]
 }
