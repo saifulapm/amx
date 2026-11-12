@@ -1,0 +1,9 @@
+# CI's run of the suite: `cargo nextest run --profile ci`. A failing test
+# gets one more try; one that passes on it is flaky, and the job summary
+# names it from the JUnit report (.github/scripts/flaky.py).
+[profile.ci]
+retries = 1
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"

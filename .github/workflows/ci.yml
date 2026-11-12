@@ -26,6 +26,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9
+
       # The e2e suite drives throwaway `tmux -L` servers, and one of its tests
       # sets `extended-keys-format`, which arrived in tmux 3.5; the apt package
       # on this runner is 3.4. So the release the suite is driven against at
@@ -53,7 +57,12 @@ jobs:
 
       # The end-to-end suites drive real tmux servers and read their screens,
       # and a shared runner is sometimes slow enough to catch one mid-frame.
-      # So a failing run gets one more try: a failure that repeats is real,
-      # and one that does not is still in the log above.
+      # So a failing test gets one more try (.config/nextest.toml): a failure
+      # that repeats fails the job, and a test that passed only on its retry
+      # is named in the summary.
       - name: Test
-        run: cargo test || cargo test
+        run: cargo nextest run --profile ci
+
+      - name: Name the flaky tests
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/flaky.py target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
