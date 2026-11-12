@@ -31,7 +31,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The newest release, a prerelease aside, as install.sh's `latest` is.
+      # The newest v* tag by version; a prerelease, with a - in its tag, is skipped.
       - name: Check out the newest tag
         shell: bash
         run: |

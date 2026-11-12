@@ -670,7 +670,7 @@ mod tests {
                 ),
             ],
             "a newer amx only adds keys and values; a field of the wrong type is a \
-             hand edit and costs the row by design (finding B2RZWETZ)",
+             hand edit, never a newer amx's, and costs the row by design",
         ),
         (
             "meta.json",
@@ -679,7 +679,7 @@ mod tests {
                 "store_a_rewrite_keeps_the_keys_a_newer_amx_wrote",
             )],
             "a newer amx only adds keys; a field of the wrong type is a hand edit \
-             and costs the row by design (finding B2RZWETZ)",
+             and costs the row by design, since fields are added, never retyped",
         ),
         (
             "events.jsonl",
