@@ -3,33 +3,15 @@
   "writes": [
     {
       "base": null,
-      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T10:38:01.070694497Z\"\nid = \"01M77NBYYF5NB0M9BBPBS6CMYY\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:38:01.070694497Z\"\nproject = \"amx\"\ntitle = \"safe-sweep review fix: a branch reads merged into main only with --merged, a commit beyond base, …\"\n+++\n\nsafe-sweep review fix: a branch reads merged into main only with --merged, a commit beyond base, and a 'commit' entry in its own reflog; accepted misses (left for clear or stop): reflog off or expired, commits made without git commit; sweep's under-writer check keeps only a record that moved since the list (seq changed, or a new non-finished phase), so a working record over a dead pane is swept\n",
-      "id": "01M77NBYYF3T93220KG6CQX5BX",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NBYYF5NB0M9BBPBS6CMYY.md"
+      "body": "+++\ncreated = \"2026-11-12T10:43:06.339827157Z\"\nid = \"01M77NN923RYYV4X4ZJMJ5F999\"\nkind = \"handoff\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:43:06.339827157Z\"\nproject = \"amx\"\ntitle = \"Next: marks-survive. safe-sweep landed on main. Numbers: ~1 h wall clock, 6 tasks (t0 help-table …\"\n+++\n\nNext: marks-survive. safe-sweep landed on main. Numbers: ~1 h wall clock, 6 tasks (t0 help-table lesson check, t1-t5) all solo, 3 review blocks fixed in one pass (dead-pane record now swept; merged into main needs a 'commit' entry in the branch's own reflog, so a branch that only caught up with main is not listed; view c branch-keep test), 2 [later] ideas filed (#XP5084R3, #7ZMDP7J1), walk 10 steps pass twice, one finding #V3NR8C9Y closed as by design: a state.json hand-edited to done over a live pane is swept, as tests/e2e_sweep.rs sweep_ends_an_agent_that_is_somehow_still_running_before_it_takes_the_tree pins; Saiful may overturn. Plan correction: amx new --check returns before the caps, so the cap race is pinned by a unit test. The 2026-11-01 phase lesson repeated and is now a Check: with no enforcer, the next run's first task.\n",
+      "id": "01M77NN924NKT9VH7ZJZYZMHZQ",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NN923RYYV4X4ZJMJ5F999.md"
     },
     {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:38:01.209959114Z\"\nid = \"01M77NBZ3EWDKQSDG2SDP494YQ\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:38:01.209959114Z\"\nproject = \"amx\"\ntitle = \"review finding dropped: dogfood #V3NR8C9Y (state.json forged to done over a live pane gets swept)…\"\n+++\n\nreview finding dropped: dogfood #V3NR8C9Y (state.json forged to done over a live pane gets swept); tests/e2e_sweep.rs sweep_ends_an_agent_that_is_somehow_still_running_before_it_takes_the_tree pins that on purpose, and the forged write is to the person's own state dir\n",
-      "id": "01M77NBZ3F40AHES4TPV0FPPK3",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NBZ3EWDKQSDG2SDP494YQ.md"
-    },
-    {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:38:01.375461879Z\"\nid = \"01M77NBZ80PQNDF6CYXP5084R3\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:38:01.375461879Z\"\nproject = \"amx\"\ntitle = \"sweep's pre-writer derive::view check has no test: needs a record that reads finished over a scre…\"\n+++\n\nsweep's pre-writer derive::view check has no test: needs a record that reads finished over a screen that reads working (review [later])\n",
-      "id": "01M77NBZ80T83BQ1AT82NJR7XX",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NBZ80PQNDF6CYXP5084R3.md"
-    },
-    {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:38:01.51226788Z\"\nid = \"01M77NBZCKG0NPZ30C7ZMDP7J1\"\nkind = \"idea\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:38:01.51226788Z\"\nproject = \"amx\"\ntitle = \"stop::run_finished and stop --delete remove tree, branch and record after letting the writer go; …\"\n+++\n\nstop::run_finished and stop --delete remove tree, branch and record after letting the writer go; a resume landing in that gap starts a pane in a tree tidy then removes (review [later]); forget_row holds the writer until the record is gone\n",
-      "id": "01M77NBZCMGYMQMWTK5JX5VQTZ",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NBZCKG0NPZ30C7ZMDP7J1.md"
-    },
-    {
-      "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:38:01.664922434Z\"\nid = \"01M77NBZH2J2FJJH22YBR0XRBW\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:38:01.664922434Z\"\nproject = \"amx\"\ntitle = \"review fixes landed: dead-pane sweep, reflog-gated merged, view c branch test, docs (5d02792)\"\n+++\n\nreview fixes landed: dead-pane sweep, reflog-gated merged, view c branch test, docs (5d02792)\n",
-      "id": "01M77NBZH2QA0VVNT424TV5K8S",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77NBZH2J2FJJH22YBR0XRBW.md"
+      "base": "01M77KT43EG3DQZ2VZFVC8M8RZ",
+      "body": null,
+      "id": "01M77NN93EN4YRQZH7968SAM1V",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     }
   ]
 }
