@@ -3328,3 +3328,49 @@ fn space_writes_the_look_on_the_record_and_leaves_the_rows_alone() {
         amx.capture(&view)
     );
 }
+
+#[test]
+fn the_view_asks_the_forge_about_a_repository_once_for_all_its_agents() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let ids = ["a-a1b", "b-b2c", "c-c3d", "d-d4e", "e-e5f"];
+    for id in ids {
+        common::with_a_worktree(&amx, id, &repo, "happy-turn");
+    }
+    let listing: Vec<Value> = ids
+        .iter()
+        .zip(31..)
+        .map(|(id, number)| {
+            json!({
+                "number": number, "state": "OPEN", "isDraft": false,
+                "reviewDecision": "", "statusCheckRollup": [],
+                "headRefName": format!("amx/{id}"), "headRefOid": "abc",
+            })
+        })
+        .collect();
+    let said = Value::Array(listing).to_string();
+    let (bin, log) = common::a_logging(&amx, "gh", &format!("echo '{said}'"));
+
+    let path = common::path_with(&bin);
+    let view = amx.in_a_terminal(&[("PATH", &path)], &[]);
+    // Every row shows its own request from the one answer.
+    let drawn = amx.until("every request on its row", || {
+        let drawn = amx.capture(&view);
+        ids.iter()
+            .zip(31..)
+            .all(|(id, number)| {
+                drawn
+                    .lines()
+                    .any(|line| line.contains(id) && line.contains(&format!("#{number}")))
+            })
+            .then_some(drawn)
+    });
+    // The view reads every second or so; a dozen readings later, still one.
+    std::thread::sleep(std::time::Duration::from_secs(12));
+    assert_eq!(
+        common::calls(&log).len(),
+        1,
+        "{:?}\n{drawn}",
+        common::calls(&log)
+    );
+}

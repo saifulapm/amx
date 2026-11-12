@@ -4,8 +4,8 @@
 //! A machine with neither installed gets no pull requests, never an error.
 //!
 //! - Interactive readers never wait on a forge: they read the answer cached in
-//!   `pr.json` beside the record and, when it is stale, refresh it on a
-//!   detached thread.
+//!   `pr.json` beside the record, and the view has [`refresh`] ask about every
+//!   stale branch of a repository at once, on a detached thread.
 //! - Only [`asked_now`] (for `sweep`) and [`request_head`] (for `new --pr`)
 //!   call the forge synchronously.
 
@@ -24,6 +24,10 @@ pub const FRESH: u64 = 60;
 
 /// The cache file, in the agent's record directory.
 const CACHE: &str = "pr.json";
+
+/// Requests one answer about a whole repository carries. A branch a full
+/// answer leaves out may have a request beyond it, so it is asked about alone.
+const LIMIT: usize = 100;
 
 /// One pull request, as much of it as a row shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,19 +267,11 @@ fn pipeline_of(status: &str) -> Option<Checks> {
     }
 }
 
-/// The pull requests on this agent's branch from the cache, starting a
-/// background refresh when it is stale.
-pub fn of(meta: &Meta) -> Vec<Pr> {
-    let Some((dir, at, branch)) = about(meta) else {
-        return Vec::new();
-    };
-    read(&dir, &at, branch, crate::store::now())
-}
-
 /// The cached pull requests, with no refresh.
 ///
-/// For verbs that print and exit: a refresh thread would be killed with the
-/// process before the forge answered. The view keeps the cache current.
+/// What every reader shows. The view keeps the cache current through
+/// [`refresh`]; a verb that prints and exits would be gone before a forge
+/// answered.
 pub fn written(meta: &Meta) -> Vec<Pr> {
     let Some((dir, _, branch)) = about(meta) else {
         return Vec::new();
@@ -294,16 +290,69 @@ fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
     (dir.is_dir() && at.is_dir()).then(|| (dir, at.to_path_buf(), branch))
 }
 
-/// [`of`] with the record directory and the working directory given.
+/// Ask about the branches of `metas` whose written-down requests are stale,
+/// one ask per repository, on detached threads, so the next reading shows
+/// the answers. Never waits on a forge.
 ///
-/// Returns the cached answer even when stale, so the column does not blink
-/// while a refresh runs.
-pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
-    let held = held(dir);
-    if !still_good(held.as_ref(), branch, now) && asks_again(dir, now) {
-        ask_again(dir.to_path_buf(), at.to_path_buf(), branch.to_string(), now);
+/// What is written down stays shown while an ask runs, so the column does
+/// not blink.
+pub fn refresh(metas: &[&Meta], now: u64) {
+    let agents = metas.iter().filter_map(|meta| asked_about(meta)).collect();
+    refresh_with(agents, now, &Forges::installed());
+}
+
+/// [`refresh`] over agents already found, each with its repository, and the
+/// forge programs given.
+fn refresh_with(agents: Vec<(PathBuf, Asked)>, now: u64, forges: &Forges) {
+    for (repo, agents) in stale(agents, now) {
+        if asks_again(&repo, now) {
+            ask_again(repo, agents, now, forges.clone());
+        }
     }
-    theirs(held, branch)
+}
+
+/// An agent whose answer a repository's ask writes down.
+#[derive(Debug, Clone)]
+struct Asked {
+    /// The record directory, where `pr.json` goes.
+    dir: PathBuf,
+    branch: String,
+}
+
+/// The agent's repository and where its answer goes, for an agent on a
+/// branch of amx's whose repository is still there.
+fn asked_about(meta: &Meta) -> Option<(PathBuf, Asked)> {
+    let (dir, _, branch) = about(meta)?;
+    let repo = repository(meta);
+    repo.is_dir().then(|| {
+        let branch = branch.to_string();
+        (repo, Asked { dir, branch })
+    })
+}
+
+/// The agents whose written-down requests need asking about again, by
+/// repository, in the order first met.
+fn stale(agents: Vec<(PathBuf, Asked)>, now: u64) -> Vec<(PathBuf, Vec<Asked>)> {
+    let mut by_repository: Vec<(PathBuf, Vec<Asked>)> = Vec::new();
+    for (repo, asked) in agents {
+        if still_good(held(&asked.dir).as_ref(), &asked.branch, now) {
+            continue;
+        }
+        match by_repository.iter_mut().find(|(known, _)| *known == repo) {
+            Some((_, agents)) => agents.push(asked),
+            None => by_repository.push((repo, vec![asked])),
+        }
+    }
+    by_repository
+}
+
+/// The repository an agent's tree was cut from, read off the tree's path; its
+/// directory for an agent amx cut no tree for.
+fn repository(meta: &Meta) -> PathBuf {
+    meta.worktree
+        .as_deref()
+        .and_then(crate::worktree::repo_of)
+        .unwrap_or_else(|| meta.dir.clone())
 }
 
 /// The pull requests on this agent's branch, asking the forge synchronously
@@ -439,68 +488,205 @@ fn write(
     crate::store::write_atomic(&dir.join(CACHE), said.as_bytes())
 }
 
-/// Record directories with a refresh in flight, so each agent has at most one.
+/// Repositories with an ask in flight, so each has at most one.
 static ASKING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
-/// Record directories whose last refresh no forge answered, and when it was
-/// asked for. What is written down stands, so without this every reading
-/// would ask again.
-static UNANSWERED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+/// When each repository was last asked about, answered or not. What a forge
+/// that did not answer left written down stands, so without this every
+/// reading would ask again.
+static ASKED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
 
-/// Whether a refresh for `dir` may be asked for at `now`: no forge failed to
-/// answer one in the last [`FRESH`] seconds.
-fn asks_again(dir: &Path, now: u64) -> bool {
-    UNANSWERED.lock().map_or(true, |unanswered| {
-        unanswered
-            .get(dir)
+/// Whether `repo` may be asked about at `now`: it was not asked about in the
+/// last [`FRESH`] seconds.
+fn asks_again(repo: &Path, now: u64) -> bool {
+    ASKED.lock().map_or(true, |asked| {
+        asked
+            .get(repo)
             .is_none_or(|&at| now.saturating_sub(at) >= FRESH)
     })
 }
 
-/// Refresh the cache on a detached thread that is never joined. A forge that
-/// does not answer leaves the cache as it is, and the failure is noted as of
-/// `now`.
-fn ask_again(dir: PathBuf, at: PathBuf, branch: String, now: u64) {
+/// Ask about `repo` on a detached thread that is never joined, and note the
+/// ask as of `now`.
+fn ask_again(repo: PathBuf, agents: Vec<Asked>, now: u64, forges: Forges) {
     {
         let Ok(mut asking) = ASKING.lock() else {
             return;
         };
-        if !asking.insert(dir.clone()) {
+        if !asking.insert(repo.clone()) {
             return;
         }
     }
+    if let Ok(mut asked) = ASKED.lock() {
+        asked.insert(repo.clone(), now);
+    }
 
-    let asking = dir.clone();
+    let asking = repo.clone();
     let done = std::thread::Builder::new()
         .name("amx-pr".to_string())
         .spawn(move || {
-            let looked = ask(&at, &branch);
-            if let Ok(mut unanswered) = UNANSWERED.lock() {
-                match looked {
-                    Some(_) => unanswered.remove(&asking),
-                    None => unanswered.insert(asking.clone(), now),
-                };
-            }
-            if let Some(looked) = looked {
-                let _ = write(
-                    &asking,
-                    &branch,
-                    looked.prs,
-                    &looked.merged_heads,
-                    crate::store::now(),
-                );
-            }
+            look_over(&asking, &agents, &forges, now);
             forget(&asking);
         });
     if done.is_err() {
-        forget(&dir);
+        forget(&repo);
     }
 }
 
-fn forget(dir: &Path) {
+fn forget(repo: &Path) {
     if let Ok(mut asking) = ASKING.lock() {
-        asking.remove(dir);
+        asking.remove(repo);
     }
+}
+
+/// Ask about every agent's branch in `repo` at once and write each its own
+/// answer, as asked at `now`. A branch a full answer leaves out is asked
+/// about alone. A forge that does not answer leaves everything written down
+/// as it is. Whether a forge answered.
+fn look_over(repo: &Path, agents: &[Asked], forges: &Forges, now: u64) -> bool {
+    let Some(listing) = ask_the_repository(repo, forges) else {
+        return false;
+    };
+    for agent in agents {
+        let looked = listing.of(&agent.branch).or_else(|| {
+            // Asked alone by name, a `pr-<N>` branch would read as having no
+            // request; what is written down stands instead.
+            numbered(&agent.branch)
+                .is_none()
+                .then(|| ask_with(repo, &agent.branch, forges))
+                .flatten()
+        });
+        if let Some(looked) = looked {
+            let _ = write(
+                &agent.dir,
+                &agent.branch,
+                looked.prs,
+                &looked.merged_heads,
+                now,
+            );
+        }
+    }
+    true
+}
+
+/// The forge programs, named so tests can put fakes in their place.
+#[derive(Debug, Clone)]
+struct Forges {
+    gh: PathBuf,
+    glab: PathBuf,
+}
+
+impl Forges {
+    /// The `gh` and `glab` on PATH.
+    fn installed() -> Forges {
+        Forges {
+            gh: PathBuf::from("gh"),
+            glab: PathBuf::from("glab"),
+        }
+    }
+}
+
+/// The forge an answer came from, which names its fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Forge {
+    Gh,
+    Glab,
+}
+
+impl Forge {
+    /// The fields naming a request's head branch, head commit and number.
+    fn fields(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Forge::Gh => ("headRefName", "headRefOid", "number"),
+            Forge::Glab => ("source_branch", "sha", "iid"),
+        }
+    }
+}
+
+/// One forge's answer about a whole repository: the requests it listed, at
+/// most [`LIMIT`] of them.
+#[derive(Debug)]
+struct Listing {
+    forge: Forge,
+    listed: Vec<serde_json::Value>,
+}
+
+impl Listing {
+    /// The requests on `branch`: those whose head is it, and for a `pr-<N>`
+    /// branch (see [`numbered`]) request N, whose head is a fork's name.
+    ///
+    /// `None` when the answer is full and holds none of them, since one may
+    /// stand beyond it.
+    fn of(&self, branch: &str) -> Option<Looked> {
+        let (head, commit, number) = self.forge.fields();
+        let request = numbered(branch);
+        let mine: Vec<serde_json::Value> = self
+            .listed
+            .iter()
+            .filter(|listed| {
+                word(listed, head) == branch
+                    || request.is_some() && listed.get(number).and_then(|it| it.as_u64()) == request
+            })
+            .cloned()
+            .collect();
+        if mine.is_empty() && self.listed.len() >= LIMIT {
+            return None;
+        }
+        let said = serde_json::Value::Array(mine).to_string();
+        Some(Looked {
+            prs: sorted(match self.forge {
+                Forge::Gh => read_gh(&said),
+                Forge::Glab => read_glab(&said),
+            }),
+            merged_heads: merged_heads(&said, commit),
+        })
+    }
+}
+
+/// The request number a `pr-<N>` branch was cut for by `new --pr`.
+fn numbered(branch: &str) -> Option<u64> {
+    let digits = branch.strip_prefix("pr-")?;
+    digits
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
+/// Ask `gh`, then `glab`, about every request in the repository at `at`, the
+/// newest [`LIMIT`] of them. `None` when neither answers with a list.
+fn ask_the_repository(at: &Path, forges: &Forges) -> Option<Listing> {
+    let limit = LIMIT.to_string();
+    let fields = format!("{GH_FIELDS},headRefName");
+    let asked = [
+        (
+            Forge::Gh,
+            &forges.gh,
+            vec![
+                "pr", "list", "--state", "all", "--limit", &limit, "--json", &fields,
+            ],
+        ),
+        (
+            Forge::Glab,
+            &forges.glab,
+            vec![
+                "mr",
+                "list",
+                "--all",
+                "--per-page",
+                &limit,
+                "--output",
+                "json",
+            ],
+        ),
+    ];
+    asked.into_iter().find_map(|(forge, program, args)| {
+        let said = run(at, program, &args)?;
+        match serde_json::from_str(&said) {
+            Ok(serde_json::Value::Array(listed)) => Some(Listing { forge, listed }),
+            _ => None,
+        }
+    })
 }
 
 /// One forge answer.
@@ -513,9 +699,14 @@ struct Looked {
 /// Ask `gh`, then `glab`, about `branch`. `None` when neither answers, which
 /// says nothing about the requests.
 fn ask(at: &Path, branch: &str) -> Option<Looked> {
+    ask_with(at, branch, &Forges::installed())
+}
+
+/// [`ask`] with the forge programs given.
+fn ask_with(at: &Path, branch: &str, forges: &Forges) -> Option<Looked> {
     if let Some(said) = run(
         at,
-        "gh",
+        &forges.gh,
         &[
             "pr", "list", "--head", branch, "--state", "all", "--limit", "5", "--json", GH_FIELDS,
         ],
@@ -527,7 +718,7 @@ fn ask(at: &Path, branch: &str) -> Option<Looked> {
     }
     if let Some(said) = run(
         at,
-        "glab",
+        &forges.glab,
         &[
             "mr",
             "list",
@@ -548,7 +739,7 @@ fn ask(at: &Path, branch: &str) -> Option<Looked> {
 
 /// Run a forge command and return its stdout, or `None` if it is missing or
 /// fails.
-fn run(at: &Path, program: &str, args: &[&str]) -> Option<String> {
+fn run(at: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Option<String> {
     let out = command(at, program, args).output().ok()?;
     out.status
         .success()
@@ -832,6 +1023,109 @@ mod tests {
         );
     }
 
+    /// A fake forge in a directory of its own: a `gh` that logs each call and
+    /// prints `listing` when asked about the whole repository and `alone`
+    /// when asked about one branch, and no `glab`.
+    struct Fake {
+        dir: TempDir,
+        forges: Forges,
+    }
+
+    impl Fake {
+        fn new(listing: &str, alone: &str) -> Fake {
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join("listing"), listing).unwrap();
+            std::fs::write(dir.path().join("alone"), alone).unwrap();
+            let at = dir.path().display();
+            let gh = dir.path().join("gh");
+            std::fs::write(
+                &gh,
+                format!(
+                    "#!/bin/sh\n\
+                     printf '%s\\n' \"$*\" >> '{at}/calls'\n\
+                     [ -f '{at}/fails' ] && exit 1\n\
+                     case \" $* \" in *' --head '*) cat '{at}/alone' ;; *) cat '{at}/listing' ;; esac\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+            wait_until_runnable(&gh);
+            let forges = Forges {
+                gh,
+                glab: dir.path().join("no-glab"),
+            };
+            Fake { dir, forges }
+        }
+
+        /// From now on every call fails.
+        fn fails(&self) {
+            std::fs::write(self.dir.path().join("fails"), "").unwrap();
+        }
+
+        /// The calls made so far, one line of arguments each, leaving out
+        /// the bare run that checked the script could be run.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|call| !call.is_empty())
+                .map(str::to_string)
+                .collect()
+        }
+
+        /// One [`refresh_with`] at `now`, waited out.
+        fn refresh(&self, agents: &[(&Path, &Path, &str)], now: u64) {
+            let asked = agents
+                .iter()
+                .map(|(repo, dir, branch)| {
+                    let asked = Asked {
+                        dir: dir.to_path_buf(),
+                        branch: branch.to_string(),
+                    };
+                    (repo.to_path_buf(), asked)
+                })
+                .collect();
+            refresh_with(asked, now, &self.forges);
+            for (repo, _, _) in agents {
+                asked_by_now(repo);
+            }
+        }
+    }
+
+    /// A gh listing of open requests, each `(number, head branch)`, with the
+    /// head commit `sha-<number>`.
+    fn listed(requests: &[(u64, &str)]) -> String {
+        listed_as(requests, "OPEN")
+    }
+
+    /// [`listed`] with every request in `state`.
+    fn listed_as(requests: &[(u64, &str)], state: &str) -> String {
+        let entries: Vec<serde_json::Value> = requests
+            .iter()
+            .map(|(number, head)| {
+                serde_json::json!({
+                    "number": number,
+                    "state": state,
+                    "isDraft": false,
+                    "reviewDecision": "",
+                    "statusCheckRollup": [],
+                    "headRefName": head,
+                    "headRefOid": format!("sha-{number}"),
+                })
+            })
+            .collect();
+        serde_json::Value::Array(entries).to_string()
+    }
+
+    /// Record directories for `branches`, each its own.
+    fn records(branches: usize) -> Vec<TempDir> {
+        (0..branches).map(|_| TempDir::new().unwrap()).collect()
+    }
+
+    fn numbers(dir: &Path, branch: &str) -> Vec<u64> {
+        kept(dir, branch).iter().map(|pr| pr.number).collect()
+    }
+
     #[test]
     fn a_look_reads_what_the_last_look_wrote_down() {
         let dir = TempDir::new().unwrap();
@@ -841,11 +1135,15 @@ mod tests {
         }];
         write(dir.path(), "amx/fix-login-a1b", prs.clone(), &[], 1_000).unwrap();
 
+        let repo = TempDir::new().unwrap();
+        let forge = Fake::new("[]", "[]");
+        forge.refresh(&[(repo.path(), dir.path(), "amx/fix-login-a1b")], 1_030);
         assert_eq!(
-            read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_030),
-            prs,
+            forge.calls(),
+            Vec::<String>::new(),
             "a fresh answer is the answer, and no forge is asked at all"
         );
+        assert_eq!(kept(dir.path(), "amx/fix-login-a1b"), prs);
         let left: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
@@ -921,19 +1219,180 @@ mod tests {
         );
     }
 
-    /// Wait until no refresh is in flight for `dir`.
-    fn asked_by_now(dir: &Path) {
+    /// Wait until no ask is in flight about `repo`.
+    fn asked_by_now(repo: &Path) {
         for _ in 0..1_000 {
-            if !ASKING.lock().unwrap().contains(dir) {
+            if !ASKING.lock().unwrap().contains(repo) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("the refresh for {} never finished", dir.display());
+        panic!("the ask about {} never finished", repo.display());
+    }
+
+    #[test]
+    fn a_reading_asks_about_a_whole_repository_once_and_writes_each_branch_its_own() {
+        let repo = TempDir::new().unwrap();
+        let dirs = records(5);
+        let branches = [
+            "amx/a-a1b",
+            "amx/b-b2c",
+            "amx/c-c3d",
+            "amx/d-d4e",
+            "amx/e-e5f",
+        ];
+        let requests: Vec<(u64, &str)> = (11..).zip(branches).collect();
+        let forge = Fake::new(&listed(&requests), "[]");
+        let agents: Vec<(&Path, &Path, &str)> = dirs
+            .iter()
+            .zip(branches)
+            .map(|(dir, branch)| (repo.path(), dir.path(), branch))
+            .collect();
+
+        for now in [1_000, 1_001, 1_030, 1_045] {
+            forge.refresh(&agents, now);
+        }
+        assert_eq!(forge.calls().len(), 1, "{:?}", forge.calls());
+        assert!(
+            forge.calls()[0].starts_with("pr list --state all --limit 100"),
+            "{:?}",
+            forge.calls()
+        );
+        for ((dir, branch), number) in dirs.iter().zip(branches).zip(11..) {
+            assert_eq!(numbers(dir.path(), branch), [number], "{branch}");
+        }
+
+        // Once the answers are a minute old, one more ask.
+        forge.refresh(&agents, 1_000 + FRESH);
+        assert_eq!(forge.calls().len(), 2, "{:?}", forge.calls());
+    }
+
+    #[test]
+    fn two_repositories_are_asked_about_once_each() {
+        let (one, two) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let dirs = records(6);
+        let branches = [
+            "amx/a-a1b",
+            "amx/b-b2c",
+            "amx/c-c3d",
+            "amx/d-d4e",
+            "amx/e-e5f",
+            "amx/f-f6a",
+        ];
+        let requests: Vec<(u64, &str)> = (11..).zip(branches).collect();
+        let forge = Fake::new(&listed(&requests), "[]");
+        let agents: Vec<(&Path, &Path, &str)> = dirs
+            .iter()
+            .zip(branches)
+            .enumerate()
+            .map(|(at, (dir, branch))| match at < 3 {
+                true => (one.path(), dir.path(), branch),
+                false => (two.path(), dir.path(), branch),
+            })
+            .collect();
+
+        for now in [1_000, 1_020, 1_045] {
+            forge.refresh(&agents, now);
+        }
+        assert_eq!(forge.calls().len(), 2, "{:?}", forge.calls());
+        for ((dir, branch), number) in dirs.iter().zip(branches).zip(11..) {
+            assert_eq!(numbers(dir.path(), branch), [number], "{branch}");
+        }
+    }
+
+    #[test]
+    fn a_branch_is_written_only_its_own_requests_and_their_merged_heads() {
+        let repo = TempDir::new().unwrap();
+        let dirs = records(3);
+        let mut requests: Vec<serde_json::Value> =
+            serde_json::from_str(&listed_as(&[(4, "amx/a-a1b")], "MERGED")).unwrap();
+        requests.extend(
+            serde_json::from_str::<Vec<serde_json::Value>>(&listed(&[
+                (9, "amx/a-a1b"),
+                (12, "main"),
+                (13, "amx/elsewhere-z9z"),
+            ]))
+            .unwrap(),
+        );
+        let forge = Fake::new(&serde_json::Value::Array(requests).to_string(), "[]");
+        forge.refresh(
+            &[
+                (repo.path(), dirs[0].path(), "amx/a-a1b"),
+                (repo.path(), dirs[1].path(), "pr-12"),
+                (repo.path(), dirs[2].path(), "amx/c-c3d"),
+            ],
+            1_000,
+        );
+
+        assert_eq!(numbers(dirs[0].path(), "amx/a-a1b"), [9, 4]);
+        assert_eq!(
+            held(dirs[0].path()).unwrap().merged_heads,
+            ["sha-4"],
+            "the merged head of its own request and nobody else's"
+        );
+        assert_eq!(
+            numbers(dirs[1].path(), "pr-12"),
+            [12],
+            "a request from a fork is found by its number, since its head is \
+             the fork's own name"
+        );
+        assert_eq!(numbers(dirs[2].path(), "amx/c-c3d"), Vec::<u64>::new());
+        assert!(
+            held(dirs[2].path()).is_some(),
+            "and a branch with no request is written down as having none"
+        );
+    }
+
+    #[test]
+    fn a_branch_a_full_answer_leaves_out_is_asked_about_alone() {
+        let repo = TempDir::new().unwrap();
+        let dirs = records(3);
+        let others: Vec<(u64, String)> = (1000..1000 + LIMIT as u64)
+            .map(|number| (number, format!("amx/other-{number}")))
+            .collect();
+        let others: Vec<(u64, &str)> = others
+            .iter()
+            .map(|(number, head)| (*number, head.as_str()))
+            .collect();
+        let forge = Fake::new(&listed(&others), &listed(&[(7, "amx/old-a1b")]));
+        write(
+            dirs[1].path(),
+            "pr-5",
+            vec![Pr {
+                number: 5,
+                standing: Standing::Open,
+            }],
+            &[],
+            1,
+        )
+        .unwrap();
+        forge.refresh(
+            &[
+                (repo.path(), dirs[0].path(), "amx/old-a1b"),
+                (repo.path(), dirs[1].path(), "pr-5"),
+                (repo.path(), dirs[2].path(), "amx/other-1000"),
+            ],
+            1_000,
+        );
+
+        assert_eq!(numbers(dirs[0].path(), "amx/old-a1b"), [7]);
+        assert_eq!(
+            numbers(dirs[1].path(), "pr-5"),
+            [5],
+            "a fork's request asked about by name is not found, so what is \
+             written down stands"
+        );
+        assert_eq!(numbers(dirs[2].path(), "amx/other-1000"), [1000]);
+        let calls = forge.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[1].contains("--head amx/old-a1b"), "{calls:?}");
     }
 
     #[test]
     fn a_forge_that_cannot_be_asked_leaves_the_requests_written_down() {
+        let repo = TempDir::new().unwrap();
+        let forge = Fake::new("[]", "[]");
+        forge.fails();
         let dir = TempDir::new().unwrap();
         let going = vec![Pr {
             number: 12,
@@ -949,25 +1408,24 @@ mod tests {
         .unwrap();
         let before = std::fs::read(dir.path().join(CACHE)).unwrap();
 
-        // 70 s on, stale: a refresh is asked of a forge that does not answer.
-        assert_eq!(
-            read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_070),
-            going
-        );
-        asked_by_now(dir.path());
+        // 70 s on, stale: a forge that does not answer is asked.
+        let agents = [(repo.path(), dir.path(), "amx/fix-login-a1b")];
+        forge.refresh(&agents, 1_070);
+        assert_eq!(forge.calls().len(), 1);
+        assert_eq!(kept(dir.path(), "amx/fix-login-a1b"), going);
         assert_eq!(
             std::fs::read(dir.path().join(CACHE)).unwrap(),
             before,
             "the badge and the merged heads stay as they were"
         );
-        assert!(
-            !asks_again(dir.path(), 1_071),
+        forge.refresh(&agents, 1_071);
+        assert_eq!(
+            forge.calls().len(),
+            1,
             "and the next reading does not ask again so soon"
         );
-        assert!(
-            asks_again(dir.path(), 1_070 + FRESH),
-            "until the freshness has passed"
-        );
+        forge.refresh(&agents, 1_070 + FRESH);
+        assert_eq!(forge.calls().len(), 2, "until the freshness has passed");
     }
 
     #[test]
@@ -993,11 +1451,11 @@ mod tests {
     #[test]
     fn a_forge_that_cannot_be_asked_about_a_new_branch_writes_nothing() {
         let dir = TempDir::new().unwrap();
-        assert_eq!(
-            read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_000),
-            Vec::new()
-        );
-        asked_by_now(dir.path());
+        let repo = TempDir::new().unwrap();
+        let forge = Fake::new("[]", "[]");
+        forge.fails();
+        forge.refresh(&[(repo.path(), dir.path(), "amx/fix-login-a1b")], 1_000);
+        assert_eq!(forge.calls().len(), 1);
         assert!(!dir.path().join(CACHE).exists());
         assert_eq!(
             ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 1_000),
@@ -1102,8 +1560,9 @@ mod tests {
             transcript: None,
             created: 1,
         };
+        assert!(asked_about(&meta).is_none(), "and nothing asks about it");
         assert!(
-            of(&meta).is_empty(),
+            written(&meta).is_empty(),
             "an agent working in a directory has no branch of amx's making, \
              and the person's own checkout is not this agent's work"
         );

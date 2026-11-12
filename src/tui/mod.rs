@@ -1404,6 +1404,10 @@ impl Screen {
         let now = now();
         let views = derive::views_of(root, records, now, derive::Wants::Card);
         verbs::sweep::fetch_origins_again(&views);
+        crate::pr::refresh(
+            &views.iter().map(|view| &view.meta).collect::<Vec<_>>(),
+            now,
+        );
         self.list.time_is(now);
         self.showing(views);
         self.read = Some(Instant::now());

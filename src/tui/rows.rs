@@ -705,7 +705,7 @@ impl Default for List {
             branch_at: crate::worktree::branch_at,
             branches: HashMap::new(),
             prs: HashMap::new(),
-            asks: pr::of,
+            asks: pr::written,
             now: 0,
             afters: HashMap::new(),
             after: shelve_after_of,
