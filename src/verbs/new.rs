@@ -362,6 +362,18 @@ fn run_aloud(
     let mut with_role: Option<Config> = None;
     if let Some(name) = args.role.clone() {
         let (personal, project) = role_places(dir)?;
+        if role::stem(&name).is_none() {
+            warned(
+                problems,
+                &format!(
+                    "`{name}` is not a role name: name a file in {} or {} without `.md`",
+                    personal.display(),
+                    project.display()
+                ),
+                to_terminal,
+            )?;
+            return Ok(exit::USAGE);
+        }
         let (found, warnings) = role::for_name(&personal, &project, &name);
         for warning in warnings {
             warned(problems, &warning, to_terminal)?;

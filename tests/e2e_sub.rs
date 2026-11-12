@@ -442,6 +442,35 @@ fn sub_from_outside_with_no_worktree_runs_in_the_directory_as_it_is() {
 }
 
 #[test]
+fn sub_refuses_a_role_name_that_is_not_one_file_stem() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let repo = amx.a_repo();
+    let repo_s = repo.to_string_lossy().to_string();
+    for name in ["../x", "/abs/x", "a/b", ".."] {
+        let out = a_sub_from_outside(
+            &amx,
+            &mock,
+            &[
+                "--bg",
+                "--no-worktree",
+                "--role",
+                name,
+                "--dir",
+                &repo_s,
+                "scout",
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(64),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn sub_refuses_a_parent_whose_directory_has_gone() {
     // The child inherits a stopped parent's directory, which may have been
     // removed since. The error names the parent the path came from and

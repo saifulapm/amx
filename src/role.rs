@@ -43,6 +43,16 @@ pub fn project_dir(project: &Path) -> PathBuf {
     project.join(".amx").join(AGENTS)
 }
 
+/// The file stem a `--role` value names, or `None` if it is not one path
+/// component. One trailing `.md` is dropped, so `x.md` means role `x`. The
+/// name is joined onto a directory, so a separator or `..` would reach a file
+/// outside the two role directories.
+pub fn stem(name: &str) -> Option<&str> {
+    let name = name.strip_suffix(".md").unwrap_or(name);
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
+    (!bad).then_some(name)
+}
+
 /// The role `name`, with warnings about its file.
 ///
 /// The project's file wins whole over the person's; the two are not merged. A
@@ -50,6 +60,9 @@ pub fn project_dir(project: &Path) -> PathBuf {
 /// falling back to the person's.
 pub fn for_name(personal: &Path, project: &Path, name: &str) -> (Option<Role>, Vec<String>) {
     let mut warnings = Vec::new();
+    let Some(name) = stem(name) else {
+        return (None, warnings);
+    };
     for dir in [project, personal] {
         let path = dir.join(format!("{name}.md"));
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -196,6 +209,46 @@ mod tests {
         let path = dir.join(format!("{name}.md"));
         std::fs::write(&path, text).unwrap();
         path
+    }
+
+    #[test]
+    fn a_name_that_is_not_one_file_stem_finds_no_role() {
+        let place = TempDir::new().unwrap();
+        let personal = place.path().join("personal");
+        let project = place.path().join("repo/.amx/agents");
+        std::fs::create_dir_all(&personal).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let role = "---\nagent: pi\n---\nhi\n";
+        // Each name below would reach one of these files if it were joined on.
+        let outside = place.path().join("abs");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(place.path().join("x.md"), role).unwrap();
+        std::fs::write(outside.join("x.md"), role).unwrap();
+        wrote(&personal.join("a"), "b", role);
+        std::fs::write(personal.join("..md"), role).unwrap();
+        std::fs::write(personal.join(".md"), role).unwrap();
+        let absolute = outside.join("x").display().to_string();
+
+        for name in ["../x", absolute.as_str(), "a/b", "..", ".", ""] {
+            let (found, warnings) = for_name(&personal, &project, name);
+            assert!(found.is_none(), "{name:?} reached a file");
+            assert!(warnings.is_empty(), "{name:?}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn a_dotted_stem_is_found_and_a_trailing_md_means_the_stem() {
+        let place = TempDir::new().unwrap();
+        let personal = place.path().join("personal");
+        let project = place.path().join("repo/.amx/agents");
+        wrote(&personal, "code-review.v2", "---\nagent: pi\n---\nhi\n");
+        wrote(&personal, "x", "---\nagent: pi\n---\nhi\n");
+
+        let (found, _) = for_name(&personal, &project, "code-review.v2");
+        assert_eq!(found.expect("the dotted role").name, "code-review.v2");
+
+        let (found, _) = for_name(&personal, &project, "x.md");
+        assert_eq!(found.expect("the stem's role").name, "x");
     }
 
     #[test]

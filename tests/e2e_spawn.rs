@@ -2665,6 +2665,26 @@ fn a_typed_dial_beats_the_roles_and_an_unknown_role_names_the_ones_it_knows() {
 }
 
 #[test]
+fn a_role_name_that_climbs_out_of_the_role_directories_is_a_usage_error() {
+    // The file the name would reach holds a valid role, so a read of it
+    // would spawn rather than refuse.
+    let amx = Harness::new();
+    let planted = amx.home().join(".config/amx/escaped.md");
+    // The roles directory must exist for `..` to climb out of it.
+    std::fs::create_dir_all(amx.home().join(".config/amx/agents")).unwrap();
+    std::fs::write(&planted, "---\nagent: claude\n---\nEscaped.\n").unwrap();
+
+    let out = new_as_claude(
+        &amx,
+        "happy-turn",
+        &["--check", "--no-worktree", "--role", "../escaped", "hi"],
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{said}");
+    assert!(said.contains("is not a role name"), "{said}");
+}
+
+#[test]
 fn a_personal_roles_permission_is_the_default_and_a_harness_without_the_dial_drops_it() {
     // One role may run on claude or pi, whichever its model picks; pi has no
     // permission dial, so the role's is dropped there rather than refused.
