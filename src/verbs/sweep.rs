@@ -10,6 +10,8 @@
 //!
 //! - A worktree holding uncommitted work is never removed, and neither is the
 //!   record that names it.
+//! - A candidate that went back to work after the list was read is kept, and
+//!   one that cannot be taken is said; the rest of the list still goes.
 
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,8 +62,11 @@ pub fn run(
         return Ok(exit::OK);
     }
 
+    // A candidate that fails is said and the rest of the list still goes.
     for (view, _) in &candidates {
-        take_landed(root, &view.meta, out)?;
+        if let Err(e) = take_landed(root, view, out) {
+            writeln!(out, "could not sweep {}: {e:#}", view.id())?;
+        }
     }
     Ok(exit::OK)
 }
@@ -223,10 +228,22 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
 }
 
 /// Take one candidate: its pane if it still has one, tree, branch and record.
+/// False when it was kept, with the reason said on `out`.
+///
+/// `listed` is the reading the candidate was listed from, which may be as old
+/// as the prompt. The agent is read again, and is kept if it is no longer
+/// finished; then, under the writer that takes its pane down, if its record
+/// left a finished phase, counted a send, or names another pane since. A send
+/// waits on that writer, so none lands between the check and the stop.
 ///
 /// This is `stop --force --delete --worktree delete --branch delete`, so the
 /// ending, the removals and their output all come from `stop`.
-pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()> {
+pub fn take_landed(root: &Path, listed: &View, out: &mut impl Write) -> Result<bool> {
+    let meta = &listed.meta;
+    if !finished(derive::view(root, &meta.id, store::now())?.phase()) {
+        writeln!(out, "kept {}: it is working again", meta.id)?;
+        return Ok(false);
+    }
     // Checked before `stop`: a tree holding uncommitted work keeps the whole
     // agent, record included, since the record names the tree and branch.
     if let Some(tree) = clear::holding(meta) {
@@ -236,7 +253,7 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
             meta.id,
             tree.display()
         )?;
-        return Ok(());
+        return Ok(false);
     }
 
     // Only a branch amx named is deleted. A branch the person named (e.g.
@@ -248,7 +265,8 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
         }
         _ => Disposition::Delete,
     };
-    stop::run(
+    let seq = listed.state.seq;
+    let taken = stop::run_finished(
         root,
         &StopArgs {
             id: meta.id.clone(),
@@ -257,10 +275,14 @@ pub fn take_landed(root: &Path, meta: &Meta, out: &mut impl Write) -> Result<()>
             worktree: Some(Disposition::Delete),
             branch: Some(branch),
         },
-        &mut std::io::empty(),
+        meta,
+        |now| !finished(now.state) || now.seq != seq,
         out,
     )?;
-    Ok(())
+    if !taken {
+        writeln!(out, "kept {}: it is working again", meta.id)?;
+    }
+    Ok(taken)
 }
 
 #[cfg(test)]
@@ -587,7 +609,7 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        take_landed(root.path(), &view.meta, &mut out).unwrap();
+        assert!(take_landed(root.path(), view, &mut out).unwrap());
         assert!(!tree.exists(), "the tree is gone");
         assert!(
             Agent::open(root.path(), &meta.id).is_err(),
@@ -671,6 +693,162 @@ mod tests {
             said.contains("fix-login-a1b  amx/fix-login-a1b merged into main"),
             "one commit that main took is work that landed: {said}"
         );
+    }
+
+    /// Output that runs `meanwhile` once, as soon as the list starts to be
+    /// printed: after the candidates were read and before any is taken,
+    /// with or without a prompt in between.
+    struct Meanwhile<F: FnMut()> {
+        said: Vec<u8>,
+        meanwhile: Option<F>,
+    }
+
+    impl<F: FnMut()> Write for Meanwhile<F> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Some(mut meanwhile) = self.meanwhile.take() {
+                meanwhile();
+            }
+            self.said.write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Run the verb with `meanwhile` landing between the list and the taking.
+    fn swept_meanwhile(root: &Path, force: bool, meanwhile: impl FnMut()) -> String {
+        let mut out = Meanwhile {
+            said: Vec::new(),
+            meanwhile: Some(meanwhile),
+        };
+        let code = run(root, force, &mut &b"y\n"[..], &mut out).unwrap();
+        assert_eq!(code, exit::OK, "a sweep is never a failure");
+        String::from_utf8(out.said).unwrap()
+    }
+
+    fn branch_stands(repo: &Path, branch: &str) -> bool {
+        !git(
+            repo,
+            &["branch", "--list", branch, "--format=%(refname:short)"],
+        )
+        .is_empty()
+    }
+
+    #[test]
+    fn sweep_keeps_a_candidate_that_went_back_to_work_after_the_list() {
+        for force in [false, true] {
+            let root = TempDir::new().unwrap();
+            let repo = a_repo();
+            let first = a_swept_agent(root.path(), repo.path(), "first-a1b");
+            let busy = a_swept_agent(root.path(), repo.path(), "busy-b2c");
+            let last = a_swept_agent(root.path(), repo.path(), "last-c3d");
+
+            let said = swept_meanwhile(root.path(), force, || {
+                let agent = Agent::open(root.path(), "busy-b2c").unwrap();
+                let writer = agent.writer().unwrap();
+                writer
+                    .update_state(|state| state.state = Phase::Working)
+                    .unwrap();
+            });
+            assert!(
+                said.contains("busy-b2c  amx/busy-b2c merged into main"),
+                "{said}"
+            );
+            assert!(
+                said.contains("kept busy-b2c: it is working again"),
+                "force {force}: {said}"
+            );
+            assert!(Agent::open(root.path(), "busy-b2c").is_ok(), "{said}");
+            assert!(busy.worktree.as_deref().unwrap().exists(), "{said}");
+            assert!(branch_stands(repo.path(), "amx/busy-b2c"), "{said}");
+            assert_eq!(
+                Agent::open(root.path(), "busy-b2c")
+                    .unwrap()
+                    .state()
+                    .unwrap()
+                    .state,
+                Phase::Working,
+                "and it is still at work: {said}"
+            );
+
+            for gone in [&first, &last] {
+                assert!(
+                    Agent::open(root.path(), &gone.id).is_err(),
+                    "the rest of the list is still taken: {said}"
+                );
+                assert!(!gone.worktree.as_deref().unwrap().exists(), "{said}");
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_keeps_a_candidate_sent_a_message_before_its_turn_began() {
+        // A send counts itself under the writer, before any hook says the
+        // turn began, so the record still reads done.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
+
+        let said = swept_meanwhile(root.path(), false, || {
+            let agent = Agent::open(root.path(), "fix-login-a1b").unwrap();
+            agent
+                .writer()
+                .unwrap()
+                .observe(|state| state.seq += 1)
+                .unwrap();
+        });
+        assert!(
+            said.contains("kept fix-login-a1b: it is working again"),
+            "{said}"
+        );
+        assert!(Agent::open(root.path(), &meta.id).is_ok(), "{said}");
+        assert!(meta.worktree.as_deref().unwrap().exists(), "{said}");
+    }
+
+    #[test]
+    fn sweep_still_takes_a_candidate_parked_after_the_list() {
+        // Parking lets an idle agent's pane go and leaves it idle: still
+        // finished, so still swept.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_swept_agent(root.path(), repo.path(), "fix-login-a1b");
+        let agent = Agent::open(root.path(), &meta.id).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| state.state = Phase::Idle)
+            .unwrap();
+
+        let said = swept_meanwhile(root.path(), false, || {
+            agent
+                .writer()
+                .unwrap()
+                .observe(|state| state.parked_at = store::now())
+                .unwrap();
+        });
+        assert!(said.contains("removed fix-login-a1b's record"), "{said}");
+        assert!(!meta.worktree.as_deref().unwrap().exists(), "{said}");
+    }
+
+    #[test]
+    fn sweep_says_which_candidate_it_could_not_take_and_takes_the_rest() {
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let first = a_swept_agent(root.path(), repo.path(), "first-a1b");
+        a_swept_agent(root.path(), repo.path(), "gone-b2c");
+        let last = a_swept_agent(root.path(), repo.path(), "last-c3d");
+
+        let said = swept_meanwhile(root.path(), true, || {
+            Agent::open(root.path(), "gone-b2c")
+                .unwrap()
+                .remove()
+                .unwrap();
+        });
+        assert!(said.contains("could not sweep gone-b2c"), "{said}");
+        for gone in [&first, &last] {
+            assert!(Agent::open(root.path(), &gone.id).is_err(), "{said}");
+            assert!(!gone.worktree.as_deref().unwrap().exists(), "{said}");
+        }
     }
 
     #[test]

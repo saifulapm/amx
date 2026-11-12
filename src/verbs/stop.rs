@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::Signal;
 
 use crate::cli::{Disposition, StopArgs};
-use crate::store::{Agent, Meta, Phase};
+use crate::store::{Agent, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
 use crate::{exit, paths, spawn, store, trust, warn, worktree};
 
@@ -54,7 +54,40 @@ pub fn run(
         return Ok(exit::FAILURE);
     }
 
-    dispositions(&meta, args, input, out)?;
+    tidy(&agent, &meta, args, input, out)?;
+    Ok(exit::OK)
+}
+
+/// `run` for an agent `listed` read as finished: no interrupt is sent, and
+/// `changed` is asked of the record under the same hold of the writer that
+/// takes the pane down. False, touching nothing, when it says yes or the
+/// record names another pane than `listed`.
+///
+/// For a sweep, whose list was read before a prompt that can wait any time.
+pub(crate) fn run_finished(
+    root: &Path,
+    args: &StopArgs,
+    listed: &Meta,
+    changed: impl FnOnce(&State) -> bool,
+    out: &mut impl Write,
+) -> Result<bool> {
+    let agent = Agent::open(root, &args.id)?;
+    if !stop_one_ending(root, &args.id, listed, out, end, changed)? {
+        return Ok(false);
+    }
+    tidy(&agent, listed, args, &mut std::io::empty(), out)?;
+    Ok(true)
+}
+
+/// After the pane is down: the tree, the branch, and the record if asked.
+fn tidy(
+    agent: &Agent,
+    meta: &Meta,
+    args: &StopArgs,
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+) -> Result<()> {
+    dispositions(meta, args, input, out)?;
 
     // Last, since the lines above are printed from the record. A tree that
     // stayed is named only by the record, so the record stays with it.
@@ -72,7 +105,7 @@ pub fn run(
             }
         }
     }
-    Ok(exit::OK)
+    Ok(())
 }
 
 /// End one agent: take its pane down, mark it stopped if it had not ended, and
@@ -91,7 +124,7 @@ fn stop_one(root: &Path, id: &str, read: &Meta, out: &mut impl Write) -> Result<
     if !turn_ended(&agent, read, signal, GRACE, signalled)? {
         warn!("amx stop: {}", no_ending(read));
     }
-    stop_one_ending(root, id, read, out, end)
+    stop_one_ending(root, id, read, out, end, |_| false)
 }
 
 /// For a vendor with an interrupt signal, send it and wait up to `patience`
@@ -181,14 +214,16 @@ fn no_ending(meta: &Meta) -> String {
 ///
 /// Holds the writer from the check to the write: an exit landing meanwhile has
 /// either written its phase already, which is left alone, or waits for this
-/// one. The pane goes first, so a pane that will not go leaves the phase
-/// unchanged.
+/// one, and a send waits until the pane is gone. The pane goes first, so a
+/// pane that will not go leaves the phase unchanged. False, touching nothing,
+/// when the record names another pane than `read` or `changed` says so.
 fn stop_one_ending(
     root: &Path,
     id: &str,
     read: &Meta,
     out: &mut impl Write,
     end: impl FnOnce(&Server, &PaneId, &str) -> Result<()>,
+    changed: impl FnOnce(&State) -> bool,
 ) -> Result<bool> {
     let agent = Agent::open(root, id)?;
     let writer = agent.writer()?;
@@ -198,7 +233,11 @@ fn stop_one_ending(
     }
     let server = Server::from_socket(meta.socket.clone());
 
-    let was = writer.state()?.state;
+    let state = writer.state()?;
+    if changed(&state) {
+        return Ok(false);
+    }
+    let was = state.state;
     end(&server, &meta.pane, &meta.id)?;
     // Still under the writer, so the exit the kill causes waits and reads the
     // agent as stopped, not failed.
@@ -525,9 +564,14 @@ mod tests {
         let read = agent.meta().unwrap();
 
         let mut out = Vec::new();
-        let stopped = stop_one_ending(dir.path(), "stuck-a1b", &read, &mut out, |_, _, _| {
-            anyhow::bail!("tmux would not kill it")
-        });
+        let stopped = stop_one_ending(
+            dir.path(),
+            "stuck-a1b",
+            &read,
+            &mut out,
+            |_, _, _| anyhow::bail!("tmux would not kill it"),
+            |_| false,
+        );
 
         assert!(stopped.is_err(), "the failure is the answer");
         let state = agent.state().unwrap();
@@ -584,7 +628,14 @@ mod tests {
         let mut out = Vec::new();
         std::thread::scope(|scope| {
             let stopping = scope.spawn(|| {
-                stop_one_ending(dir.path(), "done-a1b", &read, &mut out, |_, _, _| Ok(()))
+                stop_one_ending(
+                    dir.path(),
+                    "done-a1b",
+                    &read,
+                    &mut out,
+                    |_, _, _| Ok(()),
+                    |_| false,
+                )
             });
             std::thread::sleep(Duration::from_millis(200));
             exiting
@@ -741,9 +792,14 @@ mod tests {
         drop(writer);
 
         let mut out = Vec::new();
-        let stopped = stop_one_ending(dir.path(), "back-a1b", &read, &mut out, |_, pane, _| {
-            panic!("{pane} is the resumed agent's, and nothing ends it")
-        })
+        let stopped = stop_one_ending(
+            dir.path(),
+            "back-a1b",
+            &read,
+            &mut out,
+            |_, pane, _| panic!("{pane} is the resumed agent's, and nothing ends it"),
+            |_| false,
+        )
         .unwrap();
 
         assert!(!stopped);

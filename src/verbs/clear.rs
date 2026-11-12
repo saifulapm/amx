@@ -119,7 +119,13 @@ pub fn take_row(root: &Path, view: &View) -> Result<Taken> {
     if let Some(tree) = holding(&meta) {
         return Ok(Taken::Holding(tree));
     }
-    sweep::take_landed(root, &meta, &mut std::io::sink())?;
+    if !sweep::take_landed(root, view, &mut std::io::sink())? {
+        // Kept for uncommitted work found since, or for work begun again.
+        if let Some(tree) = holding(&meta) {
+            return Ok(Taken::Holding(tree));
+        }
+        bail!("{} is working again", meta.id);
+    }
     // The stop keeps a tree git would not remove, and the record with it.
     Ok(match meta.worktree.as_ref().filter(|tree| tree.exists()) {
         Some(tree) => Taken::Holding(tree.clone()),
