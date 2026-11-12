@@ -1474,11 +1474,17 @@ fn a_walked_list_on_a_pi_is_offered_by_its_numbers_and_answered_with_one() {
         .into_iter()
         .find(|event| event["kind"] == "answer")
         .expect("the answer on the record");
+    let mut payload = answered["payload"].clone();
+    let question = payload["question"].take();
     assert_eq!(
-        answered["payload"],
-        json!({ "key": "2", "answer": second }),
+        payload,
+        json!({ "key": "2", "answer": second, "question": null }),
         "the digit that was typed and the row it chose, rather than the keys \
          amx walked to reach it: {answered}"
+    );
+    assert!(
+        question.as_str().is_some_and(|asked| asked.contains(&dir)),
+        "beside the question it answered: {answered}"
     );
 }
 

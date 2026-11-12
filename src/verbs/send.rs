@@ -98,7 +98,7 @@ pub fn run(
     let agent = Agent::open(root, id)?;
     // The confirmation is looked for only in what is appended after this
     // offset, so the wait never re-reads the whole log.
-    let from = std::fs::metadata(agent.events_path()).map_or(0, |log| log.len());
+    let from = logged(&agent);
 
     let server = Server::from_socket(view.meta.socket.clone());
     match delivered(&agent, &server, &view.meta.pane, text)? {
@@ -196,9 +196,7 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
         return Ok(Delivered::Refused(held(id, &state.composer_holds)));
     }
     if !server.pane_answers_for(pane, id) {
-        return Ok(Delivered::Refused(format!(
-            "{id} no longer has a pane; run `amx status {id}`"
-        )));
+        return Ok(Delivered::Refused(no_pane(id)));
     }
 
     // Logged as given; typed with a trailing space if the last word opens a
@@ -281,6 +279,43 @@ fn events_from(agent: &Agent, from: u64) -> Result<Vec<Event>> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect())
+}
+
+/// Where `agent`'s event log ends now. A caller takes it before its reading,
+/// so [`told_since`] sees everything logged after that reading.
+pub(crate) fn logged(agent: &Agent) -> u64 {
+    std::fs::metadata(agent.events_path()).map_or(0, |log| log.len())
+}
+
+/// Whether the record under the writer no longer says what `read` said: its
+/// phase, its last event or its question moved.
+///
+/// Only these are compared. Readers rewrite the rest (the still screen, a
+/// summary) on every look, which changes nothing a key would land on.
+pub(crate) fn moved(read: &State, now: &State) -> bool {
+    (read.state, read.last_event, &read.question) != (now.state, now.last_event, &now.question)
+}
+
+/// Whether the agent said anything after byte `from` of its log, while `read`
+/// was its record.
+///
+/// `last_event` counts seconds, so two questions of the same words asked in
+/// one second leave the record as it was, and an answer amx cannot name
+/// leaves it alone too; the log does not. A reader's own edges are a look
+/// at the same screen and do not count. A subagent's events count only when
+/// its permission box is the question: only its next event says the box
+/// closed.
+pub(crate) fn told_since(agent: &Agent, read: &State, from: u64) -> Result<bool> {
+    Ok(events_from(agent, from)?.iter().any(|event| {
+        let by = event.payload["agent_id"].as_str();
+        ![derive::READ_PROMPT, derive::READ_TURN_END].contains(&event.kind.as_str())
+            && (by.is_none() || by == read.asked_by.as_deref())
+    }))
+}
+
+/// The refusal for a pane that went away since the caller's reading.
+pub(crate) fn no_pane(id: &str) -> String {
+    format!("{id} no longer has a pane; run `amx status {id}`")
 }
 
 /// Whether only a pane reading can confirm the send: the vendor has no hooks.

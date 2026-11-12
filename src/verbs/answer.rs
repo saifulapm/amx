@@ -12,6 +12,9 @@
 //!   no pending question exits `BLOCKED`.
 //! - Every key goes in its own `send-keys` call with a pause after it; see
 //!   [`drive`].
+//! - The keys go in under the record's writer, and only when the record still
+//!   says what the reading said; a question that moved since is exit
+//!   `BLOCKED` with nothing typed. See [`reply`].
 //! - An answer amx can name clears the question from the record, since the
 //!   vendor fires no hook when a prompt is dismissed. One it cannot name
 //!   (`y`, `enter`, `esc`, a hand-written walk) leaves the record alone,
@@ -23,9 +26,10 @@ use std::time::Duration;
 
 use crate::cli::AnswerArgs;
 use crate::derive;
+use crate::store::Writer;
 use crate::store::{Agent, Ask, Event, Kind, Phase, State};
 use crate::tmux::{PaneId, Server};
-use crate::verbs::send::{ends_its_own_paste, nothing_more_is_coming};
+use crate::verbs::send::{self, ends_its_own_paste, nothing_more_is_coming};
 use crate::{exit, paths, store, warn};
 
 /// Moves a menu's cursor onto the vendor's free-text row.
@@ -85,6 +89,9 @@ pub fn from_env(id: &str, typed: &AnswerArgs) -> Result<i32> {
 
 /// Runs the verb against `root`.
 pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
+    let agent = Agent::open(root, id)?;
+    // Taken before the reading, so anything the agent says after it shows.
+    let from = send::logged(&agent);
     let view = derive::view(root, id, store::now())?;
     let phase = view.phase();
     if phase.is_terminal() {
@@ -95,15 +102,27 @@ pub fn run(root: &Path, id: &str, typed: &AnswerArgs) -> Result<i32> {
         return Ok(exit::BLOCKED);
     }
 
-    let agent = Agent::open(root, id)?;
     let server = Server::from_socket(view.meta.socket.clone());
-    match given(&agent, &server, &view, typed)? {
+    match given(&agent, &server, &view, from, typed)? {
         Answered::Yes => Ok(exit::OK),
         Answered::No(refused) => {
             warn!("amx: {refused}");
             Ok(exit::USAGE)
         }
+        Answered::Moved => {
+            warn!("amx: {}", no_longer_asking(id));
+            Ok(exit::BLOCKED)
+        }
+        Answered::Gone => {
+            warn!("amx: {}", send::no_pane(id));
+            Ok(exit::FAILURE)
+        }
     }
+}
+
+/// The refusal for a question that moved between the reading and the keys.
+pub fn no_longer_asking(id: &str) -> String {
+    format!("{id} is no longer asking that; run `amx status {id}`")
 }
 
 /// The outcome of [`given`].
@@ -112,6 +131,11 @@ pub enum Answered {
     Yes,
     /// Refused before anything was typed, with the reason.
     No(String),
+    /// Nothing typed: the record moved since the reading, so the question the
+    /// answer was meant for may be gone.
+    Moved,
+    /// Nothing typed: the pane went away since the reading.
+    Gone,
 }
 
 /// Answers the question the agent in `view` is waiting on.
@@ -119,10 +143,13 @@ pub enum Answered {
 /// Shared by the verb and the view, so a refusal comes back as
 /// [`Answered::No`] instead of being printed: the view has no stderr while in
 /// raw mode. Nothing is typed unless the question can take the answer.
+///
+/// `from` is where the log ended before `view` was read ([`send::logged`]).
 pub fn given(
     agent: &Agent,
     server: &Server,
     view: &derive::View,
+    from: u64,
     typed: &AnswerArgs,
 ) -> Result<Answered> {
     let (answer, note) = match read(typed, view.kind(), &view.state) {
@@ -145,14 +172,13 @@ pub fn given(
     };
     reply(
         agent,
-        server,
-        &view.meta.pane,
+        &(server, &view.meta.pane),
         &view.state,
+        from,
         answer,
         note.as_deref(),
         Shape::of(&view.state),
-    )?;
-    Ok(Answered::Yes)
+    )
 }
 
 /// A command line parsed into something this question takes.
@@ -677,22 +703,40 @@ fn grammar(kind: Option<Kind>, state: &State) -> String {
     }
 }
 
-/// Types an answer at the pane and records it.
+/// Types an answer at the pane and records it, holding the writer from the
+/// check to the write.
+///
+/// The caller read the record without the lock. Under it the record is read
+/// again: one that [`send::moved`], or an agent that [`send::told_since`]
+/// byte `from`, means another answer or a new question came first, and
+/// nothing is typed. Hooks wait on the writer meanwhile, so the next question
+/// cannot go up between the check and the last key.
+///
+/// The check is on the record, never its phase alone: a prompt only the
+/// screen shows (codex's approval box) leaves the record working, and the
+/// caller's verdict already said waiting.
 ///
 /// Keys that move the cursor onto a field go before any text, so the menu
-/// cannot read a digit in the words as a choice. The record update stops a
-/// second caller answering the same question before the next hook arrives.
+/// cannot read a digit in the words as a choice.
 fn reply(
     agent: &Agent,
-    server: &Server,
-    pane: &PaneId,
+    keyboard: &impl Keyboard,
     read: &State,
+    from: u64,
     answer: Answer,
     note: Option<&str>,
     shape: Shape,
-) -> Result<()> {
-    drive(&(server, pane), &steps(&answer, note, shape))?;
-    answered(agent, read, &answer, note)
+) -> Result<Answered> {
+    let writer = agent.writer()?;
+    if send::moved(read, &writer.state()?) || send::told_since(agent, read, from)? {
+        return Ok(Answered::Moved);
+    }
+    if !keyboard.answers_for(agent.id()) {
+        return Ok(Answered::Gone);
+    }
+    drive(keyboard, &steps(&answer, note, shape))?;
+    answered(&writer, read, &answer, note)?;
+    Ok(Answered::Yes)
 }
 
 /// Where a sequence of steps is typed. A trait so tests can see how many
@@ -704,6 +748,8 @@ trait Keyboard {
     fn words(&self, text: &str) -> Result<()>;
     /// Gives the vendor time to redraw before the next key.
     fn settle(&self);
+    /// Whether the pane is still the one `id` runs in.
+    fn answers_for(&self, id: &str) -> bool;
 }
 
 impl Keyboard for (&Server, &PaneId) {
@@ -717,6 +763,10 @@ impl Keyboard for (&Server, &PaneId) {
 
     fn settle(&self) {
         std::thread::sleep(SETTLES);
+    }
+
+    fn answers_for(&self, id: &str) -> bool {
+        self.0.pane_answers_for(self.1, id)
     }
 }
 
@@ -756,12 +806,16 @@ fn drive(keyboard: &impl Keyboard, steps: &[Step]) -> Result<()> {
 /// Only the event is written when amx cannot name the answer, or when the
 /// record has changed since `read` (a hook may have put up a new question).
 /// The record then stays as it was until the next hook or pane reading.
-fn answered(agent: &Agent, read: &State, answer: &Answer, note: Option<&str>) -> Result<()> {
-    let writer = agent.writer()?;
+///
+/// The event names the question it answered, as read.
+fn answered(writer: &Writer, read: &State, answer: &Answer, note: Option<&str>) -> Result<()> {
     let said = answer.said(read);
     let mut what = answer.event(&said);
     if let Some(note) = note {
         what["note"] = serde_json::json!(note);
+    }
+    if let Some(question) = &read.question {
+        what["question"] = serde_json::json!(question);
     }
     writer.append(&Event::new("answer", what))?;
     if !answer.chose() || writer.state()?.last_event != read.last_event {
@@ -1025,6 +1079,10 @@ mod tests {
 
         fn settle(&self) {
             self.0.borrow_mut().push(vec!["settle".to_string()]);
+        }
+
+        fn answers_for(&self, _: &str) -> bool {
+            true
         }
     }
 
@@ -1580,7 +1638,13 @@ mod tests {
         let dialog = a_walked_dialog();
         let agent = recorded(root.path(), &dialog);
         let picked = answer(&given("3"), dialog.kind, &dialog).expect("the third row");
-        answered(&agent, &agent.state().unwrap(), &picked, None).unwrap();
+        answered(
+            &agent.writer().unwrap(),
+            &agent.state().unwrap(),
+            &picked,
+            None,
+        )
+        .unwrap();
 
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Working);
@@ -1628,7 +1692,13 @@ mod tests {
         let gate = a_trust_gate();
         let agent = recorded(root.path(), &gate);
         let walked = Answer::Walk(vec!["Down".to_string(), "Enter".to_string()]);
-        answered(&agent, &agent.state().unwrap(), &walked, None).unwrap();
+        answered(
+            &agent.writer().unwrap(),
+            &agent.state().unwrap(),
+            &walked,
+            None,
+        )
+        .unwrap();
 
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Waiting);
@@ -1778,7 +1848,7 @@ mod tests {
         let agent = recorded(root.path(), &call);
 
         answered(
-            &agent,
+            &agent.writer().unwrap(),
             &agent.state().unwrap(),
             &Answer::Key("2".to_string()),
             None,
@@ -1794,7 +1864,7 @@ mod tests {
         assert!(state.multi());
 
         answered(
-            &agent,
+            &agent.writer().unwrap(),
             &agent.state().unwrap(),
             &Answer::Toggle(vec![1, 3]),
             None,
@@ -1829,7 +1899,7 @@ mod tests {
             ]);
             let agent = recorded(root.path(), &call);
             answered(
-                &agent,
+                &agent.writer().unwrap(),
                 &agent.state().unwrap(),
                 &Answer::Key(key.to_string()),
                 None,
@@ -1862,9 +1932,212 @@ mod tests {
         )
         .unwrap();
 
-        answered(&agent, &read, &Answer::Key("2".to_string()), None).unwrap();
+        answered(
+            &agent.writer().unwrap(),
+            &read,
+            &Answer::Key("2".to_string()),
+            None,
+        )
+        .unwrap();
         assert_eq!(agent.state().unwrap(), replaced);
         let logged = agent.events().unwrap();
         assert_eq!(logged[0].payload["key"], "2", "what was typed is logged");
+    }
+
+    /// A keyboard on a pane that went away: any key is a failure.
+    struct NoPane;
+
+    impl Keyboard for NoPane {
+        fn keys(&self, keys: &[&str]) -> Result<()> {
+            panic!("pressed {keys:?} at a pane that is gone")
+        }
+
+        fn words(&self, text: &str) -> Result<()> {
+            panic!("pasted {text:?} at a pane that is gone")
+        }
+
+        fn settle(&self) {}
+
+        fn answers_for(&self, _: &str) -> bool {
+            false
+        }
+    }
+
+    /// Answer `key` at `read` with the log taken at `from`, on a keyboard that
+    /// records what it is sent.
+    fn answer_at(agent: &Agent, read: &State, from: u64, key: &str) -> (Answered, Typed) {
+        let typist = Typed::default();
+        let answer = answer(&given(key), read.kind, read).expect("an answer it takes");
+        let replied = reply(agent, &typist, read, from, answer, None, Shape::of(read)).unwrap();
+        (replied, typist)
+    }
+
+    /// What a hook writes when the agent puts up `question`.
+    fn asks_again(agent: &Agent, question: &State, by: Option<&str>) {
+        let writer = agent.writer().unwrap();
+        let mut said = serde_json::json!({ "message": "Claude needs your permission" });
+        if let Some(by) = by {
+            said["agent_id"] = serde_json::json!(by);
+        }
+        writer.append(&Event::new("Notification", said)).unwrap();
+        let question = question.clone();
+        writer.update_state(|state| *state = question).unwrap();
+    }
+
+    #[test]
+    fn a_question_put_up_between_the_reading_and_the_lock_gets_no_keys() {
+        for key in ["1", "2", "esc", "y"] {
+            let root = tempfile::TempDir::new().unwrap();
+            let agent = recorded(root.path(), &a_permission_box());
+            let from = send::logged(&agent);
+            let read = agent.state().unwrap();
+
+            asks_again(&agent, &a_checkbox_question(), None);
+
+            let (replied, typist) = answer_at(&agent, &read, from, key);
+            assert!(matches!(replied, Answered::Moved), "{key}");
+            assert!(typist.0.borrow().is_empty(), "{key}: nothing is typed");
+            assert_eq!(agent.events().unwrap().len(), 1, "{key}: only the hook's");
+        }
+    }
+
+    #[test]
+    fn the_same_question_asked_again_in_the_same_second_is_a_new_question() {
+        // `last_event` counts seconds. Box one was answered, box two put up
+        // with the same words, all inside one second: the record reads as
+        // the caller read it, and only the log says it moved.
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_plain_question());
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+
+        let writer = agent.writer().unwrap();
+        answered(&writer, &read, &Answer::Key("y".to_string()), None).unwrap();
+        writer
+            .observe(|state| *state = read.clone())
+            .expect("box two reads as box one did");
+        drop(writer);
+        assert!(!send::moved(&read, &agent.state().unwrap()));
+
+        let (replied, typist) = answer_at(&agent, &read, from, "1");
+        assert!(matches!(replied, Answered::Moved));
+        assert!(typist.0.borrow().is_empty(), "nothing is typed");
+        let answers = agent.events().unwrap().len();
+        assert_eq!(
+            answers, 1,
+            "box two is not answered by a reading of box one"
+        );
+    }
+
+    #[test]
+    fn a_subagents_event_moves_only_the_box_it_asked() {
+        // A subagent working beside the question says nothing about it.
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_plain_question());
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .append(&Event::new(
+                "PreToolUse",
+                serde_json::json!({ "agent_id": "a7" }),
+            ))
+            .unwrap();
+        let (replied, typist) = answer_at(&agent, &read, from, "1");
+        assert!(matches!(replied, Answered::Yes));
+        assert_eq!(*typist.0.borrow(), vec![vec!["1"]]);
+
+        // The box a subagent asked closes only with that subagent's next event.
+        let root = tempfile::TempDir::new().unwrap();
+        let mut its_box = a_plain_question();
+        its_box.asked_by = Some("a7".to_string());
+        let agent = recorded(root.path(), &its_box);
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .append(&Event::new(
+                "PostToolUse",
+                serde_json::json!({ "agent_id": "a7" }),
+            ))
+            .unwrap();
+        let (replied, typist) = answer_at(&agent, &read, from, "1");
+        assert!(matches!(replied, Answered::Moved));
+        assert!(typist.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_readers_own_look_since_the_reading_moves_nothing() {
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_plain_question());
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+        let writer = agent.writer().unwrap();
+        writer
+            .append(&Event::new(derive::READ_PROMPT, serde_json::json!({})))
+            .unwrap();
+        writer
+            .observe(|state| state.summary = Some("looked".to_string()))
+            .unwrap();
+        drop(writer);
+
+        let (replied, _) = answer_at(&agent, &read, from, "2");
+        assert!(matches!(replied, Answered::Yes));
+    }
+
+    #[test]
+    fn a_prompt_only_the_screen_shows_is_answered_over_a_working_record() {
+        // codex's approval box fires no hook: the record stays working while
+        // the verdict says waiting, and the record is what is compared.
+        let root = tempfile::TempDir::new().unwrap();
+        let mut working = a_permission_box();
+        working.state = Phase::Working;
+        let agent = recorded(root.path(), &working);
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+
+        let (replied, typist) = answer_at(&agent, &read, from, "y");
+        assert!(matches!(replied, Answered::Yes));
+        assert_eq!(*typist.0.borrow(), vec![vec!["y"]]);
+        assert_eq!(agent.events().unwrap()[0].payload["key"], "y");
+    }
+
+    #[test]
+    fn a_lone_answer_to_a_walked_list_still_types_its_whole_walk() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dialog = a_walked_dialog();
+        let agent = recorded(root.path(), &dialog);
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+
+        let (replied, typist) = answer_at(&agent, &read, from, "1");
+        assert!(matches!(replied, Answered::Yes));
+        let pressed: Vec<_> = typist
+            .0
+            .borrow()
+            .iter()
+            .filter(|call| call[0] != "settle")
+            .cloned()
+            .collect();
+        assert_eq!(pressed, vec![vec!["Up"], vec!["Up"], vec!["Enter"]]);
+        let event = &agent.events().unwrap()[0].payload;
+        assert_eq!(event["key"], "1");
+        assert_eq!(event["question"], serde_json::json!(read.question));
+    }
+
+    #[test]
+    fn a_pane_that_went_away_since_the_reading_is_sent_nothing() {
+        let root = tempfile::TempDir::new().unwrap();
+        let agent = recorded(root.path(), &a_plain_question());
+        let from = send::logged(&agent);
+        let read = agent.state().unwrap();
+        let answer = answer(&given("1"), read.kind, &read).unwrap();
+
+        let replied = reply(&agent, &NoPane, &read, from, answer, None, Shape::of(&read)).unwrap();
+        assert!(matches!(replied, Answered::Gone));
+        assert!(agent.events().unwrap().is_empty(), "nothing is logged");
+        assert_eq!(agent.state().unwrap(), read, "and the record is as it was");
     }
 }

@@ -1418,16 +1418,20 @@ pub enum Replied {
 /// An ended or parked agent is resumed with the line, as `amx resume <id>
 /// "message"` does. A command row has no vendor to resume and is refused.
 pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
-    let view = derive::view(root, id, store::now())?;
     let agent = Agent::open(root, id)?;
+    // Before the reading, so an answer sees what the agent said after it.
+    let from = verbs::send::logged(&agent);
+    let view = derive::view(root, id, store::now())?;
     let server = Server::from_socket(view.meta.socket.clone());
 
     match view.phase() {
         Phase::Waiting => {
             let typed = card_line(text, view.state.pending());
-            match verbs::answer::given(&agent, &server, &view, &typed)? {
+            match verbs::answer::given(&agent, &server, &view, from, &typed)? {
                 Answered::Yes => Ok(Replied::Yes(format!("answered {id}"))),
                 Answered::No(refused) => Ok(Replied::No(format!("{id}: {refused}"))),
+                Answered::Moved => Ok(Replied::No(verbs::answer::no_longer_asking(id))),
+                Answered::Gone => Ok(Replied::No(verbs::send::no_pane(id))),
             }
         }
         phase if phase.is_terminal() || parked(&view) => {
