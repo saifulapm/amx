@@ -85,6 +85,8 @@ env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TM
 
 Keep the build out of `/tmp`: a target directory there runs out of room part way through. Point `CARGO_TARGET_DIR` somewhere with space, such as `~/.cache`, if the checkout itself sits under `/tmp`.
 
+The website is built from the newest release tag, never from main, so it describes what installs. A docs fix on main reaches the site with the next release, or with a manual run of the Pages workflow once that fix is in a tag.
+
 ## License
 
 amx is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
