@@ -1,17 +1,24 @@
 name: CI
 
+# A tag's suite runs as the first job of the release, which calls this file,
+# so a tag is tested once and never published untested.
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
+  workflow_call:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
