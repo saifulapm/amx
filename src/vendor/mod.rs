@@ -516,7 +516,14 @@ impl Unasked {
             return 0;
         };
         let equals = format!("{}=", self.flag);
-        let joined = first.strip_prefix(&equals);
+        // A short valued flag also takes its value attached, as `-anever`.
+        let short = self.value && self.flag.len() == 2 && !self.flag.starts_with("--");
+        let joined = first.strip_prefix(&equals).or_else(|| {
+            short
+                .then(|| first.strip_prefix(self.flag))
+                .flatten()
+                .filter(|rest| !rest.is_empty())
+        });
         let Some(key) = self.key else {
             return match (first == self.flag, joined) {
                 (true, _) if self.value => words.len().min(2),
@@ -559,7 +566,9 @@ pub fn unasked(vendor: &Vendor) -> Vec<Unasked> {
 /// spelling one string of its words.
 ///
 /// The spellings are `vendor`'s, or every vendor's when the program is none
-/// amx knows, since a wrapper may pass any of them on.
+/// amx knows, since a wrapper may pass any of them on. A lone `--` is dropped
+/// too: amx writes its own dials after these words, and past `--` they would
+/// be text.
 pub fn without_unasked(vendor: Option<&Vendor>, words: &[String]) -> (Vec<String>, Vec<String>) {
     let spellings: Vec<Unasked> = match vendor {
         Some(vendor) => unasked(vendor),
@@ -569,7 +578,13 @@ pub fn without_unasked(vendor: Option<&Vendor>, words: &[String]) -> (Vec<String
     let mut at = 0;
     while at < words.len() {
         let rest = &words[at..];
-        match spellings.iter().map(|one| one.spells(rest)).max() {
+        let ends_options = usize::from(rest[0] == "--");
+        match spellings
+            .iter()
+            .map(|one| one.spells(rest))
+            .chain([ends_options])
+            .max()
+        {
             Some(taken) if taken > 0 => {
                 dropped.push(rest[..taken].join(" "));
                 at += taken;

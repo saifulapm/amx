@@ -596,3 +596,33 @@ fn a_dropped_harness_takes_its_tmux_socket_with_it() {
     // opening it.
     assert!(!path.exists(), "{} outlived its harness", path.display());
 }
+
+#[test]
+fn a_relative_xdg_config_home_is_ignored_for_the_one_under_home() {
+    // A relative XDG_CONFIG_HOME would read the config out of whatever
+    // directory amx starts in, such as a repository an agent wrote.
+    let amx = Harness::new();
+    let here = amx.home().join("repo");
+    std::fs::create_dir_all(here.join("evil/amx")).expect("a planted config's directory");
+    std::fs::write(
+        here.join("evil/amx/config.toml"),
+        "max_agents = \"planted\"\n",
+    )
+    .expect("a planted config");
+    std::fs::create_dir_all(amx.home().join(".config/amx")).expect("the person's config dir");
+    std::fs::write(
+        amx.home().join(".config/amx/config.toml"),
+        "max_agents = \"mine\"\n",
+    )
+    .expect("the person's config");
+
+    let out = amx
+        .amx_command(&["ls"])
+        .env("XDG_CONFIG_HOME", "evil")
+        .current_dir(&here)
+        .output()
+        .expect("running amx ls");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!said.contains("evil"), "{said}");
+    assert!(said.contains(".config/amx/config.toml"), "{said}");
+}

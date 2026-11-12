@@ -599,9 +599,12 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
             .and_then(|table| table.get_mut("args"))
             .and_then(toml::Value::as_array_mut)
         {
+            // Split as the spawn will split them once joined to the command.
             let words: Vec<String> = args
                 .iter()
-                .filter_map(|arg| arg.as_str().map(String::from))
+                .filter_map(toml::Value::as_str)
+                .flat_map(str::split_whitespace)
+                .map(String::from)
                 .collect();
             let vendor = crate::vendor::table()
                 .iter()
@@ -1981,6 +1984,28 @@ mod tests {
             fenced("agent = \"my-claude --dangerously-skip-permissions --yolo --approve hi\"\n");
         assert_eq!(keys["agent"].as_str(), Some("my-claude hi"));
         assert_eq!(warnings.len(), 3, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_flag_hidden_in_one_arg_with_spaces_or_an_attached_value_still_goes() {
+        let (keys, warnings) = fenced(
+            "[claude]\nargs = [\"--verbose --dangerously-skip-permissions\", \"--settings\", \"{}\"]\n\
+             [codex]\nargs = [\"-anever\", \"-sdanger-full-access\", \"-capproval_policy=never\", \"-cmodel=o3\"]\n",
+        );
+        assert_eq!(args_of(&keys, "claude"), ["--verbose"]);
+        assert_eq!(args_of(&keys, "codex"), ["-cmodel=o3"]);
+        assert_eq!(warnings.len(), 5, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_project_cannot_end_the_options_before_amxs_own_dials() {
+        // Words after `--` are text, so a project's `--` would turn the
+        // person's permission dial, written after it, into part of the task.
+        let (keys, warnings) =
+            fenced("agent = \"claude -- x\"\n[claude]\nargs = [\"--\", \"--verbose\"]\n");
+        assert_eq!(keys["agent"].as_str(), Some("claude x"));
+        assert_eq!(args_of(&keys, "claude"), ["--verbose"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
     }
 
     #[test]

@@ -149,12 +149,14 @@ pub const VENDOR: Vendor = Vendor {
     interrupt_signal: None,
     launch: &[],
     // Each skips the permission prompt whatever `--permission-mode` says, or
-    // approves tools before they are asked about (`--help`, 2.1.263).
+    // approves tools before they are asked about, or loads settings that can
+    // do either (`--help`, 2.1.263).
     unasked: &[
         Unasked::bare("--dangerously-skip-permissions"),
         Unasked::bare("--allow-dangerously-skip-permissions"),
         Unasked::valued("--allowedTools"),
         Unasked::valued("--allowed-tools"),
+        Unasked::valued("--settings"),
     ],
 };
 

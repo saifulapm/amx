@@ -255,9 +255,10 @@ Even when allowed, a project file cannot set:
 - `permission`, `trust` or `subagents_may_escalate`,
 - in `agent` or a vendor's `args`: a flag that skips or lowers what the vendor
   asks before acting, or settles its folder trust, such as
-  `--dangerously-skip-permissions`, `--permission-mode`, codex's `--sandbox`
-  and `-a`, opencode's `--auto` or pi's `--approve`. The flag and its value
-  are dropped; the program and its other arguments stay,
+  `--dangerously-skip-permissions`, `--permission-mode`, `--settings`, codex's
+  `--sandbox` and `-a`, opencode's `--auto` or pi's `--approve`, nor a lone
+  `--`. The flag and its value are dropped; the program and its other
+  arguments stay,
 - in a vendor's `env`: `PATH`, `HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`,
   `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, or any `XDG_*`, `GIT_*`,
