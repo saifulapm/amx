@@ -428,7 +428,8 @@ pub struct State {
     /// where a refusal returns to working inside a turn and to idle outside
     /// one.
     pub turn_open: bool,
-    /// Sends an interrupt put back into the vendor's composer, oldest first.
+    /// Sends an interrupt put back into the vendor's composer, or a send
+    /// whose Enter failed left there, oldest first.
     ///
     /// pi restores queued messages on cancel, where claude drops them (see
     /// [`crate::vendor::Vendor::restores_queued_on_cancel`]). The text sits

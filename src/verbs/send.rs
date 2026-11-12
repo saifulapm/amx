@@ -232,14 +232,15 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     Ok(Delivered::Sent)
 }
 
-/// The refusal for a composer an interrupt put queued text back into.
+/// The refusal for a composer holding text nobody submitted: queued sends an
+/// interrupt put back, or a send whose Enter failed.
 ///
 /// A paste would be appended to that text and submitted with it. The refusal
 /// lasts until the vendor's next prompt.
 fn held(id: &str, held: &[String]) -> String {
     let held: Vec<String> = held.iter().map(|text| format!("{text:?}")).collect();
     format!(
-        "{id}'s input still holds text the interrupt put back: {}; submit or clear it \
+        "{id}'s input still holds text that was never submitted: {}; submit or clear it \
          with `amx attach {id}` before sending",
         held.join(", ")
     )

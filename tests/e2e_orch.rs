@@ -374,6 +374,11 @@ fn a_send_whose_enter_failed_leaves_no_turn_open_and_its_words_held() {
         "{}",
         stderr(&out)
     );
+    assert!(
+        !stderr(&out).contains("interrupt"),
+        "no interrupt put it there: {}",
+        stderr(&out)
+    );
 }
 
 #[test]
