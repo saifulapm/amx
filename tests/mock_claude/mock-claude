@@ -14,7 +14,7 @@
 #   print <text>          print a line, with backslash escapes.
 #   sleep <ms>            wait. A long trailing sleep keeps the agent alive.
 #   await <Key>           block until the key is typed at the pane: `Escape`
-#                         (byte 27) or `Enter` (byte 13).
+#                         (byte 27), `Enter` (byte 13) or a digit `1`-`9`.
 #   transcript <json>     append a line to the transcript the hooks named.
 #   ignore <signal>       ignore this signal, for an agent that will not stop.
 #   exit <code>           exit with this code.
@@ -88,6 +88,7 @@ byte_of() {
 	case "$1" in
 	Escape) printf '27' ;;
 	Enter) printf '13' ;;
+	[1-9]) printf '%d' $((48 + $1)) ;;
 	*) return 1 ;;
 	esac
 }

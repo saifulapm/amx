@@ -2140,4 +2140,129 @@ mod tests {
         assert!(agent.events().unwrap().is_empty(), "nothing is logged");
         assert_eq!(agent.state().unwrap(), read, "and the record is as it was");
     }
+
+    /// Every bracketed paste in `typed`, in the order it arrived, with the
+    /// byte typed just before it.
+    fn pastes(typed: &[u8]) -> Vec<(Option<char>, String)> {
+        let typed = String::from_utf8_lossy(typed);
+        let mut before = None;
+        let mut found = Vec::new();
+        for piece in typed.split("\u{1b}[200~") {
+            match piece.split_once("\u{1b}[201~") {
+                Some((text, after)) => {
+                    found.push((before, text.to_string()));
+                    before = after.chars().last().or(Some('~'));
+                }
+                None => before = piece.chars().last(),
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_send_an_answers_words_and_a_second_send_racing_on_one_pane_each_arrive_whole() {
+        // The paste goes through a buffer named for the pane, so two pastes
+        // let loose together can swap or lose each other's text. Every paste
+        // goes in under the writer.
+        let root = tempfile::TempDir::new().unwrap();
+        let typed = root.path().join("typed");
+        let server = Server::named(format!("amx-test-answer-pastes-{}", std::process::id()))
+            .with_conf("/dev/null");
+        let script = format!(
+            "stty raw -echo; printf '\\033[?2004h'; exec cat > '{}'",
+            typed.display()
+        );
+        let (_, pane) = server
+            .new_session(&crate::tmux::Spawn {
+                name: Some(&format!("{}pick-a1b", crate::tmux::SESSION_PREFIX)),
+                command: &["sh", "-c", &script],
+                ..crate::tmux::Spawn::default()
+            })
+            .expect("a pane for it");
+        struct Killed(Server);
+        impl Drop for Killed {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+            }
+        }
+        let server = Killed(server);
+        let mut meta = recorded(root.path(), &State::default()).meta().unwrap();
+        meta.socket = server.0.socket().clone();
+        meta.pane = pane.clone();
+        let records = root.path().join("records");
+        let agent = Agent::create(&records, &meta).unwrap();
+
+        let [first, words, second] = ['x', 'y', 'z'].map(|c| c.to_string().repeat(200));
+        let mut landed = Vec::new();
+        for _ in 0..10 {
+            let idle = agent
+                .writer()
+                .unwrap()
+                .update_state(|state| {
+                    *state = State {
+                        state: Phase::Idle,
+                        ..State::default()
+                    }
+                })
+                .unwrap();
+            let from = send::logged(&agent);
+            let together = std::sync::Barrier::new(3);
+            let keyboard = (&server.0, &pane);
+            let send = |text: &str| {
+                together.wait();
+                send::deliver(&agent, &server.0, &pane, text).is_ok()
+            };
+            let (sent, answered, again) = std::thread::scope(|scope| {
+                let sent = scope.spawn(|| send(&first));
+                let again = scope.spawn(|| send(&second));
+                let answered = scope.spawn(|| {
+                    together.wait();
+                    let answer = Answer::Words(words.clone());
+                    let shape = Shape::of(&idle);
+                    reply(&agent, &keyboard, &idle, from, answer, None, shape).unwrap()
+                });
+                (
+                    sent.join().unwrap(),
+                    matches!(answered.join().unwrap(), Answered::Yes),
+                    again.join().unwrap(),
+                )
+            });
+            for (went, text) in [(sent, &first), (answered, &words), (again, &second)] {
+                if went {
+                    landed.push(text.clone());
+                }
+            }
+            assert!(sent && again, "both sends are taken");
+        }
+
+        let started = std::time::Instant::now();
+        let mut arrived = Vec::new();
+        while started.elapsed() < Duration::from_secs(5) {
+            arrived = pastes(&std::fs::read(&typed).unwrap_or_default());
+            if arrived.len() >= landed.len() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // A send's paste follows the Enter that ended whatever came before
+        // it, never a key in the middle of an answer.
+        for (before, text) in &arrived {
+            if *text != words {
+                assert!(
+                    matches!(before, None | Some('\r')),
+                    "a send landed inside another's keys, after {before:?}"
+                );
+            }
+        }
+        let arrived = arrived.into_iter().map(|(_, text)| text).collect();
+        let sorted = |mut texts: Vec<String>| {
+            texts.sort();
+            texts
+        };
+        assert_eq!(
+            sorted(arrived),
+            sorted(landed),
+            "each paste whole, once, and only those that went in"
+        );
+    }
 }

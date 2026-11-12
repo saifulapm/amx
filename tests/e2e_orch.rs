@@ -199,6 +199,118 @@ fn send_to_an_agent_working_only_on_its_background_agents_is_not_queued() {
     );
 }
 
+/// The question of box `n` of [`boxes_in_a_row`].
+fn the_box(n: usize) -> String {
+    format!("Claude needs your permission to use Bash for box {n}")
+}
+
+/// A scenario of `boxes` permission boxes one after another, each put up only
+/// once a `1` answered the one before it.
+fn boxes_in_a_row(amx: &Harness, boxes: usize) -> String {
+    let mut steps = String::from(
+        "hook SessionStart {\"source\": \"startup\"}\n\
+         hook UserPromptSubmit {\"prompt\": \"clean up\"}\n",
+    );
+    for n in 1..=boxes {
+        steps.push_str(&format!(
+            "hook Notification {{\"message\": \"{}\", \"notification_type\": \"permission_prompt\"}}\n\
+             print  Do you want to proceed?\n\
+             print  ❯ 1. Yes\n\
+             print    2. No\n\
+             await 1\n\
+             hook PostToolUse {{\"tool_name\": \"Bash\"}}\n",
+            the_box(n)
+        ));
+    }
+    steps.push_str(
+        "hook Stop {\"last_assistant_message\": \"all clean\"}\n\
+         print ❯\n\
+         sleep 600000\n",
+    );
+    let path = amx.home().join("boxes-in-a-row");
+    std::fs::write(path.with_extension("scenario"), steps).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn two_answers_started_together_answer_one_box_and_never_the_next() {
+    // Each round, two callers both read box 2n-1 and race. Under the writer
+    // the second finds the record moved and types nothing, so box 2n is
+    // answered only by a caller whose reading showed box 2n.
+    let rounds = 20;
+    let amx = Harness::new();
+    let id = "clean-up-a1b";
+    amx.play(id, &boxes_in_a_row(&amx, rounds * 2));
+    let showing = |n: usize| {
+        let asked = the_box(n);
+        amx.until(&format!("box {n}"), || {
+            let state = amx.state(id);
+            (state["state"] == "waiting" && state["question"]["text"] == json!(asked)).then_some(())
+        })
+    };
+
+    for round in 0..rounds {
+        let first = round * 2 + 1;
+        showing(first);
+        let racing: Vec<_> = (0..2)
+            .map(|_| {
+                amx.amx_command(&["answer", id, "1"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let outs: Vec<Output> = racing
+            .into_iter()
+            .map(|caller| caller.wait_with_output().unwrap())
+            .collect();
+        let mut codes: Vec<i32> = outs.iter().map(code).collect();
+        codes.sort();
+        for out in outs.iter().filter(|out| code(out) == 2) {
+            assert!(
+                stderr(out).contains(&format!(
+                    "{id} is no longer asking that; run `amx status {id}`"
+                )),
+                "{}",
+                stderr(out)
+            );
+        }
+        match codes[..] {
+            // The loser saw the record move and typed nothing.
+            [0, 2] => {
+                showing(first + 1);
+                let out = amx.amx(&["answer", id, "1"]);
+                assert_eq!(code(&out), 0, "{}", stderr(&out));
+            }
+            // The loser's reading came after box 2n went up.
+            [0, 0] => {}
+            _ => panic!("round {round}: {outs:?}"),
+        }
+    }
+    amx.until_state(id, "idle");
+
+    // Every answer is logged against the box that was up when it went in,
+    // and each box has one.
+    let mut up = None;
+    let mut answers = 0;
+    for event in amx.events(id) {
+        match event["kind"].as_str() {
+            Some("Notification") => {
+                assert_eq!(answers, usize::from(up.is_some()), "one answer per box");
+                up = event["payload"]["message"].as_str().map(str::to_string);
+                answers = 0;
+            }
+            Some("answer") => {
+                assert_eq!(event["payload"]["question"].as_str(), up.as_deref());
+                answers += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(answers, 1, "the last box too");
+}
+
 /// A folder holding a `tmux` that fails every `send-keys ... Enter` and hands
 /// every other call to the real one.
 fn a_tmux_that_drops_the_enter(amx: &Harness) -> std::path::PathBuf {
