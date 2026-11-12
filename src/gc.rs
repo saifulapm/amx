@@ -32,7 +32,7 @@ pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
 /// The writer lock is held until the record is gone. `resume` takes the same
 /// lock, so it either finished first and the record reads as running, or it
 /// waits and finds no record. A record whose pane still answers is kept
-/// whatever its phase.
+/// whatever its phase, and so is one whose tmux cannot be asked.
 fn forgot(record: &Record, now: u64) -> bool {
     let Ok(_writer) = record.agent.writer() else {
         return false;
@@ -42,7 +42,12 @@ fn forgot(record: &Record, now: u64) -> bool {
     };
     past_keeping(&state, now)
         && !holding(&meta)
-        && !Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id)
+        // A tmux that cannot be asked may hold a live pane, so it keeps the
+        // record.
+        && matches!(
+            Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id),
+            Ok(false)
+        )
         && record.agent.remove().is_ok()
 }
 
@@ -198,6 +203,33 @@ mod tests {
 
         assert_eq!(ids(&sweep(records, NOW)), ["just-done-c3d", "old-done-a1b"]);
         assert_eq!(left(root.path()), ["just-done-c3d", "old-done-a1b"]);
+    }
+
+    #[test]
+    fn a_tmux_that_cannot_be_asked_keeps_its_record() {
+        // A socket path longer than a unix socket can name: tmux cannot say
+        // whether a pane there still answers, so nothing is taken.
+        let root = TempDir::new().unwrap();
+        let away = TempDir::new().unwrap();
+        let unusable = away.path().join("s".repeat(120));
+        let nobody = away.path().join("nobody-listens");
+        for (id, socket) in [("unaskable-a1b", &unusable), ("no-server-c3d", &nobody)] {
+            record(root.path(), id, Phase::Done, NOW - KEEP - 1);
+            let agent = Agent::open(root.path(), id).unwrap();
+            agent
+                .writer()
+                .unwrap()
+                .update_meta(|meta| meta.socket = Socket::Path(socket.clone()))
+                .unwrap();
+            wrote(&agent, Phase::Done, NOW - KEEP - 1);
+        }
+
+        assert_eq!(ids(&sweep(read(root.path()), NOW)), ["unaskable-a1b"]);
+        assert_eq!(
+            left(root.path()),
+            ["unaskable-a1b"],
+            "and the one with no server listening goes, as before"
+        );
     }
 
     #[test]

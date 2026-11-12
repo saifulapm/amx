@@ -188,7 +188,9 @@ pub fn forget_row(root: &Path, view: &View) -> Result<Taken> {
 fn still_over(agent: &Agent) -> Result<Meta> {
     let meta = agent.meta()?;
     let state = agent.state()?;
-    if Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
+    // A tmux that cannot be asked is an error, not a lost pane: the row may
+    // have been resumed onto it.
+    if Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id)? {
         bail!("{}'s pane is open again", meta.id);
     }
     if !state.state.is_terminal() && state.parked_at > 0 {
@@ -378,6 +380,53 @@ mod tests {
         }
         assert!(!left.exists(), "{out}");
         assert_eq!(store::list(root.path()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn clear_keeps_a_row_whose_tmux_cannot_be_asked_since_the_list() {
+        // Resumed onto a server tmux cannot reach: whether its pane answers
+        // cannot be told, so the row is said and kept with its tree.
+        let repo = a_repo();
+        let root = TempDir::new().unwrap();
+        let tree = a_finished_agent(root.path(), repo.path(), "resumed-a1b", false);
+        let away = TempDir::new().unwrap();
+        let unusable = away.path().join("s".repeat(120));
+
+        let mut input = std::io::BufReader::new(Moved {
+            act: Some(|| {
+                let agent = Agent::open(root.path(), "resumed-a1b").unwrap();
+                let writer = agent.writer().unwrap();
+                writer
+                    .update_meta(|meta| meta.socket = Socket::Path(unusable.clone()))
+                    .unwrap();
+                writer
+                    .update_state(|state| state.state = Phase::Starting)
+                    .unwrap();
+            }),
+            typed: b"y\n",
+        });
+        let mut out = Vec::new();
+        run(root.path(), false, &mut input, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+
+        assert!(out.contains("could not clear resumed-a1b"), "{out}");
+        assert!(tree.exists(), "{out}");
+        assert!(Agent::open(root.path(), "resumed-a1b").is_ok(), "{out}");
+    }
+
+    /// Input that runs `act` once before the answer is read.
+    struct Moved<'a, F: FnOnce()> {
+        act: Option<F>,
+        typed: &'a [u8],
+    }
+
+    impl<F: FnOnce()> Read for Moved<'_, F> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(act) = self.act.take() {
+                act();
+            }
+            self.typed.read(buf)
+        }
     }
 
     #[test]

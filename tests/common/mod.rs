@@ -467,7 +467,8 @@ fn leaks_nothing(command: &mut Command) {
 /// `is_no_server` in src/tmux.rs recognises.
 fn the_server_went(stderr: &[u8]) -> bool {
     let said = String::from_utf8_lossy(stderr);
-    said.contains("error connecting to")
+    (said.contains("error connecting to")
+        && (said.contains("No such file or directory") || said.contains("Connection refused")))
         || said.contains("no server running")
         || said.contains("server exited")
 }

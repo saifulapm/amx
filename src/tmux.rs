@@ -794,7 +794,11 @@ fn unquote(value: &str) -> String {
 /// existed, one with no server behind it, or a server that exited mid-call.
 fn is_no_server(err: &anyhow::Error) -> bool {
     let said = format!("{err:#}");
-    said.contains("error connecting to")
+    // tmux says "error connecting to" for every failed connect; only no
+    // socket there, or nobody listening on it, means no server. A path too
+    // long or not allowed means tmux cannot tell.
+    (said.contains("error connecting to")
+        && (said.contains("No such file or directory") || said.contains("Connection refused")))
         || said.contains("no server running")
         || said.contains("server exited")
 }
@@ -980,6 +984,20 @@ mod tests {
             .output()
             .expect("starting a server");
         assert!(out.status.success(), "{out:?}");
+    }
+
+    #[test]
+    fn a_socket_tmux_cannot_use_is_an_error_and_one_nobody_listens_on_is_no_server() {
+        let away = tempfile::TempDir::new().unwrap();
+        let pane = PaneId::new("%1").unwrap();
+
+        let nobody = Server::from_socket(Socket::Path(away.path().join("nobody")));
+        assert!(!nobody.answers_for_now(&pane, "fix-login-a1b").unwrap());
+
+        // Longer than a unix socket address holds: tmux says "error
+        // connecting to" here too, but nothing says no server is there.
+        let unusable = Server::from_socket(Socket::Path(away.path().join("s".repeat(120))));
+        assert!(unusable.answers_for_now(&pane, "fix-login-a1b").is_err());
     }
 
     #[test]
