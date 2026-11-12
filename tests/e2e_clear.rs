@@ -148,6 +148,30 @@ fn clear_takes_the_branch_of_a_row_that_made_no_commit_and_sweep_leaves_it() {
 }
 
 #[test]
+fn clear_takes_a_row_whose_record_says_working_over_a_pane_that_died() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = an_ended_agent(&amx, "dead-a1b", &repo);
+    work_on_the_branch(&tree, "login.rs");
+    git(&repo, &["merge", "--no-ff", "-m", "merge", "amx/dead-a1b"]);
+    amx.set_state("dead-a1b", serde_json::json!({ "state": "working" }));
+
+    let out = amx.amx(&["clear", "--force"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let out = said(&out);
+    assert!(
+        out.contains("dead-a1b  amx/dead-a1b merged into main"),
+        "{out}"
+    );
+    assert!(!Path::new(&tree).exists(), "{out}");
+    assert!(!amx.agent_dir("dead-a1b").exists(), "{out}");
+}
+
+#[test]
 fn clear_says_nothing_to_clear_where_no_row_has_finished() {
     let amx = Harness::new();
     amx.play("watch-log-d4e", "works-without-end");

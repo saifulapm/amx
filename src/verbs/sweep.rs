@@ -233,8 +233,9 @@ fn agreed(count: usize, input: &mut impl BufRead, out: &mut impl Write) -> Resul
 /// `listed` is the reading the candidate was listed from, which may be as old
 /// as the prompt. The agent is read again, and is kept if it is no longer
 /// finished; then, under the writer that takes its pane down, if its record
-/// left a finished phase, counted a send, or names another pane since. A send
-/// waits on that writer, so none lands between the check and the stop.
+/// counted a send, moved to a phase that is not finished, or names another
+/// pane since. A send waits on that writer, so none lands between the check
+/// and the stop.
 ///
 /// This is `stop --force --delete --worktree delete --branch delete`, so the
 /// ending, the removals and their output all come from `stop`.
@@ -265,7 +266,10 @@ pub fn take_landed(root: &Path, listed: &View, out: &mut impl Write) -> Result<b
         }
         _ => Disposition::Delete,
     };
-    let seq = listed.state.seq;
+    // Moved since the list: a send or resume counted itself, or the record
+    // left the phase it was listed in for one that is not finished. A record
+    // that still says working over a pane that died has not moved.
+    let (seq, was) = (listed.state.seq, listed.state.state);
     let taken = stop::run_finished(
         root,
         &StopArgs {
@@ -276,7 +280,7 @@ pub fn take_landed(root: &Path, listed: &View, out: &mut impl Write) -> Result<b
             branch: Some(branch),
         },
         meta,
-        |now| !finished(now.state) || now.seq != seq,
+        |now| now.seq != seq || (now.state != was && !finished(now.state)),
         out,
     )?;
     if !taken {
@@ -803,6 +807,30 @@ mod tests {
         );
         assert!(Agent::open(root.path(), &meta.id).is_ok(), "{said}");
         assert!(meta.worktree.as_deref().unwrap().exists(), "{said}");
+    }
+
+    #[test]
+    fn sweep_takes_a_candidate_whose_record_says_working_over_a_pane_that_died() {
+        // Killed mid-turn by a reboot or a dead tmux server: the record still
+        // says working, its pane is gone, so it reads stopped and nothing has
+        // moved since the list.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_swept_agent(root.path(), repo.path(), "dead-a1b");
+        let agent = Agent::open(root.path(), &meta.id).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| state.state = Phase::Working)
+            .unwrap();
+
+        let said = swept(root.path(), true, "");
+        assert!(
+            said.contains("dead-a1b  amx/dead-a1b merged into main"),
+            "{said}"
+        );
+        assert!(said.contains("removed dead-a1b's record"), "{said}");
+        assert!(!meta.worktree.as_deref().unwrap().exists(), "{said}");
     }
 
     #[test]
