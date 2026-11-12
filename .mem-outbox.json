@@ -2,16 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": "01M782AEH1X6RM55YTG2JHJEPK",
-      "body": "# plan: keys-under-lock\n\n- [x] t1 answer reads the record again under the writer and holds it through its keys; a record changed since the reading is exit 2 with nothing typed, in the verb and the view\n- [ ] t2 interrupt classifies again under the writer and presses Escape while holding it; waiting is exit 2, idle exit 1, in the verb and the view  [after: t1]\n- [ ] t3 a send whose paste or Enter failed logs an unsent event that result, wait and the queue read as no send, and a failed Enter keeps the text as composer holds\n- [ ] t4 e2e over the stand-in: two answers racing on two boxes for 20 rounds, three racing pastes arrive whole, and a tmux that fails the Enter gives send exit 1 and result an answer  [after: t1, t3]\n",
-      "id": "01M782XZRGZ4FR51Z7TVH42C00",
+      "base": "01M782XZRGZ4FR51Z7TVH42C00",
+      "body": "# plan: keys-under-lock\n\n- [x] t1 answer reads the record again under the writer and holds it through its keys; a record changed since the reading is exit 2 with nothing typed, in the verb and the view\n- [x] t2 interrupt classifies again under the writer and presses Escape while holding it; waiting is exit 2, idle exit 1, in the verb and the view  [after: t1]\n- [ ] t3 a send whose paste or Enter failed logs an unsent event that result, wait and the queue read as no send, and a failed Enter keeps the text as composer holds\n- [ ] t4 e2e over the stand-in: two answers racing on two boxes for 20 rounds, three racing pastes arrive whole, and a tmux that fails the Enter gives send exit 1 and result an answer  [after: t1, t3]\n",
+      "id": "01M7835PDPVBB58S6WTC9W7WJM",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T14:35:03.352113295Z\"\nid = \"01M782XZWTFJ27S8ZKS997Y5E7\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T14:35:03.352113295Z\"\nproject = \"amx\"\ntitle = \"t1 landed: answer reads the record again under the writer and holds it through its keys\"\n+++\n\nt1 landed: answer reads the record again under the writer and holds it through its keys\n",
-      "id": "01M782XZWTX6HHXYCZDY6MVQ7G",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M782XZWTFJ27S8ZKS997Y5E7.md"
+      "body": "+++\ncreated = \"2026-11-12T14:39:15.934866562Z\"\nid = \"01M7835PJ26ZD36N8QP9YE75P6\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T14:39:15.934866562Z\"\nproject = \"amx\"\ntitle = \"t2 landed: interrupt classifies again under the writer and presses Escape while holding it\"\n+++\n\nt2 landed: interrupt classifies again under the writer and presses Escape while holding it\n",
+      "id": "01M7835PJ3VCEWN8341W4QCS57",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M7835PJ26ZD36N8QP9YE75P6.md"
     }
   ]
 }
