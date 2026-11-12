@@ -365,10 +365,41 @@ struct Recorded {
     /// When the forge was asked, in epoch seconds.
     asked: u64,
     branch: String,
+    /// One request that does not read, such as a standing a newer amx
+    /// wrote, costs that request only.
+    #[serde(deserialize_with = "readable")]
     prs: Vec<Pr>,
     /// See [`merged_heads`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "readable"
+    )]
     merged_heads: Vec<String>,
+}
+
+/// The entries of a list that read, or none if it is not a list.
+fn readable<'de, D, T>(reading: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read<T> {
+        Good(T),
+        Bad(serde::de::IgnoredAny),
+    }
+    Ok(match Read::<Vec<Read<T>>>::deserialize(reading)? {
+        Read::Good(entries) => entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Read::Good(entry) => Some(entry),
+                Read::Bad(_) => None,
+            })
+            .collect(),
+        Read::Bad(_) => Vec::new(),
+    })
 }
 
 /// Whether the cache is for `branch` and needs no refresh: it is fresh, or
@@ -937,6 +968,26 @@ mod tests {
             asks_again(dir.path(), 1_070 + FRESH),
             "until the freshness has passed"
         );
+    }
+
+    #[test]
+    fn a_request_that_does_not_read_costs_that_request_and_not_the_others() {
+        let dir = TempDir::new().unwrap();
+        for said in [
+            r#"{"asked":1000,"branch":"amx/fix-login-a1b","prs":[{"number":3,"standing":"open"},{"number":4,"standing":"weird"}]}"#,
+            r#"{"asked":1000,"branch":"amx/fix-login-a1b","prs":[{"number":3,"standing":"open"},{"number":"five","standing":"open"}]}"#,
+            r#"{"asked":1000,"branch":"amx/fix-login-a1b","prs":[{"number":3,"standing":"open"}],"merged_heads":"abc"}"#,
+        ] {
+            std::fs::write(dir.path().join(CACHE), said).unwrap();
+            assert_eq!(
+                kept(dir.path(), "amx/fix-login-a1b"),
+                [Pr {
+                    number: 3,
+                    standing: Standing::Open,
+                }],
+                "{said}"
+            );
+        }
     }
 
     #[test]
