@@ -1085,6 +1085,8 @@ pub fn a_logging(amx: &Harness, program: &str, then: &str) -> (PathBuf, PathBuf)
     let bin = amx.home().join(format!("logging-{program}"));
     std::fs::create_dir_all(&bin).unwrap();
     let log = bin.join("calls.log");
+    // Made again, a stand-in starts a new log.
+    let _ = std::fs::remove_file(&log);
     let script = bin.join(program);
     std::fs::write(
         &script,

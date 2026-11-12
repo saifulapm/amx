@@ -445,8 +445,10 @@ impl Another {
         };
         let pane = tmux(&["new-session", "-d", "-P", "-F", "#{pane_id}", "sleep 600"]);
         tmux(&["set-option", "-p", "-t", &pane, "@amx-id", id]);
-        amx.record(id, &pane);
-        amx.set_meta(id, json!({ "socket": { "name": self.0 } }));
+        // Recorded on no pane first: the harness stamps a live pane of its own
+        // server, and this pane's id names one there too.
+        amx.record(id, "%404");
+        amx.set_meta(id, json!({ "socket": { "name": self.0 }, "pane": pane }));
     }
 }
 
@@ -484,24 +486,45 @@ fn a_reading_of_six_agents_lists_and_captures_each_server_once() {
     let amx = Harness::new();
     let ids = ["a-a1b", "b-b2c", "c-c3d", "d-d4e", "e-e5f", "f-f6a"];
     for id in ids {
-        amx.play(id, "works-without-end");
+        amx.play(id, "happy-turn");
     }
     for id in ids {
-        amx.until_state(id, "working");
+        amx.until_state(id, "idle");
     }
 
-    // Fresh records need no screen: one listing and nothing else.
+    // Fresh records of finished turns need no screen: one listing and
+    // nothing else.
     let log = listed_through_a_logging_tmux(&amx);
-    assert_eq!(common::calls_to(&log, "list-panes"), 1, "{:?}", common::calls(&log));
-    assert_eq!(common::calls_to(&log, "capture-pane"), 0, "{:?}", common::calls(&log));
+    assert_eq!(
+        common::calls_to(&log, "list-panes"),
+        1,
+        "{:?}",
+        common::calls(&log)
+    );
+    assert_eq!(
+        common::calls_to(&log, "capture-pane"),
+        0,
+        "{:?}",
+        common::calls(&log)
+    );
 
     // Every screen wanted: still one capture call for the six.
     for id in ids {
         gone_quiet(&amx, id);
     }
     let log = listed_through_a_logging_tmux(&amx);
-    assert_eq!(common::calls_to(&log, "list-panes"), 1, "{:?}", common::calls(&log));
-    assert_eq!(common::calls_to(&log, "capture-pane"), 1, "{:?}", common::calls(&log));
+    assert_eq!(
+        common::calls_to(&log, "list-panes"),
+        1,
+        "{:?}",
+        common::calls(&log)
+    );
+    assert_eq!(
+        common::calls_to(&log, "capture-pane"),
+        1,
+        "{:?}",
+        common::calls(&log)
+    );
 }
 
 #[test]
@@ -523,8 +546,18 @@ fn a_reading_over_two_servers_lists_and_captures_each_once() {
     }
 
     let log = listed_through_a_logging_tmux(&amx);
-    assert_eq!(common::calls_to(&log, "list-panes"), 2, "{:?}", common::calls(&log));
-    assert_eq!(common::calls_to(&log, "capture-pane"), 2, "{:?}", common::calls(&log));
+    assert_eq!(
+        common::calls_to(&log, "list-panes"),
+        2,
+        "{:?}",
+        common::calls(&log)
+    );
+    assert_eq!(
+        common::calls_to(&log, "capture-pane"),
+        2,
+        "{:?}",
+        common::calls(&log)
+    );
     let on = |socket: &str| {
         common::calls(&log)
             .iter()
