@@ -133,6 +133,9 @@ pub enum Source {
     Transcript,
     /// The last screenful of the pane.
     Screen,
+    /// A source a newer amx wrote that this build does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A question an agent stopped on, with the choices it offers.
@@ -179,6 +182,11 @@ pub enum Kind {
     Question,
     /// The folder-trust screen shown before a session starts.
     Trust,
+    /// A kind a newer amx wrote on a record that this build does not know.
+    /// Only a record reads as it (see `kind_or_unknown`), so a screen rule
+    /// naming it, or any kind this build does not know, is refused.
+    #[serde(skip_deserializing)]
+    Unknown,
 }
 
 /// One choice under a question, as the vendor wrote it.
@@ -664,6 +672,24 @@ where
     })
 }
 
+/// A known kind, or [`Kind::Unknown`] for one this build does not know, as
+/// [`phase_or_unknown`] reads a phase.
+fn kind_or_unknown<'de, D>(deserializer: D) -> std::result::Result<Option<Kind>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Named {
+        Known(Option<Kind>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Named::deserialize(deserializer)? {
+        Named::Known(kind) => kind,
+        Named::Other(_) => Some(Kind::Unknown),
+    })
+}
+
 /// A stored question: its words alone, or everything known about it.
 ///
 /// Anything beyond the words comes from reading the screen, so a question a
@@ -692,7 +718,10 @@ struct Known {
     /// numbered the list, as in every older document.
     #[serde(skip_serializing_if = "is_not")]
     walked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "kind_or_unknown"
+    )]
     kind: Option<Kind>,
     /// The whole call. The question on screen and its choices are also
     /// written above, where existing readers look for them.

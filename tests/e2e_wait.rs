@@ -304,3 +304,18 @@ fn a_message_a_hand_interrupt_left_open_keeps_the_family_from_settling() {
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert_eq!(stdout(&out), "kid-one-b2c idle\n");
 }
+
+#[test]
+fn result_prints_an_answer_from_a_source_a_newer_amx_named() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    common::an_ended_agent(&amx, "fix-login-a1b", &repo);
+    amx.set_state(
+        "fix-login-a1b",
+        json!({ "state": "done", "result": "fixed the login bug", "source": "oracle" }),
+    );
+
+    let out = amx.amx(&["result", "fix-login-a1b"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "fixed the login bug\n");
+}

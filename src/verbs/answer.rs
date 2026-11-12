@@ -1166,6 +1166,21 @@ mod tests {
     }
 
     #[test]
+    fn a_question_of_a_kind_this_build_does_not_know_is_answered_by_its_options() {
+        let newer = a_plain_question();
+        assert_eq!(
+            answer(&given("1"), Some(Kind::Unknown), &newer),
+            Ok(Answer::Key("1".to_string()))
+        );
+        assert!(answer(&given("3"), Some(Kind::Unknown), &newer).is_err());
+        assert!(
+            answer(&given_text("BSD-3-Clause"), Some(Kind::Unknown), &newer).is_err(),
+            "and words are refused, since nothing says there is a field for them"
+        );
+        assert!(answer(&given("BSD-3-Clause"), Some(Kind::Unknown), &newer).is_err());
+    }
+
+    #[test]
     fn a_question_that_takes_one_choice_is_offered_one() {
         // `1,3` at a plain menu would answer with `1` and type `3` at whatever
         // comes next.

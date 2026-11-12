@@ -169,7 +169,11 @@ impl View {
     pub fn kind(&self) -> Option<crate::store::Kind> {
         match asked_kind(own_screens(&self.meta), self.verdict.rule.as_deref()) {
             seen @ Some(crate::store::Kind::Question) => seen,
-            seen => self.state.kind.or(seen),
+            // A kind a newer amx wrote says less than the screen does.
+            seen => match self.state.kind {
+                Some(crate::store::Kind::Unknown) => seen.or(self.state.kind),
+                kind => kind.or(seen),
+            },
         }
     }
 
@@ -283,6 +287,7 @@ fn source_name(source: Source) -> &'static str {
         Source::Payload => "payload",
         Source::Transcript => "transcript",
         Source::Screen => "screen",
+        Source::Unknown => "unknown",
     }
 }
 
@@ -3680,6 +3685,68 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(records[0].state.state, Phase::Unknown);
     }
 
+    /// A record written by this build, then edited the way a newer amx would
+    /// write it: `edit` changes the document before it is read.
+    fn a_newer_record(root: &Path, state: &State, edit: impl FnOnce(&mut serde_json::Value)) {
+        let agent = Agent::create(root, &meta()).expect("a record");
+        let path = agent.dir().join("state.json");
+        std::fs::write(&path, serde_json::to_vec(state).unwrap()).unwrap();
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        edit(&mut document);
+        std::fs::write(&path, document.to_string()).unwrap();
+    }
+
+    #[test]
+    fn records_reads_a_question_kind_this_build_has_never_heard_of_as_unknown() {
+        let root = TempDir::new().unwrap();
+        let mut asking = state(Phase::Waiting, 1_000);
+        asking.question = Some("Which fixture should the port keep?".to_string());
+        asking.options = vec!["sqlite".to_string(), "docker".to_string()];
+        asking.kind = Some(crate::store::Kind::Question);
+        a_newer_record(root.path(), &asking, |document| {
+            assert_eq!(document["question"]["kind"], "question");
+            document["question"]["kind"] = "survey".into();
+        });
+
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(records.len(), 1, "the agent is still listed");
+        let read = &records[0].state;
+        assert_eq!(read.kind, Some(crate::store::Kind::Unknown));
+        assert_eq!(read.options, asking.options, "and the rest of it reads");
+        let view = View::new(
+            records[0].meta.clone(),
+            read.clone(),
+            verdict(Phase::Waiting, Evidence::Hooks, None),
+        );
+        assert_eq!(view.json()["kind"], "unknown");
+    }
+
+    #[test]
+    fn records_reads_an_answer_source_this_build_has_never_heard_of_as_unknown() {
+        let root = TempDir::new().unwrap();
+        let mut ended = state(Phase::Idle, 1_000);
+        ended.result = Some("fixed the login bug".to_string());
+        ended.source = Some(Source::Payload);
+        a_newer_record(root.path(), &ended, |document| {
+            document["source"] = "oracle".into();
+        });
+
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(records.len(), 1, "the agent is still listed");
+        assert_eq!(records[0].state.source, Some(Source::Unknown));
+        assert_eq!(records[0].state.result, ended.result);
+    }
+
+    #[test]
+    fn a_rule_naming_a_kind_this_build_does_not_know_is_still_refused() {
+        assert!(serde_json::from_str::<crate::store::Kind>("\"survey\"").is_err());
+        assert!(
+            serde_json::from_str::<crate::store::Kind>("\"unknown\"").is_err(),
+            "and unknown is a reading, not a kind a rule can claim"
+        );
+    }
+
     #[test]
     fn reader_takes_the_record_when_the_record_says_how_it_ended() {
         for phase in [Phase::Done, Phase::Failed, Phase::Stopped] {
@@ -4527,6 +4594,23 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             doing: None,
         };
         assert_eq!(told.kind(), Some(Kind::Question));
+
+        // A kind a newer amx wrote tells nothing, so the screen decides, and
+        // with nothing on the screen it stays unknown.
+        let newer = |verdict| View {
+            meta: meta(),
+            state: State {
+                kind: Some(Kind::Unknown),
+                ..State::default()
+            },
+            verdict,
+            doing: None,
+        };
+        assert_eq!(newer(claimed("folder_trust")).kind(), Some(Kind::Trust));
+        assert_eq!(
+            newer(verdict(Phase::Waiting, Evidence::Hooks, None)).kind(),
+            Some(Kind::Unknown)
+        );
     }
 
     /// A call of two questions, the second multi-select, as a hook recorded
