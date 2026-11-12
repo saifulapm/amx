@@ -2,16 +2,22 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": "01M77SJGA4VMS1E8RTQSFMPYP4",
-      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [x] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [ ] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [ ] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [ ] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
-      "id": "01M77SNNSMCNHZGQFMT4CP7PC4",
+      "base": "01M77SNNSMCNHZGQFMT4CP7PC4",
+      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [x] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [x] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [ ] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [ ] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
+      "id": "01M77STDA9Q8MASSJMG81A62AA",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T11:53:13.836345711Z\"\nid = \"01M77SNNZBXSE80D7SDK0HM1Q7\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:53:13.836345711Z\"\nproject = \"amx\"\ntitle = \"t2 landed: an unreadable view.json is never written over; keys row says marks are not saved\"\n+++\n\nt2 landed: an unreadable view.json is never written over; keys row says marks are not saved\n",
-      "id": "01M77SNNZBA5FX0K918YSY3652",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77SNNZBXSE80D7SDK0HM1Q7.md"
+      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T11:55:48.992352447Z\"\nid = \"01M77STDH0GWAPW7ATDWDDWHYG\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:55:48.992352447Z\"\nproject = \"amx\"\ntitle = \"marks-survive t3: pr.rs a_reader_that_can_wait test asserted that a forge failure answers no requ…\"\n+++\n\nmarks-survive t3: pr.rs a_reader_that_can_wait test asserted that a forge failure answers no requests and stamps pr.json; the plan reverses that, so it now asserts the written requests stand and the file is unchanged. A failed refresh is remembered in memory (UNANSWERED) for FRESH seconds so the view does not spawn gh per reading; backoff proper stays with quiet-waits.\n",
+      "id": "01M77STDH0RR5DZ5NZ7X9GMPVF",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77STDH0GWAPW7ATDWDDWHYG.md"
+    },
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T11:55:49.210619219Z\"\nid = \"01M77STDPKAHDM649JV8M0M1WE\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:55:49.210619219Z\"\nproject = \"amx\"\ntitle = \"t3 landed: forge failure writes nothing, keeps pr.json, waits FRESH before asking again\"\n+++\n\nt3 landed: forge failure writes nothing, keeps pr.json, waits FRESH before asking again\n",
+      "id": "01M77STDPKYXQWYMB65CANT777",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77STDPKAHDM649JV8M0M1WE.md"
     }
   ]
 }
