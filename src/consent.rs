@@ -17,13 +17,20 @@ const ALLOWED: &str = "allowed";
 
 /// Whether `project_file` is allowed as it stands now, per the copies kept
 /// next to `root`. A file that cannot be read is not allowed.
+#[cfg(test)]
 pub fn allowed_in(root: &Path, project_file: &Path) -> bool {
-    let Some(copy) = copy_of(root, project_file) else {
-        return false;
-    };
+    allowed_bytes_in(root, project_file).is_some()
+}
+
+/// The bytes of `project_file` when they are the ones allowed, else `None`.
+///
+/// The caller uses these bytes rather than reading the file again, so a file
+/// changed after the compare is never what it uses.
+pub fn allowed_bytes_in(root: &Path, project_file: &Path) -> Option<Vec<u8>> {
+    let copy = copy_of(root, project_file)?;
     match (std::fs::read(&copy), std::fs::read(project_file)) {
-        (Ok(kept), Ok(now)) => kept == now,
-        _ => false,
+        (Ok(kept), Ok(now)) if kept == now => Some(now),
+        _ => None,
     }
 }
 

@@ -510,13 +510,14 @@ pub fn for_dir_in(dir: &Path, root: &Path) -> (Config, Vec<String>) {
         Err(e) => warnings.push(format!("using defaults: {e}")),
     }
     if let Some(file) = crate::paths::project_config(dir).filter(|file| file.is_file()) {
-        match crate::consent::allowed_in(root, &file) {
-            true => {
-                let (mut keys, mut said) = keys_of(&file);
+        match crate::consent::allowed_bytes_in(root, &file) {
+            Some(bytes) => {
+                after_consent(&file);
+                let (mut keys, mut said) = keys_in(&file, usable_bytes(&bytes).map(Some));
                 said.extend(only_what_a_project_may_set(&file, &mut keys));
                 layers.push((keys, said));
             }
-            false => warnings.push(not_allowed(&file)),
+            None => warnings.push(not_allowed(&file)),
         }
     }
 
@@ -650,10 +651,9 @@ pub fn project_key_in(dir: &Path, key: &str, root: &Path) -> Option<String> {
         return None;
     }
     let path = crate::paths::project_config(dir)?;
-    if !crate::consent::allowed_in(root, &path) {
-        return None;
-    }
-    let keys = usable(&path).ok()??;
+    let bytes = crate::consent::allowed_bytes_in(root, &path)?;
+    after_consent(&path);
+    let keys = usable_bytes(&bytes).ok()?;
     Some(keys.get(key)?.as_str()?.to_string())
 }
 
@@ -702,7 +702,12 @@ fn layered_tables(layers: Vec<(toml::Table, Vec<String>)>) -> (Config, Vec<Strin
 /// validated as a whole config here, before layering, so a key of the wrong
 /// type is blamed on the file that holds it.
 fn keys_of(path: &Path) -> (toml::Table, Vec<String>) {
-    match usable(path) {
+    keys_in(path, usable(path))
+}
+
+/// [`keys_of`] for a file already read.
+fn keys_in(path: &Path, read: Result<Option<toml::Table>>) -> (toml::Table, Vec<String>) {
+    match read {
         Ok(Some(keys)) => {
             let said = unknown_keys(&keys)
                 .into_iter()
@@ -724,10 +729,41 @@ fn usable(path: &Path) -> Result<Option<toml::Table>> {
     let Some(text) = read(path)? else {
         return Ok(None);
     };
+    usable_text(&text).map(Some)
+}
+
+/// [`usable`] for bytes already read.
+fn usable_bytes(bytes: &[u8]) -> Result<toml::Table> {
+    usable_text(std::str::from_utf8(bytes)?)
+}
+
+/// The keys `text` sets, validated as a complete config.
+fn usable_text(text: &str) -> Result<toml::Table> {
     let keys: toml::Table = text.parse()?;
     let _: Config = keys.clone().try_into()?;
     harness_tables(&keys)?;
-    Ok(Some(keys))
+    Ok(keys)
+}
+
+/// A test seam run between consent's compare and the parse of the bytes it
+/// compared, where a swapped file would once have been read.
+fn after_consent(_file: &Path) {
+    #[cfg(test)]
+    AFTER_CONSENT.with(|seam| {
+        if let Some(swap) = seam.borrow().as_ref() {
+            swap(_file)
+        }
+    });
+}
+
+/// What [`after_consent`] runs in a test.
+#[cfg(test)]
+type Swap = Option<Box<dyn Fn(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_CONSENT: std::cell::RefCell<Swap> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// A file's text, `None` when it does not exist, or an error when it cannot
@@ -1648,6 +1684,36 @@ mod tests {
         let file = crate::paths::project_config(dir).expect("a project file");
         crate::consent::allow_in(&root, &file).unwrap();
         (state, root)
+    }
+
+    /// Run `then` with the project file swapped for `swapped` right after
+    /// consent has compared it.
+    fn swapped_after_consent<T>(swapped: &'static str, then: impl FnOnce() -> T) -> T {
+        AFTER_CONSENT.with(|seam| {
+            *seam.borrow_mut() = Some(Box::new(move |file: &Path| {
+                std::fs::write(file, swapped).unwrap()
+            }))
+        });
+        let done = then();
+        AFTER_CONSENT.with(|seam| *seam.borrow_mut() = None);
+        done
+    }
+
+    #[test]
+    fn a_project_file_swapped_after_consent_still_reads_as_the_bytes_allowed() {
+        let repo = a_project();
+        let file = repo.path().join(".amx/config.toml");
+        let allowed = "max_agents = 42\non_stopped = \"allowed\"\n";
+        std::fs::write(&file, allowed).unwrap();
+        let (_state, root) = allowing(repo.path());
+        let swapped = "max_agents = 7\non_stopped = \"swapped\"\n";
+
+        let config = swapped_after_consent(swapped, || for_dir_in(repo.path(), &root).0);
+        assert_eq!(config.max_agents, 42);
+        std::fs::write(&file, allowed).unwrap();
+        let key =
+            swapped_after_consent(swapped, || project_key_in(repo.path(), "on_stopped", &root));
+        assert_eq!(key.as_deref(), Some("allowed"));
     }
 
     #[test]
