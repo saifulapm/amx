@@ -423,3 +423,114 @@ fn an_empty_machine_says_so() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "no agents");
     assert_eq!(ls(&amx).len(), 0);
 }
+
+/// A second tmux server for a test, killed on drop.
+struct Another(String);
+
+impl Another {
+    fn of(amx: &Harness) -> Another {
+        Another(format!("{}-b", amx.socket()))
+    }
+
+    /// A pane on this server stamped as agent `id`, recorded under it.
+    fn play(&self, amx: &Harness, id: &str) {
+        let tmux = |args: &[&str]| {
+            let out = std::process::Command::new("tmux")
+                .args(["-L", &self.0, "-f", "/dev/null"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "tmux {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let pane = tmux(&["new-session", "-d", "-P", "-F", "#{pane_id}", "sleep 600"]);
+        tmux(&["set-option", "-p", "-t", &pane, "@amx-id", id]);
+        amx.record(id, &pane);
+        amx.set_meta(id, json!({ "socket": { "name": self.0 } }));
+    }
+}
+
+impl Drop for Another {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.0, "kill-server"])
+            .output();
+        let _ = std::fs::remove_file(common::socket_dir().join(&self.0));
+    }
+}
+
+/// A record that has heard nothing for long enough that its screen decides.
+fn gone_quiet(amx: &Harness, id: &str) {
+    amx.set_state(
+        id,
+        json!({ "state": "working", "since": 1, "last_event": 1 }),
+    );
+}
+
+/// `amx ls --json` through a logging tmux, with the log it left.
+fn listed_through_a_logging_tmux(amx: &Harness) -> std::path::PathBuf {
+    let (bin, log) = common::a_logging_tmux(amx);
+    let out = amx
+        .amx_command(&["ls", "--json"])
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    log
+}
+
+#[test]
+fn a_reading_of_six_agents_lists_and_captures_each_server_once() {
+    let amx = Harness::new();
+    let ids = ["a-a1b", "b-b2c", "c-c3d", "d-d4e", "e-e5f", "f-f6a"];
+    for id in ids {
+        amx.play(id, "works-without-end");
+    }
+    for id in ids {
+        amx.until_state(id, "working");
+    }
+
+    // Fresh records need no screen: one listing and nothing else.
+    let log = listed_through_a_logging_tmux(&amx);
+    assert_eq!(common::calls_to(&log, "list-panes"), 1, "{:?}", common::calls(&log));
+    assert_eq!(common::calls_to(&log, "capture-pane"), 0, "{:?}", common::calls(&log));
+
+    // Every screen wanted: still one capture call for the six.
+    for id in ids {
+        gone_quiet(&amx, id);
+    }
+    let log = listed_through_a_logging_tmux(&amx);
+    assert_eq!(common::calls_to(&log, "list-panes"), 1, "{:?}", common::calls(&log));
+    assert_eq!(common::calls_to(&log, "capture-pane"), 1, "{:?}", common::calls(&log));
+}
+
+#[test]
+fn a_reading_over_two_servers_lists_and_captures_each_once() {
+    let amx = Harness::new();
+    let other = Another::of(&amx);
+    let ids = ["a-a1b", "b-b2c", "c-c3d"];
+    for id in ids {
+        amx.play(id, "works-without-end");
+    }
+    for id in ids {
+        amx.until_state(id, "working");
+    }
+    for id in ["d-d4e", "e-e5f", "f-f6a"] {
+        other.play(&amx, id);
+    }
+    for id in ids.into_iter().chain(["d-d4e", "e-e5f", "f-f6a"]) {
+        gone_quiet(&amx, id);
+    }
+
+    let log = listed_through_a_logging_tmux(&amx);
+    assert_eq!(common::calls_to(&log, "list-panes"), 2, "{:?}", common::calls(&log));
+    assert_eq!(common::calls_to(&log, "capture-pane"), 2, "{:?}", common::calls(&log));
+    let on = |socket: &str| {
+        common::calls(&log)
+            .iter()
+            .filter(|call| call.contains(&format!("-L {socket} ")))
+            .count()
+    };
+    assert_eq!(on(amx.socket()), 2, "{:?}", common::calls(&log));
+    assert_eq!(on(&other.0), 2, "{:?}", common::calls(&log));
+}
