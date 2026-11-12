@@ -11,7 +11,8 @@
 //!   [`ends_its_own_paste`].
 //! - The send is appended to the event log and `seq` is bumped before anything
 //!   is typed, so a concurrent `result` never takes the previous turn's answer
-//!   for this one.
+//!   for this one. A paste or Enter that fails is followed by [`UNSENT`], so
+//!   no reader waits on a turn the message never started.
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
@@ -27,6 +28,10 @@ use crate::{complain, exit, paths, registry, spawn, store, warn};
 
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
+
+/// The event amx records right after a [`SEND`] whose paste or Enter failed:
+/// the message never reached the vendor, so it opens no turn.
+pub const UNSENT: &str = "unsent";
 
 /// Whether `event` is the vendor reporting that it took a prompt: its
 /// `Prompted` or `Taken` moment.
@@ -103,7 +108,7 @@ pub fn run(
     let server = Server::from_socket(view.meta.socket.clone());
     match delivered(&agent, &server, &view.meta.pane, text)? {
         Delivered::Sent => {}
-        Delivered::Refused(why) => {
+        Delivered::Refused(why) | Delivered::Failed(why) => {
             complain!("amx: {why}");
             return Ok(exit::FAILURE);
         }
@@ -150,7 +155,7 @@ pub fn run(
 pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
     match delivered(agent, server, pane, text)? {
         Delivered::Sent => Ok(()),
-        Delivered::Refused(why) => bail!(why),
+        Delivered::Refused(why) | Delivered::Failed(why) => bail!(why),
         Delivered::Waiting(_) => bail!(
             "{} is waiting on a question; the message was not sent",
             agent.id()
@@ -166,6 +171,9 @@ enum Delivered {
     /// The record turned to waiting since the caller read it. Nothing typed or
     /// recorded; this is the current state.
     Waiting(Box<State>),
+    /// tmux refused the paste or the Enter, for the reason given. The send is
+    /// logged and [`UNSENT`] after it.
+    Failed(String),
 }
 
 /// [`deliver`], returning a refusal or a new question instead of an error.
@@ -204,8 +212,24 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
     writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
     writer.observe(|state| state.seq += 1)?;
-    server.paste(pane, &spawn::as_typed(vendor, text))?;
-    server.send_keys(pane, &["Enter"]).map(|()| Delivered::Sent)
+    let unsent = || writer.append(&Event::new(UNSENT, serde_json::json!({ "text": text })));
+    if let Err(e) = server.paste(pane, &spawn::as_typed(vendor, text)) {
+        unsent()?;
+        return Ok(Delivered::Failed(format!(
+            "the message did not reach {id}: {e:#}"
+        )));
+    }
+    if let Err(e) = server.send_keys(pane, &["Enter"]) {
+        // The words sit in the composer unsubmitted, where the next paste
+        // would join them.
+        unsent()?;
+        writer.observe(|state| state.composer_holds.push(text.to_string()))?;
+        return Ok(Delivered::Failed(format!(
+            "the message was typed into {id}'s input but not submitted: {e:#}; \
+             submit or clear it with `amx attach {id}`"
+        )));
+    }
+    Ok(Delivered::Sent)
 }
 
 /// The refusal for a composer an interrupt put queued text back into.
@@ -397,7 +421,8 @@ pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
         .collect()
 }
 
-/// The `send` events on the log after the last turn edge.
+/// The `send` events on the log after the last turn edge, less those
+/// [`UNSENT`] follows.
 fn unanswered<'a>(
     hooks: Option<&Hooks>,
     events: &'a [Event],
@@ -430,7 +455,11 @@ fn unanswered<'a>(
             answered = at + 1;
         }
     }
-    events[answered..].iter().filter(|event| event.kind == SEND)
+    let rest = &events[answered..];
+    rest.iter().enumerate().filter_map(move |(at, event)| {
+        let never_sent = rest.get(at + 1).is_some_and(|next| next.kind == UNSENT);
+        (event.kind == SEND && !never_sent).then_some(event)
+    })
 }
 
 /// Exit `BLOCKED`, printing the pending question and its numbered choices on
@@ -812,6 +841,38 @@ mod tests {
             Event::new("message_start", json!({ "role": "user" })),
         ];
         assert!(queued(pi.as_ref(), &steered).is_empty());
+    }
+
+    #[test]
+    fn a_send_that_never_reached_the_vendor_is_not_queued() {
+        let claude = crate::vendor::hooks_for("claude");
+        let sent = |text: &str| Event::new(SEND, json!({ "text": text }));
+        let unsent = |text: &str| Event::new(UNSENT, json!({ "text": text }));
+        let working = Event::new("UserPromptSubmit", json!({}));
+        assert!(
+            queued(
+                claude.as_ref(),
+                &[
+                    working.clone(),
+                    sent("and the linter"),
+                    unsent("and the linter")
+                ]
+            )
+            .is_empty()
+        );
+        // The send after it still counts.
+        assert_eq!(
+            queued(
+                claude.as_ref(),
+                &[
+                    working,
+                    sent("and the linter"),
+                    unsent("and the linter"),
+                    sent("again")
+                ]
+            ),
+            ["again"]
+        );
     }
 
     #[test]

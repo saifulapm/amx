@@ -199,6 +199,71 @@ fn send_to_an_agent_working_only_on_its_background_agents_is_not_queued() {
     );
 }
 
+/// A folder holding a `tmux` that fails every `send-keys ... Enter` and hands
+/// every other call to the real one.
+fn a_tmux_that_drops_the_enter(amx: &Harness) -> std::path::PathBuf {
+    let real = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|dir| std::path::Path::new(dir).join("tmux"))
+        .find(|tmux| tmux.is_file())
+        .expect("a tmux on PATH");
+    let bin = amx.home().join("drops-the-enter");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("tmux");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             for arg; do last=$arg; done\n\
+             case \" $* \" in *' send-keys '*) [ \"$last\" = Enter ] && exit 1 ;; esac\n\
+             exec {} \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    let mut mode = std::fs::metadata(&script).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&script, mode).unwrap();
+    bin
+}
+
+#[test]
+fn a_send_whose_enter_failed_leaves_no_turn_open_and_its_words_held() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    amx.play(id, "takes-a-message-on-enter");
+    amx.until_state(id, "idle");
+
+    let bin = a_tmux_that_drops_the_enter(&amx);
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let out = amx
+        .amx_command(&["send", id, "and now the linter"])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("not submitted"), "{}", stderr(&out));
+
+    // No turn is waited on: the answer is the one before the send.
+    let started = std::time::Instant::now();
+    let out = amx.amx(&["result", id, "--timeout", "5"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "the tests pass now");
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+
+    // Nothing is queued, and the words sitting in the input are named.
+    let status = common::status(&amx, id);
+    assert_eq!(status["queued"], json!([]), "{status}");
+    let out = amx.amx(&["send", id, "again"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("and now the linter"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn send_takes_the_text_from_a_file() {
     // The pane gets the file's contents, not its path.

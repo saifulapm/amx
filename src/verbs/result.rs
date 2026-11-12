@@ -304,22 +304,31 @@ impl Turns {
 /// The first ending of an open turn counts; a vendor Stop arriving after an
 /// interrupt does not change it. Only a message makes the previous answer
 /// stale. What counts as an ending is [`a_turn_ended`].
+///
+/// A send that [`send::UNSENT`] follows never reached the vendor, so the fold
+/// goes back to where it stood before that send.
 #[derive(Debug, Clone, Copy)]
 struct Fold {
     ended: Ended,
     open: bool,
+    /// `ended` and `open` before the last send.
+    before: (Ended, bool),
 }
 
 impl Fold {
     const START: Fold = Fold {
         ended: Ended::Turn,
         open: true,
+        before: (Ended::Turn, true),
     };
 
     fn step(&mut self, hooks: Option<&Hooks>, event: &Event) {
         if event.kind == send::SEND {
+            self.before = (self.ended, self.open);
             self.ended = Ended::NotYet;
             self.open = true;
+        } else if event.kind == send::UNSENT {
+            (self.ended, self.open) = self.before;
         } else if a_turn_ended(hooks, event) {
             if self.open {
                 self.ended = match cut_short(event) {
@@ -552,6 +561,28 @@ mod tests {
             claudes(&log(&[derive::READ_TURN_END, send::SEND])),
             Ended::NotYet,
             "and one that ended before the message is the turn before it"
+        );
+    }
+
+    #[test]
+    fn a_send_that_never_reached_the_vendor_opens_no_turn() {
+        use crate::verbs::send::UNSENT;
+        // The answer before it still stands.
+        assert_eq!(claudes(&log(&["Stop", send::SEND, UNSENT])), Ended::Turn);
+        assert_eq!(
+            claudes(&log(&[send::SEND, INTERRUPT, send::SEND, UNSENT])),
+            Ended::Interrupted
+        );
+        // A turn still open stays open.
+        assert_eq!(
+            claudes(&log(&["UserPromptSubmit", send::SEND, UNSENT])),
+            Ended::Turn,
+            "the spawn task's turn, never ended, answers with what it left"
+        );
+        // And the next send opens one as before.
+        assert_eq!(
+            claudes(&log(&["Stop", send::SEND, UNSENT, send::SEND])),
+            Ended::NotYet
         );
     }
 

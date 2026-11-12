@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::store::{Agent, Event};
 use crate::vendor::{Hooks, Moment};
-use crate::verbs::send::SEND;
+use crate::verbs::send::{SEND, UNSENT};
 use crate::{exit, paths, store};
 
 /// How often `--follow` polls: the resolution of the recorded timestamps.
@@ -194,7 +194,7 @@ fn clock(at: u64) -> String {
 fn detail(hooks: Option<&Hooks>, event: &Event) -> String {
     let payload = &event.payload;
     let about = match event.kind.as_str() {
-        SEND => text(&payload["text"]),
+        SEND | UNSENT => text(&payload["text"]),
         "answer" => text(&payload["key"]),
         "exit" => match payload["code"].as_i64() {
             Some(code) => format!("code {code}"),

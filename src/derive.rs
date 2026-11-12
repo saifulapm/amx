@@ -1067,6 +1067,11 @@ fn write_the_reading(agent: &Agent, state: &mut State, verdict: &Verdict, said: 
             }
             crossed = boundary(current.state, verdict.phase);
             current.state = verdict.phase;
+            // What a failed Enter left in the composer went out with this
+            // prompt, as a reporting vendor's prompt hook says.
+            if crossed == Some(READ_PROMPT) {
+                current.composer_holds.clear();
+            }
             if crossed == Some(READ_TURN_END) {
                 the_line_goes_with_the_turn(current);
                 if let Some(said) = said {
@@ -5375,6 +5380,32 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             wants_a_line(&running),
             "so the finished turn is asked about, as a turn with no rewrite on it is"
         );
+    }
+
+    #[test]
+    fn reader_lets_go_of_the_words_a_failed_enter_held_once_it_sees_a_turn_begin() {
+        // A vendor without hooks has no prompt event to clear them; the turn a
+        // reader sees begin took them, or the person cleared them.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(&root);
+        let mut idle = agent
+            .writer()
+            .unwrap()
+            .update_state(|state| {
+                state.state = Phase::Idle;
+                state.composer_holds = vec!["and the linter".to_string()];
+            })
+            .unwrap();
+
+        write_the_reading(
+            &agent,
+            &mut idle,
+            &verdict(Phase::Working, Evidence::Screen, Some("spinner")),
+            None,
+        );
+
+        assert!(agent.state().unwrap().composer_holds.is_empty());
+        assert_eq!(agent.events().unwrap()[0].kind, READ_PROMPT);
     }
 
     /// A claude agent's record on disk, at `state`.
