@@ -2,22 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": null,
-      "body": "+++\nby = \"agent\"\ncreated = \"2026-11-12T10:02:43.141829164Z\"\nid = \"01M77KBAN7TMJ9Q0Q8N7FBN3WK\"\nkind = \"ruling\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:02:43.141829164Z\"\nproject = \"amx\"\ntitle = \"safe-sweep t2: the view's ctrl+x shares clear::forget_row, so it also deletes an empty amx branch…\"\n+++\n\nsafe-sweep t2: the view's ctrl+x shares clear::forget_row, so it also deletes an empty amx branch; an explicit --branch keep on stop --delete wins\n",
-      "id": "01M77KBAN7XNQ4N2FSGGX5CMAG",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KBAN7TMJ9Q0Q8N7FBN3WK.md"
-    },
-    {
-      "base": "01M77K5DCRTR5K4MF6V8WHQ73D",
-      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [x] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [ ] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [ ] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
-      "id": "01M77KBAPC80XW8A0S9SDXDAZ8",
+      "base": "01M77KBAPC80XW8A0S9SDXDAZ8",
+      "body": "# plan: safe-sweep\n\n- [x] t0 Take the help screen's counts from HELP itself, enforcing the help-table lesson\n- [x] t1 Read a branch as merged into main only when it has a commit beyond its base, in sweep, clear and the view's c\n- [x] t2 clear and stop --delete delete an amx-named branch with no commits of its own  [after: t1]\n- [x] t3 Sweep reads each candidate again under its writer and keeps one that is working again, taking the rest  [after: t1]\n- [ ] t4 ls's record sweep and clear keep a record when tmux cannot be asked\n- [ ] t5 A cap count skips a record removed mid-count\n",
+      "id": "01M77KHR701R8KR880SRSW1917",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T10:02:43.320793205Z\"\nid = \"01M77KBATX70WSV7KEBH502DVJ\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:02:43.320793205Z\"\nproject = \"amx\"\ntitle = \"t2 landed: clear and stop --delete delete an empty amx branch (f51bd2d)\"\n+++\n\nt2 landed: clear and stop --delete delete an empty amx branch (f51bd2d)\n",
-      "id": "01M77KBATXQ1PC9YPNG4TBRAXW",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KBATX70WSV7KEBH502DVJ.md"
+      "body": "+++\ncreated = \"2026-11-12T10:06:13.768796396Z\"\nid = \"01M77KHRBD5JGKD6EJRH794MFM\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T10:06:13.768796396Z\"\nproject = \"amx\"\ntitle = \"t3 landed: sweep re-reads each candidate under its writer (b1659ab)\"\n+++\n\nt3 landed: sweep re-reads each candidate under its writer (b1659ab)\n",
+      "id": "01M77KHRBE3FZAWVP9TYDEJ5MT",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77KHRBD5JGKD6EJRH794MFM.md"
     }
   ]
 }
