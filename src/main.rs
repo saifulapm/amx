@@ -467,6 +467,144 @@ mod tests {
         )));
     }
 
+    /// Every place outside tests that reads a record's own phase or the time
+    /// it entered it, with what covers it when the reading disagrees with the
+    /// record: a test that builds such a pair, or why a disagreement cannot
+    /// mislead it.
+    ///
+    /// A prompt only the screen shows leaves the record working since before
+    /// it, and a pane that died leaves it working over a stopped verdict. Two
+    /// rules tested only on agreeing pairs were wrong (timed sleep's early
+    /// wake, sweep's second reading).
+    const RECORDED_PHASE_READS: [(&str, &str, &str); 8] = [
+        (
+            "src/tui/rows.rs",
+            "view.state.since,",
+            "a timed sleep also wakes on the verdict's own change, \
+             test arranged_a_question_read_off_the_screen_ends_a_timed_sleep_too; \
+             the idle shelve counts from the last change the record knows",
+        ),
+        (
+            "src/tui/rows.rs",
+            "shelves(self.shelved.get(view.id()), view.phase(), view.state.since)",
+            "a mark holds only while the verdict says the turn is over, and an older \
+             since only keeps it",
+        ),
+        (
+            "src/tui/rows.rs",
+            "view.state.last_event.max(view.state.since)",
+            "shown as an age, decides nothing",
+        ),
+        (
+            "src/derive.rs",
+            "\"since\": self.state.since,",
+            "printed beside the verdict's own age, decides nothing",
+        ),
+        (
+            "src/derive.rs",
+            "let alive = if record.state.state.is_terminal() {",
+            "a finished record is final whatever its pane shows",
+        ),
+        (
+            "src/verbs/statusline.rs",
+            ".filter(|record| !record.state.state.is_terminal())",
+            "a finished record is final whatever its pane shows",
+        ),
+        (
+            "src/verbs/doctor.rs",
+            "view.state.state == Phase::Starting && view.phase() == Phase::Unknown",
+            "asks for the disagreement itself",
+        ),
+        (
+            "src/verbs/sweep.rs",
+            "let (seq, was) = (listed.state.seq, listed.state.state);",
+            "test sweep_takes_a_candidate_whose_record_says_working_over_a_pane_that_died",
+        ),
+    ];
+
+    /// The production code of every source file under `src`, by path.
+    fn production_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let code = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+                    let name = path
+                        .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap()
+                        .display()
+                        .to_string();
+                    found.push((name, code.to_string()));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        found
+    }
+
+    #[test]
+    fn every_read_of_a_records_own_phase_says_what_covers_a_reading_that_disagrees() {
+        let sources = production_sources();
+        let mut unlisted = Vec::new();
+        for (file, code) in &sources {
+            // Test modules in their own file are test code.
+            if file.ends_with("tests.rs") {
+                continue;
+            }
+            for line in code.lines() {
+                let reads = [".state.state", ".state.since"].iter().any(|field| {
+                    line.match_indices(field).any(|(at, _)| {
+                        !line[at + field.len()..]
+                            .starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    })
+                });
+                let line = line.trim();
+                if reads
+                    && !RECORDED_PHASE_READS
+                        .iter()
+                        .any(|(listed, read, _)| listed == file && line.contains(read))
+                {
+                    unlisted.push(format!("{file}: {line}"));
+                }
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "these read the record's phase or its since, which a reading of the \
+             screen can disagree with; use the view's phase, or add each to \
+             RECORDED_PHASE_READS with a test that builds a verdict over a record \
+             that disagrees (a Stopped verdict over a Working record, a Waiting \
+             one over Working):\n{}",
+            unlisted.join("\n")
+        );
+
+        for (file, read, covered) in RECORDED_PHASE_READS {
+            let code = &sources.iter().find(|(name, _)| name == file).unwrap().1;
+            assert!(code.contains(read), "{file} no longer reads `{read}`");
+            for (at, _) in covered.match_indices("test ") {
+                let test: String = covered[at + 5..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                let whole = std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file),
+                )
+                .unwrap();
+                assert!(
+                    whole.contains(&format!("fn {test}()")),
+                    "{file}: `{read}` names a test it does not hold: {test}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_verb_that_cannot_reach_its_agent_fails_with_the_reason() {
         assert_eq!(finish(Ok(exit::BLOCKED)), exit::BLOCKED);
