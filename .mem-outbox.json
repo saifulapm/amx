@@ -2,16 +2,16 @@
   "machine": "cloud-vm",
   "writes": [
     {
-      "base": "01M77SBTPP83NTRMWB7QYFBM45",
-      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [ ] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [ ] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [ ] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [ ] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
-      "id": "01M77SJGA4VMS1E8RTQSFMPYP4",
+      "base": "01M77SJGA4VMS1E8RTQSFMPYP4",
+      "body": "# plan: marks-survive\n\n- [x] t0 A test lists every read of a record's own phase or since outside test code, each with the disagreeing-pair test that covers it, and goes red on a new one\n- [x] t1 A view.json top-level field that does not read (vendor, statusline, sent, one bad sent line) costs that field only; pins survive for the idle park\n- [x] t2 A view.json that exists and does not parse, or whose arrangement does not read, is never written over by a pin, a sent line or a quit, and the keys row says so  [after: t1]\n- [ ] t3 A forge that cannot be asked writes nothing and leaves pr.json's requests and merged heads, without asking again before FRESH; an empty answer still clears\n- [ ] t4 A question kind or answer source this build does not know reads as unknown: the agent lists, result prints, answer refuses or answers by the options shown\n- [ ] t5 A rewrite of state.json or meta.json keeps the keys this build does not know, through hooks, readings, rename and stop  [after: t4]\n",
+      "id": "01M77SNNSMCNHZGQFMT4CP7PC4",
       "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
     },
     {
       "base": null,
-      "body": "+++\ncreated = \"2026-11-12T11:51:29.909892311Z\"\nid = \"01M77SJGG3P9NDJFM1VD0CMHJ5\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:51:29.909892311Z\"\nproject = \"amx\"\ntitle = \"t1 landed: view.json top-level fields read alone, bad sent lines skipped, unknown keys carried\"\n+++\n\nt1 landed: view.json top-level fields read alone, bad sent lines skipped, unknown keys carried\n",
-      "id": "01M77SJGG33B8VCZSV3RMDHXG8",
-      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77SJGG3P9NDJFM1VD0CMHJ5.md"
+      "body": "+++\ncreated = \"2026-11-12T11:53:13.836345711Z\"\nid = \"01M77SNNZBXSE80D7SDK0HM1Q7\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T11:53:13.836345711Z\"\nproject = \"amx\"\ntitle = \"t2 landed: an unreadable view.json is never written over; keys row says marks are not saved\"\n+++\n\nt2 landed: an unreadable view.json is never written over; keys row says marks are not saved\n",
+      "id": "01M77SNNZBA5FX0K918YSY3652",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77SNNZBXSE80D7SDK0HM1Q7.md"
     }
   ]
 }
