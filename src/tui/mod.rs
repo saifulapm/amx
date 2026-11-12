@@ -917,7 +917,7 @@ const STATUSLINE: &str = "set -g status-right '#(amx statusline) | %H:%M'";
 /// Printed for the user to paste, never written to their tmux config, and
 /// only once.
 fn offer_the_statusline(path: &Path) -> Option<String> {
-    let mut remembered = Remembered::read(path);
+    let mut remembered = Remembered::to_change(path)?;
     if remembered.statusline {
         return None;
     }
@@ -954,13 +954,26 @@ struct Remembered {
     later: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Said on the keys row when a change is not saved because the view file
+/// does not read.
+const UNREADABLE: &str = "view.json does not read; marks are not saved";
+
 impl Remembered {
     /// The file's contents, or the defaults if it is missing or unparseable.
     fn read(path: &Path) -> Remembered {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        Remembered::to_change(path).unwrap_or_default()
+    }
+
+    /// The file's contents to change and write back: the defaults if it is
+    /// missing, `None` if it is there and does not parse, or its arrangement
+    /// does not read. Writing then would lose every mark in it, so it waits
+    /// until the file reads again or is removed.
+    fn to_change(path: &Path) -> Option<Remembered> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Remembered::default()),
+            Err(_) => None,
+        }
     }
 
     /// Write the whole file atomically, so a concurrent reader sees the old
@@ -3210,7 +3223,12 @@ impl Screen {
         let Some(path) = self.remembering.clone().filter(|_| changed) else {
             return;
         };
-        let mut remembered = Remembered::read(&path);
+        let Some(mut remembered) = Remembered::to_change(&path) else {
+            // `published` stays as it was, so the change is still this view's
+            // own when the file reads again.
+            self.notice = Some(Notice::Refused(UNREADABLE.to_string()));
+            return;
+        };
         let disk = remembered.arrangement.clone();
         remembered.arrangement =
             Arrangement::merged(&self.published, &self.list.arrangement(), &disk);
@@ -3294,7 +3312,10 @@ impl Screen {
         let Some(path) = self.remembering.clone() else {
             return;
         };
-        let mut remembered = Remembered::read(&path);
+        let Some(mut remembered) = Remembered::to_change(&path) else {
+            self.notice = Some(Notice::Refused(UNREADABLE.to_string()));
+            return;
+        };
         remembered.sent = self.sent.clone();
         let _ = remembered.write(&path);
     }

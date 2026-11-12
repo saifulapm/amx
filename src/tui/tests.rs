@@ -1957,6 +1957,72 @@ fn remembered_a_field_that_does_not_read_costs_that_field_and_not_the_marks() {
 }
 
 #[test]
+fn remembered_a_file_that_does_not_read_is_never_written_over() {
+    let state = TempDir::new().unwrap();
+    let path = state.path().join("view.json");
+    let fleet = || {
+        vec![
+            reading("one-a1b", Phase::Working, State::default()),
+            reading("two-b2c", Phase::Working, State::default()),
+        ]
+    };
+    for said in [
+        &b"{\"arrangement\":"[..],
+        br#"{"arrangement":7,"vendor":true}"#,
+        b"not a view file",
+    ] {
+        std::fs::write(&path, said).unwrap();
+        let mut screen = Screen {
+            root: state.path().to_path_buf(),
+            remembering: Some(path.clone()),
+            ..watching(fleet())
+        };
+        screen.adopt_the_view();
+        assert_eq!(wall(&screen), ["Working", "one-a1b", "two-b2c"]);
+
+        screen.list.top();
+        while screen.list.selected().is_none() {
+            screen.list.down();
+        }
+        let before = screen.list.arrangement();
+        assert!(screen.list.hold_or_let_go());
+        screen.changed(before, "pin", "pinned");
+        assert_eq!(std::fs::read(&path).unwrap(), said, "a pin writes nothing");
+        assert!(
+            matches!(
+                &screen.notice,
+                Some(Notice::Refused(why)) if why == "view.json does not read; marks are not saved"
+            ),
+            "and says so as a refusal"
+        );
+        assert!(
+            screen.list.arrangement().has_pinned("one-a1b"),
+            "while this view still shows the pin"
+        );
+
+        screen.remember_line(&Asking::Task, "port the importer");
+        assert_eq!(std::fs::read(&path).unwrap(), said, "nor does a sent line");
+        assert_eq!(offer_the_statusline(&path), None);
+        assert_eq!(std::fs::read(&path).unwrap(), said, "nor a quit");
+    }
+
+    // Once the file is gone, the next pin writes one.
+    std::fs::remove_file(&path).unwrap();
+    let mut screen = Screen {
+        root: state.path().to_path_buf(),
+        remembering: Some(path.clone()),
+        ..watching(fleet())
+    };
+    screen.list.top();
+    while screen.list.selected().is_none() {
+        screen.list.down();
+    }
+    assert!(screen.list.hold_or_let_go());
+    screen.keep(true);
+    assert!(Remembered::read(&path).arrangement.has_pinned("one-a1b"));
+}
+
+#[test]
 fn remembered_a_key_this_build_does_not_know_is_written_back() {
     let state = TempDir::new().unwrap();
     let path = state.path().join("view.json");
