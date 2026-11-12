@@ -4757,6 +4757,37 @@ fn keys_c_lists_a_row_that_made_no_commit_by_its_phase_and_takes_its_branch() {
     );
 }
 
+#[test]
+fn keys_c_keeps_the_branch_of_a_row_whose_commit_went_nowhere() {
+    let root = TempDir::new().unwrap();
+    let repo = a_repo();
+    let config = Config::default();
+    let view = did_nothing(root.path(), repo.path(), "fix-login-a1b");
+    let tree = view.meta.worktree.clone().unwrap();
+    std::fs::write(tree.join("login.rs"), "fn login() {}\n").unwrap();
+    git(&tree, &["add", "login.rs"]);
+    git(&tree, &["commit", "-m", "the agent's own commit"]);
+    let mut screen = watching(vec![view]);
+
+    screen.act(c(), root.path(), &config, None).unwrap();
+    screen.act(c(), root.path(), &config, None).unwrap();
+    assert!(crate::store::list(root.path()).unwrap().is_empty());
+    assert!(!tree.exists(), "the tree goes");
+    assert_eq!(
+        git(
+            repo.path(),
+            &[
+                "branch",
+                "--list",
+                "amx/fix-login-a1b",
+                "--format=%(refname:short)"
+            ]
+        ),
+        "amx/fix-login-a1b",
+        "and the branch stands, holding the one commit main does not have"
+    );
+}
+
 /// The arming window is five seconds, long enough to read a wall of reasons
 /// before pressing again.
 #[test]

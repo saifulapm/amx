@@ -185,13 +185,16 @@ fn settled(prs: &[Pr]) -> Option<String> {
 /// The branch was merged into the main line without a request.
 ///
 /// git lists a branch still at its base as merged, so the branch must also
-/// hold a commit beyond the base the record names; a record with no base
-/// cannot show one. The cheap `--merged` check runs first, since the view
-/// asks this on every reading.
+/// hold a commit beyond the base the record names, and its reflog must say
+/// one was made on it, since a branch that only caught up with main holds
+/// main's commits. A record with no base, or a reflog that cannot say, is
+/// not merged. The cheap `--merged` check runs first, since the view asks
+/// this on every reading.
 fn in_the_main_line(meta: &Meta, branch: &str) -> Option<String> {
     let repo = repository(meta);
     let merged = worktree::is_merged(&repo, branch).ok()?
-        && worktree::commits_since(&repo, meta.base.as_deref()?, branch).ok()? > 0;
+        && worktree::commits_since(&repo, meta.base.as_deref()?, branch).ok()? > 0
+        && worktree::committed_on(&repo, branch);
     merged.then(|| format!("{branch} merged into {}", worktree::main_branch(&repo)))
 }
 
@@ -697,6 +700,52 @@ mod tests {
             said.contains("fix-login-a1b  amx/fix-login-a1b merged into main"),
             "one commit that main took is work that landed: {said}"
         );
+    }
+
+    #[test]
+    fn sweep_never_reads_a_branch_that_only_caught_up_with_main_as_merged() {
+        // An idle agent that pulled main has commits beyond its base, none of
+        // them its own.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_fresh_agent(root.path(), repo.path(), "caught-up-a1b");
+        std::fs::write(repo.path().join("main.rs"), "fn main() {}\n").unwrap();
+        git(repo.path(), &["add", "main.rs"]);
+        git(repo.path(), &["commit", "-m", "main moves on"]);
+        let tree = meta.worktree.as_deref().unwrap();
+        git(tree, &["merge", "-q", "--ff-only", "main"]);
+
+        assert_eq!(swept(root.path(), false, "y\n"), "nothing to sweep\n");
+    }
+
+    #[test]
+    fn sweep_reads_an_own_commit_main_fast_forwarded_to_as_merged() {
+        // The same shape as a branch that caught up, told apart by the
+        // branch's reflog, which says the agent committed.
+        let root = TempDir::new().unwrap();
+        let repo = a_repo();
+        let meta = a_fresh_agent(root.path(), repo.path(), "fix-login-a1b");
+        let tree = meta.worktree.as_deref().unwrap();
+        std::fs::write(tree.join("login.rs"), "fn login() {}\n").unwrap();
+        git(tree, &["add", "login.rs"]);
+        git(tree, &["commit", "-m", "the agent's own commit"]);
+        git(repo.path(), &["merge", "-q", "amx/fix-login-a1b"]);
+        assert!(
+            swept(root.path(), false, "n\n")
+                .contains("fix-login-a1b  amx/fix-login-a1b merged into main")
+        );
+
+        // A reflog git has expired cannot say, so nothing is taken on it.
+        git(
+            repo.path(),
+            &[
+                "reflog",
+                "expire",
+                "--expire=now",
+                "refs/heads/amx/fix-login-a1b",
+            ],
+        );
+        assert_eq!(swept(root.path(), false, "y\n"), "nothing to sweep\n");
     }
 
     /// Output that runs `meanwhile` once, as soon as the list starts to be

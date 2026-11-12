@@ -320,6 +320,24 @@ pub fn commits_since(repo: &Path, base: &str, branch: &str) -> Result<usize> {
         .with_context(|| format!("counting the commits on {branch} since {base}"))
 }
 
+/// Whether `branch`'s own reflog records a commit made on it.
+///
+/// A branch fast-forwarded to main and main fast-forwarded to a commit made
+/// on the branch have the same shape; only the reflog tells them apart. An
+/// empty, expired or unreadable reflog is false.
+pub fn committed_on(repo: &Path, branch: &str) -> bool {
+    git(
+        repo,
+        &[
+            "reflog",
+            "show",
+            "--format=%gs",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok_and(|log| log.lines().any(|entry| entry.starts_with("commit")))
+}
+
 /// The repository's main line: `origin/HEAD` when set, else `main` if it
 /// exists, else `master`.
 ///
