@@ -37,7 +37,7 @@ pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
         .into_iter()
         .filter(|record| !record.state.state.is_terminal())
         .collect();
-    let phases: Vec<Phase> = derive::views_of(root, live, now)
+    let phases: Vec<Phase> = derive::views_of(root, live, now, derive::Wants::Card)
         .iter()
         .map(View::phase)
         .collect();

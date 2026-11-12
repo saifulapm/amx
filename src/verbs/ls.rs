@@ -32,7 +32,7 @@ pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Writ
         .into_iter()
         .filter(|record| scope.covers(&record.meta))
         .collect();
-    let views = derive::views_of(root, records, now);
+    let views = derive::views_of(root, records, now, derive::Wants::Card);
     if json {
         let listed: Vec<_> = views.iter().map(View::json).collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&listed)?)?;

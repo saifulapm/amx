@@ -1,0 +1,67 @@
+# A running turn whose hooks land every second for 30 s, with claude's
+# spinner line on the screen the whole time.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "port the importer"}
+print I'll port the importer.
+print ✽ Porting… (15s · still thinking with xhigh effort)
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+sleep 1000
+sleep 600000

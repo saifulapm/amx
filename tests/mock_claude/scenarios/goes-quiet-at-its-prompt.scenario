@@ -1,0 +1,11 @@
+# A turn whose hooks stop before it ends: its prompt comes back with no Stop
+# hook, so only the screen says the turn is over.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "port the importer"}
+hook PreToolUse {"tool_name": "Bash", "tool_input": {"command": "cargo test"}}
+print ✽ Porting… (15s · still thinking with xhigh effort)
+sleep 2000
+print \033[2J\033[H● the importer is ported
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

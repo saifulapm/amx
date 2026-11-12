@@ -319,3 +319,38 @@ fn result_prints_an_answer_from_a_source_a_newer_amx_named() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "fixed the login bug\n");
 }
+
+#[test]
+fn a_wait_on_working_agents_whose_hooks_are_fresh_captures_no_pane() {
+    let amx = Harness::new();
+    let ids = ["port-import-a1b", "port-import-b2c", "port-import-c3d"];
+    for id in ids {
+        amx.play(id, "reports-every-second");
+    }
+    for id in ids {
+        amx.until_state(id, "working");
+    }
+
+    let (bin, log) = common::a_logging_tmux(&amx);
+    let out = amx
+        .amx_command(&[&["wait"], &ids[..], &["--timeout", "10"]].concat())
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&out),
+        3,
+        "still working at the deadline: {}",
+        stderr(&out)
+    );
+    assert!(
+        !common::calls(&log).is_empty(),
+        "the stand-in was the tmux it ran"
+    );
+    assert_eq!(
+        common::calls_to(&log, "capture-pane"),
+        0,
+        "{:?}",
+        common::calls(&log)
+    );
+}

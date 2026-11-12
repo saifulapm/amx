@@ -70,7 +70,8 @@ pub fn run(
     let mut turns = Turns::of(root, id)?;
 
     loop {
-        let view = derive::view(root, id, store::now())?;
+        // No spinner line: a waiter branches on the phase alone.
+        let view = derive::view_for(root, id, store::now(), derive::Wants::Phase)?;
         let phase = view.phase();
         match settled(phase, turns.ended(phase)) {
             Settled::Answer => return answer(&view, to_terminal, out),

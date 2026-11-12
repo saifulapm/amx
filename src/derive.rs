@@ -522,11 +522,23 @@ fn wants_the_question(screens: &Ruleset, state: &State) -> bool {
             .is_none_or(|question| placeholder(screens, question))
 }
 
+/// What a reading is for, which decides whether a working agent's pane is
+/// captured for its spinner line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wants {
+    /// Everything a card or a row shows, the spinner line's words included.
+    Card,
+    /// The phase and the question alone: what a caller waiting on a turn
+    /// branches on. A fresh record of a working agent costs no capture.
+    Phase,
+}
+
 /// Whether reading this agent needs a capture of its pane.
 ///
 /// [`read`] asks the same questions off the record alone, so a wall can batch
 /// every wanted capture into one tmux call (see [`Server::captures`]). The two
-/// must agree; a test checks it.
+/// must agree for [`Wants::Card`]; a test checks it. [`Wants::Phase`] leaves
+/// out only the spinner line, which [`read`] does without.
 ///
 /// A command's pane is always wanted: nothing else reports on it.
 fn wants_the_screen(
@@ -536,6 +548,7 @@ fn wants_the_screen(
     alive: bool,
     now: u64,
     heartbeat: Option<u64>,
+    wants: Wants,
 ) -> bool {
     if state.state.is_terminal() || !alive {
         return false;
@@ -544,7 +557,8 @@ fn wants_the_screen(
         return true;
     }
     if !cut_short(state) && now.saturating_sub(heard(state, heartbeat)) <= FRESH {
-        return wants_the_question(screens, state) || wants_the_doing(screens, state);
+        return wants_the_question(screens, state)
+            || wants == Wants::Card && wants_the_doing(screens, state);
     }
     true
 }
@@ -1706,8 +1720,13 @@ fn the_turn_so_far(meta: &Meta) -> Option<String> {
     (!said.trim().is_empty()).then_some(said)
 }
 
-/// Reads one agent.
+/// Reads one agent, everything its card shows.
 pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
+    view_for(root, id, now, Wants::Card)
+}
+
+/// Reads one agent for what `wants` needs.
+pub fn view_for(root: &Path, id: &str, now: u64, wants: Wants) -> Result<View> {
     let agent = Agent::open(root, id)?;
     let meta = agent.meta()?;
     let state = agent.state()?;
@@ -1735,6 +1754,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
         alive,
         now,
         beat,
+        wants,
     )
     .then(|| server.capture(&meta.pane).ok())
     .flatten();
@@ -1823,7 +1843,7 @@ struct Pending {
 
 /// Reads every agent, oldest first.
 pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
-    Ok(views_of(root, records(root)?, now))
+    Ok(views_of(root, records(root)?, now, Wants::Card))
 }
 
 /// [`views`] over records already read.
@@ -1831,7 +1851,7 @@ pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
 /// Two passes with one round of tmux between them: one pane listing per
 /// server, then one capture call per server for every screen needed. Each
 /// record is read against its own vendor's screens.
-pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
+pub fn views_of(root: &Path, records: Vec<Record>, now: u64, wants: Wants) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
     let mut listings = crate::tmux::Listings::default();
     let mut views = Vec::new();
@@ -1860,7 +1880,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
         });
     }
 
-    let mut screens = screens_of(&pending, now);
+    let mut screens = screens_of(&pending, now, wants);
     for (at, item) in pending.into_iter().enumerate() {
         let Pending {
             record,
@@ -1879,7 +1899,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<View> {
 /// The screens the readings need, captured a server at a time and indexed
 /// like `pending`. Unwanted screens and panes gone since the listing are
 /// `None`.
-fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
+fn screens_of(pending: &[Pending], now: u64, wants: Wants) -> Vec<Option<String>> {
     let mut screens: Vec<Option<String>> = vec![None; pending.len()];
     let mut wanted: Vec<(crate::tmux::Socket, Vec<usize>)> = Vec::new();
 
@@ -1892,6 +1912,7 @@ fn screens_of(pending: &[Pending], now: u64) -> Vec<Option<String>> {
             item.alive,
             now,
             item.beat,
+            wants,
         ) {
             continue;
         }
@@ -2660,7 +2681,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             false,
             true,
             1_001,
-            None
+            None,
+            Wants::Card
         ));
         assert!(wants_the_screen(
             rules::of("pi"),
@@ -2668,7 +2690,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
             false,
             true,
             1_001,
-            None
+            None,
+            Wants::Card
         ));
     }
 
@@ -3133,6 +3156,27 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         asked.get()
     }
 
+    /// A reading of this record off a screen, or with none taken.
+    fn read_off(
+        meta: &Meta,
+        state: &State,
+        alive: bool,
+        now: u64,
+        heartbeat: Option<u64>,
+        taken: bool,
+    ) -> Reading {
+        conclude(
+            meta,
+            state,
+            alive,
+            || taken.then(|| A_BLOCKING_SCREEN.to_string()),
+            rules::of("claude"),
+            now,
+            1,
+            heartbeat,
+        )
+    }
+
     #[test]
     fn reader_says_which_readings_need_a_pane_before_it_takes_one() {
         // A wall works out which screens it wants from the records before
@@ -3192,13 +3236,37 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                                     runs_a_command(meta, record),
                                     alive,
                                     now,
-                                    beat
+                                    beat,
+                                    Wants::Card
                                 ),
                                 looked_at_the_pane(meta, record, alive, now, beat),
                                 "{} under {:?} alive={alive} at {now} beating {beat:?}",
                                 record.state,
                                 meta.agent
                             );
+                            // A waiter takes fewer screens, and reads the same
+                            // phase and question without the ones it skips.
+                            if !wants_the_screen(
+                                own_screens(meta),
+                                record,
+                                runs_a_command(meta, record),
+                                alive,
+                                now,
+                                beat,
+                                Wants::Phase,
+                            ) {
+                                let (seen, unseen) = (
+                                    read_off(meta, record, alive, now, beat, true),
+                                    read_off(meta, record, alive, now, beat, false),
+                                );
+                                assert_eq!(
+                                    (seen.verdict, seen.asking),
+                                    (unseen.verdict, unseen.asking),
+                                    "{} under {:?} alive={alive} at {now} beating {beat:?}",
+                                    record.state,
+                                    meta.agent
+                                );
+                            }
                         }
                     }
                 }
@@ -5603,6 +5671,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             true,
             1_045,
             agent.heartbeat(),
+            Wants::Card,
         ));
     }
 

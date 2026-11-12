@@ -112,7 +112,7 @@ fn readings(root: &Path, ids: &[&str]) -> Result<Vec<View>> {
         let state = agent.state()?;
         records.push(Record { agent, meta, state });
     }
-    let mut views = derive::views_of(root, records, store::now());
+    let mut views = derive::views_of(root, records, store::now(), derive::Wants::Phase);
     ids.iter()
         .map(|id| {
             let at = views

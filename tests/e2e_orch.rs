@@ -951,3 +951,62 @@ fn the_orchestration_verbs_say_so_when_there_is_no_such_agent() {
         );
     }
 }
+
+#[test]
+fn a_wait_on_a_working_agent_whose_hooks_are_fresh_captures_no_pane() {
+    let amx = Harness::new();
+    let id = "port-import-b2c";
+    amx.play(id, "reports-every-second");
+    amx.until_state(id, "working");
+
+    let (bin, log) = common::a_logging_tmux(&amx);
+    let out = amx
+        .amx_command(&["result", id, "--timeout", "10"])
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&out),
+        3,
+        "still working at the deadline: {}",
+        stderr(&out)
+    );
+    assert!(
+        !common::calls(&log).is_empty(),
+        "the stand-in was the tmux it ran"
+    );
+    assert_eq!(
+        common::calls_to(&log, "capture-pane"),
+        0,
+        "the hooks say it is working, and the spinner line is no answer: {:?}",
+        common::calls(&log)
+    );
+
+    // The card still reads the spinner line off the same pane.
+    let view = amx.in_a_terminal(&[], &[]);
+    common::card_on(&amx, &view, id);
+    amx.until("the spinner line on the card", || {
+        amx.capture(&view).contains("Porting").then_some(())
+    });
+}
+
+#[test]
+fn a_wait_on_an_agent_whose_hooks_went_quiet_ends_on_its_idle_screen() {
+    let amx = Harness::new();
+    let id = "port-import-b2c";
+    amx.play(id, "goes-quiet-at-its-prompt");
+    amx.until_state(id, "working");
+
+    let (bin, log) = common::a_logging_tmux(&amx);
+    let out = amx
+        .amx_command(&["result", id, "--timeout", "40"])
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .unwrap();
+    assert_ne!(code(&out), 3, "the screen ended the turn: {}", stderr(&out));
+    assert!(
+        common::calls_to(&log, "capture-pane") > 0,
+        "once the hooks went quiet the pane was read again"
+    );
+    assert_eq!(common::status(&amx, id)["state"], "idle");
+}

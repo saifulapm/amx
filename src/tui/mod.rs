@@ -1402,7 +1402,7 @@ impl Screen {
             .filter(|record| scope.covers(&record.meta))
             .collect();
         let now = now();
-        let views = derive::views_of(root, records, now);
+        let views = derive::views_of(root, records, now, derive::Wants::Card);
         verbs::sweep::fetch_origins_again(&views);
         self.list.time_is(now);
         self.showing(views);

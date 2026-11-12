@@ -1065,3 +1065,74 @@ fn common_no_tmpdir_named_is_the_socket_directory_under_tmp() {
         "an empty $TMUX_TMPDIR names no directory, which is how tmux reads it"
     );
 }
+
+/// The first `program` on PATH, for a stand-in that hands calls on to it.
+pub fn the_real(program: &str) -> PathBuf {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|dir| Path::new(dir).join(program))
+        .find(|found| found.is_file())
+        .unwrap_or_else(|| panic!("a {program} on PATH"))
+}
+
+/// A stand-in `program` in a folder of its own under the harness's home that
+/// appends its arguments to the returned log, one line per call, and then
+/// runs `then`, a shell line given the arguments in `"$@"`.
+///
+/// Answers with the folder, to put first on PATH, and the log.
+pub fn a_logging(amx: &Harness, program: &str, then: &str) -> (PathBuf, PathBuf) {
+    let bin = amx.home().join(format!("logging-{program}"));
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = bin.join("calls.log");
+    let script = bin.join(program);
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n{then}\n",
+            quoted(&log.display().to_string())
+        ),
+    )
+    .unwrap();
+    let mut mode = std::fs::metadata(&script).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&script, mode).unwrap();
+    (bin, log)
+}
+
+/// A `tmux` that logs each call and runs the real one; see [`a_logging`].
+pub fn a_logging_tmux(amx: &Harness) -> (PathBuf, PathBuf) {
+    let real = the_real("tmux");
+    a_logging(
+        amx,
+        "tmux",
+        &format!("exec {} \"$@\"", quoted(&real.display().to_string())),
+    )
+}
+
+/// PATH with `bin` first.
+pub fn path_with(bin: &Path) -> String {
+    match std::env::var("PATH") {
+        Ok(rest) => format!("{}:{rest}", bin.display()),
+        Err(_) => bin.display().to_string(),
+    }
+}
+
+/// The calls a [`a_logging`] stand-in logged, one per line; none when it was
+/// never called.
+pub fn calls(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// How many logged calls ran `subcommand` anywhere in their arguments, a
+/// sequence of tmux commands counting once.
+pub fn calls_to(log: &Path, subcommand: &str) -> usize {
+    calls(log)
+        .iter()
+        .filter(|call| call.split_whitespace().any(|word| word == subcommand))
+        .count()
+}
