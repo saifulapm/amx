@@ -605,6 +605,171 @@ mod tests {
         }
     }
 
+    /// Every file amx names as a constant and reads back, with the tests that
+    /// forge one bad entry beside good ones in it, or why it has none.
+    /// A file's name, the tests that forge a bad entry in it (file and name),
+    /// and how it reads.
+    type ReadBack = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+    );
+
+    const READ_BACK: [ReadBack; 12] = [
+        (
+            "view.json",
+            &[(
+                "src/tui/tests.rs",
+                "remembered_a_field_that_does_not_read_costs_that_field_and_not_the_marks",
+            )],
+            "each field reads on its own",
+        ),
+        (
+            "visited.json",
+            &[(
+                "src/verbs/attach.rs",
+                "attach_an_entry_on_the_trail_that_does_not_read_costs_that_entry_and_not_the_trail",
+            )],
+            "each entry reads on its own",
+        ),
+        (
+            "pr.json",
+            &[(
+                "src/pr.rs",
+                "a_request_that_does_not_read_costs_that_request_and_not_the_others",
+            )],
+            "each request reads on its own",
+        ),
+        (
+            "state.json",
+            &[
+                (
+                    "src/derive.rs",
+                    "records_reads_a_question_kind_this_build_has_never_heard_of_as_unknown",
+                ),
+                (
+                    "src/derive.rs",
+                    "records_reads_an_answer_source_this_build_has_never_heard_of_as_unknown",
+                ),
+                (
+                    "src/hook.rs",
+                    "hook_keeps_the_keys_a_newer_amx_wrote_in_both_files",
+                ),
+            ],
+            "a newer amx only adds keys and values; a field of the wrong type is a \
+             hand edit and costs the row by design (finding B2RZWETZ)",
+        ),
+        (
+            "meta.json",
+            &[(
+                "src/store.rs",
+                "store_a_rewrite_keeps_the_keys_a_newer_amx_wrote",
+            )],
+            "a newer amx only adds keys; a field of the wrong type is a hand edit \
+             and costs the row by design (finding B2RZWETZ)",
+        ),
+        (
+            "events.jsonl",
+            &[(
+                "src/store.rs",
+                "store_survives_a_damaged_line_without_losing_the_rest",
+            )],
+            "each line reads on its own",
+        ),
+        (
+            "handoff.json",
+            &[],
+            "one record the agent's own spawn writes once and resume reads whole",
+        ),
+        (
+            "boot-env.json",
+            &[],
+            "one record the agent's own spawn writes and its boot reads and removes",
+        ),
+        (
+            ".claude.json",
+            &[(
+                "src/trust.rs",
+                "trust_forgets_the_tree_and_leaves_every_other_key_alone",
+            )],
+            "claude's own file: amx forgets one tree and keeps every other key",
+        ),
+        (
+            ".claude-plugin/plugin.json",
+            &[],
+            "the plugin amx installs; uninstall reads it as any JSON or none",
+        ),
+        (
+            "hooks.json",
+            &[],
+            "the plugin's hooks amx installs; doctor only says whether it is there",
+        ),
+        (
+            "summary.asked",
+            &[],
+            "one claim about one agent, whose loss costs one summary ask",
+        ),
+    ];
+
+    #[test]
+    fn every_file_amx_reads_back_names_the_test_that_forges_one_bad_entry_in_it() {
+        // One bad field in view.json lost every mark, twice, and one bad
+        // request in pr.json hid every badge. So a file amx keeps and reads
+        // back is listed here with the test that proves one bad entry costs
+        // that entry and not the good ones beside it.
+        let mut unlisted = Vec::new();
+        let mut named = Vec::new();
+        for (file, code) in production_sources() {
+            for line in code.lines() {
+                let line = line.trim();
+                let Some(value) = line
+                    .strip_prefix("pub ")
+                    .or(line.strip_prefix("pub(crate) "))
+                    .unwrap_or(line)
+                    .strip_prefix("const ")
+                    .and_then(|rest| rest.split_once(": &str = \""))
+                    .and_then(|(_, value)| value.strip_suffix("\";"))
+                else {
+                    continue;
+                };
+                let kept = [".json", ".jsonl", ".asked"]
+                    .iter()
+                    .any(|ext| value.ends_with(ext));
+                if kept {
+                    named.push(value.to_string());
+                    if !READ_BACK.iter().any(|(name, _, _)| *name == value) {
+                        unlisted.push(format!("{file}: {value}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "these files are read back but not in READ_BACK; read each field or \
+             entry on its own, forge one bad entry beside good ones in a test, and \
+             list it:\n{}",
+            unlisted.join("\n")
+        );
+
+        for (name, tests, why) in READ_BACK {
+            assert!(
+                named.iter().any(|value| value == name),
+                "{name} is no longer a file amx names"
+            );
+            assert!(!why.is_empty(), "{name} says nothing of how it reads");
+            for (file, test) in tests {
+                let whole = std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file),
+                )
+                .unwrap();
+                assert!(
+                    whole.contains(&format!("fn {test}()")),
+                    "{name}: {file} holds no test {test}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_verb_that_cannot_reach_its_agent_fails_with_the_reason() {
         assert_eq!(finish(Ok(exit::BLOCKED)), exit::BLOCKED);

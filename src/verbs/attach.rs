@@ -88,12 +88,16 @@ fn current(order: &[(Group, String)], inside: Option<&str>, pane: Option<&str>) 
 
 /// The agents this machine's terminals have been handed to, newest first.
 ///
-/// An unreadable trail file reads as empty rather than failing an attach.
+/// An unreadable trail file reads as empty rather than failing an attach, and
+/// an entry that is no id is passed over rather than costing the rest.
 pub fn visited(root: &Path) -> Vec<String> {
     paths::visited_file(root)
         .and_then(|path| std::fs::read(&path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
         .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| entry.as_str().map(str::to_string))
+        .collect()
 }
 
 /// Put `id` at the front of the trail.
@@ -418,6 +422,16 @@ mod tests {
         let path = paths::visited_file(&root).expect("somewhere to keep it");
         std::fs::write(&path, "[\"ask-b2c").unwrap();
         assert!(visited(&root).is_empty());
+    }
+
+    #[test]
+    fn attach_an_entry_on_the_trail_that_does_not_read_costs_that_entry_and_not_the_trail() {
+        let state = tempfile::TempDir::new().unwrap();
+        let root = state.path().join("agents");
+        let path = paths::visited_file(&root).expect("somewhere to keep it");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"["ask-b2c", 7, {"id": "x"}, "busy-c3d"]"#).unwrap();
+        assert_eq!(visited(&root), ["ask-b2c", "busy-c3d"]);
     }
 
     #[test]
