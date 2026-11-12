@@ -531,7 +531,7 @@ mod tests {
                     walk(&path, found);
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    let code = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+                    let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or(&text);
                     let name = path
                         .strip_prefix(env!("CARGO_MANIFEST_DIR"))
                         .unwrap()
