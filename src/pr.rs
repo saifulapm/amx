@@ -810,11 +810,6 @@ struct Looked {
 
 /// Ask `gh`, then `glab`, about `branch`. `None` when neither answers, which
 /// says nothing about the requests.
-fn ask(at: &Path, branch: &str) -> Option<Looked> {
-    ask_with(at, branch, &Forges::installed())
-}
-
-/// [`ask`] with the forge programs given.
 fn ask_with(at: &Path, branch: &str, forges: &Forges) -> Option<Looked> {
     if let Some(said) = run(
         at,
@@ -1854,7 +1849,7 @@ mod tests {
             "a program that is not installed is not a failure to report"
         );
         assert!(
-            ask(dir.path(), "amx/fix-login-a1b").is_none(),
+            ask_with(dir.path(), "amx/fix-login-a1b", &Forges::installed()).is_none(),
             "and neither is a directory no forge will answer about: it is no \
              answer, rather than an answer of no requests"
         );
