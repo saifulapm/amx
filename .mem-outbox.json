@@ -1,0 +1,17 @@
+{
+  "machine": "cloud-vm",
+  "writes": [
+    {
+      "base": "01M77BTXEC06NTQ4QAJCH7ZGMZ",
+      "body": "# plan: project-fence\n\n- [x] t1 Refuse XDG_*, BASH_ENV, ENV, NODE_OPTIONS and GIT_* in a project's env, and ignore a relative XDG_CONFIG_HOME\n- [x] t2 Drop every vendor's permission, skip-permissions and trust flag words from a project's args and agent  [after: t1]\n- [x] t3 Refuse a role name that is not one file stem with exit 64, in new and sub\n- [x] t4 Parse the project file from the bytes consent compared  [after: t2]\n- [x] t5 amx allow prints, records and reports one reading, with control and bidi characters escaped  [after: t4]\n- [ ] t6 Say in the site docs and amx allow --help what a project may not set  [after: t2, t3, t5]\n",
+      "id": "01M77BYCTKJCVJ73FRPDQZZFC5",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/plan.md"
+    },
+    {
+      "base": null,
+      "body": "+++\ncreated = \"2026-11-12T07:53:19.496394032Z\"\nid = \"01M77BYCZWY3ZPDSMPEGAT2CA2\"\nkind = \"log\"\nmachine = \"cloud-vm\"\nmodified = \"2026-11-12T07:53:19.496394032Z\"\nproject = \"amx\"\ntitle = \"t5 landed: amx allow one reading, escaped display\"\n+++\n\nt5 landed: amx allow one reading, escaped display\n",
+      "id": "01M77BYCZX3T4W3G5DWTH7PK82",
+      "path": "projects/01M0EWQXTW6MHCD3WNYFSEKBNR/items/01M77BYCZWY3ZPDSMPEGAT2CA2.md"
+    }
+  ]
+}
