@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -300,8 +300,8 @@ fn about(meta: &Meta) -> Option<(PathBuf, PathBuf, &str)> {
 /// while a refresh runs.
 pub fn read(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     let held = held(dir);
-    if !still_good(held.as_ref(), branch, now) {
-        ask_again(dir.to_path_buf(), at.to_path_buf(), branch.to_string());
+    if !still_good(held.as_ref(), branch, now) && asks_again(dir, now) {
+        ask_again(dir.to_path_buf(), at.to_path_buf(), branch.to_string(), now);
     }
     theirs(held, branch)
 }
@@ -325,7 +325,9 @@ fn ask_now(dir: &Path, at: &Path, branch: &str, now: u64) -> Vec<Pr> {
     if still_good(held.as_ref(), branch, now) {
         return theirs(held, branch);
     }
-    let looked = ask(at, branch);
+    let Some(looked) = ask(at, branch) else {
+        return theirs(held, branch);
+    };
     let _ = write(dir, branch, looked.prs.clone(), &looked.merged_heads, now);
     looked.prs
 }
@@ -409,8 +411,25 @@ fn write(
 /// Record directories with a refresh in flight, so each agent has at most one.
 static ASKING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
-/// Refresh the cache on a detached thread that is never joined.
-fn ask_again(dir: PathBuf, at: PathBuf, branch: String) {
+/// Record directories whose last refresh no forge answered, and when it was
+/// asked for. What is written down stands, so without this every reading
+/// would ask again.
+static UNANSWERED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+
+/// Whether a refresh for `dir` may be asked for at `now`: no forge failed to
+/// answer one in the last [`FRESH`] seconds.
+fn asks_again(dir: &Path, now: u64) -> bool {
+    UNANSWERED.lock().map_or(true, |unanswered| {
+        unanswered
+            .get(dir)
+            .is_none_or(|&at| now.saturating_sub(at) >= FRESH)
+    })
+}
+
+/// Refresh the cache on a detached thread that is never joined. A forge that
+/// does not answer leaves the cache as it is, and the failure is noted as of
+/// `now`.
+fn ask_again(dir: PathBuf, at: PathBuf, branch: String, now: u64) {
     {
         let Ok(mut asking) = ASKING.lock() else {
             return;
@@ -425,13 +444,21 @@ fn ask_again(dir: PathBuf, at: PathBuf, branch: String) {
         .name("amx-pr".to_string())
         .spawn(move || {
             let looked = ask(&at, &branch);
-            let _ = write(
-                &asking,
-                &branch,
-                looked.prs,
-                &looked.merged_heads,
-                crate::store::now(),
-            );
+            if let Ok(mut unanswered) = UNANSWERED.lock() {
+                match looked {
+                    Some(_) => unanswered.remove(&asking),
+                    None => unanswered.insert(asking.clone(), now),
+                };
+            }
+            if let Some(looked) = looked {
+                let _ = write(
+                    &asking,
+                    &branch,
+                    looked.prs,
+                    &looked.merged_heads,
+                    crate::store::now(),
+                );
+            }
             forget(&asking);
         });
     if done.is_err() {
@@ -446,14 +473,15 @@ fn forget(dir: &Path) {
 }
 
 /// One forge answer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Looked {
     prs: Vec<Pr>,
     merged_heads: Vec<String>,
 }
 
-/// Ask `gh`, then `glab`, about `branch`. Neither answering is no requests.
-fn ask(at: &Path, branch: &str) -> Looked {
+/// Ask `gh`, then `glab`, about `branch`. `None` when neither answers, which
+/// says nothing about the requests.
+fn ask(at: &Path, branch: &str) -> Option<Looked> {
     if let Some(said) = run(
         at,
         "gh",
@@ -461,10 +489,10 @@ fn ask(at: &Path, branch: &str) -> Looked {
             "pr", "list", "--head", branch, "--state", "all", "--limit", "5", "--json", GH_FIELDS,
         ],
     ) {
-        return Looked {
+        return Some(Looked {
             prs: sorted(read_gh(&said)),
             merged_heads: merged_heads(&said, "headRefOid"),
-        };
+        });
     }
     if let Some(said) = run(
         at,
@@ -479,12 +507,12 @@ fn ask(at: &Path, branch: &str) -> Looked {
             "json",
         ],
     ) {
-        return Looked {
+        return Some(Looked {
             prs: sorted(read_glab(&said)),
             merged_heads: merged_heads(&said, "sha"),
-        };
+        });
     }
-    Looked::default()
+    None
 }
 
 /// Run a forge command and return its stdout, or `None` if it is missing or
@@ -839,19 +867,92 @@ mod tests {
             number: 12,
             standing: Standing::Open,
         }];
-        write(dir.path(), "amx/fix-login-a1b", going, &[], 1_000).unwrap();
+        write(
+            dir.path(),
+            "amx/fix-login-a1b",
+            going.clone(),
+            &["aaa".to_string()],
+            1_000,
+        )
+        .unwrap();
+        let before = std::fs::read(dir.path().join(CACHE)).unwrap();
         assert_eq!(
             ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 90_000),
-            Vec::new(),
+            going,
             "and a stale one is asked about here and now, rather than in a \
-             thread this reader will not be around for: there is no forge in a \
-             temporary directory, and its answer is the answer"
+             thread this reader will not be around for: no forge answers in a \
+             temporary directory, so what was written down still stands"
         );
         assert_eq!(
-            held(dir.path()).unwrap().asked,
-            90_000,
-            "and what it said is written down for whoever reads next"
+            std::fs::read(dir.path().join(CACHE)).unwrap(),
+            before,
+            "and is still written down, merged heads and all"
         );
+    }
+
+    /// Wait until no refresh is in flight for `dir`.
+    fn asked_by_now(dir: &Path) {
+        for _ in 0..1_000 {
+            if !ASKING.lock().unwrap().contains(dir) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the refresh for {} never finished", dir.display());
+    }
+
+    #[test]
+    fn a_forge_that_cannot_be_asked_leaves_the_requests_written_down() {
+        let dir = TempDir::new().unwrap();
+        let going = vec![Pr {
+            number: 12,
+            standing: Standing::Open,
+        }];
+        write(
+            dir.path(),
+            "amx/fix-login-a1b",
+            going.clone(),
+            &["aaa".to_string()],
+            1_000,
+        )
+        .unwrap();
+        let before = std::fs::read(dir.path().join(CACHE)).unwrap();
+
+        // 70 s on, stale: a refresh is asked of a forge that does not answer.
+        assert_eq!(
+            read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_070),
+            going
+        );
+        asked_by_now(dir.path());
+        assert_eq!(
+            std::fs::read(dir.path().join(CACHE)).unwrap(),
+            before,
+            "the badge and the merged heads stay as they were"
+        );
+        assert!(
+            !asks_again(dir.path(), 1_071),
+            "and the next reading does not ask again so soon"
+        );
+        assert!(
+            asks_again(dir.path(), 1_070 + FRESH),
+            "until the freshness has passed"
+        );
+    }
+
+    #[test]
+    fn a_forge_that_cannot_be_asked_about_a_new_branch_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            read(dir.path(), dir.path(), "amx/fix-login-a1b", 1_000),
+            Vec::new()
+        );
+        asked_by_now(dir.path());
+        assert!(!dir.path().join(CACHE).exists());
+        assert_eq!(
+            ask_now(dir.path(), dir.path(), "amx/fix-login-a1b", 1_000),
+            Vec::new()
+        );
+        assert!(!dir.path().join(CACHE).exists());
     }
 
     #[test]
@@ -966,8 +1067,9 @@ mod tests {
             "a program that is not installed is not a failure to report"
         );
         assert!(
-            ask(dir.path(), "amx/fix-login-a1b").prs.is_empty(),
-            "and neither is a directory the forge has nothing to say about"
+            ask(dir.path(), "amx/fix-login-a1b").is_none(),
+            "and neither is a directory no forge will answer about: it is no \
+             answer, rather than an answer of no requests"
         );
     }
 

@@ -144,6 +144,51 @@ fn sweep_asks_the_forge_itself_where_no_look_has_written_a_request_down() {
 }
 
 #[test]
+fn sweep_over_a_forge_that_cannot_be_asked_keeps_the_request_written_down() {
+    let amx = Harness::new();
+    let repo = amx.a_repo();
+    let tree = an_ended_agent(&amx, "fix-login-a1b", &repo);
+    work_on_the_branch(&tree, "login.rs");
+    let head = git(Path::new(&tree), &["rev-parse", "HEAD"]);
+    let written = amx.agent_dir("fix-login-a1b").join("pr.json");
+    std::fs::write(
+        &written,
+        json!({
+            "asked": 1_000,
+            "branch": "amx/fix-login-a1b",
+            "prs": [{ "number": 12, "standing": "open" }],
+            "merged_heads": [head.trim()],
+        })
+        .to_string(),
+    )
+    .expect("writing pr.json");
+    let before = std::fs::read(&written).expect("pr.json");
+
+    // Both forges exit 1: logged out, offline, or rate limited.
+    let bin = a_forge_saying(&amx, "");
+    for forge in ["gh", "glab"] {
+        std::fs::write(bin.join(forge), "#!/bin/sh\nexit 1\n").expect("writing the forge");
+        std::fs::set_permissions(bin.join(forge), std::fs::Permissions::from_mode(0o755))
+            .expect("a runnable forge");
+    }
+    let out = said(&sweep_with(&amx, &bin, &["--force"]));
+    assert!(out.contains("nothing to sweep"), "{out}");
+    assert_eq!(
+        std::fs::read(&written).expect("pr.json"),
+        before,
+        "the open request and the merged heads are still written down"
+    );
+    assert!(Path::new(&tree).exists(), "{out}");
+
+    // A forge that answers with no requests is an answer.
+    let bin = a_forge_saying(&amx, "[]");
+    said(&sweep_with(&amx, &bin, &["--force"]));
+    let now: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written).expect("pr.json")).expect("json");
+    assert_eq!(now["prs"], json!([]), "{now}");
+}
+
+#[test]
 fn sweep_keeps_a_merged_branch_the_agent_went_on_committing_on() {
     // The request merged, then two more unpushed commits landed on the same
     // branch. They are on no other branch.
