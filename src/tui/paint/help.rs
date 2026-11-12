@@ -594,9 +594,9 @@ mod tests {
         // An emptied group loses its heading; the count is against the table.
         assert!(!drawn.contains("WALK"), "{drawn}");
         assert!(
-            drawn.contains("5 of 57"),
+            drawn.contains(&format!("5 of {}", HELP.len())),
             "and it is said against the whole of the table, because `5 keys` \
-             about a table of fifty-seven reads as a program with five:\n{drawn}"
+             about the whole table reads as a program with five:\n{drawn}"
         );
 
         // Backspace removes a letter; esc drops the search.

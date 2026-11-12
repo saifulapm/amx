@@ -5,6 +5,27 @@ mod common;
 
 use common::{Harness, pane_field, press, resize, types, until_empty};
 
+/// How many keys the help table holds and how many groups it is cut into,
+/// read from the table's own declaration so a key added to it moves every
+/// count below with it.
+fn the_table() -> (usize, usize) {
+    let source = include_str!("../src/tui/paint/help.rs");
+    let length = |declared: &str| -> usize {
+        let after = source
+            .split_once(declared)
+            .unwrap_or_else(|| panic!("help.rs declares {declared:?}"))
+            .1;
+        after[..after.find(']').expect("the array's length closes")]
+            .trim()
+            .parse()
+            .expect("a literal length")
+    };
+    (
+        length("const HELP: [(&str, &str);"),
+        length("const GROUPS: [(&str, usize);"),
+    )
+}
+
 #[test]
 fn the_first_quit_offers_the_status_line_and_no_quit_after_it_does() {
     let amx = Harness::new();
@@ -102,8 +123,9 @@ fn the_keys_are_on_the_screen_for_the_asking() {
     until_empty(&amx, &view);
     // Tall enough for the whole help document: every key, five group headings
     // with a blank row above each, the position row and the blank under it,
-    // and the view's chrome. A key added to the table needs a row added here.
-    resize(&amx, &view, 100, 73);
+    // and the view's chrome.
+    let (keys, groups) = the_table();
+    resize(&amx, &view, 100, (keys + 2 * groups - 1 + 7) as u16);
 
     types(&amx, &view, "?");
     // Wait for the last key of the last group. The view has no synchronized
@@ -190,7 +212,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
     let first = amx.until("the keys, the count and the foot", || {
         let drawn = amx.capture(&view);
         (drawn.contains("walk the agents")
-            && drawn.contains(" of 57")
+            && drawn.contains(&format!(" of {}", the_table().0))
             && drawn.contains("j k scroll"))
         .then_some(drawn)
     });
@@ -208,7 +230,7 @@ fn the_keys_a_short_screen_cannot_hold_are_a_scroll_away() {
             .then_some(drawn)
     });
     assert!(
-        last.contains(&format!(" of {}", 57)),
+        last.contains(&format!(" of {}", the_table().0)),
         "which says where in the document it is:\n{last}"
     );
     assert!(
