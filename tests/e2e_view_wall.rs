@@ -1652,6 +1652,11 @@ fn a_path_heading_draws_its_waiting_count_in_the_waiting_colour() {
     });
     press(&amx, &view, "C-s");
     let line = amx.until("the heading over the repository", || {
+        // coloured_line panics on a screen without the line, and the heading
+        // is drawn only once the view has taken the key.
+        if !amx.capture(&view).contains("~/repo") {
+            return None;
+        }
         let line = coloured_line(&amx, &view, "~/repo");
         line.contains("1 waiting").then_some(line)
     });
