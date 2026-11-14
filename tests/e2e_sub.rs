@@ -224,8 +224,21 @@ fn sub_no_parent_spawns_a_peer_with_no_family() {
     let amx = Harness::new();
     let mock = amx.mock();
     let parent = a_parent(&amx, &mock);
+    // With no parent the child is cut where it is run; keep it off this checkout.
+    let repo = amx.a_repo();
 
-    let out = a_sub(&amx, &parent, &mock, &["--no-parent", "--bg", "scout"]);
+    let out = a_sub(
+        &amx,
+        &parent,
+        &mock,
+        &[
+            "--no-parent",
+            "--dir",
+            &repo.to_string_lossy(),
+            "--bg",
+            "scout",
+        ],
+    );
     assert_eq!(out.status.code(), Some(0));
     let child = bg_id(&out);
     assert_eq!(amx.meta(&child)["parent"], Value::Null);
@@ -236,7 +249,13 @@ fn sub_no_parent_spawns_a_peer_with_no_family() {
 fn sub_from_a_persons_shell_is_an_ordinary_spawn() {
     let amx = Harness::new();
     let mock = amx.mock();
-    let out = a_sub_from_outside(&amx, &mock, &["--bg", "scout"]);
+    // An ordinary spawn is cut where it is run; keep it off this checkout.
+    let repo = amx.a_repo();
+    let out = a_sub_from_outside(
+        &amx,
+        &mock,
+        &["--dir", &repo.to_string_lossy(), "--bg", "scout"],
+    );
     assert_eq!(
         out.status.code(),
         Some(0),
