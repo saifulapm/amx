@@ -441,12 +441,12 @@ impl Drop for Harness {
 }
 
 /// Remove variables that leak in when the suite runs inside an agent's pane
-/// or next to a real codex or opencode.
+/// or next to a real claude, codex or opencode.
 ///
 /// `AMX_NESTED` makes every hook a stand-in delivers count as nested, and the
-/// other `AMX_*` names point at the outer agent. `CODEX_HOME` and the
-/// `OPENCODE_CONFIG*` variables point at the person's own vendor config, which
-/// no test may touch; a test that needs one sets it.
+/// other `AMX_*` names point at the outer agent. `CLAUDE_CONFIG_DIR`,
+/// `CODEX_HOME` and the `OPENCODE_CONFIG*` variables point at the person's
+/// own vendor config, which no test may touch; a test that needs one sets it.
 fn leaks_nothing(command: &mut Command) {
     for name in [
         "AMX_NESTED",
@@ -454,6 +454,7 @@ fn leaks_nothing(command: &mut Command) {
         "AMX_AGENT_DIR",
         "AMX_WORKTREE",
         "AMX_BIN",
+        "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_CONFIG",
