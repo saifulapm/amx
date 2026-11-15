@@ -697,6 +697,17 @@ pub struct AdoptArgs {
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
     pub name: Option<String>,
+
+    /// Move the claude with this process id into a new amx pane: end it,
+    /// then resume its conversation under amx. For a claude outside amx, as
+    /// `amx ls --loose` lists them.
+    #[arg(long, value_name = "PID", conflicts_with = "session")]
+    pub pid: Option<u32>,
+
+    /// Move the claude on this conversation into a new amx pane, as `--pid`
+    /// does.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
 }
 
 /// The vendor for one spawn and the settings it launches with.

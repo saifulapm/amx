@@ -415,7 +415,7 @@ mod tests {
 
     /// The source of every verb, checked for direct `eprint` calls that
     /// bypass [`tell`].
-    const VERBS: [(&str, &str); 26] = [
+    const VERBS: [(&str, &str); 27] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("allow", include_str!("verbs/allow.rs")),
         ("answer", include_str!("verbs/answer.rs")),
@@ -427,6 +427,7 @@ mod tests {
         ("fork", include_str!("verbs/fork.rs")),
         ("interrupt", include_str!("verbs/interrupt.rs")),
         ("logs", include_str!("verbs/logs.rs")),
+        ("move_in", include_str!("verbs/move_in.rs")),
         ("ls", include_str!("verbs/ls.rs")),
         ("new", include_str!("verbs/new.rs")),
         ("park", include_str!("verbs/park.rs")),

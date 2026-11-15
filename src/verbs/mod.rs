@@ -12,6 +12,7 @@ pub mod fork;
 pub mod interrupt;
 pub mod logs;
 pub mod ls;
+pub mod move_in;
 pub mod new;
 pub mod park;
 pub mod rename;

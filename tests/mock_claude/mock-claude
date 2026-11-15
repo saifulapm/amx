@@ -8,6 +8,7 @@
 # Steps, one per line. Blank lines and `#` comments are ignored.
 #
 #   argv                  print the arguments this stand-in was given.
+#   env <NAME>            print `env: NAME=<value>`, empty when unset.
 #   hook <Event> <json>   send a hook payload on `amx _hook`'s stdin. `<json>`
 #                         is optional; `session_id` and `transcript_path` are
 #                         added unless it names them.
@@ -171,6 +172,7 @@ while IFS= read -r line <&3 || [ -n "$line" ]; do
 
 	case "$verb" in
 	argv) printf 'argv: %s\n' "$*" ;;
+	env) printf 'env: %s=%s\n' "$rest" "$(printenv "$rest")" ;;
 	hook) deliver "$rest" ;;
 	print) printf '%b\n' "$rest" ;;
 	sleep) nap "$rest" ;;

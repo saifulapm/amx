@@ -482,14 +482,25 @@ it, or run it from the agent's shell mode.
 
 ```sh
 amx adopt [--task <TEXT>] [--name <NAME>]
+amx adopt --pid <PID> [--task <TEXT>] [--name <NAME>]
+amx adopt --session <ID> [--task <TEXT>] [--name <NAME>]
 ```
 
 | Flag | Does |
 | --- | --- |
 | `--task <TEXT>` | What the row should say the agent is doing. Default: the directory name. |
 | `--name <NAME>` | Use this as the id. |
+| `--pid <PID>` | Move the claude with this pid, running outside amx, into a new amx pane. |
+| `--session <ID>` | Move the claude on this conversation, as `--pid` does. |
 
-It reads `$TMUX_PANE` and the vendor's session variable
+With `--pid` or `--session`, adopt moves a claude that runs outside amx, as
+`amx ls --loose` lists them. No process can move into tmux, so amx ends the
+claude and resumes its conversation in a new pane: idle, in the claude's
+directory, with its flags and its `CLAUDE_CONFIG_DIR`, and no worktree. It
+prints `moved to amx: amx attach <id>`. The move is a real spawn, so `stop`,
+`resume` and `fork` all work on it afterwards.
+
+Without them, adopt registers the agent in the pane it is typed in. It reads `$TMUX_PANE` and the vendor's session variable
 (`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID` or `CODEX_SESSION_ID`). opencode
 sets no such variable, so opencode sessions cannot be adopted. Nothing is sent
 to the agent. amx made no worktree for it and has no launch command, so `stop`

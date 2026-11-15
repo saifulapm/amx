@@ -38,6 +38,9 @@ const PANE_ENV: &str = "TMUX_PANE";
 
 /// Run the verb against the machine.
 pub fn from_env(args: &AdoptArgs) -> Result<i32> {
+    if args.pid.is_some() || args.session.is_some() {
+        return super::move_in::from_env(args);
+    }
     let root = paths::state_root()?;
     let env: BTreeMap<String, String> = std::env::vars().collect();
     let here = std::env::current_dir().context("no working directory")?;
@@ -141,7 +144,7 @@ pub fn run(
 }
 
 /// Lock the agents root against other adopts until the lock is dropped.
-fn hold(root: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
+pub(crate) fn hold(root: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
     let dir = std::fs::File::open(root).with_context(|| format!("opening {}", root.display()))?;
     nix::fcntl::Flock::lock(dir, nix::fcntl::FlockArg::LockExclusive)
@@ -605,6 +608,7 @@ mod tests {
             &AdoptArgs {
                 task: Some("port the importer".to_string()),
                 name: Some("importer".to_string()),
+                ..AdoptArgs::default()
             },
         )
         .unwrap();

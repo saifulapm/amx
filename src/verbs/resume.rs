@@ -62,7 +62,7 @@ pub fn picked_up(
         Ok(place) => place,
         Err(full) => return Ok(Comeback::No(full)),
     };
-    bring_back(root, id, message, env)?;
+    bring_back(root, id, message, env, &BTreeMap::new())?;
     Ok(Comeback::Back)
 }
 
@@ -136,7 +136,7 @@ fn one(
         }
     };
 
-    bring_back(root, id, message, env)?;
+    bring_back(root, id, message, env, &BTreeMap::new())?;
     writeln!(out, "{id} resumed")?;
     Ok(exit::OK)
 }
@@ -179,7 +179,7 @@ fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> R
             }
         };
         // One failure does not stop the sweep.
-        match bring_back(root, view.id(), None, env) {
+        match bring_back(root, view.id(), None, env, &BTreeMap::new()) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
             Err(e) => complain!("amx resume: {}: {e:#}", view.id()),
         }
@@ -206,11 +206,15 @@ fn take_a_place(root: &Path, id: &str, dir: &Path) -> Result<Result<store::Claim
 /// one step: a concurrent second resume waits, then finds the `starting` state
 /// and live pane the first wrote. The checks in [`one`] and [`sweep`] only
 /// give friendlier refusals.
-fn bring_back(
+///
+/// `pinned` sets (or, for `None`, removes) variables after the harness's own,
+/// for a caller that must keep a value the config would replace.
+pub(crate) fn bring_back(
     root: &Path,
     id: &str,
     message: Option<&str>,
     env: &BTreeMap<String, String>,
+    pinned: &BTreeMap<String, Option<String>>,
 ) -> Result<()> {
     let agent = Agent::open(root, id)?;
     let writer = agent.writer()?;
@@ -238,6 +242,12 @@ fn bring_back(
     let mut env = env.clone();
     if let Some(agent) = &meta.agent {
         spawn::harness_env(&mut env, &crate::config::for_dir(&meta.dir).0, agent);
+    }
+    for (name, value) in pinned {
+        match value {
+            Some(value) => env.insert(name.clone(), value.clone()),
+            None => env.remove(name),
+        };
     }
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent.dir(), &env)?;

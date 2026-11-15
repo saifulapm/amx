@@ -1,0 +1,5 @@
+# A resumed session that says which claude account dir it runs under.
+argv
+env CLAUDE_CONFIG_DIR
+hook SessionStart {"source": "resume", "session_id": "@SESSION2@", "transcript_path": "@TRANSCRIPT2@"}
+sleep 600000

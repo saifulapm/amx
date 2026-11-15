@@ -117,8 +117,12 @@ pub fn proc_start(pid: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command name is in parentheses and may hold spaces or `)`, so the
     // fields are counted from the last `)`. Field 3 follows it.
-    let after = &stat[stat.rfind(')')? + 1..];
-    after.split_whitespace().nth(19).map(str::to_string)
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
+    // A zombie has ended; only its parent has yet to reap it.
+    if matches!(fields.next(), Some("Z" | "X")) {
+        return None;
+    }
+    fields.nth(18).map(str::to_string)
 }
 
 #[cfg(test)]

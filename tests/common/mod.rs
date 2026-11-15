@@ -466,6 +466,18 @@ impl Harness {
     /// Its account dir is `CLAUDE_CONFIG_DIR` when `env` names one, else
     /// `~/.claude` under this harness's home.
     pub fn loose(&self, scenario: &str, dir: &Path, env: &[(&str, &str)]) -> Loose {
+        self.loose_with_args(scenario, dir, env, &[])
+    }
+
+    /// [`loose`](Self::loose), with `args` on the stand-in's command line, as
+    /// flags and a first prompt typed after `claude` are.
+    pub fn loose_with_args(
+        &self,
+        scenario: &str,
+        dir: &Path,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Loose {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let said = self.home.path().join(format!(
             "loose-{}.out",
@@ -473,6 +485,7 @@ impl Harness {
         ));
         let mut command = Command::new(fixtures().join("mock-claude"));
         command
+            .args(args)
             .current_dir(dir)
             .env("HOME", self.home.path())
             .env("AMX_STATE_DIR", self.state.path())
