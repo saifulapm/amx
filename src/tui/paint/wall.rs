@@ -181,7 +181,7 @@ fn line(
                 true => Style::new(),
                 false => dim(),
             };
-            Line::styled(format!("OUTSIDE AMX {count}"), label)
+            Line::styled(format!("Outside amx ({count})"), label)
         }
         Item::Loose(_) => match list.loose(item) {
             // The columns `amx ls --loose` prints. The status and the dir

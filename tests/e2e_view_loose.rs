@@ -1,5 +1,5 @@
 //! End-to-end tests for the claudes running outside amx on the wall: the view
-//! draws them in an `OUTSIDE AMX` group at its foot, and enter on one moves it
+//! draws them in an `Outside amx` group at its foot, and enter on one moves it
 //! into an amx pane.
 
 mod common;
@@ -51,15 +51,15 @@ fn the_view_draws_a_claude_outside_amx_under_its_own_heading_at_the_foot() {
     let view = a_view(&amx);
     let drawn = amx.until("the outside heading", || {
         let drawn = amx.capture(&view);
-        drawn.contains("OUTSIDE AMX").then_some(drawn)
+        drawn.contains("Outside amx").then_some(drawn)
     });
 
     let heading = drawn
         .lines()
-        .find(|line| line.contains("OUTSIDE AMX"))
+        .find(|line| line.contains("Outside amx"))
         .unwrap_or_default();
-    assert_eq!(heading.trim(), "OUTSIDE AMX 1", "{drawn}");
-    let row = under(&drawn, "OUTSIDE AMX");
+    assert_eq!(heading.trim(), "Outside amx (1)", "{drawn}");
+    let row = under(&drawn, "Outside amx");
     assert!(row.contains("~/app"), "its dir: {row:?}\n{drawn}");
     assert!(row.contains("idle"), "its status: {row:?}\n{drawn}");
     assert!(
@@ -86,9 +86,9 @@ fn the_view_leaves_out_a_held_claude_and_draws_no_heading_once_none_is_loose() {
     let view = a_view(&amx);
     let drawn = amx.until("the outside heading", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("OUTSIDE AMX") && drawn.contains("an-agent")).then_some(drawn)
+        (drawn.contains("Outside amx") && drawn.contains("an-agent")).then_some(drawn)
     });
-    assert!(drawn.contains("OUTSIDE AMX 1"), "one, not two:\n{drawn}");
+    assert!(drawn.contains("Outside amx (1)"), "one, not two:\n{drawn}");
     assert!(
         !drawn.contains(&held.pid().to_string()),
         "a record holds its session:\n{drawn}"
@@ -97,7 +97,7 @@ fn the_view_leaves_out_a_held_claude_and_draws_no_heading_once_none_is_loose() {
     drop(claude);
     amx.until("the heading to go with the last loose claude", || {
         let drawn = amx.capture(&view);
-        (drawn.contains("an-agent") && !drawn.contains("OUTSIDE AMX")).then_some(())
+        (drawn.contains("an-agent") && !drawn.contains("Outside amx")).then_some(())
     });
 }
 
@@ -132,6 +132,6 @@ fn enter_on_a_claude_outside_amx_moves_it_onto_the_wall() {
         let row = drawn
             .lines()
             .any(|line| line.contains(&id) && !line.contains("moved to amx"));
-        (row && !drawn.contains("OUTSIDE AMX")).then_some(())
+        (row && !drawn.contains("Outside amx")).then_some(())
     });
 }
