@@ -515,7 +515,9 @@ amx adopt --session <ID> [--task <TEXT>] [--name <NAME>]
 With `--pid` or `--session`, adopt moves a claude that runs outside amx, as
 `amx ls --loose` lists them. No process can move into tmux, so amx ends the
 claude and resumes its conversation in a new pane: idle, in the claude's
-directory, with its flags and its `CLAUDE_CONFIG_DIR`, and no worktree. It
+directory, with the same claude program, its flags and its `CLAUDE_CONFIG_DIR`,
+and no worktree. The configured `agent` is not used, since a launcher there
+may pick another account. It
 prints `moved to amx: amx attach <id>`. The move is a real spawn, so `stop`,
 `resume` and `fork` all work on it afterwards. An unsent draft in the old
 claude's input is lost.
