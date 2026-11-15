@@ -55,6 +55,7 @@ impl Cli {
             Diff { .. } => "diff",
             Resume { .. } => "resume",
             Fork { .. } => "fork",
+            Here { .. } => "here",
             Adopt(_) => "adopt",
             Events { .. } => "events",
             Statusline => "statusline",
@@ -354,6 +355,17 @@ pub enum Command {
         /// Every stopped agent, for example after the tmux server died.
         #[arg(long, conflicts_with = "id")]
         all: bool,
+    },
+
+    /// Start a claude here under amx and attach this terminal to it.
+    ///
+    /// The agent runs in the current directory, with no worktree and no task,
+    /// and opens idle at its prompt. Arguments after `--` go to claude as
+    /// they are.
+    Here {
+        /// Arguments passed to the agent command verbatim.
+        #[arg(last = true, value_name = "AGENT_ARGS")]
+        vendor_args: Vec<String>,
     },
 
     /// Start a second agent on a copy of this one's conversation.

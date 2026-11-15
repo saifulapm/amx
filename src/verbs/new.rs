@@ -216,6 +216,12 @@ fn carrying(config: &Config, agent: String) -> String {
 
 /// Runs the verb from the command line.
 pub fn from_env(args: &NewArgs) -> Result<i32> {
+    from_env_into(args, &mut std::io::stdout().lock())
+}
+
+/// [`from_env`] writing the new id to `out`. `amx here` reads it back to
+/// attach.
+pub fn from_env_into(args: &NewArgs, out: &mut impl Write) -> Result<i32> {
     let root = paths::state_root()?;
     // Absolute before anything reads it, so the record and the cap count
     // match records started from inside that directory.
@@ -236,7 +242,6 @@ pub fn from_env(args: &NewArgs) -> Result<i32> {
         }
     }
     let env = spawn::env_snapshot(std::env::vars());
-    let mut out = std::io::stdout().lock();
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
 
@@ -256,7 +261,7 @@ pub fn from_env(args: &NewArgs) -> Result<i32> {
         config,
         args,
         &task,
-        &mut out,
+        out,
         &mut problems,
         to_terminal,
     )
@@ -759,7 +764,7 @@ fn set_up(
         id,
     );
 
-    spawn::record(
+    let agent = spawn::record(
         root,
         &Meta {
             role: args.role.clone(),
@@ -789,6 +794,13 @@ fn set_up(
             created: now(),
         },
     )?;
+    // With no task no turn starts, so nothing reports once the session opens.
+    // See `State::opens_idle`.
+    if task.is_empty() {
+        agent
+            .writer()?
+            .update_state(|state| state.opens_idle = true)?;
+    }
     Ok(())
 }
 
@@ -820,14 +832,22 @@ fn dial_written(exec: bool, dial: &str) -> Option<String> {
 fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
     match args.exec {
         true => spawn::exec_command(task),
-        false => spawn::vendor_command(
-            &launch.agent,
-            &launch.dials,
-            &args.vendor_args,
-            task,
-            Some(id),
-            trust,
-        ),
+        false => {
+            let mut command = spawn::vendor_command(
+                &launch.agent,
+                &launch.dials,
+                &args.vendor_args,
+                task,
+                Some(id),
+                trust,
+            );
+            // `vendor_command` ends with the task word; with no task the
+            // vendor opens at its prompt instead of on an empty one.
+            if task.is_empty() {
+                command.pop();
+            }
+            command
+        }
     }
 }
 

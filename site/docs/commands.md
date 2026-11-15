@@ -474,6 +474,24 @@ and an agent with a recorded session.
 amx fork fix-login-a1b "try it with sqlite instead"
 ```
 
+## here
+
+Start a claude in the current directory under amx, and attach this terminal to
+it.
+
+```sh
+amx here [-- AGENT_ARGS]
+```
+
+The agent has no task and no worktree. It runs where you stand, and its row
+reads idle once its session opens. Arguments after `--` go to the agent
+command as they are, as with `amx new`. Attaching works as `amx attach` does,
+inside tmux or outside it.
+
+```sh
+amx here -- --model haiku
+```
+
 ## adopt
 
 Register an agent you started yourself, so it appears in the list and every

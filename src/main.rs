@@ -163,6 +163,7 @@ fn run(cli: &cli::Cli) -> i32 {
             *all,
         )),
         Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
+        Some(cli::Command::Here { vendor_args }) => finish(verbs::here::from_env(vendor_args)),
         Some(cli::Command::Fork { id, task }) => finish(verbs::fork::from_env(id, task.as_deref())),
         Some(cli::Command::Events { ids, follow, json }) => {
             finish(verbs::events::from_env(ids, *follow, *json))
@@ -416,7 +417,7 @@ mod tests {
 
     /// The source of every verb, checked for direct `eprint` calls that
     /// bypass [`tell`].
-    const VERBS: [(&str, &str); 27] = [
+    const VERBS: [(&str, &str); 28] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("allow", include_str!("verbs/allow.rs")),
         ("answer", include_str!("verbs/answer.rs")),
@@ -426,6 +427,7 @@ mod tests {
         ("doctor", include_str!("verbs/doctor.rs")),
         ("events", include_str!("verbs/events.rs")),
         ("fork", include_str!("verbs/fork.rs")),
+        ("here", include_str!("verbs/here.rs")),
         ("interrupt", include_str!("verbs/interrupt.rs")),
         ("logs", include_str!("verbs/logs.rs")),
         ("move_in", include_str!("verbs/move_in.rs")),
