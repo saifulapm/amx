@@ -2225,6 +2225,13 @@ mod tests {
         meta.pane = pane.clone();
         let records = root.path().join("records");
         let agent = Agent::create(&records, &meta).unwrap();
+        // tmux brackets a paste only once the pane has asked for it. The
+        // redirect makes `typed` after the printf that asks, so a race begun
+        // before then would count an early paste as lost.
+        let asked = std::time::Instant::now();
+        while !typed.exists() && asked.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         let [first, words, second] = ['x', 'y', 'z'].map(|c| c.to_string().repeat(200));
         let mut landed = Vec::new();
