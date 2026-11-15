@@ -8,10 +8,12 @@
 //!
 //! - The agent is found by `AMX_ID` in the pane's environment, or, for an
 //!   adopted claude that has none, by the payload's session id (see
-//!   [`by_session`]).
+//!   [`by_session`]), and after a new session by its pane's stamp (see
+//!   [`by_stamp`]).
 //! - It runs on every prompt and tool call while the vendor waits, so the
 //!   common path only touches the agent's directory. tmux is asked only when a
-//!   stop needs a notice or errand, and to set the park timer at a turn's end.
+//!   stop needs a notice or errand, to set the park timer at a turn's end, and
+//!   to read the stamp of a pane a live record names.
 //! - For vendors whose wire listens (amx's pi extension), it prints the
 //!   record's directory on stdout; see [`hears_the_answer`].
 //!
@@ -29,7 +31,7 @@ use crate::exit;
 use crate::notify::{self, Notice};
 use crate::spawn::quoted;
 use crate::store::{Agent, Ask, Choice, Kind, Meta, Phase, Source, State};
-use crate::tmux::Server;
+use crate::tmux::{PaneId, Server};
 use crate::vendor::{Hooks, Moment};
 
 /// The environment variable naming the agent a pane belongs to. `_boot` sets
@@ -60,8 +62,13 @@ pub fn from_env(stdin: &mut impl Read) -> i32 {
         return exit::OK;
     };
     let env_file = std::env::var_os(ENV_FILE).map(PathBuf::from);
+    let pane = pane_of(
+        std::env::var("TMUX").ok().as_deref(),
+        std::env::var("TMUX_PANE").ok().as_deref(),
+    );
     run(
         id.as_deref(),
+        pane.as_ref(),
         &root,
         stdin,
         &mut std::io::stdout().lock(),
@@ -78,9 +85,16 @@ fn nested() -> bool {
     std::env::var_os(NESTED_ENV).is_some()
 }
 
+/// The server and pane the hook runs in, from `$TMUX` and `$TMUX_PANE`. Asks
+/// tmux nothing.
+fn pane_of(tmux: Option<&str>, pane: Option<&str>) -> Option<(Server, PaneId)> {
+    Some((Server::from_tmux_env(tmux?)?, PaneId::new(pane?).ok()?))
+}
+
 /// [`from_env`] with its inputs passed in.
 pub fn run(
     id: Option<&str>,
+    pane: Option<&(Server, PaneId)>,
     root: &Path,
     stdin: &mut impl Read,
     out: &mut impl Write,
@@ -96,7 +110,7 @@ pub fn run(
     let Ok(payload) = serde_json::from_str::<Value>(&text) else {
         return exit::OK;
     };
-    let Some(agent) = whose(id, root, &payload) else {
+    let Some(agent) = whose(id, pane, root, &payload) else {
         return exit::OK;
     };
 
@@ -127,11 +141,37 @@ fn hears_the_answer(agent: &Agent) -> bool {
 ///
 /// The pane's `AMX_ID` wins. An id with no record behind it ends the search:
 /// the pane named an agent that is gone.
-fn whose(id: Option<&str>, root: &Path, payload: &Value) -> Option<Agent> {
+fn whose(
+    id: Option<&str>,
+    pane: Option<&(Server, PaneId)>,
+    root: &Path,
+    payload: &Value,
+) -> Option<Agent> {
     match id {
         Some(id) => Agent::open(root, id).ok(),
-        None => by_session(root, payload["session_id"].as_str()?),
+        None => by_session(root, payload["session_id"].as_str()?).or_else(|| {
+            let (server, pane) = pane?;
+            by_stamp(root, server, pane)
+        }),
     }
+}
+
+/// The live record adopted in `pane`, for a session no record has yet.
+///
+/// A `/clear`, `/resume` or `/compact` gives an adopted claude a new session
+/// id, so [`by_session`] misses its first payload. The pane is the same, and
+/// adoption stamped it with the record's id. Records come first, and tmux is
+/// asked only when a live record names this pane id; the stamp on this
+/// server decides, since pane ids repeat across servers. A fresh claude in
+/// the same pane is still dropped by [`anothers`].
+fn by_stamp(root: &Path, server: &Server, pane: &PaneId) -> Option<Agent> {
+    let mut ids = crate::store::list(root).ok()?;
+    ids.sort();
+    ids.into_iter()
+        .filter_map(|id| Agent::open(root, &id).ok())
+        .filter(|agent| agent.meta().is_ok_and(|meta| meta.pane == *pane))
+        .filter(|agent| !agent.state().is_ok_and(|state| state.state.is_terminal()))
+        .find(|agent| server.pane_answers_for(pane, agent.id()))
 }
 
 /// The record for a session, for payloads with no `AMX_ID`.
@@ -2965,6 +3005,7 @@ mod tests {
     fn hook(root: &Path, id: &str, payload: &str) -> i32 {
         run(
             Some(id),
+            None,
             root,
             &mut payload.as_bytes(),
             &mut std::io::sink(),
@@ -3173,6 +3214,7 @@ mod tests {
         assert_eq!(
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut r#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#.as_bytes(),
                 &mut std::io::sink(),
@@ -3210,6 +3252,7 @@ mod tests {
         assert_eq!(
             run(
                 None,
+                None,
                 root.path(),
                 &mut r#"{"session_id":"abc-123","hook_event_name":"PreToolUse","tool_name":"Bash"}"#
                     .as_bytes(),
@@ -3228,6 +3271,7 @@ mod tests {
         assert_eq!(
             run(
                 None,
+                None,
                 root.path(),
                 &mut r#"{"session_id":"def-456","hook_event_name":"Stop","last_assistant_message":"done"}"#
                     .as_bytes(),
@@ -3238,6 +3282,21 @@ mod tests {
             exit::OK
         );
         assert_eq!(adopted.state().unwrap().result, None);
+    }
+
+    #[test]
+    fn hook_a_pane_is_read_only_from_both_tmux_variables() {
+        // Outside tmux there is no stamp to fall back on, and no tmux to ask.
+        assert!(pane_of(None, Some("%3")).is_none());
+        assert!(pane_of(Some("/tmp/tmux-1000/default,1,0"), None).is_none());
+        assert!(pane_of(Some("/tmp/tmux-1000/default,1,0"), Some("main")).is_none());
+
+        let (server, pane) = pane_of(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap();
+        assert_eq!(
+            server.socket(),
+            &Socket::Path(PathBuf::from("/tmp/tmux-1000/default"))
+        );
+        assert_eq!(pane.as_str(), "%3");
     }
 
     #[test]
@@ -3308,6 +3367,7 @@ mod tests {
             assert_eq!(
                 run(
                     Some(agent.id()),
+                    None,
                     root.path(),
                     &mut payload.as_bytes(),
                     &mut std::io::sink(),
@@ -3332,6 +3392,7 @@ mod tests {
         assert_eq!(
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut r#"{"session_id":"abc-123","hook_event_name":"Stop","last_assistant_message":"I fixed the login bug."}"#
                     .as_bytes(),
@@ -3368,6 +3429,7 @@ mod tests {
         let hear = |payload: &str| {
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut payload.as_bytes(),
                 &mut std::io::sink(),
@@ -3427,6 +3489,7 @@ mod tests {
 
         run(
             Some(agent.id()),
+            None,
             root.path(),
             &mut r#"{"session_id":"def-456","hook_event_name":"SessionStart","source":"clear"}"#
                 .as_bytes(),
@@ -3481,6 +3544,7 @@ mod tests {
         assert_eq!(
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut r#"{"hook_event_name":"UserPromptSubmit","prompt":"carry on"}"#.as_bytes(),
                 &mut std::io::sink(),
@@ -3524,6 +3588,7 @@ mod tests {
         let send = |line: &str| {
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut line.as_bytes(),
                 &mut std::io::sink(),
@@ -3576,6 +3641,7 @@ mod tests {
         let send = |payload: Value| {
             run(
                 Some(agent.id()),
+                None,
                 root.path(),
                 &mut payload.to_string().as_bytes(),
                 &mut std::io::sink(),
@@ -3757,6 +3823,7 @@ mod tests {
 
         run(
             None,
+            None,
             root.path(),
             &mut r#"{"session_id":"abc-123","hook_event_name":"UserPromptSubmit"}"#.as_bytes(),
             &mut std::io::sink(),
@@ -3797,6 +3864,7 @@ mod tests {
         let mut out = Vec::new();
         run(
             None,
+            None,
             root.path(),
             &mut r#"{"session_id":"pi-session","hook_event_name":"agent_start"}"#.as_bytes(),
             &mut out,
@@ -3810,6 +3878,7 @@ mod tests {
         let mut out = Vec::new();
         run(
             Some("their-pi-a1b"),
+            None,
             root.path(),
             &mut r#"{"hook_event_name":"tool_execution_start","tool_name":"bash"}"#.as_bytes(),
             &mut out,
@@ -3837,6 +3906,7 @@ mod tests {
         let mut out = Vec::new();
         run(
             None,
+            None,
             root.path(),
             &mut r#"{"session_id":"claude-session","hook_event_name":"UserPromptSubmit"}"#
                 .as_bytes(),
@@ -3849,6 +3919,7 @@ mod tests {
         // A report belonging to no record gets nothing.
         let mut out = Vec::new();
         run(
+            None,
             None,
             root.path(),
             &mut r#"{"session_id":"nobodys","hook_event_name":"agent_start"}"#.as_bytes(),
@@ -4121,6 +4192,7 @@ mod tests {
         // No agent named: this claude is not amx's.
         assert_eq!(
             run(
+                None,
                 None,
                 root.path(),
                 &mut "{}".as_bytes(),
