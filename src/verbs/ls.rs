@@ -50,7 +50,7 @@ pub fn loose_from_env() -> Result<i32> {
     let dirs = loose::config_dirs(&env, &home, crate::config::current());
     let mut out = std::io::stdout().lock();
     loose_table(
-        &loose::find(&dirs, &held(&root)?, loose::proc_start),
+        &loose::find(&dirs, &held(&root)?, loose::claude_start),
         now(),
         &mut out,
     )?;

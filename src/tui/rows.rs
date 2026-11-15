@@ -742,7 +742,7 @@ fn outside_amx(held: &BTreeSet<String>) -> Vec<Loose> {
     let env = crate::spawn::env_snapshot(std::env::vars());
     let home = std::env::home_dir().unwrap_or_default();
     let dirs = loose::config_dirs(&env, &home, crate::config::current());
-    loose::find(&dirs, held, loose::proc_start)
+    loose::find(&dirs, held, loose::claude_start)
 }
 
 impl List {

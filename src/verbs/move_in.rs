@@ -118,13 +118,17 @@ pub fn finish_from_env(id: &str) -> Result<i32> {
     .with_context(|| format!("reading {}", file.display()))?;
     let _ = std::fs::remove_file(&file);
     let _held = adopt::hold(&root)?;
-    carry_out(&root, &env, &planned)?;
+    let carried = carry_out(&root, &env, &planned);
+    // The claude's terminal is the one place its person is looking.
     if let Some(tty) = &planned.tty
         && let Ok(mut terminal) = std::fs::OpenOptions::new().write(true).open(tty)
     {
-        let _ = writeln!(terminal, "moved to amx: amx attach {id}");
+        let _ = match &carried {
+            Ok(()) => writeln!(terminal, "moved to amx: amx attach {id}"),
+            Err(e) => writeln!(terminal, "amx: {e:#}"),
+        };
     }
-    Ok(exit::OK)
+    carried.map(|()| exit::OK)
 }
 
 /// Where a planned move waits for `amx _move`.
@@ -249,7 +253,35 @@ fn carry_out(root: &Path, env: &BTreeMap<String, String>, planned: &Planned) -> 
         }
         return Err(e.context(recovery(&planned.claude)));
     }
+    if !settles(root, &planned.id) {
+        bail!(
+            "the new claude in {} ended as it started; {}",
+            planned.id,
+            recovery(&planned.claude)
+        );
+    }
     Ok(())
+}
+
+/// How long a moved claude has to open its session before the move is taken
+/// as made.
+const SETTLE: Duration = Duration::from_secs(10);
+
+/// Whether the new pane's claude came up: its record reaches a live phase
+/// before it ends. One that is still starting after [`SETTLE`] counts as up.
+fn settles(root: &Path, id: &str) -> bool {
+    let deadline = Instant::now() + SETTLE;
+    while Instant::now() < deadline {
+        let phase = Agent::open(root, id)
+            .and_then(|agent| agent.state())
+            .map(|state| state.state);
+        match phase {
+            Ok(Phase::Idle | Phase::Working | Phase::Waiting) => return true,
+            Ok(phase) if phase.is_terminal() => return false,
+            _ => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    true
 }
 
 /// The claude `--pid` or `--session` names, or why it cannot be moved.
@@ -264,7 +296,7 @@ fn named(
     // The newest file for a session wins: a session resumed by hand after a
     // crash leaves the dead one's file behind.
     let mut files: Vec<Loose> = loose::files(dirs).into_iter().filter(wanted).collect();
-    files.sort_by_key(|it| (it.runs(loose::proc_start), it.started));
+    files.sort_by_key(|it| (it.runs(loose::claude_start), it.started));
     let Some(claude) = files.pop() else {
         match (args.pid, &args.session) {
             (Some(pid), _) => bail!(
@@ -274,7 +306,7 @@ fn named(
             _ => bail!("name the claude to move with --pid or --session"),
         }
     };
-    if !claude.runs(loose::proc_start) {
+    if !claude.runs(loose::claude_start) {
         bail!("refused: {} is no longer running", claude.pid);
     }
     if held.contains(&claude.session) {
@@ -326,6 +358,11 @@ fn recovery(claude: &Loose) -> String {
 
 /// SIGTERM the claude and wait for it to end.
 fn end(claude: &Loose) -> Result<()> {
+    // Checked again at the signal: `amx _move` signals a moment after the
+    // plan, in another process, and the pid may have ended and been reused.
+    if !claude.runs(loose::claude_start) {
+        bail!("refused: {} is no longer running", claude.pid);
+    }
     let pid = nix::unistd::Pid::from_raw(i32::try_from(claude.pid)?);
     nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM)
         .with_context(|| format!("ending {}", claude.pid))?;

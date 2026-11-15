@@ -234,7 +234,7 @@ pub(crate) fn bring_back(
     // Two claudes on one session write one transcript, with no warning.
     let home = env.get("HOME").map(PathBuf::from).unwrap_or_default();
     let dirs = crate::loose::config_dirs(env, &home, &crate::config::for_dir(&meta.dir).0);
-    if let Some(pid) = crate::loose::live_on(&dirs, session, crate::loose::proc_start) {
+    if let Some(pid) = crate::loose::live_on(&dirs, session, crate::loose::claude_start) {
         bail!("session {session} is live in pid {pid}; end it before resuming {id}");
     }
 

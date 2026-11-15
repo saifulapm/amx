@@ -109,9 +109,25 @@ impl Loose {
     }
 }
 
+/// The most of a sessions file amx reads. claude's are a few hundred bytes.
+const LARGEST: u64 = 64 * 1024;
+
 /// One sessions file, or `None` when a field amx needs is missing.
+///
+/// Only a regular file no larger than [`LARGEST`] is read: a link or a device
+/// put in its place would otherwise be read without end.
 fn read(path: &Path, config_dir: &Path) -> Option<Loose> {
-    let text = std::fs::read_to_string(path).ok()?;
+    use std::io::Read;
+    if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let opened = file.metadata().ok()?;
+    if !opened.is_file() || opened.len() > LARGEST {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(LARGEST).read_to_string(&mut text).ok()?;
     let file: Value = serde_json::from_str(&text).ok()?;
     let pid = u32::try_from(file["pid"].as_u64()?).ok()?;
     let proc_start = match &file["procStart"] {
@@ -131,6 +147,18 @@ fn read(path: &Path, config_dir: &Path) -> Option<Loose> {
         started: file["startedAt"].as_u64().map(|ms| ms / 1000),
         config_dir: config_dir.to_path_buf(),
     })
+}
+
+/// [`proc_start`] for a pid that runs claude: its command line names claude,
+/// as the program or as the script an interpreter runs. A sessions file can
+/// name any pid, and only a claude may be listed or signalled.
+pub fn claude_start(pid: u32) -> Option<String> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let names_claude = cmdline
+        .split(|byte| *byte == 0)
+        .take(2)
+        .any(|word| String::from_utf8_lossy(word).contains("claude"));
+    names_claude.then(|| proc_start(pid)).flatten()
 }
 
 /// The start time of a running pid in clock ticks since boot, field 22 of
@@ -255,6 +283,46 @@ mod tests {
 
         env.insert(CONFIG_ENV.to_string(), "/home/me/.claude".to_string());
         assert_eq!(config_dirs(&env, home, &none), [home.join(".claude")]);
+    }
+
+    #[test]
+    fn a_link_a_device_or_an_oversized_file_in_its_place_is_skipped_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        a_file(dir.path(), 41, idle(41, "s-1"));
+        let sessions = dir.path().join("sessions");
+        std::os::unix::fs::symlink("/dev/zero", sessions.join("42.json")).unwrap();
+        let elsewhere = dir.path().join("elsewhere.json");
+        std::fs::write(&elsewhere, idle(43, "s-3").to_string()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, sessions.join("43.json")).unwrap();
+        let mut huge = idle(44, "s-4");
+        huge["name"] = "x".repeat(LARGEST as usize).into();
+        std::fs::write(sessions.join("44.json"), huge.to_string()).unwrap();
+
+        let found = find(&[dir.path().to_path_buf()], &BTreeSet::new(), all_running);
+        let pids: Vec<u32> = found.iter().map(|loose| loose.pid).collect();
+        assert_eq!(pids, [41]);
+    }
+
+    #[test]
+    fn only_a_process_whose_command_line_names_claude_counts_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("claude");
+        std::os::unix::fs::symlink("/bin/sleep", &named).unwrap();
+        let mut claude = std::process::Command::new(&named)
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut other = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+
+        let (theirs, started) = (claude_start(claude.id()), proc_start(claude.id()));
+        let plain = claude_start(other.id());
+        let _ = (claude.kill(), other.kill(), claude.wait(), other.wait());
+        assert!(started.is_some());
+        assert_eq!(theirs, started);
+        assert_eq!(plain, None);
     }
 
     #[test]

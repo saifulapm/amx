@@ -392,3 +392,66 @@ fn adopt_typed_inside_a_loose_claude_moves_that_claude_and_says_where() {
     assert!(argv.contains(&format!("--resume={SESSION}")), "{argv}");
     assert_eq!(amx.meta(&id)["dir"], dir.display().to_string());
 }
+
+#[test]
+fn adopt_never_signals_a_process_that_is_not_claude_whatever_its_file_says() {
+    let amx = Harness::new();
+    let mut sleeper = std::process::Command::new("/bin/sleep")
+        .arg("60")
+        .spawn()
+        .expect("a sleep");
+    let pid = sleeper.id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start = stat[stat.rfind(')').unwrap() + 1..]
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .to_string();
+    let sessions = amx.home().join(".claude/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        sessions.join(format!("{pid}.json")),
+        serde_json::json!({
+            "pid": pid, "sessionId": SESSION, "cwd": amx.home(),
+            "procStart": start, "status": "idle",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        stdout(&amx.amx(&["ls", "--loose"])),
+        "no claude is running outside amx\n"
+    );
+    let out = adopt(&amx, &["--pid", &pid.to_string()]);
+    let still = sleeper.try_wait().unwrap().is_none();
+    let _ = (sleeper.kill(), sleeper.wait());
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(still, "the sleep was signalled");
+    assert!(common::agents(&amx).is_empty());
+}
+
+#[test]
+fn adopt_whose_new_claude_dies_at_once_says_how_to_get_the_conversation_back() {
+    let amx = Harness::new();
+    let (mut claude, dir) = a_loose_claude(&amx, &[]);
+    let dies = amx.home().join("dies.scenario");
+    std::fs::write(&dies, "exit 2\n").unwrap();
+
+    let out = amx
+        .amx_command(&["adopt", "--pid", &claude.pid().to_string()])
+        .env("MOCK_CLAUDE_SCENARIO", &dies)
+        .output()
+        .expect("running amx adopt");
+
+    assert!(claude.ended());
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(!stdout(&out).contains("moved to amx"), "{out:?}");
+    assert!(
+        common::stderr(&out).contains(&format!(
+            "cd {} && claude --resume {SESSION}",
+            dir.display()
+        )),
+        "{out:?}"
+    );
+}
