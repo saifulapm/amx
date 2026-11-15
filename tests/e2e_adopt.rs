@@ -595,3 +595,19 @@ fn adopt_pid_moves_a_claude_held_in_another_tmux_servers_pane() {
     assert!(argv.contains(&format!("--resume={SESSION}")), "{argv}");
     let _ = tmux(&["kill-server"]);
 }
+
+#[test]
+fn adopt_pid_refuses_a_claude_amx_started_and_one_that_is_not_claude() {
+    let amx = Harness::new();
+    amx.record("an-agent", "%404");
+    let mut ours = amx.loose("sits-loose", amx.home(), &[("AMX_ID", "an-agent")]);
+
+    let out = adopt(&amx, &["--pid", &ours.pid().to_string()]);
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(
+        common::stderr(&out).contains(&format!("refused: {} was started by amx", ours.pid())),
+        "{out:?}"
+    );
+    assert!(!ours.ended());
+    assert_eq!(common::agents(&amx), ["an-agent"]);
+}

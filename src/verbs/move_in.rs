@@ -325,7 +325,17 @@ fn named(
         }
     };
     if !claude.runs(loose::claude_start) {
-        bail!("refused: {} is no longer running", claude.pid);
+        match claude.runs(loose::proc_start) {
+            true => bail!("refused: {} is not running claude", claude.pid),
+            false => bail!("refused: {} is no longer running", claude.pid),
+        }
+    }
+    if loose::started_by_amx(claude.pid) {
+        bail!(
+            "refused: {} was started by amx, as agent {}",
+            claude.pid,
+            loose::environ_of(claude.pid, crate::hook::ID_ENV).unwrap_or_default()
+        );
     }
     // Ending one would start the conversation while the other still writes it.
     if let Some(other) = files.iter().find(|it| {
