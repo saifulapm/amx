@@ -62,6 +62,15 @@ pub fn find(
     held: &BTreeSet<String>,
     running: impl Fn(u32) -> Option<String>,
 ) -> Vec<Loose> {
+    files(dirs)
+        .into_iter()
+        .filter(|it| !held.contains(&it.session) && it.runs(&running))
+        .collect()
+}
+
+/// Every sessions file under `dirs` that reads, live or not, one per pid: the
+/// first account dir's wins.
+pub fn files(dirs: &[PathBuf]) -> Vec<Loose> {
     let mut found: BTreeMap<u32, Loose> = BTreeMap::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else {
@@ -72,19 +81,32 @@ pub fn find(
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let Some(loose) = read(&path, dir) else {
-                continue;
-            };
-            if found.contains_key(&loose.pid) || held.contains(&loose.session) {
-                continue;
+            if let Some(loose) = read(&path, dir) {
+                found.entry(loose.pid).or_insert(loose);
             }
-            if running(loose.pid).as_deref() != Some(loose.proc_start.as_str()) {
-                continue;
-            }
-            found.insert(loose.pid, loose);
         }
     }
     found.into_values().collect()
+}
+
+/// The pid of a running claude on `session`, held by a record or not.
+pub fn live_on(
+    dirs: &[PathBuf],
+    session: &str,
+    running: impl Fn(u32) -> Option<String>,
+) -> Option<u32> {
+    files(dirs)
+        .into_iter()
+        .find(|it| it.session == session && it.runs(&running))
+        .map(|it| it.pid)
+}
+
+impl Loose {
+    /// Whether the process the file names still runs: its pid is alive with
+    /// the start time the file gives.
+    pub fn runs(&self, running: impl Fn(u32) -> Option<String>) -> bool {
+        running(self.pid).as_deref() == Some(self.proc_start.as_str())
+    }
 }
 
 /// One sessions file, or `None` when a field amx needs is missing.

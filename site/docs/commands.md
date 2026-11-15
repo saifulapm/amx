@@ -492,13 +492,22 @@ amx adopt --session <ID> [--task <TEXT>] [--name <NAME>]
 | `--name <NAME>` | Use this as the id. |
 | `--pid <PID>` | Move the claude with this pid, running outside amx, into a new amx pane. |
 | `--session <ID>` | Move the claude on this conversation, as `--pid` does. |
+| `--force` | Move a claude that is mid-turn or has background shells or subagents running. The turn in progress and that work are lost. |
 
 With `--pid` or `--session`, adopt moves a claude that runs outside amx, as
 `amx ls --loose` lists them. No process can move into tmux, so amx ends the
 claude and resumes its conversation in a new pane: idle, in the claude's
 directory, with its flags and its `CLAUDE_CONFIG_DIR`, and no worktree. It
 prints `moved to amx: amx attach <id>`. The move is a real spawn, so `stop`,
-`resume` and `fork` all work on it afterwards.
+`resume` and `fork` all work on it afterwards. An unsent draft in the old
+claude's input is lost.
+
+The move refuses, and leaves the claude running, when the claude is mid-turn
+or has background work running (unless `--force`), when it is run from inside
+an amx agent, or when the pid no longer runs the claude its sessions file
+named. A claude that is still running 5 seconds after SIGTERM is left alone,
+and nothing is started. `amx resume` likewise refuses a conversation that a
+claude outside amx is running.
 
 Without them, adopt registers the agent in the pane it is typed in. It reads `$TMUX_PANE` and the vendor's session variable
 (`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID` or `CODEX_SESSION_ID`). opencode

@@ -55,6 +55,12 @@ pub fn run(
     args: &AdoptArgs,
     out: &mut impl Write,
 ) -> Result<i32> {
+    // An agent's own claude would end with the one it moves, mid-command.
+    if let Some(id) = env.get(crate::hook::ID_ENV)
+        && Agent::open(root, id).is_ok()
+    {
+        bail!("refused: an amx agent cannot adopt another claude");
+    }
     let _held = adopt::hold(root)?;
     let mut dirs = loose::config_dirs(env, home, config);
     // A pid names its own account dir, which may be one amx does not scan.
@@ -63,16 +69,20 @@ pub fn run(
     {
         dirs.push(theirs);
     }
-    let found = loose::find(&dirs, &ls::held(root)?, loose::proc_start);
-    let Some(claude) = found.into_iter().find(|it| {
-        Some(it.pid) == args.pid || Some(it.session.as_str()) == args.session.as_deref()
-    }) else {
-        match (args.pid, &args.session) {
-            (Some(pid), _) => bail!("no claude outside amx has pid {pid}"),
-            (_, Some(session)) => bail!("no claude outside amx is on session {session}"),
-            _ => bail!("name the claude to move with --pid or --session"),
+    let claude = named(&dirs, &ls::held(root)?, args)?;
+    if !args.force {
+        match claude.status.as_str() {
+            "busy" => bail!(
+                "refused: {} is mid-turn; --force adopts anyway, and the turn in progress is lost",
+                claude.pid
+            ),
+            "shell" => bail!(
+                "refused: {} has background work running; --force adopts anyway, and ends it",
+                claude.pid
+            ),
+            _ => {}
         }
-    };
+    }
 
     let account = account_of(claude.pid);
     let flags = flags_of(&cmdline_of(claude.pid));
@@ -122,6 +132,40 @@ pub fn run(
     }
     writeln!(out, "moved to amx: amx attach {id}")?;
     Ok(exit::OK)
+}
+
+/// The claude `--pid` or `--session` names, or why it cannot be moved.
+fn named(
+    dirs: &[std::path::PathBuf],
+    held: &std::collections::BTreeSet<String>,
+    args: &AdoptArgs,
+) -> Result<Loose> {
+    let wanted = |it: &Loose| {
+        Some(it.pid) == args.pid || Some(it.session.as_str()) == args.session.as_deref()
+    };
+    // The newest file for a session wins: a session resumed by hand after a
+    // crash leaves the dead one's file behind.
+    let mut files: Vec<Loose> = loose::files(dirs).into_iter().filter(wanted).collect();
+    files.sort_by_key(|it| (it.runs(loose::proc_start), it.started));
+    let Some(claude) = files.pop() else {
+        match (args.pid, &args.session) {
+            (Some(pid), _) => bail!(
+                "refused: {pid} has no claude sessions file; --session <id> names its conversation"
+            ),
+            (_, Some(session)) => bail!("refused: no claude is running on session {session}"),
+            _ => bail!("name the claude to move with --pid or --session"),
+        }
+    };
+    if !claude.runs(loose::proc_start) {
+        bail!("refused: {} is no longer running", claude.pid);
+    }
+    if held.contains(&claude.session) {
+        bail!(
+            "refused: {} is on a conversation an amx agent already holds",
+            claude.pid
+        );
+    }
+    Ok(claude)
 }
 
 /// Write the stopped record and the handoff its resume starts from.

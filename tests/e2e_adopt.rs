@@ -222,3 +222,141 @@ fn two_adopts_of_one_claude_at_once_make_one_record() {
     assert_eq!(sorted, [0, 1], "{codes:?}");
     assert_eq!(common::agents(&amx).len(), 1);
 }
+
+/// A loose stand-in playing `scenario` on [`SESSION`] in `<home>/app`.
+fn a_loose(amx: &Harness, scenario: &str) -> common::Loose {
+    amx.config(&format!("agent = \"{}\"\n", amx.mock()));
+    let dir = amx.home().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    amx.loose(scenario, &dir, &[("MOCK_CLAUDE_SESSION", SESSION)])
+}
+
+/// Assert `out` is a refusal saying `reason`, with the claude still running
+/// and no record written.
+fn refused(amx: &Harness, out: &std::process::Output, reason: &str, claude: &mut common::Loose) {
+    assert_eq!(code(out), 1, "{out:?}");
+    assert!(common::stderr(out).contains(reason), "{out:?}");
+    assert!(!claude.ended(), "a refusal leaves the claude running");
+    assert!(common::agents(amx).is_empty(), "{:?}", common::agents(amx));
+}
+
+#[test]
+fn adopt_refuses_a_claude_mid_turn_and_force_moves_it_anyway() {
+    let amx = Harness::new();
+    let mut claude = a_loose(&amx, "sits-busy");
+    let pid = claude.pid().to_string();
+
+    let out = adopt(&amx, &["--pid", &pid]);
+    refused(
+        &amx,
+        &out,
+        &format!("refused: {pid} is mid-turn; --force adopts anyway"),
+        &mut claude,
+    );
+
+    moved(&adopt(&amx, &["--pid", &pid, "--force"]));
+    amx.until("the old claude to end", || claude.ended().then_some(()));
+}
+
+#[test]
+fn adopt_refuses_a_claude_with_background_work_running() {
+    let amx = Harness::new();
+    let mut claude = a_loose(&amx, "sits-with-a-shell");
+    let pid = claude.pid().to_string();
+
+    let out = adopt(&amx, &["--pid", &pid]);
+    refused(
+        &amx,
+        &out,
+        &format!("refused: {pid} has background work running; --force adopts anyway"),
+        &mut claude,
+    );
+}
+
+#[test]
+fn adopt_refuses_when_run_from_inside_an_amx_agent() {
+    let amx = Harness::new();
+    let mut claude = a_loose(&amx, "sits-loose");
+    amx.record("an-agent", "%404");
+
+    let out = amx
+        .amx_command(&["adopt", "--pid", &claude.pid().to_string()])
+        .env("AMX_ID", "an-agent")
+        .output()
+        .expect("running amx adopt");
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(
+        common::stderr(&out).contains("refused: an amx agent cannot adopt another claude"),
+        "{out:?}"
+    );
+    assert!(!claude.ended());
+    assert_eq!(common::agents(&amx), ["an-agent"]);
+}
+
+#[test]
+fn adopt_refuses_a_pid_whose_start_is_not_the_one_its_file_names() {
+    let amx = Harness::new();
+    let mut claude = a_loose(&amx, "sits-loose");
+    let pid = claude.pid().to_string();
+    // The file a claude before it left, for a pid the system has reused.
+    let file = amx.home().join(format!(".claude/sessions/{pid}.json"));
+    let mut forged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    forged["procStart"] = "1".into();
+    std::fs::write(&file, forged.to_string()).unwrap();
+
+    let out = adopt(&amx, &["--pid", &pid]);
+    refused(
+        &amx,
+        &out,
+        &format!("refused: {pid} is no longer running"),
+        &mut claude,
+    );
+}
+
+#[test]
+fn adopt_of_a_claude_that_will_not_end_starts_nothing() {
+    let amx = Harness::new();
+    let mut claude = a_loose(&amx, "sits-and-will-not-end");
+    let pid = claude.pid().to_string();
+
+    let out = adopt(&amx, &["--pid", &pid]);
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(
+        common::stderr(&out).contains(&format!("{pid} did not end; nothing was started")),
+        "{out:?}"
+    );
+    assert!(!claude.ended());
+    assert!(
+        common::agents(&amx).is_empty(),
+        "{:?}",
+        common::agents(&amx)
+    );
+}
+
+#[test]
+fn resume_refuses_a_session_live_in_another_process() {
+    let amx = Harness::new();
+    let (claude, _) = a_loose_claude(&amx, &[]);
+    let id = moved(&adopt(&amx, &["--pid", &claude.pid().to_string()]));
+    amx.until_state(&id, "idle");
+    assert_eq!(code(&amx.amx(&["stop", &id])), 0);
+    // Someone runs `claude --resume` on the same conversation by hand.
+    let session = amx.meta(&id)["session"].as_str().unwrap().to_string();
+    let again = amx.loose(
+        "sits-loose",
+        amx.home(),
+        &[("MOCK_CLAUDE_SESSION", &session)],
+    );
+
+    let out = amx
+        .amx_command(&["resume", &id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .output()
+        .expect("running amx resume");
+    assert_eq!(code(&out), 1, "{out:?}");
+    assert!(
+        common::stderr(&out).contains(&format!("session {session} is live in pid {}", again.pid())),
+        "{out:?}"
+    );
+}

@@ -1,0 +1,4 @@
+# A claude outside amx that ignores SIGTERM, as a wedged one would.
+ignore TERM
+sessionfile idle
+sleep 600000

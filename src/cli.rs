@@ -708,6 +708,11 @@ pub struct AdoptArgs {
     /// does.
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
+
+    /// Move a claude that is mid-turn or has background work running. The
+    /// turn in progress, and its shells and subagents, are lost.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// The vendor for one spawn and the settings it launches with.
