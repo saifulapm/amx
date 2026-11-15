@@ -385,8 +385,10 @@ fn hints(screen: &Screen) -> Vec<Hint<'static>> {
     let mut said = match list.items().get(list.cursor()) {
         Some(Item::Heading(..)) => vec![enters(screen), ("ctrl+x", "clears the group")],
         Some(Item::Fold(..) | Item::Sub(..)) => vec![enters(screen)],
-        // The cursor never rests on a blank.
-        Some(Item::Blank) => Vec::new(),
+        // The cursor never rests on a blank, and the heading over the claudes
+        // outside amx does nothing.
+        Some(Item::Blank | Item::Outside(_)) => Vec::new(),
+        Some(Item::Loose(_)) => vec![enters(screen)],
         // An ended agent cannot be attached or stopped; ctrl+x forgets it.
         Some(Item::Agent(_)) => {
             let card = match screen.card.is_some() {
@@ -421,6 +423,7 @@ fn enters(screen: &Screen) -> Hint<'static> {
             false => ("enter", "shuts it"),
         },
         Some(Item::Fold(..) | Item::Sub(..)) => ("enter", "shows them"),
+        Some(Item::Loose(_)) => ("enter", "moves it into amx"),
         _ => ("enter", "attach"),
     }
 }

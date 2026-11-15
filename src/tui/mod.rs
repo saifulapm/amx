@@ -1397,7 +1397,15 @@ impl Screen {
     fn reread(&mut self, root: &Path, scope: &Scope) -> Result<()> {
         // Narrowed before the reading, so an agent outside the scope costs no
         // screen, and a project view fetches only that project's origin.
-        let records = derive::records(root)?
+        let records = derive::records(root)?;
+        // Every record's session, in scope or not, so a scoped view does not
+        // take an agent outside its scope for a claude outside amx.
+        let held = records
+            .iter()
+            .filter_map(|record| record.meta.session.clone())
+            .collect();
+        self.list.find_outside(&held, scope.under());
+        let records = records
             .into_iter()
             .filter(|record| scope.covers(&record.meta))
             .collect();
@@ -1836,6 +1844,10 @@ impl Screen {
                     self.follow_the_cursor();
                 } else if self.list.on_fold() {
                     self.list.unfold();
+                } else if key.code == KeyCode::Enter && self.list.selected_loose().is_some() {
+                    // Enter alone: the move ends the claude, so the walking
+                    // keys `l` and right never reach it.
+                    self.move_in(root, config);
                 } else {
                     return self.bring_forward(root, here);
                 }
@@ -2447,6 +2459,35 @@ impl Screen {
         // A resumed agent is in a pane this reading does not know.
         self.acted();
         Ok(self.arrived(id, reached))
+    }
+
+    /// Move the claude outside amx under the cursor into an amx pane, as
+    /// `amx adopt --pid` does, and land on its row once a reading has it.
+    ///
+    /// A refusal, such as a busy claude, is the notice and leaves the view
+    /// open.
+    fn move_in(&mut self, root: &Path, config: &Config) {
+        let Some(pid) = self.list.selected_loose().map(|claude| claude.pid) else {
+            return;
+        };
+        let env = spawn::env_snapshot(std::env::vars());
+        let home = std::env::home_dir().unwrap_or_default();
+        let args = crate::cli::AdoptArgs {
+            pid: Some(pid),
+            ..Default::default()
+        };
+        let mut said = Vec::new();
+        match verbs::move_in::run(root, &env, &home, config, &args, &mut said) {
+            Ok(_) => {
+                let said = String::from_utf8_lossy(&said).trim().to_string();
+                self.started = said
+                    .strip_prefix("moved to amx: amx attach ")
+                    .map(str::to_string);
+                self.notice = Some(Notice::Advice(said));
+            }
+            Err(e) => self.notice = Some(Notice::Refused(format!("{e:#}"))),
+        }
+        self.acted();
     }
 
     /// Go to the `at`th agent on the wall, counted from the top.

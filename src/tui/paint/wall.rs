@@ -176,6 +176,27 @@ fn line(
             ),
             None => Line::raw(""),
         },
+        Item::Outside(count) => {
+            let label = match at.hovered {
+                true => Style::new(),
+                false => dim(),
+            };
+            Line::styled(format!("OUTSIDE AMX {count}"), label)
+        }
+        Item::Loose(_) => match list.loose(item) {
+            // The columns `amx ls --loose` prints. The status and the dir
+            // come from claude's own file, so they are made inert.
+            Some(claude) => Line::styled(
+                format!(
+                    "{GUTTER}{}  {:<5}  {}",
+                    claude.pid,
+                    inert(&claude.status),
+                    inert(&list.dir_of(claude))
+                ),
+                dim(),
+            ),
+            None => Line::raw(""),
+        },
         Item::Blank => Line::raw(""),
     };
     match at.selected {

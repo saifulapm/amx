@@ -15,6 +15,7 @@
 //!   list is rebuilt on every reading.
 
 use crate::derive::{Evidence, View};
+use crate::loose::{self, Loose};
 use crate::pr::{self, Pr, Standing};
 use crate::store::{Ask, Meta, Phase};
 use serde::{Deserialize, Serialize};
@@ -509,6 +510,12 @@ pub enum Item {
     /// The fold under a parent row, and how many of its descendants it hides.
     /// Opening it unfolds the parent's heading.
     Sub(usize, usize),
+    /// The heading over the claudes running outside amx, and how many there
+    /// are. It has no group: they have no record to arrange.
+    Outside(usize),
+    /// A claude running outside amx, by pid, which outlasts the reading that
+    /// replaces the list's claudes before the cursor is followed.
+    Loose(u32),
     /// Spacing above a heading.
     Blank,
 }
@@ -525,6 +532,8 @@ pub enum Key {
 enum On {
     Agent(String),
     Heading(Key),
+    /// A claude outside amx, by pid.
+    Loose(u32),
     Nothing,
 }
 
@@ -672,6 +681,11 @@ pub struct List {
     /// Each agent's phase in the previous reading, to see a question or a
     /// failure begin that only the screen shows. Not persisted.
     phases: HashMap<String, Phase>,
+    /// The claudes running outside amx, drawn at the foot. Not persisted.
+    outside: Vec<Loose>,
+    /// Source of `outside`, given the sessions records hold. Injected for
+    /// tests, which must never see the machine's own claudes.
+    finds: fn(&BTreeSet<String>) -> Vec<Loose>,
 }
 
 impl Default for List {
@@ -712,8 +726,23 @@ impl Default for List {
             home: std::env::home_dir(),
             woke: false,
             phases: HashMap::new(),
+            outside: Vec::new(),
+            finds: if cfg!(test) {
+                |_| Vec::new()
+            } else {
+                outside_amx
+            },
         }
     }
+}
+
+/// The claudes on this machine no record holds, under every account dir amx
+/// reads, as `amx ls --loose` lists them.
+fn outside_amx(held: &BTreeSet<String>) -> Vec<Loose> {
+    let env = crate::spawn::env_snapshot(std::env::vars());
+    let home = std::env::home_dir().unwrap_or_default();
+    let dirs = loose::config_dirs(&env, &home, crate::config::current());
+    loose::find(&dirs, held, loose::proc_start)
 }
 
 impl List {
@@ -1322,6 +1351,39 @@ impl List {
         self.agent(*self.items.get(self.cursor)?)
     }
 
+    /// Read the claudes running outside amx for the next reading to draw,
+    /// leaving out the sessions in `held` and any not running under `under`.
+    pub fn find_outside(&mut self, held: &BTreeSet<String>, under: Option<&Path>) {
+        self.outside = (self.finds)(held)
+            .into_iter()
+            .filter(|claude| under.is_none_or(|under| claude.cwd.starts_with(under)))
+            .collect();
+    }
+
+    /// The claude outside amx on this line, if any.
+    pub fn loose(&self, item: Item) -> Option<&Loose> {
+        match item {
+            Item::Loose(pid) => self.outside.iter().find(|claude| claude.pid == pid),
+            _ => None,
+        }
+    }
+
+    /// Where a claude outside amx runs, the way a heading writes a path.
+    pub fn dir_of(&self, claude: &Loose) -> String {
+        shorten(&claude.cwd, self.home.as_deref())
+    }
+
+    /// The claude outside amx under the cursor, if any.
+    pub fn selected_loose(&self) -> Option<&Loose> {
+        self.loose(*self.items.get(self.cursor)?)
+    }
+
+    /// Replace the source of the claudes outside amx with a fake.
+    #[cfg(test)]
+    pub(super) fn finding(&mut self, finds: fn(&BTreeSet<String>) -> Vec<Loose>) {
+        self.finds = finds;
+    }
+
     /// Whether the cursor is on a fold line.
     pub fn on_fold(&self) -> bool {
         matches!(
@@ -1683,6 +1745,16 @@ impl List {
                 self.projects = projects;
                 self.items = items;
             }
+        }
+        // At the foot on every axis, and left out of a narrowing, which names
+        // agents.
+        if !self.outside.is_empty() && self.filters.label().is_none() {
+            if !self.items.is_empty() {
+                self.items.push(Item::Blank);
+            }
+            self.items.push(Item::Outside(self.outside.len()));
+            self.items
+                .extend(self.outside.iter().map(|claude| Item::Loose(claude.pid)));
         }
         self.settle();
     }
@@ -2180,6 +2252,7 @@ impl List {
                 Some(key) => On::Heading(key),
                 None => On::Nothing,
             },
+            Some(Item::Loose(pid)) => On::Loose(*pid),
             _ => On::Nothing,
         }
     }
@@ -2192,6 +2265,10 @@ impl List {
                 Item::Heading(under, _) => self.key(*under).as_ref() == Some(key),
                 _ => false,
             }),
+            On::Loose(pid) => self
+                .items
+                .iter()
+                .position(|item| *item == Item::Loose(*pid)),
             On::Nothing => None,
         };
         match (found, held) {
@@ -2208,10 +2285,11 @@ impl List {
             // The agent left the list. Its old line now holds another agent,
             // which a key meant for the gone one would hit, so move to the
             // heading above instead. No single key on a heading is destructive.
-            (None, On::Agent(_)) if !self.items.is_empty() => {
+            // The same holds for a claude outside amx, which enter would end.
+            (None, On::Agent(_) | On::Loose(_)) if !self.items.is_empty() => {
                 let over = self.items[..=self.cursor.min(self.items.len() - 1)]
                     .iter()
-                    .rposition(|item| matches!(item, Item::Heading(..)))
+                    .rposition(|item| matches!(item, Item::Heading(..) | Item::Outside(_)))
                     .or_else(|| {
                         self.items
                             .iter()
@@ -2645,6 +2723,11 @@ mod tests {
                 Item::Fold(_, hidden) => format!("… {hidden} more"),
                 Item::Sub(n, hidden) => {
                     format!("{}… {hidden} sub", list.gutter(Item::Sub(*n, *hidden)))
+                }
+                Item::Outside(count) => format!("outside {count}"),
+                Item::Loose(_) => {
+                    let claude = list.loose(*item).unwrap();
+                    format!("{} {}", claude.pid, claude.cwd.display())
                 }
                 Item::Blank => String::new(),
             })
@@ -6238,6 +6321,73 @@ mod tests {
         list.show(vec![view("port-importer-b2c", Phase::Working, 20)]);
         assert!(list.agent_by_id("fix-login-a1b").is_none());
         assert_eq!(list.prs.len(), 1, "{:?}", list.prs);
+    }
+
+    /// A claude outside amx in `dir`.
+    fn a_loose(pid: u32, dir: &str) -> Loose {
+        Loose {
+            pid,
+            session: format!("s-{pid}"),
+            cwd: dir.into(),
+            status: "idle".into(),
+            proc_start: "777".into(),
+            started: None,
+            config_dir: "/home/me/.claude".into(),
+        }
+    }
+
+    fn two_outside(_: &BTreeSet<String>) -> Vec<Loose> {
+        vec![a_loose(41, "/work/app"), a_loose(52, "/srv/api")]
+    }
+
+    #[test]
+    fn outside_draws_the_claudes_outside_amx_at_the_foot_and_no_heading_for_none() {
+        let mut list = List::default();
+        list.find_outside(&BTreeSet::new(), None);
+        list.show(vec![view("busy-b2c", Phase::Working, 20)]);
+        assert_eq!(lines(&list), ["Working (1)", "busy-b2c"]);
+
+        list.finding(two_outside);
+        list.find_outside(&BTreeSet::new(), None);
+        list.show(vec![view("busy-b2c", Phase::Working, 20)]);
+        assert_eq!(
+            lines(&list),
+            [
+                "Working (1)",
+                "busy-b2c",
+                "",
+                "outside 2",
+                "41 /work/app",
+                "52 /srv/api"
+            ]
+        );
+
+        // A view scoped to a directory draws the claudes running under it.
+        list.find_outside(&BTreeSet::new(), Some(Path::new("/srv")));
+        list.show(vec![view("busy-b2c", Phase::Working, 20)]);
+        assert_eq!(
+            lines(&list),
+            ["Working (1)", "busy-b2c", "", "outside 1", "52 /srv/api"]
+        );
+    }
+
+    #[test]
+    fn outside_keeps_the_cursor_on_its_claude_when_an_agent_arrives_above() {
+        let mut list = List::default();
+        list.finding(two_outside);
+        list.find_outside(&BTreeSet::new(), None);
+        list.show(Vec::new());
+        list.down();
+        list.down();
+        assert_eq!(list.selected_loose().map(|claude| claude.pid), Some(52));
+
+        list.find_outside(&BTreeSet::new(), None);
+        list.show(vec![view("busy-b2c", Phase::Working, 20)]);
+        assert_eq!(list.selected_loose().map(|claude| claude.pid), Some(52));
+        assert!(
+            list.selected().is_none(),
+            "a claude outside amx is no agent"
+        );
     }
 
     #[test]
