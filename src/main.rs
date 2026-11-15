@@ -22,6 +22,7 @@ mod furniture;
 mod hook;
 mod ids;
 mod install;
+mod loose;
 mod models;
 mod notify;
 mod paths;
@@ -91,7 +92,8 @@ fn run(cli: &cli::Cli) -> i32 {
         }
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(args)),
         Some(cli::Command::Sub(args)) => finish(verbs::sub::from_env(args)),
-        Some(cli::Command::Ls { json, dir }) => finish(verbs::ls::from_env(
+        Some(cli::Command::Ls { loose: true, .. }) => finish(verbs::ls::loose_from_env()),
+        Some(cli::Command::Ls { json, dir, .. }) => finish(verbs::ls::from_env(
             *json,
             dir.as_deref().or(cli.dir.as_deref()),
         )),
@@ -280,7 +282,7 @@ mod tests {
 
     /// The scrub every run of this suite needs, quoted by the guard below.
     const CLEAN_ROOM: &str = "env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID \
-        -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test";
+        -u TMUX -u TMUX_PANE -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test";
 
     #[test]
     fn the_readme_gives_the_clean_room_line_the_guard_names() {
@@ -308,6 +310,10 @@ mod tests {
             "AMX_ID",
             "TMUX",
             "TMUX_PANE",
+            // The account and conversation of the claude the suite runs in:
+            // a loose-claude test would read it, and an adopt could end it.
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_SESSION_ID",
         ]
         .into_iter()
         .filter(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))

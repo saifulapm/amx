@@ -1,0 +1,6 @@
+# A claude started outside amx: it keeps claude's sessions file, idle at its
+# prompt, as a claude typed in a terminal does.
+argv
+sessionfile idle
+print waiting at the prompt
+sleep 600000

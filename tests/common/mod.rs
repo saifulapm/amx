@@ -428,6 +428,83 @@ impl Harness {
     }
 }
 
+/// A stand-in claude started outside amx and outside tmux, as one typed in a
+/// terminal is. Killed on drop.
+pub struct Loose {
+    child: std::process::Child,
+    /// Where its stdout goes, `argv:` line included.
+    said: PathBuf,
+}
+
+impl Loose {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// What it has printed so far.
+    pub fn said(&self) -> String {
+        std::fs::read_to_string(&self.said).unwrap_or_default()
+    }
+
+    /// Whether the process has ended (and been reaped).
+    pub fn ended(&mut self) -> bool {
+        self.child.try_wait().ok().flatten().is_some()
+    }
+}
+
+impl Drop for Loose {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Harness {
+    /// Start mock-claude playing `scenario` in `dir` under this harness's
+    /// home, outside tmux, with `env` on top, and wait for its sessions file.
+    ///
+    /// Its account dir is `CLAUDE_CONFIG_DIR` when `env` names one, else
+    /// `~/.claude` under this harness's home.
+    pub fn loose(&self, scenario: &str, dir: &Path, env: &[(&str, &str)]) -> Loose {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let said = self.home.path().join(format!(
+            "loose-{}.out",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut command = Command::new(fixtures().join("mock-claude"));
+        command
+            .current_dir(dir)
+            .env("HOME", self.home.path())
+            .env("AMX_STATE_DIR", self.state.path())
+            .env("AMX_BIN", AMX)
+            .env("MOCK_CLAUDE_SCENARIO", self.scenario(scenario))
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env_remove("AMX_ID")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&said).expect("the stand-in's output file"))
+            .stderr(std::process::Stdio::null());
+        leaks_nothing(&mut command);
+        command.env_remove("AMX_BIN").env("AMX_BIN", AMX);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let child = command.spawn().expect("starting a loose stand-in");
+        let pid = child.id();
+        let account = env
+            .iter()
+            .find(|(name, _)| *name == "CLAUDE_CONFIG_DIR")
+            .map(|(_, dir)| PathBuf::from(dir))
+            .unwrap_or_else(|| self.home.path().join(".claude"));
+        let file = account.join(format!("sessions/{pid}.json"));
+        let loose = Loose { child, said };
+        self.until("the loose stand-in's sessions file", || {
+            file.exists().then_some(())
+        });
+        loose
+    }
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
         // Kill the server and every pane on it.
@@ -455,6 +532,8 @@ fn leaks_nothing(command: &mut Command) {
         "AMX_WORKTREE",
         "AMX_BIN",
         "CLAUDE_CONFIG_DIR",
+        // Names the claude this suite runs inside, which an adopt would end.
+        "CLAUDE_CODE_SESSION_ID",
         "CODEX_HOME",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_CONFIG",

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::derive::{self, View};
 use crate::store::{Meta, now};
 use crate::verbs::send;
-use crate::{exit, gc, paths, spawn};
+use crate::{exit, gc, loose, paths, spawn};
 
 /// Run the verb against the machine.
 pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
@@ -40,6 +40,57 @@ pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Writ
         table(&views, out)?;
     }
     Ok(exit::OK)
+}
+
+/// `amx ls --loose` against the machine.
+pub fn loose_from_env() -> Result<i32> {
+    let root = paths::state_root()?;
+    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let home = std::env::home_dir().unwrap_or_default();
+    let dirs = loose::config_dirs(&env, &home, crate::config::current());
+    let mut out = std::io::stdout().lock();
+    loose_table(
+        &loose::find(&dirs, &held(&root)?, loose::proc_start),
+        now(),
+        &mut out,
+    )?;
+    Ok(exit::OK)
+}
+
+/// Every session a record names, ended records included.
+pub fn held(root: &Path) -> Result<std::collections::BTreeSet<String>> {
+    Ok(derive::records(root)?
+        .into_iter()
+        .filter_map(|record| record.meta.session)
+        .collect())
+}
+
+/// One row per loose claude: pid, directory, status and age.
+fn loose_table(found: &[loose::Loose], now: u64, out: &mut impl Write) -> Result<()> {
+    if found.is_empty() {
+        writeln!(out, "no claude is running outside amx")?;
+        return Ok(());
+    }
+    let widest = found
+        .iter()
+        .map(|it| it.pid.to_string().len())
+        .max()
+        .unwrap_or(0);
+    for it in found {
+        let age = it
+            .started
+            .map(|started| derive::in_words(now.saturating_sub(started)))
+            .unwrap_or_else(|| "-".to_string());
+        writeln!(
+            out,
+            "{:>widest$}  {:<5}  {:>5}  {}",
+            it.pid,
+            super::inert_line(&it.status),
+            age,
+            super::inert_line(&it.cwd.display().to_string()),
+        )?;
+    }
+    Ok(())
 }
 
 /// Which agents a reading is about: every agent, or with `--dir` those under

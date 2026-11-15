@@ -74,13 +74,13 @@ cargo build --release
 The end-to-end suites drive real tmux servers and need tmux 3.5 or newer, and the CI summary's test needs python3. The suite must not see your own agents, so run it outside an amx pane over an empty home, as the suite's own guard asks:
 
 ```sh
-env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test
+env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test
 ```
 
 For the unit tests alone:
 
 ```sh
-env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test --bin amx
+env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID -u TMUX -u TMUX_PANE -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID HOME=$(mktemp -d) CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup cargo test --bin amx
 ```
 
 Keep the build out of `/tmp`: a target directory there runs out of room part way through. Point `CARGO_TARGET_DIR` somewhere with space, such as `~/.cache`, if the checkout itself sits under `/tmp`.

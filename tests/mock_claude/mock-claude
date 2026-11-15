@@ -18,6 +18,10 @@
 #   transcript <json>     append a line to the transcript the hooks named.
 #   ignore <signal>       ignore this signal, for an agent that will not stop.
 #   exit <code>           exit with this code.
+#   sessionfile <status>  write claude's sessions file for this process under
+#                         $CLAUDE_CONFIG_DIR (else ~/.claude) with this status:
+#                         idle, busy or shell. It is left behind on exit, as a
+#                         killed claude leaves it.
 #
 # @SESSION@, @SESSION2@, @TRANSCRIPT@ and @TRANSCRIPT2@ are substituted when
 # the scenario is read. @NOW@ is substituted as each transcript line is written.
@@ -75,6 +79,21 @@ deliver() {
 	[ -z "$interior" ] || fields="$fields,$interior"
 
 	printf '%s' "{$fields}" | "$amx" _hook
+}
+
+# Write claude's sessions/<pid>.json for this process, with status $1.
+#
+# procStart is field 22 of /proc/<pid>/stat, counted after the `)` that closes
+# the command name. The file is written whole and moved in place.
+sessions_file() {
+	sessions=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions
+	mkdir -p "$sessions"
+	start=$(sed 's/.*) //' "/proc/$$/stat" | cut -d' ' -f20)
+	inside=
+	[ -z "${TMUX:-}" ] || inside=",\"tmux\":\"${TMUX%%,*}\""
+	printf '{"pid":%d,"sessionId":"%s","cwd":"%s","procStart":"%s","startedAt":%s000,"kind":"interactive","status":"%s"%s}\n' \
+		"$$" "$session" "$(pwd)" "$start" "$(date +%s)" "$1" "$inside" >"$sessions/$$.json.new"
+	mv "$sessions/$$.json.new" "$sessions/$$.json"
 }
 
 # Sleep for $1 milliseconds.
@@ -157,6 +176,7 @@ while IFS= read -r line <&3 || [ -n "$line" ]; do
 	sleep) nap "$rest" ;;
 	await) await "$rest" ;;
 	ignore) trap '' "$rest" ;;
+	sessionfile) sessions_file "$rest" ;;
 	transcript)
 		mkdir -p "$(dirname "$transcript")"
 		printf '%s\n' "$(printf '%s' "$rest" | sed "s|@NOW@|$(now)|g")" >>"$transcript"

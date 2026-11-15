@@ -96,6 +96,11 @@ pub enum Command {
         /// contains it.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
+
+        /// List the claudes running outside amx instead: each live claude
+        /// process whose conversation no agent holds.
+        #[arg(long, conflicts_with_all = ["json", "dir"])]
+        loose: bool,
     },
 
     /// Show one agent, and which signal its state came from.
@@ -924,7 +929,7 @@ mod tests {
     #[test]
     fn ls_the_verb_takes_the_directory_the_reading_is_about() {
         let cli = parse(&["amx", "ls", "--dir", "/srv/app", "--json"]).unwrap();
-        let Some(Command::Ls { json, dir }) = cli.command else {
+        let Some(Command::Ls { json, dir, .. }) = cli.command else {
             panic!("expected ls");
         };
         assert!(json);
