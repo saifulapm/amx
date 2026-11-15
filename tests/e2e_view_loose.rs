@@ -128,6 +128,10 @@ fn enter_on_a_claude_outside_amx_moves_it_onto_the_wall() {
     });
     amx.until("its row among the agents, and no outside heading", || {
         let drawn = amx.capture(&view);
-        (drawn.contains(&id) && !drawn.contains("OUTSIDE AMX")).then_some(())
+        // The notice names the id too, so the row is a line of its own.
+        let row = drawn
+            .lines()
+            .any(|line| line.contains(&id) && !line.contains("moved to amx"));
+        (row && !drawn.contains("OUTSIDE AMX")).then_some(())
     });
 }
