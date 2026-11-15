@@ -65,7 +65,26 @@ pub fn find(
     files(dirs)
         .into_iter()
         .filter(|it| !held.contains(&it.session) && it.runs(&running))
+        .filter(|it| !started_by_amx(it.pid))
         .collect()
+}
+
+/// Whether amx started this process: its environment names an agent. Such a
+/// claude has its record, which names no session until its first hook.
+pub fn started_by_amx(pid: u32) -> bool {
+    environ_of(pid, crate::hook::ID_ENV).is_some()
+}
+
+/// A variable from a process's environment, `None` when unset, empty or
+/// unreadable.
+pub fn environ_of(pid: u32, name: &str) -> Option<String> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{name}=");
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|pair| std::str::from_utf8(pair).ok())
+        .find_map(|pair| pair.strip_prefix(&prefix).map(str::to_string))
+        .filter(|value| !value.is_empty())
 }
 
 /// Every sessions file under `dirs` that reads, live or not, one per pid: the
@@ -129,6 +148,14 @@ fn read(path: &Path, config_dir: &Path) -> Option<Loose> {
     let mut text = String::new();
     file.take(LARGEST).read_to_string(&mut text).ok()?;
     let file: Value = serde_json::from_str(&text).ok()?;
+    // Background and spare claudes (`bg`) write files too; only one a person
+    // runs counts. An older claude wrote no kind.
+    if file["kind"]
+        .as_str()
+        .is_some_and(|kind| kind != "interactive")
+    {
+        return None;
+    }
     let pid = u32::try_from(file["pid"].as_u64()?).ok()?;
     let proc_start = match &file["procStart"] {
         Value::String(start) => start.clone(),
@@ -142,7 +169,8 @@ fn read(path: &Path, config_dir: &Path) -> Option<Loose> {
             .filter(|s| !s.is_empty())?
             .to_string(),
         cwd: PathBuf::from(file["cwd"].as_str()?),
-        status: file["status"].as_str().unwrap_or("idle").to_string(),
+        // A file that does not say is not taken as idle.
+        status: file["status"].as_str().unwrap_or("unknown").to_string(),
         proc_start,
         started: file["startedAt"].as_u64().map(|ms| ms / 1000),
         config_dir: config_dir.to_path_buf(),
@@ -260,6 +288,23 @@ mod tests {
         let found = find(&[dir.path().to_path_buf()], &BTreeSet::new(), all_running);
         let pids: Vec<u32> = found.iter().map(|loose| loose.pid).collect();
         assert_eq!(pids, [41, 44]);
+    }
+
+    #[test]
+    fn a_background_claude_and_a_file_with_no_status_are_not_taken_as_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bg = idle(41, "s-1");
+        bg["kind"] = "bg".into();
+        a_file(dir.path(), 41, bg);
+        let mut older = idle(42, "s-2");
+        older.as_object_mut().unwrap().remove("status");
+        a_file(dir.path(), 42, older);
+        let found = find(&[dir.path().to_path_buf()], &BTreeSet::new(), all_running);
+        let read: Vec<(u32, &str)> = found
+            .iter()
+            .map(|it| (it.pid, it.status.as_str()))
+            .collect();
+        assert_eq!(read, [(42, "unknown")]);
     }
 
     #[test]

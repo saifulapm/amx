@@ -56,7 +56,7 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     let held = adopt::hold(root)?;
-    let planned = plan(root, env, home, config, args)?;
+    let planned = plan(root, env, home, config, args, false)?;
     carry_out(root, env, &planned)?;
     drop(held);
     writeln!(out, "moved to amx: amx attach {}", planned.id)?;
@@ -76,22 +76,30 @@ pub fn self_from_env(args: &AdoptArgs, session: &str) -> Result<i32> {
     let home = std::env::home_dir().context("no home directory")?;
     let args = AdoptArgs {
         session: Some(session.to_string()),
-        // The claude is at its prompt, since its person typed this; claude may
-        // still call itself busy while it runs the command.
-        force: true,
         ..args.clone()
     };
     let planned = {
         let _held = adopt::hold(&root)?;
-        plan(&root, &env, &home, crate::config::current(), &args)?
+        plan(&root, &env, &home, crate::config::current(), &args, true)?
     };
     spawn::write_owned(&planned_file(&root, &planned.id)?, &planned)?;
-    let started = std::process::Command::new(std::env::current_exe()?)
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
         .args([MOVE_VERB, &planned.id])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    // In a session of its own from its first instruction, so nothing aimed at
+    // the claude's shell or its group reaches it.
+    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            nix::unistd::setsid()
+                .map(drop)
+                .map_err(std::io::Error::from)
+        });
+    }
+    let started = command.spawn();
     if let Err(e) = started {
         let _ = std::fs::remove_dir_all(paths::agent_dir_in(&root, &planned.id)?);
         return Err(anyhow::Error::new(e).context("starting the move"));
@@ -107,8 +115,6 @@ pub const MOVE_VERB: &str = "_move";
 /// `amx _move <id>`: end the claude the record's plan names and start its
 /// pane, then tell the claude's old terminal where it went.
 pub fn finish_from_env(id: &str) -> Result<i32> {
-    // In a session of its own, away from the claude's terminal and its signals.
-    let _ = nix::unistd::setsid();
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let file = planned_file(&root, id)?;
@@ -155,12 +161,17 @@ pub struct Planned {
 ///
 /// Run under the adopt lock. The record names the claude's session at once,
 /// so a second move of the same claude finds it held.
+///
+/// `waive_busy` lets a claude that calls itself mid-turn through, for the
+/// self-move: claude may say busy while it runs the `!` command its person
+/// just typed.
 fn plan(
     root: &Path,
     env: &BTreeMap<String, String>,
     home: &Path,
     config: &Config,
     args: &AdoptArgs,
+    waive_busy: bool,
 ) -> Result<Planned> {
     // An agent's own claude would end with the one it moves, mid-command.
     if let Some(id) = env.get(crate::hook::ID_ENV)
@@ -176,26 +187,33 @@ fn plan(
         dirs.push(theirs);
     }
     let claude = named(&dirs, &ls::held(root)?, args)?;
-    if !args.force {
-        match claude.status.as_str() {
-            "busy" => bail!(
-                "refused: {} is mid-turn; --force adopts anyway, and the turn in progress is lost",
-                claude.pid
-            ),
-            "shell" => bail!(
-                "refused: {} has background work running; --force adopts anyway, and ends it",
-                claude.pid
-            ),
-            _ => {}
-        }
+    match claude.status.as_str() {
+        _ if args.force => {}
+        "idle" => {}
+        "busy" if waive_busy => {}
+        "busy" => bail!(
+            "refused: {} is mid-turn; --force adopts anyway, and the turn in progress is lost",
+            claude.pid
+        ),
+        "shell" => bail!(
+            "refused: {} has background work running; --force adopts anyway, and ends it",
+            claude.pid
+        ),
+        status => bail!(
+            "refused: {} does not say it is idle (its status is `{status}`); --force adopts anyway",
+            claude.pid
+        ),
     }
 
     let account = account_of(claude.pid);
-    let flags = flags_of(&cmdline_of(claude.pid));
+    let cmdline = cmdline_of(claude.pid);
+    let flags = flags_of(&cmdline);
     let tty = std::fs::read_link(format!("/proc/{}/fd/0", claude.pid))
         .ok()
         .filter(|it| it.starts_with("/dev/pts") || it.starts_with("/dev/tty"));
-    let command = claude_command(config);
+    // The claude it ran, not the configured launcher: a launcher may pick an
+    // account of its own, and the move keeps the claude's.
+    let command = program_of(&cmdline, claude.pid).unwrap_or_else(|| claude_command(config));
     let task = match &args.task {
         Some(task) => task.clone(),
         None => label(&claude.cwd),
@@ -300,7 +318,7 @@ fn named(
     let Some(claude) = files.pop() else {
         match (args.pid, &args.session) {
             (Some(pid), _) => bail!(
-                "refused: {pid} has no claude sessions file; --session <id> names its conversation"
+                "refused: {pid} has no claude sessions file, so amx cannot tell which conversation it is on"
             ),
             (_, Some(session)) => bail!("refused: no claude is running on session {session}"),
             _ => bail!("name the claude to move with --pid or --session"),
@@ -308,6 +326,17 @@ fn named(
     };
     if !claude.runs(loose::claude_start) {
         bail!("refused: {} is no longer running", claude.pid);
+    }
+    // Ending one would start the conversation while the other still writes it.
+    if let Some(other) = files.iter().find(|it| {
+        it.session == claude.session && it.pid != claude.pid && it.runs(loose::claude_start)
+    }) {
+        bail!(
+            "refused: session {} is live in two claudes, {} and {}; end one first",
+            claude.session,
+            other.pid,
+            claude.pid
+        );
     }
     if held.contains(&claude.session) {
         bail!(
@@ -378,15 +407,7 @@ fn end(claude: &Loose) -> Result<()> {
 
 /// The account dir the claude runs under, `None` for none.
 fn account_of(pid: u32) -> Option<String> {
-    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    environ
-        .split(|byte| *byte == 0)
-        .filter_map(|pair| std::str::from_utf8(pair).ok())
-        .find_map(|pair| {
-            pair.strip_prefix(&format!("{CONFIG_ENV}="))
-                .map(str::to_string)
-        })
-        .filter(|dir| !dir.is_empty())
+    loose::environ_of(pid, CONFIG_ENV)
 }
 
 /// The claude's command line, one word an argument.
@@ -472,6 +493,24 @@ pub fn flags_of(cmdline: &[String]) -> Vec<String> {
         }
     }
     kept
+}
+
+/// The words that start the claude `cmdline` ran, up to the first naming
+/// claude: `/home/me/.local/bin/claude`, or `sh /t/mock-claude` for a script.
+/// A bare program name is looked up in the claude's own PATH, so the new pane
+/// finds the same one.
+fn program_of(cmdline: &[String], pid: u32) -> Option<Vec<String>> {
+    let at = cmdline.iter().position(|word| word.contains("claude"))?;
+    let mut words = cmdline[..=at].to_vec();
+    if !words[0].contains('/')
+        && let Some(path) = loose::environ_of(pid, "PATH")
+        && let Some(found) = std::env::split_paths(&path)
+            .map(|dir| dir.join(&words[0]))
+            .find(|it| it.is_file())
+    {
+        words[0] = found.display().to_string();
+    }
+    Some(words)
 }
 
 /// The configured agent command when it runs claude, else `claude`.

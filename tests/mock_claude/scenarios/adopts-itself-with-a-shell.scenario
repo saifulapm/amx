@@ -1,0 +1,5 @@
+# A claude outside amx with a background shell running, whose person types
+# `!amx adopt`.
+sessionfile shell
+run MOCK_CLAUDE_SCENARIO="$MOCK_CLAUDE_NEXT_SCENARIO" "$AMX_BIN" adopt 2>&1
+sleep 600000
