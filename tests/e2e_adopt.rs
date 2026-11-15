@@ -360,3 +360,35 @@ fn resume_refuses_a_session_live_in_another_process() {
         "{out:?}"
     );
 }
+
+#[test]
+fn adopt_typed_inside_a_loose_claude_moves_that_claude_and_says_where() {
+    let amx = Harness::new();
+    amx.config(&format!("agent = \"{}\"\n", amx.mock()));
+    let dir = amx.home().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    let next = amx.scenario("continues-a-session").display().to_string();
+    let mut claude = amx.loose(
+        "adopts-itself",
+        &dir,
+        &[
+            ("MOCK_CLAUDE_SESSION", SESSION),
+            ("MOCK_CLAUDE_NEXT_SCENARIO", &next),
+        ],
+    );
+
+    let id = amx.until("amx adopt to say where the claude went", || {
+        claude
+            .said()
+            .lines()
+            .find_map(|line| line.strip_prefix("moved to amx: amx attach "))
+            .map(str::to_string)
+    });
+    let started = std::time::Instant::now();
+    amx.until("the old claude to end", || claude.ended().then_some(()));
+    amx.until_state(&id, "idle");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let argv = common::argv_of(&amx, &id);
+    assert!(argv.contains(&format!("--resume={SESSION}")), "{argv}");
+    assert_eq!(amx.meta(&id)["dir"], dir.display().to_string());
+}

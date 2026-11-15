@@ -489,6 +489,10 @@ impl Harness {
             .current_dir(dir)
             .env("HOME", self.home.path())
             .env("AMX_STATE_DIR", self.state.path())
+            // An amx it runs, as `!amx adopt`, stays on this harness's server
+            // and config.
+            .env("AMX_TMUX_SOCKET", &self.socket)
+            .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             .env("AMX_BIN", AMX)
             .env("MOCK_CLAUDE_SCENARIO", self.scenario(scenario))
             .env_remove("TMUX")

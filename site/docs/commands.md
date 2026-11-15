@@ -509,7 +509,13 @@ named. A claude that is still running 5 seconds after SIGTERM is left alone,
 and nothing is started. `amx resume` likewise refuses a conversation that a
 claude outside amx is running.
 
-Without them, adopt registers the agent in the pane it is typed in. It reads `$TMUX_PANE` and the vendor's session variable
+Typed inside a claude that runs outside tmux, as `!amx adopt`, adopt moves
+that same claude, found by its `CLAUDE_CODE_SESSION_ID`. amx is then a child
+of the claude it ends, so it prints `moved to amx: amx attach <id>`, hands the
+rest to a process of its own, and the old terminal prints the same line once
+the claude has gone.
+
+Inside a tmux pane, adopt registers the agent in the pane it is typed in. It reads `$TMUX_PANE` and the vendor's session variable
 (`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID` or `CODEX_SESSION_ID`). opencode
 sets no such variable, so opencode sessions cannot be adopted. Nothing is sent
 to the agent. amx made no worktree for it and has no launch command, so `stop`

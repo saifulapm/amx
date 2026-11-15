@@ -41,6 +41,16 @@ pub fn from_env(args: &AdoptArgs) -> Result<i32> {
     if args.pid.is_some() || args.session.is_some() {
         return super::move_in::from_env(args);
     }
+    // Outside tmux there is no pane to adopt in place: a claude typed this as
+    // `!amx adopt`, and is moved into one.
+    if std::env::var_os(PANE_ENV).is_none_or(|pane| pane.is_empty())
+        && let Some(session) = crate::vendor::claude::VENDOR
+            .session_env
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|session| !session.is_empty())
+    {
+        return super::move_in::self_from_env(args, &session);
+    }
     let root = paths::state_root()?;
     let env: BTreeMap<String, String> = std::env::vars().collect();
     let here = std::env::current_dir().context("no working directory")?;

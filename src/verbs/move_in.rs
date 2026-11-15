@@ -55,13 +55,115 @@ pub fn run(
     args: &AdoptArgs,
     out: &mut impl Write,
 ) -> Result<i32> {
+    let held = adopt::hold(root)?;
+    let planned = plan(root, env, home, config, args)?;
+    carry_out(root, env, &planned)?;
+    drop(held);
+    writeln!(out, "moved to amx: amx attach {}", planned.id)?;
+    Ok(exit::OK)
+}
+
+/// `amx adopt` typed as `!amx adopt` inside a claude outside tmux: move the
+/// claude this command runs under, found by its session.
+///
+/// amx is then a child of the claude it ends, and dies with it. So only the
+/// checks and the record happen here; ending the claude and starting its pane
+/// are left to `amx _move`, started in a session of its own so that it
+/// outlives this process.
+pub fn self_from_env(args: &AdoptArgs, session: &str) -> Result<i32> {
+    let root = paths::state_root()?;
+    let env = spawn::env_snapshot(std::env::vars());
+    let home = std::env::home_dir().context("no home directory")?;
+    let args = AdoptArgs {
+        session: Some(session.to_string()),
+        // The claude is at its prompt, since its person typed this; claude may
+        // still call itself busy while it runs the command.
+        force: true,
+        ..args.clone()
+    };
+    let planned = {
+        let _held = adopt::hold(&root)?;
+        plan(&root, &env, &home, crate::config::current(), &args)?
+    };
+    spawn::write_owned(&planned_file(&root, &planned.id)?, &planned)?;
+    let started = std::process::Command::new(std::env::current_exe()?)
+        .args([MOVE_VERB, &planned.id])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Err(e) = started {
+        let _ = std::fs::remove_dir_all(paths::agent_dir_in(&root, &planned.id)?);
+        return Err(anyhow::Error::new(e).context("starting the move"));
+    }
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "moved to amx: amx attach {}", planned.id)?;
+    Ok(exit::OK)
+}
+
+/// The hidden verb that finishes a move [`self_from_env`] planned.
+pub const MOVE_VERB: &str = "_move";
+
+/// `amx _move <id>`: end the claude the record's plan names and start its
+/// pane, then tell the claude's old terminal where it went.
+pub fn finish_from_env(id: &str) -> Result<i32> {
+    // In a session of its own, away from the claude's terminal and its signals.
+    let _ = nix::unistd::setsid();
+    let root = paths::state_root()?;
+    let env = spawn::env_snapshot(std::env::vars());
+    let file = planned_file(&root, id)?;
+    let planned: Planned = serde_json::from_str(
+        &std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?,
+    )
+    .with_context(|| format!("reading {}", file.display()))?;
+    let _ = std::fs::remove_file(&file);
+    let _held = adopt::hold(&root)?;
+    carry_out(&root, &env, &planned)?;
+    if let Some(tty) = &planned.tty
+        && let Ok(mut terminal) = std::fs::OpenOptions::new().write(true).open(tty)
+    {
+        let _ = writeln!(terminal, "moved to amx: amx attach {id}");
+    }
+    Ok(exit::OK)
+}
+
+/// Where a planned move waits for `amx _move`.
+fn planned_file(root: &Path, id: &str) -> Result<std::path::PathBuf> {
+    Ok(paths::agent_dir_in(root, id)?.join(PLANNED))
+}
+
+/// The plan `amx _move` reads, written and read by the same amx a moment
+/// apart.
+const PLANNED: &str = "move.json";
+
+/// A move whose record is written and whose claude still runs.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Planned {
+    pub id: String,
+    pub claude: Loose,
+    /// The claude's `CLAUDE_CONFIG_DIR`, `None` for none.
+    pub account: Option<String>,
+    /// The claude's terminal, told where it went once it has gone.
+    pub tty: Option<std::path::PathBuf>,
+}
+
+/// Check the claude may be moved, then write its stopped record and handoff.
+///
+/// Run under the adopt lock. The record names the claude's session at once,
+/// so a second move of the same claude finds it held.
+fn plan(
+    root: &Path,
+    env: &BTreeMap<String, String>,
+    home: &Path,
+    config: &Config,
+    args: &AdoptArgs,
+) -> Result<Planned> {
     // An agent's own claude would end with the one it moves, mid-command.
     if let Some(id) = env.get(crate::hook::ID_ENV)
         && Agent::open(root, id).is_ok()
     {
         bail!("refused: an amx agent cannot adopt another claude");
     }
-    let _held = adopt::hold(root)?;
     let mut dirs = loose::config_dirs(env, home, config);
     // A pid names its own account dir, which may be one amx does not scan.
     if let Some(theirs) = args.pid.and_then(account_of).map(std::path::PathBuf::from)
@@ -86,8 +188,9 @@ pub fn run(
 
     let account = account_of(claude.pid);
     let flags = flags_of(&cmdline_of(claude.pid));
-    end(&claude)?;
-
+    let tty = std::fs::read_link(format!("/proc/{}/fd/0", claude.pid))
+        .ok()
+        .filter(|it| it.starts_with("/dev/pts") || it.starts_with("/dev/tty"));
     let command = claude_command(config);
     let task = match &args.task {
         Some(task) => task.clone(),
@@ -115,23 +218,38 @@ pub fn run(
         transcript: None,
         created: now(),
     };
-    let agent = match written(root, &meta, &claude, command, flags) {
-        Ok(agent) => agent,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&claimed);
-            return Err(e.context(recovery(&claude)));
-        }
-    };
+    if let Err(e) = written(root, &meta, &claude, command, flags) {
+        let _ = std::fs::remove_dir_all(&claimed);
+        return Err(e);
+    }
+    Ok(Planned {
+        id,
+        claude,
+        account,
+        tty,
+    })
+}
 
-    let pinned = BTreeMap::from([(CONFIG_ENV.to_string(), account)]);
-    if let Err(e) = resume::bring_back(root, &id, None, env, &pinned) {
-        if let Ok(writer) = agent.writer() {
+/// End the planned claude, then start its pane.
+///
+/// A claude that will not end takes its record with it: nothing was started.
+/// A pane that will not start leaves the record failed, and says how to get
+/// the conversation back by hand.
+fn carry_out(root: &Path, env: &BTreeMap<String, String>, planned: &Planned) -> Result<()> {
+    if let Err(e) = end(&planned.claude) {
+        let _ = std::fs::remove_dir_all(paths::agent_dir_in(root, &planned.id)?);
+        return Err(e);
+    }
+    let pinned = BTreeMap::from([(CONFIG_ENV.to_string(), planned.account.clone())]);
+    if let Err(e) = resume::bring_back(root, &planned.id, None, env, &pinned) {
+        if let Ok(agent) = Agent::open(root, &planned.id)
+            && let Ok(writer) = agent.writer()
+        {
             let _ = writer.update_state(|state| state.state = Phase::Failed);
         }
-        return Err(e.context(recovery(&claude)));
+        return Err(e.context(recovery(&planned.claude)));
     }
-    writeln!(out, "moved to amx: amx attach {id}")?;
-    Ok(exit::OK)
+    Ok(())
 }
 
 /// The claude `--pid` or `--session` names, or why it cannot be moved.

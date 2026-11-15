@@ -66,6 +66,7 @@ impl Cli {
             Exit { .. } => "_exit",
             Boot { .. } => "_boot",
             Park { .. } => "_park",
+            Move { .. } => "_move",
         })
     }
 }
@@ -480,6 +481,10 @@ pub enum Command {
     /// Close an idle agent's pane, keeping its record.
     #[command(name = "_park", hide = true)]
     Park { id: String },
+
+    /// Finish moving a claude that `amx adopt` typed inside it planned.
+    #[command(name = "_move", hide = true)]
+    Move { id: String },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -685,7 +690,7 @@ pub struct SubArgs {
     pub vendor_args: Vec<String>,
 }
 
-#[derive(Debug, Args, Default)]
+#[derive(Debug, Args, Default, Clone)]
 pub struct AdoptArgs {
     /// What the agent is working on, shown in its row.
     ///
@@ -1640,7 +1645,7 @@ mod tests {
                     "the {shell} script never offers `{verb}`"
                 );
             }
-            for hidden in ["_hook", "_exit", "_boot", "_park"] {
+            for hidden in ["_hook", "_exit", "_boot", "_park", "_move"] {
                 assert!(
                     !script.contains(hidden),
                     "the {shell} script offers `{hidden}`"

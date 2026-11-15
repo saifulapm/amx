@@ -17,7 +17,7 @@ use crate::config::Config;
 pub const CONFIG_ENV: &str = "CLAUDE_CONFIG_DIR";
 
 /// One claude process outside amx, as its sessions file describes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Loose {
     pub pid: u32,
     pub session: String,

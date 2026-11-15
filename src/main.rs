@@ -170,6 +170,7 @@ fn run(cli: &cli::Cli) -> i32 {
         Some(cli::Command::Statusline) => finish(verbs::statusline::from_env()),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Park { id }) => finish(verbs::park::from_env(id)),
+        Some(cli::Command::Move { id }) => finish(verbs::move_in::finish_from_env(id)),
         Some(cli::Command::Stop(args)) => finish(verbs::stop::from_env(args)),
         Some(cli::Command::Sweep { force }) => finish(verbs::sweep::from_env(*force)),
         Some(cli::Command::Clear { force }) => finish(verbs::clear::from_env(*force)),
@@ -635,7 +636,7 @@ mod tests {
         &'static str,
     );
 
-    const READ_BACK: [ReadBack; 13] = [
+    const READ_BACK: [ReadBack; 14] = [
         (
             "view.json",
             &[(
@@ -713,6 +714,11 @@ mod tests {
             "boot-env.json",
             &[],
             "one record the agent's own spawn writes and its boot reads and removes",
+        ),
+        (
+            "move.json",
+            &[],
+            "one plan `amx adopt` writes and the `amx _move` it starts reads whole and removes",
         ),
         (
             ".claude.json",

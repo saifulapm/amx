@@ -377,7 +377,7 @@ pub fn write_boot_env(dir: &Path, env: &BTreeMap<String, String>) -> Result<()> 
 }
 
 /// Write `value` as pretty JSON, atomically and owner-only.
-fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(crate) fn write_owned<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let mut bytes =
         serde_json::to_vec_pretty(value).with_context(|| format!("writing {}", path.display()))?;
     bytes.push(b'\n');
