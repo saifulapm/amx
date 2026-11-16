@@ -370,6 +370,16 @@ fn row(
     // does, since a cut state word misleads. Past the summary's last cell the
     // words are cut instead, so the age stays on the row.
     let words = view.state_words();
+    // A reset time cut short reads as a different time, so a row too narrow
+    // for the whole of it says plain `limited`.
+    let fits = match widths.state {
+        0 => room,
+        cell => cell + room,
+    };
+    let words = match phase == Phase::Limited && width_of(&words) > fits {
+        true => Phase::Limited.word().to_string(),
+        false => words,
+    };
     let state = match widths.state {
         0 => 0,
         cell => cell.max(width_of(&words)).min(cell + room),
@@ -471,10 +481,26 @@ fn row(
         (false, true) => Style::new(),
         (false, false) => dim(),
     };
-    spans.push(Span::styled(
-        format!("{}{}", grid::pad(&said, room), " ".repeat(GAP)),
-        summary,
-    ));
+    let padded = format!("{}{}", grid::pad(&said, room), " ".repeat(GAP));
+    // With no state cell, a limit's or an error's words open the summary and
+    // wear their state's colour there; the rest stays as quiet as ever.
+    let lead = match (widths.state, phase, view.error()) {
+        (0, Phase::Limited, _) => Some(Style::new().fg(theme.limited)),
+        (0, _, Some(_)) => Some(Style::new().fg(theme.failed)),
+        _ => None,
+    }
+    .filter(|_| armed.is_none() && said.starts_with(&words));
+    match lead {
+        Some(paint) => {
+            let cut = padded
+                .char_indices()
+                .nth(words.chars().count())
+                .map_or(padded.len(), |(at, _)| at);
+            spans.push(Span::styled(padded[..cut].to_string(), paint));
+            spans.push(Span::styled(padded[cut..].to_string(), summary));
+        }
+        None => spans.push(Span::styled(padded, summary)),
+    }
     spans.push(Span::styled(grid::padl(&worked, age), dim()));
     Line::from(spans)
 }
@@ -2363,6 +2389,26 @@ mod tests {
     }
 
     #[test]
+    fn rows_too_narrow_for_the_reset_time_say_plain_limited_rather_than_cut_it() {
+        // `resumes 15:0…` reads as a time; plain `limited` does not.
+        let (capped, words) = limited("capped-a1b");
+        for screen in [
+            by_project(vec![at(capped.clone(), "/src/api")]),
+            showing(vec![capped.clone()], None),
+        ] {
+            for width in 40..=60 {
+                let lines = painted(&screen, (width, 10));
+                let row = lines.iter().find(|line| line.contains("capped")).unwrap();
+                assert!(
+                    row.contains(&words) || row.contains("limited") && !row.contains("resumes"),
+                    "{width}: {row:?}"
+                );
+                assert!(row.trim_end().ends_with("3s"), "{width}: {row:?}");
+            }
+        }
+    }
+
+    #[test]
     fn rows_on_the_state_axis_say_a_limit_and_an_error_in_the_summary() {
         // A limited row sits under Working and an errored one under
         // Completed; neither heading says the words.
@@ -2370,18 +2416,25 @@ mod tests {
         let mut errored = view("busy-b2c", Phase::Idle, Some("API Error"), 3);
         errored.state.error = Some("overloaded".to_string());
         let screen = showing(vec![capped, errored], None);
-        let lines = painted(&screen, (80, 12));
-        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap();
+        let size = (80, 12);
+        let lines = painted(&screen, size);
+        let at = |name: &str| lines.iter().position(|line| line.contains(name)).unwrap();
+        let row = |name: &str| &lines[at(name)];
         assert!(
             row("capped-a1b").contains(&words),
             "{:?}",
             row("capped-a1b")
         );
         assert!(
-            row("busy-b2c").contains("error: overloaded"),
+            row("busy-b2c").contains("error: overloaded · API Error"),
             "{:?}",
             row("busy-b2c")
         );
+        // The words wear their state's colour; what follows stays quiet.
+        let colour = |name: &str, word: &str| word_colour(&screen, size, at(name) as u16, word);
+        assert_eq!(colour("capped-a1b", "resumes"), theme().limited);
+        assert_eq!(colour("busy-b2c", "overloaded"), theme().failed);
+        assert_ne!(colour("busy-b2c", "API"), theme().failed);
     }
 
     #[test]
