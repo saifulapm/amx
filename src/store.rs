@@ -1467,6 +1467,15 @@ pub fn unarchive(root: &Path, id: &str) -> Result<bool> {
     if !shelved.join(META).is_file() || live.exists() {
         return Ok(false);
     }
+    // Moved back, a record that does not read would be in neither listing.
+    let archived = Agent {
+        id: id.to_string(),
+        dir: shelved.clone(),
+    };
+    archived
+        .meta()
+        .and(archived.state())
+        .with_context(|| format!("the archived record of {id} does not read, so it stays"))?;
     match std::fs::rename(&shelved, &live) {
         Ok(()) => Ok(true),
         // Another resume brought it back first.
@@ -1631,6 +1640,22 @@ mod tests {
             session: None,
             transcript: None,
             created: now(),
+        }
+    }
+
+    #[test]
+    fn store_leaves_an_archived_record_that_does_not_read_where_it_is() {
+        // Moved back, it would read in neither ls nor ls --archived.
+        let root = TempDir::new().unwrap();
+        for (id, file) in [("bad-meta-a1b", META), ("bad-state-c3d", STATE)] {
+            let agent = Agent::create(root.path(), &meta(id)).unwrap();
+            std::fs::write(agent.dir().join(file), "{\"id\":").unwrap();
+            agent.archive().unwrap();
+
+            let said = format!("{:#}", unarchive(root.path(), id).unwrap_err());
+            assert!(said.contains(id), "{said}");
+            assert!(list(root.path()).unwrap().is_empty());
+            assert!(root.path().join(ARCHIVE).join(id).join(META).is_file());
         }
     }
 
