@@ -316,11 +316,16 @@ pub fn usage(format: Transcript, jsonl: &str) -> Option<ContextFill> {
 /// The context window of the model a transcript names, in tokens.
 ///
 /// claude writes the model's id on each answer but not its window, so the
-/// window is read off the id: a `[1m]` id and the claude 5 models other than
-/// haiku run with a million tokens, any other claude model with 200,000. A
-/// model this table does not know has no window, rather than a wrong one.
+/// window is read off the id: opus 5.5 runs with two million tokens (claude's
+/// own gauge read 42% at 831,721 on 2026-11-16), a `[1m]` id and the other
+/// claude 5 models but haiku with a million, any other claude model with
+/// 200,000. A model this table does not know has no window, rather than a
+/// wrong one.
 fn window_of(model: &str) -> Option<u64> {
     let id = model.rsplit_once('/').map_or(model, |(_, id)| id);
+    if id.starts_with("claude-opus-5-5") {
+        return Some(2_000_000);
+    }
     let million = id.ends_with("[1m]")
         || ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"]
             .iter()
@@ -1498,9 +1503,9 @@ mod tests {
         // Two turns: summing them would say 512k; the last one's input already
         // holds the whole conversation.
         let claude = concat!(
-            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-5[1m]\",\"content\":[],",
             "\"usage\":{\"input_tokens\":100000}}}\n",
-            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-5[1m]\",\"content\":[],",
             "\"usage\":{\"input_tokens\":2000,\"cache_creation_input_tokens\":10000,",
             "\"cache_read_input_tokens\":400000,\"output_tokens\":900}}}\n",
             // claude's synthetic entry, all zero, written last.
@@ -1550,11 +1555,12 @@ mod tests {
     #[test]
     fn conversation_window_reads_the_model_a_transcript_names() {
         for (model, window) in [
-            ("claude-opus-5-5", Some(1_000_000)),
+            ("claude-opus-5-5", Some(2_000_000)),
+            ("claude-opus-5", Some(1_000_000)),
             ("claude-fable-5-2", Some(1_000_000)),
             ("claude-sonnet-5-5", Some(1_000_000)),
             ("claude-sonnet-4-5[1m]", Some(1_000_000)),
-            ("anthropic/claude-opus-5-5", Some(1_000_000)),
+            ("anthropic/claude-opus-5-5", Some(2_000_000)),
             ("claude-haiku-5-5", Some(200_000)),
             ("claude-opus-4-1", Some(200_000)),
             ("<synthetic>", None),

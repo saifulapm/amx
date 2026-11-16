@@ -4577,7 +4577,7 @@ mod tests {
         let transcript = root.path().join("session.jsonl");
         std::fs::write(
             &transcript,
-            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],\
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-5[1m]\",\"content\":[],\
              \"usage\":{\"input_tokens\":12000,\"cache_read_input_tokens\":400000}}}\n",
         )
         .unwrap();
