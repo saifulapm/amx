@@ -178,10 +178,21 @@ fn run(cli: &cli::Cli) -> i32 {
         Some(cli::Command::Diff { id, stat, from }) => {
             finish(verbs::diff::from_env(id, *stat, from.as_deref()))
         }
-        Some(cli::Command::Resume { id, message, all }) => finish(verbs::resume::from_env(
+        Some(cli::Command::Resume {
+            id,
+            message,
+            all,
+            spacing,
+            limit,
+            dry_run,
+        }) => finish(verbs::resume::from_env(
             id.as_deref(),
             message.as_deref(),
-            *all,
+            all.then(|| verbs::resume::All {
+                spacing: spacing.unwrap_or(verbs::resume::All::default().spacing),
+                limit: limit.map(|limit| limit as usize),
+                dry_run: *dry_run,
+            }),
         )),
         Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
         Some(cli::Command::Here { vendor_args }) => finish(verbs::here::from_env(vendor_args)),

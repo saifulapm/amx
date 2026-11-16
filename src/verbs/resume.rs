@@ -76,7 +76,7 @@ pub fn can_come_back(meta: &Meta, dir: &Path) -> bool {
 /// Run the verb against the machine.
 ///
 /// Caps come from the agent's own project config.
-pub fn from_env(id: Option<&str>, message: Option<&str>, all: bool) -> Result<i32> {
+pub fn from_env(id: Option<&str>, message: Option<&str>, all: Option<All>) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
@@ -88,12 +88,13 @@ pub fn run(
     root: &Path,
     id: Option<&str>,
     message: Option<&str>,
-    all: bool,
+    all: Option<All>,
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
 ) -> Result<i32> {
-    match id {
-        Some(id) if !all => {
+    match (id, all) {
+        (_, Some(all)) => sweep(root, &all, env, out),
+        (Some(id), None) => {
             store::unarchive(root, id)?;
             // A gc pass can archive the record while this resume waits on its
             // lock, and the record is then gone from where it looked: bring it
@@ -108,7 +109,28 @@ pub fn run(
                 return tried;
             }
         }
-        _ => sweep(root, env, out),
+        (None, None) => sweep(root, &All::default(), env, out),
+    }
+}
+
+/// How `resume --all` brings a fleet back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct All {
+    /// Seconds between one agent's start and the next.
+    pub spacing: u64,
+    /// The most agents to bring back, or all of them.
+    pub limit: Option<usize>,
+    /// Name them and bring back none.
+    pub dry_run: bool,
+}
+
+impl Default for All {
+    fn default() -> All {
+        All {
+            spacing: 5,
+            limit: None,
+            dry_run: false,
+        }
     }
 }
 
@@ -178,26 +200,54 @@ fn nothing_is_running(view: &derive::View) -> bool {
 /// Resume every agent whose pane disappeared, as after a tmux server died.
 ///
 /// Agents that finished, or were stopped with `amx stop`, are left alone.
-fn sweep(root: &Path, env: &BTreeMap<String, String>, out: &mut impl Write) -> Result<i32> {
+///
+/// They start `all.spacing` seconds apart, so a fleet's vendors do not all
+/// start, and ask for their sessions, at once. A dry run names each one, then
+/// the spacing, and claims no place.
+fn sweep(
+    root: &Path,
+    all: &All,
+    env: &BTreeMap<String, String>,
+    out: &mut impl Write,
+) -> Result<i32> {
     let stopped: Vec<_> = derive::views(root, store::now())?
         .into_iter()
         .filter(lost_its_pane)
+        .take(all.limit.unwrap_or(usize::MAX))
         .collect();
     if stopped.is_empty() {
         writeln!(out, "nothing to bring back")?;
         return Ok(exit::OK);
     }
+    if all.dry_run {
+        for view in &stopped {
+            writeln!(out, "{}", view.id())?;
+        }
+        writeln!(out, "spacing {}s", all.spacing)?;
+        return Ok(exit::OK);
+    }
 
-    for view in stopped {
+    for (at, view) in stopped.into_iter().enumerate() {
+        if at > 0 {
+            out.flush()?;
+            std::thread::sleep(std::time::Duration::from_secs(all.spacing));
+        }
         // Each agent counts against its own project's cap. A full project
         // skips its agents; the others still come back.
-        let _place = match take_a_place(root, view.id(), &view.meta.dir)? {
+        let place = match take_a_place(root, view.id(), &view.meta.dir)? {
             Ok(place) => place,
             Err(full) => {
                 warn!("amx resume: {}: {full}", view.id());
                 continue;
             }
         };
+        if place.port().is_none() {
+            warn!(
+                "amx resume: {}: {}",
+                view.id(),
+                crate::port::none_free(&crate::port::range())
+            );
+        }
         // One failure does not stop the sweep.
         match bring_back(root, view.id(), None, env, &BTreeMap::new()) {
             Ok(()) => writeln!(out, "{} resumed", view.id())?,
@@ -639,7 +689,7 @@ mod tests {
         let env = BTreeMap::new();
 
         let mut out = Vec::new();
-        let named = run(&root, Some("fix-login-a1b"), None, false, &env, &mut out);
+        let named = run(&root, Some("fix-login-a1b"), None, None, &env, &mut out);
         let picked = picked_up(&root, "fix-login-a1b", None, &env).map(|_| ());
         for why in [named.map(|_| ()), picked] {
             let why = why.unwrap_err();

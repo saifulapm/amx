@@ -498,12 +498,15 @@ Start an agent again on the conversation it had, in a new pane.
 
 ```sh
 amx resume <ID> [MESSAGE]
-amx resume --all
+amx resume --all [--spacing <SPAN>] [--limit <N>] [--dry-run]
 ```
 
 | Flag | Does |
 | --- | --- |
-| `--all` | Every stopped agent, such as after the tmux server died. |
+| `--all` | Every agent whose pane went away, such as after the tmux server died. One ended with `amx stop` stays stopped. |
+| `--spacing <SPAN>` | With `--all`: the wait between one agent and the next, so a fleet does not start at once. A number and `s`, `m`, `h` or `d`; `5s` when not given. |
+| `--limit <N>` | With `--all`: bring back at most N. |
+| `--dry-run` | With `--all`: print the ids it would bring back and the spacing, and bring back none. |
 
 A message becomes the agent's first turn when it comes back. Without one it
 opens at its prompt and waits. `resume` brings back parked agents too, and

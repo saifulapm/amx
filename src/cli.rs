@@ -378,6 +378,16 @@ pub enum Command {
         /// Every stopped agent, for example after the tmux server died.
         #[arg(long, conflicts_with = "id")]
         all: bool,
+        /// With --all: the wait between one agent and the next, so a fleet
+        /// does not start at once. 5s when not given.
+        #[arg(long, value_name = "SPAN", value_parser = a_span, conflicts_with = "id")]
+        spacing: Option<u64>,
+        /// With --all: bring back at most this many.
+        #[arg(long, value_name = "N", conflicts_with = "id", value_parser = clap::value_parser!(u32).range(1..))]
+        limit: Option<u32>,
+        /// With --all: print what would be brought back, and bring back none.
+        #[arg(long, conflicts_with = "id")]
+        dry_run: bool,
     },
 
     /// Start a claude here under amx and attach this terminal to it.
@@ -1111,6 +1121,19 @@ mod tests {
             (&["amx", "diff", "fix-a1b", "--stat"], "diff"),
             (&["amx", "resume", "fix-a1b"], "resume"),
             (&["amx", "resume", "--all"], "resume"),
+            (
+                &[
+                    "amx",
+                    "resume",
+                    "--all",
+                    "--spacing",
+                    "1s",
+                    "--limit",
+                    "2",
+                    "--dry-run",
+                ],
+                "resume",
+            ),
             (&["amx", "resume", "fix-a1b", "carry on"], "resume"),
             (&["amx", "fork", "fix-a1b"], "fork"),
             (&["amx", "fork", "fix-a1b", "try it with sqlite"], "fork"),
@@ -1702,6 +1725,28 @@ mod tests {
                 exit::USAGE,
                 "{bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn resume_takes_its_pacing_only_with_all() {
+        for alone in [
+            &["amx", "resume", "fix-a1b", "--spacing", "1s"][..],
+            &["amx", "resume", "fix-a1b", "--limit", "2"],
+            &["amx", "resume", "fix-a1b", "--dry-run"],
+            &["amx", "resume", "--all", "--spacing", "soon"],
+            &["amx", "resume", "--all", "--limit", "0"],
+        ] {
+            assert_eq!(code(alone), exit::USAGE, "{alone:?}");
+        }
+        match parse(&["amx", "resume", "--all"]).unwrap().command {
+            Some(Command::Resume {
+                spacing,
+                limit,
+                dry_run,
+                ..
+            }) => assert_eq!((spacing, limit, dry_run), (None, None, false)),
+            other => panic!("{other:?}"),
         }
     }
 

@@ -913,6 +913,65 @@ fn resume_all_brings_back_everything_a_dead_server_took() {
 }
 
 #[test]
+fn resume_all_dry_run_names_what_it_would_bring_back_and_brings_back_none() {
+    let amx = Harness::new();
+    let ids = ["fix-login-a1b", "port-importer-c3d", "add-tests-d4e"];
+    for id in ids {
+        start(&amx, id, amx.home(), "happy-turn");
+    }
+    for id in ids {
+        amx.until_state(id, "idle");
+    }
+    amx.tmux(&["kill-server"]);
+
+    let printed = said(&resume(&amx, &["--all", "--dry-run"]));
+    for id in ids {
+        assert!(
+            printed.lines().any(|line| line == id),
+            "{id} on a line of its own: {printed}"
+        );
+    }
+    assert!(printed.ends_with("spacing 5s\n"), "{printed}");
+    assert!(!printed.contains("resumed"), "{printed}");
+    for id in ids {
+        assert_eq!(
+            amx.state(id)["state"],
+            "idle",
+            "{id}'s record left as the dead server did"
+        );
+    }
+}
+
+#[test]
+fn resume_all_brings_back_at_most_its_limit_spaced_apart() {
+    let amx = Harness::new();
+    let ids = ["fix-login-a1b", "port-importer-c3d", "add-tests-d4e"];
+    for id in ids {
+        start(&amx, id, amx.home(), "happy-turn");
+    }
+    for id in ids {
+        amx.until_state(id, "idle");
+    }
+    amx.tmux(&["kill-server"]);
+
+    let began = std::time::Instant::now();
+    let printed = said(&resume(&amx, &["--all", "--limit", "2", "--spacing", "1s"]));
+    let took = began.elapsed();
+    let resumed: Vec<&str> = ids
+        .into_iter()
+        .filter(|id| printed.contains(&format!("{id} resumed")))
+        .collect();
+    assert_eq!(resumed.len(), 2, "{printed}");
+    assert!(
+        took >= std::time::Duration::from_secs(1),
+        "the second came a second after the first: {took:?}"
+    );
+    for id in resumed {
+        until_continued(&amx, id);
+    }
+}
+
+#[test]
 fn resume_all_says_so_when_there_is_nothing_to_bring_back() {
     let amx = Harness::new();
     let id = "watch-log-c3d";
