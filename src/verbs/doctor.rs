@@ -772,6 +772,8 @@ fn config_dirs_ran_under(root: &Path) -> BTreeSet<PathBuf> {
                 .find(|dir| dir.file_name() == Some(OsStr::new("projects")))?;
             Some(projects.parent()?.to_path_buf())
         })
+        // An account dir removed since, as old records name, runs no claude.
+        .filter(|dir| dir.is_dir())
         .collect()
 }
 
@@ -1346,6 +1348,45 @@ mod tests {
         assert!(!old.exists(), "the old one went");
         assert!(young.exists(), "a spawn still starting keeps its claim");
         assert!(tree.exists(), "and a tree is never taken");
+    }
+
+    #[test]
+    fn a_config_dir_removed_since_is_not_one_claude_runs_under() {
+        let root = TempDir::new().unwrap();
+        let accounts = TempDir::new().unwrap();
+        for (id, account) in [("kept-a1b", "kept"), ("gone-c3d", "gone")] {
+            let dir = accounts.path().join(account);
+            store::Agent::create(
+                root.path(),
+                &store::Meta {
+                    role: None,
+                    parent: None,
+                    depth: 0,
+                    id: id.to_string(),
+                    task: "fix the login bug".to_string(),
+                    agent: Some("claude".to_string()),
+                    model: None,
+                    effort: None,
+                    dir: PathBuf::from("/srv/app"),
+                    worktree: None,
+                    branch: None,
+                    base: None,
+                    socket: crate::tmux::Socket::Name("amx".to_string()),
+                    pane: crate::tmux::PaneId::new("%1").unwrap(),
+                    bg: false,
+                    session: None,
+                    transcript: Some(dir.join("projects/-srv-app/s.jsonl")),
+                    created: 1,
+                },
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(accounts.path().join("kept/projects")).unwrap();
+
+        assert_eq!(
+            config_dirs_ran_under(root.path()),
+            BTreeSet::from([accounts.path().join("kept")])
+        );
     }
 
     #[test]
