@@ -489,9 +489,17 @@ fn the_listing_forgets_an_agent_that_ended_a_week_ago() {
         "old-done-a1b",
         json!({ "state": "done", "exit": 0, "last_event": 1 }),
     );
+    // Past the week a finished record is kept, short of the two weeks a
+    // stopped one stays listed.
+    let week_ago = common::now() - 8 * 24 * 60 * 60;
     amx.record("old-stopped-c3d", "%404");
     amx.set_state(
         "old-stopped-c3d",
+        json!({ "state": "stopped", "last_event": week_ago, "since": week_ago }),
+    );
+    amx.record("long-stopped-e5f", "%404");
+    amx.set_state(
+        "long-stopped-e5f",
         json!({ "state": "stopped", "last_event": 1 }),
     );
 
@@ -506,6 +514,12 @@ fn the_listing_forgets_an_agent_that_ended_a_week_ago() {
         "an agent somebody stopped keeps its record, and its branch with it"
     );
     assert!(!amx.agent_dir("old-done-a1b").exists());
+    assert!(
+        amx.state_root()
+            .join(".archive/long-stopped-e5f/meta.json")
+            .is_file(),
+        "a long-stopped one is kept too, in the archive"
+    );
 }
 
 #[test]
