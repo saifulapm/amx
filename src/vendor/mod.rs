@@ -222,11 +222,15 @@ pub enum Wire {
         path: &'static str,
         body: &'static str,
     },
-    /// A plugin directory of amx's own; `files` are paths relative to `dir`.
+    /// A plugin directory of amx's own; `files` are paths relative to it.
     /// The vendor's hook runner reads the hook config inside it, so no file of
     /// the person's is edited. claude's plugin.
+    ///
+    /// The directory is `path` inside `$<dir_env>` when set, else `dir`.
     Plugin {
+        dir_env: &'static str,
         dir: &'static str,
+        path: &'static str,
         files: &'static [(&'static str, &'static str)],
     },
     /// amx's groups merged into the vendor's `hooks.json`, each trusted in the
@@ -261,8 +265,8 @@ impl Wire {
         matches!(self, Wire::File { .. } | Wire::Placed { .. })
     }
 
-    /// The wire's path under the home directory. For a hooks or placed wire,
-    /// the directory used when its variable is unset.
+    /// The wire's path under the home directory. For a plugin, hooks or
+    /// placed wire, the directory used when its variable is unset.
     pub fn path(&self) -> &'static str {
         match self {
             Wire::File { path, .. } => path,

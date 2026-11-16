@@ -751,7 +751,10 @@ pub fn gather(
     let home = install::home()?;
     let exe = std::env::current_exe()?;
     let path = std::env::var_os("PATH");
-    let wirings = wirings(&config.agent, &home, &install::process_env, path.as_deref());
+    // The plugin a spawned claude loads, under the config dir its pane gets.
+    let table = config.harness("claude").env;
+    let env = install::claude_env(&table, &install::process_env);
+    let wirings = wirings(&config.agent, &home, &env, path.as_deref());
     let state_root = crate::paths::state_root()?;
     // Only a vendor whose trust screen amx answers by writing its store has
     // keys of amx's in it. An unreadable store yields no stale trees.

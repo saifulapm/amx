@@ -51,10 +51,28 @@ pub fn process_env(name: &str) -> Option<OsString> {
     std::env::var_os(name)
 }
 
-/// An empty environment, for tests.
-#[cfg(test)]
+/// An empty environment: every wire at its directory under home.
 pub fn no_env(_: &str) -> Option<OsString> {
     None
+}
+
+/// `env` with `[claude.env]` laid over it for the variable claude's plugin
+/// wire reads, since amx hands that table to claude's pane and it wins over
+/// the spawning environment. Every other variable is `env`'s alone.
+pub fn claude_env<'a>(
+    table: &'a std::collections::BTreeMap<String, String>,
+    env: Env<'a>,
+) -> impl Fn(&str) -> Option<OsString> + 'a {
+    move |name| {
+        let read = matches!(
+            crate::vendor::claude::HOOKS.wire,
+            Wire::Plugin { dir_env, .. } if dir_env == name
+        );
+        match table.get(name).filter(|_| read) {
+            Some(value) => Some(value.into()),
+            None => env(name),
+        }
+    }
 }
 
 /// A hooks wire for tests, carrying codex's shipped body.
@@ -90,7 +108,41 @@ pub fn wire_path(wire: &Wire, home: &Path, env: Env) -> PathBuf {
         Wire::Placed {
             dir_env, dir, path, ..
         } => vendor_dir(env(dir_env), dir, home).join(path),
-        _ => home.join(wire.path()),
+        Wire::Plugin {
+            dir_env, dir, path, ..
+        } => match env(dir_env).filter(|value| !value.is_empty()) {
+            Some(set) => vendor_dir(Some(set), dir, home).join(path),
+            None => home.join(dir),
+        },
+        Wire::File { .. } => home.join(wire.path()),
+    }
+}
+
+/// The environments `wire` is installed and removed under, one per place.
+///
+/// A plugin goes where `env` puts it and under home too, since the account
+/// claude runs under can be picked after amx looks (a launcher that sets
+/// `CLAUDE_CONFIG_DIR` itself). Two spellings of one directory, as when the
+/// config dir's skills are a symlink to home's, count once. Home comes
+/// first: a symlink into it that dangles cannot be written through.
+pub fn places<'a>(wire: &Wire, home: &Path, env: Env<'a>) -> Vec<Env<'a>> {
+    if !matches!(wire, Wire::Plugin { .. }) {
+        return vec![env];
+    }
+    let unset: Env<'a> = &no_env;
+    if real(&wire_path(wire, home, unset)) == real(&wire_path(wire, home, env)) {
+        vec![env]
+    } else {
+        vec![unset, env]
+    }
+}
+
+/// `path` with every symlink in it resolved, as far as it exists.
+fn real(path: &Path) -> PathBuf {
+    match (path.canonicalize(), path.parent(), path.file_name()) {
+        (Ok(real), _, _) => real,
+        (Err(_), Some(parent), Some(name)) => real(parent).join(name),
+        (Err(_), _, _) => path.to_path_buf(),
     }
 }
 
@@ -1084,7 +1136,7 @@ mod tests {
 
     /// claude's plugin directory and the files it ships.
     fn plugin() -> (&'static str, &'static [(&'static str, &'static str)]) {
-        let Wire::Plugin { dir, files } = claude::HOOKS.wire else {
+        let Wire::Plugin { dir, files, .. } = claude::HOOKS.wire else {
             panic!("claude reports through a plugin");
         };
         (dir, files)

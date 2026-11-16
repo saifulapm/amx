@@ -16,8 +16,10 @@ use crate::{exit, install, paths, registry};
 pub fn from_env() -> Result<i32> {
     let state_root = paths::state_root()?;
     let home = install::home()?;
+    let table = crate::config::current().harness("claude").env;
+    let env = install::claude_env(&table, &install::process_env);
     let mut out = std::io::stdout().lock();
-    run(&state_root, &home, &install::process_env, &mut out)
+    run(&state_root, &home, &env, &mut out)
 }
 
 /// The verb, with the state root, the home the wiring lives under, and the
@@ -36,8 +38,13 @@ pub fn run(state_root: &Path, home: &Path, env: install::Env, out: &mut impl Wri
     for vendor in registry::entries() {
         let Some(hooks) = &vendor.hooks else { continue };
         // Opt-in wires go too, not only the reporting one.
-        for wire in std::iter::once(&hooks.wire).chain(hooks.opt_in.iter()) {
-            let report = install::uninstall_wire(wire, home, env)?;
+        let wires = std::iter::once(&hooks.wire).chain(hooks.opt_in.iter());
+        let places = wires.flat_map(|wire| {
+            let places = install::places(wire, home, env);
+            places.into_iter().map(move |place| (wire, place))
+        });
+        for (wire, place) in places {
+            let report = install::uninstall_wire(wire, home, place)?;
             let path = report.path.display();
             match (wire, report.changed) {
                 (Wire::File { .. }, true) => writeln!(out, "removed {path}")?,

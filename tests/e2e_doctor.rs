@@ -628,3 +628,181 @@ fn doctor_warns_of_a_claude_that_starts_with_hooks_off_and_still_exits_clean() {
         "a warning alone does not fail doctor:\n{printed}"
     );
 }
+
+/// A folder holding a stand-in claude, the real tmux and the amx under test,
+/// so doctor run on it judges claude alone.
+fn claude_alone() -> tempfile::TempDir {
+    let bin = tempfile::TempDir::new().unwrap();
+    let claude = bin.path().join("claude");
+    std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&claude, PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(common::the_real("tmux"), bin.path().join("tmux")).unwrap();
+    std::os::unix::fs::symlink(common::AMX, bin.path().join("amx")).unwrap();
+    bin
+}
+
+/// Run `amx <args>` with `env` set; answer with the exit code and stdout.
+fn amx_with(amx: &Harness, args: &[&str], env: &[(&str, &Path)]) -> (i32, String) {
+    let mut command = amx.amx_command(args);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let out = command.output().expect("running amx");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+/// `amx setup claude` with `dir` as the config dir claude runs under: the
+/// plugin goes there and under ~/.claude, doctor judges the one in `dir`.
+fn wires_claude_under(amx: &Harness, dir: &Path, env: &[(&str, &Path)]) {
+    let (code, printed) = amx_with(amx, &["setup", "claude"], env);
+    assert_eq!(code, 0, "{printed}");
+    let manifest = ".claude-plugin/plugin.json";
+    assert!(
+        dir.join("skills/amx").join(manifest).is_file(),
+        "claude under this config dir loads its plugins from here:\n{printed}"
+    );
+    assert!(
+        amx.home()
+            .join(".claude/skills/amx")
+            .join(manifest)
+            .is_file(),
+        "and a claude without one from home:\n{printed}"
+    );
+
+    let bin = claude_alone();
+    let mut env = env.to_vec();
+    env.push(("PATH", bin.path()));
+    let (code, printed) = amx_with(amx, &["doctor"], &env);
+    let (ok, line) = hooks_line(&printed, "claude");
+    assert!(ok, "{printed}");
+    assert!(
+        line.contains(&format!("{}/skills/amx", dir.display())),
+        "doctor judges the plugin the spawned claude loads: {line}"
+    );
+    assert_eq!(code, 0, "{printed}");
+
+    std::fs::remove_file(dir.join("skills/amx").join(manifest)).unwrap();
+    let (code, printed) = amx_with(amx, &["doctor"], &env);
+    let (ok, line) = hooks_line(&printed, "claude");
+    assert!(
+        !ok,
+        "the copy under home does not stand in for it:\n{printed}"
+    );
+    assert!(line.contains(&dir.display().to_string()), "{line}");
+    assert_eq!(code, 1, "{printed}");
+}
+
+#[test]
+fn setup_wires_claude_under_the_config_dir_its_table_names() {
+    let amx = Harness::new();
+    let account = tempfile::TempDir::new().unwrap();
+    let dir = account.path().canonicalize().unwrap();
+    amx.config(&format!(
+        "agent = \"claude\"\n[claude.env]\nCLAUDE_CONFIG_DIR = \"{}\"\n",
+        dir.display()
+    ));
+    wires_claude_under(&amx, &dir, &[]);
+}
+
+#[test]
+fn setup_wires_claude_under_the_config_dir_it_inherits() {
+    let amx = Harness::new();
+    let account = tempfile::TempDir::new().unwrap();
+    let dir = account.path().canonicalize().unwrap();
+    amx.config("agent = \"claude\"\n");
+    wires_claude_under(&amx, &dir, &[("CLAUDE_CONFIG_DIR", &dir)]);
+}
+
+#[test]
+fn setup_without_a_config_dir_writes_under_home_alone() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n");
+    let (code, printed) = amx_with(&amx, &["setup", "claude"], &[]);
+    assert_eq!(code, 0, "{printed}");
+
+    let written: Vec<PathBuf> = common::tree(amx.home())
+        .into_iter()
+        .filter(|(_, bytes)| bytes.is_some())
+        .map(|(path, _)| path.strip_prefix(amx.home()).unwrap().to_path_buf())
+        .collect();
+    let plugin = Path::new(".claude/skills/amx");
+    assert!(
+        written
+            .iter()
+            .all(|path| path.starts_with(plugin) || path.starts_with(".config")),
+        "{written:?}"
+    );
+    assert!(
+        written.contains(&plugin.join(".claude-plugin/plugin.json")),
+        "{written:?}"
+    );
+}
+
+#[test]
+fn a_config_dir_whose_skills_are_homes_is_wired_once_and_unwired_once() {
+    // A person can share one skills directory between accounts with a
+    // symlink, so both paths name one plugin.
+    let amx = Harness::new();
+    let account = tempfile::TempDir::new().unwrap();
+    let dir = account.path().canonicalize().unwrap();
+    let skills = amx.home().join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    std::os::unix::fs::symlink(&skills, dir.join("skills")).unwrap();
+    amx.config(&format!(
+        "agent = \"claude\"\n[claude.env]\nCLAUDE_CONFIG_DIR = \"{}\"\n",
+        dir.display()
+    ));
+
+    let (code, printed) = amx_with(&amx, &["setup", "claude"], &[]);
+    assert_eq!(code, 0, "{printed}");
+    assert_eq!(
+        printed.matches("wrote the plugin to").count(),
+        1,
+        "{printed}"
+    );
+
+    let bin = claude_alone();
+    let (_, printed) = amx_with(&amx, &["doctor"], &[("PATH", bin.path())]);
+    let (ok, line) = hooks_line(&printed, "claude");
+    assert!(ok, "{line}");
+    assert!(
+        line.contains(&format!("{}/skills/amx", dir.display())),
+        "{line}"
+    );
+
+    let (code, printed) = amx_with(&amx, &["uninstall"], &[]);
+    assert_eq!(code, 0, "{printed}");
+    assert_eq!(
+        printed.matches("removed the plugin at").count(),
+        1,
+        "{printed}"
+    );
+    assert!(
+        !printed.contains(&format!("no amx plugin at {}", dir.display())),
+        "the one plugin was removed, not looked for twice:\n{printed}"
+    );
+    assert!(!skills.join("amx").exists(), "{printed}");
+    assert!(!dir.join("skills/amx").exists(), "{printed}");
+}
+
+#[test]
+fn uninstall_takes_claudes_plugin_out_of_the_config_dir_too() {
+    let amx = Harness::new();
+    let account = tempfile::TempDir::new().unwrap();
+    let dir = account.path().canonicalize().unwrap();
+    amx.config(&format!(
+        "agent = \"claude\"\n[claude.env]\nCLAUDE_CONFIG_DIR = \"{}\"\n",
+        dir.display()
+    ));
+    let (code, printed) = amx_with(&amx, &["setup", "claude"], &[]);
+    assert_eq!(code, 0, "{printed}");
+    assert!(dir.join("skills/amx").exists(), "{printed}");
+
+    let (code, printed) = amx_with(&amx, &["uninstall"], &[]);
+    assert_eq!(code, 0, "{printed}");
+    assert!(!dir.join("skills/amx").exists(), "{printed}");
+    assert!(!amx.home().join(".claude/skills/amx").exists(), "{printed}");
+}

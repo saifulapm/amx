@@ -180,7 +180,9 @@ pub const HOOKS: Hooks = Hooks {
     // manifest as `<name>@skills-dir`, for every project, read live, and the
     // person's settings are never opened (2.1.270).
     wire: Wire::Plugin {
+        dir_env: "CLAUDE_CONFIG_DIR",
         dir: ".claude/skills/amx",
+        path: "skills/amx",
         files: &[
             (
                 crate::install::MANIFEST,
@@ -356,7 +358,7 @@ mod tests {
         // Checked against claude 2.1.240's hook list. A renamed event fails
         // silently: the record just stops moving.
         let hooks = VENDOR.hooks.expect("claude reports through hooks");
-        let Wire::Plugin { dir, files } = hooks.wire else {
+        let Wire::Plugin { dir, files, .. } = hooks.wire else {
             panic!("claude reports through a plugin amx writes");
         };
         assert_eq!(

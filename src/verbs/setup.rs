@@ -19,15 +19,10 @@ use crate::{exit, install, registry, store};
 /// Run the verb against the machine.
 pub fn from_env(vendor: Option<&str>, subagent: bool) -> Result<i32> {
     let home = install::home()?;
+    let table = crate::config::current().harness("claude").env;
+    let env = install::claude_env(&table, &install::process_env);
     let mut out = std::io::stdout().lock();
-    run(
-        vendor,
-        subagent,
-        &home,
-        &install::process_env,
-        store::now(),
-        &mut out,
-    )
+    run(vendor, subagent, &home, &env, store::now(), &mut out)
 }
 
 /// Run the verb with the home directory and environment named.
@@ -81,7 +76,9 @@ pub fn run(
     }
     let mut wrote = false;
     for wire in wires {
-        wrote |= wire_one(wire, home, env, now, out)?;
+        for place in install::places(wire, home, env) {
+            wrote |= wire_one(wire, home, place, now, out)?;
+        }
     }
     if !wrote {
         writeln!(
