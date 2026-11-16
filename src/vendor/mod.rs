@@ -2005,7 +2005,11 @@ mod tests {
     fn the_vendors_before_opencode_keep_the_argv_and_keys_they_had() {
         for vendor in table().iter().filter(|vendor| vendor.name != "opencode") {
             assert_eq!(vendor.prompt_flag, None, "{}", vendor.name);
-            assert!(vendor.popups.is_empty(), "{}", vendor.name);
+            let popups: &[char] = match vendor.name {
+                "codex" => &['$'],
+                _ => &[],
+            };
+            assert_eq!(vendor.popups, popups, "{}", vendor.name);
             assert_eq!(vendor.cancel_presses, 1, "{}", vendor.name);
             assert_eq!(vendor.interrupt_signal, None, "{}", vendor.name);
             for (which, dial) in vendor.dials() {

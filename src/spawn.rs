@@ -1541,6 +1541,16 @@ mod tests {
     }
 
     #[test]
+    fn spawn_a_message_to_codex_ending_in_a_skill_closes_its_popup_first() {
+        // codex's skill popup opens on `$` and takes the Enter.
+        let codex = registry::entry("codex");
+        assert_eq!(as_typed(codex, "reply ok $review"), "reply ok $review ");
+        assert_eq!(as_typed(codex, "run $review on it"), "run $review on it");
+        assert_eq!(as_typed(codex, "and now the linter"), "and now the linter");
+        assert_eq!(as_typed(codex, "costs 5$"), "costs 5$");
+    }
+
+    #[test]
     fn spawn_launch_words_go_right_after_the_program_once() {
         // Launch words go right after the program, once: not again when the
         // configured command, a harness's args or the caller's args carry one.

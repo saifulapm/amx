@@ -144,7 +144,9 @@ pub const VENDOR: Vendor = Vendor {
     // The approval box marks `y` on its first row, and `y` approves.
     menus_take_letters: true,
     prompt_flag: None,
-    popups: &[],
+    // A word opening on `$` opens the skill popup, which takes the Enter
+    // (#AMCXQCAE, codex 0.157.1); a space after it closes the popup.
+    popups: &['$'],
     cancel_presses: 1,
     interrupt_signal: None,
     // Each codex gets its own app server. Under the shared daemon hooks run in
