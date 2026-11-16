@@ -28,6 +28,7 @@ mod loose;
 mod models;
 mod notify;
 mod paths;
+mod port;
 mod pr;
 mod registry;
 mod role;

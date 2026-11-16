@@ -3,7 +3,10 @@
 
 mod common;
 
-use common::{AMX, Harness, a_project, argv_of, command_of, git, ls};
+use common::{
+    AMX, Harness, a_project, adjacent_ports, argv_of, command_of, git, ls, pane_env, pane_environ,
+    port_of,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -64,37 +67,6 @@ fn path_with_the_stand_in(amx: &Harness) -> String {
         amx.home().join("bin").display(),
         std::env::var("PATH").unwrap_or_default()
     )
-}
-
-/// A process's environment read from `/proc`, which shows what the pane
-/// really started with, independent of anything amx recorded.
-fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
-    let raw = std::fs::read(format!("/proc/{pid}/environ"))
-        .unwrap_or_else(|e| panic!("reading /proc/{pid}/environ: {e}"));
-    raw.split(|&byte| byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            let text = String::from_utf8_lossy(entry);
-            let (name, value) = text.split_once('=').expect("NAME=VALUE");
-            (name.to_string(), value.to_string())
-        })
-        .collect()
-}
-
-/// The environment of the agent's pane process, once the vendor runs in it.
-///
-/// Once the stand-in prints its argv, `_boot` has read the boot file and
-/// exec'd the vendor, so the pane's environment is the one amx handed over.
-fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, String> {
-    argv_of(amx, id);
-    let pid = amx.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &amx.pane_of(id),
-        "#{pane_pid}",
-    ]);
-    pane_environ(&pid)
 }
 
 /// The value a `ls --json` row prints under `key`, panicking if the key is
@@ -2968,4 +2940,160 @@ fn every_claude_is_named_after_its_id_and_opened_to_remote_control_when_asked() 
         argv.contains(&format!("--remote-control {remote} ")),
         "{argv}"
     );
+}
+
+/// `amx new` of a dispatched worker drawing its port from `range`, with `env`
+/// set on the caller.
+fn new_on_ports(amx: &Harness, range: &str, task: &str, env: &[(&str, &str)]) -> Output {
+    amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), task])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
+        .env("AMX_PORT_RANGE", range)
+        .envs(env.iter().copied())
+        .output()
+        .expect("running amx new")
+}
+
+/// The port the agent's pane was given in `$AMX_PORT`, once `$PORT` is
+/// checked to say the same.
+fn port_in(amx: &Harness, id: &str) -> Option<u16> {
+    let env = pane_env(amx, id);
+    assert_eq!(env.get("PORT"), env.get("AMX_PORT"), "{env:?}");
+    env.get("AMX_PORT")
+        .map(|port| port.parse().expect("a port number"))
+}
+
+/// A range of one port nobody listens on, and that port.
+fn one_free_port() -> (String, u16) {
+    let port = port_of(&adjacent_ports(1)[0]);
+    (format!("{port}-{port}"), port)
+}
+
+#[test]
+fn every_agent_gets_a_port_of_its_own() {
+    let amx = Harness::new();
+    let mock = amx.mock();
+    let first = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "the first"],
+    ));
+    let second = id_of(&new(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "--agent", &mock, "the second"],
+    ));
+
+    let first = port_in(&amx, &first).expect("the first agent has a port");
+    let second = port_in(&amx, &second).expect("the second agent has a port");
+    assert_ne!(first, second, "two agents never share a port");
+    for port in [first, second] {
+        assert!((4100..=4999).contains(&port), "{port} is out of range");
+    }
+}
+
+#[test]
+fn a_port_another_process_listens_on_is_passed_over() {
+    let amx = Harness::new();
+    let mut ports = adjacent_ports(2);
+    let free = port_of(&ports.pop().expect("the second port"));
+    let busy = port_of(&ports[0]);
+
+    let id = id_of(&new_on_ports(
+        &amx,
+        &format!("{busy}-{free}"),
+        "fix the login bug",
+        &[],
+    ));
+    assert_eq!(port_in(&amx, &id), Some(free));
+}
+
+#[test]
+fn with_no_port_free_the_agent_starts_without_one() {
+    let amx = Harness::new();
+    let held = adjacent_ports(1);
+    let port = port_of(&held[0]);
+    let range = format!("{port}-{port}");
+
+    // The second spawn comes from a shell that already has a port, as one
+    // inside another agent's pane does. That port is not the new agent's.
+    for env in [&[][..], &[("AMX_PORT", "4242"), ("PORT", "4242")][..]] {
+        let out = new_on_ports(&amx, &range, "fix the login bug", env);
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(said.contains(&format!("no free port in {range}")), "{said}");
+        let id = id_of(&out);
+        let env = pane_env(&amx, &id);
+        assert_eq!(env.get("AMX_PORT"), None, "{env:?}");
+        assert_eq!(env.get("PORT"), None, "{env:?}");
+    }
+}
+
+#[test]
+fn a_stopped_agents_port_goes_to_the_next_one() {
+    let amx = Harness::new();
+    let (range, port) = one_free_port();
+    let first = id_of(&new_on_ports(&amx, &range, "the first", &[]));
+    assert_eq!(port_in(&amx, &first), Some(port));
+    amx.until_state(&first, "idle");
+    amx.until_shown(&first, "auto mode on");
+
+    let stopped = amx.amx(&["stop", &first, "--force"]);
+    assert!(
+        stopped.status.success(),
+        "amx stop: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let next = id_of(&new_on_ports(&amx, &range, "the next", &[]));
+    assert_eq!(port_in(&amx, &next), Some(port));
+}
+
+#[test]
+fn two_spawns_at_the_same_instant_get_different_ports() {
+    for round in 0..3 {
+        let amx = Harness::new();
+        // Both spawns would otherwise race to start the server.
+        common::something_else_on_the_server(&amx);
+        let ports = adjacent_ports(2);
+        let wanted: std::collections::BTreeSet<u16> = ports.iter().map(port_of).collect();
+        let range = format!("{}-{}", port_of(&ports[0]), port_of(&ports[1]));
+        drop(ports);
+
+        let spawns = ["the first", "the second"].map(|task| {
+            amx.amx_command(&["new", "--no-worktree", "--agent", &amx.mock(), task])
+                .env("MOCK_CLAUDE_SCENARIO", amx.scenario("a-dispatched-worker"))
+                .env("AMX_PORT_RANGE", &range)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("starting amx new")
+        });
+        let ids = spawns.map(|spawn| id_of(&spawn.wait_with_output().expect("amx new")));
+
+        let got: std::collections::BTreeSet<u16> = ids
+            .iter()
+            .map(|id| port_in(&amx, id).expect("each agent has a port"))
+            .collect();
+        assert_eq!(got, wanted, "round {round}");
+    }
+}
+
+#[test]
+fn an_agent_recorded_working_whose_pane_is_gone_holds_no_port() {
+    let amx = Harness::new();
+    // A server with no panes left would go, and reuse the pane's id.
+    common::something_else_on_the_server(&amx);
+    let (range, port) = one_free_port();
+    let gone = id_of(&new_on_ports(&amx, &range, "the first", &[]));
+    assert_eq!(port_in(&amx, &gone), Some(port));
+    amx.until_state(&gone, "idle");
+    amx.until_shown(&gone, "auto mode on");
+
+    let pane = amx.pane_of(&gone);
+    amx.tmux(&["kill-pane", "-t", &pane]);
+    amx.until("the pane to go", || (!amx.pane_alive(&pane)).then_some(()));
+    let mut state = amx.state(&gone);
+    state["state"] = serde_json::json!("working");
+    amx.set_state(&gone, state);
+
+    let next = id_of(&new_on_ports(&amx, &range, "the next", &[]));
+    assert_eq!(port_in(&amx, &next), Some(port));
 }

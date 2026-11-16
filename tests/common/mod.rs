@@ -687,6 +687,69 @@ pub fn argv_of(amx: &Harness, id: &str) -> String {
     })
 }
 
+/// A process's environment read from `/proc`, which shows what the pane
+/// really started with, independent of anything amx recorded.
+pub fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ"))
+        .unwrap_or_else(|e| panic!("reading /proc/{pid}/environ: {e}"));
+    raw.split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let text = String::from_utf8_lossy(entry);
+            let (name, value) = text.split_once('=').expect("NAME=VALUE");
+            (name.to_string(), value.to_string())
+        })
+        .collect()
+}
+
+/// The environment of the agent's pane process, once the vendor runs in it.
+///
+/// Once the stand-in prints its argv, `_boot` has read the boot file and
+/// exec'd the vendor, so the pane's environment is the one amx handed over.
+pub fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, String> {
+    argv_of(amx, id);
+    let pid = amx.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &amx.pane_of(id),
+        "#{pane_pid}",
+    ]);
+    pane_environ(&pid)
+}
+
+/// `count` adjacent ports on 127.0.0.1, the first one first, each held by a
+/// listener until the caller drops it.
+///
+/// The OS picks the first, so the suite stays off the 41xx ports a person's
+/// dev servers use. Holding every port keeps a parallel test from taking one
+/// before the caller decides which to free.
+pub fn adjacent_ports(count: u16) -> Vec<std::net::TcpListener> {
+    use std::net::TcpListener;
+    loop {
+        let first = TcpListener::bind("127.0.0.1:0").expect("a port from the OS");
+        let port = first.local_addr().expect("its address").port();
+        let mut held = vec![first];
+        for next in 1..count {
+            match port
+                .checked_add(next)
+                .and_then(|next| TcpListener::bind(("127.0.0.1", next)).ok())
+            {
+                Some(listener) => held.push(listener),
+                None => break,
+            }
+        }
+        if held.len() == usize::from(count) {
+            return held;
+        }
+    }
+}
+
+/// The port a listener from [`adjacent_ports`] holds.
+pub fn port_of(listener: &std::net::TcpListener) -> u16 {
+    listener.local_addr().expect("its address").port()
+}
+
 /// The vendor argv amx wrote into the handoff.
 pub fn command_of(amx: &Harness, id: &str) -> Vec<String> {
     amx.handoff(id)["command"]

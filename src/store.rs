@@ -38,6 +38,9 @@ const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";
 const SPAWN_LOCK: &str = "spawn.lock";
 const CLAIM: &str = "claim";
+/// The port the agent's spawn picked (see [`crate::port`]), as its number.
+/// Written under the spawn lock, so the next spawn sees it while counting.
+const PORT: &str = "port";
 
 /// The directory under the agents directory where records idle past
 /// [`crate::gc::ARCHIVE_AFTER`] are kept. Not shaped like an id, so [`list`]
@@ -1530,11 +1533,14 @@ pub fn spawn_lock(root: &Path) -> Result<File> {
 pub struct Claim {
     path: PathBuf,
     _file: File,
+    port: Option<u16>,
 }
 
 impl Claim {
-    /// Claim a place in `dir` for an agent of `project`.
-    pub fn hold(dir: &Path, project: &Path) -> Result<Claim> {
+    /// Claim a place in `dir` for an agent of `project`, and keep `port` as
+    /// its port, or none.
+    pub fn hold(dir: &Path, project: &Path, port: Option<u16>) -> Result<Claim> {
+        keep_port(dir, port)?;
         let path = dir.join(CLAIM);
         let mut file = OpenOptions::new()
             .write(true)
@@ -1547,7 +1553,41 @@ impl Claim {
             .with_context(|| format!("locking {}", path.display()))?;
         file.write_all(project.as_os_str().as_encoded_bytes())
             .with_context(|| format!("writing {}", path.display()))?;
-        Ok(Claim { path, _file: file })
+        Ok(Claim {
+            path,
+            _file: file,
+            port,
+        })
+    }
+
+    /// The port the spawn picked, or none when every one was taken.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+}
+
+/// The port kept in the agent directory `dir`. A missing file, or one that
+/// does not read as a port, is none.
+pub fn port(dir: &Path) -> Option<u16> {
+    std::fs::read_to_string(dir.join(PORT))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Keep `port` in the agent directory `dir`, or remove the one a spawn before
+/// kept, so the agent never names a port it was not given.
+fn keep_port(dir: &Path, port: Option<u16>) -> Result<()> {
+    let path = dir.join(PORT);
+    match port {
+        Some(port) => write_atomic(&path, port.to_string().as_bytes()),
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", path.display()))
+            }
+            _ => Ok(()),
+        },
     }
 }
 
@@ -3285,6 +3325,24 @@ mod tests {
         });
 
         assert_eq!(agent.state().unwrap().seq, 199);
+    }
+
+    #[test]
+    fn store_reads_a_port_that_does_not_read_as_none() {
+        let dir = TempDir::new().unwrap();
+        let claim = Claim::hold(dir.path(), Path::new("/src/app"), Some(4123)).unwrap();
+        assert_eq!(port(dir.path()), Some(4123));
+        drop(claim);
+
+        std::fs::write(dir.path().join(PORT), "41x3").unwrap();
+        assert_eq!(port(dir.path()), None, "a hand edit");
+        std::fs::write(dir.path().join(PORT), "70000").unwrap();
+        assert_eq!(port(dir.path()), None, "past the last port");
+
+        // A spawn that found no port takes away the one a spawn before kept.
+        std::fs::write(dir.path().join(PORT), "4123").unwrap();
+        let _claim = Claim::hold(dir.path(), Path::new("/src/app"), None).unwrap();
+        assert_eq!(port(dir.path()), None);
     }
 
     #[test]

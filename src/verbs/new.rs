@@ -474,13 +474,17 @@ fn run_aloud(
         let (id, agent_dir) = claim(root, args.name.as_deref(), task)?;
         Ok(((id, agent_dir.clone()), agent_dir))
     })?;
-    let ((id, agent_dir), _place) = match taken {
+    let ((id, agent_dir), place) = match taken {
         Ok(taken) => taken,
         Err(full) => {
             warned(problems, &full, to_terminal)?;
             return Ok(exit::BLOCKED);
         }
     };
+    if place.port().is_none() {
+        let range = crate::port::range();
+        warned(problems, &crate::port::none_free(&range), to_terminal)?;
+    }
 
     // On failure remove the claimed directory. The claim created it, so it
     // cannot hold another spawn's record.

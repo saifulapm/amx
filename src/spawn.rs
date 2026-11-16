@@ -634,6 +634,9 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         command.env_remove(marker);
     }
     command.env_remove(crate::hook::NESTED_ENV);
+    // A server started from an agent's pane holds that agent's port too.
+    command.env_remove(crate::port::ENV);
+    command.env_remove(crate::port::PORT_ENV);
 
     let parent = meta
         .parent
@@ -647,6 +650,7 @@ pub fn boot(root: &Path, id: &str) -> Result<i32> {
         &scratch(&dir)?,
         meta.parent.as_deref().zip(parent.as_deref()),
         meta.depth,
+        crate::store::port(&dir),
     ) {
         command.env(name, value);
     }
@@ -692,9 +696,10 @@ pub(crate) fn quoted(word: &str) -> String {
 /// over it.
 ///
 /// The snapshot often comes from another agent's pane, so the id, record and
-/// scratch variables are always replaced, and the parent variables are set
-/// from `parent` or removed. [`crate::hook::NESTED_ENV`] is always removed:
-/// this pane is an agent, not a shell nested in one.
+/// scratch variables are always replaced, and the parent and port variables
+/// are set from `parent` and `port` or removed. [`crate::hook::NESTED_ENV`]
+/// is always removed: this pane is an agent, not a shell nested in one.
+#[allow(clippy::too_many_arguments)]
 fn pane_env(
     snapshot: &BTreeMap<String, String>,
     bin: &Path,
@@ -703,9 +708,16 @@ fn pane_env(
     scratch: &Path,
     parent: Option<(&str, &Path)>,
     depth: u32,
+    port: Option<u16>,
 ) -> BTreeMap<String, String> {
     let mut env = snapshot.clone();
     env.remove(crate::hook::NESTED_ENV);
+    env.remove(crate::port::ENV);
+    env.remove(crate::port::PORT_ENV);
+    if let Some(port) = port {
+        env.insert(crate::port::ENV.to_string(), port.to_string());
+        env.insert(crate::port::PORT_ENV.to_string(), port.to_string());
+    }
     env.insert("AMX_BIN".to_string(), bin.to_string_lossy().into_owned());
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     env.insert(
@@ -911,13 +923,15 @@ pub fn at_capacity(
     }))
 }
 
-/// Check the caps and, if there is room, run `claim` and hold its place.
+/// Check the caps and, if there is room, run `claim` and hold its place with
+/// a free port.
 ///
 /// `claim` creates the agent's directory and returns it; the place is held
-/// until the returned [`crate::store::Claim`] drops. The inner `Err` is
-/// [`at_capacity`]'s refusal. Runs under [`crate::store::spawn_lock`], which is
-/// released on return so the next spawn counts this claim without waiting for
-/// setup.
+/// until the returned [`crate::store::Claim`] drops. The claim carries the
+/// port, none when every port is taken. The inner `Err` is [`at_capacity`]'s
+/// refusal. Runs under [`crate::store::spawn_lock`], which is released on
+/// return so the next spawn counts this claim and its port without waiting
+/// for setup.
 pub fn take_a_place<T>(
     root: &Path,
     project: &Path,
@@ -930,8 +944,27 @@ pub fn take_a_place<T>(
         return Ok(Err(full));
     }
     let (claimed, dir) = claim()?;
-    let held = crate::store::Claim::hold(&dir, project)?;
+    let port = crate::port::pick(crate::port::range(), &held_ports(root)?);
+    let held = crate::store::Claim::hold(&dir, project, port)?;
     Ok(Ok((claimed, held)))
+}
+
+/// The ports held by spawns still setting up and by agents whose pane still
+/// answers for them, short of an end.
+///
+/// A record left working over a dead pane holds nothing, and neither does a
+/// parked agent: it has no pane, and its resume picks a port again.
+fn held_ports(root: &Path) -> Result<BTreeSet<u16>> {
+    let setting_up = crate::store::claims(root)?
+        .into_iter()
+        .filter_map(|(id, _)| crate::paths::agent_dir_in(root, &id).ok());
+    let on = answering(root, |phase, _| !phase.is_terminal())?
+        .into_iter()
+        .filter_map(|meta| crate::paths::agent_dir_in(root, &meta.id).ok());
+    Ok(setting_up
+        .chain(on)
+        .filter_map(|dir| crate::store::port(&dir))
+        .collect())
 }
 
 /// Write the record for a spawned agent.
@@ -2252,6 +2285,7 @@ mod tests {
             Path::new("/state/agents/port-it-b2c/scratch"),
             None,
             0,
+            None,
         );
 
         assert_eq!(
@@ -2286,6 +2320,7 @@ mod tests {
             Path::new("/state/agents/port-it-b2c/scratch"),
             Some(("fix-login-a1b", Path::new("/state/agents/fix-login-a1b"))),
             1,
+            None,
         );
 
         assert_eq!(env.get(PARENT_ENV).unwrap(), "fix-login-a1b");

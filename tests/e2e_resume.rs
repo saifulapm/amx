@@ -5,7 +5,10 @@
 
 mod common;
 
-use common::{Harness, a_project, argv_of, clients_on, something_else_on_the_server, watching};
+use common::{
+    Harness, a_project, adjacent_ports, argv_of, clients_on, pane_env, port_of,
+    something_else_on_the_server, watching,
+};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -317,6 +320,29 @@ fn resume_brings_a_stopped_agent_back_on_the_session_it_had() {
     assert!(amx.pane_alive(&pane));
     assert_ne!(amx.state(id)["state"], "stopped");
     assert_eq!(amx.state(id)["exit"], json!(null), "it is running again");
+}
+
+#[test]
+fn resume_gives_the_agent_a_free_port_again() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+
+    let port = port_of(&adjacent_ports(1)[0]);
+    let out = amx
+        .amx_command(&["resume", id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+        .env("AMX_PORT_RANGE", format!("{port}-{port}"))
+        .output()
+        .expect("running amx resume");
+    said(&out);
+
+    let env = pane_env(&amx, id);
+    assert_eq!(env.get("AMX_PORT"), Some(&port.to_string()), "{env:?}");
+    assert_eq!(env.get("PORT"), Some(&port.to_string()), "{env:?}");
 }
 
 #[test]

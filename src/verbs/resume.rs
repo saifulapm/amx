@@ -142,13 +142,19 @@ fn one(
         );
         return Ok(exit::BLOCKED);
     }
-    let _place = match take_a_place(root, id, &view.meta.dir)? {
+    let place = match take_a_place(root, id, &view.meta.dir)? {
         Ok(place) => place,
         Err(full) => {
             warn!("amx resume: {full}");
             return Ok(exit::BLOCKED);
         }
     };
+    if place.port().is_none() {
+        warn!(
+            "amx resume: {}",
+            crate::port::none_free(&crate::port::range())
+        );
+    }
 
     bring_back(root, id, message, env, &BTreeMap::new())?;
     writeln!(out, "{id} resumed")?;
