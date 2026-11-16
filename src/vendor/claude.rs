@@ -137,8 +137,9 @@ pub const VENDOR: Vendor = Vendor {
         sigil: '/',
         skill_prefix: "",
     }),
-    // The last word is the prompt whatever it starts with.
-    ends_options: None,
+    // Without it a task starting with `-` is read as a flag, and one after a
+    // variadic flag such as `--add-dir` as another of its values (2.1.325).
+    ends_options: Some("--"),
     attaches_at: false,
     restores_queued_on_cancel: false,
     // 2.1.284's permission menu ignores `y`; digits work.

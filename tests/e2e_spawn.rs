@@ -2881,3 +2881,62 @@ fn a_project_agent_loses_its_skip_permissions_flag_and_keeps_the_rest() {
         "{command:?}"
     );
 }
+
+#[test]
+fn a_task_starting_with_a_dash_reaches_claude_past_its_options() {
+    // claude would read `- reply ok` as a flag, and `fix it` after
+    // `--add-dir /srv` as a second directory.
+    let amx = Harness::new();
+    amx.config("[claude]\nargs = [\"--add-dir\", \"/srv\"]\n");
+    let brief = amx.home().join("t.md");
+    std::fs::write(&brief, "- reply ok\n").expect("a brief to read");
+    let id = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &[
+            "--no-worktree",
+            "--dir",
+            &amx.home().to_string_lossy(),
+            "--file",
+            &brief.to_string_lossy(),
+        ],
+    ));
+    let argv = argv_of(&amx, &id);
+    assert!(argv.ends_with("--add-dir /srv -- - reply ok"), "{argv}");
+
+    amx.until("the hook to report a session", || {
+        amx.meta(&id)["session"].as_str().map(str::to_string)
+    });
+    let session = amx.meta(&id)["session"].as_str().unwrap().to_string();
+    let stopped = amx.amx(&["stop", &id, "--force"]);
+    assert!(stopped.status.success(), "{}", common::stderr(&stopped));
+
+    let again = amx
+        .amx_command(&["resume", &id, "--", "- again"])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("PATH", path_with_the_stand_in(&amx))
+        .output()
+        .expect("running amx resume");
+    assert!(again.status.success(), "{}", common::stderr(&again));
+    amx.until("the resumed vendor to print its argv", || {
+        let pane = amx.capture(&amx.pane_of(&id));
+        pane.contains(&format!("--resume={session}")).then_some(())
+    });
+    let argv = argv_of(&amx, &id);
+    assert!(
+        argv.ends_with(&format!("--resume={session} -- - again")),
+        "{argv}"
+    );
+
+    let forked = amx
+        .amx_command(&["fork", &id, "--", "- other"])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("PATH", path_with_the_stand_in(&amx))
+        .output()
+        .expect("running amx fork");
+    assert!(forked.status.success(), "{}", common::stderr(&forked));
+    let copy = common::stdout(&forked).trim().to_string();
+    let argv = argv_of(&amx, &copy);
+    assert!(argv.ends_with("-- - other"), "{argv}");
+    assert_eq!(argv.matches(" -- ").count(), 1, "{argv}");
+}

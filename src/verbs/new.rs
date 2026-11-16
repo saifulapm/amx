@@ -865,9 +865,15 @@ fn launched(
                 images,
             );
             // `vendor_command` ends with the task word; with no task the
-            // vendor opens at its prompt instead of on an empty one.
+            // vendor opens at its prompt instead of on an empty one. The
+            // end-of-options word goes too, or a resume flag appended later
+            // would land past it as the prompt.
             if task.is_empty() && images.is_empty() {
                 command.pop();
+                let ends = registry::entry(&launch.agent).and_then(|vendor| vendor.ends_options);
+                if command.last().map(String::as_str) == ends {
+                    command.pop();
+                }
             }
             command
         }
@@ -1554,7 +1560,7 @@ mod tests {
                 false,
                 &[]
             ),
-            ["claude", "--model", "opus", "port the importer"]
+            ["claude", "--model", "opus", "--", "port the importer"]
         );
     }
 
@@ -1594,8 +1600,27 @@ mod tests {
                 false,
                 &[]
             ),
-            ["claude", "port the importer"],
+            ["claude", "--", "port the importer"],
             "and an ordinary spawn is launched the way it always was"
+        );
+    }
+
+    #[test]
+    fn a_spawn_with_no_task_ends_on_no_end_of_options_word() {
+        // A resume appends its flag to this argv, and past a last `--` the
+        // vendor would read the flag as the prompt.
+        let launch =
+            Launch::resolve(&Config::default(), &spawn(Some("claude"), [None; 3])).unwrap();
+        assert_eq!(
+            launched(
+                &spawn(Some("claude"), [None; 3]),
+                "",
+                &launch,
+                "port-it-b2c",
+                false,
+                &[]
+            ),
+            ["claude"]
         );
     }
 

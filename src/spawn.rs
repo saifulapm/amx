@@ -212,13 +212,19 @@ pub fn vendor_command(
         &args,
     ));
     command.extend(image_flags(registry::entry(agent), images));
-    command.extend(
-        registry::entry(agent)
-            .and_then(|vendor| vendor.ends_options)
-            .map(str::to_string),
-    );
+    command.extend(ends_options(registry::entry(agent), &command));
     command.extend(task_words(registry::entry(agent), task, images));
     command
+}
+
+/// The vendor's end-of-options word to write before a message appended to
+/// `command`, unless `command` already holds it: past a first `--` a second
+/// would be read as the message.
+pub fn ends_options(vendor: Option<&Vendor>, command: &[String]) -> Option<String> {
+    vendor
+        .and_then(|vendor| vendor.ends_options)
+        .filter(|word| !command.iter().any(|written| written == word))
+        .map(str::to_string)
 }
 
 /// The option words that hand `images` over at start, for a vendor that
@@ -279,12 +285,6 @@ fn with_launch_words(
         .collect();
     drop(command.splice(1..1, missing));
     command
-}
-
-/// The recorded vendor's end-of-options word, for a verb appending a message
-/// to its argv.
-pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
-    vendor_of(handoff)?.ends_options
 }
 
 /// A message as the argv word handed to `vendor`.
@@ -1053,6 +1053,7 @@ mod tests {
                 "opus",
                 "--session-id",
                 "abc-123",
+                "--",
                 "fix the login bug"
             ]
         );
@@ -1083,6 +1084,7 @@ mod tests {
                 "high",
                 "--session-id",
                 "abc-123",
+                "--",
                 "fix the login bug"
             ],
             "the permission dial nobody turned sends no flag at all"
@@ -1116,6 +1118,7 @@ mod tests {
                 "--permission-mode",
                 "plan",
                 "--model=sonnet",
+                "--",
                 "fix the login bug"
             ]
         );
@@ -1163,7 +1166,7 @@ mod tests {
             &[],
         );
         assert_eq!(with, without);
-        assert_eq!(with, ["claude", "fix the login bug"]);
+        assert_eq!(with, ["claude", "--", "fix the login bug"]);
     }
 
     #[test]
@@ -1300,7 +1303,8 @@ mod tests {
     fn spawn_ends_pis_options_before_a_task_so_an_at_sign_is_words() {
         // pi reads a word starting with `-` as a flag until `--`, and one
         // starting with `@` as a file to attach on either side, so that word
-        // gets a leading space. claude has neither reading.
+        // gets a leading space. claude ends its options too, but its `@` is a
+        // mention inside the prompt, meant as written.
         let pi = vendor_command(
             "pi",
             &Dials::default(),
@@ -1321,7 +1325,35 @@ mod tests {
             false,
             &[],
         );
-        assert_eq!(claude, ["claude", "@alice asked for this"]);
+        assert_eq!(claude, ["claude", "--", "@alice asked for this"]);
+    }
+
+    #[test]
+    fn spawn_ends_claudes_options_before_the_task_whatever_comes_before_it() {
+        // claude reads a task starting with `-` as a flag, and one after a
+        // variadic flag such as `--add-dir` as another value for it.
+        let dash = |agent: &str, args: &[&str], task: &str| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            vendor_command(agent, &Dials::default(), &args, task, None, false, &[])
+        };
+        assert_eq!(
+            dash("claude", &[], "- reply ok"),
+            ["claude", "--", "- reply ok"]
+        );
+        assert_eq!(
+            dash("claude", &["--add-dir", "/srv"], "fix it"),
+            ["claude", "--add-dir", "/srv", "--", "fix it"]
+        );
+        // The wrapper Saiful runs is read by its program's name.
+        assert_eq!(
+            dash("/home/u/.local/libexec/dots/claude", &[], "- reply ok"),
+            ["/home/u/.local/libexec/dots/claude", "--", "- reply ok"]
+        );
+        // Past a first `--` a second is text, so args that hold one get none.
+        assert_eq!(
+            dash("claude", &["--add-dir", "/srv", "--"], "fix it"),
+            ["claude", "--add-dir", "/srv", "--", "fix it"]
+        );
     }
 
     #[test]
@@ -1397,7 +1429,7 @@ mod tests {
             true,
             &[],
         );
-        assert_eq!(claude, ["claude", "fix the login bug"]);
+        assert_eq!(claude, ["claude", "--", "fix the login bug"]);
 
         let unregistered = vendor_command(
             "mock-claude",

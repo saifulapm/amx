@@ -1441,7 +1441,9 @@ fn the_composer_turns_the_dials_for_the_one_spawn_its_tokens_lead() {
     let next = composed_after(&amx, &id);
     let command = command_of(&amx, &next);
     assert!(
-        !command.iter().any(|arg| arg.starts_with("--")),
+        !command
+            .iter()
+            .any(|arg| arg.starts_with("--") && arg != "--"),
         "a token turns a dial for the line it was typed on: {command:?}"
     );
     assert!(amx.meta(&next)["worktree"].is_null(), "and no other");

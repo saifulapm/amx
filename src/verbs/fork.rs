@@ -291,7 +291,6 @@ fn build_copy(
     images: &[PathBuf],
 ) -> Vec<String> {
     let spec = &resume::spelling(vendor);
-    let ends_options = vendor.and_then(|vendor| vendor.ends_options);
     let fork = spec
         .fork
         .expect("a copy is only asked of a vendor that declares how it branches");
@@ -322,7 +321,7 @@ fn build_copy(
     }
     if prompt.is_some() || !images.is_empty() {
         command.extend(spawn::image_flags(vendor, images));
-        command.extend(ends_options.map(str::to_string));
+        command.extend(spawn::ends_options(vendor, &command));
         command.extend(spawn::task_words(
             vendor,
             prompt.unwrap_or_default(),
@@ -453,6 +452,7 @@ mod tests {
                 "claude",
                 "--resume=abc-123",
                 "--fork-session",
+                "--",
                 "@/state/agents/port-it-b2c/images/1.png x"
             ]
         );
@@ -544,6 +544,7 @@ mod tests {
                 "opus",
                 "--resume=abc-123",
                 "--fork-session",
+                "--",
                 "now do it with sqlite"
             ]
         );

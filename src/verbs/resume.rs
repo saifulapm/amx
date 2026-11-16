@@ -310,7 +310,7 @@ pub(crate) fn bring_back(
 fn handed_on(recorded: &Handoff, session: &str, message: Option<&str>) -> Handoff {
     let mut command = continuing(recorded, session);
     if let Some(message) = message {
-        command.extend(spawn::ends_options_of(recorded).map(str::to_string));
+        command.extend(spawn::ends_options(spawn::vendor_of(recorded), &command));
         command.push(spawn::as_words(spawn::vendor_of(recorded), message));
     }
     Handoff {
@@ -855,6 +855,7 @@ mod tests {
                 "--model",
                 "opus",
                 "--resume=abc-123",
+                "--",
                 "and now the linter"
             ]
         );
