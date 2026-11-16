@@ -2289,8 +2289,8 @@ impl Screen {
             KeyCode::Right if chord(key) == KeyModifiers::CONTROL => composer.word_right(),
             KeyCode::Left => composer.left(),
             KeyCode::Right => composer.right(),
-            KeyCode::Home => composer.home(),
-            KeyCode::End => composer.end(),
+            KeyCode::Home => composer.row_home(),
+            KeyCode::End => composer.row_end(),
             KeyCode::Char('a') if chord(key) == KeyModifiers::CONTROL => composer.home(),
             KeyCode::Char('e') if chord(key) == KeyModifiers::CONTROL => composer.end(),
             // Up and down move through the suggestions.

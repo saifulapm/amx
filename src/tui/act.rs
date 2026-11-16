@@ -476,6 +476,23 @@ impl Composer {
         self.at = self.length();
     }
 
+    /// Moves to the start of the drawn row.
+    pub fn row_home(&mut self) {
+        let rows = visual_rows(&self.text, self.room.get());
+        self.at = rows[cursor_row(&rows, self.at)].start;
+    }
+
+    /// Moves to the end of the drawn row: past it on a paragraph's last row,
+    /// else onto its last character, since its end is the next row's start.
+    pub fn row_end(&mut self) {
+        let rows = visual_rows(&self.text, self.room.get());
+        let row = cursor_row(&rows, self.at);
+        self.at = match ends_paragraph(&rows, row) {
+            true => rows[row].end,
+            false => rows[row].end - 1,
+        };
+    }
+
     /// Moves to the start of the previous word.
     ///
     /// Words split on whitespace only, so a dial like `m:opus` is one word.
@@ -4162,6 +4179,35 @@ mod tests {
         assert_eq!(composer.at, 5, "row 3");
         composer.arrow(&sent, false);
         assert_eq!((composer.text.as_str(), composer.at), ("newer", 0));
+    }
+
+    #[test]
+    fn home_and_end_reach_the_rows_ends_and_ctrl_a_and_e_the_lines() {
+        // Rows: "you need " 0..9, "to attach " 9..19, "it" 19..21.
+        let mut composer = drawn("you need to attach it", 10);
+        composer.at = 12;
+        composer.row_home();
+        assert_eq!(composer.at, 9, "the second row's first cell");
+        composer.at = 12;
+        composer.row_end();
+        assert_eq!(
+            composer.at, 18,
+            "the second row's last cell, not the third row"
+        );
+        composer.row_end();
+        assert_eq!(composer.at, 18, "and again stays there");
+        composer.at = 20;
+        composer.row_end();
+        assert_eq!(composer.at, 21, "past the end of a paragraph's last row");
+        composer.home();
+        assert_eq!(composer.at, 0, "ctrl+a: the line's start");
+        composer.end();
+        assert_eq!(composer.at, 21, "ctrl+e: the line's end");
+
+        let mut two = drawn("one\ntwo", 10);
+        two.at = 1;
+        two.row_end();
+        assert_eq!(two.at, 3, "before the newline");
     }
 
     #[test]

@@ -347,7 +347,8 @@ The line edits like a shell prompt:
 | --- | --- |
 | `←` `→` | A character. |
 | `ctrl+←` `ctrl+→` | A word. |
-| `home` `end` `ctrl+a` `ctrl+e` | Start and end of the line. |
+| `home` `end` | Start and end of the row as drawn. |
+| `ctrl+a` `ctrl+e` | Start and end of the whole line. |
 | `backspace` `delete` | The character before or under the cursor. |
 | `ctrl+w` `alt+backspace` | The word before the cursor. |
 | `shift+enter` | A newline. Needs a terminal that reports it; see below. |
