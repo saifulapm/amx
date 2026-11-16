@@ -346,17 +346,25 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
 }
 
 /// The warning for a `[notify]` table that does not read, which is then read
-/// as its default. serde's reason may echo the file's text, so its control
-/// characters become spaces.
+/// as its default.
 fn unread_notify(table: &toml::Table) -> Option<String> {
     let e = table.get("notify")?.clone().try_into::<Notify>().err()?;
-    let reason: String = e
-        .to_string()
-        .trim_end()
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    // serde breaks the line before naming the key.
+    let reason = inert(e.to_string().trim_end()).replace('\n', " ");
     Some(format!("ignoring [notify]: {reason}"))
+}
+
+/// A parser's reason, which may quote the file, with every control character
+/// but a line break turned into a space, so a warning cannot drive the
+/// terminal that prints it.
+fn inert(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|c| match c.is_control() && c != '\n' {
+            true => ' ',
+            false => c,
+        })
+        .collect()
 }
 
 /// The file's harness tables, keyed by program name.
@@ -807,7 +815,11 @@ fn keys_in(path: &Path, read: Result<Option<toml::Table>>) -> (toml::Table, Vec<
         Ok(None) => (toml::Table::new(), Vec::new()),
         Err(e) => (
             toml::Table::new(),
-            vec![format!("ignoring {}: {}", path.display(), e.root_cause())],
+            vec![format!(
+                "ignoring {}: {}",
+                path.display(),
+                inert(&e.root_cause().to_string())
+            )],
         ),
     }
 }
@@ -1426,6 +1438,21 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_does_not_parse_is_named_without_the_control_characters_it_holds() {
+        // toml's error quotes the line, raw bytes and all.
+        let dir = TempDir::new().unwrap();
+        let text = "max_agents = 2\nnotify = \"\u{1b}]0;owned\u{7}\"\n";
+        let path = wrote(dir.path(), "config.toml", text);
+        let (_, said) = load_from(&path);
+        let (_, laid) = layered(std::slice::from_ref(&path));
+        for w in said.iter().chain(&laid) {
+            assert!(w.contains("config.toml"), "{w:?}");
+            assert!(!w.chars().any(|c| c.is_control() && c != '\n'), "{w:?}");
+        }
+        assert_eq!((said.len(), laid.len()), (1, 1));
+    }
+
+    #[test]
     fn a_notify_table_that_does_not_read_says_so_once_with_the_key_and_the_reason() {
         let text = "shelve_after = 60\n[notify]\nopen = 7\n";
         let (c, w) = parse(text).unwrap();
@@ -1435,6 +1462,7 @@ mod tests {
         assert!(w[0].starts_with("ignoring [notify]: "), "{w:?}");
         assert!(w[0].contains("open"), "names the key: {w:?}");
         assert!(w[0].contains("integer"), "and serde's reason: {w:?}");
+        assert!(!w[0].contains('\n'), "on one line: {w:?}");
 
         let dir = TempDir::new().unwrap();
         let (c, w) = layered(&[wrote(dir.path(), "config.toml", text)]);
