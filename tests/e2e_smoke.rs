@@ -18,6 +18,32 @@ fn the_harness_runs_amx_in_its_home_not_in_the_checkout() {
 }
 
 #[test]
+fn the_harness_refuses_a_test_binary_built_for_another_checkout() {
+    // cargo runs a test in the checkout it was built for. A run that reused
+    // binaries a removed worktree had built into the shared target dir read
+    // fixtures from the removed folder, and 74 tests failed far from the
+    // cause (lessons 2026-11-16).
+    let elsewhere = tempfile::TempDir::new().unwrap();
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "the_harness_runs_amx_in_its_home_not_in_the_checkout",
+        ])
+        .current_dir(elsewhere.path())
+        .output()
+        .expect("running this test binary");
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains(&format!(
+            "this test binary was built for {}",
+            env!("CARGO_MANIFEST_DIR")
+        )),
+        "{said}"
+    );
+}
+
+#[test]
 fn a_scenario_moves_the_record_through_a_turn() {
     let amx = Harness::new();
     let pane = amx.play("fix-login-a1b", "happy-turn");

@@ -31,6 +31,18 @@ pub struct Harness {
 impl Harness {
     pub fn new() -> Harness {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        // cargo runs a test in the checkout it was built for. Elsewhere, the
+        // binary came from a target dir another checkout shares, and its
+        // fixture paths name that checkout.
+        let built_for = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let here = std::env::current_dir().expect("the test's directory");
+        assert!(
+            here.canonicalize().ok() == built_for.canonicalize().ok(),
+            "this test binary was built for {}, not {}: give each checkout \
+             its own CARGO_TARGET_DIR, or `cargo clean -p amx` in a shared one",
+            built_for.display(),
+            here.display()
+        );
         Harness {
             state: TempDir::new().expect("a state directory"),
             home: TempDir::new().expect("a home directory"),
