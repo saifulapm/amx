@@ -304,13 +304,19 @@ fn record(
     }
 
     // Fall back to the transcript when the payload carried no answer. Asking
-    // the pane would need a tmux call on the hook path.
+    // the pane would need a tmux call on the hook path. The answer is at the
+    // end, so the tail is read first and the whole file only when the tail
+    // does not settle it: a long session's transcript runs to hundreds of
+    // megabytes, and the vendor is waiting on this hook.
     if state.state == Phase::Idle
         && state.result.is_none()
-        && let Some(path) = &meta.transcript
-        && let Ok(text) = std::fs::read_to_string(path)
         && let Some(format) = format
-        && let Some(answer) = crate::conversation::answer(format, &text)
+        && let Some(answer) = Agent::transcript_tail(&meta)
+            .and_then(|tail| crate::conversation::answer(format, &tail))
+            .or_else(|| {
+                let text = std::fs::read_to_string(meta.transcript.as_ref()?).ok()?;
+                crate::conversation::answer(format, &text)
+            })
     {
         state.result = Some(answer);
         state.source = Some(Source::Transcript);
@@ -4339,6 +4345,46 @@ mod tests {
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result.as_deref(), Some("from the transcript"));
+        assert_eq!(state.source, Some(Source::Transcript));
+    }
+
+    #[test]
+    fn hook_takes_the_answer_off_the_end_of_a_huge_transcript() {
+        // 50 MB whose head is no UTF-8 at all, as a whole-file read would
+        // have to take: only the tail is needed for the last entry.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        let transcript = root.path().join("session.jsonl");
+        let mut bytes = b"\xff\xfe not text\n".to_vec();
+        let filler =
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"keep going\"}}\n";
+        while bytes.len() < 50 * 1024 * 1024 {
+            bytes.extend_from_slice(filler.as_bytes());
+        }
+        bytes.extend_from_slice(
+            b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"fin\"}]}}\n",
+        );
+        std::fs::write(&transcript, bytes).unwrap();
+
+        hook(
+            root.path(),
+            agent.id(),
+            &json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "abc-123",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Stop","stop_hook_active":false}"#,
+        );
+
+        let state = agent.state().unwrap();
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.result.as_deref(), Some("fin"));
         assert_eq!(state.source, Some(Source::Transcript));
     }
 
