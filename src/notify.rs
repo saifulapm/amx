@@ -13,6 +13,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use crate::config::Delivery;
 use crate::store::{Agent, Phase, State};
@@ -212,13 +213,13 @@ fn deliver(
 
 /// Wait for the notifier to print the button clicked, and do what it says.
 ///
-/// A dismissed notice prints nothing.
+/// A dismissed notice prints nothing, and one ignored past [`CLICK_WAIT`] is
+/// given up on.
 fn clicked(notifier: Child, buttons: &Buttons) {
-    let Ok(out) = notifier.wait_with_output() else {
+    let Some(name) = chosen(notifier, CLICK_WAIT) else {
         return;
     };
-    let name = String::from_utf8_lossy(&out.stdout);
-    match (name.trim(), &buttons.open, &buttons.asked) {
+    match (name.as_str(), &buttons.open, &buttons.asked) {
         ("open", Some(open), _) => open_with(open),
         // `1` is claude's Yes. Esc is its No whatever row No sits on (2 or
         // 3), as the box's own footer says.
@@ -226,6 +227,34 @@ fn clicked(notifier: Child, buttons: &Buttons) {
         ("no", _, Some(asked)) => answer(asked, "esc"),
         _ => (),
     }
+}
+
+/// How long a notifier waits for a click before it gives up, so a notice
+/// nobody answers leaves no process behind for days.
+const CLICK_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// What the notifier printed, trimmed, once it exits; or `None` when it
+/// printed nothing within `limit`, in which case it is killed and reaped.
+fn chosen(mut notifier: Child, limit: Duration) -> Option<String> {
+    use std::io::Read;
+    let mut out = notifier.stdout.take()?;
+    let (said, heard) = std::sync::mpsc::channel();
+    // A thread reads, so the wait can have a deadline. The notifier is a
+    // forked copy of a single-threaded hook, so a thread is safe here.
+    std::thread::Builder::new()
+        .name("amx-click".to_string())
+        .spawn(move || {
+            let mut name = String::new();
+            let _ = out.read_to_string(&mut name);
+            let _ = said.send(name);
+        })
+        .ok()?;
+    let name = heard.recv_timeout(limit);
+    if name.is_err() {
+        let _ = notifier.kill();
+    }
+    let _ = notifier.wait();
+    name.ok().map(|name| name.trim().to_string())
 }
 
 /// Answer the box with `key`, unless it is no longer the question the notice
@@ -560,6 +589,43 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for {what}");
+    }
+
+    /// `sh -c script` with its stdout piped, as [`raise`] starts a notifier
+    /// with buttons.
+    fn a_notifier(script: &str) -> Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn notify_a_click_is_waited_for_and_an_ignored_notice_is_given_up_on() {
+        assert_eq!(
+            chosen(a_notifier("echo yes"), Duration::from_secs(10)),
+            Some("yes".to_string())
+        );
+        assert_eq!(
+            chosen(a_notifier("exit 0"), Duration::from_secs(10)),
+            Some(String::new()),
+            "a dismissed notice prints nothing"
+        );
+
+        let ignored = a_notifier("sleep 30; echo yes");
+        let proc = PathBuf::from(format!("/proc/{}", ignored.id()));
+        let began = Instant::now();
+        assert_eq!(chosen(ignored, Duration::from_millis(200)), None);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
+        if cfg!(target_os = "linux") {
+            assert!(!proc.exists(), "the notifier is killed and reaped");
+        }
     }
 
     #[test]
