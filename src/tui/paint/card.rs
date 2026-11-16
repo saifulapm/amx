@@ -1954,6 +1954,46 @@ index e69de29..0000000
     }
 
     #[test]
+    fn card_rule_says_how_full_the_agents_context_window_is() {
+        let card = || Card {
+            id: "fix-login-a1b".to_string(),
+            phase: Phase::Working,
+            question: None,
+            options: Vec::new(),
+            walked: false,
+            kind: None,
+            body: A_PATCH.to_string(),
+            changes: true,
+            answer: false,
+            listening: true,
+            queued: Vec::new(),
+        };
+        let rule = |agent: View| {
+            painted(&showing(vec![agent], Some(card())), (80, 24))
+                .into_iter()
+                .find(|line| line.contains(RULE))
+                .expect("the card's rule")
+        };
+
+        let mut agent = view("fix-login-a1b", Phase::Working, None, 3);
+        agent.state.context = Some(crate::store::ContextFill {
+            tokens: 412_000,
+            window: Some(1_000_000),
+        });
+        let ruled = rule(agent);
+        assert!(
+            ruled.contains("fix-login-a1b · claude · ctx 41% · 412k · what it has changed"),
+            "after what it runs: {ruled:?}"
+        );
+
+        let ruled = rule(view("fix-login-a1b", Phase::Working, None, 3));
+        assert!(
+            !ruled.contains("ctx"),
+            "a vendor that reported no usage gets no badge: {ruled:?}"
+        );
+    }
+
+    #[test]
     fn card_rule_marks_the_state_and_says_what_the_agent_is_doing() {
         let size = (80, 20);
         let looked = |agent: View| {

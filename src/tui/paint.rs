@@ -268,9 +268,14 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             screen.beat,
             // The bare id when the list has lost the agent.
             on.map_or(card.id.as_str(), rows::called),
-            // The wall's vendor words, with the rule's separator.
+            // The wall's vendor words, with the rule's separator, then how
+            // full the context window is.
             &on.map_or(String::new(), |view| {
-                rows::vendor_words(&view.meta).replace(' ', text::SEPARATOR)
+                let runs = rows::vendor_words(&view.meta).replace(' ', text::SEPARATOR);
+                match rows::context_words(&view.state) {
+                    Some(context) => format!("{runs}{}{context}", text::SEPARATOR),
+                    None => runs,
+                }
             }),
             showing,
             prs,

@@ -17,7 +17,7 @@
 use crate::derive::{Evidence, View};
 use crate::loose::{self, Loose};
 use crate::pr::{self, Pr, Standing};
-use crate::store::{Ask, Meta, Phase};
+use crate::store::{Ask, Meta, Phase, State};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2406,6 +2406,25 @@ pub fn vendor_words(meta: &Meta) -> String {
     .flatten()
     .collect::<Vec<&str>>()
     .join(" ")
+}
+
+/// How full the agent's context window is, `ctx 41% · 412k`, or `ctx 412k`
+/// when the model's window is not known; `None` before the vendor reported
+/// usage.
+pub fn context_words(state: &State) -> Option<String> {
+    let fill = state.context?;
+    let tokens = match fill.tokens {
+        under if under < 1_000 => under.to_string(),
+        under if under < 999_500 => format!("{}k", (under + 500) / 1_000),
+        over => format!("{:.1}M", over as f64 / 1_000_000.0),
+    };
+    Some(match fill.window.filter(|window| *window > 0) {
+        Some(window) => format!(
+            "ctx {}% · {tokens}",
+            (fill.tokens * 100 + window / 2) / window
+        ),
+        None => format!("ctx {tokens}"),
+    })
 }
 
 /// When the agent was last heard from.
@@ -6175,6 +6194,39 @@ mod tests {
         // Parts are listed in order as recorded, not in fixed slots.
         agent.meta.effort = Some("low".to_string());
         assert_eq!(vendor_words(&agent.meta), "claude low");
+    }
+
+    #[test]
+    fn a_row_says_how_full_the_context_window_is_once_the_vendor_reported_usage() {
+        let mut agent = view("fix-login-a1b", Phase::Working, 10);
+        assert_eq!(context_words(&agent.state), None, "nothing reported yet");
+
+        let fill = |tokens, window| Some(crate::store::ContextFill { tokens, window });
+        agent.state.context = fill(412_000, Some(1_000_000));
+        assert_eq!(
+            context_words(&agent.state).as_deref(),
+            Some("ctx 41% · 412k")
+        );
+
+        agent.state.context = fill(412_000, None);
+        assert_eq!(
+            context_words(&agent.state).as_deref(),
+            Some("ctx 412k"),
+            "a window nobody knows is no percent, not a guessed one"
+        );
+
+        agent.state.context = fill(999, Some(200_000));
+        assert_eq!(context_words(&agent.state).as_deref(), Some("ctx 0% · 999"));
+        agent.state.context = fill(199_600, Some(200_000));
+        assert_eq!(
+            context_words(&agent.state).as_deref(),
+            Some("ctx 100% · 200k")
+        );
+        agent.state.context = fill(1_234_567, Some(1_000_000));
+        assert_eq!(
+            context_words(&agent.state).as_deref(),
+            Some("ctx 123% · 1.2M")
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::store::ContextFill;
 use crate::vendor::Transcript;
 
 /// One thing said in a conversation.
@@ -266,13 +267,69 @@ fn context_of<V: Borrow<Value>>(
     format: Transcript,
     newest: impl Iterator<Item = V>,
 ) -> Option<u64> {
+    used(format, newest).map(|(total, _)| total)
+}
+
+/// [`context_of`]'s count with the entry that reported it.
+fn used<V: Borrow<Value>>(format: Transcript, newest: impl Iterator<Item = V>) -> Option<(u64, V)> {
     newest
         .filter(|entry| match format {
             Transcript::Codex => codex_event(entry.borrow()) == Some("token_count"),
             _ => voice(format, entry.borrow()) == Some(Voice::Assistant),
         })
-        .map(|entry| usage_sum(format, entry.borrow()))
-        .find(|total| *total > 0)
+        .map(|entry| (usage_sum(format, entry.borrow()), entry))
+        .find(|(total, _)| *total > 0)
+}
+
+/// How full the context window is: [`context_of`]'s count, and the window of
+/// the model the same entry names, or the window codex writes beside its
+/// count. `None` when the transcript reports no usage.
+///
+/// The hook asks on every event, so outside pi, whose branch needs the whole
+/// file, only lines that can hold a count are parsed, newest first, until one
+/// does.
+pub fn usage(format: Transcript, jsonl: &str) -> Option<ContextFill> {
+    let fill = |entry: &Value, tokens| ContextFill {
+        tokens,
+        window: entry["payload"]["info"]["model_context_window"]
+            .as_u64()
+            .or_else(|| window_of(entry["message"]["model"].as_str()?)),
+    };
+    match format {
+        Transcript::Pi => {
+            let entries: Vec<Value> = spoken(format, jsonl).collect();
+            let (tokens, entry) = used(format, entries.iter().rev())?;
+            Some(fill(entry, tokens))
+        }
+        _ => {
+            let counted = jsonl
+                .lines()
+                .rev()
+                .filter(|line| line.contains("usage") || line.contains("tokens"))
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok());
+            let (tokens, entry) = used(format, counted)?;
+            Some(fill(&entry, tokens))
+        }
+    }
+}
+
+/// The context window of the model a transcript names, in tokens.
+///
+/// claude writes the model's id on each answer but not its window, so the
+/// window is read off the id: a `[1m]` id and the claude 5 models other than
+/// haiku run with a million tokens, any other claude model with 200,000. A
+/// model this table does not know has no window, rather than a wrong one.
+fn window_of(model: &str) -> Option<u64> {
+    let id = model.rsplit_once('/').map_or(model, |(_, id)| id);
+    let million = id.ends_with("[1m]")
+        || ["claude-opus-5", "claude-fable-5", "claude-sonnet-5"]
+            .iter()
+            .any(|family| id.starts_with(family));
+    match (million, id.starts_with("claude-")) {
+        (true, _) => Some(1_000_000),
+        (false, true) => Some(200_000),
+        (false, false) => None,
+    }
 }
 
 /// The input tokens of one entry's usage, missing fields as 0.
@@ -1434,6 +1491,77 @@ mod tests {
             "a tail holding nothing else has no context to report"
         );
         assert_eq!(answer(Transcript::Claude, only_synthetic), None);
+    }
+
+    #[test]
+    fn conversation_usage_takes_the_last_entrys_tokens_and_the_window_of_its_model() {
+        // Two turns: summing them would say 512k; the last one's input already
+        // holds the whole conversation.
+        let claude = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],",
+            "\"usage\":{\"input_tokens\":100000}}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],",
+            "\"usage\":{\"input_tokens\":2000,\"cache_creation_input_tokens\":10000,",
+            "\"cache_read_input_tokens\":400000,\"output_tokens\":900}}}\n",
+            // claude's synthetic entry, all zero, written last.
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"content\":[],",
+            "\"usage\":{\"input_tokens\":0}}}\n",
+        );
+        assert_eq!(
+            usage(Transcript::Claude, claude),
+            Some(ContextFill {
+                tokens: 412_000,
+                window: Some(1_000_000)
+            })
+        );
+
+        let older = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5\",\"content\":[],\"usage\":{\"input_tokens\":50000}}}\n";
+        assert_eq!(
+            usage(Transcript::Claude, older),
+            Some(ContextFill {
+                tokens: 50_000,
+                window: Some(200_000)
+            }),
+            "a claude model this table does not raise has claude's usual window"
+        );
+
+        let unnamed = "{\"type\":\"assistant\",\"message\":{\"content\":[],\"usage\":{\"input_tokens\":7000}}}\n";
+        assert_eq!(
+            usage(Transcript::Claude, unnamed),
+            Some(ContextFill {
+                tokens: 7_000,
+                window: None
+            }),
+            "a model nobody named has no window to measure against"
+        );
+
+        assert_eq!(
+            usage(Transcript::Codex, CODEX_TURNS).and_then(|fill| fill.window),
+            Some(258_400),
+            "codex names its window beside the count"
+        );
+        assert_eq!(
+            usage(Transcript::Claude, "{\"type\":\"attachment\"}\n"),
+            None,
+            "and a transcript with no usage has no fill"
+        );
+    }
+
+    #[test]
+    fn conversation_window_reads_the_model_a_transcript_names() {
+        for (model, window) in [
+            ("claude-opus-5-5", Some(1_000_000)),
+            ("claude-fable-5-2", Some(1_000_000)),
+            ("claude-sonnet-5-5", Some(1_000_000)),
+            ("claude-sonnet-4-5[1m]", Some(1_000_000)),
+            ("anthropic/claude-opus-5-5", Some(1_000_000)),
+            ("claude-haiku-5-5", Some(200_000)),
+            ("claude-opus-4-1", Some(200_000)),
+            ("<synthetic>", None),
+            ("gpt-5.5", None),
+        ] {
+            assert_eq!(window_of(model), window, "{model}");
+        }
     }
 
     #[test]

@@ -458,6 +458,19 @@ pub struct State {
     /// The class of the API error that ended the turn, such as `overloaded`.
     /// The agent stays idle; the vendor's next prompt or call clears it.
     pub error: Option<String>,
+    /// How full the vendor's context window was at the last event that read
+    /// the transcript (see [`crate::conversation::usage`]). `None` until the
+    /// vendor reports usage; a new session starts without one.
+    pub context: Option<ContextFill>,
+}
+
+/// The tokens the agent's next turn sends, and the model's window when it is
+/// known, read off the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextFill {
+    pub tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
 }
 
 /// A screen a reader saw, and when it first appeared.
@@ -677,6 +690,8 @@ struct Wire {
     resumes_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<ContextFill>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -807,6 +822,7 @@ impl From<State> for Wire {
             asked_by,
             resumes_at,
             error,
+            context,
         } = state;
 
         Wire {
@@ -861,6 +877,7 @@ impl From<State> for Wire {
             asked_by,
             resumes_at,
             error,
+            context,
         }
     }
 }
@@ -912,6 +929,7 @@ impl From<Wire> for State {
             asked_by: wire.asked_by,
             resumes_at: wire.resumes_at,
             error: wire.error,
+            context: wire.context,
         }
     }
 }

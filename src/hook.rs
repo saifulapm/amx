@@ -335,12 +335,16 @@ fn record(
     // The session title only exists in the transcript, and the vendor writes
     // it within seconds of the first prompt, so read it on every event rather
     // than waiting for the turn to end. A transcript without a title leaves the
-    // recorded one alone.
+    // recorded one alone, and so does one without usage the recorded fill.
     if let Some(format) = format
         && let Some(tail) = Agent::transcript_tail(&meta)
-        && let Some(title) = crate::conversation::session_title(format, &tail)
     {
-        state.session_title = Some(title);
+        if let Some(title) = crate::conversation::session_title(format, &tail) {
+            state.session_title = Some(title);
+        }
+        if let Some(fill) = crate::conversation::usage(format, &tail) {
+            state.context = Some(fill);
+        }
     }
 
     let written = match unheard {
@@ -4497,6 +4501,55 @@ mod tests {
         let state = agent.state().unwrap();
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result, None);
+    }
+
+    #[test]
+    fn hook_keeps_how_full_the_context_window_is() {
+        // The view draws the gauge off the record, so it reads no transcript
+        // per row; the hook reads the tail on every event anyway.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        let transcript = root.path().join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[],\
+             \"usage\":{\"input_tokens\":12000,\"cache_read_input_tokens\":400000}}}\n",
+        )
+        .unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            &json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "abc-123",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#,
+        );
+        assert_eq!(
+            agent.state().unwrap().context,
+            Some(crate::store::ContextFill {
+                tokens: 412_000,
+                window: Some(1_000_000)
+            })
+        );
+
+        // A transcript that says nothing of usage leaves the last count.
+        std::fs::write(&transcript, "{\"type\":\"attachment\"}\n").unwrap();
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"more"}"#,
+        );
+        assert_eq!(
+            agent.state().unwrap().context.map(|fill| fill.tokens),
+            Some(412_000)
+        );
     }
 
     #[test]
