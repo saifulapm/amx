@@ -3621,6 +3621,49 @@ mod tests {
     }
 
     #[test]
+    fn hook_an_archived_record_hears_nothing_and_stays_archived() {
+        // Neither the pane's id nor the payload's session reaches into the
+        // archive: an archived agent comes back only through resume.
+        let root = TempDir::new().unwrap();
+        let shelved = Agent::create(
+            root.path(),
+            &Meta {
+                parent: None,
+                depth: 0,
+                session: Some("abc-123".to_string()),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let id = shelved.id().to_string();
+        shelved.archive().unwrap();
+        let shelf = root.path().join(crate::store::ARCHIVE);
+
+        for named in [None, Some(id.as_str())] {
+            assert_eq!(
+                run(
+                    named,
+                    None,
+                    root.path(),
+                    &mut r#"{"session_id":"abc-123","hook_event_name":"Stop","last_assistant_message":"done"}"#
+                        .as_bytes(),
+                    &mut std::io::sink(),
+                    &quiet(),
+                    None,
+                ),
+                exit::OK
+            );
+        }
+        assert!(crate::store::list(root.path()).unwrap().is_empty());
+        let archived = Agent::open(&shelf, &id).unwrap();
+        assert!(
+            archived.events().unwrap().is_empty(),
+            "nothing was written down"
+        );
+        assert_eq!(archived.state().unwrap().result, None);
+    }
+
+    #[test]
     fn hook_a_pane_is_read_only_from_both_tmux_variables() {
         // Outside tmux there is no stamp to fall back on, and no tmux to ask.
         assert!(pane_of(None, Some("%3")).is_none());
