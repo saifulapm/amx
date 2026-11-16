@@ -260,6 +260,17 @@ it was and the keys row says why:
 | `the clipboard holds no image or text` | The clipboard is empty, or holds another type. |
 | `the image is 21 MB; the limit is 20 MB` | The image is too big to attach. |
 
+`enter` sends each image whose marker is still on the line, in the order the
+markers stand, and the words without the markers: `[Image #1] what is this`
+starts the agent on `what is this` with the image, as
+[`amx new --image`](commands.md#new) would; a fork line hands its images to
+the copy. Delete a marker and its image stays behind. A
+reply goes the same way to an agent between turns. An agent asking a question
+or one that has ended takes no images, so such a reply is refused and the line
+stays. A line sent or closed with `esc` removes the images it held. `↑` brings
+a sent line back as its words, without its images; `ctrl+g` shows the markers
+in the editor, and each one left there keeps its image.
+
 ### Changing the dials
 
 These keys set the dials in the header for every agent you start next:
