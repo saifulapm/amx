@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{Harness, finished, path_with, press, types, until_empty};
+use common::{Harness, agents, argv_of, finished, path_with, press, said_in, types, until_empty};
 use std::path::{Path, PathBuf};
 
 /// The first bytes of a PNG, then a few more, as the image on the clipboard.
@@ -306,4 +306,156 @@ fn ctrl_v_takes_an_image_at_the_limit_and_the_next_key_still_lands() {
     let held = held(&amx);
     assert_eq!(held.len(), 1);
     assert_eq!(std::fs::metadata(&held[0]).unwrap().len(), 20 * 1024 * 1024);
+}
+
+/// An empty view whose `claude` is mock-claude printing its argv, with the
+/// clipboard `bin` stands in for and `env` on top. Tasks start as claude,
+/// without a worktree.
+fn a_view_that_starts_claude(amx: &Harness, bin: &Path, env: &[(&str, &str)]) -> String {
+    std::fs::copy(amx.mock(), bin.join("claude")).unwrap();
+    amx.config("agent = \"claude\"\nworktrees = false\n");
+    let scenario = amx.scenario("a-dispatched-worker");
+    let scenario = scenario.to_string_lossy();
+    let path = path_with(bin);
+    let mut pairs = vec![
+        ("PATH", path.as_str()),
+        ("WAYLAND_DISPLAY", "wayland-9"),
+        ("MOCK_CLAUDE_SCENARIO", &scenario),
+    ];
+    pairs.extend_from_slice(env);
+    let view = amx.in_a_terminal(&pairs, &[]);
+    until_empty(amx, &view);
+    view
+}
+
+/// The one agent the view started, once its pane is on the record.
+fn started(amx: &Harness) -> String {
+    amx.until("the agent to be started", || {
+        let ids = agents(amx);
+        let id = (ids.len() == 1).then(|| ids[0].clone())?;
+        amx.meta(&id)["pane"].as_str().map(|_| id)
+    })
+}
+
+/// Assert the started agent's argv ends with its first image, then `task`.
+fn given_the_image(amx: &Harness, id: &str, task: &str) {
+    let argv = argv_of(amx, id);
+    let want = format!(
+        "@{} {task}",
+        amx.agent_dir(id).join("images/1.png").display()
+    );
+    assert!(argv.ends_with(&want), "{argv:?} ends with {want:?}");
+}
+
+#[test]
+fn a_task_line_starts_the_agent_with_its_image_and_lets_the_holding_file_go() {
+    let amx = Harness::new();
+    let png = a_file(&amx, "shot.png", PNG);
+    let bin = a_clipboard(&amx, &[("image/png", &png)]);
+    let view = a_view_that_starts_claude(&amx, &bin, &[]);
+
+    press(&amx, &view, "n");
+    shown(&amx, &view, "TASK");
+    press(&amx, &view, "C-v");
+    types(&amx, &view, " what is this");
+    until_a_row(&amx, &view, "❯ [Image #1] what is this");
+    press(&amx, &view, "Enter");
+
+    let id = started(&amx);
+    given_the_image(&amx, &id, "what is this");
+    assert_eq!(
+        std::fs::read(amx.agent_dir(&id).join("images/1.png")).unwrap(),
+        PNG
+    );
+    assert!(held(&amx).is_empty(), "nothing is held: {:?}", held(&amx));
+}
+
+#[test]
+fn a_reply_from_an_idle_claudes_card_hands_it_the_image() {
+    let amx = Harness::new();
+    amx.play("fix-login-a1b", "takes-a-message");
+    amx.until_state("fix-login-a1b", "idle");
+    let png = a_file(&amx, "shot.png", PNG);
+    let bin = a_clipboard(&amx, &[("image/png", &png)]);
+    let view = a_view_on(&amx, &bin);
+    shown(&amx, &view, "fix-login-a1b");
+
+    press(&amx, &view, "Space");
+    shown(&amx, &view, "❯ reply");
+    types(&amx, &view, "look ");
+    press(&amx, &view, "C-v");
+    until_a_row(&amx, &view, "❯ look [Image #1]");
+    press(&amx, &view, "Enter");
+
+    let want = format!(
+        "@{} look",
+        amx.agent_dir("fix-login-a1b")
+            .join("images/1.png")
+            .display()
+    );
+    let pane = amx.pane_of("fix-login-a1b");
+    amx.until("the image on claude's pane", || {
+        said_in(&amx, &pane).contains(&want).then_some(())
+    });
+    assert!(held(&amx).is_empty(), "nothing is held: {:?}", held(&amx));
+}
+
+#[test]
+fn esc_on_a_line_holding_an_image_lets_the_holding_file_go() {
+    let amx = Harness::new();
+    let png = a_file(&amx, "shot.png", PNG);
+    let bin = a_clipboard(&amx, &[("image/png", &png)]);
+    let view = a_task_line(&amx, &bin);
+
+    press(&amx, &view, "C-v");
+    until_a_row(&amx, &view, "❯ [Image #1]");
+    assert_eq!(held(&amx).len(), 1);
+    press(&amx, &view, "Escape");
+
+    amx.until("the holding file to go", || {
+        held(&amx).is_empty().then_some(())
+    });
+}
+
+#[test]
+fn a_line_sent_with_an_image_comes_back_as_its_words() {
+    let amx = Harness::new();
+    let png = a_file(&amx, "shot.png", PNG);
+    let bin = a_clipboard(&amx, &[("image/png", &png)]);
+    let view = a_view_that_starts_claude(&amx, &bin, &[]);
+
+    press(&amx, &view, "n");
+    shown(&amx, &view, "TASK");
+    press(&amx, &view, "C-v");
+    types(&amx, &view, " look");
+    until_a_row(&amx, &view, "❯ [Image #1] look");
+    press(&amx, &view, "Enter");
+    started(&amx);
+
+    press(&amx, &view, "n");
+    shown(&amx, &view, "TASK");
+    press(&amx, &view, "Up");
+    until_a_row(&amx, &view, "❯ look");
+}
+
+#[test]
+fn ctrl_g_gives_the_markers_back_with_their_images() {
+    let amx = Harness::new();
+    let png = a_file(&amx, "shot.png", PNG);
+    let bin = a_clipboard(&amx, &[("image/png", &png)]);
+    let view = a_view_that_starts_claude(&amx, &bin, &[("VISUAL", "true"), ("EDITOR", "true")]);
+
+    press(&amx, &view, "n");
+    shown(&amx, &view, "TASK");
+    press(&amx, &view, "C-v");
+    types(&amx, &view, " look");
+    until_a_row(&amx, &view, "❯ [Image #1] look");
+    press(&amx, &view, "C-g");
+    // A key typed after the editor lands after what it saved.
+    types(&amx, &view, "s");
+    until_a_row(&amx, &view, "❯ [Image #1] looks");
+    press(&amx, &view, "Enter");
+
+    let id = started(&amx);
+    given_the_image(&amx, &id, "looks");
 }

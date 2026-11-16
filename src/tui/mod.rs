@@ -1192,7 +1192,8 @@ where
 /// result back on the line.
 ///
 /// The editor gets the text with pastes expanded, so the paste markers are
-/// dropped from what comes back.
+/// dropped from what comes back. Image markers go as plain text, and one still
+/// there when the editor is done keeps its image.
 fn edit_the_line<B>(terminal: &mut Terminal<B>, screen: &mut Screen, config: &Config) -> Result<()>
 where
     B: Backend,
@@ -2123,7 +2124,7 @@ impl Screen {
 
         // A digit that picks an option is sent at once.
         if let Some((id, choice)) = self.picking(&composer, key) {
-            let said = act::reply(root, &id, &choice);
+            let said = act::reply(root, &id, &choice, &[]);
             self.replied(said, composer);
             return Ok(Doing::Carry);
         }
@@ -2204,9 +2205,9 @@ impl Screen {
                 // Fork, with the typed task or none.
                 if let Asking::Fork { id } = &composer.asking {
                     let id = id.clone();
-                    let whole = composer.whole();
-                    let task = (!whole.trim().is_empty()).then_some(whole);
-                    let made = act::spawn_copy(root, &id, task.as_deref());
+                    let (words, images) = composer.sent();
+                    let task = (!words.trim().is_empty()).then_some(words);
+                    let made = act::spawn_copy(root, &id, task.as_deref(), &images);
                     self.forked(made, composer);
                     return Ok(Doing::Carry);
                 }
@@ -2218,14 +2219,15 @@ impl Screen {
                         // current hunk. Sent piecemeal, the agent would answer
                         // the first note before the rest arrived. Without notes
                         // the line goes alone.
-                        let review = self.review(&composer.whole());
+                        let (words, images) = composer.sent();
+                        let review = self.review(&words);
                         let said = self.written(&review);
-                        if said.trim().is_empty() {
+                        if said.trim().is_empty() && images.is_empty() {
                             return Ok(Doing::Carry);
                         }
                         // Checked before the send, which spends the notes.
                         let kept = !self.scroll.remarks().is_empty();
-                        let sent = act::reply(root, &id, &said);
+                        let sent = act::reply(root, &id, &said, &images);
                         let took = matches!(sent, Ok(Replied::Yes(_)));
                         self.replied(sent, composer);
                         // A sent review returns the card to the top of the
@@ -2338,7 +2340,7 @@ impl Screen {
     fn replied(&mut self, said: Result<Replied>, composer: Composer) {
         match said {
             Ok(Replied::Yes(said)) => {
-                self.remember_line(&Asking::Reply, &composer.whole());
+                self.remember_line(&Asking::Reply, &composer.sent().0);
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
             }
@@ -2362,7 +2364,7 @@ impl Screen {
     fn forked(&mut self, made: Result<Started>, composer: Composer) {
         match made {
             Ok(Started::Yes { id, said }) => {
-                self.remember_line(&composer.asking, &composer.whole());
+                self.remember_line(&composer.asking, &composer.sent().0);
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
                 self.started = Some(id);
@@ -2566,7 +2568,7 @@ impl Screen {
         follow: bool,
         here: Option<&Here>,
     ) -> Result<Doing> {
-        if let Some(task) = act::slight(config, &composer.whole()) {
+        if let Some(task) = act::slight(config, &composer.sent().0) {
             self.mode = Mode::Confirming(Asked::Slight {
                 task,
                 line: composer,
@@ -2587,15 +2589,17 @@ impl Screen {
         here: Option<&Here>,
     ) -> Result<Doing> {
         let launching = self.profile.launching(config);
+        let (words, images) = composer.sent();
         match act::start(
             root,
             &launching,
-            &composer.whole(),
+            &words,
+            &images,
             composer.under.as_deref(),
             &self.standing,
         ) {
             Ok(Started::Yes { id, said }) => {
-                self.remember_line(&Asking::Task, &composer.whole());
+                self.remember_line(&Asking::Task, &words);
                 self.notice = Some(Notice::Advice(said));
                 self.acted();
                 if follow {

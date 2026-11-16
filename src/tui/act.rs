@@ -63,9 +63,9 @@ pub struct Composer {
 pub struct Walking {
     /// Index of the line shown, newest first.
     at: usize,
-    /// Text, cursor and pastes from before the walk, restored by stepping
-    /// past the newest line.
-    draft: (String, usize, Vec<String>),
+    /// Text, cursor, pastes and images from before the walk, restored by
+    /// stepping past the newest line.
+    draft: (String, usize, Vec<String>, Vec<PathBuf>),
 }
 
 /// Lines the view has sent, for the composer to recall.
@@ -177,8 +177,8 @@ impl Composer {
     /// Recalls the next older (`older`) or newer sent line.
     ///
     /// Stepping newer past the newest restores the draft from before the walk.
-    /// A recalled line is plain text with the cursor at its end and no pastes.
-    /// Returns whether the line changed.
+    /// A recalled line is plain text with the cursor at its end and no pastes
+    /// or images. Returns whether the line changed.
     pub fn recall(&mut self, sent: &[String], older: bool) -> bool {
         let at = match (&self.walking, older) {
             (None, true) => 0,
@@ -188,7 +188,9 @@ impl Composer {
                 Some(at) => at,
                 None => {
                     let draft = self.walking.take().expect("a walk under way").draft;
-                    (self.text, self.at, self.pastes) = draft;
+                    // An image pasted onto the recalled line goes with it.
+                    let_go(&self.images);
+                    (self.text, self.at, self.pastes, self.images) = draft;
                     return true;
                 }
             },
@@ -205,15 +207,20 @@ impl Composer {
                         std::mem::take(&mut self.text),
                         self.at,
                         std::mem::take(&mut self.pastes),
+                        std::mem::take(&mut self.images),
                     ),
                 });
             }
         }
+        let_go(&std::mem::take(&mut self.images));
         self.set_text(line.clone());
         true
     }
 
     /// Replaces the line with plain `text`, the cursor at its end.
+    ///
+    /// The line keeps its images, so a marker still in `text`, as an editor
+    /// gives it back, still stands for its image.
     pub fn set_text(&mut self, text: String) {
         self.at = text.chars().count();
         self.text = text;
@@ -276,12 +283,51 @@ impl Composer {
     ///
     /// A marker edited into something else stays as the characters left.
     pub fn whole(&self) -> String {
+        self.unfolded(self.text.clone())
+    }
+
+    /// `text` with every paste marker replaced by the paste it stands for.
+    fn unfolded(&self, text: String) -> String {
         self.pastes
             .iter()
             .enumerate()
-            .fold(self.text.clone(), |line, (at, pasted)| {
+            .fold(text, |line, (at, pasted)| {
                 line.replace(&marker(at + 1), pasted)
             })
+    }
+
+    /// The line as sent with its images: each image marker still on the line
+    /// is taken out of the words, and its image goes in the order the markers
+    /// stand. Then the pastes are unfolded, as in [`whole`](Self::whole).
+    ///
+    /// The markers are read before the pastes go back, so a pasted text that
+    /// holds `[Image #1]` is never taken for one.
+    pub fn sent(&self) -> (String, Vec<PathBuf>) {
+        let mut text = self.text.clone();
+        let mut images = Vec::new();
+        let mut from = 0;
+        while from < text.len() {
+            let held =
+                (1..=self.images.len()).find(|nth| text[from..].starts_with(&image_marker(*nth)));
+            let Some(nth) = held else {
+                from += text[from..].chars().next().map_or(1, char::len_utf8);
+                continue;
+            };
+            let image = &self.images[nth - 1];
+            if !images.contains(image) {
+                images.push(image.clone());
+            }
+            // Take the marker and one of the spaces it stood between.
+            let mut to = from + image_marker(nth).len();
+            let after = &text[to..];
+            if text[..from].ends_with(' ') && (after.is_empty() || after.starts_with(' ')) {
+                from -= 1;
+            } else if from == 0 && after.starts_with(' ') {
+                to += 1;
+            }
+            text.replace_range(from..to, "");
+        }
+        (self.unfolded(text), images)
     }
 
     /// Deletes the character before the cursor, or the whole marker ending
@@ -557,6 +603,24 @@ fn marker(nth: usize) -> String {
 /// The marker for the `nth` image on a line, numbered from one per line.
 fn image_marker(nth: usize) -> String {
     format!("[Image #{nth}]")
+}
+
+/// A line that is gone, sent or cancelled, takes its holding files with it.
+/// A sent image was copied into the agent's record before this.
+impl Drop for Composer {
+    fn drop(&mut self) {
+        let_go(&self.images);
+        if let Some(walking) = &self.walking {
+            let_go(&walking.draft.3);
+        }
+    }
+}
+
+/// Removes holding files. One already gone is no matter.
+fn let_go(holding: &[PathBuf]) {
+    for file in holding {
+        let _ = std::fs::remove_file(file);
+    }
 }
 
 /// Reads a find line made only of `s:` tokens as a state narrowing.
@@ -1224,11 +1288,13 @@ pub fn slight(config: &Config, line: &str) -> Option<String> {
 /// row.
 ///
 /// The agent runs in the line's `d:` if it has one, else `under` (the project
-/// the line was opened under), else `here` (the view's directory).
+/// the line was opened under), else `here` (the view's directory). `images`
+/// go with the task, as `--image` gives them.
 pub fn start(
     root: &Path,
     config: &Config,
     line: &str,
+    images: &[PathBuf],
     under: Option<&Path>,
     here: &Path,
 ) -> Result<Started> {
@@ -1294,7 +1360,7 @@ pub fn start(
         // The view passes the task inline; `ctrl+g` is its editor.
         file: None,
         edit: false,
-        image: Vec::new(),
+        image: images.to_vec(),
         name: None,
         role: None,
         dir: None,
@@ -1400,13 +1466,19 @@ fn spawned(
 ///
 /// The verb decides everything (which session to copy, whether the vendor can
 /// fork, the project cap) and its stderr is captured for the view's line.
-pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> {
+/// `images` go with the first turn.
+pub fn spawn_copy(
+    root: &Path,
+    id: &str,
+    task: Option<&str>,
+    images: &[PathBuf],
+) -> Result<Started> {
     let (mut out, mut problems) = (Vec::new(), Vec::new());
     let code = verbs::fork::run(
         root,
         id,
         task,
-        &[],
+        images,
         &spawn::env_snapshot(std::env::vars()),
         &mut out,
         &mut problems,
@@ -1441,7 +1513,11 @@ pub enum Replied {
 ///
 /// An ended or parked agent is resumed with the line, as `amx resume <id>
 /// "message"` does. A command row has no vendor to resume and is refused.
-pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
+///
+/// `images` are holding files, copied into the record before a message goes.
+/// An answer and a resume have no way to hand on an image, so a line holding
+/// one is refused there rather than sent without it.
+pub fn reply(root: &Path, id: &str, text: &str, images: &[PathBuf]) -> Result<Replied> {
     let agent = Agent::open(root, id)?;
     // Before the reading, so an answer sees what the agent said after it.
     let from = verbs::send::logged(&agent);
@@ -1449,6 +1525,9 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
     let server = Server::from_socket(view.meta.socket.clone());
 
     match view.phase() {
+        Phase::Waiting if !images.is_empty() => Ok(Replied::No(format!(
+            "{id} is asking a question; an answer takes no images"
+        ))),
         Phase::Waiting => {
             let typed = card_line(text, view.state.pending());
             match verbs::answer::given(&agent, &server, &view, from, &typed)? {
@@ -1465,6 +1544,12 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
                     verbs::interrupt::doing(&view)
                 )));
             }
+            if !images.is_empty() {
+                return Ok(Replied::No(format!(
+                    "{id} is {}; bringing it back takes no images",
+                    verbs::interrupt::doing(&view)
+                )));
+            }
             let env = spawn::env_snapshot(std::env::vars());
             match verbs::resume::picked_up(root, id, Some(text), &env)? {
                 Comeback::Back => Ok(Replied::Yes(format!("resumed {id}"))),
@@ -1472,7 +1557,20 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
             }
         }
         _ => {
-            verbs::send::deliver(&agent, &server, &view.meta.pane, text, &[])?;
+            // `deliver` types the words alone for a vendor that takes no
+            // images, so the line is refused here instead.
+            let vendor = view.meta.agent.as_deref();
+            if !images.is_empty()
+                && vendor
+                    .and_then(registry::entry)
+                    .and_then(|it| it.images)
+                    .is_none()
+            {
+                let program = vendor.unwrap_or("this agent");
+                return Ok(Replied::No(format!("{program} is given no images by amx")));
+            }
+            let images = crate::images::filed(agent.dir(), images)?;
+            verbs::send::deliver(&agent, &server, &view.meta.pane, text, &images)?;
             Ok(Replied::Yes(format!("sent to {id}")))
         }
     }
@@ -2037,6 +2135,54 @@ mod tests {
     }
 
     #[test]
+    fn composer_sends_each_held_marker_as_its_image_and_a_typed_one_as_text() {
+        let mut line = Composer::new(Asking::Task);
+        line.attach(PathBuf::from("/state/holding/a.png"));
+        line.attach(PathBuf::from("/state/holding/b.png"));
+        // The markers' order on the line decides the images' order, and only
+        // markers for images the line holds are taken.
+        line.text = "[Image #2] compare [Image #1] and [Image #3]".to_string();
+        assert_eq!(
+            line.sent(),
+            (
+                "compare and [Image #3]".to_string(),
+                vec![
+                    PathBuf::from("/state/holding/b.png"),
+                    PathBuf::from("/state/holding/a.png")
+                ]
+            )
+        );
+
+        // A marker deleted from the line sends no image.
+        line.text = "look [Image #2]".to_string();
+        assert_eq!(
+            line.sent(),
+            (
+                "look".to_string(),
+                vec![PathBuf::from("/state/holding/b.png")]
+            )
+        );
+
+        // With no image held, the same characters go as typed.
+        let mut typed = Composer::new(Asking::Task);
+        typed.insert("[Image #1] what is this");
+        assert_eq!(
+            typed.sent(),
+            ("[Image #1] what is this".to_string(), Vec::new())
+        );
+
+        // A paste that holds a marker's characters is the paste's text.
+        let mut pasted = Composer::new(Asking::Reply);
+        pasted.attach(PathBuf::from("/state/holding/a.png"));
+        let long = format!("{}[Image #1]", "x".repeat(PASTED_CHARACTERS));
+        pasted.paste(&long);
+        assert_eq!(
+            pasted.sent(),
+            (long, vec![PathBuf::from("/state/holding/a.png")])
+        );
+    }
+
+    #[test]
     fn composer_walks_the_cursor_by_a_character_a_word_and_to_the_ends() {
         let mut line = Composer::new(Asking::Task);
         line.insert("port the importer");
@@ -2193,7 +2339,7 @@ mod tests {
         .unwrap();
 
         let Started::No(why) =
-            spawn_copy(root.path(), "fix-login-a1b", Some("do it again")).unwrap()
+            spawn_copy(root.path(), "fix-login-a1b", Some("do it again"), &[]).unwrap()
         else {
             panic!("a copy was started over the project's own cap");
         };
@@ -3072,9 +3218,15 @@ mod tests {
 
         // The refusal names `w:changes`, not `new`'s flag.
         let line = format!("d:{} w:changes port the importer", here.path().display());
-        let Started::No(why) =
-            start(root.path(), &Config::default(), &line, None, here.path()).unwrap()
-        else {
+        let Started::No(why) = start(
+            root.path(),
+            &Config::default(),
+            &line,
+            &[],
+            None,
+            here.path(),
+        )
+        .unwrap() else {
             panic!("a spawn was sent to carry work that is not there");
         };
         assert_eq!(
@@ -3099,6 +3251,7 @@ mod tests {
             root.path(),
             &Config::default(),
             "d:nowhere/at/all port the importer",
+            &[],
             None,
             here.path(),
         )
