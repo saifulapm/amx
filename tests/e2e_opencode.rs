@@ -320,6 +320,52 @@ fn a_message_ending_on_a_popup_word_is_typed_with_a_space_after_it() {
 }
 
 #[test]
+fn a_configured_opencode_takes_a_provider_and_model_without_asking_codex() {
+    // opencode lists no models, so `--model provider/model` was refused with
+    // an empty list after running `codex debug models`.
+    let model = "opencode/longcat-2.5-preview-free";
+    let amx = Harness::new();
+    amx.config("agent = \"opencode\"\n");
+    let asked = amx.home().join("codex-was-run");
+    let logging = amx.home().join("logging");
+    std::fs::create_dir_all(&logging).expect("a folder for the logging codex");
+    let codex = logging.join("codex");
+    std::fs::write(
+        &codex,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", asked.display()),
+    )
+    .expect("the logging codex");
+    std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the logging codex runs");
+
+    let id = "longcat-a1b";
+    let out = amx
+        .amx_command(&["new", "--no-worktree", "--name", id, "--model", model, "x"])
+        .env(
+            "PATH",
+            format!("{}:{}", logging.display(), path_to_opencode(&amx)),
+        )
+        .env("MOCK_OPENCODE_SCENARIO", scenario("takes-a-turn"))
+        .output()
+        .expect("running amx");
+    assert!(
+        out.status.success(),
+        "amx new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(said(&amx, id, "model: "), model, "opencode got the word");
+    assert!(
+        said(&amx, id, "argv: ").contains("'--prompt=x'"),
+        "and the task"
+    );
+    assert!(
+        !asked.exists(),
+        "codex was run: {:?}",
+        std::fs::read_to_string(&asked)
+    );
+}
+
+#[test]
 fn a_model_rides_in_the_env_on_new_and_a_resume_keeps_the_sessions_own() {
     let model = "opencode/longcat-2.5-preview-free";
     let amx = Harness::new();

@@ -152,15 +152,30 @@ fn picked(config: &Config, model: Option<&str>) -> Result<String, String> {
 /// Asking the configured harness first breaks ties in its favour and avoids
 /// running a vendor's model listing when an earlier list already answered.
 fn harness_for(config: &Config, model: &str) -> Result<&'static Vendor, String> {
+    let configured = registry::entry(&config.agent).map(|vendor| vendor.name);
     let mut said = Vec::new();
     for vendor in asked(config) {
         let list = models::models_of(vendor, config);
-        if models::lists_model(&list, model) {
+        if models::lists_model(&list, model)
+            || (Some(vendor.name) == configured && takes_unlisted(vendor, &list, model))
+        {
             return Ok(vendor);
         }
         said.push(takes(vendor, config, &list));
     }
     Err(format!("--model {model:?}: {}", said.join("; ")))
+}
+
+/// Whether the configured `vendor` takes `model` with no list to look it up
+/// in: it runs nothing to list its models, `list` is empty, its model dial is
+/// open, and the word names a provider and a model (opencode's
+/// `provider/model`). Asked first, so no other harness's listing is run for
+/// it. A listing that failed is not an empty list.
+fn takes_unlisted(vendor: &Vendor, list: &[String], model: &str) -> bool {
+    vendor.models == Models::Cycle
+        && list.is_empty()
+        && model.contains('/')
+        && vendor.model.is_some_and(|dial| dial.open)
 }
 
 /// Every harness, the configured one first and the rest in table order.
@@ -1486,6 +1501,32 @@ mod tests {
             takes(&json, &Config::default(), &printed[..3]),
             "second lists 3 models (`second list models`)"
         );
+    }
+
+    #[test]
+    fn a_harness_with_nothing_to_list_and_an_open_model_dial_takes_a_provider_and_model() {
+        // opencode lists no models, so a word was refused with an empty list.
+        let config = Config {
+            agent: "opencode".to_string(),
+            ..listing(&[("pi", &["openai/gpt-5"]), ("codex", &["gpt-5.5"])])
+        };
+        let word = "opencode/longcat-2.5-preview-free";
+
+        let launch = Launch::resolve(&config, &spawn(None, [Some(word), None, None])).unwrap();
+        assert_eq!(launch.agent, "opencode");
+        assert_eq!(launch.dials.model, word);
+
+        let launch = Launch::resolve(&config, &spawn(None, [Some("gpt-5"), None, None])).unwrap();
+        assert_eq!(launch.agent, "pi", "a bare word is still looked up");
+        let refusal =
+            Launch::resolve(&config, &spawn(None, [Some("longcat"), None, None])).unwrap_err();
+        assert!(refusal.contains("codex accepts gpt-5.5"), "{refusal}");
+
+        // A harness that lists its models is held to its list.
+        let claudes = listing(&[("pi", &["openai/gpt-5"]), ("codex", &["gpt-5.5"])]);
+        let launch =
+            Launch::resolve(&claudes, &spawn(None, [Some("openai/gpt-5"), None, None])).unwrap();
+        assert_eq!(launch.agent, "pi", "claude's list does not hold it");
     }
 
     #[test]
