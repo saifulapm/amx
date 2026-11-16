@@ -215,6 +215,7 @@ pub const HOOKS: Hooks = Hooks {
     matcher: "",
     idle_notice: "",
     permission_notice: "",
+    question_notices: &[],
     permission_sentence: "",
     injected: &[],
     // Arrives as a PreToolUse with `tool_input.questions[]`

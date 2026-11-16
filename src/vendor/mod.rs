@@ -178,6 +178,10 @@ pub struct Hooks {
     pub idle_notice: &'static str,
     /// The notification type that repeats an open permission box.
     pub permission_notice: &'static str,
+    /// The notification types that ask the person something. A notice of any
+    /// other type is only logged. Empty means every typed notice asks, and an
+    /// untyped notice always does.
+    pub question_notices: &'static [&'static str],
     /// The text of the vendor's permission box, with [`TOOL`] for the tool.
     pub permission_sentence: &'static str,
     /// Prefixes of prompts the vendor submits itself, such as a background

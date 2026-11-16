@@ -233,6 +233,7 @@ pub const HOOKS: Hooks = Hooks {
     matcher: "",
     idle_notice: "",
     permission_notice: "",
+    question_notices: &[],
     permission_sentence: "",
     injected: &[],
     // The tool that opens a question form (core/src/tool/plugin/question.ts:10).

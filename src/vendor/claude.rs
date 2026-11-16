@@ -206,6 +206,14 @@ pub const HOOKS: Hooks = Hooks {
     question_tool: "AskUserQuestion",
     idle_notice: "idle_prompt",
     permission_notice: "permission_prompt",
+    // claude also notifies about a push sent, a login, a subagent finished or
+    // a quota resumed, and adds types over time; only these wait on the person.
+    question_notices: &[
+        "permission_prompt",
+        "elicitation_dialog",
+        "elicitation_url_dialog",
+        "agent_needs_input",
+    ],
     permission_sentence: "Claude needs your permission to use {tool}",
     // A finished background task and a message from another agent, seen in
     // real UserPromptSubmit payloads.

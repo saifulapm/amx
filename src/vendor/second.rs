@@ -114,6 +114,7 @@ pub const HOOKS: Hooks = Hooks {
     question_tool: "choose",
     idle_notice: "resting",
     permission_notice: "gatekeeping",
+    question_notices: &[],
     permission_sentence: "second may not run {tool} yet",
     injected: &["[second]"],
     fresh_start: Some("new"),

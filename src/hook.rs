@@ -537,6 +537,15 @@ fn typed(payload: &Value, what: &str) -> bool {
     payload["notification_type"] == what
 }
 
+/// Whether a notification asks the person something (see
+/// [`crate::vendor::Hooks`]'s `question_notices`). An older vendor sends no
+/// type, and its notices are questions.
+fn asks(hooks: &Hooks, payload: &Value) -> bool {
+    payload["notification_type"].as_str().is_none_or(|kind| {
+        hooks.question_notices.is_empty() || hooks.question_notices.contains(&kind)
+    })
+}
+
 /// Whether a prompt was typed into the session by the vendor itself (see
 /// [`crate::vendor::Hooks`]'s `injected`).
 fn injected(hooks: &Hooks, payload: &Value) -> bool {
@@ -600,7 +609,8 @@ fn still_running(shells: u32, agents: u32) -> String {
 /// - [`Notified`](Moment::Notified) means stopped on a question, with its
 ///   words. The choices are on the pane, filled in later by a reader. The
 ///   notification type is the only thing that names a permission prompt, and
-///   the only thing that tells the idle nudge from a question.
+///   the only thing that tells the idle nudge from a question, and a question
+///   from news that waits on nobody (see [`asks`]).
 /// - [`Ended`](Moment::Ended) ends the turn and carries the freshest answer
 ///   (the transcript lags). If it lists background tasks still running, the
 ///   agent stays working; see [`crate::store::State`]'s `background`.
@@ -827,6 +837,10 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.asks(None);
             Screen::Clear
         }
+
+        // A push sent, a login, a subagent finished: news, not a stop. The
+        // event log keeps it.
+        Moment::Notified if !asks(hooks, payload) => return None,
 
         // With a call pending, the menu is what is on screen, and this notice
         // says less about it (claude 2.1.240 sends only "Claude needs your
@@ -1085,6 +1099,88 @@ mod tests {
         }));
         assert_eq!(box_.state, Phase::Waiting);
         assert_eq!(box_.kind, Some(Kind::Permission));
+    }
+
+    #[test]
+    fn hook_a_notification_that_asks_nothing_moves_nothing() {
+        // claude also notifies about a push sent, a login, a subagent done or
+        // a quota resumed. None of them is on screen waiting for the person.
+        for record in [
+            State {
+                state: Phase::Working,
+                turn_open: true,
+                summary: Some("Running Bash".to_string()),
+                ..State::default()
+            },
+            State {
+                state: Phase::Idle,
+                result: Some("Fixed the login bug.".to_string()),
+                ..State::default()
+            },
+        ] {
+            for kind in [
+                "push_notification",
+                "auth_success",
+                "agent_completed",
+                "quota_auto_resume_fired",
+                "some_future_type",
+            ] {
+                let mut state = record.clone();
+                let notice = apply(
+                    &json!({
+                        "hook_event_name": "Notification",
+                        "message": "Claude sent you a message",
+                        "notification_type": kind
+                    }),
+                    &mut state,
+                    &mut meta(),
+                );
+                assert_eq!(state.state, record.state, "{kind}");
+                assert_eq!(state.question, None, "{kind}");
+                assert_eq!(state.summary, record.summary, "{kind}");
+                assert_eq!(notice, None, "{kind}");
+            }
+        }
+    }
+
+    #[test]
+    fn hook_a_notification_that_asks_is_a_stop() {
+        for kind in [
+            Some("permission_prompt"),
+            Some("elicitation_dialog"),
+            Some("elicitation_url_dialog"),
+            Some("agent_needs_input"),
+            None,
+        ] {
+            let mut state = State {
+                state: Phase::Working,
+                turn_open: true,
+                summary: Some("Running Bash".to_string()),
+                ..State::default()
+            };
+            let mut payload = json!({
+                "hook_event_name": "Notification",
+                "message": "Claude needs your input"
+            });
+            if let Some(kind) = kind {
+                payload["notification_type"] = json!(kind);
+            }
+            let notice = apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Waiting, "{kind:?}");
+            assert_eq!(
+                state.question.as_deref(),
+                Some("Claude needs your input"),
+                "{kind:?}"
+            );
+            assert_eq!(
+                notice,
+                Some(Notice::waiting(
+                    "fix-login-a1b",
+                    Some("Claude needs your input")
+                )),
+                "{kind:?}"
+            );
+        }
     }
 
     /// Fold a payload into a fresh record, read through `hooks`.
@@ -3100,6 +3196,28 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "PreToolUse");
         assert_eq!(events[0].payload["tool_name"], "Bash");
+    }
+
+    #[test]
+    fn hook_logs_a_notification_that_asks_nothing() {
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#,
+        );
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"Notification","message":"Claude sent you a message","notification_type":"push_notification"}"#,
+        );
+
+        assert_eq!(agent.state().unwrap().state, Phase::Working);
+        let events = agent.events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].kind, "Notification");
+        assert_eq!(events[1].payload["notification_type"], "push_notification");
     }
 
     #[test]

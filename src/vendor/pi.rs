@@ -211,6 +211,7 @@ pub const HOOKS: Hooks = Hooks {
     question_tool: "",
     idle_notice: "",
     permission_notice: "",
+    question_notices: &[],
     permission_sentence: "",
     injected: &[],
     // Session start carries no `source`.
