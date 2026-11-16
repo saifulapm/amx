@@ -140,6 +140,7 @@ List every agent, one line each.
 
 ```sh
 amx ls [--json] [--dir <PATH>]
+amx ls --archived [--json] [--dir <PATH>]
 amx ls --loose
 ```
 
@@ -148,6 +149,7 @@ amx ls --loose
 | `--json` | Print the stable JSON array. See [Scripting](scripting.md#json-output). |
 | `--dir <PATH>` | A directory filter: only agents working under this directory. A worktree agent counts as its repository's. |
 | `--loose` | List the claudes running outside amx instead: pid, status, age and directory of each claude whose conversation no agent holds. claude's sessions files are read under `$CLAUDE_CONFIG_DIR`, `~/.claude` and any `CLAUDE_CONFIG_DIR` in `[claude.env]`. |
+| `--archived` | List the archived agents instead. `ls` moves a stopped or parked agent that nothing has happened to for 14 days aside, to `agents/.archive`, so the readers no longer read it. Nothing is deleted, and `amx resume <id>` brings one back. |
 
 ```
 $ amx ls

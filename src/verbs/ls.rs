@@ -10,22 +10,50 @@ use std::path::{Path, PathBuf};
 use crate::derive::{self, View};
 use crate::store::{Meta, now};
 use crate::verbs::send;
-use crate::{exit, gc, loose, paths, spawn};
+use crate::{exit, gc, loose, paths, spawn, store};
 
 /// Run the verb against the machine.
-pub fn from_env(json: bool, dir: Option<&Path>) -> Result<i32> {
+pub fn from_env(json: bool, dir: Option<&Path>, archived: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let scope = Scope::of(dir)?;
     let mut out = std::io::stdout().lock();
-    run(&root, json, &scope, now(), &mut out)
+    match archived {
+        true => archive(&root, json, &scope, now(), &mut out),
+        false => run(&root, json, &scope, now(), &mut out),
+    }
 }
 
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Write) -> Result<i32> {
-    // Read once: the sweep drops what it forgets, and the reading takes the
-    // rest, so no state document is parsed twice.
+    // Read once: the sweep drops what it forgets and moves aside what it
+    // archives, and the reading takes the rest, so no state document is
+    // parsed twice.
     let records = gc::sweep(derive::records(root)?, now);
+    shown(root, records, json, scope, now, out)
+}
 
+/// `amx ls --archived`: the records the gc pass moved aside, read where they
+/// lie. Nothing is swept or moved back.
+pub fn archive(
+    root: &Path,
+    json: bool,
+    scope: &Scope,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<i32> {
+    let shelf = root.join(store::ARCHIVE);
+    shown(&shelf, derive::records(&shelf)?, json, scope, now, out)
+}
+
+/// The rows of `records`, read under `root`, as a table or as JSON.
+fn shown(
+    root: &Path,
+    records: Vec<derive::Record>,
+    json: bool,
+    scope: &Scope,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<i32> {
     // Narrowed before the reading, so an agent outside the scope costs no
     // screen and no summary.
     let records = records
@@ -529,6 +557,42 @@ mod tests {
         let mut left = crate::store::list(root.path()).unwrap();
         left.sort();
         assert_eq!(left, ["here-a1b", "there-c3d"]);
+    }
+
+    #[test]
+    fn ls_moves_a_long_stopped_record_aside_and_ls_archived_lists_it() {
+        const NOW: u64 = 1_800_000_000;
+        let root = tempfile::TempDir::new().unwrap();
+        on_disk(
+            root.path(),
+            "old-stopped-a1b",
+            Phase::Stopped,
+            NOW - 15 * 86_400,
+        );
+        on_disk(root.path(), "new-stopped-c3d", Phase::Stopped, NOW - 60);
+
+        let listed = |archived: bool| {
+            let mut out = Vec::new();
+            let code = match archived {
+                true => archive(root.path(), false, &Scope::default(), NOW, &mut out),
+                false => run(root.path(), false, &Scope::default(), NOW, &mut out),
+            };
+            assert_eq!(code.unwrap(), exit::OK);
+            String::from_utf8(out).unwrap()
+        };
+
+        let live = listed(false);
+        assert_eq!(live.lines().count(), 1, "{live}");
+        assert!(live.contains("new-stopped-c3d"), "{live}");
+
+        let aside = listed(true);
+        assert_eq!(aside.lines().count(), 1, "{aside}");
+        assert!(aside.contains("old-stopped-a1b"), "{aside}");
+        assert_eq!(
+            crate::store::list(&root.path().join(crate::store::ARCHIVE)).unwrap(),
+            ["old-stopped-a1b"],
+            "and reading the archive moved nothing back"
+        );
     }
 
     #[test]

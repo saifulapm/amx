@@ -103,6 +103,12 @@ pub enum Command {
         /// process whose conversation no agent holds.
         #[arg(long, conflicts_with_all = ["json", "dir"])]
         loose: bool,
+
+        /// List the archived agents instead: stopped or parked ones idle for
+        /// 14 days, which the listing moves aside. `amx resume` brings one
+        /// back.
+        #[arg(long, conflicts_with = "loose")]
+        archived: bool,
     },
 
     /// Show one agent, and which signal its state came from.

@@ -38,6 +38,11 @@ const EVENTS: &str = "events.jsonl";
 const LOCK: &str = "lock";
 const SPAWN_LOCK: &str = "spawn.lock";
 const CLAIM: &str = "claim";
+
+/// The directory under the agents directory where records idle past
+/// [`crate::gc::ARCHIVE_AFTER`] are kept. Not shaped like an id, so [`list`]
+/// and every reader that lists records skip it.
+pub const ARCHIVE: &str = ".archive";
 /// Text the vendor is streaming during a turn, removed when the turn ends.
 /// Written by the vendor's reporter, only read here.
 pub const LIVE: &str = "live";
@@ -1245,6 +1250,23 @@ impl Agent {
     pub fn remove(&self) -> Result<()> {
         std::fs::remove_dir_all(&self.dir)
             .with_context(|| format!("removing {}", self.dir.display()))
+    }
+
+    /// Move the record, whole, under [`ARCHIVE`]. Fails, leaving it where it
+    /// is, when the archive already holds a record of this id.
+    pub fn archive(&self) -> Result<()> {
+        let shelf = self.dir.parent().unwrap_or(&self.dir).join(ARCHIVE);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(paths::DIR_MODE)
+            .create(&shelf)
+            .with_context(|| format!("creating {}", shelf.display()))?;
+        let to = shelf.join(&self.id);
+        if to.exists() {
+            bail!("the archive already holds `{}`", self.id);
+        }
+        std::fs::rename(&self.dir, &to)
+            .with_context(|| format!("moving {} to {}", self.dir.display(), to.display()))
     }
 }
 

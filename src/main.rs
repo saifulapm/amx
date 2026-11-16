@@ -95,9 +95,15 @@ fn run(cli: &cli::Cli) -> i32 {
         Some(cli::Command::New(args)) => finish(verbs::new::from_env(args)),
         Some(cli::Command::Sub(args)) => finish(verbs::sub::from_env(args)),
         Some(cli::Command::Ls { loose: true, .. }) => finish(verbs::ls::loose_from_env()),
-        Some(cli::Command::Ls { json, dir, .. }) => finish(verbs::ls::from_env(
+        Some(cli::Command::Ls {
+            json,
+            dir,
+            archived,
+            ..
+        }) => finish(verbs::ls::from_env(
             *json,
             dir.as_deref().or(cli.dir.as_deref()),
+            *archived,
         )),
         Some(cli::Command::Status { id, json, why }) => {
             finish(verbs::status::from_env(id, *json, *why))
