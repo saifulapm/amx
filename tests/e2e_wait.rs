@@ -109,6 +109,18 @@ fn a_wait_gives_up_when_the_caller_says_when() {
 }
 
 #[test]
+fn a_wait_holds_on_an_agent_at_its_prompt_with_a_shell_out() {
+    // It reads `idle · 1 shell`, but the shell is still work to wait for.
+    let amx = Harness::new();
+    amx.play("dev-server-a1b", "rests-with-a-shell");
+    amx.until_shown("dev-server-a1b", "auto mode on · 1 shell");
+
+    let out = amx.amx(&["wait", "dev-server-a1b", "--timeout", "5"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "", "the shell has not finished");
+}
+
+#[test]
 fn an_agent_stopped_on_a_question_is_one_the_caller_can_act_on() {
     // `waiting` counts as settled: the question arrives mid-wait, and a caller
     // that is not told about it cannot answer it.

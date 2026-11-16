@@ -757,15 +757,6 @@ const CHANGED: &str = "what it has changed";
 /// the rule never looks like the agent stopped.
 const THINKING: &str = "thinking…";
 
-/// What the rule says of a turn the vendor ended with background shells still
-/// running.
-fn shells_running(n: u32) -> String {
-    match n {
-        1 => "1 shell running".to_string(),
-        n => format!("{n} shells running"),
-    }
-}
-
 /// The most rows a wrapped question gets.
 const ASKED_TALL: usize = 3;
 
@@ -978,18 +969,18 @@ fn rule(
         }
     };
     // Not the row's summary, which the card body already shows at length.
-    // The vendor's spinner line if one was read, else the background shells
-    // count, else `THINKING`.
+    // The row's state words while background work runs, else the vendor's
+    // spinner line if one was read, else `THINKING`.
     let doing = match card.phase {
         Phase::Starting | Phase::Working => format!(
             " {}",
-            match on.map_or(0, |view| view.state.background) {
-                0 => on
+            match on.filter(|view| view.state.background > 0) {
+                Some(view) => view.state_words(),
+                None => on
                     .and_then(|view| view.doing.as_deref())
                     .map(inert)
                     .filter(|said| !said.is_empty())
                     .unwrap_or_else(|| THINKING.to_string()),
-                n => shells_running(n),
             }
         ),
         _ => String::new(),
@@ -1975,13 +1966,25 @@ index e69de29..0000000
             "the spinner line whole, at the far end: {spinning:?}"
         );
 
-        // Background shells still running.
-        let mut held = view("fix-login-a1b", Phase::Working, Some("2 shells running"), 3);
+        // Background shells still running after the turn ended: the row's
+        // words.
+        let mut held = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
         held.state.background = 2;
         let held = looked(held);
         assert!(
-            held.ends_with("2 shells running"),
-            "the shells the turn is held open for: {held:?}"
+            held.ends_with("idle · 2 shells"),
+            "the shells the agent is held working for: {held:?}"
+        );
+
+        // A running turn with subagents and a shell out: the row's words too.
+        let mut turn = view("fix-login-a1b", Phase::Working, Some("Running Bash"), 3);
+        turn.state.turn_open = true;
+        turn.state.background = 3;
+        turn.state.agents = 2;
+        let turn = looked(turn);
+        assert!(
+            turn.ends_with("working · 2 subagents · 1 shell"),
+            "what the turn has out: {turn:?}"
         );
 
         let quiet = looked(view("fix-login-a1b", Phase::Working, None, 3));

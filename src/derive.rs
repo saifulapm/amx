@@ -121,7 +121,56 @@ pub struct View {
     pub doing: Option<String>,
 }
 
+/// The background work an agent has running: shells and subagents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Background {
+    pub shells: u32,
+    pub agents: u32,
+}
+
 impl View {
+    /// The shells and subagents the record counts as running. Zeros when
+    /// none.
+    pub fn background(&self) -> Background {
+        Background {
+            shells: self.state.background.saturating_sub(self.state.agents),
+            agents: self.state.agents,
+        }
+    }
+
+    /// Whether the model is at its prompt while background work runs.
+    ///
+    /// The verdict stays working so `wait` and `result` keep waiting on the
+    /// work; only what is shown reads idle.
+    pub fn at_rest(&self) -> bool {
+        self.phase() == Phase::Working && !self.state.turn_open && self.state.background > 0
+    }
+
+    /// The words shown for the state: `idle · 1 shell` at rest, `working · 2
+    /// subagents · 1 shell` in a turn with work out, else the phase's word.
+    pub fn state_words(&self) -> String {
+        let Background { shells, agents } = self.background();
+        let counted = |n: u32, one: &str| match n {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            n => Some(format!("{n} {one}s")),
+        };
+        let (word, counts) = match self.phase() {
+            Phase::Working if self.at_rest() => {
+                ("idle", [counted(shells, "shell"), counted(agents, "agent")])
+            }
+            Phase::Working if self.state.background > 0 => (
+                "working",
+                [counted(agents, "subagent"), counted(shells, "shell")],
+            ),
+            phase => (phase.word(), [None, None]),
+        };
+        std::iter::once(word.to_string())
+            .chain(counts.into_iter().flatten())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
     /// Builds a view whose parts agree.
     ///
     /// A question belongs to the turn waiting on it, so it is dropped unless
@@ -209,7 +258,13 @@ impl View {
             "depth": self.meta.depth,
             // The role the spawn named, if any.
             "role": self.meta.role,
-            "state": self.verdict.phase.as_str(),
+            // `idle` for a model at its prompt with background work out; the
+            // work is in `background`.
+            "state": match self.at_rest() {
+                true => Phase::Idle.as_str(),
+                false => self.verdict.phase.as_str(),
+            },
+            "background": self.background(),
             "evidence": self.verdict.evidence,
             "rule": self.verdict.rule,
             // The row's seconds (see `clock`), plus the stamps behind them for
@@ -2322,6 +2377,74 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         );
         assert_eq!(root.json()["parent"], serde_json::Value::Null);
         assert_eq!(root.json()["depth"], 0);
+    }
+
+    /// A view of a record the hooks left working, with `background` tasks
+    /// running, `agents` of them subagents, and the turn open or closed.
+    fn with_work_out(turn_open: bool, background: u32, agents: u32) -> View {
+        View::new(
+            meta(),
+            State {
+                background,
+                agents,
+                turn_open,
+                ..state(Phase::Working, 1_000)
+            },
+            verdict(Phase::Working, Evidence::Hooks, None),
+        )
+    }
+
+    #[test]
+    fn a_view_at_its_prompt_with_work_out_reads_idle_and_counts_it() {
+        let shell = with_work_out(false, 1, 0);
+        assert!(shell.at_rest());
+        assert_eq!(shell.state_words(), "idle · 1 shell");
+        assert_eq!(shell.json()["state"], "idle");
+        assert_eq!(
+            shell.json()["background"],
+            serde_json::json!({"shells": 1, "agents": 0})
+        );
+        assert_eq!(with_work_out(false, 2, 0).state_words(), "idle · 2 shells");
+        assert_eq!(with_work_out(false, 2, 2).state_words(), "idle · 2 agents");
+        assert_eq!(
+            with_work_out(false, 2, 1).state_words(),
+            "idle · 1 shell · 1 agent"
+        );
+        // The verdict stays working, so wait and result keep waiting.
+        assert_eq!(shell.phase(), Phase::Working);
+    }
+
+    #[test]
+    fn a_running_turn_names_its_subagents_and_shells_beside_working() {
+        let turn = with_work_out(true, 3, 2);
+        assert!(!turn.at_rest());
+        assert_eq!(turn.state_words(), "working · 2 subagents · 1 shell");
+        assert_eq!(turn.json()["state"], "working");
+        assert_eq!(
+            turn.background(),
+            Background {
+                shells: 1,
+                agents: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_view_with_nothing_out_reads_its_plain_word() {
+        let working = with_work_out(true, 0, 0);
+        assert_eq!(working.state_words(), "working");
+        assert_eq!(
+            working.json()["background"],
+            serde_json::json!({"shells": 0, "agents": 0})
+        );
+        let idle = View::new(
+            meta(),
+            state(Phase::Idle, 1_000),
+            verdict(Phase::Idle, Evidence::Hooks, None),
+        );
+        assert!(!idle.at_rest());
+        assert_eq!(idle.state_words(), "done");
+        assert_eq!(idle.json()["state"], "idle");
     }
 
     fn verdict(phase: Phase, evidence: Evidence, rule: Option<&str>) -> Verdict {

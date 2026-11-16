@@ -242,6 +242,28 @@ fn the_listing_reads_as_a_table_when_nobody_asks_for_json() {
 }
 
 #[test]
+fn the_listing_reads_an_agent_at_its_prompt_with_a_shell_out_as_idle() {
+    // The Stop leaves the record working on the shell; the listing says the
+    // model is at its prompt and counts what still runs.
+    let amx = Harness::new();
+    amx.play("dev-server-a1b", "rests-with-a-shell");
+    amx.until_shown("dev-server-a1b", "auto mode on · 1 shell");
+
+    let out = amx.amx(&["ls"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("idle · 1 shell dev-server-a1b"), "{text}");
+
+    let listed = ls(&amx);
+    assert_eq!(listed[0]["state"], "idle", "{}", listed[0]);
+    assert_eq!(
+        listed[0]["background"],
+        json!({"shells": 1, "agents": 0}),
+        "{}",
+        listed[0]
+    );
+}
+
+#[test]
 fn a_record_that_has_gone_quiet_falls_back_to_the_screen() {
     // The pane is at the idle prompt and the record has heard nothing for a
     // long time.

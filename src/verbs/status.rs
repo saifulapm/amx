@@ -43,7 +43,7 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
 
 /// The report for a person.
 fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Result<()> {
-    writeln!(out, "{}  {}", view.id(), view.phase().word())?;
+    writeln!(out, "{}  {}", view.id(), view.state_words())?;
     writeln!(out, "  evidence  {}", evidence(view, now))?;
     if let Some(question) = &view.state.question {
         say(out, "asking", question)?;

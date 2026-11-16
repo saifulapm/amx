@@ -160,11 +160,17 @@ fn table(views: &[View], out: &mut impl Write) -> Result<()> {
     }
 
     let widest = views.iter().map(|view| view.id().len()).max().unwrap_or(0);
-    for view in views {
+    // Wide enough for `starting`, and for the counts of background work.
+    let words: Vec<String> = views.iter().map(View::state_words).collect();
+    let state = words
+        .iter()
+        .map(|said| said.chars().count())
+        .fold(8, usize::max);
+    for (view, said) in views.iter().zip(&words) {
         writeln!(
             out,
-            "{:<8} {:<widest$}  {:>5}  {}",
-            view.phase().word(),
+            "{:<state$} {:<widest$}  {:>5}  {}",
+            said,
             view.id(),
             worked(view),
             doing(view),

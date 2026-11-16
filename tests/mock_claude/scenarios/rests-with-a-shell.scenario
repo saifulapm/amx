@@ -1,0 +1,8 @@
+# An agent whose turn ended with a background shell still running. claude is
+# back at its prompt and counts the shell on its footer.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "start the dev server"}
+hook Stop {"last_assistant_message": "the dev server is up", "background_tasks": [{"id": "b1", "type": "shell", "status": "running"}]}
+print ❯
+print   ⏵⏵ auto mode on · 1 shell
+sleep 600000

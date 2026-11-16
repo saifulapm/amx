@@ -361,6 +361,15 @@ fn row(
         None => widths.age,
     };
     let room = room.saturating_sub(age - widths.age);
+    // Background work makes the words longer than the state cell. The row
+    // widens its own cell and takes the cells from its summary, as a wake time
+    // does, since a cut state word misleads.
+    let words = view.state_words();
+    let state = match widths.state {
+        0 => 0,
+        cell => cell.max(width_of(&words)),
+    };
+    let room = room.saturating_sub(state - widths.state);
     let armed = moment.armed.iter().position(|id| id == view.id());
     let said = match armed {
         Some(at) => match moment.why.get(at) {
@@ -371,7 +380,16 @@ fn row(
             None if moment.swept => AGAIN_ALL.to_string(),
             None => AGAIN.to_string(),
         },
-        None => verbs::inert_line(view.line().unwrap_or("")),
+        // With no state cell the heading says the phase, but not the work
+        // out, so the summary opens with the words where they say more.
+        None => {
+            let line = verbs::inert_line(view.line().unwrap_or(""));
+            match widths.state == 0 && words != phase.word() {
+                false => line,
+                true if line.is_empty() => words.clone(),
+                true => format!("{words} · {line}"),
+            }
+        }
     };
 
     let asking = phase == Phase::Waiting;
@@ -407,14 +425,16 @@ fn row(
             dim(),
         ));
     }
-    if widths.state > 0 {
+    if state > 0 {
+        // At its prompt the model has ended its turn, so the word wears idle's
+        // colour though the verdict is working.
+        let shown = match view.at_rest() {
+            true => Phase::Idle,
+            false => phase,
+        };
         spans.push(Span::styled(
-            format!(
-                "{}{}",
-                grid::pad(phase.word(), widths.state),
-                " ".repeat(GAP)
-            ),
-            state_colour(theme, phase),
+            format!("{}{}", grid::pad(&words, state), " ".repeat(GAP)),
+            state_colour(theme, shown),
         ));
     }
     if requests > 0 {
@@ -2204,6 +2224,78 @@ mod tests {
 
         assert_eq!(word_colour(&screen, size, 4, "done"), theme().done);
         assert!(word_modifier(&screen, size, 4, "fixed it").contains(Modifier::DIM));
+    }
+
+    /// A working reading with `background` tasks out, `agents` of them
+    /// subagents, and its turn open or closed.
+    fn with_work_out(id: &str, turn_open: bool, background: u32, agents: u32) -> View {
+        let mut working = view(id, Phase::Working, Some("Running Bash"), 3);
+        working.state.turn_open = turn_open;
+        working.state.background = background;
+        working.state.agents = agents;
+        working
+    }
+
+    #[test]
+    fn rows_widen_the_state_cell_for_the_work_a_turn_has_out() {
+        let size = (80, 10);
+        let screen = by_project(vec![
+            at(with_work_out("busy-a1b", true, 3, 2), "/src/api"),
+            at(
+                view("fix-login-b2c", Phase::Done, Some("fixed it"), 60),
+                "/src/api",
+            ),
+        ]);
+        let lines = painted(&screen, size);
+        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap();
+        assert!(
+            row("busy-a1b").contains("working · 2 subagents · 1 shell  Running Bash"),
+            "{:?}",
+            row("busy-a1b")
+        );
+        assert_eq!(
+            row("busy-a1b").chars().count(),
+            row("fix-login-b2c").chars().count(),
+            "the summary pays for the wider cell, so the row ends where the others do"
+        );
+
+        let resting = by_project(vec![at(with_work_out("busy-a1b", false, 1, 0), "/src/api")]);
+        let lines = painted(&resting, size);
+        assert!(lines[3].contains("idle · 1 shell"), "{lines:?}");
+        assert_eq!(
+            word_colour(&resting, size, 3, "idle"),
+            theme().done,
+            "at its prompt the word wears idle's colour"
+        );
+    }
+
+    #[test]
+    fn rows_on_the_state_axis_open_the_summary_with_the_work_out() {
+        let screen = showing(
+            vec![
+                with_work_out("rest-a1b", false, 1, 0),
+                with_work_out("turn-b2c", true, 3, 2),
+                view("plain-c3d", Phase::Working, Some("Running Bash"), 3),
+            ],
+            None,
+        );
+        let lines = painted(&screen, (80, 12));
+        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap();
+        assert!(
+            row("rest-a1b").contains("idle · 1 shell · Running Bash"),
+            "{:?}",
+            row("rest-a1b")
+        );
+        assert!(
+            row("turn-b2c").contains("working · 2 subagents · 1 shell · Running Bash"),
+            "{:?}",
+            row("turn-b2c")
+        );
+        assert!(
+            !row("plain-c3d").contains("working"),
+            "the heading says a plain phase: {:?}",
+            row("plain-c3d")
+        );
     }
 
     #[test]
