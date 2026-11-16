@@ -106,6 +106,14 @@ pub fn validate_name(name: &str, state_root: &Path) -> Result<()> {
         }
         bail!("name {name:?} is already taken");
     }
+    if state_root
+        .join(crate::store::ARCHIVE)
+        .join(name)
+        .join(crate::store::META)
+        .exists()
+    {
+        bail!("name {name:?} is held by an archived agent; `amx resume {name}` brings it back");
+    }
     Ok(())
 }
 
@@ -329,6 +337,17 @@ mod tests {
             let id = generate(task, root.path()).unwrap();
             assert!(matches_pis_session_id_pattern(&id), "{id:?}");
         }
+    }
+
+    #[test]
+    fn a_name_an_archived_agent_holds_points_at_resume() {
+        // An archived record keeps its id: resume brings it back to it.
+        let root = tempfile::TempDir::new().unwrap();
+        let shelved = root.path().join(crate::store::ARCHIVE).join("fix-login");
+        std::fs::create_dir_all(&shelved).unwrap();
+        std::fs::write(shelved.join("meta.json"), "{}").unwrap();
+        let said = format!("{:#}", validate_name("fix-login", root.path()).unwrap_err());
+        assert!(said.contains("amx resume fix-login"), "{said}");
     }
 
     #[test]

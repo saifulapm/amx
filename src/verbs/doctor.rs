@@ -931,10 +931,16 @@ fn orphan_ids(root: &Path, now: u64) -> Vec<(PathBuf, u64)> {
 /// Trees under `.amx/worktrees` that no record names, in every repository amx
 /// has cut trees in and in the one `dir` belongs to.
 fn orphan_trees(root: &Path, dir: Option<&Path>) -> Vec<PathBuf> {
-    let named: Vec<PathBuf> = store::list(root)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|id| store::Agent::open(root, id).ok()?.meta().ok()?.worktree)
+    // An archived record still names its tree, and resume brings it back.
+    let shelf = root.join(store::ARCHIVE);
+    let named: Vec<PathBuf> = [root, shelf.as_path()]
+        .into_iter()
+        .flat_map(|under| {
+            store::list(under)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|id| store::Agent::open(under, &id).ok()?.meta().ok()?.worktree)
+        })
         .collect();
     let mut repos: BTreeSet<PathBuf> = named
         .iter()
@@ -1340,6 +1346,41 @@ mod tests {
         assert!(!old.exists(), "the old one went");
         assert!(young.exists(), "a spawn still starting keeps its claim");
         assert!(tree.exists(), "and a tree is never taken");
+    }
+
+    #[test]
+    fn a_tree_an_archived_record_names_is_no_orphan() {
+        let root = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        let tree = repo.path().join(".amx/worktrees/old-stopped-a1b");
+        std::fs::create_dir_all(&tree).unwrap();
+        let shelf = root.path().join(store::ARCHIVE);
+        store::Agent::create(
+            &shelf,
+            &store::Meta {
+                role: None,
+                parent: None,
+                depth: 0,
+                id: "old-stopped-a1b".to_string(),
+                task: "fix the login bug".to_string(),
+                agent: None,
+                model: None,
+                effort: None,
+                dir: repo.path().to_path_buf(),
+                worktree: Some(tree.clone()),
+                branch: None,
+                base: None,
+                socket: crate::tmux::Socket::Name("amx".to_string()),
+                pane: crate::tmux::PaneId::new("%1").unwrap(),
+                bg: false,
+                session: None,
+                transcript: None,
+                created: 1,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(orphan_trees(root.path(), None), Vec::<PathBuf>::new());
     }
 
     #[test]
