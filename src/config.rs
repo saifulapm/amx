@@ -10,9 +10,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Every top-level key the file may set, besides `[keys]`, `[notify]` and the
-/// harness tables. Anything else is warned about and ignored.
-pub const KNOWN_KEYS: [&str; 26] = [
+/// Every top-level key the file may set, besides `[keys]` and the harness
+/// tables. Anything else is warned about and ignored.
+pub const KNOWN_KEYS: [&str; 27] = [
     "agent",
     "max_agents",
     "max_total",
@@ -39,6 +39,7 @@ pub const KNOWN_KEYS: [&str; 26] = [
     "on_done",
     "on_failed",
     "on_stopped",
+    "notify",
 ];
 
 /// The `[keys]` table of view key bindings, which a project file merges entry
@@ -46,9 +47,6 @@ pub const KNOWN_KEYS: [&str; 26] = [
 const BOUND_KEYS: &str = "keys";
 
 /// The `[notify]` table: what the buttons on a desktop notice run.
-const NOTIFY: &str = "notify";
-
-/// The `[notify]` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Notify {
@@ -335,7 +333,7 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
         .filter_map(|(key, value)| {
             if !value.is_table() {
                 Some(format!("ignoring unknown key `{key}`"))
-            } else if key == BOUND_KEYS || key == NOTIFY {
+            } else if key == BOUND_KEYS {
                 None
             } else if registry::entry(key).is_none() {
                 Some(format!("ignoring [{key}]: amx has no vendor named `{key}`"))
@@ -1132,6 +1130,7 @@ mod tests {
                 subagent_depth = 3
                 max_children = 3
                 subagents_may_escalate = true
+                notify = { open = "foot -e amx attach {id}" }
             "#,
         )
         .unwrap();
@@ -1161,10 +1160,11 @@ mod tests {
         assert_eq!(c.subagent_depth, 3);
         assert_eq!(c.max_children, 3);
         assert!(c.subagents_may_escalate);
+        assert_eq!(c.notify.open.as_deref(), Some("foot -e amx attach {id}"));
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
             KNOWN_KEYS.len(),
-            26,
+            27,
             "a key this file does not name is a key nothing here proves"
         );
     }

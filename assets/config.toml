@@ -134,6 +134,10 @@ shelve_after = 259200
 # on_failed = "gh issue comment 41 -b \"$AMX_ID failed\""
 # on_stopped = "echo $AMX_ID stopped >> ~/amx.log"
 
+# Buttons on a desktop notice. open is the command an Open button runs with
+# sh -c, {id} replaced by the agent's id; unset puts no Open on a notice.
+# notify = { open = "foot -e amx attach {id}" }
+
 # Your own keys in the view, each bound to a shell command. Write ctrl+ and
 # alt+ in either order, then one character or f1 to f12; a capital letter
 # means shift. The command runs with sh -c in the selected agent's worktree (or

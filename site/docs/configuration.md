@@ -50,6 +50,7 @@ A config problem never stops an agent from starting:
 | `on_done` | none | Command run when an agent's command exits 0. |
 | `on_failed` | none | Command run when an agent's command exits non-zero. |
 | `on_stopped` | none | Command run when you stop an agent. |
+| `notify` | empty | The `[notify]` table. Its `open` is the command a desktop notice's Open button runs, such as `"foot -e amx attach {id}"`. |
 | `[keys]` | empty | Your own key bindings in the view. |
 | `[claude]`, `[pi]`, `[codex]`, `[opencode]` | empty | Per-vendor models, arguments and environment. |
 
@@ -139,6 +140,21 @@ command finishes. Nothing is posted about a pane you are already looking at.
 `"terminal"` is for SSH sessions: run the view inside a tmux on the remote
 machine and the notice reaches your local terminal. `true` and `false` still
 work and mean `"desktop"` and `"off"`.
+
+On Linux a desktop notice can carry buttons:
+
+```toml
+[notify]
+open = "foot -e amx attach {id}"
+```
+
+With `open` set, every notice has an Open button that runs the command with
+`sh -c`, `{id}` replaced by the agent's id. Unset, there is no Open button.
+
+A notice about a permission box also has Yes and No. They answer the box
+only while it is still the same question: if it was answered in the pane and
+asked again, or the agent did anything else since, the click does nothing.
+A notice nobody clicks is given up on after ten minutes.
 
 ## Moment commands
 
