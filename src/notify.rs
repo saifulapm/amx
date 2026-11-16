@@ -6,13 +6,16 @@
 //! neither. Delivery is best effort. The hook forks a notifier and returns at
 //! once; the notifier asks tmux whether the pane is being watched, skips the
 //! notice if so, and starts the errand. Failures are silent.
+//!
+//! A desktop notice may carry [`Buttons`]. The forked notifier then waits for
+//! the click, which `notify-send -A` prints, and acts on it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use crate::config::Delivery;
-use crate::store::Phase;
+use crate::store::{Agent, Phase};
 use crate::tmux::{PaneId, Server};
 
 /// The variables tmux sets in every pane: its server and the pane's id. A hook
@@ -53,6 +56,44 @@ impl Notice {
     }
 }
 
+/// The buttons on a desktop notice and what each one does.
+#[derive(Default)]
+pub struct Buttons {
+    /// The command Open runs: `[notify] open` with `{id}` replaced. `None`
+    /// puts no Open on the notice.
+    pub open: Option<String>,
+    /// The permission box Yes and No answer. `None` puts neither on it.
+    pub asked: Option<Asked>,
+}
+
+/// A permission box as the hook that posted its notice read it.
+///
+/// A click answers through [`crate::verbs::answer::given`], which types
+/// nothing once the record moved or the agent said anything after `from`. A
+/// box answered at the pane and asked again in the same words is a new
+/// question, and the old notice's click must not answer it.
+pub struct Asked {
+    pub agent: Agent,
+    /// The record as the hook wrote it, read as a view reads it.
+    pub view: crate::derive::View,
+    /// Where the event log ended when the hook wrote the record.
+    pub from: u64,
+}
+
+impl Buttons {
+    /// The `-A` actions, as name and label.
+    fn actions(&self) -> Vec<(&'static str, &'static str)> {
+        let mut actions = Vec::new();
+        if self.open.is_some() {
+            actions.push(("open", "Open"));
+        }
+        if self.asked.is_some() {
+            actions.extend([("yes", "Yes"), ("no", "No")]);
+        }
+        actions
+    }
+}
+
 /// A moment command ready to start, assembled by [`crate::errand`].
 ///
 /// Passed to [`post`] so the one fork that delivers the notice also starts it.
@@ -73,8 +114,14 @@ pub struct Errand {
 /// Forks a notifier and returns at once, since the hook's caller is waiting.
 /// The notifier asks tmux once whether the pane is watched: a watched pane gets
 /// no notice, and the errand is told the answer. Without fork the work runs
-/// inline, where an extra notification is the cheaper error.
-pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
+/// inline, where an extra notification is the cheaper error, and the notice
+/// goes up without buttons, since waiting for a click would hold the hook.
+pub fn post(
+    notice: Option<&Notice>,
+    delivery: Delivery,
+    errand: Option<&Errand>,
+    buttons: &Buttons,
+) {
     // Nothing to deliver and nothing to run is no reason to fork.
     let notice = notice.filter(|_| delivery.tells());
     if notice.is_none() && errand.is_none() {
@@ -84,29 +131,80 @@ pub fn post(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>
     match detach() {
         Fork::Hook => (),
         Fork::Notifier => {
-            deliver(notice, delivery, errand);
+            deliver(notice, delivery, errand, buttons);
             // The child is a copy of the hook, whose work is done; returning
             // would run the rest of it twice.
             unsafe { nix::libc::_exit(crate::exit::OK) };
         }
-        Fork::Neither => deliver(notice, delivery, errand),
+        Fork::Neither => deliver(notice, delivery, errand, &Buttons::default()),
     }
 }
 
-/// Deliver the notice, unless the pane is watched, and start the errand.
-fn deliver(notice: Option<&Notice>, delivery: Delivery, errand: Option<&Errand>) {
+/// Deliver the notice, unless the pane is watched, start the errand, and act
+/// on the click if the notice has buttons.
+fn deliver(
+    notice: Option<&Notice>,
+    delivery: Delivery,
+    errand: Option<&Errand>,
+    buttons: &Buttons,
+) {
     let watched = watched(var(SERVER_ENV).as_deref(), var(PANE_ENV).as_deref());
-    if let Some(notice) = notice.filter(|_| !watched) {
-        if delivery.desktop() {
-            raise(notice);
-        }
-        if delivery.terminal() {
-            tell_terminals(notice);
-        }
+    let notice = notice.filter(|_| !watched);
+    // Raised first and waited on last: with buttons the notifier runs until
+    // the person clicks or dismisses it.
+    let raised = notice
+        .filter(|_| delivery.desktop())
+        .and_then(|notice| raise(notice, buttons));
+    if let Some(notice) = notice.filter(|_| delivery.terminal()) {
+        tell_terminals(notice);
     }
     if let Some(errand) = errand {
         start(errand, Some(watched));
     }
+    if let Some(notifier) = raised {
+        clicked(notifier, buttons);
+    }
+}
+
+/// Wait for the notifier to print the button clicked, and do what it says.
+///
+/// A dismissed notice prints nothing.
+fn clicked(notifier: Child, buttons: &Buttons) {
+    let Ok(out) = notifier.wait_with_output() else {
+        return;
+    };
+    let name = String::from_utf8_lossy(&out.stdout);
+    match (name.trim(), &buttons.open, &buttons.asked) {
+        ("open", Some(open), _) => open_with(open),
+        // `1` is claude's Yes. Esc is its No whatever row No sits on (2 or
+        // 3), as the box's own footer says.
+        ("yes", _, Some(asked)) => answer(asked, "1"),
+        ("no", _, Some(asked)) => answer(asked, "esc"),
+        _ => (),
+    }
+}
+
+/// Answer the box with `key`, unless it is no longer the question the notice
+/// was raised for.
+fn answer(asked: &Asked, key: &str) {
+    let server = Server::from_socket(asked.view.meta.socket.clone());
+    let typed = crate::cli::AnswerArgs {
+        key: Some(key.to_string()),
+        ..crate::cli::AnswerArgs::default()
+    };
+    // A refusal has nobody to tell: the notifier has no terminal.
+    let _ = crate::verbs::answer::given(&asked.agent, &server, &asked.view, asked.from, &typed);
+}
+
+/// Start the Open command with `sh -c` and leave it running.
+fn open_with(command: &str) {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 /// Start an errand with `sh -c` and return without waiting for it.
@@ -185,8 +283,10 @@ fn detach() -> Fork {
         }
     };
 
-    // SAFETY: the hook is single threaded, and between this fork and the
-    // command it starts the child reads its own environment and nothing else.
+    // SAFETY: the hook is single threaded, so the child is a whole copy of it
+    // and may do what the hook could: wait on the notifier, call tmux, and
+    // take the agent's writer to answer a box. The hook dropped the writer
+    // before posting, so the child holds no lock while it waits.
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { .. }) => {
             restore();
@@ -238,20 +338,27 @@ fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-/// Start the desktop notifier without waiting for it or checking its result.
-fn raise(notice: &Notice) {
-    let Some(mut command) = notifier(notice) else {
-        return;
+/// Start the desktop notifier, and hand it back when it has buttons, to be
+/// waited on for the click. One without buttons is left to finish alone.
+fn raise(notice: &Notice, buttons: &Buttons) -> Option<Child> {
+    let actions = buttons.actions();
+    let mut command = notifier(notice, &actions)?;
+    let out = match actions.is_empty() {
+        true => Stdio::null(),
+        false => Stdio::piped(),
     };
-    let _ = command
+    let notifier = command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(out)
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+        .ok()?;
+    (!actions.is_empty()).then_some(notifier)
 }
 
-/// The desktop notification command: `osascript` on macOS, else `notify-send`.
-fn notifier(notice: &Notice) -> Option<Command> {
+/// The desktop notification command: `osascript` on macOS, else `notify-send`
+/// with an `-A` for each action. `osascript` takes no actions.
+fn notifier(notice: &Notice, actions: &[(&str, &str)]) -> Option<Command> {
     if cfg!(target_os = "macos") {
         let mut command = Command::new("osascript");
         command.arg("-e").arg(format!(
@@ -263,11 +370,11 @@ fn notifier(notice: &Notice) -> Option<Command> {
     }
 
     let mut command = Command::new("notify-send");
-    command
-        .arg("--app-name=amx")
-        .arg("--")
-        .arg(&notice.title)
-        .arg(&notice.body);
+    command.arg("--app-name=amx");
+    for (name, label) in actions {
+        command.arg("-A").arg(format!("{name}={label}"));
+    }
+    command.arg("--").arg(&notice.title).arg(&notice.body);
     Some(command)
 }
 
@@ -665,7 +772,7 @@ mod tests {
     fn hook_notices_go_out_as_arguments_and_never_as_script() {
         // Agent text must reach the notifier as one argument.
         let notice = Notice::waiting("fix-login-a1b", Some("$(rm -rf ~); \"quoted\""));
-        let command = notifier(&notice).unwrap();
+        let command = notifier(&notice, &[]).unwrap();
         let args: Vec<String> = command
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())

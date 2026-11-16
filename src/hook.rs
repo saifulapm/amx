@@ -354,6 +354,9 @@ fn record(
     if meta != before {
         writer.update_meta(|current| *current = meta.clone())?;
     }
+    // Taken under the writer, so an event that lands the moment it drops
+    // counts as said after this notice.
+    let from = crate::verbs::send::logged(agent);
     drop(writer);
 
     // Notice and errand share one fork, since the vendor is waiting on this
@@ -361,7 +364,22 @@ fn record(
     let errand = reached(written.state, was, notice.is_some())
         .filter(|phase| *phase != Phase::Idle)
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
-    notify::post(notice.as_ref(), config.notifications, errand.as_ref());
+    let buttons = notify::Buttons {
+        open: open_for(config, agent),
+        asked: (notice.is_some() && written.kind == Some(Kind::Permission)).then(|| {
+            notify::Asked {
+                agent: agent.clone(),
+                view: as_posted(&meta, &written),
+                from,
+            }
+        }),
+    };
+    notify::post(
+        notice.as_ref(),
+        config.notifications,
+        errand.as_ref(),
+        &buttons,
+    );
     after_the_write(root, agent, &meta, was, &written, &event, config);
 
     if hooks(&meta).is_some_and(|hooks| moment(&hooks, payload) == Some(Moment::Started))
@@ -552,8 +570,37 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
         .then(|| agent.meta().ok())
         .flatten()
         .and_then(|meta| crate::errand::assembled(config, agent, &meta, state.state, &event));
-    notify::post(notice.as_ref(), config.notifications, errand.as_ref());
+    let buttons = notify::Buttons {
+        open: open_for(config, agent),
+        asked: None,
+    };
+    notify::post(
+        notice.as_ref(),
+        config.notifications,
+        errand.as_ref(),
+        &buttons,
+    );
     Ok(())
+}
+
+/// The command a notice's Open runs for `agent`: `[notify] open` with `{id}`
+/// replaced. An id is `[a-z0-9-]`, so it needs no quoting in the shell line.
+fn open_for(config: &Config, agent: &Agent) -> Option<String> {
+    let open = config.notify.open.as_deref()?;
+    Some(open.replace("{id}", agent.id()))
+}
+
+/// The record this hook wrote, as the view a click on its notice answers
+/// against. The hook read no pane, so the verdict is the record's own.
+fn as_posted(meta: &Meta, written: &State) -> crate::derive::View {
+    let verdict = crate::derive::Verdict {
+        phase: Phase::Waiting,
+        evidence: crate::derive::Evidence::Hooks,
+        rule: None,
+        age: 0,
+        worked: 0,
+    };
+    crate::derive::View::new(meta.clone(), written.clone(), verdict)
 }
 
 /// The payload's event name as the vendor spells it; what the event log

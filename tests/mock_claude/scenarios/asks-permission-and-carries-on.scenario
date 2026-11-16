@@ -1,0 +1,17 @@
+# An agent stopped on a permission box that carries on once `1` is typed.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "remove the build directory"}
+sleep 50
+print ────────────────────────────────────────────────
+print  Bash command
+print    rm -rf build
+print  Do you want to proceed?
+print  ❯ 1. Yes
+print    2. No
+print  Esc to cancel · Tab to amend · ctrl+e to explain
+hook Notification {"message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"}
+await 1
+hook PostToolUse {"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}}
+print removed the build directory
+hook Stop {"last_assistant_message": "removed the build directory"}
+sleep 600000

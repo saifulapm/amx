@@ -10,8 +10,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Every top-level key the file may set, besides `[keys]` and the harness
-/// tables. Anything else is warned about and ignored.
+/// Every top-level key the file may set, besides `[keys]`, `[notify]` and the
+/// harness tables. Anything else is warned about and ignored.
 pub const KNOWN_KEYS: [&str; 26] = [
     "agent",
     "max_agents",
@@ -44,6 +44,29 @@ pub const KNOWN_KEYS: [&str; 26] = [
 /// The `[keys]` table of view key bindings, which a project file merges entry
 /// by entry instead of replacing.
 const BOUND_KEYS: &str = "keys";
+
+/// The `[notify]` table: what the buttons on a desktop notice run.
+const NOTIFY: &str = "notify";
+
+/// The `[notify]` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Notify {
+    /// The command an Open button runs through `sh -c`, with `{id}` replaced
+    /// by the agent's id. Unset puts no Open button on a notice.
+    pub open: Option<String>,
+}
+
+/// A value read as `T`, or `T`'s default when it does not read, so a bad
+/// value costs its own key and not the rest of the file.
+fn or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value.try_into().unwrap_or_default())
+}
 
 /// Where notices about agent transitions are delivered.
 ///
@@ -235,6 +258,10 @@ pub struct Config {
     ///
     /// A project file merges its bindings into the person's entry by entry.
     pub keys: BTreeMap<String, String>,
+    /// The `[notify]` table, read through its default: a bad `open` costs
+    /// Open and nothing else in the file.
+    #[serde(deserialize_with = "or_default")]
+    pub notify: Notify,
     /// The harness tables the file sets, keyed by program name.
     ///
     /// Filled from the tables that name a known vendor rather than by serde;
@@ -280,6 +307,7 @@ impl Default for Config {
             on_failed: None,
             on_stopped: None,
             keys: BTreeMap::new(),
+            notify: Notify::default(),
             harnesses: BTreeMap::new(),
         }
     }
@@ -307,7 +335,7 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
         .filter_map(|(key, value)| {
             if !value.is_table() {
                 Some(format!("ignoring unknown key `{key}`"))
-            } else if key == BOUND_KEYS {
+            } else if key == BOUND_KEYS || key == NOTIFY {
                 None
             } else if registry::entry(key).is_none() {
                 Some(format!("ignoring [{key}]: amx has no vendor named `{key}`"))
@@ -1359,6 +1387,26 @@ mod tests {
         // A list key needs a list, even for one path.
         assert!(parse("copy = \".env\"").is_err());
         assert!(parse("base = 3").is_err());
+    }
+
+    #[test]
+    fn notify_open_that_does_not_read_costs_that_key_and_not_the_file() {
+        let (c, w) =
+            parse("max_agents = 9\n[notify]\nopen = \"foot -e amx attach {id}\"\n").unwrap();
+        assert_eq!(c.notify.open.as_deref(), Some("foot -e amx attach {id}"));
+        assert_eq!(c.max_agents, 9);
+        assert!(w.is_empty(), "a known table: {w:?}");
+
+        for forged in ["[notify]\nopen = 5\n", "notify = \"foot\"\n"] {
+            let text = format!("max_agents = 9\n{forged}");
+            let (c, _) = parse(&text).unwrap();
+            assert_eq!(c.notify.open, None, "{forged}");
+            assert_eq!(c.max_agents, 9, "the good key beside it stands: {forged}");
+
+            let dir = TempDir::new().unwrap();
+            let (c, w) = layered(&[wrote(dir.path(), "config.toml", &text)]);
+            assert_eq!(c.max_agents, 9, "and the file still layers: {forged} {w:?}");
+        }
     }
 
     #[test]
