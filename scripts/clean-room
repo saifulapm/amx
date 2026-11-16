@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs a command, such as `cargo test --test e2e_resume`, the way this suite
+# needs: outside any amx pane and over an empty home, while cargo and rustup
+# keep the person's own toolchain. An agent whose shell refuses a `HOME=` on
+# its command line runs its tests through this instead.
+exec env -u AMX_BIN -u AMX_AGENT_DIR -u AMX_NESTED -u AMX_DIR -u AMX_ID \
+    -u TMUX -u TMUX_PANE -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID \
+    MISE_CEILING_PATHS="$HOME" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
+    HOME="$(mktemp -d)" "$@"
