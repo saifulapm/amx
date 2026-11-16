@@ -12,6 +12,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, Ref, RefCell};
+use std::ffi::OsString;
 use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use crate::catalog::{self, Entry};
 use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
 use crate::config::Config;
 use crate::derive::View;
+use crate::install::{Env, no_env};
 use crate::store::{Agent, Ask, Kind, Phase};
 use crate::tmux::Server;
 use crate::verbs::answer::Answered;
@@ -1112,12 +1114,15 @@ fn pointed(
 /// catalog is read once per line.
 ///
 /// `home` holds the vendor's own skills and agents and is where `~` points;
-/// with none, only the project's are offered. `wall` is the projects on the
-/// wall, offered to `d:` beside the directories under it.
+/// with none, only the project's are offered. `env` is the view's own
+/// environment, which a vendor's `[<vendor>.env]` is laid over to find where
+/// the vendor keeps its own files. `wall` is the projects on the wall, offered
+/// to `d:` beside the directories under it.
 pub fn suggest(
     composer: &Composer,
     config: &Config,
     home: Option<&Path>,
+    env: Env,
     project: &Path,
     wall: &[PathBuf],
 ) -> Option<Suggest> {
@@ -1138,7 +1143,7 @@ pub fn suggest(
         .skip(word.start)
         .collect();
 
-    let entries = answering(composer, &typed, config, home, project, wall);
+    let entries = answering(composer, &typed, config, home, env, project, wall);
     (!entries.is_empty()).then_some(Suggest {
         word,
         entries,
@@ -1188,6 +1193,7 @@ fn answering(
     typed: &str,
     config: &Config,
     home: Option<&Path>,
+    env: Env,
     project: &Path,
     wall: &[PathBuf],
 ) -> Vec<Entry> {
@@ -1233,7 +1239,13 @@ fn answering(
         ],
         _ => return Vec::new(),
     };
-    let listed = composer.catalog(&agent, project, || catalogued(&agent, home, project));
+    // The pane gets `[<vendor>.env]` laid over the view's environment, so a
+    // value there wins, an empty one included.
+    let table = config.harness(registry::program(&agent)).env;
+    let pane_env = |name: &str| table.get(name).map(OsString::from).or_else(|| env(name));
+    let listed = composer.catalog(&agent, project, || {
+        catalogued(&agent, home, &pane_env, project)
+    });
     let named = named(&listed, typed, kinds);
     // Paths on a task line are read where its `d:` says; on a reply, where
     // the agent runs.
@@ -1248,11 +1260,11 @@ fn answering(
 }
 
 /// Everything the vendor loads by name, from the places its entry declares.
-fn catalogued(agent: &str, home: Option<&Path>, project: &Path) -> Vec<Entry> {
+fn catalogued(agent: &str, home: Option<&Path>, env: Env, project: &Path) -> Vec<Entry> {
     let Some(places) = registry::entry(agent).and_then(|vendor| vendor.catalog) else {
         return Vec::new();
     };
-    catalog::listing(&places, home, project)
+    catalog::listing(&places, home, env, project)
 }
 
 /// The entries of these kinds whose spelling starts with `typed`.
@@ -1606,7 +1618,8 @@ fn as_agent(agent: &str, task: &str, home: Option<&Path>, project: &Path) -> (Ve
     let Some(name) = word.strip_prefix(AT).filter(|name| !name.is_empty()) else {
         return whole();
     };
-    if !catalogued(agent, home, project)
+    // No vendor keeps its agents in a place a variable moves.
+    if !catalogued(agent, home, &no_env, project)
         .iter()
         .any(|entry| entry.kind == catalog::Kind::Agent && entry.spelled == word)
     {
@@ -3164,14 +3177,14 @@ mod tests {
             let mut line = Composer::new(Asking::Reply);
             line.insert(word);
             assert!(
-                suggest(&line, &as_claude(), None, a_project(), &[]).is_none(),
+                suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
                 "{word:?} is a word of the message"
             );
         }
         let mut task = Composer::new(Asking::Task);
         task.insert("agent:cl");
         assert!(
-            suggest(&task, &as_claude(), None, a_project(), &[]).is_some(),
+            suggest(&task, &as_claude(), None, &no_env, a_project(), &[]).is_some(),
             "and a dial on the task line it still is"
         );
 
@@ -3181,7 +3194,8 @@ mod tests {
         std::fs::write(project.path().join("importer.rs"), "").unwrap();
         let mut line = Composer::new(Asking::Reply);
         line.insert("see d:/nowhere @imp");
-        let found = suggest(&line, &as_claude(), None, project.path(), &[]).expect("the file");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).expect("the file");
         assert_eq!(
             found
                 .entries
@@ -3199,7 +3213,7 @@ mod tests {
             let mut composer = Composer::new(Asking::Task);
             composer.insert(line);
             assert!(
-                suggest(&composer, &as_claude(), None, a_project(), &[]).is_none(),
+                suggest(&composer, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
                 "{line:?}"
             );
         }
@@ -3545,10 +3559,17 @@ mod tests {
             line
         };
 
-        let found = suggest(&line(), &as_claude(), Some(home.path()), a_project(), &[])
-            .expect("the home's agent");
+        let found = suggest(
+            &line(),
+            &as_claude(),
+            Some(home.path()),
+            &no_env,
+            a_project(),
+            &[],
+        )
+        .expect("the home's agent");
         assert_eq!(found.entries[0].spelled, "@scout");
-        assert!(suggest(&line(), &as_claude(), None, a_project(), &[]).is_none());
+        assert!(suggest(&line(), &as_claude(), None, &no_env, a_project(), &[]).is_none());
         assert_eq!(
             as_agent("claude", "@scout look", Some(home.path()), a_project()),
             (
@@ -3625,7 +3646,8 @@ mod tests {
         // `agent:` completes to every vendor in the registry.
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("the table");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("the table");
         assert_eq!(
             offered(&found),
             ["agent:claude", "agent:pi", "agent:codex", "agent:opencode"]
@@ -3637,12 +3659,13 @@ mod tests {
         );
 
         line.insert("p");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("the one left");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["agent:pi"]);
 
         line.insert("q");
         assert!(
-            suggest(&line, &as_claude(), None, a_project(), &[]).is_none(),
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
             "and a word nothing answers to is the word somebody typed"
         );
     }
@@ -3651,7 +3674,7 @@ mod tests {
     fn composer_puts_the_suggestion_the_choice_is_on_where_the_word_was() {
         let mut line = Composer::new(Asking::Task);
         line.insert("m:opus agent:");
-        line.suggest = suggest(&line, &as_claude(), None, a_project(), &[]);
+        line.suggest = suggest(&line, &as_claude(), None, &no_env, a_project(), &[]);
 
         // The highlight wraps at both ends.
         line.choose(1);
@@ -3691,7 +3714,7 @@ mod tests {
             line.left();
         }
 
-        line.suggest = suggest(&line, &as_claude(), None, a_project(), &[]);
+        line.suggest = suggest(&line, &as_claude(), None, &no_env, a_project(), &[]);
         line.complete();
         assert_eq!(line.text, "agent:claude port it");
         assert_eq!(
@@ -3705,14 +3728,14 @@ mod tests {
     fn composer_is_finishing_a_word_until_it_is_spelled_the_way_the_choice_is() {
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:cl");
-        line.suggest = suggest(&line, &as_claude(), None, a_project(), &[]);
+        line.suggest = suggest(&line, &as_claude(), None, &no_env, a_project(), &[]);
         assert!(
             line.finishing(),
             "a word short of the one offered is a word still being written"
         );
 
         line.insert("aude");
-        line.suggest = suggest(&line, &as_claude(), None, a_project(), &[]);
+        line.suggest = suggest(&line, &as_claude(), None, &no_env, a_project(), &[]);
         assert_eq!(
             offered(line.suggest.as_ref().expect("itself")),
             ["agent:claude"]
@@ -3802,10 +3825,12 @@ mod tests {
         });
 
         line.insert("/qu");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("the reading");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("the reading");
         assert_eq!(offered(&found), ["/quenched", "/quiet"]);
         line.insert("e");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("narrowed");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("narrowed");
         assert_eq!(
             offered(&found),
             ["/quenched"],
@@ -3815,7 +3840,7 @@ mod tests {
         // Naming another vendor replaces the cached catalog.
         line.home();
         line.insert("agent:pi ");
-        suggest(&line, &as_claude(), None, a_project(), &[]);
+        suggest(&line, &as_claude(), None, &no_env, a_project(), &[]);
         assert_eq!(
             line.listed
                 .borrow()
@@ -3846,7 +3871,7 @@ mod tests {
             entries: vec![worded("$deploy".to_string())],
         });
         line.insert("$de");
-        let found = suggest(&line, &as_codex, None, a_project(), &[]).expect("the skill");
+        let found = suggest(&line, &as_codex, None, &no_env, a_project(), &[]).expect("the skill");
         assert_eq!(offered(&found), ["$deploy"]);
 
         let mut line = Composer::new(Asking::Task);
@@ -3857,9 +3882,55 @@ mod tests {
         });
         line.insert("/de");
         assert!(
-            suggest(&line, &as_codex, None, a_project(), &[]).is_none(),
+            suggest(&line, &as_codex, None, &no_env, a_project(), &[]).is_none(),
             "a slash on a codex line asks its catalog for nothing"
         );
+    }
+
+    #[test]
+    fn composer_reads_codex_skills_from_the_codex_home_its_pane_would_get() {
+        // codex's pane gets `[codex.env]` laid over the view's environment,
+        // so a CODEX_HOME there wins over the one the view inherited.
+        let (home, configured, inherited) = (
+            TempDir::new().unwrap(),
+            TempDir::new().unwrap(),
+            TempDir::new().unwrap(),
+        );
+        for (dir, name) in [(&configured, "review"), (&inherited, "tidy")] {
+            let skill = dir.path().join("skills").join(name);
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), "---\ndescription: x\n---\n").unwrap();
+        }
+        let as_codex = Config {
+            agent: "codex".to_string(),
+            harnesses: [(
+                "codex".to_string(),
+                crate::config::HarnessConfig {
+                    env: [(
+                        "CODEX_HOME".to_string(),
+                        configured.path().to_string_lossy().into_owned(),
+                    )]
+                    .into(),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Config::default()
+        };
+        let view_env = |name: &str| (name == "CODEX_HOME").then(|| inherited.path().into());
+
+        let mut line = Composer::new(Asking::Task);
+        line.insert("$");
+        let found = suggest(
+            &line,
+            &as_codex,
+            Some(home.path()),
+            &view_env,
+            a_project(),
+            &[],
+        )
+        .expect("the configured skill");
+        assert_eq!(offered(&found), ["$review"]);
     }
 
     #[test]
@@ -3867,14 +3938,14 @@ mod tests {
         let mut line = Composer::new(Asking::Task);
         line.insert("port the importer");
         assert!(
-            suggest(&line, &as_claude(), None, a_project(), &[]).is_none(),
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
             "a sentence asks the vendor for nothing by name"
         );
 
         let mut line = Composer::new(Asking::Task);
         line.insert("agent:pi ");
         assert!(
-            suggest(&line, &as_claude(), None, a_project(), &[]).is_none(),
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
             "and a cursor standing on whitespace is standing in no word"
         );
     }
@@ -3893,24 +3964,28 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert("m:");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("claude's models");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("claude's models");
         assert_eq!(
             offered(&found),
             cycle("m:", claude.model.expect("claude has a model dial"))
         );
 
         line.insert("o");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("the one left");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["m:opus"]);
 
         let mut line = Composer::new(Asking::Task);
         line.insert("p:pl");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("claude's modes");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("claude's modes");
         assert_eq!(offered(&found), ["p:plan"]);
 
         let mut line = Composer::new(Asking::Task);
         line.insert("e:");
-        let found = suggest(&line, &as_claude(), None, a_project(), &[]).expect("claude's levels");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).expect("claude's levels");
         assert_eq!(
             offered(&found),
             cycle("e:", claude.effort.expect("claude has an effort dial"))
@@ -3919,8 +3994,8 @@ mod tests {
         // `w:` is amx's own dial, with amx's own values.
         let mut line = Composer::new(Asking::Task);
         line.insert("w:");
-        let found =
-            suggest(&line, &as_claude(), None, a_project(), &[]).expect("on, off or changes");
+        let found = suggest(&line, &as_claude(), None, &no_env, a_project(), &[])
+            .expect("on, off or changes");
         assert_eq!(offered(&found), ["w:on", "w:off", "w:changes"]);
 
         // A dial the vendor does not declare offers nothing.
@@ -3930,7 +4005,7 @@ mod tests {
         };
         let mut line = Composer::new(Asking::Task);
         line.insert("m:");
-        assert!(suggest(&line, &config, None, a_project(), &[]).is_none());
+        assert!(suggest(&line, &config, None, &no_env, a_project(), &[]).is_none());
     }
 
     #[test]
@@ -3953,7 +4028,7 @@ mod tests {
         };
         let mut line = Composer::new(Asking::Task);
         line.insert("m:");
-        let found = suggest(&line, &told, None, a_project(), &[]).expect("pi's models");
+        let found = suggest(&line, &told, None, &no_env, a_project(), &[]).expect("pi's models");
         assert_eq!(
             offered(&found),
             ["m:default", "m:openai/gpt-5", "m:anthropic/claude-opus-5"],
@@ -3962,7 +4037,7 @@ mod tests {
 
         // A partial value narrows the list.
         line.insert("openai/");
-        let found = suggest(&line, &told, None, a_project(), &[]).expect("the one left");
+        let found = suggest(&line, &told, None, &no_env, a_project(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["m:openai/gpt-5"]);
     }
 
@@ -4003,7 +4078,8 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert("on:");
-        let found = suggest(&line, &as_claude(), None, project.path(), &[]).expect("what git has");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).expect("what git has");
         assert_eq!(
             offered(&found),
             ["on:main", "on:release", "on:spike", "on:spike-two"],
@@ -4013,12 +4089,13 @@ mod tests {
 
         // Narrowed by what has been typed.
         line.insert("spike-");
-        let found = suggest(&line, &as_claude(), None, project.path(), &[]).expect("the one left");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["on:spike-two"]);
 
         line.insert("x");
         assert!(
-            suggest(&line, &as_claude(), None, project.path(), &[]).is_none(),
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).is_none(),
             "and a name no branch answers to is the name somebody typed"
         );
 
@@ -4026,14 +4103,14 @@ mod tests {
         let here = TempDir::new().unwrap();
         let mut line = Composer::new(Asking::Task);
         line.insert(&format!("d:{} on:rel", project.path().display()));
-        let found =
-            suggest(&line, &as_claude(), None, here.path(), &[]).expect("what is over there");
+        let found = suggest(&line, &as_claude(), None, &no_env, here.path(), &[])
+            .expect("what is over there");
         assert_eq!(offered(&found), ["on:release"]);
 
         // Outside a repository, nothing.
         let mut line = Composer::new(Asking::Task);
         line.insert("on:");
-        assert!(suggest(&line, &as_claude(), None, here.path(), &[]).is_none());
+        assert!(suggest(&line, &as_claude(), None, &no_env, here.path(), &[]).is_none());
     }
 
     #[test]
@@ -4046,7 +4123,8 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert("read @src/");
-        let found = suggest(&line, &as_claude(), None, project.path(), &[]).expect("what is in it");
+        let found = suggest(&line, &as_claude(), None, &no_env, project.path(), &[])
+            .expect("what is in it");
         assert_eq!(
             offered(&found),
             ["@src/main.rs", "@src/tui/"],
@@ -4056,12 +4134,13 @@ mod tests {
 
         // Narrowed by what has been typed.
         line.insert("m");
-        let found = suggest(&line, &as_claude(), None, project.path(), &[]).expect("the one left");
+        let found =
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).expect("the one left");
         assert_eq!(offered(&found), ["@src/main.rs"]);
 
         line.insert("x");
         assert!(
-            suggest(&line, &as_claude(), None, project.path(), &[]).is_none(),
+            suggest(&line, &as_claude(), None, &no_env, project.path(), &[]).is_none(),
             "and a path nothing answers to is the path somebody typed"
         );
     }
@@ -4073,7 +4152,7 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert("read @src/t");
-        line.suggest = suggest(&line, &as_claude(), None, project.path(), &[]);
+        line.suggest = suggest(&line, &as_claude(), None, &no_env, project.path(), &[]);
         line.complete();
         assert_eq!(
             (line.text.as_str(), line.at),
@@ -4092,8 +4171,8 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert(&format!("d:{} port @crates/", there.path().display()));
-        let found =
-            suggest(&line, &as_claude(), None, here.path(), &[]).expect("what is over there");
+        let found = suggest(&line, &as_claude(), None, &no_env, here.path(), &[])
+            .expect("what is over there");
         assert_eq!(offered(&found), ["@crates/importer/"]);
     }
 
@@ -4113,8 +4192,8 @@ mod tests {
 
         let mut line = Composer::new(Asking::Task);
         line.insert("d:");
-        let found =
-            suggest(&line, &as_claude(), None, here.path(), &wall).expect("somewhere to run");
+        let found = suggest(&line, &as_claude(), None, &no_env, here.path(), &wall)
+            .expect("somewhere to run");
         assert_eq!(
             offered(&found),
             [
@@ -4131,8 +4210,8 @@ mod tests {
         // Narrowed by what has been typed, for either source.
         let mut line = Composer::new(Asking::Task);
         line.insert(&format!("d:{}/i", elsewhere.path().display()));
-        let found =
-            suggest(&line, &as_claude(), None, here.path(), &wall).expect("the one project");
+        let found = suggest(&line, &as_claude(), None, &no_env, here.path(), &wall)
+            .expect("the one project");
         assert_eq!(offered(&found), [format!("d:{}", wall[0].display())]);
     }
 
@@ -4149,7 +4228,7 @@ mod tests {
             let mut line = Composer::new(asking);
             line.insert("agent:");
             assert!(
-                suggest(&line, &as_claude(), None, a_project(), &[]).is_none(),
+                suggest(&line, &as_claude(), None, &no_env, a_project(), &[]).is_none(),
                 "{}",
                 line.label()
             );

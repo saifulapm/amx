@@ -378,8 +378,9 @@ fn runs_itself(meta: &Meta, account: Option<&Path>, text: &str) -> bool {
                 .is_file()
     });
     let spelled = format!("{}{name}", catalog.sigil);
+    // No vendor that runs unlisted words keeps a place a variable moves.
     !ours
-        && !crate::catalog::listing(&catalog, Some(&home), &meta.dir)
+        && !crate::catalog::listing(&catalog, Some(&home), &crate::install::no_env, &meta.dir)
             .iter()
             .any(|entry| entry.spelled == spelled)
 }

@@ -1155,6 +1155,40 @@ fn the_composer_completes_the_word_under_the_cursor_out_of_the_vendors_files() {
 }
 
 #[test]
+fn a_codex_line_offers_the_skills_under_the_codex_home_it_was_started_with() {
+    // codex reads the person's skills from `$CODEX_HOME/skills` when the
+    // variable is set, so `~/.codex/skills` holds none of them.
+    let amx = Harness::new();
+    let codex_home = amx.home().join("elsewhere/codex");
+    a_file_saying(&codex_home.join("skills/review/SKILL.md"), "Read the diff.");
+    a_file_saying(
+        &amx.home().join(".codex/skills/tidy/SKILL.md"),
+        "Sweep up after.",
+    );
+
+    // Out of the home, whose `.codex/skills` would be the project's.
+    let project = amx.home().join("project");
+    std::fs::create_dir_all(&project).expect("the project");
+
+    amx.config("agent = \"codex\"\nworktrees = false\n");
+    let view = amx.in_a_terminal(
+        &[("CODEX_HOME", &codex_home.to_string_lossy())],
+        &["--dir", &project.to_string_lossy()],
+    );
+    until_empty(&amx, &view);
+    types(&amx, &view, "n");
+    types(&amx, &view, "$");
+    let drawn = amx.until("the skill under the line", || {
+        let drawn = amx.capture(&view);
+        drawn.contains("$review").then_some(drawn)
+    });
+    assert!(
+        !drawn.contains("$tidy"),
+        "the skill under ~/.codex is not one codex reads here:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_composer_offers_the_agents_when_tab_is_pressed_on_nothing() {
     let amx = Harness::new();
     an_agent_called_scout(&amx);

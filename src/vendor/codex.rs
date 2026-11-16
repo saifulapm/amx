@@ -96,7 +96,8 @@ pub const VENDOR: Vendor = Vendor {
     // A skill runs as a bare `$name` anywhere in a message
     // (skills/src/mentions.rs:41); `/name` runs no skill. The skill places are
     // the person's and the project's roots from ext/skills/src/host_roots.rs
-    // (:86-108, 137-185), with `$CODEX_HOME/skills` taken as `~/.codex/skills`.
+    // (:86-108, 137-185), `$CODEX_HOME/skills` among them, which is
+    // `~/.codex/skills` when CODEX_HOME is unset.
     // codex reads the project places in every directory from the project root
     // down; amx reads them only where the agent runs. No commands (custom
     // prompts are gone), no agents (roles have no CLI flag) and no built-ins
@@ -109,7 +110,11 @@ pub const VENDOR: Vendor = Vendor {
     catalog: Some(Catalog {
         skills: &[
             Place::Person(".agents/skills"),
-            Place::Person(".codex/skills"),
+            Place::Vendor {
+                dir_env: "CODEX_HOME",
+                dir: ".codex",
+                path: "skills",
+            },
             Place::Project(".codex/skills"),
             Place::Project(".agents/skills"),
         ],
@@ -409,7 +414,11 @@ mod tests {
             Some(Catalog {
                 skills: &[
                     Place::Person(".agents/skills"),
-                    Place::Person(".codex/skills"),
+                    Place::Vendor {
+                        dir_env: "CODEX_HOME",
+                        dir: ".codex",
+                        path: "skills",
+                    },
                     Place::Project(".codex/skills"),
                     Place::Project(".agents/skills"),
                 ],

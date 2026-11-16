@@ -668,7 +668,7 @@ pub fn without_unasked(vendor: Option<&Vendor>, words: &[String]) -> (Vec<String
     (kept, dropped)
 }
 
-/// A directory a vendor loads from, relative to one of two roots.
+/// A directory a vendor loads from, relative to one of three roots.
 ///
 /// A `*` segment matches every directory at that level, for layouts such as
 /// claude's plugin cache (market, plugin, version).
@@ -676,6 +676,14 @@ pub fn without_unasked(vendor: Option<&Vendor>, words: &[String]) -> (Vec<String
 pub enum Place {
     /// Relative to the home directory.
     Person(&'static str),
+    /// Relative to the vendor's own directory: the one `dir_env` names when
+    /// set and non-empty, else `dir` under the home, as codex reads
+    /// `CODEX_HOME`.
+    Vendor {
+        dir_env: &'static str,
+        dir: &'static str,
+        path: &'static str,
+    },
     /// Relative to the project the agent runs in.
     Project(&'static str),
 }
@@ -684,7 +692,7 @@ impl Place {
     /// The path relative to its root.
     pub fn path(&self) -> &'static str {
         match self {
-            Place::Person(path) | Place::Project(path) => path,
+            Place::Person(path) | Place::Project(path) | Place::Vendor { path, .. } => path,
         }
     }
 }

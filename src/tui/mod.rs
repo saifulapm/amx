@@ -39,6 +39,7 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufWriter, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -625,6 +626,10 @@ struct Screen {
     /// where `~` on a line points. None in tests, so a test offers only what
     /// it made, not what the home of whoever runs it holds.
     home: Option<PathBuf>,
+    /// The environment the view was started in, read when it opens, which
+    /// says where a vendor keeps its own files (codex's `CODEX_HOME`). Empty
+    /// in tests, for the reason `home` is None.
+    env: BTreeMap<OsString, OsString>,
     profile: Profile,
     theme: Theme,
     /// The theme's last warning, so fixing the file clears its own notice.
@@ -1072,6 +1077,7 @@ where
         ),
         standing,
         home: std::env::home_dir(),
+        env: std::env::vars_os().collect(),
         theme: painting.theme,
         remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
@@ -2508,6 +2514,7 @@ impl Screen {
             composer,
             &launching,
             self.home.as_deref(),
+            &|name| self.env.get(OsStr::new(name)).cloned(),
             &project,
             &self.projects,
         );

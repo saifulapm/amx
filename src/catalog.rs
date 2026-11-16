@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::install::{Env, vendor_dir};
 use crate::vendor::{Catalog, Place};
 
 /// What a catalog word names.
@@ -45,11 +46,13 @@ pub const FENCE: &str = "---";
 /// everything found on disk.
 ///
 /// A word found in more than one place is kept once, from the first place in
-/// declaration order. With no `home`, the person's own places list nothing.
-pub fn listing(catalog: &Catalog, home: Option<&Path>, project: &Path) -> Vec<Entry> {
+/// declaration order. With no `home`, the person's own places list nothing,
+/// the vendor's own directory among them. `env` is the environment the vendor
+/// runs under, which may move that directory.
+pub fn listing(catalog: &Catalog, home: Option<&Path>, env: Env, project: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     for place in catalog.skills {
-        for found in expand(place, home, project) {
+        for found in expand(place, home, env, project) {
             skills(&found, catalog, &mut entries);
         }
     }
@@ -58,7 +61,7 @@ pub fn listing(catalog: &Catalog, home: Option<&Path>, project: &Path) -> Vec<En
         (catalog.agents, Kind::Agent),
     ] {
         for place in places {
-            for found in expand(place, home, project) {
+            for found in expand(place, home, env, project) {
                 walk(
                     &found.dir,
                     found.plugin.as_deref(),
@@ -95,16 +98,15 @@ struct Found {
 
 /// Every directory `place` resolves to under its root, expanding each `*`
 /// segment to the directories that exist there.
-fn expand(place: &Place, home: Option<&Path>, project: &Path) -> Vec<Found> {
-    let root = match place {
-        Place::Person(_) => match home {
-            Some(home) => home,
-            None => return Vec::new(),
-        },
-        Place::Project(_) => project,
+fn expand(place: &Place, home: Option<&Path>, env: Env, project: &Path) -> Vec<Found> {
+    let root = match (place, home) {
+        (Place::Person(_), Some(home)) => home.to_path_buf(),
+        (Place::Vendor { dir_env, dir, .. }, Some(home)) => vendor_dir(env(dir_env), dir, home),
+        (Place::Project(_), _) => project.to_path_buf(),
+        (Place::Person(_) | Place::Vendor { .. }, None) => return Vec::new(),
     };
 
-    let mut found = vec![(root.to_path_buf(), Vec::new())];
+    let mut found = vec![(root, Vec::new())];
     for segment in place.path().split('/') {
         let mut next = Vec::new();
         for (dir, matched) in found {
@@ -272,6 +274,7 @@ pub fn unquoted(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::no_env;
     use crate::vendor::{claude, codex, pi};
     use tempfile::TempDir;
 
@@ -315,6 +318,7 @@ mod tests {
         let entries = listing(
             &claude::VENDOR.catalog.expect("claude loads files by name"),
             Some(home.path()),
+            &no_env,
             project.path(),
         );
         assert_eq!(
@@ -379,7 +383,7 @@ mod tests {
         file(&project.path().join(".pi/prompts/ship.md"), "Ship it.");
 
         let catalog = pi::VENDOR.catalog.expect("pi loads files by name");
-        let entries = listing(&catalog, Some(home.path()), project.path());
+        let entries = listing(&catalog, Some(home.path()), &no_env, project.path());
 
         let files = &entries[..6];
         assert_eq!(
@@ -423,7 +427,8 @@ mod tests {
     #[test]
     fn codex_spells_a_skill_behind_its_own_sigil_out_of_four_places() {
         // codex runs a skill as `$name`. Skills nested deeper than one level
-        // are not read, as for claude and pi.
+        // are not read, as for claude and pi. With no CODEX_HOME, codex's own
+        // skills are under `~/.codex`.
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
@@ -455,6 +460,7 @@ mod tests {
         let entries = listing(
             &codex::VENDOR.catalog.expect("codex loads skills by name"),
             Some(home.path()),
+            &no_env,
             project.path(),
         );
         assert_eq!(
@@ -474,7 +480,7 @@ mod tests {
 
         for catalog in [claude::VENDOR.catalog.unwrap(), pi::VENDOR.catalog.unwrap()] {
             assert!(
-                listing(&catalog, Some(home.path()), project.path())
+                listing(&catalog, Some(home.path()), &no_env, project.path())
                     .iter()
                     .all(|entry| entry.kind == Kind::Builtin),
                 "nothing but what the vendor answers out of itself, which is \
@@ -512,6 +518,7 @@ mod tests {
         let entries = listing(
             &claude::VENDOR.catalog.unwrap(),
             Some(home.path()),
+            &no_env,
             project.path(),
         );
         assert_eq!(
@@ -536,6 +543,7 @@ mod tests {
         let entries = listing(
             &claude::VENDOR.catalog.unwrap(),
             Some(home.path()),
+            &no_env,
             project.path(),
         );
         assert_eq!(on_disk(&entries), ["/ship"]);
@@ -563,6 +571,7 @@ mod tests {
         let entries = listing(
             &pi::VENDOR.catalog.unwrap(),
             Some(home.path()),
+            &no_env,
             project.path(),
         );
         assert_eq!(
