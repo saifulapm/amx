@@ -372,9 +372,15 @@ fn row(
     let words = view.state_words();
     // A reset time cut short reads as a different time, so a row too narrow
     // for the whole of it says plain `limited`.
-    let fits = match widths.state {
-        0 => room,
-        cell => cell + room,
+    // On the state axis the words open the summary, and a line after them
+    // needs ` · ` and a cell of its own, or the cut lands on the time.
+    let fits = match (
+        widths.state,
+        view.line().is_some_and(|line| !line.is_empty()),
+    ) {
+        (0, false) => room,
+        (0, true) => room.saturating_sub(4),
+        (cell, _) => cell + room,
     };
     let words = match phase == Phase::Limited && width_of(&words) > fits {
         true => Phase::Limited.word().to_string(),
@@ -2392,9 +2398,12 @@ mod tests {
     fn rows_too_narrow_for_the_reset_time_say_plain_limited_rather_than_cut_it() {
         // `resumes 15:0…` reads as a time; plain `limited` does not.
         let (capped, words) = limited("capped-a1b");
+        let mut said = capped.clone();
+        said.state.result = Some("done".to_string());
         for screen in [
             by_project(vec![at(capped.clone(), "/src/api")]),
             showing(vec![capped.clone()], None),
+            showing(vec![said], None),
         ] {
             for width in 40..=60 {
                 let lines = painted(&screen, (width, 10));
