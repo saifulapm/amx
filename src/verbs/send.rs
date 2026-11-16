@@ -633,7 +633,7 @@ pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
             let text = event.payload["text"].as_str()?;
             let at = taken
                 .iter()
-                .position(|(when, words)| *when >= event.at && words.trim() == text.trim());
+                .position(|(when, words)| *when >= event.at && words.trim() == as_logged(text));
             match at {
                 Some(at) => {
                     taken.remove(at);
@@ -643,6 +643,11 @@ pub fn still_queued(meta: &Meta, events: &[Event]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// `text` as claude's transcript holds it: a tab as four spaces, trimmed.
+fn as_logged(text: &str) -> String {
+    text.replace('\t', "    ").trim().to_string()
 }
 
 /// The `send` events on the log after the last turn edge, less those
@@ -1161,6 +1166,26 @@ mod tests {
             still_queued(&meta, &events),
             ["why MEM_PROJECT? ", "check the tests"]
         );
+    }
+
+    #[test]
+    fn a_pasted_message_claude_folded_in_is_no_longer_queued() {
+        // claude takes a paste of several lines off its queue wrapped in its
+        // pasted_content tag, with each tab as four spaces.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-09-29T20:32:04.768Z\",\"content\":\"<pasted_content id=\\\"1\\\">one\\n    two\\nthree</pasted_content id=\\\"1\\\">\",\"reason\":\"absorbed_mid_turn\"}\n",
+        )
+        .unwrap();
+        let mut meta = asking(None, &[], None).meta;
+        meta.agent = Some("claude".to_string());
+        meta.transcript = Some(transcript);
+        let mut sent = Event::new(SEND, json!({ "text": "one\n\ttwo\nthree" }));
+        sent.at = 1_790_713_654;
+        let events = [Event::new("UserPromptSubmit", json!({})), sent];
+        assert!(still_queued(&meta, &events).is_empty());
     }
 
     #[test]

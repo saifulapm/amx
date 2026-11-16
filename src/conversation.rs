@@ -451,7 +451,7 @@ pub fn unqueued(format: Transcript, jsonl: &str) -> Vec<(u64, String)> {
         .filter(|entry| entry["type"] == QUEUED && entry["operation"] == "remove")
         .filter_map(|entry| {
             let at = epoch(entry["timestamp"].as_str()?)?;
-            Some((at, entry["content"].as_str()?.to_string()))
+            Some((at, unwrapped(entry["content"].as_str()?)))
         })
         .collect()
 }
@@ -533,7 +533,7 @@ fn absorbed(entry: &Value) -> Option<&str> {
 /// What one claude entry said.
 fn claude(entry: &Value, said: &mut Vec<Said>) {
     if let Some(queued) = absorbed(entry) {
-        prompt(Some(queued), said);
+        prompt(Some(&unwrapped(queued)), said);
         return;
     }
     match voice(Transcript::Claude, entry) {
@@ -545,7 +545,10 @@ fn claude(entry: &Value, said: &mut Vec<Said>) {
                 Some(typed) => typed.to_string(),
                 None => text_of(&entry["message"]["content"]),
             };
-            prompt(Some(&command(&typed).unwrap_or(typed)), said);
+            prompt(
+                Some(&command(&typed).unwrap_or_else(|| unwrapped(&typed))),
+                said,
+            );
         }
         Some(Voice::Assistant) => {
             for block in blocks(entry) {
@@ -795,6 +798,32 @@ fn command(written: &str) -> Option<String> {
     })
 }
 
+/// A message as it was sent, without the `<pasted_content id="N">` tags
+/// claude 2.1.325 wraps a paste of several lines in, opening and closing.
+pub fn unwrapped(written: &str) -> String {
+    const TAG: &str = "pasted_content";
+    let mut kept = String::with_capacity(written.len());
+    let mut rest = written;
+    while let Some(at) = rest.find('<') {
+        let after = &rest[at + 1..];
+        let tag = after.strip_prefix('/').unwrap_or(after);
+        let named =
+            tag.starts_with(TAG) && matches!(tag[TAG.len()..].chars().next(), Some(' ' | '>'));
+        match after.find('>').filter(|_| named) {
+            Some(end) => {
+                kept.push_str(&rest[..at]);
+                rest = &after[end + 1..];
+            }
+            None => {
+                kept.push_str(&rest[..=at]);
+                rest = after;
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
 /// The text between `<tag>` and `</tag>`.
 fn tagged<'a>(written: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
@@ -1001,6 +1030,27 @@ mod tests {
             read(Transcript::Claude, &dropped),
             vec![Said::Prompt("run the tests".to_string())]
         );
+    }
+
+    #[test]
+    fn conversation_a_paste_reads_without_the_tag_claude_wraps_it_in() {
+        let wrapped = "<pasted_content id=\"1\">one\ntwo</pasted_content id=\"1\">";
+        assert_eq!(unwrapped(wrapped), "one\ntwo");
+        assert_eq!(
+            unwrapped(&format!(
+                "look:\n{wrapped}\nand <pasted_content>x</pasted_content>"
+            )),
+            "look:\none\ntwo\nand x"
+        );
+        // Only that tag, and only whole.
+        for kept in [
+            "a < b > c",
+            "<pasted_contents>",
+            "<pasted_content id=\"1\"",
+            "<b>x</b>",
+        ] {
+            assert_eq!(unwrapped(kept), kept);
+        }
     }
 
     #[test]

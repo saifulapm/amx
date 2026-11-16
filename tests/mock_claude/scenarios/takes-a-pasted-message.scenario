@@ -1,0 +1,10 @@
+# A turn on a message of several lines, which claude 2.1.325 logs wrapped in
+# its pasted_content tag.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "one"}
+transcript {"type":"user","timestamp":"@NOW@","message":{"content":"<pasted_content id=\"1\">one\ntwo\nthree\nfour\nfive</pasted_content id=\"1\">"}}
+transcript {"type":"assistant","timestamp":"@NOW@","sessionId":"@SESSION@","message":{"content":[{"type":"text","text":"read all five"}]}}
+hook Stop {"last_assistant_message": "read all five"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

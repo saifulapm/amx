@@ -2027,3 +2027,25 @@ fn card_line_on_a_command_that_has_ended_says_nothing_is_listening() {
         "a command row is past listening:\n{carded}"
     );
 }
+
+#[test]
+fn a_pasted_message_reads_as_it_was_sent_in_logs_and_on_the_card() {
+    // claude logs a message of several lines inside a pasted_content tag.
+    let amx = Harness::new();
+    let id = "paste-a1b";
+    amx.play(id, "takes-a-pasted-message");
+    amx.until_state(id, "idle");
+
+    let out = amx.amx(&["logs", id]);
+    let logged = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        logged.contains("one") && logged.contains("five"),
+        "{logged}"
+    );
+    assert!(!logged.contains("pasted_content"), "{logged}");
+
+    let view = amx.in_a_terminal(&[], &[]);
+    let carded = card_on(&amx, &view, id);
+    assert!(carded.contains("five"), "{carded}");
+    assert!(!carded.contains("pasted_content"), "{carded}");
+}
