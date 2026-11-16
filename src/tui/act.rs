@@ -230,6 +230,7 @@ impl Composer {
             true => target.end.saturating_sub(1).max(target.start),
             false => landed,
         };
+        self.out_of_the_marker(!up);
         true
     }
 
@@ -466,23 +467,49 @@ impl Composer {
         if chars.is_empty() {
             return;
         }
-        for marker in self.markers() {
-            let length = marker.chars().count();
-            for (byte, _) in self.text.match_indices(&marker) {
-                let from = self.text[..byte].chars().count();
-                let span = from..from + length;
-                if span.contains(&chars.start) {
-                    chars.start = span.start;
-                }
-                if span.start < chars.end && chars.end < span.end {
-                    chars.end = span.end;
-                }
+        for span in self.marker_spans() {
+            if span.contains(&chars.start) {
+                chars.start = span.start;
+            }
+            if span.start < chars.end && chars.end < span.end {
+                chars.end = span.end;
             }
         }
         let bytes = self.byte_at(chars.start)..self.byte_at(chars.end);
         self.yanked = self.text[bytes.clone()].to_string();
         self.text.replace_range(bytes, "");
         self.at = chars.start;
+    }
+
+    /// Where each paste or image marker this line holds stands, in
+    /// characters.
+    fn marker_spans(&self) -> Vec<Range<usize>> {
+        let mut spans = Vec::new();
+        for marker in self.markers() {
+            let length = marker.chars().count();
+            for (byte, _) in self.text.match_indices(&marker) {
+                let from = self.text[..byte].chars().count();
+                spans.push(from..from + length);
+            }
+        }
+        spans
+    }
+
+    /// Moves a cursor a row move left inside a marker to the marker's start,
+    /// or its end going `down`, since a marker can wrap over two rows and
+    /// typing inside one would break it. Going down to its start could leave
+    /// the cursor on the row it left.
+    fn out_of_the_marker(&mut self, down: bool) {
+        if let Some(span) = self
+            .marker_spans()
+            .into_iter()
+            .find(|span| span.start < self.at && self.at < span.end)
+        {
+            self.at = match down {
+                true => span.end,
+                false => span.start,
+            };
+        }
     }
 
     /// Inserts what the last cut deleted, at the cursor.
@@ -538,6 +565,7 @@ impl Composer {
     pub fn row_home(&mut self) {
         let rows = visual_rows(&self.text, self.room.get());
         self.at = rows[cursor_row(&rows, self.at)].start;
+        self.out_of_the_marker(false);
     }
 
     /// Moves to the end of the drawn row: past it on a paragraph's last row,
@@ -549,6 +577,7 @@ impl Composer {
             true => rows[row].end,
             false => rows[row].end - 1,
         };
+        self.out_of_the_marker(false);
     }
 
     /// Moves to the start of the previous word.
@@ -4358,6 +4387,30 @@ mod tests {
             composer.text, "abcdef  end",
             "the marker began a row up, and goes whole"
         );
+    }
+
+    #[test]
+    fn a_row_move_never_leaves_the_cursor_inside_a_marker() {
+        let mut composer = drawn("abcdef ", 14);
+        composer.paste(&"x\n".repeat(PASTED_ROWS + 1));
+        composer.insert(" end");
+        // Rows: "abcdef [Pasted " 0..15, "text #1] end" 15..27; the marker
+        // is 7..23.
+        composer.at = 25;
+        composer.row_home();
+        assert_eq!(
+            composer.at, 7,
+            "home stops before the marker it would split"
+        );
+        composer.row_end();
+        assert_eq!(composer.at, 7, "and so does end on the row above");
+        composer.arrow(&[], false);
+        assert_eq!(composer.at, 23, "down onto the marker stands after it");
+        composer.at = 25;
+        composer.arrow(&[], true);
+        assert_eq!(composer.at, 7, "and so does up");
+        composer.insert("x");
+        assert_eq!(composer.text, "abcdef x[Pasted text #1] end");
     }
 
     #[test]
