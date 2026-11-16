@@ -951,7 +951,12 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
                         .unwrap_or(0);
                 }
                 false => {
-                    state.state = Phase::Idle;
+                    // Work still out keeps the agent working, as at a turn's
+                    // end: idle would set the park timer on its shells.
+                    state.state = match state.background > 0 {
+                        true => Phase::Working,
+                        false => Phase::Idle,
+                    };
                     state.error = Some(class.to_string());
                 }
             }
@@ -4689,6 +4694,20 @@ mod tests {
         );
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.error.as_deref(), Some("unknown"), "no class named");
+    }
+
+    #[test]
+    fn hook_an_error_with_work_still_out_keeps_the_agent_working() {
+        // As a turn's end does: the park timer and `_park` read idle, and
+        // would take the pane with its shells.
+        let mut state = mid_turn();
+        state.background = 2;
+        state.agents = 1;
+        apply(&failed("overloaded", "API Error"), &mut state, &mut meta());
+        assert_eq!(state.state, Phase::Working);
+        assert!(!state.turn_open);
+        assert_eq!(state.error.as_deref(), Some("overloaded"));
+        assert_eq!((state.background, state.agents), (2, 1));
     }
 
     #[test]

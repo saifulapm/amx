@@ -936,6 +936,12 @@ fn read_beside(
     };
 
     match rules.claim(&screen, state.state, held) {
+        // A usage limit leaves claude at its prompt, and esc there changes
+        // nothing: the vendor resumes the turn itself, and its hooks say so.
+        // Work still out does not change that.
+        Claim::Ruled(rule) if rule.state == Phase::Idle && state.state == Phase::Limited => {
+            told(Phase::Limited, Evidence::Hooks, Some(&rule.name))
+        }
         // A prompt with shells still running behind it is not a finished
         // turn; the count the Stop hook wrote tells the two apart (see
         // `State::background`). Nothing is sent when somebody stops a shell in
@@ -948,11 +954,6 @@ fn read_beside(
                     || state.background > 0 && still_has_a_shell(rules, &screen)) =>
         {
             told(Phase::Working, Evidence::Hooks, Some(&rule.name))
-        }
-        // A usage limit leaves claude at its prompt, and esc there changes
-        // nothing: the vendor resumes the turn itself, and its hooks say so.
-        Claim::Ruled(rule) if rule.state == Phase::Idle && state.state == Phase::Limited => {
-            told(Phase::Limited, Evidence::Hooks, Some(&rule.name))
         }
         Claim::Ruled(rule) => Reading {
             verdict: Verdict {
@@ -4845,6 +4846,28 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             None,
         );
         assert_eq!(gone.verdict.phase, Phase::Stopped);
+    }
+
+    #[test]
+    fn reader_keeps_a_limited_turn_limited_with_work_still_out() {
+        let mut limited = state(Phase::Limited, 1_000);
+        limited.background = 2;
+        limited.agents = 1;
+        for screen in [IDLE_SCREEN, A_SCREEN_WITH_A_SHELL] {
+            let verdict = read(
+                &limited,
+                0,
+                true,
+                || Some(screen.to_string()),
+                rules::of("claude"),
+                true,
+                1_020,
+                SETTLED_LOOKS,
+                None,
+            )
+            .verdict;
+            assert_eq!(verdict.phase, Phase::Limited, "{screen:?}");
+        }
     }
 
     #[test]
