@@ -356,6 +356,8 @@ The line edits like a shell prompt:
 | `alt+↑` `alt+↓` | Earlier tasks or replies. |
 
 The last 50 tasks and 50 replies are kept in `~/.local/state/amx/view.json`.
+While one is shown, the rule over a task line says `history N/M`, counted
+from the oldest.
 
 A paste longer than 800 characters or three lines folds into
 `[Pasted text #1]`. The whole paste is still sent. Backspace removes the

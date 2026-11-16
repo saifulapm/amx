@@ -178,15 +178,22 @@ pub(super) fn rows_of(composer: &Composer, width: u16) -> usize {
 
 /// The rule over the composer.
 ///
-/// The mode label (and its target, see [`Composer::about`]) styled as
+/// The mode label (and its target, see [`Composer::about`], and the sent line
+/// shown, see [`Composer::history`]) styled as
 /// [`prospective`], then [`GLOSS`], then dashes to the edge with the
 /// permission dial in reverse video near the end. When space runs out the
 /// gloss goes first, then the dial; the label is only cut.
 fn rule(composer: &Composer, width: usize, theme: Theme) -> Line<'static> {
-    let label = match composer.about() {
-        Some(about) => format!("{}{SEPARATOR}{about} ", composer.label()),
-        None => format!("{} ", composer.label()),
-    };
+    let label = [
+        Some(composer.label().to_string()),
+        composer.about(),
+        composer.history(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(SEPARATOR)
+        + " ";
     let dial = composer
         .allowed
         .take()
@@ -851,6 +858,27 @@ mod tests {
         let narrow = edge(&typing("port it"), (20, 30));
         assert!(narrow.starts_with("TASK ┈"), "{narrow:?}");
         assert!(!narrow.contains("vendor"), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_rule_counts_the_sent_line_shown_from_the_oldest() {
+        let sent: Vec<String> = (1..=17).map(|n| format!("task {n}")).rev().collect();
+        let mut screen = typing("draft");
+        let walk = |screen: &mut Screen, older: bool| {
+            if let Mode::Typing(composer) = &mut screen.mode {
+                composer.recall(&sent, older);
+            }
+        };
+        walk(&mut screen, true);
+        let rule = edge(&screen, (80, 30));
+        assert!(rule.starts_with("TASK · history 17/17 "), "{rule:?}");
+        walk(&mut screen, true);
+        let rule = edge(&screen, (80, 30));
+        assert!(rule.starts_with("TASK · history 16/17 "), "{rule:?}");
+        walk(&mut screen, false);
+        walk(&mut screen, false);
+        let rule = edge(&screen, (80, 30));
+        assert!(!rule.contains("history"), "back on the draft: {rule:?}");
     }
 
     #[test]

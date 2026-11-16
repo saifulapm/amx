@@ -67,6 +67,8 @@ pub struct Composer {
 pub struct Walking {
     /// Index of the line shown, newest first.
     at: usize,
+    /// How many lines the walk is over.
+    of: usize,
     /// Text, cursor, pastes and images from before the walk, restored by
     /// stepping past the newest line.
     draft: (String, usize, Vec<String>, Vec<PathBuf>),
@@ -254,6 +256,7 @@ impl Composer {
             None => {
                 self.walking = Some(Walking {
                     at: 0,
+                    of: 0,
                     draft: shown,
                 })
             }
@@ -265,7 +268,8 @@ impl Composer {
         }
         match to {
             Some(to) => {
-                self.walking.as_mut().expect("a walk under way").at = to;
+                let walking = self.walking.as_mut().expect("a walk under way");
+                (walking.at, walking.of) = (to, sent.len());
                 self.set_text(sent[to].clone());
                 if !older {
                     self.at = 0;
@@ -632,6 +636,14 @@ impl Composer {
             // Not drawn: the find line is a single row with no rule.
             Asking::Find => "FIND",
         }
+    }
+
+    /// Which sent line the line shows, counted from the oldest, while a walk
+    /// is under way: `history 16/17`.
+    pub fn history(&self) -> Option<String> {
+        self.walking
+            .as_ref()
+            .map(|walking| format!("history {}/{}", walking.of - walking.at, walking.of))
     }
 
     /// What the line is aimed at, drawn on the rule beside the label.
