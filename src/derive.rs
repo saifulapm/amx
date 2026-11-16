@@ -271,8 +271,13 @@ impl View {
 
     /// [`View::json`] with the pull requests already read.
     fn json_beside(&self, prs: &[crate::pr::Pr]) -> serde_json::Value {
-        // Read once for both fields.
-        let (context, last_words) = match &transcript(&self.meta) {
+        // Read once for both fields, and not at all for a run that has ended:
+        // a wall of ended runs cost one transcript read per row.
+        let read = match self.phase().is_terminal() {
+            true => None,
+            false => transcript(&self.meta),
+        };
+        let (context, last_words) = match &read {
             Some((format, tail)) => crate::conversation::context_and_last_words(*format, tail),
             None => (None, None),
         };
@@ -341,7 +346,7 @@ impl View {
             "created": self.meta.created,
             // Read off the transcript, not the record: what the next turn
             // would send back to the vendor, and the reader's last words. Null
-            // without a transcript.
+            // without a transcript, and for a run that has ended.
             "context": context,
             "last_words": last_words,
         });

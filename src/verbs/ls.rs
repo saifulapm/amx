@@ -595,6 +595,81 @@ mod tests {
         );
     }
 
+    /// A claude record idle since `NOW - 60` with `transcript`, on a tmux
+    /// server that does not exist. Parked, it reads idle; not parked, its pane
+    /// is gone and it reads stopped while the record still says idle.
+    fn idle_on_no_server(root: &Path, id: &str, transcript: &Path, parked: bool) {
+        let meta = Meta {
+            agent: Some("claude".to_string()),
+            transcript: Some(transcript.to_path_buf()),
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            ..meta(id, 1)
+        };
+        let agent = crate::store::Agent::create(root, &meta).expect("a record");
+        let state = State {
+            state: Phase::Idle,
+            last_event: 1_800_000_000 - 60,
+            since: 1_800_000_000 - 60,
+            parked_at: if parked { 1 } else { 0 },
+            ..State::default()
+        };
+        std::fs::write(
+            agent.dir().join("state.json"),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .expect("a record");
+    }
+
+    /// `ls --json` at `NOW`, as rows keyed by id.
+    fn listed_json(root: &Path) -> std::collections::HashMap<String, serde_json::Value> {
+        let mut out = Vec::new();
+        assert_eq!(
+            run(root, true, &Scope::default(), 1_800_000_000, &mut out).unwrap(),
+            exit::OK
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
+        rows.into_iter()
+            .map(|row| (row["id"].as_str().unwrap().to_string(), row))
+            .collect()
+    }
+
+    #[test]
+    fn ls_json_reads_no_transcript_for_a_row_that_has_ended() {
+        let root = tempfile::TempDir::new().unwrap();
+        let transcript = root.path().join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"the tests pass now\"}],\"usage\":{\"input_tokens\":1200}}}\n",
+        )
+        .unwrap();
+        idle_on_no_server(root.path(), "parked-a1b", &transcript, true);
+        // The record says idle; the reading says stopped, since the pane went.
+        idle_on_no_server(root.path(), "gone-c3d", &transcript, false);
+
+        let rows = listed_json(root.path());
+        let (idle, gone) = (&rows["parked-a1b"], &rows["gone-c3d"]);
+        assert_eq!(idle["state"], "idle", "{idle}");
+        assert_eq!(idle["context"], 1200, "{idle}");
+        assert_eq!(idle["last_words"], "the tests pass now", "{idle}");
+        assert_eq!(gone["state"], "stopped", "{gone}");
+        assert_eq!(gone["context"], serde_json::Value::Null, "{gone}");
+        assert_eq!(gone["last_words"], serde_json::Value::Null, "{gone}");
+    }
+
+    #[test]
+    fn ls_json_lists_an_ended_row_whose_transcript_will_not_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::TempDir::new().unwrap();
+        let transcript = root.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+        std::fs::set_permissions(&transcript, std::fs::Permissions::from_mode(0o000)).unwrap();
+        idle_on_no_server(root.path(), "gone-c3d", &transcript, false);
+
+        let rows = listed_json(root.path());
+        assert_eq!(rows["gone-c3d"]["state"], "stopped");
+        assert_eq!(rows["gone-c3d"]["context"], serde_json::Value::Null);
+    }
+
     #[test]
     fn reader_durations_read_as_a_person_would_say_them() {
         let said = |seconds| worked(&view("x-a1b", Phase::Idle, seconds, None));
