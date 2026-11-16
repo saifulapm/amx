@@ -755,15 +755,20 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = wrapper.id() as i32;
+        let comm =
+            |pid: i32| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         let mut under = Vec::new();
+        // A forked child reads as `sh` until it has exec'd the vendor.
         for _ in 0..100 {
             under = children(pid);
-            if !under.is_empty() {
+            if under
+                .first()
+                .is_some_and(|child| comm(*child).trim() == "sleep")
+            {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let comm = |pid: i32| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap();
         assert_eq!(under.len(), 1, "{under:?}");
         assert_eq!(comm(under[0]).trim(), "sleep");
 
