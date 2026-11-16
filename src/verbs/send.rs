@@ -77,6 +77,7 @@ pub fn from_env(
     text: Option<&str>,
     file: Option<&Path>,
     images: &[PathBuf],
+    shell: bool,
 ) -> Result<i32> {
     let text = match file {
         Some(path) => match crate::cli::text_of(path) {
@@ -92,7 +93,25 @@ pub fn from_env(
     let root = paths::state_root()?;
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let mut out = std::io::stdout().lock();
+    let view = derive::view(&root, id, store::now())?;
+    if let Some(refusal) = runs_in_a_shell(&view.meta, &text).filter(|_| !shell) {
+        complain!("amx: refused: {refusal}");
+        return Ok(exit::FAILURE);
+    }
     run(&root, id, &text, images, to_terminal, &mut out)
+}
+
+/// Why a message is not sent unless told `--shell`: the vendor would run it as
+/// a shell command, with no model reading it.
+fn runs_in_a_shell(meta: &Meta, text: &str) -> Option<String> {
+    let vendor = meta.agent.as_deref().and_then(registry::entry)?;
+    let sigil = vendor
+        .shell_sigil
+        .filter(|sigil| text.starts_with(*sigil))?;
+    Some(format!(
+        "{} runs a message starting with {sigil} as a shell command; --shell sends it",
+        vendor.name
+    ))
 }
 
 /// The verb, with the state directory named.
@@ -314,10 +333,14 @@ fn delivered(
     Ok(Delivered::Sent { local })
 }
 
-/// Whether `text` is a command `meta`'s vendor runs itself: one line opening
-/// with the catalog's sigil and a word the catalog does not list, where the
-/// catalog says such words are the vendor's own (claude's `/clear`).
+/// Whether `text` is a command `meta`'s vendor runs itself: a shell command
+/// (claude's `!ls`), or one line opening with the catalog's sigil and a word
+/// the catalog does not list, where the catalog says such words are the
+/// vendor's own (claude's `/clear`).
 fn runs_itself(meta: &Meta, text: &str) -> bool {
+    if runs_in_a_shell(meta, text).is_some() {
+        return true;
+    }
     let catalog = meta
         .agent
         .as_deref()

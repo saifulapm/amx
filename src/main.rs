@@ -107,11 +107,13 @@ fn run(cli: &cli::Cli) -> i32 {
             text,
             file,
             image,
+            shell,
         }) => finish(verbs::send::from_env(
             id,
             text.as_deref(),
             file.as_deref(),
             image,
+            *shell,
         )),
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Interrupt { id }) => finish(verbs::interrupt::from_env(id)),

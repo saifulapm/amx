@@ -1110,3 +1110,56 @@ fn send_of_a_command_claude_runs_without_a_hook_counts_once_its_input_lets_it_go
     let status = common::status(&amx, id);
     assert_eq!(status["queued"], json!([]), "{status}");
 }
+
+#[test]
+fn send_refuses_a_bang_line_claude_would_run_as_a_shell_command_unless_told() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    amx.play(id, "runs-a-command-itself");
+    amx.until_state(id, "idle");
+
+    let out = amx.amx(&["send", id, "!ls"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "refused: claude runs a message starting with ! as a shell command; --shell sends it"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    let kinds = amx.event_kinds(id);
+    assert!(
+        !kinds
+            .iter()
+            .any(|kind| kind == "send" || kind == "local_command"),
+        "nothing reached the pane: {kinds:?}"
+    );
+
+    // With --shell it goes, and claude runs it with no turn to wait for.
+    let out = amx.amx(&["send", id, "--shell", "!ls"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let sent = amx.events(id);
+    assert!(
+        sent.iter()
+            .any(|event| event["kind"] == "local_command" && event["payload"]["text"] == "!ls"),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn send_with_shell_sends_a_message_without_a_bang_as_it_is() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    amx.play(id, "takes-a-message");
+    amx.until_state(id, "idle");
+
+    let out = amx.amx(&["send", id, "--shell", "and now the linter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let sent = amx.events(id);
+    assert!(
+        sent.iter().any(
+            |event| event["kind"] == "send" && event["payload"]["text"] == "and now the linter"
+        ),
+        "{sent:?}"
+    );
+}

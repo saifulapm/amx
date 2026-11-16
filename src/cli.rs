@@ -141,6 +141,11 @@ pub enum Command {
         /// record.
         #[arg(long, value_name = "FILE")]
         image: Vec<PathBuf>,
+
+        /// Send a message starting with `!`, which claude runs as a shell
+        /// command with no model, instead of refusing it.
+        #[arg(long)]
+        shell: bool,
     },
 
     /// Answer a waiting agent's question: y, n, 1-9, 1,3, enter, esc, or words.

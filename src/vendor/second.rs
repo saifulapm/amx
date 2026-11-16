@@ -33,6 +33,7 @@ pub const SECOND: Vendor = Vendor {
     ends_options: None,
     names: &[],
     remote_flag: None,
+    shell_sigil: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
     menus_take_letters: true,
@@ -72,6 +73,7 @@ pub const BRANCHING: Vendor = Vendor {
     ends_options: Some("--"),
     names: &[],
     remote_flag: None,
+    shell_sigil: None,
     ..SECOND
 };
 

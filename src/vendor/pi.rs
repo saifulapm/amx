@@ -144,6 +144,7 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: Some("--"),
     names: &[],
     remote_flag: None,
+    shell_sigil: None,
     // A word starting with `@` is a file to attach on either side of `--`
     // (args.js:25 and :224); a leading space makes it plain text:
     // `pi -p -- ' @README say hello'` says hello (0.87.1).

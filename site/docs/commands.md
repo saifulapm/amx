@@ -265,8 +265,13 @@ amx send <ID> --file <PATH>
 | --- | --- |
 | `--file <PATH>` | Read the message from a file, or stdin for `-`. |
 | `--image <FILE>` | Give the agent this image with the message; repeat for more. Checked as `new --image` checks it, and a refusal (exit 1) sends nothing. claude is given the copy as an `@path` word, pi and opencode as an `image: <path>` line above the message. codex is pasted each path alone, and the message follows once codex shows the image's `[Image #N]` chip; a chip that does not show within 5 s leaves the message unsent (exit 1). |
+| `--shell` | Send a message starting with `!`, which claude runs as a shell command with no model. Without it, such a message is refused (exit 1) and nothing is typed. |
 
 A message sent mid-turn waits in the vendor's queue until the agent takes it.
+A command claude runs itself, such as `/clear`, `/compact`, `/context` or any
+slash word that is not one of your skills or commands, starts no turn: `send`
+counts it as sent once any hook arrives or claude's input lets go of it within
+2 s, and `result` does not wait for an answer to it.
 `send` refuses (exit 2) while the agent is waiting on a question, since text
 typed there would answer it: use `answer`. It also refuses a parked agent and
 tells you to `resume` it.

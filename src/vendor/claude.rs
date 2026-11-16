@@ -143,6 +143,7 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: Some("--"),
     names: &["-n", "--name"],
     remote_flag: Some("--remote-control"),
+    shell_sigil: Some('!'),
     attaches_at: false,
     restores_queued_on_cancel: false,
     // 2.1.284's permission menu ignores `y`; digits work.

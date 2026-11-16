@@ -166,6 +166,7 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: None,
     names: &[],
     remote_flag: None,
+    shell_sigil: None,
     // The v2 server parses no `@path` in text (core/src/session/prompt.ts:45-83);
     // `@` opens a popup instead, see `popups`.
     attaches_at: false,

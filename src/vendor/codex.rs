@@ -127,6 +127,7 @@ pub const VENDOR: Vendor = Vendor {
     ends_options: Some("--"),
     names: &[],
     remote_flag: None,
+    shell_sigil: None,
     // The argv prompt is sent as is, with no `@` expansion
     // (tui/src/chatwidget/user_messages.rs:196-221).
     attaches_at: false,

@@ -475,6 +475,10 @@ pub struct Vendor {
     /// The flag that opens a session to remote control under a name, written
     /// with the agent's id when the harness table turns `remote_control` on.
     pub remote_flag: Option<&'static str>,
+    /// The character that makes a message a shell command the vendor runs
+    /// itself, with no model: claude's `!`. `amx send` refuses such a message
+    /// unless told `--shell`.
+    pub shell_sigil: Option<char>,
     /// Whether a message word starting with `@` is still read as a file to
     /// attach after [`ends_options`](Self::ends_options). amx prefixes such a
     /// word with a space.
