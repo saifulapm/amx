@@ -192,7 +192,8 @@ fn asked(config: &Config) -> impl Iterator<Item = &'static Vendor> {
 /// The models a harness accepts, as a refusal names them.
 ///
 /// A list the vendor prints can run to hundreds of models, so it is named by
-/// count and by the command that prints it.
+/// count and by the command that prints it. A harness [`takes_unlisted`]
+/// answers for is named by the form it takes.
 fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
     match vendor.models {
         Models::Printed(argv) | Models::Json(argv)
@@ -205,6 +206,9 @@ fn takes(vendor: &Vendor, config: &Config, list: &[String]) -> String {
                 vendor.name,
                 argv.join(" ")
             )
+        }
+        Models::Cycle if list.is_empty() && vendor.model.is_some_and(|dial| dial.open) => {
+            format!("{} takes a provider/model name", vendor.name)
         }
         _ => format!("{} accepts {}", vendor.name, list.join(", ")),
     }
@@ -1521,6 +1525,11 @@ mod tests {
         let refusal =
             Launch::resolve(&config, &spawn(None, [Some("longcat"), None, None])).unwrap_err();
         assert!(refusal.contains("codex accepts gpt-5.5"), "{refusal}");
+        assert!(
+            refusal.contains("opencode takes a provider/model name"),
+            "says the form it takes, not an empty list: {refusal}"
+        );
+        assert!(!refusal.contains("accepts ;"), "{refusal}");
 
         // A harness that lists its models is held to its list.
         let claudes = listing(&[("pi", &["openai/gpt-5"]), ("codex", &["gpt-5.5"])]);
