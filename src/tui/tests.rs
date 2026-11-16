@@ -1932,6 +1932,75 @@ fn keys_plain_arrows_on_a_card_line_holding_text_walk_its_rows_not_the_card() {
 }
 
 #[test]
+fn keys_the_editing_keys_reach_the_rows_and_words_of_a_task_line() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+    let press =
+        |screen: &mut Screen, key: KeyEvent| screen.act(key, root.path(), &config, None).unwrap();
+    let line = |screen: &Screen| match &screen.mode {
+        Mode::Typing(composer) => (composer.text.clone(), composer.at),
+        _ => panic!("no line is open"),
+    };
+    let key = |code| KeyEvent::from(code);
+    let ctrl = |letter| KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL);
+    let alt = |letter| KeyEvent::new(KeyCode::Char(letter), KeyModifiers::ALT);
+
+    press(&mut screen, key(KeyCode::Char('n')));
+    for typed in "you need to attach it".chars() {
+        press(&mut screen, key(KeyCode::Char(typed)));
+    }
+    // Rows ten cells wide: "you need " 0..9, "to attach " 9..19, "it" 19..21.
+    if let Mode::Typing(composer) = &screen.mode {
+        composer.room.set(10);
+    }
+    let text = "you need to attach it".to_string();
+    press(&mut screen, key(KeyCode::Up));
+    assert_eq!(line(&screen), (text.clone(), 11));
+    press(&mut screen, key(KeyCode::Home));
+    assert_eq!(line(&screen), (text.clone(), 9), "home: the row's start");
+    press(&mut screen, key(KeyCode::End));
+    assert_eq!(
+        line(&screen),
+        (text.clone(), 18),
+        "end: the row's last cell"
+    );
+    press(&mut screen, ctrl('a'));
+    assert_eq!(line(&screen), (text.clone(), 0), "ctrl+a: the line's start");
+    press(&mut screen, ctrl('e'));
+    assert_eq!(line(&screen), (text.clone(), 21), "ctrl+e: the line's end");
+    press(&mut screen, alt('b'));
+    assert_eq!(line(&screen), (text.clone(), 19), "alt+b: a word back");
+    press(&mut screen, ctrl('a'));
+    press(&mut screen, alt('f'));
+    assert_eq!(line(&screen), (text.clone(), 3), "alt+f: a word on");
+    press(&mut screen, ctrl('a'));
+    press(&mut screen, alt('d'));
+    assert_eq!(
+        line(&screen),
+        (" need to attach it".to_string(), 0),
+        "alt+d"
+    );
+    press(&mut screen, ctrl('y'));
+    assert_eq!(line(&screen), (text.clone(), 3), "ctrl+y puts it back");
+    press(&mut screen, ctrl('e'));
+    press(&mut screen, ctrl('u'));
+    assert_eq!(
+        line(&screen),
+        ("you need to attach ".to_string(), 19),
+        "ctrl+u: to the row's start"
+    );
+    press(&mut screen, ctrl('y'));
+    press(&mut screen, key(KeyCode::Up));
+    press(&mut screen, ctrl('k'));
+    assert_eq!(
+        line(&screen),
+        ("you need toit".to_string(), 11),
+        "ctrl+k: to the row's end"
+    );
+}
+
+#[test]
 fn replied_keeps_the_line_it_sent_and_not_one_refused() {
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     let mut sent = Composer::new(Asking::Reply);

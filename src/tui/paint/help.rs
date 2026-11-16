@@ -637,6 +637,22 @@ mod tests {
     }
 
     #[test]
+    fn the_line_keys_name_every_editing_key() {
+        let from = GROUPS[0].1 + GROUPS[1].1;
+        let start = &HELP[from..from + GROUPS[2].1];
+        for key in [
+            "ctrl+u", "ctrl+k", "alt+b", "alt+f", "alt+d", "ctrl+y", "home",
+        ] {
+            assert!(
+                start
+                    .iter()
+                    .any(|(keys, does)| keys.contains(key) || does.contains(key)),
+                "the line's keys do not name {key}"
+            );
+        }
+    }
+
+    #[test]
     fn every_key_leaves_a_gap_before_what_it_does() {
         for (key, _) in HELP {
             assert!(
