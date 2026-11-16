@@ -8,6 +8,7 @@ pub mod clear;
 pub mod diff;
 pub mod doctor;
 pub mod events;
+pub mod find;
 pub mod fork;
 pub mod here;
 pub mod interrupt;

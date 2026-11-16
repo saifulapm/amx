@@ -58,6 +58,7 @@ impl Cli {
             Here { .. } => "here",
             Adopt(_) => "adopt",
             Events { .. } => "events",
+            Find { .. } => "find",
             Statusline => "statusline",
             Doctor { .. } => "doctor",
             Setup { .. } => "setup",
@@ -424,6 +425,18 @@ pub enum Command {
     /// amx cut no worktree for it and has no command to relaunch it with, so
     /// `stop` only closes its pane, and `resume` and `fork` cannot restart it.
     Adopt(AdoptArgs),
+
+    /// Print each agent whose task, name or conversation holds the text.
+    ///
+    /// Newest agents first, archived ones included, ignoring case. Reads at
+    /// most 128 MB of conversation and says when it stopped there. Exits 1
+    /// when nothing holds the text.
+    Find {
+        text: String,
+        /// Print the matches as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Print the agents' event streams, merged.
     Events {
@@ -1106,6 +1119,8 @@ mod tests {
             (&["amx", "events"], "events"),
             (&["amx", "events", "fix-a1b", "--follow"], "events"),
             (&["amx", "events", "--json"], "events"),
+            (&["amx", "find", "importer"], "find"),
+            (&["amx", "find", "importer", "--json"], "find"),
             (&["amx", "statusline"], "statusline"),
             (&["amx", "doctor"], "doctor"),
             (&["amx", "doctor", "--fix"], "doctor"),

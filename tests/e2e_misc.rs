@@ -626,3 +626,33 @@ fn a_relative_xdg_config_home_is_ignored_for_the_one_under_home() {
     assert!(!said.contains("evil"), "{said}");
     assert!(said.contains(".config/amx/config.toml"), "{said}");
 }
+
+#[test]
+fn find_prints_the_one_agent_whose_conversation_mentions_the_text() {
+    let amx = Harness::new();
+    started(&amx, "port-a1b", "carries-usage", &[]);
+    started(&amx, "login-b2c", "carries-usage", &[]);
+    amx.until_state("port-a1b", "idle");
+    amx.until_state("login-b2c", "idle");
+    // The stand-in's transcript says hello; one of them talks of the importer.
+    let transcript = amx.meta("port-a1b")["transcript"]
+        .as_str()
+        .map(PathBuf::from)
+        .expect("the hook named the transcript");
+    let mut said = std::fs::read_to_string(&transcript).unwrap();
+    said.push_str("{\"type\":\"user\",\"message\":{\"content\":\"port the importer to v2\"}}\n");
+    std::fs::write(&transcript, said).unwrap();
+
+    let out = amx.amx(&["find", "importer"]);
+    assert!(out.status.success(), "{out:?}");
+    let printed = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(printed.lines().count(), 1, "{printed}");
+    assert!(
+        printed.starts_with("port-a1b  ") && printed.contains("port the importer to v2"),
+        "{printed}"
+    );
+
+    let out = amx.amx(&["find", "nothing-matches"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "nothing found\n");
+}

@@ -187,6 +187,7 @@ fn run(cli: &cli::Cli) -> i32 {
         Some(cli::Command::Fork { id, task, image }) => {
             finish(verbs::fork::from_env(id, task.as_deref(), image))
         }
+        Some(cli::Command::Find { text, json }) => finish(verbs::find::from_env(text, *json)),
         Some(cli::Command::Events {
             ids,
             follow,
@@ -451,7 +452,7 @@ mod tests {
 
     /// The source of every verb, checked for direct `eprint` calls that
     /// bypass [`tell`].
-    const VERBS: [(&str, &str); 28] = [
+    const VERBS: [(&str, &str); 29] = [
         ("adopt", include_str!("verbs/adopt.rs")),
         ("allow", include_str!("verbs/allow.rs")),
         ("answer", include_str!("verbs/answer.rs")),
@@ -460,6 +461,7 @@ mod tests {
         ("diff", include_str!("verbs/diff.rs")),
         ("doctor", include_str!("verbs/doctor.rs")),
         ("events", include_str!("verbs/events.rs")),
+        ("find", include_str!("verbs/find.rs")),
         ("fork", include_str!("verbs/fork.rs")),
         ("here", include_str!("verbs/here.rs")),
         ("interrupt", include_str!("verbs/interrupt.rs")),

@@ -407,6 +407,29 @@ $ amx events echo-hello-from-the-5iu
 23:42:32Z  echo-hello-from-the-5iu  exit              code 0
 ```
 
+## find
+
+Print each agent whose task, name or conversation holds some text.
+
+```sh
+amx find <TEXT> [--json]
+```
+
+| Flag | Does |
+| --- | --- |
+| `--json` | One object: `found`, a list of `id`, `line` and `archived`, and `stopped`. |
+
+Agents are read newest first, archived ones included, and case is ignored.
+Each agent prints once, with the first line that holds the text, cut to the
+words around it. Nothing is indexed: one query reads at most 128 MB of
+conversation, and ends with `stopped after 128 MB` when it stopped there. It
+exits 1 and prints `nothing found` when no agent holds the text.
+
+```
+$ amx find importer
+port-the-importer-4ka  {"type":"user","message":{"content":"port the importer to v2"}…
+```
+
 ## diff
 
 Show what the agent changed, including what it has committed.

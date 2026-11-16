@@ -26,6 +26,7 @@ driving agents is ordinary shell scripting.
 | `amx ls [--json]` | Every agent, one line each. |
 | `amx status <id> [--json]` | One agent's state and which signal it came from. |
 | `amx events [<ids>] [--follow] [--json]` | The agents' event logs, merged in time order. |
+| `amx find "<text>" [--json]` | The agents whose task, name or conversation holds the text, newest first, with the line that does. Exits 1 when none does. |
 | `amx diff <id> [--stat] [--from <ref>]` | The agent's changes against the commit it started from, or against `--from`. |
 | `amx logs <id> [--lines N]` | Recent history without attaching: the vendor's transcript, else the pane, else the recorded answer. |
 | `amx fork <id> ["<task>"]` | Start a second agent on a copy of this one's conversation. Prints the new id. |
