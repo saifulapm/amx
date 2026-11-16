@@ -23,7 +23,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::derive::{self, Evidence, View};
+use crate::derive::{self, Background, Evidence, View};
 use crate::store::{Agent, Event, Phase, State, Writer};
 use crate::tmux::Server;
 use crate::verbs::send;
@@ -59,6 +59,10 @@ pub fn run(root: &Path, id: &str, to_terminal: bool, out: &mut impl Write) -> Re
         }
         Cut::Gone => {
             complain!("amx: {}", send::no_pane(id));
+            Ok(exit::FAILURE)
+        }
+        Cut::Background(running) => {
+            complain!("amx: {id}: {}", background_is_running(running));
             Ok(exit::FAILURE)
         }
         Cut::Nothing => {
@@ -127,7 +131,7 @@ fn running_now(now: &State) -> Cut {
         phase if matches!(phase, Phase::Idle | Phase::Limited) || phase.is_terminal() => {
             Cut::Nothing
         }
-        _ => Cut::Turn,
+        _ => at_rest(now).map_or(Cut::Turn, Cut::Background),
     }
 }
 
@@ -159,6 +163,35 @@ pub enum Cut {
     Nothing,
     /// The pane went away since the reading.
     Gone,
+    /// The model is at its prompt and only background work runs; Escape
+    /// would land on an idle composer.
+    Background(Background),
+}
+
+/// The refusal for an agent whose only work is in the background.
+pub fn background_is_running(running: Background) -> String {
+    let plural = |n: u32, kind: &str| match n {
+        1 => format!("1 background {kind}"),
+        n => format!("{n} background {kind}s"),
+    };
+    let what = match (running.shells, running.agents) {
+        (shells, 0) => plural(shells, "shell"),
+        (0, agents) => plural(agents, "agent"),
+        (shells, agents) => format!(
+            "{} and {}",
+            plural(shells, "shell"),
+            plural(agents, "agent")
+        ),
+    };
+    format!("nothing to interrupt; {what} running")
+}
+
+/// The background work a record counts, when its model is at its prompt.
+fn at_rest(state: &State) -> Option<Background> {
+    (!state.turn_open && state.background > 0).then(|| Background {
+        shells: state.background.saturating_sub(state.agents),
+        agents: state.agents,
+    })
 }
 
 /// Classify one reading.
@@ -172,6 +205,8 @@ fn what_is_running(view: &View) -> Cut {
     match view.phase() {
         Phase::Waiting => Cut::Question,
         Phase::Working if derive::runs_a_command(&view.meta, &view.state) => Cut::Command,
+        // The record stays working while a shell runs, but the model is idle.
+        Phase::Working if view.at_rest() => Cut::Background(view.background()),
         Phase::Working => Cut::Turn,
         _ => Cut::Nothing,
     }
@@ -363,6 +398,78 @@ mod tests {
         let mut older = reading(Phase::Working, Evidence::Hooks);
         older.meta.agent = None;
         assert_eq!(what_is_running(&older), Cut::Turn);
+    }
+
+    #[test]
+    fn interrupt_an_agent_at_its_prompt_with_background_work_has_no_turn_to_cut() {
+        // The record stays working on the shell; the model is at its prompt.
+        let mut view = reading(Phase::Working, Evidence::Hooks);
+        view.state.background = 1;
+        view.state.turn_open = false;
+        assert_eq!(
+            what_is_running(&view),
+            Cut::Background(Background {
+                shells: 1,
+                agents: 0
+            })
+        );
+
+        // A turn that is open with a shell out is still a turn.
+        view.state.turn_open = true;
+        assert_eq!(what_is_running(&view), Cut::Turn);
+
+        // A verdict read off the screen counts although the record says idle.
+        let mut screen = reading(Phase::Working, Evidence::Screen);
+        screen.state.state = Phase::Idle;
+        screen.state.background = 3;
+        screen.state.agents = 1;
+        assert_eq!(
+            what_is_running(&screen),
+            Cut::Background(Background {
+                shells: 2,
+                agents: 1
+            })
+        );
+    }
+
+    #[test]
+    fn interrupt_names_the_background_work_it_found() {
+        let said = |shells, agents| background_is_running(Background { shells, agents });
+        assert_eq!(
+            said(1, 0),
+            "nothing to interrupt; 1 background shell running"
+        );
+        assert_eq!(
+            said(2, 0),
+            "nothing to interrupt; 2 background shells running"
+        );
+        assert_eq!(
+            said(0, 1),
+            "nothing to interrupt; 1 background agent running"
+        );
+        assert_eq!(
+            said(2, 3),
+            "nothing to interrupt; 2 background shells and 3 background agents running"
+        );
+    }
+
+    #[test]
+    fn interrupt_a_record_that_moved_to_background_work_gets_no_key() {
+        let mut now = State {
+            state: Phase::Working,
+            background: 1,
+            turn_open: false,
+            ..State::default()
+        };
+        assert_eq!(
+            running_now(&now),
+            Cut::Background(Background {
+                shells: 1,
+                agents: 0
+            })
+        );
+        now.turn_open = true;
+        assert_eq!(running_now(&now), Cut::Turn);
     }
 
     #[test]

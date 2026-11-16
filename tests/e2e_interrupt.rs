@@ -184,6 +184,39 @@ fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
 }
 
 #[test]
+fn an_agent_at_its_prompt_with_a_shell_out_is_refused_and_gets_no_escape() {
+    let amx = Harness::new();
+    let id = "dev-server-a1b";
+    amx.play(id, "rests-with-a-shell");
+    amx.until_shown(id, "auto mode on · 1 shell");
+    let (bin, log) = common::a_logging_tmux(&amx);
+
+    let out = amx
+        .amx_command(&["interrupt", id])
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", common::stderr(&out));
+    let said = common::stderr(&out);
+    assert!(
+        said.contains("nothing to interrupt; 1 background shell running"),
+        "{said}"
+    );
+    assert!(
+        !common::calls(&log)
+            .iter()
+            .any(|call| call.contains("send-keys") && call.contains("Escape")),
+        "no key reached the pane: {:?}",
+        common::calls(&log)
+    );
+    let kinds = amx.event_kinds(id);
+    assert!(
+        !kinds.iter().any(|kind| kind == "interrupt"),
+        "a refusal leaves nothing on the log: {kinds:?}"
+    );
+}
+
+#[test]
 fn an_agent_sitting_at_its_prompt_has_no_turn_to_interrupt() {
     let amx = Harness::new();
     amx.play("fix-login-a1b", "happy-turn");
