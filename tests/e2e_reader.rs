@@ -235,6 +235,24 @@ fn a_turn_a_limit_ended_reads_limited_until_its_reset() {
 }
 
 #[test]
+fn twenty_agents_limited_at_once_each_read_limited_and_none_failed() {
+    let amx = Harness::new();
+    let ids: Vec<String> = (0..20).map(|n| format!("capped-{n:03}")).collect();
+    for id in &ids {
+        amx.play(id, "hits-a-limit");
+    }
+    for id in &ids {
+        amx.until_shown(id, "auto mode on");
+    }
+    let listed = ls(&amx);
+    assert_eq!(listed.len(), 20);
+    for agent in &listed {
+        assert_eq!(agent["state"], "limited", "{agent}");
+        assert_eq!(agent["ended"], 0, "{agent}");
+    }
+}
+
+#[test]
 fn a_turn_an_api_error_ended_reads_idle_with_the_error() {
     let amx = Harness::new();
     amx.play("busy-b2c", "hits-an-error");
