@@ -627,10 +627,10 @@ struct Screen {
     complained: Option<String>,
     mode: Mode,
     look: Look,
-    /// Whether rows show a column with vendor, model and effort. Off by
-    /// default: on a single-vendor fleet it repeats one word and costs summary
-    /// width.
-    vendor: bool,
+    /// The column rows show beside the name: vendor, model and effort, or how
+    /// full the context window is. Off by default: on a single-vendor fleet
+    /// the first repeats one word, and either costs summary width.
+    extra: Extra,
     card: Option<Card<Body>>,
     /// What `card` was built from, when the view built it. A card built
     /// elsewhere (a diff) has none, so the next pass rebuilds it.
@@ -956,12 +956,47 @@ struct Remembered {
     /// Whether rows show the vendor column.
     #[serde(deserialize_with = "rows::or_default")]
     vendor: bool,
+    /// Whether rows show the context column instead. A separate key, so an
+    /// older amx, which knows only `vendor`, opens with no column.
+    #[serde(deserialize_with = "rows::or_default")]
+    context: bool,
     /// Lines sent, for recall in a later view.
     #[serde(deserialize_with = "rows::or_default")]
     sent: act::Backlog,
     /// Keys a newer amx wrote, written back as they were.
     #[serde(flatten)]
     later: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The wall's optional column, which `v` turns through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Extra {
+    #[default]
+    Off,
+    /// The vendor, model and effort each row runs.
+    Vendor,
+    /// How full each row's context window is.
+    Context,
+}
+
+impl Extra {
+    /// The column after this one.
+    fn next(self) -> Extra {
+        match self {
+            Extra::Off => Extra::Vendor,
+            Extra::Vendor => Extra::Context,
+            Extra::Context => Extra::Off,
+        }
+    }
+
+    /// The column a view file asks for.
+    fn kept(remembered: &Remembered) -> Extra {
+        match (remembered.context, remembered.vendor) {
+            (true, _) => Extra::Context,
+            (false, true) => Extra::Vendor,
+            (false, false) => Extra::Off,
+        }
+    }
 }
 
 /// Said on the keys row when a change is not saved because the view file
@@ -1046,10 +1081,10 @@ where
     // Restore the saved arrangement before the first frame.
     if let Some(path) = remembering {
         let remembered = Remembered::read(path);
+        screen.extra = Extra::kept(&remembered);
         screen.list.arrange(remembered.arrangement.clone());
         screen.published = remembered.arrangement;
         screen.viewed_at = stamped(path);
-        screen.vendor = remembered.vendor;
         screen.sent = remembered.sent;
     }
 
@@ -2009,9 +2044,9 @@ impl Screen {
             }
             // Clear every finished row on the wall.
             KeyCode::Char('c') if plain => self.clear_or_arm(root),
-            // Toggle the vendor column.
+            // Turn the extra column: vendor, then context, then none.
             KeyCode::Char('v') if plain => {
-                self.vendor = !self.vendor;
+                self.extra = self.extra.next();
                 self.keep(true);
             }
             // Turn the grouping axis.
@@ -3379,7 +3414,8 @@ impl Screen {
         remembered
             .arrangement
             .forget_the_gone(|id| crate::store::Agent::open(&self.root, id).is_ok());
-        remembered.vendor = self.vendor;
+        remembered.vendor = self.extra == Extra::Vendor;
+        remembered.context = self.extra == Extra::Context;
         // A failed write is not worth the notice line.
         let _ = remembered.write(&path);
         // Adopt the merged arrangement now, and merge the next change against
@@ -3441,9 +3477,9 @@ impl Screen {
         }
         let remembered = Remembered::read(&path);
         self.viewed_at = now;
+        self.extra = Extra::kept(&remembered);
         self.published = remembered.arrangement.clone();
         self.list.arrange(remembered.arrangement);
-        self.vendor = remembered.vendor;
         self.sent = remembered.sent;
     }
 

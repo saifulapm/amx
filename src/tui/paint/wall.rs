@@ -45,7 +45,12 @@ pub(super) fn agents(
     }
 
     let width = area.width as usize;
-    let widths = grid::widths(width, list.axis(), moment.vendor, list.root_pad());
+    let widths = grid::widths(
+        width,
+        list.axis(),
+        moment.extra != crate::tui::Extra::Off,
+        list.root_pad(),
+    );
     let requests = request_column(list);
 
     let lines: Vec<Line> = list
@@ -128,8 +133,8 @@ pub(super) struct Moment<'a> {
     pub(super) hover: Option<usize>,
     /// The agent the terminal was last lent to.
     pub(super) lent: Option<&'a str>,
-    /// Whether the vendor column is shown.
-    pub(super) vendor: bool,
+    /// Which column rows show beside the name, if any.
+    pub(super) extra: crate::tui::Extra,
 }
 
 /// How the cursor, the pointer and the last lend relate to one line.
@@ -448,7 +453,15 @@ fn row(
         spans.push(Span::styled(
             format!(
                 "{}{}",
-                grid::pad(&rows::vendor_words(&view.meta), widths.vendor),
+                grid::pad(
+                    &match moment.extra {
+                        crate::tui::Extra::Context => {
+                            rows::context_words(&view.state).unwrap_or_default()
+                        }
+                        _ => rows::vendor_words(&view.meta),
+                    },
+                    widths.vendor
+                ),
                 " ".repeat(GAP)
             ),
             dim(),
@@ -2149,9 +2162,52 @@ mod tests {
     }
 
     #[test]
+    fn context_column_says_how_full_each_window_is_and_the_row_still_ends_in_its_age() {
+        let mut rows = three_kinds();
+        rows[0].state.context = Some(crate::store::ContextFill {
+            tokens: 412_000,
+            window: Some(1_000_000),
+        });
+        let first = rows[0].meta.id.clone();
+        let mut screen = showing(rows, None);
+        screen.extra = crate::tui::Extra::Context;
+        let row = |drawn: &[String], id: &str| {
+            drawn
+                .iter()
+                .find(|line| line.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id}:\n{drawn:?}"))
+                .clone()
+        };
+
+        let wide = painted(&screen, (100, 10));
+        assert!(
+            row(&wide, &first).contains("ctx 41% · 412k"),
+            "{:?}",
+            row(&wide, &first)
+        );
+        assert!(
+            !row(&wide, "build-c3d").contains("ctx"),
+            "a row that reported no usage leaves the cell blank"
+        );
+        assert!(
+            !row(&wide, &first).contains("claude"),
+            "the context column stands in for the vendor's, not beside it"
+        );
+
+        // At 50 columns the summary gives way; the gauge and the age stay.
+        let narrow = painted(&screen, (50, 10));
+        let line = row(&narrow, &first);
+        assert!(line.contains("ctx 41% · 412k"), "{line:?}");
+        assert!(
+            line.trim_end().ends_with(" 3s"),
+            "the row still ends in its age: {line:?}"
+        );
+    }
+
+    #[test]
     fn vendor_column_says_what_each_kind_of_row_runs() {
         let mut screen = showing(three_kinds(), None);
-        screen.vendor = true;
+        screen.extra = crate::tui::Extra::Vendor;
         let drawn = painted(&screen, (100, 10));
         let row = |id: &str| {
             drawn
@@ -2188,7 +2244,7 @@ mod tests {
         let size = (100, 10);
         let quiet = painted(&showing(three_kinds(), None), size);
         let mut screen = showing(three_kinds(), None);
-        screen.vendor = true;
+        screen.extra = crate::tui::Extra::Vendor;
         let loud = painted(&screen, size);
 
         for id in ["fix-login-a1b", "port-import-b2c", "build-c3d"] {
@@ -2236,7 +2292,7 @@ mod tests {
             },
             "/src/api",
         )]);
-        screen.vendor = true;
+        screen.extra = crate::tui::Extra::Vendor;
         let drawn = painted(&screen, (120, 10));
         let row = drawn
             .iter()

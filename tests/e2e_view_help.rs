@@ -141,7 +141,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "fork the agent onto a task",
         "the agent you were last in",
         "to answer or send a message",
-        "which vendor, model and effort each one runs",
+        "what each one runs, then how full its context is",
         "edit the line in $EDITOR",
         "what it has changed",
         "open its pull request in the browser",

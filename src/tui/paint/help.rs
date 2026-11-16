@@ -35,7 +35,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 61] = [
     ("q ctrl+c", "close the view"),
     // look
     ("space", "open the card, to answer or send a message"),
-    ("v", "which vendor, model and effort each one runs"),
+    ("v", "what each one runs, then how full its context is"),
     ("enter → l", "go into the agent · open or shut a group"),
     ("d", "what it has changed"),
     ("o", "open its pull request in the browser"),

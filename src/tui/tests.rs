@@ -2067,7 +2067,11 @@ fn remembered_a_field_that_does_not_read_costs_that_field_and_not_the_marks() {
             ],
             "every mark is drawn over {rest}, off-d4e under the shut shelf"
         );
-        assert!(!screen.vendor, "and the vendor column is at its default");
+        assert_eq!(
+            screen.extra,
+            Extra::Off,
+            "and the vendor column is at its default"
+        );
         if rest.contains("fix it") {
             assert_eq!(
                 screen.sent.lines_for(&Asking::Task),
@@ -2378,7 +2382,7 @@ fn a_pin_this_view_makes_does_not_take_the_other_views_off_the_file() {
 }
 
 #[test]
-fn keys_v_shows_what_each_row_runs_and_the_next_view_opens_on_the_same_wall() {
+fn keys_v_shows_what_each_row_runs_then_how_full_it_is_and_the_next_view_opens_on_the_same_wall() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
     let path = root.path().join("view.json");
@@ -2391,34 +2395,68 @@ fn keys_v_shows_what_each_row_runs_and_the_next_view_opens_on_the_same_wall() {
             .act(KeyEvent::from(key), root.path(), &config, None)
             .unwrap();
     };
+    let kept = |path: &Path| {
+        let remembered = Remembered::read(path);
+        (remembered.vendor, remembered.context)
+    };
 
-    assert!(!screen.vendor, "the wall opens without the column");
+    assert_eq!(
+        screen.extra,
+        Extra::Off,
+        "the wall opens without the column"
+    );
     press(&mut screen, KeyCode::Char('v'));
-    assert!(screen.vendor, "and the key puts it up");
-    assert!(
-        Remembered::read(&path).vendor,
+    assert_eq!(
+        screen.extra,
+        Extra::Vendor,
+        "the key puts up what each runs"
+    );
+    assert_eq!(
+        kept(&path),
+        (true, false),
         "written as it is pressed, the way the arrangement is"
     );
 
-    // Pressing it again hides the column, and that is saved too.
     press(&mut screen, KeyCode::Char('v'));
-    assert!(!screen.vendor);
-    assert!(!Remembered::read(&path).vendor);
+    assert_eq!(
+        screen.extra,
+        Extra::Context,
+        "then how full each one's window is"
+    );
+    assert_eq!(kept(&path), (false, true));
+
+    press(&mut screen, KeyCode::Char('v'));
+    assert_eq!(screen.extra, Extra::Off, "then neither");
+    assert_eq!(kept(&path), (false, false));
 
     // The next view opens with the column as the file says.
     press(&mut screen, KeyCode::Char('v'));
+    press(&mut screen, KeyCode::Char('v'));
     let next = Screen {
-        vendor: Remembered::read(&path).vendor,
+        extra: Extra::kept(&Remembered::read(&path)),
         ..Screen::default()
     };
-    assert!(
-        next.vendor,
+    assert_eq!(
+        next.extra,
+        Extra::Context,
         "the next view opens where the last one was left"
     );
 
-    // A file from an older amx without `vendor` reads with the column hidden.
+    // A file from an older amx, with `vendor` and no `context`, opens on the
+    // vendor column; one without either opens with none.
+    std::fs::write(&path, b"{\"vendor\": true}\n").unwrap();
+    assert_eq!(Extra::kept(&Remembered::read(&path)), Extra::Vendor);
     std::fs::write(&path, b"{\"statusline\": true}\n").unwrap();
-    assert!(!Remembered::read(&path).vendor);
+    assert_eq!(Extra::kept(&Remembered::read(&path)), Extra::Off);
+    // A `context` that does not read costs only itself.
+    std::fs::write(
+        &path,
+        b"{\"vendor\": true, \"context\": \"yes\", \"statusline\": true}\n",
+    )
+    .unwrap();
+    let forged = Remembered::read(&path);
+    assert!(forged.statusline, "the rest of the file still reads");
+    assert_eq!(Extra::kept(&forged), Extra::Vendor);
 }
 
 #[test]
@@ -5857,11 +5895,11 @@ fn standing(screen: &Screen) -> String {
     };
     let dials = &screen.profile;
     format!(
-        "{mode} · {look} · {notice} · {:?} · {:?} · {} · {} · {} {} {} {} {}",
+        "{mode} · {look} · {notice} · {:?} · {:?} · {} · {:?} · {} {} {} {} {}",
         screen.list,
         screen.card.as_ref().map(|card| (&card.id, card.changes)),
         screen.scroll.away.get(),
-        screen.vendor,
+        screen.extra,
         dials.agent,
         dials.model,
         dials.permission,
