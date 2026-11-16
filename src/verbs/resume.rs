@@ -427,9 +427,13 @@ pub(crate) fn without_session(
     let mut command: Vec<String> = Vec::new();
 
     while let Some(word) = words.next() {
-        // The task, possibly with a brief in front and a popup space after.
-        // An empty task matches nothing.
-        if words.peek().is_none() && !handoff.task.is_empty() && word.ends_with(&task) {
+        // The task, possibly with a brief in front and a popup space after,
+        // or without one where the record predates the vendor's popup. An
+        // empty task matches nothing.
+        if words.peek().is_none()
+            && !handoff.task.is_empty()
+            && (word.ends_with(&task) || word.ends_with(&handoff.task))
+        {
             break;
         }
         // The end-of-options word `new` put before the task goes with it.
@@ -898,6 +902,28 @@ mod tests {
             build_continuation(&messaged, "def-456", Some(&ELSEWHERE)),
             ["second", "again", "def-456"]
         );
+    }
+
+    #[test]
+    fn resume_drops_a_task_recorded_before_its_vendor_named_the_popup() {
+        // codex took `$` as a popup character after records like this one
+        // were written, so the task word has no trailing space.
+        let codex = crate::registry::entry("codex");
+        let old = handoff(
+            &["codex", "--no-daemon", "--", "fix it $review"],
+            "fix it $review",
+        );
+        let new = handoff(
+            &["codex", "--no-daemon", "--", "fix it $review "],
+            "fix it $review",
+        );
+        for started in [old, new] {
+            let command = build_continuation(&started, "abc-123", codex);
+            assert!(
+                !command.iter().any(|word| word.contains("$review")),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
