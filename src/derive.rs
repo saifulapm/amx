@@ -919,6 +919,11 @@ fn read_beside(
         {
             told(Phase::Working, Evidence::Hooks, Some(&rule.name))
         }
+        // A usage limit leaves claude at its prompt, and esc there changes
+        // nothing: the vendor resumes the turn itself, and its hooks say so.
+        Claim::Ruled(rule) if rule.state == Phase::Idle && state.state == Phase::Limited => {
+            told(Phase::Limited, Evidence::Hooks, Some(&rule.name))
+        }
         Claim::Ruled(rule) => Reading {
             verdict: Verdict {
                 phase: rule.state,
@@ -944,7 +949,9 @@ fn read_beside(
         // claims, since the vendor would have reported the turn ending or its
         // question. A record mid-turn does not: that screen may be a question
         // amx missed.
-        Claim::Unclaimed if reports && matches!(state.state, Phase::Idle | Phase::Waiting) => {
+        Claim::Unclaimed
+            if reports && matches!(state.state, Phase::Idle | Phase::Waiting | Phase::Limited) =>
+        {
             told(state.state, Evidence::Hooks, None)
         }
         // The vendor's own word on the session breaks the tie, except an idle
@@ -4031,6 +4038,40 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     }
 
     #[test]
+    fn records_reads_a_state_this_build_has_never_heard_of_as_unknown() {
+        // As an amx from before `limited` reads a newer record: the phase is
+        // unknown, the row is still listed, and the rest of it reads.
+        let root = TempDir::new().unwrap();
+        let mut limited = state(Phase::Limited, 1_000);
+        limited.resumes_at = 5_000;
+        limited.summary = Some("Running Bash".to_string());
+        a_newer_record(root.path(), &limited, |document| {
+            assert_eq!(document["state"], "limited");
+            assert_eq!(document["resumes_at"], 5_000);
+            document["state"] = "becalmed".into();
+        });
+
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(records.len(), 1, "the agent is still listed");
+        assert_eq!(records[0].state.state, Phase::Unknown);
+        assert_eq!(records[0].state.resumes_at, 5_000);
+        assert_eq!(records[0].state.summary, limited.summary);
+    }
+
+    #[test]
+    fn records_reads_a_limited_record_and_an_error_back_whole() {
+        let root = TempDir::new().unwrap();
+        let mut errored = state(Phase::Idle, 1_000);
+        errored.error = Some("overloaded".to_string());
+        a_newer_record(root.path(), &errored, |document| {
+            assert_eq!(document["error"], "overloaded");
+            assert!(document.get("resumes_at").is_none(), "0 is not written");
+        });
+        let records = records(root.path()).expect("the walk to finish");
+        assert_eq!(records[0].state, errored);
+    }
+
+    #[test]
     fn records_reads_an_answer_source_this_build_has_never_heard_of_as_unknown() {
         let root = TempDir::new().unwrap();
         let mut ended = state(Phase::Idle, 1_000);
@@ -4653,6 +4694,81 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         )
         .verdict;
         assert_eq!(verdict.phase, Phase::Working, "{verdict:?}");
+    }
+
+    #[test]
+    fn reader_keeps_a_limited_turn_limited_over_a_prompt_esc_and_the_sessions_file() {
+        // claude draws its prompt under the limit's words, and neither esc
+        // nor its sessions file ends the wait: it resumes the turn itself.
+        let limited = State {
+            resumes_at: 5_000,
+            ..state(Phase::Limited, 1_000)
+        };
+        let look = |now, screen: &str, session: Option<Phase>| {
+            read_beside(
+                &limited,
+                0,
+                true,
+                || Some(screen.to_string()),
+                rules::of("claude"),
+                true,
+                now,
+                SETTLED_LOOKS,
+                None,
+                || session,
+            )
+            .verdict
+        };
+        for (now, screen, session) in [
+            (1_004, IDLE_SCREEN, None),
+            (1_020, IDLE_SCREEN, Some(Phase::Idle)),
+            (90_000, IDLE_SCREEN, None),
+            (1_002, AN_INTERRUPTED_SCREEN, None),
+            (1_020, AN_INTERRUPTED_SCREEN, None),
+            (1_020, A_SHELL, Some(Phase::Idle)),
+            (90_000, A_SHELL, None),
+        ] {
+            let verdict = look(now, screen, session);
+            assert_eq!(verdict.phase, Phase::Limited, "{now} {screen:?}");
+            assert_eq!(verdict.evidence, Evidence::Hooks, "{now} {screen:?}");
+        }
+
+        // A turn running on screen, or a menu, is what the pane says.
+        assert_eq!(look(1_020, A_WORKING_SCREEN, None).phase, Phase::Working);
+        assert_eq!(look(1_020, A_MENU, None).phase, Phase::Waiting);
+
+        // A pane that went is stopped, limit or not.
+        let gone = read(
+            &limited,
+            0,
+            false,
+            || None,
+            rules::of("claude"),
+            true,
+            1_020,
+            1,
+            None,
+        );
+        assert_eq!(gone.verdict.phase, Phase::Stopped);
+    }
+
+    #[test]
+    fn reader_writes_no_turn_end_over_a_limited_record() {
+        let limited = state(Phase::Limited, 1_000);
+        let reading = read(
+            &limited,
+            0,
+            true,
+            || Some(IDLE_SCREEN.to_string()),
+            rules::of("claude"),
+            true,
+            1_020,
+            SETTLED_LOOKS,
+            None,
+        );
+        let mut claude = meta();
+        claude.agent = Some("claude".to_string());
+        assert_eq!(went_unsaid(&claude, &limited, &reading), None);
     }
 
     #[test]
