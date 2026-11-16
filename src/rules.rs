@@ -86,7 +86,8 @@ pub struct Rule {
     /// Whether every anchor must be on the row directly above the composer,
     /// as found by the furniture walk. That is where a vendor that spins a
     /// line above its box spins it; the same words elsewhere are elision or
-    /// agent output.
+    /// agent output. With `within`, an anchor may also be on a row the line
+    /// wrapped from, its indented continuation running down to that row.
     #[serde(default)]
     pub over_composer: bool,
     /// Whether `any` anchors count only where they open a row, past indent or
@@ -281,9 +282,20 @@ impl Rule {
             },
             false => None,
         };
+        // With a window, the line over the composer may have wrapped up into
+        // the rows above it: an anchor counts there too, on a row whose
+        // continuation (indented, as claude indents a wrap) runs down to it.
+        let shown = screen.rows();
+        let wraps_into = |row: usize, over: usize| {
+            row < over
+                && self.within.is_some_and(|within| over - row < within)
+                && shown[row + 1..=over]
+                    .iter()
+                    .all(|below| below.starts_with(char::is_whitespace))
+        };
         let placed = |rows: Vec<usize>| -> Vec<usize> {
             rows.into_iter()
-                .filter(|&row| over.is_none_or(|over| row == over))
+                .filter(|&row| over.is_none_or(|over| row == over || wraps_into(row, over)))
                 .collect()
         };
 
@@ -914,7 +926,7 @@ pub(crate) mod tests {
     ///
     /// A finished turn's line also opens with `✻`, so the words after the
     /// glyph are the anchor.
-    const BACKGROUND_270_100: &str = "\
+    pub(crate) const BACKGROUND_270_100: &str = "\
 ✻ Waiting for 1 background agent to finish
                                                                                   ● high · /effort
 ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -925,6 +937,26 @@ pub(crate) mod tests {
 
   ● main
   ◯ general-purpose  Preparing to run `sleep 45`                              48s · ↓ 10.2k tokens
+";
+
+    /// The background line left in scrollback once its agent finished: the
+    /// turn the agent's result started is over, and the line sits six rows
+    /// above the composer. Built from [`BACKGROUND_270_100`] and the finished
+    /// turn claude 2.1.270 draws under it.
+    pub(crate) const BACKGROUND_STALE_270_100: &str = "\
+✻ Waiting for 1 background agent to finish
+
+● Agent \"general-purpose\" finished: slept 45 seconds.
+
+● The subagent is done; nothing else is running.
+
+✻ Brewed for 4s
+                                                                                  ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5 (1M context) (1M context) │ ◈ 2% │ measure-270 │ ◖ high
+  ⏵⏵ auto mode on (shift+tab to cycle)
 ";
 
     /// At 54 columns. The agents panel elides its subagent's label to
@@ -3307,6 +3339,16 @@ claude-haiku-5-5
                 assert_eq!(claimed.phase(), None, "{what}: the record decides");
             }
         }
+    }
+
+    #[test]
+    fn rules_a_background_line_left_in_scrollback_is_not_a_turn() {
+        // The line stays on screen after its agents finish, so it read
+        // working anywhere in the floor and flapped with every hook.
+        let rules = claude();
+        let claimed = claim(rules, BACKGROUND_STALE_270_100, Phase::Idle);
+        assert_eq!(claimed.rule_name(), Some("idle_prompt"), "{claimed:?}");
+        assert_ne!(claimed.phase(), Some(Phase::Working));
     }
 
     #[test]

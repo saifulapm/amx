@@ -387,12 +387,17 @@ over_composer = true
 # `background` at most one row down, so `within` is 3. No `not_below`: the
 # composer and footer are always under it. This is a reading only; it never
 # overwrites what the hooks recorded.
+#
+# `over_composer`: the line stays in scrollback once the agents finish, and a
+# finished agent read working under it. It counts only where it ends on the
+# row over the composer; `within` lets its wrapped rows sit above that row.
 [[rule]]
 name = "background_agents"
 state = "working"
 all = ["✻ waiting for"]
 any = ["background"]
 within = 3
+over_composer = true
 
 # The agent's own screen with the agents panel focused, as down from an empty
 # composer leaves it. claude 2.1.311 puts the panel's key hint on the mode

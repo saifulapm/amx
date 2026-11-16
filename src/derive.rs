@@ -4266,6 +4266,28 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     }
 
     #[test]
+    fn reader_reads_a_finished_agent_idle_under_an_old_background_line() {
+        use crate::rules::tests::{BACKGROUND_270_100, BACKGROUND_STALE_270_100};
+        let verdict = decided(
+            &state(Phase::Idle, 1_000),
+            true,
+            Some(BACKGROUND_STALE_270_100),
+            1_020,
+        );
+        assert_eq!(verdict.phase, Phase::Idle, "{verdict:?}");
+
+        // The same line over the composer, mid-turn, is the turn.
+        let live = decided(
+            &state(Phase::Working, 1_000),
+            true,
+            Some(BACKGROUND_270_100),
+            1_020,
+        );
+        assert_eq!(live.phase, Phase::Working, "{live:?}");
+        assert_eq!(live.rule.as_deref(), Some("background_agents"), "{live:?}");
+    }
+
+    #[test]
     fn reader_says_unknown_rather_than_guessing() {
         let verdict = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_500);
         assert_eq!(verdict.phase, Phase::Unknown);
