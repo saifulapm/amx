@@ -167,7 +167,7 @@ stopped agents and agents whose worktree is still on disk.
 Show one agent: its state, where that state came from, and details.
 
 ```sh
-amx status <ID> [--json]
+amx status <ID> [--json | --why]
 ```
 
 ```
@@ -182,6 +182,20 @@ abc-5vo  failed
 
 Messages sent and not yet taken by the agent are listed as `queued`.
 `--json` prints one object with the same fields as `ls --json` plus `queued`.
+A claude that has sent no hook in the 15 seconds since its spawn gets a
+`no hooks` line: its hooks are not wired where it reads them, which
+`amx doctor` checks.
+
+`--why` prints every signal the state is read from, one line each, whichever
+decided:
+
+```
+$ amx status --why abc-5vo
+hooks: Stop 42s ago
+screen: background_tasks, which leaves it to the record
+session file: idle (pid 4242)
+background: 1 shell, 0 agents
+```
 
 ## result
 

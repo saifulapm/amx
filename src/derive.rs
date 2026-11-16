@@ -1001,11 +1001,31 @@ fn session_says(meta: &Meta, running: impl Fn(u32) -> Option<String>) -> Option<
         return None;
     }
     let session = meta.session.as_deref()?;
+    let dirs = session_dirs(meta);
+    crate::loose::phase_of(&crate::loose::live_file(&dirs, session, running)?.status)
+}
+
+/// Seconds after a spawn by which a vendor that reports should have said
+/// something. claude sends SessionStart within a second or two.
+pub const NO_HOOKS_AFTER: u64 = 15;
+
+/// Whether a vendor that reports through hooks has sent none since its spawn
+/// [`NO_HOOKS_AFTER`] seconds ago: its hooks are not wired where it reads
+/// them, or it runs with them off. Its phase is read off the screen alone.
+pub fn no_hooks(view: &View, now: u64) -> bool {
+    reports(vendor_of(&view.meta))
+        && view.state.last_event == 0
+        && !view.phase().is_terminal()
+        && now.saturating_sub(view.meta.created) > NO_HOOKS_AFTER
+}
+
+/// The claude account directories whose sessions files may hold this
+/// record's session; see [`crate::loose::config_dirs`].
+pub(crate) fn session_dirs(meta: &Meta) -> Vec<std::path::PathBuf> {
     let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-    let home = std::env::home_dir()?;
+    let home = std::env::home_dir().unwrap_or_default();
     let config = crate::config::for_dir(&meta.dir).0;
-    let dirs = crate::loose::config_dirs(&env, &home, &config);
-    crate::loose::phase_of(&crate::loose::status_of(&dirs, session, running)?)
+    crate::loose::config_dirs(&env, &home, &config)
 }
 
 /// Reads a running command: working for as long as its pane is there.
@@ -4556,6 +4576,39 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                 never,
             );
         }
+    }
+
+    #[test]
+    fn reader_says_no_hooks_once_a_spawn_has_gone_15_seconds_without_one() {
+        let mut claude = meta();
+        claude.agent = Some("claude".to_string());
+        claude.created = 1_000;
+        let unheard = View::new(
+            claude.clone(),
+            State::default(),
+            verdict(Phase::Unknown, Evidence::Unknown, None),
+        );
+        assert!(
+            !no_hooks(&unheard, 1_015),
+            "fifteen seconds is still the start"
+        );
+        assert!(no_hooks(&unheard, 1_016));
+
+        // One hook is enough, and a vendor without hooks never had any.
+        let heard = View::new(
+            claude.clone(),
+            state(Phase::Working, 1_002),
+            verdict(Phase::Working, Evidence::Hooks, None),
+        );
+        assert!(!no_hooks(&heard, 1_016));
+        let mut command = claude;
+        command.agent = None;
+        let command = View::new(
+            command,
+            State::default(),
+            verdict(Phase::Working, Evidence::Screen, None),
+        );
+        assert!(!no_hooks(&command, 1_016));
     }
 
     #[test]

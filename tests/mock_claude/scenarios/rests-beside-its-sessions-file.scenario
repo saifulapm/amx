@@ -1,0 +1,9 @@
+# A claude whose turn ended with a background shell still running, at its
+# prompt, and whose sessions file says idle.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "start the server"}
+hook Stop {"last_assistant_message": "started", "background_tasks": [{"id": "b1", "type": "shell", "status": "running"}]}
+sessionfile idle
+print ❯
+print   ⏵⏵ auto mode on · 1 shell
+sleep 600000

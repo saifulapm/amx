@@ -98,7 +98,9 @@ fn run(cli: &cli::Cli) -> i32 {
             *json,
             dir.as_deref().or(cli.dir.as_deref()),
         )),
-        Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
+        Some(cli::Command::Status { id, json, why }) => {
+            finish(verbs::status::from_env(id, *json, *why))
+        }
         Some(cli::Command::Send {
             id,
             text,

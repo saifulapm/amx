@@ -111,6 +111,10 @@ pub enum Command {
         /// Print stable JSON instead of the summary.
         #[arg(long)]
         json: bool,
+        /// Print every signal the state is read from: the hooks, the screen,
+        /// claude's sessions file and the background work.
+        #[arg(long, conflicts_with = "json")]
+        why: bool,
     },
 
     /// Send a message to a working or idle agent.

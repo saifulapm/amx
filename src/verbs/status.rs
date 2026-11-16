@@ -12,10 +12,91 @@ use crate::verbs::send;
 use crate::{exit, paths};
 
 /// Run the verb against the machine.
-pub fn from_env(id: &str, json: bool) -> Result<i32> {
+pub fn from_env(id: &str, json: bool, why: bool) -> Result<i32> {
     let root = paths::state_root()?;
     let mut out = std::io::stdout().lock();
-    run(&root, id, json, now(), &mut out)
+    match why {
+        true => {
+            let view = derive::view(&root, id, now())?;
+            let pane = crate::tmux::Server::from_socket(view.meta.socket.clone())
+                .capture(&view.meta.pane)
+                .ok();
+            let file = view.meta.session.as_deref().and_then(|session| {
+                crate::loose::live_file(
+                    &derive::session_dirs(&view.meta),
+                    session,
+                    crate::loose::claude_start,
+                )
+            });
+            let events = Agent::open(&root, id)?.events()?;
+            signals(
+                &view,
+                &events,
+                pane.as_deref(),
+                file.as_ref(),
+                now(),
+                &mut out,
+            )?;
+            Ok(exit::OK)
+        }
+        false => run(&root, id, json, now(), &mut out),
+    }
+}
+
+/// `--why`: one line per signal the phase is read from, whichever decided.
+fn signals(
+    view: &View,
+    events: &[crate::store::Event],
+    pane: Option<&str>,
+    file: Option<&crate::loose::Loose>,
+    now: u64,
+    out: &mut impl Write,
+) -> Result<()> {
+    // The vendor's last word, by the name it gave it.
+    let heard = events
+        .iter()
+        .rev()
+        .find_map(|event| event.payload["hook_event_name"].as_str());
+    match (heard, view.state.last_event) {
+        (Some(kind), at) if at > 0 => {
+            writeln!(out, "hooks: {kind} {}s ago", now.saturating_sub(at))?
+        }
+        _ => writeln!(
+            out,
+            "hooks: none since the spawn {}s ago",
+            now.saturating_sub(view.meta.created)
+        )?,
+    }
+
+    let rules = crate::rules::of(view.meta.agent.as_deref().unwrap_or_default());
+    match pane.map(|pane| rules.claim(pane, view.phase(), u64::MAX)) {
+        None => writeln!(out, "screen: not read; the pane did not answer")?,
+        Some(crate::rules::Claim::Unclaimed) => writeln!(out, "screen: no rule matches")?,
+        Some(crate::rules::Claim::Ruled(rule) | crate::rules::Claim::Unsettled(rule)) => {
+            match rule.defers {
+                true => writeln!(out, "screen: {}, which leaves it to the record", rule.name)?,
+                false => writeln!(out, "screen: {}, which reads {}", rule.name, rule.state)?,
+            }
+        }
+    }
+
+    match file {
+        Some(file) => writeln!(out, "session file: {} (pid {})", file.status, file.pid)?,
+        None => writeln!(out, "session file: none")?,
+    }
+
+    let background = view.background();
+    let counted = |n: u32, one: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
+    };
+    writeln!(
+        out,
+        "background: {}, {}",
+        counted(background.shells, "shell"),
+        counted(background.agents, "agent")
+    )?;
+    Ok(())
 }
 
 /// The verb, with the state directory and the clock named.
@@ -45,6 +126,13 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
 fn report(view: &View, queued: &[String], now: u64, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}  {}", view.id(), view.state_words())?;
     writeln!(out, "  evidence  {}", evidence(view, now))?;
+    if derive::no_hooks(view, now) {
+        writeln!(
+            out,
+            "  hooks     no hooks: none in the {}s since the spawn; `amx doctor` checks the wiring",
+            now.saturating_sub(view.meta.created)
+        )?;
+    }
     if let Some(question) = &view.state.question {
         say(out, "asking", question)?;
         for choice in send::numbered(&view.state.options) {

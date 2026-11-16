@@ -694,6 +694,59 @@ fn the_offer_runs_to_the_choices_that_were_read_off_the_screen() {
 }
 
 #[test]
+fn status_why_names_every_signal_the_state_is_read_from() {
+    let amx = Harness::new();
+    let id = "serve-a1b";
+    amx.play(id, "rests-beside-its-sessions-file");
+    amx.until_shown(id, "· 1 shell");
+
+    let out = amx.amx(&["status", "--why", id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    let line = |label: &str| {
+        said.lines()
+            .find(|line| line.starts_with(label))
+            .unwrap_or_else(|| panic!("no `{label}` line: {said:?}"))
+            .to_string()
+    };
+    let hooks = line("hooks: ");
+    assert!(hooks.starts_with("hooks: Stop "), "the last event: {hooks}");
+    assert!(hooks.ends_with("s ago"), "and its age: {hooks}");
+    assert_eq!(line("screen: "), "screen: idle_prompt, which reads idle");
+    let file = line("session file: ");
+    assert!(file.starts_with("session file: idle (pid "), "{file}");
+    assert_eq!(line("background: "), "background: 1 shell, 0 agents");
+}
+
+#[test]
+fn status_says_no_hooks_when_a_spawn_has_sent_none() {
+    // A claude whose hooks are not wired where it reads them still starts,
+    // and nothing else would say why its row never moves.
+    let amx = Harness::new();
+    let id = "quiet-a1b";
+    amx.play(id, "unrecognisable");
+    amx.until_shown(id, "README.md");
+    // The harness dates its records from the epoch; this one was just spawned.
+    let spawned = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    amx.set_meta(id, json!({ "created": spawned }));
+
+    let said = |text: &str| {
+        text.lines()
+            .any(|line| line.trim_start().starts_with("hooks     no hooks"))
+    };
+    let early = stdout(&amx.amx(&["status", id]));
+    assert!(!said(&early), "too soon to say: {early}");
+
+    std::thread::sleep(std::time::Duration::from_secs(16));
+    let out = amx.amx(&["status", id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(said(&stdout(&out)), "{}", stdout(&out));
+}
+
+#[test]
 fn status_neutralises_the_task_it_quotes() {
     // The task is untrusted text printed to a terminal, so escapes and bidi
     // overrides in it must be neutralised.

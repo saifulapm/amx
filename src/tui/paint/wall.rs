@@ -104,6 +104,10 @@ pub(super) fn first_drawn(list: &List, visible: u16, scroll: &WallScroll) -> usi
     top
 }
 
+/// What a row says of a claude that has sent no hook since its spawn; see
+/// [`crate::derive::no_hooks`].
+const NO_HOOKS: &str = "no hooks";
+
 /// Per-frame view state the rows need that is not part of any agent's record.
 #[derive(Clone, Copy)]
 pub(super) struct Moment<'a> {
@@ -384,10 +388,16 @@ fn row(
         // out, so the summary opens with the words where they say more.
         None => {
             let line = verbs::inert_line(view.line().unwrap_or(""));
-            match widths.state == 0 && words != phase.word() {
+            let line = match widths.state == 0 && words != phase.word() {
                 false => line,
                 true if line.is_empty() => words.clone(),
                 true => format!("{words} · {line}"),
+            };
+            // A claude whose hooks never fired is read off its screen alone.
+            match crate::derive::no_hooks(view, crate::store::now()) {
+                false => line,
+                true if line.is_empty() => NO_HOOKS.to_string(),
+                true => format!("{NO_HOOKS} · {line}"),
             }
         }
     };
@@ -2266,6 +2276,33 @@ mod tests {
             word_colour(&resting, size, 3, "idle"),
             theme().done,
             "at its prompt the word wears idle's colour"
+        );
+    }
+
+    #[test]
+    fn rows_say_no_hooks_for_a_claude_that_has_sent_none_since_its_spawn() {
+        // Its phase is read off the screen alone, and nothing else would say
+        // why the row never moves.
+        let mut unheard = view("quiet-a1b", Phase::Unknown, Some("Running Bash"), 3);
+        unheard.state.last_event = 0;
+        let screen = showing(
+            vec![
+                unheard,
+                view("heard-b2c", Phase::Working, Some("Running Bash"), 3),
+            ],
+            None,
+        );
+        let lines = painted(&screen, (80, 12));
+        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap();
+        assert!(
+            row("quiet-a1b").contains("no hooks · Running Bash"),
+            "{:?}",
+            row("quiet-a1b")
+        );
+        assert!(
+            !row("heard-b2c").contains("no hooks"),
+            "{:?}",
+            row("heard-b2c")
         );
     }
 
