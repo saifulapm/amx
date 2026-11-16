@@ -925,7 +925,16 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.turn_open = false;
             state.summary = None;
             state.asks(None);
-            let class = payload["error"].as_str().unwrap_or("unknown");
+            // Every verb prints the class, and anything in the pane can send
+            // this hook, so only a short lowercase word is kept: claude's
+            // thirteen classes all are.
+            let class = payload["error"]
+                .as_str()
+                .filter(|class| {
+                    (1..=40).contains(&class.len())
+                        && class.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                })
+                .unwrap_or("unknown");
             match !hooks.limit_error.is_empty() && class == hooks.limit_error {
                 true => {
                     state.state = Phase::Limited;
@@ -4680,6 +4689,37 @@ mod tests {
         );
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.error.as_deref(), Some("unknown"), "no class named");
+    }
+
+    #[test]
+    fn hook_an_error_that_is_not_a_short_class_is_stored_as_unknown() {
+        // Anything in the pane can send the hook, and every verb prints the
+        // class: escapes, a line break or a page of text would reach the
+        // terminal of whoever runs `amx ls`.
+        let long = "x".repeat(10_000);
+        for forged in [
+            json!("bad\u{1b}[31mRED\u{1b}[0m\nline2\r\u{1b}]0;pwn\u{7}end"),
+            json!(long),
+            json!("Overloaded"),
+            json!("rate limit"),
+            json!(""),
+            json!(529),
+            json!(null),
+        ] {
+            let mut state = mid_turn();
+            let mut payload = failed("overloaded", "API Error");
+            payload["error"] = forged.clone();
+            apply(&payload, &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Idle, "{forged}");
+            assert_eq!(state.error.as_deref(), Some("unknown"), "{forged}");
+        }
+        let mut state = mid_turn();
+        apply(
+            &failed("cloud_credential_error", ""),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.error.as_deref(), Some("cloud_credential_error"));
     }
 
     #[test]
