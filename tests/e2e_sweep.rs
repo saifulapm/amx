@@ -21,10 +21,7 @@ fn sweep(amx: &Harness, args: &[&str]) -> Output {
 
 /// Run `amx sweep` with `bin` first on PATH.
 fn sweep_with(amx: &Harness, bin: &Path, args: &[&str]) -> Output {
-    let path = match std::env::var("PATH") {
-        Ok(rest) => format!("{}:{rest}", bin.display()),
-        Err(_) => bin.display().to_string(),
-    };
+    let path = common::path_with(bin);
     amx.amx_command(&[&["sweep"], args].concat())
         .env("PATH", path)
         .output()

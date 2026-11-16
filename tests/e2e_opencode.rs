@@ -45,10 +45,9 @@ fn path_to_opencode(amx: &Harness) -> String {
         std::os::unix::fs::symlink(AMX, bin.join("amx")).expect("amx on the PATH");
     }
     let ours = format!("{}:{}", bin.display(), fixtures().display());
-    match std::env::var("PATH") {
-        Ok(rest) => format!("{ours}:{rest}"),
-        Err(_) => ours,
-    }
+    // The suite's quiet notify-send before the rest, so no question raises
+    // a real notice.
+    format!("{ours}:{}", common::quiet_path())
 }
 
 /// Run amx with mock opencode on PATH, playing `scenario_name`.

@@ -31,11 +31,7 @@ fn as_claude(amx: &Harness, id: &str, repo: &Path, scenario: &str) -> String {
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
     std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
 
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = format!("{}:{}", bin.display(), common::quiet_path());
     let out = amx
         .amx_command(&[
             "new",

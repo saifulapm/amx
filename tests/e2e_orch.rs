@@ -354,7 +354,7 @@ fn a_send_whose_enter_failed_leaves_no_turn_open_and_its_words_held() {
     amx.until_state(id, "idle");
 
     let bin = a_tmux_that_drops_the_enter(&amx);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let path = common::path_with(&bin);
     let out = amx
         .amx_command(&["send", id, "and now the linter"])
         .env("PATH", &path)

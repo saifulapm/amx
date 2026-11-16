@@ -40,10 +40,9 @@ fn scenario(name: &str) -> PathBuf {
 /// `PATH` with the stand-in's directory in front, so `pi` resolves to it.
 fn path_to_pi() -> String {
     let ours = fixtures().to_string_lossy().into_owned();
-    match std::env::var("PATH") {
-        Ok(rest) => format!("{ours}:{rest}"),
-        Err(_) => ours,
-    }
+    // The suite's quiet notify-send before the rest, so no question raises
+    // a real notice.
+    format!("{ours}:{}", common::quiet_path())
 }
 
 /// Run amx with the stand-in on `PATH`, set to play `scenario_name`.

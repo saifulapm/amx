@@ -34,11 +34,7 @@ fn as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
 /// PATH with `dirs` in front.
 fn on_path(dirs: &[&Path]) -> String {
     let ours: Vec<String> = dirs.iter().map(|dir| dir.display().to_string()).collect();
-    format!(
-        "{}:{}",
-        ours.join(":"),
-        std::env::var("PATH").unwrap_or_default()
-    )
+    format!("{}:{}", ours.join(":"), common::quiet_path())
 }
 
 /// Run amx with the stand-in in `tests/<stand_in>` on PATH, playing the
