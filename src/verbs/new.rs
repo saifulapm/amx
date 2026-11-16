@@ -174,7 +174,9 @@ fn harness_for(config: &Config, model: &str) -> Result<&'static Vendor, String> 
 fn takes_unlisted(vendor: &Vendor, list: &[String], model: &str) -> bool {
     vendor.models == Models::Cycle
         && list.is_empty()
-        && model.contains('/')
+        && model
+            .split_once('/')
+            .is_some_and(|(provider, id)| !provider.is_empty() && !id.is_empty())
         && vendor.model.is_some_and(|dial| dial.open)
 }
 
@@ -1530,6 +1532,12 @@ mod tests {
             "says the form it takes, not an empty list: {refusal}"
         );
         assert!(!refusal.contains("accepts ;"), "{refusal}");
+        for half in ["/longcat", "opencode/", "/"] {
+            assert!(
+                Launch::resolve(&config, &spawn(None, [Some(half), None, None])).is_err(),
+                "{half:?} names no provider and model"
+            );
+        }
 
         // A harness that lists its models is held to its list.
         let claudes = listing(&[("pi", &["openai/gpt-5"]), ("codex", &["gpt-5.5"])]);
