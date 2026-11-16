@@ -916,7 +916,7 @@ fn glyphs_wear_a_dollar_on_the_rows_running_a_command() {
 }
 
 #[test]
-fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
+fn keys_v_says_which_vendor_model_and_effort_each_row_runs_then_how_full_its_context_is() {
     let amx = Harness::new();
     // An agent with model and effort set, one with neither, and a shell row,
     // which has no vendor.
@@ -929,6 +929,11 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
     let pane = a_pane_showing(&amx, &["cargo build"]);
     amx.record("build-c3d", &pane);
     amx.set_meta("build-c3d", json!({ "agent": null }));
+    // What the hook keeps once claude reported 412,000 tokens on a model
+    // with a million-token window.
+    let mut state = amx.state("fix-login-a1b");
+    state["context"] = json!({ "tokens": 412_000, "window": 1_000_000 });
+    amx.set_state("fix-login-a1b", state);
 
     let ids = ["fix-login-a1b", "port-b2c", "build-c3d"];
     // All three rows or None. The view has no synchronized output, so a
@@ -982,12 +987,26 @@ fn keys_v_says_which_vendor_model_and_effort_each_row_runs() {
         );
     }
 
+    // A second press turns the column to how full each context is: the
+    // agent whose vendor reported usage says so, the others leave it blank.
     press(&amx, &view, "v");
-    amx.until("the wall without it", || {
+    let gauged = amx.until("how full each context is", || {
+        let drawn = amx.capture(&view);
+        let said = rows(&drawn)?;
+        said[0].contains("ctx 41% · 412k").then_some(said)
+    });
+    assert!(
+        gauged.iter().all(|row| !row.contains("claude")),
+        "in place of the vendor column, not beside it: {gauged:?}"
+    );
+    assert!(!gauged[1].contains("ctx"), "{:?}", gauged[1]);
+
+    press(&amx, &view, "v");
+    amx.until("the wall without either", || {
         let drawn = amx.capture(&view);
         rows(&drawn)?
             .iter()
-            .all(|row| !row.contains("claude"))
+            .all(|row| !row.contains("claude") && !row.contains("ctx"))
             .then_some(())
     });
 
