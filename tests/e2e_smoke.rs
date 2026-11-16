@@ -9,6 +9,15 @@ use common::Harness;
 use std::process::Command;
 
 #[test]
+fn the_harness_runs_amx_in_its_home_not_in_the_checkout() {
+    // cargo runs a test in the checkout, where an `amx new` naming no `--dir`
+    // would cut its tree and branch (483849b5).
+    let amx = Harness::new();
+    let command = amx.amx_command(&["new", "--exec", "true"]);
+    assert_eq!(command.get_current_dir(), Some(amx.home()));
+}
+
+#[test]
 fn a_scenario_moves_the_record_through_a_turn() {
     let amx = Harness::new();
     let pane = amx.play("fix-login-a1b", "happy-turn");

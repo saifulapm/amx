@@ -90,6 +90,9 @@ impl Harness {
         let mut command = Command::new(AMX);
         command
             .args(args)
+            // Not the checkout cargo runs the test in, where an `amx new`
+            // naming no `--dir` would cut a tree and branch.
+            .current_dir(self.home.path())
             .env("AMX_STATE_DIR", self.state.path())
             .env("HOME", self.home.path())
             // XDG_CONFIG_HOME would otherwise point at the developer's config.
