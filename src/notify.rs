@@ -99,11 +99,22 @@ impl Asked {
     /// both to the answer, whose own check under the writer then covers
     /// everything logged between this check and the keys.
     fn still_asked(&self) -> Option<crate::derive::View> {
-        let now = self.agent.state().ok()?;
-        if now.state != Phase::Waiting {
+        // Read as `amx answer` reads it, pane and all: claude says nothing
+        // between the key that answers its box at the keyboard and the end
+        // of the tool it allowed, so only the screen says the box has gone.
+        let root = self.agent.dir().parent()?;
+        let view = crate::derive::view(root, self.agent.id(), crate::store::now()).ok()?;
+        if view.phase() != Phase::Waiting {
             return None;
         }
-        let view = waiting_on(&self.agent.meta().ok()?, &now);
+        // For a few seconds after an event the reading takes the record's
+        // word over the screen, so the screen is asked here too: a click
+        // types only while a box is still drawn.
+        let screen = Server::from_socket(view.meta.socket.clone())
+            .capture(&view.meta.pane)
+            .ok()?;
+        let rules = crate::rules::of(view.meta.agent.as_deref().unwrap_or_default());
+        rules.asking(&screen)?;
         let posted = &self.view.state;
         let same = view.state.question == posted.question && view.state.kind == posted.kind;
         let told =
@@ -274,9 +285,33 @@ fn answer(asked: &Asked, key: &str) {
     let _ = crate::verbs::answer::given(&asked.agent, &server, &view, from, &typed);
 }
 
-/// Start the Open command with `sh -c` and leave it running.
+/// The variables that say which pane, agent and port a process belongs to.
+/// Open is the person's command, run from a fork of a hook in the agent's
+/// pane: `amx attach` run with that pane's `$TMUX` switches a client rather
+/// than attaching a terminal.
+const THE_PANES: [&str; 12] = [
+    SERVER_ENV,
+    PANE_ENV,
+    crate::hook::ID_ENV,
+    crate::hook::NESTED_ENV,
+    "AMX_BIN",
+    crate::spawn::RECORD_DIR_ENV,
+    crate::spawn::AGENT_DIR_ENV,
+    crate::spawn::PARENT_ENV,
+    crate::spawn::PARENT_DIR_ENV,
+    crate::spawn::DEPTH_ENV,
+    crate::port::ENV,
+    crate::port::PORT_ENV,
+];
+
+/// Start the Open command with `sh -c`, outside the agent's pane, and leave
+/// it running.
 fn open_with(command: &str) {
-    let _ = Command::new("sh")
+    let mut open = Command::new("sh");
+    for name in THE_PANES {
+        open.env_remove(name);
+    }
+    let _ = open
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())

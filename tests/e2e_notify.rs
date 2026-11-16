@@ -306,3 +306,97 @@ fn open_on_a_notice_runs_the_configured_command_for_that_agent() {
     });
     assert_eq!(said, "ask-a1b\n");
 }
+
+#[test]
+fn yes_after_the_box_was_answered_at_the_keyboard_types_nothing() {
+    // claude fires nothing between the key that answers its box and the end
+    // of the tool it allowed; only the screen says the box has gone.
+    let amx = Harness::new();
+    amx.config(OPEN_IN_FOOT);
+    let go = amx.home().join("go");
+    let notifiers = amx.home().join("notifiers");
+    let (tmux_bin, tmux_log) = common::a_logging_tmux(&amx);
+    let (bin, log) = a_logging(
+        &amx,
+        "notify-send",
+        &format!(
+            "echo $PPID >> '{notifiers}'\n\
+             i=0; until [ -e '{go}' ] || [ $i -ge 1000 ]; do sleep 0.02; i=$((i+1)); done\n\
+             echo yes",
+            notifiers = notifiers.display(),
+            go = go.display(),
+        ),
+    );
+    let path = format!("{}:{}", bin.display(), common::path_with(&tmux_bin));
+
+    start(&amx, "box-b2c", "asks-permission-then-runs-quietly", &path);
+    amx.until_state("box-b2c", "waiting");
+    first_call(&amx, &log);
+
+    // A person answers at the pane; the tool runs on with no hook.
+    let pane = amx.pane_of("box-b2c");
+    amx.tmux(&["send-keys", "-t", &pane, "1"]);
+    amx.until("the tool to be running", || {
+        amx.capture(&pane).contains("Removing").then_some(())
+    });
+
+    std::fs::write(&go, "").unwrap();
+    let first = amx.until("the notifier to say who started it", || {
+        std::fs::read_to_string(&notifiers)
+            .ok()?
+            .lines()
+            .next()
+            .map(str::to_string)
+    });
+    let proc = Path::new("/proc").join(first.trim());
+    amx.until("the click to have been handled", || {
+        (!proc.exists()).then_some(())
+    });
+
+    assert_eq!(
+        calls_to(&tmux_log, "send-keys"),
+        0,
+        "the box the click was for is gone from the screen"
+    );
+}
+
+#[test]
+fn open_runs_as_the_person_and_not_inside_the_agents_pane() {
+    // The notifier is a fork of a hook in the agent's pane. Open is the
+    // person's command, and amx attach run with the pane's TMUX switches a
+    // client instead of attaching.
+    let amx = Harness::new();
+    let seen = amx.home().join("seen");
+    amx.config(&format!(
+        "notifications = \"desktop\"\n[notify]\nopen = \"env > '{}'\"\n",
+        seen.display()
+    ));
+    let (bin, _) = a_logging(&amx, "notify-send", "echo open");
+
+    start(&amx, "ask-a1b", "asks-a-question", &common::path_with(&bin));
+
+    let env = amx.until("the open command to run", || {
+        std::fs::read_to_string(&seen)
+            .ok()
+            .filter(|said| said.contains("PATH="))
+    });
+    for name in [
+        "TMUX",
+        "TMUX_PANE",
+        "AMX_ID",
+        "AMX_DIR",
+        "AMX_BIN",
+        "AMX_PORT",
+        "PORT",
+    ] {
+        assert!(
+            !env.lines()
+                .any(|line| line.starts_with(&format!("{name}="))),
+            "{name} reached the open command:\n{env}"
+        );
+    }
+    assert!(
+        env.lines().any(|line| line.starts_with("AMX_STATE_DIR=")),
+        "while where amx keeps its records still does:\n{env}"
+    );
+}
