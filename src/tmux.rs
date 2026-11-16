@@ -57,6 +57,25 @@ pub enum Socket {
 pub struct Server {
     socket: Socket,
     conf: Option<PathBuf>,
+    /// How long one call may take before amx gives up on it. `None` waits.
+    deadline: Option<std::time::Duration>,
+}
+
+/// A tmux call that ran past its server's deadline (see [`Server::within`]).
+#[derive(Debug)]
+pub struct Unanswered(pub std::time::Duration);
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tmux did not answer within {}s", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for Unanswered {}
+
+/// Whether `err` is a call that ran past its deadline.
+pub fn unanswered(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<Unanswered>().is_some()
 }
 
 /// The working directory of a tmux server's process.
@@ -165,6 +184,7 @@ impl Server {
         Self {
             socket: Socket::Name(name.into()),
             conf: None,
+            deadline: None,
         }
     }
 
@@ -173,6 +193,7 @@ impl Server {
         Self {
             socket: Socket::Path(path.into()),
             conf: None,
+            deadline: None,
         }
     }
 
@@ -185,7 +206,19 @@ impl Server {
 
     /// The server at a recorded socket.
     pub fn from_socket(socket: Socket) -> Self {
-        Self { socket, conf: None }
+        Self {
+            socket,
+            conf: None,
+            deadline: None,
+        }
+    }
+
+    /// Give up on any call to this server that takes longer than `limit`,
+    /// failing it with [`Unanswered`]. For a caller something else is waiting
+    /// on, such as a vendor's hook.
+    pub fn within(mut self, limit: std::time::Duration) -> Self {
+        self.deadline = Some(limit);
+        self
     }
 
     /// Pass `-f conf` on every call, so whichever call starts the server reads
@@ -232,6 +265,11 @@ impl Server {
                 Stdio::null()
             });
 
+        // Its own process group, so a call given up on is ended with
+        // everything it started.
+        if self.deadline.is_some() {
+            std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        }
         let mut child = cmd
             .spawn()
             .with_context(|| format!("running `tmux {}`", args.join(" ")))?;
@@ -243,9 +281,23 @@ impl Server {
 
         // Wait even if the write failed, or a tmux that exited without reading
         // stays a zombie.
-        let out = child
-            .wait_with_output()
-            .with_context(|| format!("waiting for `tmux {}`", args.join(" ")))?;
+        let out = match self.deadline {
+            None => child.wait_with_output(),
+            Some(limit) => {
+                let group = nix::unistd::Pid::from_raw(child.id() as i32);
+                let (sent, waited) = std::sync::mpsc::channel();
+                std::thread::spawn(move || sent.send(child.wait_with_output()));
+                match waited.recv_timeout(limit) {
+                    Ok(out) => out,
+                    Err(_) => {
+                        // The waiting thread reaps it once it is gone.
+                        let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
+                        return Err(Unanswered(limit).into());
+                    }
+                }
+            }
+        }
+        .with_context(|| format!("waiting for `tmux {}`", args.join(" ")))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             bail!("tmux {}: {}", args.join(" "), stderr.trim());
@@ -410,8 +462,13 @@ impl Server {
     /// A value read, so a gone pane reads as unwatched. Callers use this to
     /// decide whether to notify, where an extra notice is the safer error.
     pub fn pane_watched(&self, pane: &PaneId) -> bool {
+        self.watched(pane).unwrap_or(false)
+    }
+
+    /// [`Server::pane_watched`], with the failure to ask kept.
+    pub fn watched(&self, pane: &PaneId) -> Result<bool> {
         self.pane_field(pane, "#{pane_active} #{window_active} #{session_attached}")
-            .is_ok_and(|printed| watched_flags(&printed))
+            .map(|printed| watched_flags(&printed))
     }
 
     /// The tty of every client attached to this server.

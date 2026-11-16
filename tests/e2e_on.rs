@@ -216,3 +216,69 @@ fn stopping_an_agent_runs_the_stopped_command() {
         "the line is built for the command; nothing happened the record does not say"
     );
 }
+
+#[test]
+fn a_hung_tmux_cannot_stall_the_hook_that_ends_a_turn() {
+    // Ending a turn asks tmux whether the pane is watched (for on_idle) and
+    // sets the park timer. A tmux that never answers would hold claude on its
+    // hook; past 2 s the hook gives up on tmux, says so, and exits.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    let said = writes_down(&amx, "on_idle");
+    start(&amx, id, "happy-turn");
+    amx.until_state(id, "idle");
+    let mut state = amx.state(id);
+    state["state"] = Value::from("working");
+    amx.set_state(id, state);
+
+    let bin = tempfile::TempDir::new().unwrap();
+    let tmux = bin.path().join("tmux");
+    std::fs::write(&tmux, "#!/bin/sh\nsleep 10\n").unwrap();
+    std::fs::set_permissions(&tmux, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut path = vec![bin.path().to_path_buf()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+
+    use std::io::Write;
+    let began = std::time::Instant::now();
+    let mut child = amx
+        .amx_command(&["_hook"])
+        .env("AMX_ID", id)
+        .env("PATH", std::env::join_paths(&path).unwrap())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("running amx _hook");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"hook_event_name":"Stop","last_assistant_message":"done"}"#)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "a hook always exits 0");
+    let took = began.elapsed();
+    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+
+    let events = amx.events(id);
+    let last = |kind: &str| {
+        events
+            .iter()
+            .rev()
+            .find(|event| event["kind"] == kind)
+            .cloned()
+    };
+    assert!(
+        last("Stop").is_some(),
+        "the turn's end is written down: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.to_string().contains("tmux did not answer within 2s")),
+        "{events:?}"
+    );
+    assert_eq!(amx.state(id)["state"], "idle");
+    // The errand still runs, after the one the first idle set off.
+    wrote(&amx, &said, 2);
+}

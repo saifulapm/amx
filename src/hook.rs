@@ -88,8 +88,18 @@ fn nested() -> bool {
 /// The server and pane the hook runs in, from `$TMUX` and `$TMUX_PANE`. Asks
 /// tmux nothing.
 fn pane_of(tmux: Option<&str>, pane: Option<&str>) -> Option<(Server, PaneId)> {
-    Some((Server::from_tmux_env(tmux?)?, PaneId::new(pane?).ok()?))
+    Some((
+        Server::from_tmux_env(tmux?)?.within(TMUX_DEADLINE),
+        PaneId::new(pane?).ok()?,
+    ))
 }
+
+/// How long the hook waits on one tmux call. The vendor waits on the hook, so
+/// a tmux that does not answer is given up on rather than waited for.
+pub const TMUX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The event logged when a tmux call on the hook path was given up on.
+pub const UNANSWERED: &str = "tmux_unanswered";
 
 /// [`from_env`] with its inputs passed in.
 pub fn run(
@@ -412,9 +422,19 @@ pub fn after_the_write(
     if reached(written.state, was, false) != Some(Phase::Idle) {
         return;
     }
-    let server = Server::from_socket(meta.socket.clone());
+    let server = Server::from_socket(meta.socket.clone()).within(TMUX_DEADLINE);
+    // Once one call is given up on, the server is not asked again.
+    let mut late = None;
     if let Some(errand) = crate::errand::assembled(config, agent, meta, Phase::Idle, event) {
-        notify::start(&errand, Some(server.pane_watched(&meta.pane)));
+        let watched = match server.watched(&meta.pane) {
+            Ok(watched) => Some(watched),
+            Err(e) if crate::tmux::unanswered(&e) => {
+                late = Some(e);
+                None
+            }
+            Err(_) => Some(false),
+        };
+        notify::start(&errand, watched);
     }
 
     // amx has no daemon, so the pane's tmux server is asked to run `_park` once
@@ -422,11 +442,23 @@ pub fn after_the_write(
     //
     // This runs on every event, and the project config lookup involves git,
     // so the idle check comes first.
-    if let Some(delay) = parks_in(written, park_after(config, meta))
+    if late.is_none()
+        && let Some(delay) = parks_in(written, park_after(config, meta))
         && let Some(command) = park_command(root, agent.id())
-    {
         // A timer that cannot be set only means the pane is kept.
-        let _ = server.run_after(delay, &command);
+        && let Err(e) = server.run_after(delay, &command)
+        && crate::tmux::unanswered(&e)
+    {
+        late = Some(e);
+    }
+
+    if let Some(e) = late {
+        let _ = agent.writer().and_then(|writer| {
+            writer.append(&crate::store::Event::new(
+                UNANSWERED,
+                serde_json::json!({ "error": e.to_string() }),
+            ))
+        });
     }
 }
 
