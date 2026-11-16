@@ -494,6 +494,7 @@ fn resume_two_racers_bring_back_one_agent_and_not_two() {
                 .env("AMX_TMUX_SOCKET", amx.socket())
                 .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
                 .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+                .env("PATH", common::quiet_path())
                 .env_remove("TMUX")
                 .env_remove("TMUX_PANE")
                 .stdout(std::process::Stdio::piped())

@@ -685,19 +685,36 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
+            let file = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
             for (at, line) in text.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or_default();
                 if code.contains("var(\"PATH\")") || code.contains("var_os(\"PATH\")") {
-                    let file = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
                     loud.push(format!("{}:{}: {}", file.display(), at + 1, line.trim()));
+                }
+            }
+            // A command a test builds itself runs amx, or a server whose panes
+            // do, over the test's own PATH unless it names one: the racers of
+            // e2e_spawn's name race each raised a notice on finishing.
+            let mut from = 0;
+            while let Some(found) = text[from..].find(".env(\"AMX_STATE_DIR\"") {
+                let at = from + found;
+                from = at + 1;
+                let start = text[..at].rfind("Command::new(").unwrap_or(at);
+                let end = text[at..].find(';').map_or(text.len(), |end| at + end);
+                if !text[start..end].contains(".env(\"PATH\"") {
+                    let line = text[..start].matches('\n').count() + 1;
+                    loud.push(format!(
+                        "{}:{line}: a command with the harness's state and the test's PATH",
+                        file.display()
+                    ));
                 }
             }
         }
         assert!(
             loud.is_empty(),
-            "these read the test's own PATH, which holds the real notify-send; \
-             build it with common::quiet_path() or path_with(), or find a \
-             real program with common::the_real():\n{}",
+            "these hand on the test's own PATH, which holds the real notify-send; \
+             build it with common::quiet_path() or path_with() and name it with \
+             `.env(\"PATH\", ...)`, or find a real program with common::the_real():\n{}",
             loud.join("\n")
         );
     }

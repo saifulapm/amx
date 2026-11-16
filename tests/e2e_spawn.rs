@@ -916,6 +916,7 @@ fn boot_strips_a_marker_sitting_in_the_tmux_servers_own_environment() {
         ])
         .env("AMX_STATE_DIR", &state_dir)
         .env("HOME", amx.home())
+        .env("PATH", common::quiet_path())
         .env("CLAUDE_CODE_CHILD_SESSION", "1")
         // A server started from an agent's shell also carries amx's own
         // nested mark, which would silence every hook of every agent on it.
@@ -2471,6 +2472,8 @@ fn new_two_racers_for_one_name_leave_the_winners_record_standing() {
                     .env("XDG_CONFIG_HOME", amx.home().join(".config"))
                     .env("AMX_TMUX_SOCKET", amx.socket())
                     .env("MOCK_CLAUDE_SCENARIO", amx.scenario("finishes"))
+                    // Each winner's finish raises a notice.
+                    .env("PATH", common::quiet_path())
                     .env_remove("TMUX")
                     .env_remove("TMUX_PANE")
                     .stdout(std::process::Stdio::piped())

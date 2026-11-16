@@ -129,6 +129,7 @@ fn a_server_reading_this_config(amx: &Harness) {
         .env("AMX_STATE_DIR", amx.state_root().parent().unwrap())
         .env("HOME", amx.home())
         .env("XDG_CONFIG_HOME", amx.home().join(".config"))
+        .env("PATH", common::quiet_path())
         .output()
         .expect("running tmux");
     assert!(
