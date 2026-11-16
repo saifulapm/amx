@@ -50,6 +50,13 @@ use crate::vendor::{Capability, Moment, Vendor};
 /// interrupted agent stops reading as working while somebody watches.
 pub const FRESH: u64 = 8;
 
+/// How long a working record stands over a screen no rule claims, in seconds.
+///
+/// Past [`FRESH`] the screen decides, but a screen nobody measured says
+/// nothing. A turn whose hooks have been quiet this long may have died
+/// without a word, so it reads `unknown` after that.
+pub const HEARD_LATELY: u64 = 600;
+
 /// The log event for a turn start that a reader saw on the pane.
 ///
 /// Only a vendor without hooks gets these. They carry amx's own name so the
@@ -849,6 +856,12 @@ pub fn read(
         // amx missed.
         Claim::Unclaimed if reports && matches!(state.state, Phase::Idle | Phase::Waiting) => {
             told(state.state, Evidence::Hooks, None)
+        }
+        // A turn heard from lately is taken at its word over a screen nobody
+        // has measured: a view claude draws over its composer reads `unknown`
+        // a few seconds into every look otherwise.
+        Claim::Unclaimed if reports && state.state == Phase::Working && quiet <= HEARD_LATELY => {
+            told(Phase::Working, Evidence::Hooks, None)
         }
         Claim::Unclaimed => told(Phase::Unknown, Evidence::Unknown, None),
     }
@@ -3873,12 +3886,15 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(beaten.verdict.age, 2, "the beat is the last thing heard");
 
         // No beat, or one older than the window, leaves the record unheard
-        // from.
-        for beat in [None, Some(1_030 - FRESH - 1)] {
-            let quiet = beating(&running, Some(A_SHELL), 1_030, beat);
+        // from: past `HEARD_LATELY`, nothing vouches for the turn.
+        let later = 1_000 + HEARD_LATELY + 30;
+        for beat in [None, Some(later - HEARD_LATELY - 1)] {
+            let quiet = beating(&running, Some(A_SHELL), later, beat);
             assert_eq!(quiet.verdict.phase, Phase::Unknown, "{beat:?}");
             assert_eq!(quiet.verdict.evidence, Evidence::Unknown, "{beat:?}");
         }
+        let beaten = beating(&running, Some(A_SHELL), later, Some(later - 2));
+        assert_eq!(beaten.verdict.phase, Phase::Working);
     }
 
     #[test]
@@ -4289,14 +4305,26 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
 
     #[test]
     fn reader_says_unknown_rather_than_guessing() {
-        let verdict = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_500);
+        let verdict = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_660);
         assert_eq!(verdict.phase, Phase::Unknown);
         assert_eq!(verdict.evidence, Evidence::Unknown);
-        assert_eq!(verdict.age, 500, "and how long it has been out of touch");
+        assert_eq!(verdict.age, 660, "and how long it has been out of touch");
 
         // A pane that cannot be captured gives the same answer.
         let unreadable = decided(&state(Phase::Working, 1_000), true, None, 1_500);
         assert_eq!(unreadable.phase, Phase::Unknown);
+    }
+
+    #[test]
+    fn reader_takes_a_turn_heard_from_lately_at_its_word_over_a_screen_nobody_claims() {
+        // Nine minutes quiet: still the turn. Eleven: it may have died.
+        let lately = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_540);
+        assert_eq!(lately.phase, Phase::Working, "{lately:?}");
+        assert_eq!(lately.evidence, Evidence::Hooks);
+        assert_eq!(lately.age, 540, "still dated from the last hook");
+
+        let long = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_660);
+        assert_eq!(long.phase, Phase::Unknown, "{long:?}");
     }
 
     #[test]
@@ -4424,13 +4452,28 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         assert_eq!(waiting.verdict.phase, Phase::Waiting);
         assert_eq!(waiting.verdict.evidence, Evidence::Hooks);
 
-        // A turn recorded as running is still unknown: nothing said it ended,
-        // and an unmeasured screen may be a missed question. So is a record
-        // with nothing reported yet.
-        for phase in [Phase::Working, Phase::Starting] {
-            let mid = heard_from(true, 0, &state(phase, 1_000), true, Some(A_SHELL), 1_060);
-            assert_eq!(mid.verdict.phase, Phase::Unknown, "{phase}");
-        }
+        // A turn recorded as running and heard from lately keeps its word
+        // too: the vendor reports its questions, and a view it draws over the
+        // composer is no rule's. A record with nothing reported yet is
+        // unknown.
+        let mid = heard_from(
+            true,
+            0,
+            &state(Phase::Working, 1_000),
+            true,
+            Some(A_SHELL),
+            1_060,
+        );
+        assert_eq!(mid.verdict.phase, Phase::Working);
+        let starting = heard_from(
+            true,
+            0,
+            &state(Phase::Starting, 1_000),
+            true,
+            Some(A_SHELL),
+            1_060,
+        );
+        assert_eq!(starting.verdict.phase, Phase::Unknown);
 
         // A vendor that reports nothing has no word to keep.
         let silent = heard_from(
