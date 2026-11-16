@@ -187,6 +187,7 @@ pub const VENDOR: Vendor = Vendor {
     launch: &["--standalone"],
     // `--auto` is the permission dial's own flag.
     unasked: &[],
+    images: None,
 };
 
 /// opencode's plugin events and the words its payloads use.

@@ -476,6 +476,24 @@ pub struct Vendor {
     /// dial's flag and its trust flags, which count without being listed here.
     /// See [`unasked`].
     pub unasked: &'static [Unasked],
+    /// How the vendor is handed an image, or `None` for one amx gives none.
+    pub images: Option<Images>,
+}
+
+/// How a vendor takes an image: with the task it starts on, and in a message
+/// sent later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Images {
+    pub start: Attach,
+    pub send: Attach,
+}
+
+/// One way of handing a vendor an image's path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attach {
+    /// One `@<path>` word per image at the front of the message, which the
+    /// vendor attaches on submit (claude 2.1.325, at start and in a send).
+    Mentioned,
 }
 
 /// A flag that lowers what a vendor asks before acting, or settles its

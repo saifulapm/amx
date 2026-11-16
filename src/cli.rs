@@ -522,6 +522,13 @@ pub struct NewArgs {
     #[arg(long, conflicts_with = "file")]
     pub edit: bool,
 
+    /// Give the agent this image with its task. Repeat for more.
+    ///
+    /// A png, jpeg, webp or gif of at most 20 MB. It is copied into the
+    /// agent's record, and the agent is given the copy.
+    #[arg(long, value_name = "FILE", conflicts_with = "exec")]
+    pub image: Vec<PathBuf>,
+
     /// Name the agent instead of deriving a name from the task.
     #[arg(long)]
     pub name: Option<String>,

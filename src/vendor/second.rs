@@ -40,6 +40,7 @@ pub const SECOND: Vendor = Vendor {
     interrupt_signal: None,
     launch: &[],
     unasked: &[Unasked::bare("--unasked")],
+    images: None,
 };
 
 /// [`SECOND`] with a fork subcommand, hooks, a JSON model listing, a keyed

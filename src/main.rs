@@ -21,6 +21,7 @@ mod exit;
 mod furniture;
 mod hook;
 mod ids;
+mod images;
 mod install;
 mod loose;
 mod models;

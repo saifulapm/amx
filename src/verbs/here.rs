@@ -17,6 +17,7 @@ pub fn from_env(vendor_args: &[String]) -> Result<i32> {
         task: None,
         file: None,
         edit: false,
+        image: Vec::new(),
         name: None,
         role: None,
         dir: None,

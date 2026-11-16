@@ -426,6 +426,20 @@ fn run_aloud(
             return Ok(exit::USAGE);
         }
     };
+    // An image that cannot go is refused before anything is made.
+    if !args.image.is_empty() {
+        let refusal = match registry::entry(&launch.agent).and_then(|vendor| vendor.images) {
+            None => Some(format!("{} is given no images by amx", launch.agent)),
+            Some(_) => args
+                .image
+                .iter()
+                .find_map(|image| crate::images::checked(image).err()),
+        };
+        if let Some(refusal) = refusal {
+            warned(problems, &refusal, to_terminal)?;
+            return Ok(exit::FAILURE);
+        }
+    }
     if args.check {
         return Ok(exit::OK);
     }
@@ -747,11 +761,12 @@ fn set_up(
     // Last, so a harness env that sets the id cannot override it.
     env.insert(crate::hook::ID_ENV.to_string(), id.to_string());
     spawn::write_boot_env(agent_dir, &env)?;
+    let images = crate::images::filed(agent_dir, &args.image)?;
     spawn::write_handoff(
         agent_dir,
         &Handoff {
             task: task.to_string(),
-            command: launched(args, lined, launch, id, config.trust),
+            command: launched(args, lined, launch, id, config.trust, &images),
         },
     )?;
 
@@ -828,8 +843,15 @@ fn dial_written(exec: bool, dial: &str) -> Option<String> {
 ///
 /// `id` is the session a vendor with a start flag opens under. `trust` is the
 /// config key; vendors that answer folder trust with a flag get it here, since
-/// `spawn` has no config.
-fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) -> Vec<String> {
+/// `spawn` has no config. `images` are the copies in the record.
+fn launched(
+    args: &NewArgs,
+    task: &str,
+    launch: &Launch,
+    id: &str,
+    trust: bool,
+    images: &[PathBuf],
+) -> Vec<String> {
     match args.exec {
         true => spawn::exec_command(task),
         false => {
@@ -840,10 +862,11 @@ fn launched(args: &NewArgs, task: &str, launch: &Launch, id: &str, trust: bool) 
                 task,
                 Some(id),
                 trust,
+                images,
             );
             // `vendor_command` ends with the task word; with no task the
             // vendor opens at its prompt instead of on an empty one.
-            if task.is_empty() {
+            if task.is_empty() && images.is_empty() {
                 command.pop();
             }
             command
@@ -1103,6 +1126,7 @@ mod tests {
             task: Some("port the importer".to_string()),
             file: None,
             edit: false,
+            image: Vec::new(),
             name: None,
             role: None,
             dir: None,
@@ -1131,6 +1155,7 @@ mod tests {
             task: Some(command.to_string()),
             file: None,
             edit: false,
+            image: Vec::new(),
             name: None,
             role: None,
             dir: None,
@@ -1521,7 +1546,14 @@ mod tests {
         let launch = Launch::resolve(&config, &args).unwrap();
 
         assert_eq!(
-            launched(&args, "port the importer", &launch, "port-it-b2c", false),
+            launched(
+                &args,
+                "port the importer",
+                &launch,
+                "port-it-b2c",
+                false,
+                &[]
+            ),
             ["claude", "--model", "opus", "port the importer"]
         );
     }
@@ -1547,7 +1579,8 @@ mod tests {
                 "cargo test",
                 &launch,
                 "port-it-b2c",
-                false
+                false,
+                &[]
             ),
             ["sh", "-c", "cargo test"],
             "no vendor, no dials, and no task appended after it"
@@ -1558,7 +1591,8 @@ mod tests {
                 "port the importer",
                 &launch,
                 "port-it-b2c",
-                false
+                false,
+                &[]
             ),
             ["claude", "port the importer"],
             "and an ordinary spawn is launched the way it always was"
@@ -2057,7 +2091,14 @@ mod tests {
         let launch = Launch::resolve(&agreed(), &args).unwrap();
 
         assert_eq!(
-            launched(&args, "port the importer", &launch, "port-it-b2c", true),
+            launched(
+                &args,
+                "port the importer",
+                &launch,
+                "port-it-b2c",
+                true,
+                &[]
+            ),
             [
                 "pi",
                 "--session-id",
@@ -2068,7 +2109,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            launched(&args, "port the importer", &launch, "port-it-b2c", false),
+            launched(
+                &args,
+                "port the importer",
+                &launch,
+                "port-it-b2c",
+                false,
+                &[]
+            ),
             [
                 "pi",
                 "--session-id",

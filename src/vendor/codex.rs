@@ -170,6 +170,7 @@ pub const VENDOR: Vendor = Vendor {
             ..Unasked::valued("--config")
         },
     ],
+    images: None,
 };
 
 /// codex's hook events and the words its payloads use.

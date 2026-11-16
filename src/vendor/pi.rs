@@ -157,6 +157,7 @@ pub const VENDOR: Vendor = Vendor {
     launch: &[],
     // `--approve` and its spellings are the trust flags.
     unasked: &[],
+    images: None,
 };
 
 /// The opt-in `subagent` tool, written by `amx setup pi --subagent`.

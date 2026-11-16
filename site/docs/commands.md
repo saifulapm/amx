@@ -51,6 +51,7 @@ amx new [OPTIONS] [TASK] [-- AGENT_ARGS...]
 | --- | --- |
 | `--file <PATH>` | Read the task from a file, or stdin for `-`. One trailing newline is dropped. |
 | `--edit` | Write the task in `$VISUAL`, `$EDITOR` or `vi`. Quitting with an error (`:cq`) starts nothing. |
+| `--image <FILE>` | Give the agent this image with its task; repeat for more. A png, jpeg, webp or gif of at most 20 MB, copied into the agent's record. claude is given the copy as an `@path` word. |
 | `--name <NAME>` | Use this as the id instead of deriving one from the task. |
 | `--role <NAME>` | Take dials and a brief from a role file. See [Scripting](scripting.md#roles). |
 | `--dir <DIR>` | Run in this directory instead of the current one. |

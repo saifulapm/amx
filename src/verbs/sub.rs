@@ -211,6 +211,7 @@ fn as_new(args: &SubArgs, parent: Option<&Meta>) -> NewArgs {
         task: Some(args.task.clone()),
         file: None,
         edit: false,
+        image: Vec::new(),
         name: args.name.clone(),
         role: args.role.clone(),
         dir: None,

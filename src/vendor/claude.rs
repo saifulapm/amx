@@ -5,8 +5,8 @@
 //! turns a dial into a spawn that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
-    SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
+    Attach, Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Images, Models, Moment, Place,
+    Resume, SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
 };
 
 /// claude's entry in the table.
@@ -158,6 +158,10 @@ pub const VENDOR: Vendor = Vendor {
         Unasked::valued("--allowed-tools"),
         Unasked::valued("--settings"),
     ],
+    images: Some(Images {
+        start: Attach::Mentioned,
+        send: Attach::Mentioned,
+    }),
 };
 
 /// claude's hook events and the words its payloads use.

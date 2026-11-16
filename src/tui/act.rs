@@ -1272,6 +1272,7 @@ pub fn start(
         // The view passes the task inline; `ctrl+g` is its editor.
         file: None,
         edit: false,
+        image: Vec::new(),
         name: None,
         role: None,
         dir: None,

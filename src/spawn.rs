@@ -185,6 +185,8 @@ impl Default for Dials {
 /// ([`opens_under_id`] answers that without building the argv). `trust` is the
 /// config key; without it no trust flag is written. Every flag amx adds yields
 /// to one already on the command line, so the vendor never gets a flag twice.
+/// `images` are paths in the record, handed over as the vendor's table entry
+/// says it takes them at start.
 pub fn vendor_command(
     agent: &str,
     dials: &Dials,
@@ -192,6 +194,7 @@ pub fn vendor_command(
     task: &str,
     session: Option<&str>,
     trust: bool,
+    images: &[PathBuf],
 ) -> Vec<String> {
     let command: Vec<String> = agent.split_whitespace().map(str::to_string).collect();
     let mut command = with_launch_words(command, registry::entry(agent), vendor_args);
@@ -213,7 +216,13 @@ pub fn vendor_command(
             .and_then(|vendor| vendor.ends_options)
             .map(str::to_string),
     );
-    command.push(as_words(registry::entry(agent), task));
+    let vendor = registry::entry(agent);
+    command.push(match vendor.and_then(|vendor| vendor.images) {
+        Some(takes) if !images.is_empty() => {
+            crate::images::attached(takes.start, images, &as_words(vendor, task))
+        }
+        _ => as_words(vendor, task),
+    });
     command
 }
 
@@ -992,6 +1001,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         assert_eq!(
             command,
@@ -1019,6 +1029,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         assert_eq!(
             command,
@@ -1052,6 +1063,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         assert_eq!(
             command,
@@ -1081,6 +1093,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         assert_eq!(command, ["mock-claude", "fix the login bug"]);
     }
@@ -1096,6 +1109,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         let with = vendor_command(
             "claude",
@@ -1104,6 +1118,7 @@ mod tests {
             "fix the login bug",
             Some("fix-login-a1b"),
             false,
+            &[],
         );
         assert_eq!(with, without);
         assert_eq!(with, ["claude", "fix the login bug"]);
@@ -1223,6 +1238,7 @@ mod tests {
             "fix the login bug",
             None,
             true,
+            &[],
         );
         assert_eq!(approved, ["pi", "--approve", "--", "fix the login bug"]);
 
@@ -1233,6 +1249,7 @@ mod tests {
             "fix the login bug",
             None,
             false,
+            &[],
         );
         assert_eq!(ungated, ["pi", "--", "fix the login bug"]);
     }
@@ -1249,6 +1266,7 @@ mod tests {
             "@alice asked for this",
             None,
             false,
+            &[],
         );
         assert_eq!(pi, ["pi", "--", " @alice asked for this"]);
 
@@ -1259,6 +1277,7 @@ mod tests {
             "@alice asked for this",
             None,
             false,
+            &[],
         );
         assert_eq!(claude, ["claude", "@alice asked for this"]);
     }
@@ -1334,6 +1353,7 @@ mod tests {
             "fix the login bug",
             None,
             true,
+            &[],
         );
         assert_eq!(claude, ["claude", "fix the login bug"]);
 
@@ -1344,6 +1364,7 @@ mod tests {
             "fix the login bug",
             None,
             true,
+            &[],
         );
         assert_eq!(
             unregistered,
@@ -1393,6 +1414,7 @@ mod tests {
             "fix the login bug",
             Some("fix-login-a1b"),
             false,
+            &[],
         );
         assert_eq!(command, ["fix the login bug"]);
     }
@@ -1407,6 +1429,7 @@ mod tests {
             "fix the login bug",
             Some("fix-login-a1b"),
             false,
+            &[],
         );
         assert_eq!(command, ["pi", "-c", "--", "fix the login bug"]);
     }
