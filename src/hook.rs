@@ -282,7 +282,12 @@ fn record(
     let before = meta.clone();
     let format = crate::conversation::format_of(meta.agent.as_deref().unwrap_or_default());
     let payload: &Value = &without_a_synthetic_answer(payload, &meta, format);
+    let read = state.clone();
     let notice = apply(payload, &mut state, &mut meta);
+    // A subagent's word that changed nothing is not news of the agent, so it
+    // leaves `last_event` where it was: a subagent's calls would otherwise
+    // keep a stale record looking fresh.
+    let unheard = payload["agent_id"].is_string() && state == read;
 
     // claude fires nothing when a turn is interrupted, so the record is still
     // working when the next prompt arrives and the phase does not change. Close
@@ -322,7 +327,10 @@ fn record(
         state.session_title = Some(title);
     }
 
-    let written = writer.update_state(|current| *current = state)?;
+    let written = match unheard {
+        true => writer.observe(|current| *current = state)?,
+        false => writer.update_state(|current| *current = state)?,
+    };
     if meta != before {
         writer.update_meta(|current| *current = meta.clone())?;
     }
@@ -3218,6 +3226,37 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].kind, "Notification");
         assert_eq!(events[1].payload["notification_type"], "push_notification");
+    }
+
+    #[test]
+    fn hook_a_subagent_that_changes_nothing_is_not_news_of_the_agent() {
+        // A subagent's calls would otherwise keep a stale record looking
+        // fresh, so readers would never fall back to the pane.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| {
+                state.state = Phase::Working;
+                state.turn_open = true;
+                state.last_event = 1_000;
+            })
+            .unwrap();
+
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Read","agent_id":"a1b2"}"#,
+        );
+        assert_eq!(written(&agent)["last_event"], 1_000);
+
+        hook(
+            root.path(),
+            agent.id(),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Read"}"#,
+        );
+        assert_ne!(written(&agent)["last_event"], 1_000);
     }
 
     #[test]
