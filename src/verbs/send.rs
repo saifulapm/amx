@@ -379,7 +379,7 @@ fn runs_itself(meta: &Meta, account: Option<&Path>, text: &str) -> bool {
     });
     let spelled = format!("{}{name}", catalog.sigil);
     !ours
-        && !crate::catalog::listing(&catalog, &home, &meta.dir)
+        && !crate::catalog::listing(&catalog, Some(&home), &meta.dir)
             .iter()
             .any(|entry| entry.spelled == spelled)
 }

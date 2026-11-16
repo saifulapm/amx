@@ -45,8 +45,8 @@ pub const FENCE: &str = "---";
 /// everything found on disk.
 ///
 /// A word found in more than one place is kept once, from the first place in
-/// declaration order.
-pub fn listing(catalog: &Catalog, home: &Path, project: &Path) -> Vec<Entry> {
+/// declaration order. With no `home`, the person's own places list nothing.
+pub fn listing(catalog: &Catalog, home: Option<&Path>, project: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     for place in catalog.skills {
         for found in expand(place, home, project) {
@@ -95,9 +95,12 @@ struct Found {
 
 /// Every directory `place` resolves to under its root, expanding each `*`
 /// segment to the directories that exist there.
-fn expand(place: &Place, home: &Path, project: &Path) -> Vec<Found> {
+fn expand(place: &Place, home: Option<&Path>, project: &Path) -> Vec<Found> {
     let root = match place {
-        Place::Person(_) => home,
+        Place::Person(_) => match home {
+            Some(home) => home,
+            None => return Vec::new(),
+        },
         Place::Project(_) => project,
     };
 
@@ -311,7 +314,7 @@ mod tests {
 
         let entries = listing(
             &claude::VENDOR.catalog.expect("claude loads files by name"),
-            home.path(),
+            Some(home.path()),
             project.path(),
         );
         assert_eq!(
@@ -376,7 +379,7 @@ mod tests {
         file(&project.path().join(".pi/prompts/ship.md"), "Ship it.");
 
         let catalog = pi::VENDOR.catalog.expect("pi loads files by name");
-        let entries = listing(&catalog, home.path(), project.path());
+        let entries = listing(&catalog, Some(home.path()), project.path());
 
         let files = &entries[..6];
         assert_eq!(
@@ -451,7 +454,7 @@ mod tests {
 
         let entries = listing(
             &codex::VENDOR.catalog.expect("codex loads skills by name"),
-            home.path(),
+            Some(home.path()),
             project.path(),
         );
         assert_eq!(
@@ -471,7 +474,7 @@ mod tests {
 
         for catalog in [claude::VENDOR.catalog.unwrap(), pi::VENDOR.catalog.unwrap()] {
             assert!(
-                listing(&catalog, home.path(), project.path())
+                listing(&catalog, Some(home.path()), project.path())
                     .iter()
                     .all(|entry| entry.kind == Kind::Builtin),
                 "nothing but what the vendor answers out of itself, which is \
@@ -508,7 +511,7 @@ mod tests {
 
         let entries = listing(
             &claude::VENDOR.catalog.unwrap(),
-            home.path(),
+            Some(home.path()),
             project.path(),
         );
         assert_eq!(
@@ -532,7 +535,7 @@ mod tests {
 
         let entries = listing(
             &claude::VENDOR.catalog.unwrap(),
-            home.path(),
+            Some(home.path()),
             project.path(),
         );
         assert_eq!(on_disk(&entries), ["/ship"]);
@@ -557,7 +560,11 @@ mod tests {
             "A prompt of my own.",
         );
 
-        let entries = listing(&pi::VENDOR.catalog.unwrap(), home.path(), project.path());
+        let entries = listing(
+            &pi::VENDOR.catalog.unwrap(),
+            Some(home.path()),
+            project.path(),
+        );
         assert_eq!(
             entries
                 .iter()

@@ -621,6 +621,10 @@ struct Screen {
     /// The directory the view is about or was run from. Tasks start here unless
     /// the line or the cursor says otherwise.
     standing: PathBuf,
+    /// The person's home, where a vendor keeps their own skills and agents and
+    /// where `~` on a line points. None in tests, so a test offers only what
+    /// it made, not what the home of whoever runs it holds.
+    home: Option<PathBuf>,
     profile: Profile,
     theme: Theme,
     /// The theme's last warning, so fixing the file clears its own notice.
@@ -1067,6 +1071,7 @@ where
             std::env::home_dir().as_deref(),
         ),
         standing,
+        home: std::env::home_dir(),
         theme: painting.theme,
         remembering: remembering.map(Path::to_path_buf),
         ..Screen::default()
@@ -2499,7 +2504,13 @@ impl Screen {
                     .unwrap_or_else(|| self.standing.clone()),
             ),
         };
-        let found = act::suggest(composer, &launching, &project, &self.projects);
+        let found = act::suggest(
+            composer,
+            &launching,
+            self.home.as_deref(),
+            &project,
+            &self.projects,
+        );
         if let Mode::Typing(composer) = &mut self.mode {
             composer.suggest = found;
         }
@@ -2666,6 +2677,7 @@ impl Screen {
             &images,
             composer.under.as_deref(),
             &self.standing,
+            self.home.as_deref(),
         ) {
             Ok(Started::Yes { id, said }) => {
                 self.remember_line(&Asking::Task, &words);
