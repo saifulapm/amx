@@ -822,9 +822,11 @@ fn a_launcher_that_picks_the_account_is_judged_by_the_account_claude_ran_under()
     assert_eq!(code, 0, "{printed}");
     assert!(!dir.join("skills").exists(), "setup wrote under home alone");
 
-    amx.play_through("lh1", "happy-turn", &launcher);
+    amx.play_through("pick-account-a1b", "happy-turn", &launcher);
     amx.until("the transcript to be named", || {
-        amx.meta("lh1")["transcript"].is_string().then_some(())
+        amx.meta("pick-account-a1b")["transcript"]
+            .is_string()
+            .then_some(())
     });
 
     let (ok, line) = hooks_line(&doctor(&amx), "claude");

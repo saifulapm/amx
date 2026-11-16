@@ -84,10 +84,13 @@ pub fn loose_from_env() -> Result<i32> {
     Ok(exit::OK)
 }
 
-/// Every session a record names, ended records included.
+/// Every session a record names, ended and archived records included: resume
+/// brings an archived one back on its session.
 pub fn held(root: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let shelf = root.join(store::ARCHIVE);
     Ok(derive::records(root)?
         .into_iter()
+        .chain(derive::records(&shelf)?)
         .filter_map(|record| record.meta.session)
         .collect())
 }
@@ -667,6 +670,23 @@ mod tests {
         let rows = listed_json(root.path());
         assert_eq!(rows["gone-c3d"]["state"], "stopped");
         assert_eq!(rows["gone-c3d"]["context"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn ls_holds_the_session_of_an_archived_record_too() {
+        // A claude resumed by hand on an archived agent's conversation is
+        // that agent's, not a loose one to adopt into a second record.
+        let root = tempfile::TempDir::new().unwrap();
+        on_disk(root.path(), "shelved-a1b", Phase::Stopped, 1);
+        let agent = crate::store::Agent::open(root.path(), "shelved-a1b").unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.session = Some("abc-123".to_string()))
+            .unwrap();
+        agent.archive().unwrap();
+
+        assert!(held(root.path()).unwrap().contains("abc-123"));
     }
 
     #[test]
