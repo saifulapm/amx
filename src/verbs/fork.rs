@@ -29,7 +29,7 @@ const FORKED: &str = "fork";
 /// Run the verb against the machine.
 ///
 /// Caps come from the origin's project config.
-pub fn from_env(id: &str, task: Option<&str>) -> Result<i32> {
+pub fn from_env(id: &str, task: Option<&str>, images: &[PathBuf]) -> Result<i32> {
     let root = paths::state_root()?;
     let env = spawn::env_snapshot(std::env::vars());
     let mut out = std::io::stdout().lock();
@@ -39,7 +39,7 @@ pub fn from_env(id: &str, task: Option<&str>) -> Result<i32> {
         &root,
         id,
         task,
-        &[],
+        images,
         &env,
         &mut out,
         &mut problems,
@@ -321,14 +321,12 @@ fn build_copy(
         push_flag(&mut command, start, spec.joined(), copy);
     }
     if prompt.is_some() || !images.is_empty() {
-        let words = spawn::as_words(vendor, prompt.unwrap_or_default());
         command.extend(ends_options.map(str::to_string));
-        command.push(match vendor.and_then(|vendor| vendor.images) {
-            Some(takes) if !images.is_empty() => {
-                crate::images::attached(takes.start, images, &words)
-            }
-            _ => words,
-        });
+        command.extend(spawn::task_words(
+            vendor,
+            prompt.unwrap_or_default(),
+            images,
+        ));
     }
     command
 }

@@ -99,9 +99,17 @@ fn run(cli: &cli::Cli) -> i32 {
             dir.as_deref().or(cli.dir.as_deref()),
         )),
         Some(cli::Command::Status { id, json }) => finish(verbs::status::from_env(id, *json)),
-        Some(cli::Command::Send { id, text, file }) => {
-            finish(verbs::send::from_env(id, text.as_deref(), file.as_deref()))
-        }
+        Some(cli::Command::Send {
+            id,
+            text,
+            file,
+            image,
+        }) => finish(verbs::send::from_env(
+            id,
+            text.as_deref(),
+            file.as_deref(),
+            image,
+        )),
         Some(cli::Command::Answer { id, key }) => finish(verbs::answer::from_env(id, key)),
         Some(cli::Command::Interrupt { id }) => finish(verbs::interrupt::from_env(id)),
         Some(cli::Command::Rename { id, name }) => finish(verbs::rename::from_env(id, name)),
@@ -165,7 +173,9 @@ fn run(cli: &cli::Cli) -> i32 {
         )),
         Some(cli::Command::Adopt(args)) => finish(verbs::adopt::from_env(args)),
         Some(cli::Command::Here { vendor_args }) => finish(verbs::here::from_env(vendor_args)),
-        Some(cli::Command::Fork { id, task }) => finish(verbs::fork::from_env(id, task.as_deref())),
+        Some(cli::Command::Fork { id, task, image }) => {
+            finish(verbs::fork::from_env(id, task.as_deref(), image))
+        }
         Some(cli::Command::Events { ids, follow, json }) => {
             finish(verbs::events::from_env(ids, *follow, *json))
         }

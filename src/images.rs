@@ -106,15 +106,31 @@ pub fn filed(agent_dir: &Path, images: &[PathBuf]) -> Result<Vec<PathBuf>> {
 }
 
 /// `message` with `images` attached the way `attach` says.
+///
+/// [`Attach::Argument`] puts the images in argv words of their own
+/// ([`arguments`]), so the message is answered as it is.
 pub fn attached(attach: Attach, images: &[PathBuf], message: &str) -> String {
-    match attach {
-        Attach::Mentioned => images
+    let with = |each: fn(&Path) -> String, between: &str| {
+        images
             .iter()
-            .map(|image| mention(image))
+            .map(|image| each(image))
             .chain((!message.is_empty()).then(|| message.to_string()))
             .collect::<Vec<_>>()
-            .join(" "),
+            .join(between)
+    };
+    match attach {
+        Attach::Mentioned => with(mention, " "),
+        Attach::Lines => with(|image| format!("image: {}", image.display()), "\n"),
+        Attach::Argument => message.to_string(),
     }
+}
+
+/// One `@<path>` argv word per image, unquoted: the word is the path whole.
+pub fn arguments(images: &[PathBuf]) -> Vec<String> {
+    images
+        .iter()
+        .map(|image| format!("@{}", image.display()))
+        .collect()
 }
 
 /// An `@` word for `image`, quoted when its path holds whitespace so the
@@ -216,5 +232,39 @@ mod tests {
             "@/state/agents/a1/images/1.png"
         );
         assert_eq!(attached(Attach::Mentioned, &[], "x"), "x");
+    }
+
+    #[test]
+    fn image_lines_go_one_per_image_above_the_message() {
+        let images = [
+            PathBuf::from("/state/agents/a1/images/1.png"),
+            PathBuf::from("/my state/agents/a1/images/2.png"),
+        ];
+        assert_eq!(
+            attached(Attach::Lines, &images, "describe"),
+            "image: /state/agents/a1/images/1.png\n\
+             image: /my state/agents/a1/images/2.png\n\
+             describe"
+        );
+        assert_eq!(
+            attached(Attach::Lines, &images[..1], ""),
+            "image: /state/agents/a1/images/1.png"
+        );
+    }
+
+    #[test]
+    fn an_argument_is_one_unquoted_word_per_image_and_leaves_the_message() {
+        let images = [
+            PathBuf::from("/state/agents/a1/images/1.png"),
+            PathBuf::from("/my state/agents/a1/images/2.png"),
+        ];
+        assert_eq!(
+            arguments(&images),
+            [
+                "@/state/agents/a1/images/1.png",
+                "@/my state/agents/a1/images/2.png"
+            ]
+        );
+        assert_eq!(attached(Attach::Argument, &images, "x"), "x");
     }
 }

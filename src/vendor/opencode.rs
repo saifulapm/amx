@@ -6,8 +6,8 @@
 //! that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, Hooks, Models, Moment, Place, Resume, SessionSpec,
-    Transcript, Vendor, Wire, Wiring,
+    Attach, Capability, Catalog, DEFAULT, DialSpec, Hooks, Images, Models, Moment, Place, Resume,
+    SessionSpec, Transcript, Vendor, Wire, Wiring,
 };
 
 /// opencode's entry in the table.
@@ -187,7 +187,12 @@ pub const VENDOR: Vendor = Vendor {
     launch: &["--standalone"],
     // `--auto` is the permission dial's own flag.
     unasked: &[],
-    images: None,
+    // No `@path` is parsed in text (see `attaches_at`), so the paths go as
+    // lines the model reads, inside `--prompt=` at start.
+    images: Some(Images {
+        start: Attach::Lines,
+        send: Attach::Lines,
+    }),
 };
 
 /// opencode's plugin events and the words its payloads use.

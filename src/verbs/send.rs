@@ -59,7 +59,12 @@ const LOOK: Duration = Duration::from_millis(250);
 ///
 /// A `--file` that cannot be read is a usage error, reported before any record
 /// is touched.
-pub fn from_env(id: &str, text: Option<&str>, file: Option<&Path>) -> Result<i32> {
+pub fn from_env(
+    id: &str,
+    text: Option<&str>,
+    file: Option<&Path>,
+    images: &[PathBuf],
+) -> Result<i32> {
     let text = match file {
         Some(path) => match crate::cli::text_of(path) {
             Ok(text) => text,
@@ -74,18 +79,26 @@ pub fn from_env(id: &str, text: Option<&str>, file: Option<&Path>) -> Result<i32
     let root = paths::state_root()?;
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let mut out = std::io::stdout().lock();
-    run(&root, id, &text, to_terminal, &mut out)
+    run(&root, id, &text, images, to_terminal, &mut out)
 }
 
 /// The verb, with the state directory named.
+///
+/// `images` are files named with `--image`, checked before anything else and
+/// copied into the record just before the message is typed.
 pub fn run(
     root: &Path,
     id: &str,
     text: &str,
+    images: &[PathBuf],
     to_terminal: bool,
     out: &mut impl Write,
 ) -> Result<i32> {
     let view = derive::view(root, id, store::now())?;
+    if let Some(refusal) = cannot_take(&view.meta, images) {
+        complain!("amx send: {refusal}");
+        return Ok(exit::FAILURE);
+    }
     // Checked before the phase: a parked record still reads whatever the agent
     // was doing when its pane was taken.
     if view.verdict.evidence == derive::Evidence::LetGo {
@@ -105,8 +118,9 @@ pub fn run(
     // offset, so the wait never re-reads the whole log.
     let from = logged(&agent);
 
+    let images = crate::images::filed(agent.dir(), images)?;
     let server = Server::from_socket(view.meta.socket.clone());
-    match delivered(&agent, &server, &view.meta.pane, text, &[])? {
+    match delivered(&agent, &server, &view.meta.pane, text, &images)? {
         Delivered::Sent => {}
         Delivered::Refused(why) | Delivered::Failed(why) => {
             complain!("amx: {why}");
@@ -250,6 +264,25 @@ fn delivered(
         )));
     }
     Ok(Delivered::Sent)
+}
+
+/// Why `images` cannot go to the agent `meta` names, if they cannot.
+fn cannot_take(meta: &Meta, images: &[PathBuf]) -> Option<String> {
+    if images.is_empty() {
+        return None;
+    }
+    let vendor = meta.agent.as_deref();
+    if vendor
+        .and_then(registry::entry)
+        .and_then(|vendor| vendor.images)
+        .is_none()
+    {
+        let program = vendor.unwrap_or("this agent");
+        return Some(format!("{program} is given no images by amx"));
+    }
+    images
+        .iter()
+        .find_map(|image| crate::images::checked(image).err())
 }
 
 /// A send event's payload: the message as given, and the images with it when
@@ -1150,7 +1183,15 @@ mod tests {
             .unwrap();
 
         let mut out = Vec::new();
-        let code = run(root.path(), &meta.id, "and now the linter", false, &mut out).unwrap();
+        let code = run(
+            root.path(),
+            &meta.id,
+            "and now the linter",
+            &[],
+            false,
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(code, exit::FAILURE);
         assert!(out.is_empty(), "{out:?}");
         assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");

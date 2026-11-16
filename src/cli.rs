@@ -130,6 +130,13 @@ pub enum Command {
         /// The file is read whole, minus its final newline.
         #[arg(long, value_name = "PATH")]
         file: Option<PathBuf>,
+
+        /// Give the agent this image with the message. Repeat for more.
+        ///
+        /// A png, jpeg, webp or gif of at most 20 MB, copied into the agent's
+        /// record.
+        #[arg(long, value_name = "FILE")]
+        image: Vec<PathBuf>,
     },
 
     /// Answer a waiting agent's question: y, n, 1-9, 1,3, enter, esc, or words.
@@ -381,6 +388,13 @@ pub enum Command {
         /// conversation and waits.
         #[arg(value_parser = a_task)]
         task: Option<String>,
+
+        /// Give the copy this image with its first task. Repeat for more.
+        ///
+        /// A png, jpeg, webp or gif of at most 20 MB, copied into the copy's
+        /// record.
+        #[arg(long, value_name = "FILE")]
+        image: Vec<PathBuf>,
     },
 
     /// Add the agent already running in this pane to amx.
@@ -1242,7 +1256,7 @@ mod tests {
     #[test]
     fn fork_takes_an_agent_to_copy_and_a_turn_of_its_own() {
         let cli = parse(&["amx", "fork", "fix-a1b"]).unwrap();
-        let Some(Command::Fork { id, task }) = cli.command else {
+        let Some(Command::Fork { id, task, .. }) = cli.command else {
             panic!("expected fork");
         };
         assert_eq!(id, "fix-a1b");
@@ -1507,7 +1521,7 @@ mod tests {
     #[test]
     fn a_message_is_typed_or_read_from_a_file_and_never_both() {
         let cli = parse(&["amx", "send", "fix-login-a1b", "--file", "notes.md"]).unwrap();
-        let Some(Command::Send { id, text, file }) = cli.command else {
+        let Some(Command::Send { id, text, file, .. }) = cli.command else {
             panic!("expected send");
         };
         assert_eq!(id, "fix-login-a1b");

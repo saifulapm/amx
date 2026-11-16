@@ -494,6 +494,15 @@ pub enum Attach {
     /// One `@<path>` word per image at the front of the message, which the
     /// vendor attaches on submit (claude 2.1.325, at start and in a send).
     Mentioned,
+    /// One `@<path>` argv word per image after the end-of-options word and
+    /// before the message word, which the vendor reads as a file to attach
+    /// (pi's `[@files...] [messages...]`, at start only: a typed message
+    /// has no argv).
+    Argument,
+    /// One `image: <path>` line per image above the message, from which the
+    /// model reads the file itself (pi in a send, opencode at start and in a
+    /// send). At start the lines ride inside the prompt flag's word.
+    Lines,
 }
 
 /// A flag that lowers what a vendor asks before acting, or settles its

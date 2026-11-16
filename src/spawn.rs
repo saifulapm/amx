@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use crate::registry;
 use crate::store::{Agent, Meta, Phase};
 use crate::tmux::{Listings, PaneId, Server, Spawn};
-use crate::vendor::Vendor;
+use crate::vendor::{Attach, Vendor};
 
 /// File holding the [`Handoff`].
 pub const HANDOFF: &str = "handoff.json";
@@ -216,14 +216,32 @@ pub fn vendor_command(
             .and_then(|vendor| vendor.ends_options)
             .map(str::to_string),
     );
-    let vendor = registry::entry(agent);
-    command.push(match vendor.and_then(|vendor| vendor.images) {
-        Some(takes) if !images.is_empty() => {
-            crate::images::attached(takes.start, images, &as_words(vendor, task))
-        }
-        _ => as_words(vendor, task),
-    });
+    command.extend(task_words(registry::entry(agent), task, images));
     command
+}
+
+/// The argv words that end a start command: the task as [`as_words`] writes
+/// it, with `images` attached the way the vendor takes them at start.
+///
+/// Images that ride in the message go in before the prompt flag is put in
+/// front, so they land inside its one word. Images that are words of their
+/// own go before the task, and an empty task then gets no word at all.
+pub fn task_words(vendor: Option<&Vendor>, task: &str, images: &[PathBuf]) -> Vec<String> {
+    let start = vendor
+        .and_then(|vendor| vendor.images)
+        .filter(|_| !images.is_empty())
+        .map(|takes| takes.start);
+    match start {
+        None => vec![as_words(vendor, task)],
+        Some(Attach::Argument) => crate::images::arguments(images)
+            .into_iter()
+            .chain((!task.is_empty()).then(|| as_words(vendor, task)))
+            .collect(),
+        Some(attach) => {
+            let message = crate::images::attached(attach, images, &defused(vendor, task));
+            vec![flagged(vendor, as_typed(vendor, &message))]
+        }
+    }
 }
 
 /// `command` with the vendor's launch words inserted after the program,
@@ -261,15 +279,25 @@ pub fn ends_options_of(handoff: &Handoff) -> Option<&'static str> {
 /// a leading `@` as a file to attach ([`Vendor::attaches_at`]), and prefixed
 /// with `<prompt_flag>=` where the vendor has a [`Vendor::prompt_flag`].
 pub fn as_words(vendor: Option<&Vendor>, message: &str) -> String {
+    flagged(vendor, defused(vendor, message))
+}
+
+/// `message` as typed, with a leading space where the vendor would read a
+/// leading `@` as a file to attach.
+fn defused(vendor: Option<&Vendor>, message: &str) -> String {
     let typed = as_typed(vendor, message);
-    let typed = if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
+    if vendor.is_some_and(|vendor| vendor.attaches_at) && message.starts_with('@') {
         format!(" {typed}")
     } else {
         typed
-    };
+    }
+}
+
+/// `words` behind the vendor's prompt flag, where it has one.
+fn flagged(vendor: Option<&Vendor>, words: String) -> String {
     match vendor.and_then(|vendor| vendor.prompt_flag) {
-        Some(flag) => format!("{flag}={typed}"),
-        None => typed,
+        Some(flag) => format!("{flag}={words}"),
+        None => words,
     }
 }
 

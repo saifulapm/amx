@@ -5,8 +5,8 @@
 //! vendor bump: a renamed flag turns a dial into a spawn that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
-    SessionSpec, Transcript, Vendor, Wire, Wiring,
+    Attach, Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Images, Models, Moment, Place,
+    Resume, SessionSpec, Transcript, Vendor, Wire, Wiring,
 };
 
 /// pi's entry in the table.
@@ -157,7 +157,12 @@ pub const VENDOR: Vendor = Vendor {
     launch: &[],
     // `--approve` and its spellings are the trust flags.
     unasked: &[],
-    images: None,
+    // `pi [options] [--] [@files...] [messages...]` attaches the files to the
+    // first message; a typed message gets the paths as lines.
+    images: Some(Images {
+        start: Attach::Argument,
+        send: Attach::Lines,
+    }),
 };
 
 /// The opt-in `subagent` tool, written by `amx setup pi --subagent`.
