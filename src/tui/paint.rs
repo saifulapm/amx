@@ -51,6 +51,7 @@ pub use header::title;
 pub(super) use help::HELP;
 pub use help::Keymap;
 pub use input::Notice;
+pub(super) use input::{cursor_row, ends_paragraph, visual_rows};
 pub use wall::WallScroll;
 
 /// Where the last frame put things, for mapping mouse coordinates back to the

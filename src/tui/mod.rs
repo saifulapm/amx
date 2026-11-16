@@ -2299,14 +2299,17 @@ impl Screen {
             KeyCode::Down if chord(key).is_empty() && composer.suggest.is_some() => {
                 composer.choose(1)
             }
-            // History: alt+arrows on any line, plain arrows on a task line. The
-            // card's line keeps plain arrows for the card.
-            KeyCode::Up | KeyCode::Down
-                if chord(key) == KeyModifiers::ALT
-                    || (chord(key).is_empty() && matches!(composer.asking, Asking::Task)) =>
-            {
+            // History: alt+arrows on any line.
+            KeyCode::Up | KeyCode::Down if chord(key) == KeyModifiers::ALT => {
                 let sent = self.sent.lines_for(&composer.asking);
                 composer.recall(sent, key.code == KeyCode::Up);
+            }
+            // Plain arrows on a task line walk its rows, then history.
+            KeyCode::Up | KeyCode::Down
+                if chord(key).is_empty() && matches!(composer.asking, Asking::Task) =>
+            {
+                let sent = self.sent.lines_for(&composer.asking);
+                composer.arrow(sent, key.code == KeyCode::Up);
             }
             // A chord is not a character.
             KeyCode::Char(typed)

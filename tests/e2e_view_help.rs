@@ -156,7 +156,7 @@ fn the_keys_are_on_the_screen_for_the_asking() {
         "bring along the uncommitted changes",
         "how hard the next agent thinks",
         "effort, for one spawn",
-        "earlier lines · ↑ ↓ too on a task line",
+        "earlier lines · ↑ ↓ past the first or last row",
     ] {
         assert!(keys.contains(does), "{does} is not among the keys:\n{keys}");
     }

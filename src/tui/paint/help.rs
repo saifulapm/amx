@@ -59,7 +59,10 @@ pub(in crate::tui) const HELP: [(&str, &str); 58] = [
     ("backspace", "a character · delete ahead · ctrl+w a word"),
     ("ctrl+g", "edit the line in $EDITOR"),
     ("ctrl+v", "paste an image or text from the clipboard"),
-    ("alt+↑ alt+↓", "earlier lines · ↑ ↓ too on a task line"),
+    (
+        "alt+↑ alt+↓",
+        "earlier lines · ↑ ↓ past the first or last row",
+    ),
     // arrange
     ("ctrl+s", "group by state, directory, state, repo"),
     ("ctrl+t", "pin it to the top · again unpins it"),

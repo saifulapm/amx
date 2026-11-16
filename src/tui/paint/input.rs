@@ -127,22 +127,32 @@ pub(in crate::tui) fn visual_rows(text: &str, room: usize) -> Vec<Range<usize>> 
 
 /// The cursor's (row, char offset) in the rows [`composer_lines`] produces.
 ///
-/// A cursor at the end of a wrapped row is at the start of the next, unless
-/// the row ends its paragraph. At the end of a full row the offset is one past
+/// At the end of a full row the offset is one past
 /// the last char, which is off screen; [`last_cell`] moves the block back onto
 /// the row.
 pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
     let rows = visual_rows(&composer.text, room);
     let at = composer.at.min(composer.text.chars().count());
-    let row = rows
-        .iter()
-        .enumerate()
-        .position(|(down, row)| {
-            let ends_paragraph = rows.get(down + 1).is_none_or(|next| next.start > row.end);
-            at < row.end || (at == row.end && ends_paragraph)
-        })
-        .unwrap_or(rows.len() - 1);
+    let row = cursor_row(&rows, at);
     (row as u16, (at - rows[row].start) as u16)
+}
+
+/// The row of [`visual_rows`] a cursor at character `at` is on.
+///
+/// A cursor at the end of a wrapped row is at the start of the next, unless
+/// the row ends its paragraph.
+pub(in crate::tui) fn cursor_row(rows: &[Range<usize>], at: usize) -> usize {
+    rows.iter()
+        .enumerate()
+        .position(|(down, row)| at < row.end || (at == row.end && ends_paragraph(rows, down)))
+        .unwrap_or(rows.len() - 1)
+}
+
+/// Whether row `down` of [`visual_rows`] is the last of its paragraph, so a
+/// cursor can stand past its end.
+pub(in crate::tui) fn ends_paragraph(rows: &[Range<usize>], down: usize) -> bool {
+    rows.get(down + 1)
+        .is_none_or(|next| next.start > rows[down].end)
 }
 
 /// The rule's row above the composer.

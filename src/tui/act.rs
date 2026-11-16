@@ -16,7 +16,8 @@ use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use super::paint::{Card, Hunk};
+use super::paint::text::char_width;
+use super::paint::{Card, Hunk, cursor_row, ends_paragraph, visual_rows};
 use super::rows::{Narrow, shorten};
 use crate::catalog::{self, Entry};
 use crate::cli::{AgentArgs, AnswerArgs, NewArgs, StopArgs};
@@ -178,46 +179,104 @@ impl Composer {
         }
     }
 
+    /// Up (`up`) or Down: moves the cursor one drawn row, or past the first
+    /// or last row recalls the next older or newer sent line. Returns whether
+    /// anything moved.
+    pub fn arrow(&mut self, sent: &[String], up: bool) -> bool {
+        self.row_step(up) || self.recall(sent, up)
+    }
+
+    /// Moves the cursor one drawn row up (`up`) or down, onto the character
+    /// at its cell column or the row's end. Returns false on the first row
+    /// going up or the last going down.
+    fn row_step(&mut self, up: bool) -> bool {
+        let rows = visual_rows(&self.text, self.room.get());
+        let line: Vec<char> = self.text.chars().collect();
+        let at = self.at.min(line.len());
+        let row = cursor_row(&rows, at);
+        let to = match up {
+            true => row.checked_sub(1),
+            false => Some(row + 1).filter(|to| *to < rows.len()),
+        };
+        let Some(to) = to else {
+            return false;
+        };
+        let column: usize = line[rows[row].start..at]
+            .iter()
+            .copied()
+            .map(char_width)
+            .sum();
+        // The last character whose cell starts at or before the column. Past
+        // the row's end, its end; a wrapped row's end is the next row's start,
+        // so there the cursor stands on its last character instead.
+        let target = &rows[to];
+        let mut cells = 0;
+        let mut landed = target.start;
+        for at in target.clone() {
+            if cells > column {
+                break;
+            }
+            landed = at;
+            cells += char_width(line[at]);
+        }
+        self.at = match cells <= column {
+            true if ends_paragraph(&rows, to) => target.end,
+            true => target.end.saturating_sub(1).max(target.start),
+            false => landed,
+        };
+        true
+    }
+
     /// Recalls the next older (`older`) or newer sent line.
     ///
     /// Stepping newer past the newest restores the draft from before the walk.
-    /// A recalled line is plain text with the cursor at its end and no pastes
-    /// or images. Returns whether the line changed.
+    /// A recalled line is plain text with no pastes or images, the cursor at
+    /// its end going older and at its start going newer. A sent line edited
+    /// while it was shown becomes the draft. Returns whether the line changed.
     pub fn recall(&mut self, sent: &[String], older: bool) -> bool {
-        let at = match (&self.walking, older) {
-            (None, true) => 0,
+        // The line to show, or None for the draft.
+        let to = match (&self.walking, older) {
+            (None, true) => Some(0),
             (None, false) => return false,
-            (Some(walking), true) => walking.at + 1,
-            (Some(walking), false) => match walking.at.checked_sub(1) {
-                Some(at) => at,
-                None => {
-                    let draft = self.walking.take().expect("a walk under way").draft;
-                    // An image pasted onto the recalled line goes with it.
-                    let_go(&self.images);
-                    (self.text, self.at, self.pastes, self.images) = draft;
-                    return true;
-                }
-            },
+            (Some(walking), true) => Some(walking.at + 1),
+            (Some(walking), false) => walking.at.checked_sub(1),
         };
-        let Some(line) = sent.get(at) else {
+        if to.is_some_and(|to| to >= sent.len()) {
             return false;
-        };
+        }
+        let shown = (
+            std::mem::take(&mut self.text),
+            self.at,
+            std::mem::take(&mut self.pastes),
+            std::mem::take(&mut self.images),
+        );
         match &mut self.walking {
-            Some(walking) => walking.at = at,
             None => {
                 self.walking = Some(Walking {
-                    at,
-                    draft: (
-                        std::mem::take(&mut self.text),
-                        self.at,
-                        std::mem::take(&mut self.pastes),
-                        std::mem::take(&mut self.images),
-                    ),
-                });
+                    at: 0,
+                    draft: shown,
+                })
+            }
+            Some(walking) if sent.get(walking.at) != Some(&shown.0) => {
+                let_go(&std::mem::replace(&mut walking.draft, shown).3);
+            }
+            // An unedited sent line holds no pastes or images.
+            Some(_) => {}
+        }
+        match to {
+            Some(to) => {
+                self.walking.as_mut().expect("a walk under way").at = to;
+                self.set_text(sent[to].clone());
+                if !older {
+                    self.at = 0;
+                }
+            }
+            None => {
+                let draft = self.walking.take().expect("a walk under way").draft;
+                (self.text, _, self.pastes, self.images) = draft;
+                self.at = 0;
             }
         }
-        let_go(&std::mem::take(&mut self.images));
-        self.set_text(line.clone());
         true
     }
 
@@ -3994,20 +4053,132 @@ mod tests {
         assert!(!composer.recall(&sent, true), "nothing older to bring back");
         assert_eq!(composer.text, "port the importer");
 
-        // Stepping newer past the newest restores the draft and its cursor.
+        // Stepping newer past the newest restores the draft.
         assert!(composer.recall(&sent, false));
         assert_eq!(composer.text, "fix the login");
         assert!(composer.recall(&sent, false));
-        assert_eq!((composer.text.as_str(), composer.at), ("half a", 5));
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("half a", 0),
+            "the draft comes back with the cursor at its start"
+        );
         assert!(
             !composer.recall(&sent, false),
             "there is nothing newer than the draft"
         );
-        assert_eq!((composer.text.as_str(), composer.at), ("half a", 5));
+        assert_eq!((composer.text.as_str(), composer.at), ("half a", 0));
 
         // A new walk starts again from the newest.
         assert!(composer.recall(&sent, true));
         assert_eq!(composer.text, "fix the login");
+    }
+
+    /// A task line `room` cells wide holding `text`, the cursor at its end.
+    fn drawn(text: &str, room: usize) -> Composer {
+        let mut composer = Composer::new(Asking::Task);
+        composer.room.set(room);
+        composer.insert(text);
+        composer
+    }
+
+    #[test]
+    fn up_and_down_walk_the_rows_in_the_same_column_before_the_lines_sent() {
+        let sent = ["the last task".to_string()];
+        let mut composer = drawn("one\ntwo\nthree", 40);
+        composer.arrow(&sent, true);
+        assert_eq!(composer.at, 7, "row 2, column 3");
+        composer.arrow(&sent, true);
+        assert_eq!(composer.at, 3, "row 1, column 3");
+        composer.arrow(&sent, true);
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("the last task", 13),
+            "the first row's up brings back the newest line, cursor at its end"
+        );
+        composer.arrow(&sent, false);
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("one\ntwo\nthree", 0),
+            "down past the newest is the draft, cursor at its start"
+        );
+    }
+
+    #[test]
+    fn up_keeps_the_column_over_wrapped_rows() {
+        let mut composer = drawn(&"x".repeat(50), 20);
+        composer.at = 44;
+        composer.arrow(&[], true);
+        assert_eq!(composer.at, 24, "column 4 of the second row");
+    }
+
+    #[test]
+    fn up_keeps_the_cell_column_over_wide_characters() {
+        let mut composer = drawn("abcdef\n日本語", 40);
+        composer.at = 9;
+        composer.arrow(&[], true);
+        assert_eq!(composer.at, 4, "after 本 is four cells in");
+        composer.at = 3;
+        composer.arrow(&[], false);
+        assert_eq!(composer.at, 8, "cell 3 is inside 本, which it stands on");
+    }
+
+    #[test]
+    fn up_onto_a_shorter_wrapped_row_stays_on_that_row() {
+        // Rows: "you need " 0..9, "to attach " 9..19, "it" 19..21.
+        let mut composer = drawn("you need to attach it", 10);
+        composer.at = 18;
+        composer.arrow(&[], true);
+        assert_eq!(composer.at, 8, "on the row's last character, not past it");
+        composer.at = 9;
+        composer.arrow(&[], true);
+        assert_eq!(composer.at, 0, "the start of a wrapped row is on that row");
+    }
+
+    #[test]
+    fn down_walks_a_recalled_entrys_rows_then_the_newer_entry_from_its_start() {
+        let sent = ["newer".to_string(), "a\nb\nc".to_string()];
+        let mut composer = drawn("", 40);
+        composer.arrow(&sent, true);
+        composer.arrow(&sent, true);
+        assert_eq!((composer.text.as_str(), composer.at), ("a\nb\nc", 5));
+        composer.arrow(&sent, true);
+        composer.arrow(&sent, true);
+        assert_eq!(composer.at, 1, "row 1, column 1");
+        composer.arrow(&sent, false);
+        assert_eq!(composer.at, 3, "row 2");
+        composer.arrow(&sent, false);
+        assert_eq!(composer.at, 5, "row 3");
+        composer.arrow(&sent, false);
+        assert_eq!((composer.text.as_str(), composer.at), ("newer", 0));
+    }
+
+    #[test]
+    fn up_on_a_one_row_line_brings_back_an_older_line_every_time() {
+        let sent = ["b".to_string(), "a".to_string()];
+        let mut composer = drawn("draft", 40);
+        composer.arrow(&sent, true);
+        assert_eq!(composer.text, "b");
+        composer.arrow(&sent, true);
+        assert_eq!(composer.text, "a");
+    }
+
+    #[test]
+    fn an_edited_line_from_the_walk_comes_back_as_the_draft() {
+        let sent = ["newer".to_string(), "older".to_string()];
+        let mut composer = drawn("draft", 40);
+        composer.arrow(&sent, true);
+        composer.insert(" now");
+        composer.arrow(&sent, true);
+        assert_eq!(composer.text, "older", "the walk keeps its place");
+        composer.arrow(&sent, false);
+        assert_eq!(composer.text, "newer");
+        composer.arrow(&sent, false);
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("newer now", 0),
+            "the edit is the draft now"
+        );
+        assert!(!composer.arrow(&sent, false), "nothing is newer than it");
     }
 
     #[test]

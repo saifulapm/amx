@@ -1856,6 +1856,47 @@ fn keys_a_task_line_walks_the_lines_sent_on_the_plain_arrows() {
 }
 
 #[test]
+fn keys_up_climbs_the_rows_of_a_task_line_before_it_brings_back_a_task() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
+    screen
+        .sent
+        .remember_line(&Asking::Task, "port the importer");
+    let press =
+        |screen: &mut Screen, key: KeyEvent| screen.act(key, root.path(), &config, None).unwrap();
+    let line = |screen: &Screen| match &screen.mode {
+        Mode::Typing(composer) => (composer.text.clone(), composer.at),
+        _ => panic!("no line is open"),
+    };
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char('n')));
+    for typed in "one\ntwo\nthree".chars() {
+        match typed {
+            '\n' => press(
+                &mut screen,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            ),
+            typed => press(&mut screen, KeyEvent::from(KeyCode::Char(typed))),
+        };
+    }
+    press(&mut screen, KeyEvent::from(KeyCode::Up));
+    assert_eq!(line(&screen), ("one\ntwo\nthree".to_string(), 7));
+    press(&mut screen, KeyEvent::from(KeyCode::Up));
+    assert_eq!(line(&screen), ("one\ntwo\nthree".to_string(), 3));
+    press(&mut screen, KeyEvent::from(KeyCode::Up));
+    assert_eq!(line(&screen), ("port the importer".to_string(), 17));
+    for _ in 0..3 {
+        press(&mut screen, KeyEvent::from(KeyCode::Down));
+    }
+    assert_eq!(
+        line(&screen),
+        ("one\ntwo\nthree".to_string(), 8),
+        "down brings back the draft at its start, then walks its rows to the third"
+    );
+}
+
+#[test]
 fn replied_keeps_the_line_it_sent_and_not_one_refused() {
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     let mut sent = Composer::new(Asking::Reply);
