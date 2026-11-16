@@ -51,7 +51,7 @@ amx new [OPTIONS] [TASK] [-- AGENT_ARGS...]
 | --- | --- |
 | `--file <PATH>` | Read the task from a file, or stdin for `-`. One trailing newline is dropped. |
 | `--edit` | Write the task in `$VISUAL`, `$EDITOR` or `vi`. Quitting with an error (`:cq`) starts nothing. |
-| `--image <FILE>` | Give the agent this image with its task; repeat for more. A png, jpeg, webp or gif of at most 20 MB, copied into the agent's record. claude and pi are given the copy as an `@path` word, opencode as an `image: <path>` line above the task. codex is refused. |
+| `--image <FILE>` | Give the agent this image with its task; repeat for more. A png, jpeg, webp or gif of at most 20 MB, copied into the agent's record. claude and pi are given the copy as an `@path` word, opencode as an `image: <path>` line above the task, codex as an `--image=<path>` word before its `--`. |
 | `--name <NAME>` | Use this as the id instead of deriving one from the task. |
 | `--role <NAME>` | Take dials and a brief from a role file. See [Scripting](scripting.md#roles). |
 | `--dir <DIR>` | Run in this directory instead of the current one. |
@@ -245,7 +245,7 @@ amx send <ID> --file <PATH>
 | Flag | Does |
 | --- | --- |
 | `--file <PATH>` | Read the message from a file, or stdin for `-`. |
-| `--image <FILE>` | Give the agent this image with the message; repeat for more. Checked as `new --image` checks it, and a refusal (exit 1) sends nothing. claude is given the copy as an `@path` word, pi and opencode as an `image: <path>` line above the message. |
+| `--image <FILE>` | Give the agent this image with the message; repeat for more. Checked as `new --image` checks it, and a refusal (exit 1) sends nothing. claude is given the copy as an `@path` word, pi and opencode as an `image: <path>` line above the message. codex is pasted each path alone, and the message follows once codex shows the image's `[Image #N]` chip; a chip that does not show within 5 s leaves the message unsent (exit 1). |
 
 A message sent mid-turn waits in the vendor's queue until the agent takes it.
 `send` refuses (exit 2) while the agent is waiting on a question, since text

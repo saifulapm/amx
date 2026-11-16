@@ -41,6 +41,12 @@
 #   transcript <json>   append a line to the rollout the payloads name.
 #   await line          block until a line is typed at the pane (a bracketed
 #                       paste and Enter, as amx sends). It is the next prompt.
+#                       A paste whose whole body is a path to a file, bare or
+#                       in single quotes, is an image: it prints
+#                       `[Image #N]`, N counting per line, and is left out of
+#                       the prompt.
+#   chips off           from here on, leave a pasted path as text and print no
+#                       chip, as codex does with a file it cannot attach.
 #   await esc           block until Escape reaches the pane.
 #
 # Environment:
@@ -265,13 +271,39 @@ transcribe() {
 	printf '%s\n' "$1" >>"$transcript"
 }
 
+chips=on
+
 # Read what is typed at the pane. A message from amx is a bracketed paste and
-# Enter; the paste markers are stripped and the rest is the prompt.
+# Enter; the paste markers are stripped and the rest is the prompt. It is read
+# a byte at a time, since a pasted image path has no Enter after it.
 await() {
 	case $1 in
 	line)
-		IFS= read -r typed </dev/tty || exit 0
 		esc=$(printf '\033')
+		old=$(stty -g </dev/tty)
+		stty -icanon min 1 time 0 </dev/tty
+		typed=
+		chip=0
+		while :; do
+			key=$(dd bs=1 count=1 </dev/tty 2>/dev/null) || exit 0
+			# `$( )` drops a newline, so Enter reads as nothing.
+			[ -n "$key" ] || break
+			typed=$typed$key
+			case $typed in
+			*"$esc[200~"*"$esc[201~")
+				body=${typed##*"$esc[200~"}
+				body=${body%"$esc[201~"}
+				path=${body#\'}
+				path=${path%\'}
+				if [ "$chips" = on ] && [ -f "$path" ]; then
+					chip=$((chip + 1))
+					printf '[Image #%d]\n' "$chip"
+					typed=${typed%"$esc[200~$body$esc[201~"}
+				fi
+				;;
+			esac
+		done
+		stty "$old" </dev/tty
 		typed=$(printf '%s' "$typed" | sed -e "s/${esc}\[200~//g" -e "s/${esc}\[201~//g" -e 's/\r$//')
 		prompt=$typed
 		printf 'typed: %s\n' "$typed"
@@ -307,6 +339,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	hook) deliver "$rest" ;;
 	transcript) transcribe "$rest" ;;
 	await) await "$rest" ;;
+	chips) chips=$rest ;;
 	*)
 		echo "mock codex: $scenario: no step called \`$verb\`" >&2
 		exit 65

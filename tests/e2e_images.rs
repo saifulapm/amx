@@ -353,6 +353,81 @@ fn codex_is_given_each_image_as_an_image_flag_before_its_options_end() {
     assert_eq!(argv, want);
 }
 
+/// A codex agent started on `scenario` with a task, once its first turn has
+/// ended.
+fn idle_codex(amx: &Harness, scenario: &Path) -> String {
+    let id = id_of(&codex(
+        amx,
+        scenario,
+        &[
+            "new",
+            "--no-worktree",
+            "--agent",
+            "codex",
+            "fix the login bug",
+        ],
+    ));
+    amx.until_state(&id, "idle");
+    id
+}
+
+#[test]
+fn a_send_pastes_codex_its_image_alone_and_the_words_once_the_chip_shows() {
+    let amx = Harness::new();
+    an_image(&amx, "a.png", PNG);
+    let scenario = scenario_of("mock_codex", "takes-a-message");
+    let id = idle_codex(&amx, &scenario);
+
+    let out = codex(
+        &amx,
+        &scenario,
+        &["send", &id, "--image", "a.png", "describe"],
+    );
+    went(&out, "send");
+
+    let pane = amx.pane_of(&id);
+    amx.until("the words on codex's pane after the chip", || {
+        said_in(&amx, &pane)
+            .contains("[Image #1]\ntyped: describe")
+            .then_some(())
+    });
+}
+
+#[test]
+fn a_send_codex_shows_no_chip_for_presses_no_enter_and_fails() {
+    let amx = Harness::new();
+    an_image(&amx, "a.png", PNG);
+    let scenario = scenario_of("mock_codex", "leaves-an-image-as-text");
+    let id = idle_codex(&amx, &scenario);
+
+    let began = std::time::Instant::now();
+    let out = codex(
+        &amx,
+        &scenario,
+        &["send", &id, "--image", "a.png", "describe"],
+    );
+    let took = began.elapsed();
+
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("codex did not take the image"), "{said}");
+    assert!(
+        took >= std::time::Duration::from_secs(5) && took < std::time::Duration::from_secs(10),
+        "gave up after the 5 s wait: {took:?}"
+    );
+    assert!(
+        amx.event_kinds(&id).iter().any(|kind| kind == "unsent"),
+        "the send is logged as unsent: {:?}",
+        amx.event_kinds(&id)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let history = said_in(&amx, &amx.pane_of(&id));
+    assert!(
+        !history.contains("typed:"),
+        "no Enter reached codex:\n{history}"
+    );
+}
+
 #[test]
 fn a_send_with_a_missing_image_types_nothing() {
     let amx = Harness::new();

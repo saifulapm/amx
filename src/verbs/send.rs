@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crate::derive::{self, View};
 use crate::store::{Agent, Event, Kind, Meta, Phase, State};
 use crate::tmux::{PaneId, Server};
-use crate::vendor::{Capability, Hooks, Moment};
+use crate::vendor::{Attach, Capability, Hooks, Moment};
 use crate::verbs::{answer, print_question};
 use crate::{complain, exit, paths, registry, spawn, store, warn};
 
@@ -47,6 +47,10 @@ fn submitted(hooks: Option<&Hooks>, event: &Event) -> bool {
 
 /// How long a send waits for the agent to take the message.
 const CONFIRM: Duration = Duration::from_secs(5);
+
+/// How long a send waits for the vendor to show a pasted image as a chip
+/// before it gives up on the message ([`Attach::Pasted`]).
+const CHIP: Duration = Duration::from_secs(5);
 
 /// How often the event log is polled while waiting.
 const POLL: Duration = Duration::from_millis(50);
@@ -240,13 +244,30 @@ fn delivered(
     // popup.
     let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
     let typed = spawn::as_typed(vendor, text);
-    let typed = match vendor.and_then(|vendor| vendor.images) {
-        Some(takes) if !images.is_empty() => crate::images::attached(takes.send, images, &typed),
-        _ => typed,
+    let takes = vendor
+        .and_then(|vendor| vendor.images)
+        .filter(|_| !images.is_empty())
+        .map(|takes| takes.send);
+    let typed = match takes {
+        Some(attach) => crate::images::attached(attach, images, &typed),
+        None => typed,
     };
     writer.append(&Event::new(SEND, sent(text, images)))?;
     writer.observe(|state| state.seq += 1)?;
     let unsent = || writer.append(&Event::new(UNSENT, sent(text, images)));
+    // Each image goes alone, and the words only after the vendor shows that
+    // it attached it: Enter on a path it left as text would send the path.
+    if let (Some(Attach::Pasted { chip }), Some(vendor)) = (takes, vendor) {
+        for image in images {
+            let failed = match took_the_image(server, pane, chip, image) {
+                Ok(true) => continue,
+                Ok(false) => format!("{} did not take the image", vendor.name),
+                Err(e) => format!("the image did not reach {id}: {e:#}"),
+            };
+            unsent()?;
+            return Ok(Delivered::Failed(failed));
+        }
+    }
     if let Err(e) = server.paste(pane, &typed) {
         unsent()?;
         return Ok(Delivered::Failed(format!(
@@ -264,6 +285,27 @@ fn delivered(
         )));
     }
     Ok(Delivered::Sent)
+}
+
+/// Paste `image`'s path alone and wait up to [`CHIP`] for the pane to show
+/// one more `chip` than it did before, which says the vendor attached it.
+fn took_the_image(server: &Server, pane: &PaneId, chip: &str, image: &Path) -> Result<bool> {
+    let before = server.capture(pane)?.matches(chip).count();
+    server.paste(pane, &crate::images::pasted(image))?;
+    let deadline = Instant::now() + CHIP;
+    loop {
+        // A failed capture is just a missed look; the deadline covers it.
+        if server
+            .capture(pane)
+            .is_ok_and(|screen| screen.matches(chip).count() > before)
+        {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 /// Why `images` cannot go to the agent `meta` names, if they cannot.

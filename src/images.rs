@@ -109,7 +109,7 @@ pub fn filed(agent_dir: &Path, images: &[PathBuf]) -> Result<Vec<PathBuf>> {
 ///
 /// [`Attach::Argument`] and [`Attach::Flag`] put the images in argv words of
 /// their own ([`arguments`], [`flagged`]), and [`Attach::Pasted`] in pastes
-/// of their own, so the message is answered as it is.
+/// of their own ([`pasted`]), so the message is answered as it is.
 pub fn attached(attach: Attach, images: &[PathBuf], message: &str) -> String {
     let with = |each: fn(&Path) -> String, between: &str| {
         images
@@ -140,6 +140,17 @@ pub fn arguments(images: &[PathBuf]) -> Vec<String> {
         .iter()
         .map(|image| format!("@{}", image.display()))
         .collect()
+}
+
+/// The paste that hands `image` over alone ([`Attach::Pasted`]): its path,
+/// in single quotes when it holds whitespace, since codex leaves a bare
+/// spaced path as text.
+pub fn pasted(image: &Path) -> String {
+    let path = image.display().to_string();
+    match path.contains(char::is_whitespace) {
+        true => format!("'{path}'"),
+        false => path,
+    }
 }
 
 /// An `@` word for `image`, quoted when its path holds whitespace so the
@@ -275,5 +286,17 @@ mod tests {
             ]
         );
         assert_eq!(attached(Attach::Argument, &images, "x"), "x");
+    }
+
+    #[test]
+    fn a_pasted_path_is_single_quoted_only_where_it_holds_a_space() {
+        assert_eq!(
+            pasted(Path::new("/state/agents/a1/images/1.png")),
+            "/state/agents/a1/images/1.png"
+        );
+        assert_eq!(
+            pasted(Path::new("/my state/agents/a1/images/2.png")),
+            "'/my state/agents/a1/images/2.png'"
+        );
     }
 }
