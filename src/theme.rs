@@ -1,4 +1,4 @@
-//! The view's colour themes: six semantic roles, loaded from a shipped palette
+//! The view's colour themes: seven semantic roles, loaded from a shipped palette
 //! or a TOML file, and reloaded when that file changes.
 //!
 //! Like [`crate::config`], a theme never blocks the view: a file that cannot
@@ -56,6 +56,8 @@ pub struct Theme {
     pub failed: Color,
     /// It was ended by hand, and nothing more is coming.
     pub stopped: Color,
+    /// A usage limit holds it until the limit lifts.
+    pub limited: Color,
     /// What the next agent will be started with.
     pub accent: Color,
     /// The line the cursor is on, as a background.
@@ -71,6 +73,7 @@ impl Default for Theme {
             done: Color::Rgb(78, 186, 101),
             failed: Color::Rgb(255, 107, 128),
             stopped: Color::Rgb(153, 153, 153),
+            limited: Color::Rgb(177, 185, 249),
             accent: Color::Cyan,
             cursor: Color::Rgb(55, 55, 55),
         }
@@ -85,6 +88,7 @@ impl Theme {
             "done" => &mut self.done,
             "failed" => &mut self.failed,
             "stopped" => &mut self.stopped,
+            "limited" => &mut self.limited,
             "accent" => &mut self.accent,
             "cursor" => &mut self.cursor,
             _ => return None,
@@ -307,7 +311,9 @@ mod tests {
     use tempfile::TempDir;
 
     /// Every role a theme file may name.
-    const ROLES: [&str; 6] = ["waiting", "done", "failed", "stopped", "accent", "cursor"];
+    const ROLES: [&str; 7] = [
+        "waiting", "done", "failed", "stopped", "limited", "accent", "cursor",
+    ];
 
     #[test]
     fn the_defaults_are_the_colours_the_view_paints_today() {
@@ -318,6 +324,22 @@ mod tests {
         assert_eq!(t.stopped, Color::Rgb(153, 153, 153));
         assert_eq!(t.accent, Color::Cyan);
         assert_eq!(t.cursor, Color::Rgb(55, 55, 55));
+    }
+
+    #[test]
+    fn limited_has_a_colour_of_its_own_in_every_shipped_theme() {
+        for (name, text) in SHIPPED {
+            let (t, w) = parse(text).unwrap();
+            assert!(w.is_empty(), "{name}: {w:?}");
+            for (role, other) in [
+                ("waiting", t.waiting),
+                ("failed", t.failed),
+                ("done", t.done),
+            ] {
+                assert_ne!(t.limited, other, "{name}: limited looks like {role}");
+            }
+        }
+        assert_eq!(parse(SHIPPED[0].1).unwrap().0, Theme::default());
     }
 
     #[test]
@@ -465,6 +487,7 @@ mod tests {
             ("done", light.done),
             ("failed", light.failed),
             ("stopped", light.stopped),
+            ("limited", light.limited),
             ("accent", light.accent),
         ] {
             let Color::Rgb(r, g, b) = colour else {

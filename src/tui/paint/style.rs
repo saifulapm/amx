@@ -39,7 +39,8 @@ pub(super) fn colour(theme: Theme, phase: Phase) -> Style {
         Phase::Waiting => Style::new().fg(theme.waiting),
         // An agent amx has lost track of is not asking anything, so it does
         // not get the waiting colour.
-        Phase::Starting | Phase::Working | Phase::Unknown | Phase::Limited => Style::new(),
+        Phase::Starting | Phase::Working | Phase::Unknown => Style::new(),
+        Phase::Limited => Style::new().fg(theme.limited),
         // Idle and done both mean the turn is over.
         Phase::Idle | Phase::Done => Style::new().fg(theme.done),
         Phase::Failed => Style::new().fg(theme.failed),

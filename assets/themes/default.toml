@@ -18,6 +18,8 @@ done = "#4eba65"
 failed = "#ff6b80"
 # It was ended by hand.
 stopped = "#999999"
+# A usage limit holds it until the limit lifts. claude's own periwinkle.
+limited = "#b1b9f9"
 # The permission the next agent will start with, shown under the line that
 # starts it. The terminal's cyan, since claude's own colour for its permission
 # row has not been measured.

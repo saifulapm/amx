@@ -279,7 +279,7 @@ uses your file, counting against `max_total` if you set one.
 
 ## Themes
 
-The view uses colour for six things, and a theme sets those six:
+The view uses colour for seven things, and a theme sets those seven:
 
 ```toml
 # ~/.config/amx/themes/mine.toml
@@ -287,6 +287,7 @@ waiting = "#ffc107"   # waiting on a person
 done    = "#4eba65"   # went as intended
 failed  = "#ff6b80"   # attempted and failed
 stopped = "#999999"   # ended by hand
+limited = "#b1b9f9"   # held by a usage limit until it lifts
 accent  = "cyan"      # the next agent's dials, the line you type on
 cursor  = "#373737"   # background of the cursor's row
 ```

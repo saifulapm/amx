@@ -18,6 +18,7 @@ done = "#1a7f37"
 failed = "#cf222e"
 # It was ended by hand.
 stopped = "#6e7781"
+limited = "#5769f7"
 # The permission the next agent will start with, shown under the line that
 # starts it.
 accent = "#0550ae"

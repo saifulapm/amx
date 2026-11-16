@@ -2,7 +2,8 @@
 
 mod common;
 
-use common::{Harness, ls, status};
+use common::{Harness, ls, status, stdout, until_read};
+use serde_json::Value;
 use serde_json::json;
 
 /// claude 2.1.229's AskUserQuestion menu at 80 columns.
@@ -206,6 +207,44 @@ fn a_fresh_record_is_read_from_the_hooks() {
     assert_eq!(agent["result"], "the tests pass now");
     assert!(agent["last_event"].as_u64().unwrap() > 0, "{agent}");
     assert!(agent["age"].as_u64().unwrap() < 8, "{agent}");
+}
+
+#[test]
+fn a_turn_a_limit_ended_reads_limited_until_its_reset() {
+    let amx = Harness::new();
+    amx.play("capped-a1b", "hits-a-limit");
+    amx.until_shown("capped-a1b", "auto mode on");
+    // The Stop after the StopFailure leaves it limited.
+    assert!(
+        amx.event_kinds("capped-a1b")
+            .ends_with(&["StopFailure".to_string(), "Stop".to_string()]),
+        "{:?}",
+        amx.event_kinds("capped-a1b")
+    );
+    let agent = until_read(&amx, "capped-a1b", "limited");
+    assert_eq!(agent["ended"], 0, "{agent}");
+    assert_eq!(agent["error"], Value::Null, "{agent}");
+    assert_eq!(
+        agent["result"],
+        Value::Null,
+        "the limit's words are no answer"
+    );
+
+    let table = stdout(&amx.amx(&["ls"]));
+    assert!(table.contains("limited · resumes 15:00"), "{table}");
+}
+
+#[test]
+fn a_turn_an_api_error_ended_reads_idle_with_the_error() {
+    let amx = Harness::new();
+    amx.play("busy-b2c", "hits-an-error");
+    amx.until_shown("busy-b2c", "auto mode on");
+    let agent = until_read(&amx, "busy-b2c", "idle");
+    assert_eq!(agent["error"], "overloaded", "{agent}");
+    assert_eq!(agent["ended"], 0, "{agent}");
+
+    let table = stdout(&amx.amx(&["ls"]));
+    assert!(table.contains("error: overloaded"), "{table}");
 }
 
 #[test]

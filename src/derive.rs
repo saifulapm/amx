@@ -147,8 +147,25 @@ impl View {
     }
 
     /// The words shown for the state: `idle · 1 shell` at rest, `working · 2
-    /// subagents · 1 shell` in a turn with work out, else the phase's word.
+    /// subagents · 1 shell` in a turn with work out, `limited · resumes 15:00`
+    /// for a limit, `error: overloaded` for a turn an API error ended, else the
+    /// phase's word.
     pub fn state_words(&self) -> String {
+        self.state_words_at(crate::store::now(), &jiff::tz::TimeZone::system())
+    }
+
+    /// [`View::state_words`] at `now`, with `zone` as local time.
+    pub fn state_words_at(&self, now: u64, zone: &jiff::tz::TimeZone) -> String {
+        match (self.phase(), self.error()) {
+            (Phase::Limited, _) => {
+                return match crate::limit::resumes_words(self.state.resumes_at, now, zone) {
+                    Some(at) => format!("limited · resumes {at}"),
+                    None => "limited".to_string(),
+                };
+            }
+            (_, Some(error)) => return format!("error: {error}"),
+            _ => {}
+        }
         let Background { shells, agents } = self.background();
         let counted = |n: u32, one: &str| match n {
             0 => None,
@@ -169,6 +186,15 @@ impl View {
             .chain(counts.into_iter().flatten())
             .collect::<Vec<_>>()
             .join(" · ")
+    }
+
+    /// The class of the API error that ended the turn, while the agent is
+    /// still at the prompt it left.
+    pub fn error(&self) -> Option<&str> {
+        match self.phase() {
+            Phase::Idle => self.state.error.as_deref(),
+            _ => None,
+        }
     }
 
     /// Builds a view whose parts agree.
@@ -250,7 +276,7 @@ impl View {
             Some((format, tail)) => crate::conversation::context_and_last_words(*format, tail),
             None => (None, None),
         };
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "id": self.meta.id,
             // Parent and depth let a program nest rows as the view does. Null
             // and 0 for a root.
@@ -318,7 +344,11 @@ impl View {
             // without a transcript.
             "context": context,
             "last_words": last_words,
-        })
+        });
+        // The class of the API error that ended an idle agent's turn. Set
+        // apart from the literal, which is at serde_json's recursion limit.
+        json["error"] = serde_json::json!(self.error());
+        json
     }
 }
 
@@ -2484,6 +2514,71 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         assert!(!idle.at_rest());
         assert_eq!(idle.state_words(), "done");
         assert_eq!(idle.json()["state"], "idle");
+    }
+
+    /// A limited view whose limit lifts at `resumes_at`.
+    fn limited_until(resumes_at: u64) -> View {
+        View::new(
+            meta(),
+            State {
+                resumes_at,
+                ..state(Phase::Limited, 1_000)
+            },
+            verdict(Phase::Limited, Evidence::Hooks, None),
+        )
+    }
+
+    #[test]
+    fn a_limited_view_says_when_it_resumes_and_an_errored_one_names_its_error() {
+        let zone = jiff::tz::TimeZone::get("Asia/Dhaka").unwrap();
+        let clock = |hour: i8, day: i8| {
+            jiff::civil::date(2026, 11, day)
+                .at(hour, 0, 0, 0)
+                .to_zoned(zone.clone())
+                .unwrap()
+                .timestamp()
+                .as_second() as u64
+        };
+        let now = clock(11, 16);
+        let words = |view: &View| view.state_words_at(now, &zone);
+        assert_eq!(
+            words(&limited_until(clock(15, 16))),
+            "limited · resumes 15:00"
+        );
+        assert_eq!(
+            words(&limited_until(clock(9, 20))),
+            "limited · resumes Nov 20 09:00"
+        );
+        assert_eq!(words(&limited_until(0)), "limited", "no readable time");
+        assert_eq!(words(&limited_until(clock(9, 16))), "limited", "passed");
+
+        let limited = limited_until(clock(15, 16));
+        assert_eq!(limited.json()["state"], "limited");
+        assert_eq!(limited.json()["ended"], 0);
+        assert_eq!(limited.json()["error"], serde_json::Value::Null);
+
+        let errored = View::new(
+            meta(),
+            State {
+                error: Some("overloaded".to_string()),
+                ..state(Phase::Idle, 1_000)
+            },
+            verdict(Phase::Idle, Evidence::Hooks, None),
+        );
+        assert_eq!(words(&errored), "error: overloaded");
+        assert_eq!(errored.json()["state"], "idle");
+        assert_eq!(errored.json()["error"], "overloaded");
+        assert_eq!(errored.json()["ended"], 0);
+
+        // The error is the turn's that ended. Read working off the screen,
+        // the row says working.
+        let moved_on = View::new(
+            meta(),
+            errored.state.clone(),
+            verdict(Phase::Working, Evidence::Screen, None),
+        );
+        assert_eq!(words(&moved_on), "working");
+        assert_eq!(moved_on.json()["error"], serde_json::Value::Null);
     }
 
     fn verdict(phase: Phase, evidence: Evidence, rule: Option<&str>) -> Verdict {

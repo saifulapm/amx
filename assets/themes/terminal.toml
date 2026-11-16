@@ -11,6 +11,7 @@ done = "green"
 failed = "red"
 # It was ended by hand.
 stopped = "gray"
+limited = "blue"
 # The permission the next agent will start with, shown under the line that
 # starts it.
 accent = "cyan"

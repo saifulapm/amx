@@ -389,7 +389,9 @@ fn row(
         // out, so the summary opens with the words where they say more.
         None => {
             let line = verbs::inert_line(view.line().unwrap_or(""));
-            let line = match widths.state == 0 && words != phase.word() {
+            // A limit sits under Working, so even plain `limited` is news.
+            let line = match widths.state == 0 && (words != phase.word() || phase == Phase::Limited)
+            {
                 false => line,
                 true if line.is_empty() => words.clone(),
                 true => format!("{words} · {line}"),
@@ -443,9 +445,14 @@ fn row(
             true => Phase::Idle,
             false => phase,
         };
+        // An API error ended the turn: it was attempted and it failed.
+        let paint = match view.error() {
+            Some(_) => Style::new().fg(theme.failed),
+            None => state_colour(theme, shown),
+        };
         spans.push(Span::styled(
             format!("{}{}", grid::pad(&words, state), " ".repeat(GAP)),
-            state_colour(theme, shown),
+            paint,
         ));
     }
     if requests > 0 {
@@ -2307,6 +2314,73 @@ mod tests {
             !row("heard-b2c").contains("no hooks"),
             "{:?}",
             row("heard-b2c")
+        );
+    }
+
+    /// A limited reading whose limit lifts an hour from now, and the words
+    /// it says that in.
+    fn limited(id: &str) -> (View, String) {
+        let mut view = view(id, Phase::Limited, None, 3);
+        let now = crate::store::now();
+        view.state.resumes_at = now + 3_600;
+        let at = crate::limit::resumes_words(now + 3_600, now, &jiff::tz::TimeZone::system());
+        (view, format!("limited · resumes {}", at.unwrap()))
+    }
+
+    #[test]
+    fn rows_say_until_when_a_limit_holds_in_its_own_colour() {
+        let size = (80, 10);
+        let (capped, words) = limited("capped-a1b");
+        let screen = by_project(vec![at(capped, "/src/api")]);
+        let lines = painted(&screen, size);
+        assert!(lines[3].contains(&words), "{lines:?}");
+        let colour = word_colour(&screen, size, 3, "limited");
+        assert_eq!(colour, theme().limited);
+        assert_ne!(colour, theme().waiting);
+        assert_ne!(colour, theme().failed);
+
+        let mut errored = view("busy-b2c", Phase::Idle, Some("Running Bash"), 3);
+        errored.state.error = Some("overloaded".to_string());
+        let screen = by_project(vec![at(errored, "/src/api")]);
+        let lines = painted(&screen, size);
+        assert!(lines[3].contains("error: overloaded"), "{lines:?}");
+        assert_eq!(word_colour(&screen, size, 3, "error:"), theme().failed);
+    }
+
+    #[test]
+    fn rows_keep_their_age_when_a_limit_or_an_error_takes_the_state_cell() {
+        let (capped, _) = limited("capped-a1b");
+        let mut errored = view("busy-b2c", Phase::Idle, None, 3);
+        errored.state.error = Some("authentication_failed".to_string());
+        for row in [capped, errored] {
+            let id = row.id().to_string();
+            let screen = by_project(vec![at(row, "/src/api")]);
+            let lines = painted(&screen, (50, 10));
+            let row = lines.iter().find(|line| line.contains(&id)).unwrap();
+            assert!(row.trim_end().ends_with("3s"), "{row:?}");
+            assert_eq!(row.chars().count(), 50, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn rows_on_the_state_axis_say_a_limit_and_an_error_in_the_summary() {
+        // A limited row sits under Working and an errored one under
+        // Completed; neither heading says the words.
+        let (capped, words) = limited("capped-a1b");
+        let mut errored = view("busy-b2c", Phase::Idle, Some("API Error"), 3);
+        errored.state.error = Some("overloaded".to_string());
+        let screen = showing(vec![capped, errored], None);
+        let lines = painted(&screen, (80, 12));
+        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap();
+        assert!(
+            row("capped-a1b").contains(&words),
+            "{:?}",
+            row("capped-a1b")
+        );
+        assert!(
+            row("busy-b2c").contains("error: overloaded"),
+            "{:?}",
+            row("busy-b2c")
         );
     }
 

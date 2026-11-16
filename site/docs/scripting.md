@@ -149,6 +149,7 @@ ever added, never renamed or removed.
 | `summary` | One recorded line about what it is doing, such as `Running Bash`. |
 | `result` | The last answer amx captured. |
 | `question`, `options`, `kind`, `multi` | The pending question, when `state` is `waiting`. |
+| `error` | The API error that ended an `idle` agent's turn, such as `overloaded`, or null. The next prompt clears it. |
 | `task` | What the agent was asked to do. |
 | `agent`, `model`, `effort` | The vendor command and the dials the spawn set. Null when not set, and on command rows. |
 | `role` | The role it was spawned with. |
