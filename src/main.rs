@@ -23,6 +23,7 @@ mod hook;
 mod ids;
 mod images;
 mod install;
+mod limit;
 mod loose;
 mod models;
 mod notify;
