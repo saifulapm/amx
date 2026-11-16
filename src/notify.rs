@@ -447,12 +447,16 @@ fn notifier(notice: &Notice, actions: &[(&str, &str)]) -> Option<Command> {
         return Some(command);
     }
 
+    // Short and inert, as the terminal notice is: the words are the agent's.
     let mut command = Command::new("notify-send");
     command.arg("--app-name=amx");
     for (name, label) in actions {
         command.arg("-A").arg(format!("{name}={label}"));
     }
-    command.arg("--").arg(&notice.title).arg(&notice.body);
+    command
+        .arg("--")
+        .arg(crate::store::kept_words(&notice.title))
+        .arg(crate::store::kept_words(&notice.body));
     Some(command)
 }
 
@@ -898,6 +902,26 @@ mod tests {
         } else {
             assert!(args.contains(&"--".to_string()), "{args:?}");
             assert_eq!(args.last().unwrap(), "$(rm -rf ~); \"quoted\"");
+        }
+    }
+
+    #[test]
+    fn hook_a_desktop_notice_is_short_and_inert_whatever_the_agent_said() {
+        // The terminal notice dropped control characters,
+        // the desktop one passed them, 10,000 of them, to notify-send.
+        let said = format!(
+            "Pick \u{1b}]0;PWNED\u{7}\u{1b}[2J one\nsecond {}",
+            "C".repeat(10_000)
+        );
+        let notice = Notice::waiting("fix-login-a1b", Some(&said));
+        let command = notifier(&notice, &[("open", "Open")]).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for arg in &args {
+            assert!(!arg.chars().any(char::is_control), "{arg:?}");
+            assert!(arg.chars().count() <= 300, "{} chars", arg.chars().count());
         }
     }
 

@@ -599,9 +599,13 @@ pub(crate) fn told_more_than_the_question_since(
     from: u64,
 ) -> Result<bool> {
     Ok(events_from(agent, from)?.iter().any(|event| {
+        // Compared as the record keeps a question.
         let repeats = event.kind == "Notification"
             && read.question.is_some()
-            && event.payload["message"].as_str() == read.question.as_deref();
+            && event.payload["message"]
+                .as_str()
+                .map(crate::store::kept_words)
+                == read.question;
         said(event, read) && !repeats
     }))
 }

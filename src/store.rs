@@ -499,7 +499,7 @@ impl State {
     /// already outstanding describe the same screen. Marks the question as
     /// [`reported`](State::reported).
     pub fn asks(&mut self, question: Option<String>) {
-        self.question = question;
+        self.question = question.map(|said| kept_words(&said));
         self.options.clear();
         self.walked = false;
         self.asking.clear();
@@ -644,6 +644,21 @@ impl State {
             name: self.name.clone(),
             ..State::default()
         }
+    }
+}
+
+/// The most characters of an agent's words a record keeps or a notice
+/// carries: a question is a line, and a payload is anyone's to write.
+pub const WORDS_ROOM: usize = 300;
+
+/// `said` as a record keeps it and a notice shows it: control characters (a
+/// terminal's escapes, line breaks) made spaces, and cut to [`WORDS_ROOM`]
+/// characters, the last of them `…` when cut.
+pub fn kept_words(said: &str) -> String {
+    let inert = said.chars().map(|c| if c.is_control() { ' ' } else { c });
+    match said.chars().count() > WORDS_ROOM {
+        true => inert.take(WORDS_ROOM - 1).chain(['…']).collect(),
+        false => inert.collect(),
     }
 }
 

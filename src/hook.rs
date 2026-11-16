@@ -1618,6 +1618,42 @@ mod tests {
     }
 
     #[test]
+    fn hook_a_forged_question_is_kept_short_and_inert() {
+        // A payload is anyone's to write; ls, status and the card print the
+        // question.
+        let forged = format!(
+            "Pick \u{1b}]0;PWNED\u{7}\u{1b}[2J one\nsecond {}",
+            "C".repeat(10_000)
+        );
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "Notification",
+            "message": forged,
+            "notification_type": "permission_prompt"
+        }));
+        let question = state.question.expect("still a question");
+        assert!(
+            question.chars().count() <= 300,
+            "{} chars",
+            question.chars().count()
+        );
+        assert!(!question.chars().any(char::is_control), "{question:?}");
+        assert!(
+            question.starts_with("Pick  ]0;PWNED  [2J one second CCC"),
+            "{question:?}"
+        );
+
+        let (state, _, _) = fold(json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "B".repeat(10_000),
+        }));
+        assert!(
+            state
+                .question
+                .is_none_or(|said| said.chars().count() <= 300)
+        );
+    }
+
+    #[test]
     fn hook_a_permission_request_is_the_box_the_instant_it_goes_up() {
         // In claude 2.1.237, PermissionRequest fires as the box goes up, about
         // six seconds before the notification. It names the tool but not the
