@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, View};
@@ -106,7 +106,7 @@ pub fn run(
     let from = logged(&agent);
 
     let server = Server::from_socket(view.meta.socket.clone());
-    match delivered(&agent, &server, &view.meta.pane, text)? {
+    match delivered(&agent, &server, &view.meta.pane, text, &[])? {
         Delivered::Sent => {}
         Delivered::Refused(why) | Delivered::Failed(why) => {
             complain!("amx: {why}");
@@ -152,8 +152,17 @@ pub fn run(
 /// The write uses `observe`, which leaves the record's freshness alone: amx
 /// sent the message, the agent said nothing. Bumping it would make readers
 /// trust the pre-send record over the pane for [`derive::FRESH`] seconds.
-pub fn deliver(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<()> {
-    match delivered(agent, server, pane, text)? {
+///
+/// `images` are copies in the agent's record, handed over as the vendor's
+/// table entry says it takes them in a message.
+pub fn deliver(
+    agent: &Agent,
+    server: &Server,
+    pane: &PaneId,
+    text: &str,
+    images: &[PathBuf],
+) -> Result<()> {
+    match delivered(agent, server, pane, text, images)? {
         Delivered::Sent => Ok(()),
         Delivered::Refused(why) | Delivered::Failed(why) => bail!(why),
         Delivered::Waiting(_) => bail!(
@@ -182,7 +191,13 @@ enum Delivered {
 /// again under the writer, which is held until Enter is pressed. `_park` holds
 /// the same lock from its check to its kill, so a send either lands first or
 /// sees the parked stamp.
-fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Result<Delivered> {
+fn delivered(
+    agent: &Agent,
+    server: &Server,
+    pane: &PaneId,
+    text: &str,
+    images: &[PathBuf],
+) -> Result<Delivered> {
     if ends_its_own_paste(text) {
         bail!(
             "the message contains a bracketed-paste control sequence, \
@@ -210,10 +225,15 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
     // Logged as given; typed with a trailing space if the last word opens a
     // popup.
     let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
-    writer.append(&Event::new(SEND, serde_json::json!({ "text": text })))?;
+    let typed = spawn::as_typed(vendor, text);
+    let typed = match vendor.and_then(|vendor| vendor.images) {
+        Some(takes) if !images.is_empty() => crate::images::attached(takes.send, images, &typed),
+        _ => typed,
+    };
+    writer.append(&Event::new(SEND, sent(text, images)))?;
     writer.observe(|state| state.seq += 1)?;
-    let unsent = || writer.append(&Event::new(UNSENT, serde_json::json!({ "text": text })));
-    if let Err(e) = server.paste(pane, &spawn::as_typed(vendor, text)) {
+    let unsent = || writer.append(&Event::new(UNSENT, sent(text, images)));
+    if let Err(e) = server.paste(pane, &typed) {
         unsent()?;
         return Ok(Delivered::Failed(format!(
             "the message did not reach {id}: {e:#}"
@@ -230,6 +250,15 @@ fn delivered(agent: &Agent, server: &Server, pane: &PaneId, text: &str) -> Resul
         )));
     }
     Ok(Delivered::Sent)
+}
+
+/// A send event's payload: the message as given, and the images with it when
+/// there are any.
+fn sent(text: &str, images: &[PathBuf]) -> serde_json::Value {
+    match images.is_empty() {
+        true => serde_json::json!({ "text": text }),
+        false => serde_json::json!({ "text": text, "images": images }),
+    }
 }
 
 /// The refusal for a composer holding text nobody submitted: queued sends an
@@ -652,6 +681,7 @@ mod tests {
             &server,
             &PaneId::new("%1").unwrap(),
             "harmless\u{1b}[201~\u{1b}[B\r",
+            &[],
         )
         .unwrap_err();
 
@@ -1238,7 +1268,7 @@ mod tests {
             state.parked_at = 4_600;
         });
 
-        let refused = deliver(&agent, &pane.server, &pane.pane, "and the linter").unwrap_err();
+        let refused = deliver(&agent, &pane.server, &pane.pane, "and the linter", &[]).unwrap_err();
         assert!(format!("{refused:#}").contains("parked"), "{refused:#}");
         assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
@@ -1257,7 +1287,7 @@ mod tests {
         let agent = Agent::create(root.path(), &meta).unwrap();
         let server = Server::from_socket(meta.socket.clone());
 
-        assert!(deliver(&agent, &server, &meta.pane, "and the linter").is_err());
+        assert!(deliver(&agent, &server, &meta.pane, "and the linter", &[]).is_err());
         assert_eq!(agent.state().unwrap().seq, 0, "no send is counted");
         assert!(agent.events().unwrap().is_empty(), "and none is logged");
     }
@@ -1272,7 +1302,7 @@ mod tests {
             state.question = Some("Run the migration?".to_string());
         });
 
-        match delivered(&agent, &pane.server, &pane.pane, "and the linter").unwrap() {
+        match delivered(&agent, &pane.server, &pane.pane, "and the linter", &[]).unwrap() {
             Delivered::Waiting(state) => {
                 assert_eq!(state.question.as_deref(), Some("Run the migration?"))
             }
@@ -1295,7 +1325,7 @@ mod tests {
             state.composer_holds = vec!["and the linter".to_string()];
         });
 
-        let refused = deliver(&agent, &pane.server, &pane.pane, "and the tests").unwrap_err();
+        let refused = deliver(&agent, &pane.server, &pane.pane, "and the tests", &[]).unwrap_err();
         assert!(
             format!("{refused:#}").contains("and the linter"),
             "{refused:#}"
@@ -1307,12 +1337,40 @@ mod tests {
     }
 
     #[test]
+    fn send_hands_claude_each_image_as_an_at_word_before_the_message() {
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = Listening::new("images");
+        let meta = Meta {
+            agent: Some("claude".to_string()),
+            socket: pane.server.socket().clone(),
+            pane: pane.pane.clone(),
+            ..asking(None, &[], None).meta
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .observe(|state| state.state = Phase::Idle)
+            .unwrap();
+
+        let image = PathBuf::from("/state/agents/fix-login-a1b/images/1.png");
+        deliver(&agent, &pane.server, &pane.pane, "look", &[image]).unwrap();
+
+        std::thread::sleep(Duration::from_millis(200));
+        let screen = pane.server.capture(&pane.pane).unwrap();
+        assert!(
+            screen.contains("@/state/agents/fix-login-a1b/images/1.png look"),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn send_types_at_a_pane_that_answers_for_an_idle_agent() {
         let root = tempfile::TempDir::new().unwrap();
         let pane = Listening::new("idle");
         let agent = pane.agent(root.path(), |state| state.state = Phase::Idle);
 
-        deliver(&agent, &pane.server, &pane.pane, "and the linter").unwrap();
+        deliver(&agent, &pane.server, &pane.pane, "and the linter", &[]).unwrap();
         assert_eq!(agent.state().unwrap().seq, 1);
         assert_eq!(agent.events().unwrap().len(), 1);
     }

@@ -1384,6 +1384,7 @@ pub fn spawn_copy(root: &Path, id: &str, task: Option<&str>) -> Result<Started> 
         root,
         id,
         task,
+        &[],
         &spawn::env_snapshot(std::env::vars()),
         &mut out,
         &mut problems,
@@ -1449,7 +1450,7 @@ pub fn reply(root: &Path, id: &str, text: &str) -> Result<Replied> {
             }
         }
         _ => {
-            verbs::send::deliver(&agent, &server, &view.meta.pane, text)?;
+            verbs::send::deliver(&agent, &server, &view.meta.pane, text, &[])?;
             Ok(Replied::Yes(format!("sent to {id}")))
         }
     }

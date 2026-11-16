@@ -2251,7 +2251,7 @@ mod tests {
             let keyboard = (&server.0, &pane);
             let send = |text: &str| {
                 together.wait();
-                send::deliver(&agent, &server.0, &pane, text).is_ok()
+                send::deliver(&agent, &server.0, &pane, text, &[]).is_ok()
             };
             let (sent, answered, again) = std::thread::scope(|scope| {
                 let sent = scope.spawn(|| send(&first));

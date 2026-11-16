@@ -15,7 +15,7 @@
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, now};
@@ -35,7 +35,16 @@ pub fn from_env(id: &str, task: Option<&str>) -> Result<i32> {
     let mut out = std::io::stdout().lock();
     let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut problems = std::io::stderr().lock();
-    run(&root, id, task, &env, &mut out, &mut problems, to_terminal)
+    run(
+        &root,
+        id,
+        task,
+        &[],
+        &env,
+        &mut out,
+        &mut problems,
+        to_terminal,
+    )
 }
 
 /// The verb, against the given state root and environment.
@@ -44,6 +53,7 @@ pub fn run(
     root: &Path,
     id: &str,
     prompt: Option<&str>,
+    images: &[PathBuf],
     env: &BTreeMap<String, String>,
     out: &mut impl Write,
     problems: &mut impl Write,
@@ -66,6 +76,18 @@ pub fn run(
     if let Some(refusal) = cannot_branch(spawn::vendor_of(&recorded), &meta.id) {
         bail!(refusal);
     }
+    if let Some(refusal) = cannot_take(spawn::vendor_of(&recorded), &recorded, images) {
+        writeln!(
+            problems,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!("amx fork: {refusal}"),
+                to_terminal
+            )
+        )?;
+        return Ok(exit::FAILURE);
+    }
 
     // Without a prompt the copy is labelled with the origin's task.
     let task = prompt.unwrap_or(&meta.task);
@@ -87,7 +109,14 @@ pub fn run(
         }
     };
     // The argv needs the minted id for a vendor with a start flag.
-    let command = copying(&recorded, &session, &copy, prompt);
+    let images = match crate::images::filed(&dir, images) {
+        Ok(images) => images,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+    };
+    let command = copying(&recorded, &session, &copy, prompt, &images);
     let opened = opened_under(&recorded, &copy);
     let launched = launched_with(&recorded);
 
@@ -182,6 +211,20 @@ fn start(
     recorded.map(|_| ())
 }
 
+/// Why `images` cannot go to a copy run by `vendor`, if they cannot.
+fn cannot_take(vendor: Option<&Vendor>, handoff: &Handoff, images: &[PathBuf]) -> Option<String> {
+    if images.is_empty() {
+        return None;
+    }
+    if vendor.and_then(|vendor| vendor.images).is_none() {
+        let program = handoff.command.first().map_or("this agent", String::as_str);
+        return Some(format!("{program} is given no images by amx"));
+    }
+    images
+        .iter()
+        .find_map(|image| crate::images::checked(image).err())
+}
+
 /// Log the fork event naming the origin and the session copied.
 ///
 /// It goes on the copy's own log so it survives the origin being removed.
@@ -198,8 +241,21 @@ fn names_its_origin(root: &Path, id: &str, origin: &Meta, session: &str) -> Resu
 /// Built from the origin's argv without its task and session words (see
 /// [`resume::without_session`]). An old fork marker is dropped too, so a copy
 /// of a copy branches once.
-fn copying(handoff: &Handoff, session: &str, copy: &str, prompt: Option<&str>) -> Vec<String> {
-    build_copy(handoff, session, copy, prompt, spawn::vendor_of(handoff))
+fn copying(
+    handoff: &Handoff,
+    session: &str,
+    copy: &str,
+    prompt: Option<&str>,
+    images: &[PathBuf],
+) -> Vec<String> {
+    build_copy(
+        handoff,
+        session,
+        copy,
+        prompt,
+        spawn::vendor_of(handoff),
+        images,
+    )
 }
 
 /// [`Meta::session`] for the copy: the minted id where the vendor has a start
@@ -232,6 +288,7 @@ fn build_copy(
     copy: &str,
     prompt: Option<&str>,
     vendor: Option<&Vendor>,
+    images: &[PathBuf],
 ) -> Vec<String> {
     let spec = &resume::spelling(vendor);
     let ends_options = vendor.and_then(|vendor| vendor.ends_options);
@@ -263,9 +320,15 @@ fn build_copy(
     if let Some(start) = spec.start {
         push_flag(&mut command, start, spec.joined(), copy);
     }
-    if let Some(prompt) = prompt {
+    if prompt.is_some() || !images.is_empty() {
+        let words = spawn::as_words(vendor, prompt.unwrap_or_default());
         command.extend(ends_options.map(str::to_string));
-        command.push(spawn::as_words(vendor, prompt));
+        command.push(match vendor.and_then(|vendor| vendor.images) {
+            Some(takes) if !images.is_empty() => {
+                crate::images::attached(takes.start, images, &words)
+            }
+            _ => words,
+        });
     }
     command
 }
@@ -368,7 +431,7 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
                 "--model",
@@ -378,6 +441,21 @@ mod tests {
             ],
             "the flag and its value are one word: the value is optional, and a \
              separate one would be read as a flag of its own"
+        );
+    }
+
+    #[test]
+    fn fork_hands_claude_each_image_as_an_at_word_before_the_prompt() {
+        let started = handoff(&["claude", "fix the login bug"], "fix the login bug");
+        let image = PathBuf::from("/state/agents/port-it-b2c/images/1.png");
+        assert_eq!(
+            copying(&started, "abc-123", "port-it-b2c", Some("x"), &[image]),
+            [
+                "claude",
+                "--resume=abc-123",
+                "--fork-session",
+                "@/state/agents/port-it-b2c/images/1.png x"
+            ]
         );
     }
 
@@ -401,11 +479,11 @@ mod tests {
             "@alice asked",
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             ["pi", "--fork", "abc-123", "--session-id", "port-it-b2c"]
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", Some("@bob too")),
+            copying(&started, "abc-123", "port-it-b2c", Some("@bob too"), &[]),
             [
                 "pi",
                 "--fork",
@@ -430,7 +508,7 @@ mod tests {
         };
         let started = handoff(&["second", "--alone", "--say=look at #3 "], "look at #3");
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&saying)),
+            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&saying), &[]),
             ["second", "fork", "abc-123", "--alone"]
         );
         assert_eq!(
@@ -439,7 +517,8 @@ mod tests {
                 "abc-123",
                 "port-it-b2c",
                 Some("-v on #4"),
-                Some(&saying)
+                Some(&saying),
+                &[]
             ),
             ["second", "fork", "abc-123", "--alone", "--say=-v on #4 "]
         );
@@ -457,7 +536,8 @@ mod tests {
                 &started,
                 "abc-123",
                 "port-it-b2c",
-                Some("now do it with sqlite")
+                Some("now do it with sqlite"),
+                &[]
             ),
             [
                 "claude",
@@ -479,7 +559,7 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             ["claude", "--resume=abc-123", "--fork-session"]
         );
 
@@ -494,7 +574,7 @@ mod tests {
             "fix the login bug",
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             ["pi", "--fork", "abc-123", "--session-id", "port-it-b2c"]
         );
     }
@@ -515,7 +595,7 @@ mod tests {
             "port the importer",
         );
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
                 "--model",
@@ -548,7 +628,7 @@ mod tests {
         ] {
             let started = handoff(written, "go");
             assert_eq!(
-                copying(&started, "def-456", "port-it-b2c", None),
+                copying(&started, "def-456", "port-it-b2c", None, &[]),
                 [
                     "claude",
                     "--add-dir",
@@ -563,7 +643,7 @@ mod tests {
         // `--resume`'s value is optional, so a following flag is kept.
         let started = handoff(&["claude", "--resume", "--verbose", "go"], "go");
         assert_eq!(
-            copying(&started, "def-456", "port-it-b2c", None),
+            copying(&started, "def-456", "port-it-b2c", None, &[]),
             ["claude", "--verbose", "--resume=def-456", "--fork-session"]
         );
     }
@@ -588,14 +668,14 @@ mod tests {
         };
         let started = handoff(&["pi", "--model", "big", "go"], "go");
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&vendor)),
+            build_copy(&started, "abc-123", "port-it-b2c", None, Some(&vendor), &[]),
             ["pi", "--model", "big", "--branch-from=abc-123"]
         );
 
         // A copy of a copy names one origin, not two.
         let started = handoff(&["pi", "--branch-from=old", "go"], "go");
         assert_eq!(
-            build_copy(&started, "def-456", "port-it-b2c", None, Some(&vendor)),
+            build_copy(&started, "def-456", "port-it-b2c", None, Some(&vendor), &[]),
             ["pi", "--branch-from=def-456"]
         );
     }
@@ -620,7 +700,8 @@ mod tests {
                 "abc-123",
                 "port-it-b2c",
                 Some("next"),
-                Some(&vendor)
+                Some(&vendor),
+                &[]
             ),
             [
                 "codex", "resume", "abc-123", "--model", "big", "--fork", "next"
@@ -642,12 +723,19 @@ mod tests {
         ] {
             let started = handoff(written, "go");
             assert_eq!(
-                build_copy(&started, "abc-123", "port-it-b2c", Some("next"), branching),
+                build_copy(
+                    &started,
+                    "abc-123",
+                    "port-it-b2c",
+                    Some("next"),
+                    branching,
+                    &[]
+                ),
                 ["second", "fork", "abc-123", "-m", "large", "--", "next"],
                 "{written:?}"
             );
             assert_eq!(
-                build_copy(&started, "abc-123", "port-it-b2c", None, branching),
+                build_copy(&started, "abc-123", "port-it-b2c", None, branching, &[]),
                 ["second", "fork", "abc-123", "-m", "large"],
                 "{written:?}"
             );
@@ -655,7 +743,7 @@ mod tests {
         // The word only counts right after the program.
         let started = handoff(&["second", "-m", "fork", "--", "go"], "go");
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, branching),
+            build_copy(&started, "abc-123", "port-it-b2c", None, branching, &[]),
             ["second", "fork", "abc-123", "-m", "fork"]
         );
     }
@@ -670,7 +758,7 @@ mod tests {
             "go",
         );
         assert_eq!(
-            build_copy(&started, "abc-123", "port-it-b2c", None, pi),
+            build_copy(&started, "abc-123", "port-it-b2c", None, pi, &[]),
             [
                 "pi",
                 "--model",
@@ -700,7 +788,7 @@ mod tests {
             "go",
         );
         assert_eq!(
-            build_copy(&started, "port-it-b2c", "redo-it-c3d", None, pi),
+            build_copy(&started, "port-it-b2c", "redo-it-c3d", None, pi, &[]),
             ["pi", "--fork", "port-it-b2c", "--session-id", "redo-it-c3d"]
         );
     }
@@ -711,7 +799,7 @@ mod tests {
         // session, so no minted id is passed or recorded.
         let started = handoff(&["claude", "--model", "opus", "go"], "go");
         assert_eq!(
-            copying(&started, "abc-123", "port-it-b2c", None),
+            copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
                 "--model",
@@ -830,6 +918,7 @@ mod tests {
             root,
             id,
             None,
+            &[],
             &BTreeMap::new(),
             &mut out,
             &mut problems,
