@@ -479,7 +479,8 @@ amx resume --all
 | `--all` | Every stopped agent, such as after the tmux server died. |
 
 A message becomes the agent's first turn when it comes back. Without one it
-opens at its prompt and waits. `resume` brings back parked agents too. It
+opens at its prompt and waits. `resume` brings back parked agents too, and
+archived ones (`amx ls --archived`), which it moves back first. It
 refuses an agent that is still running (exit 2), a command row, and an agent
 amx has no launch command or session for, such as an adopted one.
 

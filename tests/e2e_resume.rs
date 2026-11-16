@@ -1501,3 +1501,89 @@ fn enter_on_a_claude_started_by_hand_says_which_half_is_missing() {
         "the name of a file amx keeps is not a reason: {said}"
     );
 }
+
+/// Stop agent `id` and age its record past the archive's two weeks, then let
+/// `amx ls` move it aside.
+fn archived(amx: &Harness, id: &str) {
+    start(amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    let mut state = amx.state(id);
+    assert_eq!(state["state"], "stopped");
+    let long_ago = common::now() - 15 * 24 * 60 * 60;
+    state["last_event"] = json!(long_ago);
+    state["since"] = json!(long_ago);
+    amx.set_state(id, state);
+
+    let listed = amx.amx(&["ls"]);
+    assert!(
+        !String::from_utf8_lossy(&listed.stdout).contains(id),
+        "ls moved it aside"
+    );
+    assert!(!amx.agent_dir(id).exists());
+    assert!(amx.state_root().join(".archive").join(id).is_dir());
+}
+
+#[test]
+fn resume_brings_an_archived_agent_back_and_it_is_listed_again() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    archived(&amx, id);
+    let aside = amx.amx(&["ls", "--archived"]);
+    assert!(String::from_utf8_lossy(&aside.stdout).contains(id));
+
+    let out = resume(&amx, &[id]);
+    assert!(said(&out).contains(id), "it says what came back");
+    assert!(amx.agent_dir(id).join("meta.json").is_file());
+    assert!(!amx.state_root().join(".archive").join(id).exists());
+    until_continued(&amx, id);
+    assert!(amx.pane_alive(&amx.pane_of(id)));
+    let listed = amx.amx(&["ls"]);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains(id));
+}
+
+#[test]
+fn resume_waiting_on_a_record_the_gc_pass_archives_brings_it_back_live() {
+    // The gc pass holds the record's lock while it moves the record aside. A
+    // resume that waited on that lock finds the record gone from where it
+    // looked, and still ends with the agent live, in agents/.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, amx.home(), "happy-turn");
+    amx.until_state(id, "idle");
+    amx.amx(&["stop", id, "--force"]);
+    assert_eq!(amx.state(id)["state"], "stopped");
+
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(amx.agent_dir(id).join("lock"))
+        .expect("the record's lock");
+    lock.lock().expect("holding the lock as gc does");
+    let racer = resume_in_background(&amx, id);
+    // Long enough for the resume to reach the lock; if it is slower, it finds
+    // the record already archived, which must work too.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let shelf = amx.state_root().join(".archive");
+    std::fs::create_dir_all(&shelf).unwrap();
+    std::fs::rename(amx.agent_dir(id), shelf.join(id)).expect("archiving under the lock");
+    drop(lock);
+
+    let out = racer.wait_with_output().expect("waiting for the resume");
+    said(&out);
+    assert!(amx.agent_dir(id).join("meta.json").is_file(), "it is live");
+    assert!(!shelf.join(id).exists(), "and not left in the archive");
+    until_continued(&amx, id);
+}
+
+/// `amx resume <id>` started in the background, as [`resume`] runs it.
+fn resume_in_background(amx: &Harness, id: &str) -> std::process::Child {
+    amx.amx_command(&["resume", id])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("starting the resume")
+}

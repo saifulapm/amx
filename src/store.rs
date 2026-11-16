@@ -1456,6 +1456,26 @@ pub fn list(root: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Move the archived record of `id` back under `root`, where readers and verbs
+/// find it.
+///
+/// False when the archive holds no record of `id`, or when a record of `id` is
+/// already live: that one wins, and the archived one stays where it is.
+pub fn unarchive(root: &Path, id: &str) -> Result<bool> {
+    let live = paths::agent_dir_in(root, id)?;
+    let shelved = paths::agent_dir_in(&root.join(ARCHIVE), id)?;
+    if !shelved.join(META).is_file() || live.exists() {
+        return Ok(false);
+    }
+    match std::fs::rename(&shelved, &live) {
+        Ok(()) => Ok(true),
+        // Another resume brought it back first.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e)
+            .with_context(|| format!("moving {} back to {}", shelved.display(), live.display())),
+    }
+}
+
 /// Take `spawn.lock`, next to the agents directory, under which a spawn
 /// counts the caps and claims its place. Held until the file is dropped.
 ///
@@ -1612,6 +1632,31 @@ mod tests {
             transcript: None,
             created: now(),
         }
+    }
+
+    #[test]
+    fn store_brings_an_archived_record_back_unless_a_live_one_has_its_id() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        agent.archive().unwrap();
+        assert!(list(root.path()).unwrap().is_empty());
+
+        assert!(unarchive(root.path(), "fix-login-a1b").unwrap());
+        assert_eq!(list(root.path()).unwrap(), ["fix-login-a1b"]);
+        assert!(
+            !unarchive(root.path(), "fix-login-a1b").unwrap(),
+            "nothing left"
+        );
+
+        // A live record of the same id wins, and the archived one stays.
+        Agent::open(root.path(), "fix-login-a1b")
+            .unwrap()
+            .archive()
+            .unwrap();
+        Agent::create(root.path(), &meta("fix-login-a1b")).unwrap();
+        assert!(!unarchive(root.path(), "fix-login-a1b").unwrap());
+        assert_eq!(list(root.path()).unwrap(), ["fix-login-a1b"]);
+        assert_eq!(list(&root.path().join(ARCHIVE)).unwrap(), ["fix-login-a1b"]);
     }
 
     #[test]

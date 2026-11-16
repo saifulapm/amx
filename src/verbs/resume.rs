@@ -93,7 +93,21 @@ pub fn run(
     out: &mut impl Write,
 ) -> Result<i32> {
     match id {
-        Some(id) if !all => one(root, id, message, env, out),
+        Some(id) if !all => {
+            store::unarchive(root, id)?;
+            // A gc pass can archive the record while this resume waits on its
+            // lock, and the record is then gone from where it looked: bring it
+            // back and go again.
+            let mut tries = 3;
+            loop {
+                let tried = one(root, id, message, env, out);
+                tries -= 1;
+                if tried.is_err() && tries > 0 && store::unarchive(root, id)? {
+                    continue;
+                }
+                return tried;
+            }
+        }
         _ => sweep(root, env, out),
     }
 }
