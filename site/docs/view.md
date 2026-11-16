@@ -346,11 +346,14 @@ The line edits like a shell prompt:
 | Key | Does |
 | --- | --- |
 | `←` `→` | A character. |
-| `ctrl+←` `ctrl+→` | A word. |
+| `ctrl+←` `ctrl+→` `alt+b` `alt+f` | A word. A paste or image marker is one word. |
 | `home` `end` | Start and end of the row as drawn. |
 | `ctrl+a` `ctrl+e` | Start and end of the whole line. |
 | `backspace` `delete` | The character before or under the cursor. |
-| `ctrl+w` `alt+backspace` | The word before the cursor. |
+| `ctrl+w` `alt+backspace` | Delete the word before the cursor. |
+| `alt+d` | Delete the word after the cursor. On a card's empty line, the patch in your `diff` viewer. |
+| `ctrl+u` `ctrl+k` | Delete to the start or the end of the row as drawn. On a card's empty line, `ctrl+u` half-pages the card. |
+| `ctrl+y` | Put back what the last `ctrl+u`, `ctrl+k`, `alt+d` or `ctrl+w` deleted. |
 | `shift+enter` | A newline. Needs a terminal that reports it; see below. |
 | `alt+enter` `ctrl+j` | A newline, on any terminal. |
 | `↑` `↓` | A row of the line as drawn, in the same column; past the first or last row, an earlier or later line. An empty reply line leaves them to the card. |

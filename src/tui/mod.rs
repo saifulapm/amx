@@ -476,8 +476,8 @@ fn chord(key: KeyEvent) -> KeyModifiers {
 /// list.
 ///
 /// The line takes plain characters, editing and cursor keys, enter, esc, tab,
-/// `ctrl+a`, `ctrl+e`, `ctrl+w`, `ctrl+y`, `alt+b`, `alt+f` and (while it
-/// holds text) `alt+d`, `ctrl+g` for the editor, `ctrl+j` for a
+/// `ctrl+a`, `ctrl+e`, `ctrl+w`, `ctrl+k`, `ctrl+y`, `alt+b`, `alt+f` and
+/// (while it holds text) `ctrl+u` and `alt+d`, `ctrl+g` for the editor, `ctrl+j` for a
 /// newline and `ctrl+v` for the clipboard. Plain up and down go to the line
 /// only while it offers suggestions or holds text; alt+up and alt+down always
 /// do, for history.
@@ -486,7 +486,9 @@ fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
     let ctrl = chord(key) == KeyModifiers::CONTROL;
     let alt = chord(key) == KeyModifiers::ALT;
     match key.code {
-        KeyCode::Char('a' | 'e' | 'w' | 'g' | 'j' | 'v' | 'y') if ctrl => true,
+        KeyCode::Char('a' | 'e' | 'w' | 'g' | 'j' | 'v' | 'y' | 'k') if ctrl => true,
+        // On an empty line ctrl+u is the card's, for half a page.
+        KeyCode::Char('u') if ctrl => !composer.text.is_empty(),
         KeyCode::Char('b' | 'f') if alt => true,
         // On an empty line alt+d is the card's, for the patch.
         KeyCode::Char('d') if alt => !composer.text.is_empty(),
@@ -2280,6 +2282,12 @@ impl Screen {
             KeyCode::Char('b') if chord(key) == KeyModifiers::ALT => composer.word_left(),
             KeyCode::Char('f') if chord(key) == KeyModifiers::ALT => composer.word_right(),
             KeyCode::Char('y') if chord(key) == KeyModifiers::CONTROL => composer.yank(),
+            KeyCode::Char('u') if chord(key) == KeyModifiers::CONTROL => {
+                composer.delete_to_row_start()
+            }
+            KeyCode::Char('k') if chord(key) == KeyModifiers::CONTROL => {
+                composer.delete_to_row_end()
+            }
             KeyCode::Char('w') if chord(key) == KeyModifiers::CONTROL => {
                 composer.delete_word_back()
             }

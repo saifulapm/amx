@@ -441,9 +441,44 @@ impl Composer {
         self.cut(from..self.at);
     }
 
+    /// Deletes from the start of the drawn row to the cursor, for ctrl+y to
+    /// put back.
+    pub fn delete_to_row_start(&mut self) {
+        let rows = visual_rows(&self.text, self.room.get());
+        let row = &rows[cursor_row(&rows, self.at)];
+        self.cut(row.start..self.at);
+    }
+
+    /// Deletes from the cursor to the end of the drawn row, for ctrl+y to
+    /// put back.
+    pub fn delete_to_row_end(&mut self) {
+        let rows = visual_rows(&self.text, self.room.get());
+        let row = &rows[cursor_row(&rows, self.at)];
+        self.cut(self.at..row.end);
+    }
+
     /// Deletes the characters `chars` into the one slot ctrl+y puts back
     /// from, and leaves the cursor at their start.
-    fn cut(&mut self, chars: Range<usize>) {
+    ///
+    /// A marker the range reaches into goes whole, as one may wrap over two
+    /// rows. Deleting nothing keeps the slot.
+    fn cut(&mut self, mut chars: Range<usize>) {
+        if chars.is_empty() {
+            return;
+        }
+        for marker in self.markers() {
+            let length = marker.chars().count();
+            for (byte, _) in self.text.match_indices(&marker) {
+                let from = self.text[..byte].chars().count();
+                let span = from..from + length;
+                if span.contains(&chars.start) {
+                    chars.start = span.start;
+                }
+                if span.start < chars.end && chars.end < span.end {
+                    chars.end = span.end;
+                }
+            }
+        }
         let bytes = self.byte_at(chars.start)..self.byte_at(chars.end);
         self.yanked = self.text[bytes.clone()].to_string();
         self.text.replace_range(bytes, "");
@@ -4281,6 +4316,47 @@ mod tests {
         assert_eq!(
             composer.whole(),
             format!("see {} now", "x\n".repeat(PASTED_ROWS + 1))
+        );
+    }
+
+    #[test]
+    fn ctrl_u_and_ctrl_k_delete_to_the_drawn_rows_ends() {
+        // Rows: "you need " 0..9, "to attach " 9..19, "it" 19..21.
+        let mut composer = drawn("you need to attach it", 10);
+        composer.at = 12;
+        composer.delete_to_row_start();
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("you need attach it", 9),
+            "only the second row's text before the cursor"
+        );
+        composer.yank();
+        assert_eq!(
+            composer.text, "you need to attach it",
+            "ctrl+y puts it back"
+        );
+        composer.delete_to_row_end();
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("you need to it", 12),
+            "to the second row's end"
+        );
+        composer.yank();
+        assert_eq!(composer.text, "you need to attach it");
+    }
+
+    #[test]
+    fn ctrl_u_takes_a_marker_split_over_two_rows_whole() {
+        let mut composer = drawn("abcdef ", 14);
+        composer.paste(&"x\n".repeat(PASTED_ROWS + 1));
+        composer.insert(" end");
+        // Rows: "abcdef [Pasted " 0..15, "text #1] end" 15..27.
+        assert_eq!(composer.text, "abcdef [Pasted text #1] end");
+        composer.at = 23;
+        composer.delete_to_row_start();
+        assert_eq!(
+            composer.text, "abcdef  end",
+            "the marker began a row up, and goes whole"
         );
     }
 

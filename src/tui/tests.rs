@@ -2889,6 +2889,7 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
         ctrl('g'),
         ctrl('j'),
         ctrl('y'),
+        ctrl('k'),
         alt(KeyCode::Char('b')),
         alt(KeyCode::Char('f')),
         alt(KeyCode::Up),
@@ -2951,6 +2952,8 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
     // alt+d opens the patch from an empty line and deletes a word from one
     // holding text.
     assert!(the_lines(&holding, alt(KeyCode::Char('d'))));
+    // So does ctrl+u, which half-pages the card from an empty line.
+    assert!(the_lines(&holding, ctrl('u')));
 }
 
 #[test]
