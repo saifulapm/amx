@@ -3681,6 +3681,165 @@ fn heard_reads_a_transcript_its_vendor_writes_over_whole() {
     );
 }
 
+/// A claude transcript entry saying `turn NNNNN`, padded to exactly 1 KiB.
+fn kib_turn(n: usize) -> String {
+    let said = |pad: &str| {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": format!("turn {n:05}")}]},
+            "pad": pad,
+        })
+        .to_string()
+    };
+    let bare = said("").len();
+    format!("{}\n", said(&"x".repeat(1023 - bare)))
+}
+
+/// A transcript of `turns` 1 KiB entries, numbered from 0.
+fn kib_turns(path: &Path, turns: usize) {
+    let whole: String = (0..turns).map(kib_turn).collect();
+    std::fs::write(path, whole).unwrap();
+}
+
+/// The screen painted on a `width` by `height` terminal, one string per row.
+fn painted_rows(screen: &Screen, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
+    (0..height)
+        .map(|row| {
+            (0..width)
+                .map(|column| terminal.backend().buffer()[(column, row)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// The row under the card's rule, which names the agent below its list row.
+fn under_the_rule(rows: &[String]) -> String {
+    let rule = rows
+        .iter()
+        .rposition(|row| row.contains("port-a1b"))
+        .expect("a card");
+    rows[rule + 1].trim_end().to_string()
+}
+
+/// Press `key` through the view, painting after each press, until a row
+/// holds `seen`; the rows then. Panics when it never shows.
+fn pressed_until(screen: &mut Screen, key: KeyEvent, seen: &str) -> Vec<String> {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    painted_rows(screen, 60, 40);
+    for _ in 0..2000 {
+        screen.act(key, root.path(), &config, None).unwrap();
+        let rows = painted_rows(screen, 60, 40);
+        if rows.iter().any(|row| row.contains(seen)) {
+            return rows;
+        }
+    }
+    panic!(
+        "{seen} never showed:\n{}",
+        painted_rows(screen, 60, 40).join("\n")
+    );
+}
+
+#[test]
+fn card_on_a_huge_transcript_shows_its_last_turn_under_an_earlier_turns_row() {
+    let held = TempDir::new().unwrap();
+    let path = held.path().join("session.jsonl");
+    // 50 MiB of 1 KiB entries.
+    kib_turns(&path, 51_200);
+    let screen = watching_a_transcript(&path);
+
+    let rows = painted_rows(&screen, 60, 40);
+    let card = rows.join("\n");
+    assert!(card.contains("turn 51199"), "the last turn:\n{card}");
+    assert_eq!(under_the_rule(&rows), "earlier turns: pgup", "\n{card}");
+}
+
+#[test]
+fn card_pgup_at_its_first_row_loads_the_turns_before_until_the_file_starts() {
+    let held = TempDir::new().unwrap();
+    let path = held.path().join("session.jsonl");
+    // 5 MiB: the card holds turns 3072 on, then 1024 on, then all of them.
+    kib_turns(&path, 5120);
+    let mut screen = watching_a_transcript(&path);
+
+    let rows = pressed_until(&mut screen, KeyEvent::from(KeyCode::PageUp), "turn 03071");
+    assert_eq!(
+        under_the_rule(&rows),
+        "earlier turns: pgup",
+        "\n{}",
+        rows.join("\n")
+    );
+
+    // ctrl+b pages like pgup, and loads the start of the file.
+    let rows = pressed_until(&mut screen, ctrl('b'), "turn 01023");
+    let card = rows.join("\n");
+    assert!(
+        !card.contains("earlier turns"),
+        "at the file's start:\n{card}"
+    );
+    let rows = pressed_until(&mut screen, KeyEvent::from(KeyCode::PageUp), "turn 00000");
+    assert!(!rows.join("\n").contains("earlier turns"));
+}
+
+#[test]
+fn card_on_a_transcript_under_two_megabytes_shows_no_earlier_turns_row() {
+    let held = TempDir::new().unwrap();
+    let path = held.path().join("session.jsonl");
+    kib_turns(&path, 2000);
+    let mut screen = watching_a_transcript(&path);
+
+    let rows = painted_rows(&screen, 60, 40);
+    assert!(rows.join("\n").contains("turn 01999"));
+    assert!(!rows.join("\n").contains("earlier turns"));
+    let rows = pressed_until(&mut screen, KeyEvent::from(KeyCode::PageUp), "turn 00000");
+    assert!(!rows.join("\n").contains("earlier turns"));
+}
+
+#[test]
+fn card_draws_a_last_entry_longer_than_two_megabytes_whole() {
+    let held = TempDir::new().unwrap();
+    let path = held.path().join("session.jsonl");
+    // The 2 MiB mark falls on the second byte of an é.
+    let written = (0..3)
+        .map(|pad| {
+            let said = format!("begin {}{}end", "é ".repeat(750_000), "x".repeat(pad));
+            transcript("before it") + &transcript(&said)
+        })
+        .find(|whole| whole.as_bytes()[whole.len() - 2 * 1024 * 1024] == 0xA9)
+        .unwrap();
+    std::fs::write(&path, &written).unwrap();
+    let screen = watching_a_transcript(&path);
+
+    let says = screen.card.as_ref().map(|card| card.body.says()).unwrap();
+    assert!(says.starts_with("begin é é"), "{says:.40}");
+    assert!(says.ends_with("end"), "the entry ends");
+    assert!(!says.contains('\u{FFFD}'), "no character was cut");
+    assert!(
+        !says.contains("before it"),
+        "the entry before is a pgup away"
+    );
+    let rows = painted_rows(&screen, 60, 40);
+    assert_eq!(under_the_rule(&rows), "earlier turns: pgup");
+}
+
+#[test]
+fn card_earlier_turns_row_fits_a_small_terminal() {
+    let held = TempDir::new().unwrap();
+    let path = held.path().join("session.jsonl");
+    kib_turns(&path, 3072);
+    let screen = watching_a_transcript(&path);
+
+    let rows = painted_rows(&screen, 50, 10);
+    assert_eq!(
+        under_the_rule(&rows),
+        "earlier turns: pgup",
+        "\n{}",
+        rows.join("\n")
+    );
+}
+
 #[test]
 fn card_on_a_finished_conversation_opens_on_its_last_rows_and_reads_as_unpaged() {
     // A conversation card is anchored past its last row and only the paint

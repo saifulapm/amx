@@ -140,6 +140,9 @@ pub struct Body {
     anchor: usize,
     /// A patch's hunks in patch order; empty for any other body.
     hunks: Vec<Hunk>,
+    /// Whether the transcript holds turns before the conversation's first,
+    /// which the card names in an [`EARLIER`] row over the body.
+    earlier: bool,
 }
 
 /// One hunk of a patch body, found in the same pass that builds the rows so
@@ -174,6 +177,7 @@ impl Body {
             chrome: false,
             anchor: 0,
             hunks: Vec::new(),
+            earlier: false,
         }
     }
 
@@ -259,7 +263,13 @@ impl Body {
             rows,
             chrome: false,
             hunks: Vec::new(),
+            earlier: false,
         }
+    }
+
+    /// The body, saying whether `earlier` turns come before it.
+    pub(in crate::tui) fn earlier(self, earlier: bool) -> Body {
+        Body { earlier, ..self }
     }
 
     /// The row a forward card opens on.
@@ -341,6 +351,7 @@ impl Body {
             chrome: false,
             anchor: 0,
             hunks,
+            earlier: false,
         }
     }
 
@@ -388,6 +399,7 @@ impl Body {
             chrome: drawn < plain.len(),
             anchor: 0,
             hunks: Vec::new(),
+            earlier: false,
         }
     }
 
@@ -700,6 +712,7 @@ pub(super) fn card_rows(
         + usize::from(added(card, showing).is_some())
         + answering.map_or(0, |line| line_rows(line, width) + GAP_ROW)
         + queued_rows(card)
+        + usize::from(card.body.earlier)
         + shown;
     rows.min(u16::MAX as usize) as u16
 }
@@ -750,6 +763,10 @@ const RULE_ROW: usize = 1;
 /// The blank row above the answer line; the first row given up when short.
 const GAP_ROW: usize = 1;
 
+/// The row over a conversation whose transcript holds earlier turns, naming
+/// the key that reads them.
+const EARLIER: &str = "earlier turns: pgup";
+
 /// What the rule says of a patch card.
 const CHANGED: &str = "what it has changed";
 
@@ -762,9 +779,10 @@ const ASKED_TALL: usize = 3;
 
 /// Draw the card into `area`, over the foot of the list.
 ///
-/// Top to bottom: the rule, pull requests, tab strip, question, choices, the
-/// vendor's extra row, the body, queued messages, a blank row and the answer
-/// line. Full width, since the body may be a pane capture.
+/// Top to bottom: the rule, the [`EARLIER`] row, pull requests, tab strip,
+/// question, choices, the vendor's extra row, the body, queued messages, a
+/// blank row and the answer line. Full width, since the body may be a pane
+/// capture.
 ///
 /// `called` is the agent's name as the list shows it and `runs` its vendor
 /// words, both for the rule. `on` (the list's reading of the agent) and
@@ -839,6 +857,7 @@ pub(super) fn float(
     let adding = take(u16::from(added.is_some()));
     // Queued messages sit just above the answer line.
     let waiting = take(queued_rows(card) as u16);
+    let earlier = take(u16::from(card.body.earlier));
 
     // What is left is the body's window.
     let held = scroll.kept(length(card), room as usize);
@@ -862,7 +881,17 @@ pub(super) fn float(
         ruled,
     );
 
-    let [requesting, tabbing, asking, listing, adds, screen, sent] = Layout::vertical([
+    let [
+        before,
+        requesting,
+        tabbing,
+        asking,
+        listing,
+        adds,
+        screen,
+        sent,
+    ] = Layout::vertical([
+        Constraint::Length(earlier),
         Constraint::Length(opened),
         Constraint::Length(tabbed),
         Constraint::Length(asked),
@@ -873,6 +902,10 @@ pub(super) fn float(
     ])
     .areas(said);
 
+    if earlier > 0 {
+        let said = fit(EARLIER, before.width as usize);
+        frame.render_widget(Paragraph::new(Line::styled(said, dim())), before);
+    }
     if opened > 0 {
         frame.render_widget(Paragraph::new(Line::from(open)), requesting);
     }

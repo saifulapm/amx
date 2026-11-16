@@ -1820,10 +1820,10 @@ impl Screen {
             },
             // Arrows walk the list even with a card open; these page the card
             // body. ctrl+b and ctrl+f do the same on keyboards without page
-            // keys.
-            KeyCode::PageUp if plain => self.paged(true),
+            // keys. Paging up past the first row reads earlier turns.
+            KeyCode::PageUp if plain => self.paged_up(),
             KeyCode::PageDown if plain => self.paged(false),
-            KeyCode::Char('b') if ctrl => self.paged(true),
+            KeyCode::Char('b') if ctrl => self.paged_up(),
             KeyCode::Char('f') if ctrl => self.paged(false),
             // Half pages.
             KeyCode::Char('u') if ctrl => self.paged_by(true, self.half()),
@@ -3089,6 +3089,52 @@ impl Screen {
         self.paged_by(up, self.scroll.page.get().max(1));
     }
 
+    /// Page the card body up, or, on a conversation already at its first row,
+    /// read the turns before it.
+    ///
+    /// The card is taken again with them in front, and the window moves one
+    /// page up from where it was, onto the last of the turns just read.
+    fn paged_up(&mut self) {
+        let page = self.scroll.page.get().max(1);
+        let away = self.scroll.away.get();
+        let first = match &self.card {
+            Some(card) if self.look == Look::Screen && self.heard.more() => match card.forward() {
+                true => away == 0,
+                // A live conversation counts from its last row, and its body
+                // has as many rows as its anchor.
+                false => away + page >= card.body.anchor(),
+            },
+            _ => false,
+        };
+        // The vendor as `conversation_of` reads it.
+        let format = self.list.selected().and_then(|view| {
+            crate::conversation::format_of(view.meta.agent.as_deref().unwrap_or_default())
+        });
+        if !format.is_some_and(|format| first && self.heard.earlier(format)) {
+            return self.paged(true);
+        }
+        let Some(view) = self.list.selected() else {
+            return;
+        };
+        let held = self.card.as_ref().map_or(0, |card| card.body.anchor());
+        let width = self.body_width();
+        let (card, fresh) = card_of(view, &self.root, width, self.theme, &mut self.heard);
+        let read = card.body.anchor().saturating_sub(held);
+        self.taken = Some(Taken {
+            id: card.id.clone(),
+            phase: card.phase,
+            question: card.question.clone(),
+            width,
+            fresh,
+        });
+        self.scroll.open_at(card.opens_at());
+        self.scroll.away.set(match card.forward() {
+            true => read.saturating_sub(page),
+            false => away + page,
+        });
+        self.card = Some(card);
+    }
+
     /// Half the card's last page height, at least one row.
     fn half(&self) -> usize {
         (self.scroll.page.get() / 2).max(1)
@@ -3516,14 +3562,11 @@ fn card_of(
         let live = working
             .then(|| agent.as_ref().and_then(Agent::live))
             .flatten();
+        let body = Body::conversation(&said, live.as_deref(), width, theme).earlier(heard.more());
         // Read from the live edge while working, forward from the last answer
         // otherwise.
         return (
-            card(
-                Body::conversation(&said, live.as_deref(), width, theme),
-                !working,
-                queued,
-            ),
+            card(body, !working, queued),
             Freshness::Files(recorded.into_iter().chain(streaming).chain(log).collect()),
         );
     }
@@ -3596,17 +3639,52 @@ fn conversation_of<'a>(
 /// read on from where the last read stopped. A pi reading depends on the
 /// file's last entry and opencode's file is rewritten, so those are read whole,
 /// and only when the file has changed.
+///
+/// A claude or codex file is first read from its last [`WINDOW`] bytes, so a
+/// card on a transcript of hundreds of megabytes opens at once;
+/// [`Heard::earlier`] reads the window before.
 #[derive(Default)]
 struct Heard {
     path: PathBuf,
     /// Device, inode, length and mtime of the file at the last read.
     stamp: Option<(u64, u64, u64, Option<SystemTime>)>,
+    /// Where the bytes read into `said` start: 0, or the start of a line.
+    from: u64,
     /// Bytes read into `said`, through the end of the last whole line.
     read: u64,
     said: Vec<crate::conversation::Said>,
 }
 
+/// How much of an appended transcript a card reads at a time.
+const WINDOW: u64 = 2 * 1024 * 1024;
+
 impl Heard {
+    /// Whether the transcript holds turns before the ones read.
+    fn more(&self) -> bool {
+        self.from > 0
+    }
+
+    /// Read the window of the transcript before the turns held, and put its
+    /// turns in front of them. False when there is none, or it cannot be
+    /// read.
+    fn earlier(&mut self, format: Transcript) -> bool {
+        if !self.more() {
+            return false;
+        }
+        let read = std::fs::File::open(&self.path).and_then(|mut file| {
+            let from = window(&mut file, self.from)?;
+            Ok((from, bytes_of(&mut file, from, self.from)?))
+        });
+        let Ok((from, bytes)) = read else {
+            return false;
+        };
+        let mut said = crate::conversation::read(format, &String::from_utf8_lossy(&bytes));
+        said.append(&mut self.said);
+        self.said = said;
+        self.from = from;
+        true
+    }
+
     /// Everything said in the transcript at `path`, or nothing where it
     /// cannot be read.
     fn of(&mut self, path: &Path, format: Transcript) -> &[crate::conversation::Said] {
@@ -3636,6 +3714,16 @@ impl Heard {
                 ..Heard::default()
             };
         }
+        // A file read for the first time starts from its last window.
+        if appends && self.read == 0 {
+            match line_start(&mut file, stamp.2).and_then(|end| window(&mut file, end)) {
+                Ok(from) => (self.from, self.read) = (from, from),
+                Err(_) => {
+                    *self = Heard::default();
+                    return &self.said;
+                }
+            }
+        }
         let mut bytes = Vec::new();
         if file
             .seek(SeekFrom::Start(self.read))
@@ -3659,6 +3747,52 @@ impl Heard {
         self.stamp = Some(stamp);
         &self.said
     }
+}
+
+/// Where the window of a transcript that ends at `end`, the start of a line,
+/// starts: [`WINDOW`] bytes back, moved on to the start of the next line so no
+/// entry or character is cut. When the window holds no line start but `end`,
+/// one entry is longer than the window, and it starts where that entry does.
+fn window(file: &mut std::fs::File, end: u64) -> std::io::Result<u64> {
+    let at = end.saturating_sub(WINDOW);
+    if at == 0 {
+        return Ok(0);
+    }
+    // From the byte before the window, so a window that already starts a line
+    // is kept. Its last byte is the newline that ends at `end`.
+    let bytes = bytes_of(file, at - 1, end)?;
+    match bytes[..bytes.len() - 1]
+        .iter()
+        .position(|byte| *byte == b'\n')
+    {
+        Some(newline) => Ok(at + newline as u64),
+        None => line_start(file, at),
+    }
+}
+
+/// The start of the line that holds byte `at`, or `at` itself when it starts
+/// one: just after the last newline before it, or 0.
+fn line_start(file: &mut std::fs::File, at: u64) -> std::io::Result<u64> {
+    const CHUNK: u64 = 64 * 1024;
+    let mut end = at;
+    while end > 0 {
+        let begin = end.saturating_sub(CHUNK);
+        let bytes = bytes_of(file, begin, end)?;
+        if let Some(newline) = bytes.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(begin + newline as u64 + 1);
+        }
+        end = begin;
+    }
+    Ok(0)
+}
+
+/// The bytes of `file` from `from` up to `to`.
+fn bytes_of(file: &mut std::fs::File, from: u64, to: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = vec![0; (to - from) as usize];
+    file.seek(SeekFrom::Start(from))?;
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The furniture of the vendor the record says runs in this pane. A record
