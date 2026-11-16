@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use crate::config::Delivery;
-use crate::store::{Agent, Phase};
+use crate::store::{Agent, Phase, State};
 use crate::tmux::{PaneId, Server};
 
 /// The variables tmux sets in every pane: its server and the pane's id. A hook
@@ -68,16 +68,60 @@ pub struct Buttons {
 
 /// A permission box as the hook that posted its notice read it.
 ///
-/// A click answers through [`crate::verbs::answer::given`], which types
-/// nothing once the record moved or the agent said anything after `from`. A
-/// box answered at the pane and asked again in the same words is a new
-/// question, and the old notice's click must not answer it.
+/// A click answers only while the record still waits on the same question of
+/// the same kind, and the agent logged nothing since `from` but a reader's
+/// look or a notification repeating that question. A box answered at the
+/// pane and asked again in the same words is a new question, and the old
+/// notice's click must not answer it.
 pub struct Asked {
-    pub agent: Agent,
+    agent: Agent,
     /// The record as the hook wrote it, read as a view reads it.
-    pub view: crate::derive::View,
+    view: crate::derive::View,
     /// Where the event log ended when the hook wrote the record.
-    pub from: u64,
+    from: u64,
+}
+
+impl Asked {
+    /// The box in `state`, with the log ending at `from`.
+    pub fn new(agent: &Agent, meta: &crate::store::Meta, state: &State, from: u64) -> Asked {
+        Asked {
+            agent: agent.clone(),
+            view: waiting_on(meta, state),
+            from,
+        }
+    }
+
+    /// The record now, as a view to answer against, if it is still the box
+    /// the notice was raised for; see [`Asked`].
+    ///
+    /// The caller takes the log's end before this reads the record and hands
+    /// both to the answer, whose own check under the writer then covers
+    /// everything logged between this check and the keys.
+    fn still_asked(&self) -> Option<crate::derive::View> {
+        let now = self.agent.state().ok()?;
+        if now.state != Phase::Waiting {
+            return None;
+        }
+        let view = waiting_on(&self.agent.meta().ok()?, &now);
+        let posted = &self.view.state;
+        let same = view.state.question == posted.question && view.state.kind == posted.kind;
+        let told =
+            crate::verbs::send::told_more_than_the_question_since(&self.agent, posted, self.from);
+        (same && matches!(told, Ok(false))).then_some(view)
+    }
+}
+
+/// The record as a reader that saw the agent waiting would read it. The
+/// notifier reads no pane, so the verdict is the record's own.
+fn waiting_on(meta: &crate::store::Meta, state: &State) -> crate::derive::View {
+    let verdict = crate::derive::Verdict {
+        phase: Phase::Waiting,
+        evidence: crate::derive::Evidence::Hooks,
+        rule: None,
+        age: 0,
+        worked: 0,
+    };
+    crate::derive::View::new(meta.clone(), state.clone(), verdict)
 }
 
 impl Buttons {
@@ -187,13 +231,18 @@ fn clicked(notifier: Child, buttons: &Buttons) {
 /// Answer the box with `key`, unless it is no longer the question the notice
 /// was raised for.
 fn answer(asked: &Asked, key: &str) {
-    let server = Server::from_socket(asked.view.meta.socket.clone());
+    // Taken before the record is read, as `amx answer` takes it.
+    let from = crate::verbs::send::logged(&asked.agent);
+    let Some(view) = asked.still_asked() else {
+        return;
+    };
+    let server = Server::from_socket(view.meta.socket.clone());
     let typed = crate::cli::AnswerArgs {
         key: Some(key.to_string()),
         ..crate::cli::AnswerArgs::default()
     };
     // A refusal has nobody to tell: the notifier has no terminal.
-    let _ = crate::verbs::answer::given(&asked.agent, &server, &asked.view, asked.from, &typed);
+    let _ = crate::verbs::answer::given(&asked.agent, &server, &view, from, &typed);
 }
 
 /// Start the Open command with `sh -c` and leave it running.

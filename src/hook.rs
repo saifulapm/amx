@@ -366,13 +366,8 @@ fn record(
         .and_then(|phase| crate::errand::assembled(config, agent, &meta, phase, &event));
     let buttons = notify::Buttons {
         open: open_for(config, agent),
-        asked: (notice.is_some() && written.kind == Some(Kind::Permission)).then(|| {
-            notify::Asked {
-                agent: agent.clone(),
-                view: as_posted(&meta, &written),
-                from,
-            }
-        }),
+        asked: (notice.is_some() && written.kind == Some(Kind::Permission))
+            .then(|| notify::Asked::new(agent, &meta, &written, from)),
     };
     notify::post(
         notice.as_ref(),
@@ -588,19 +583,6 @@ fn record_exit(agent: &Agent, code: i32, config: &Config) -> Result<()> {
 fn open_for(config: &Config, agent: &Agent) -> Option<String> {
     let open = config.notify.open.as_deref()?;
     Some(open.replace("{id}", agent.id()))
-}
-
-/// The record this hook wrote, as the view a click on its notice answers
-/// against. The hook read no pane, so the verdict is the record's own.
-fn as_posted(meta: &Meta, written: &State) -> crate::derive::View {
-    let verdict = crate::derive::Verdict {
-        phase: Phase::Waiting,
-        evidence: crate::derive::Evidence::Hooks,
-        rule: None,
-        age: 0,
-        worked: 0,
-    };
-    crate::derive::View::new(meta.clone(), written.clone(), verdict)
 }
 
 /// The payload's event name as the vendor spells it; what the event log

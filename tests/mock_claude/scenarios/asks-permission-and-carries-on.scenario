@@ -1,7 +1,11 @@
 # An agent stopped on a permission box that carries on once `1` is typed.
+#
+# In claude's order: PermissionRequest as the box goes up, and the
+# Notification repeating it later (about six seconds in claude 2.1.237).
 hook SessionStart {"source": "startup"}
 hook UserPromptSubmit {"prompt": "remove the build directory"}
 sleep 50
+hook PermissionRequest {"tool_name": "Bash"}
 print ────────────────────────────────────────────────
 print  Bash command
 print    rm -rf build

@@ -585,11 +585,33 @@ pub(crate) fn moved(read: &State, now: &State) -> bool {
 /// its permission box is the question: only its next event says the box
 /// closed.
 pub(crate) fn told_since(agent: &Agent, read: &State, from: u64) -> Result<bool> {
+    Ok(events_from(agent, from)?
+        .iter()
+        .any(|event| said(event, read)))
+}
+
+/// [`told_since`], except that a notification repeating the question `read`
+/// holds is not news. claude sends one about six seconds after its box goes
+/// up, and a click on the box's notice still answers that box.
+pub(crate) fn told_more_than_the_question_since(
+    agent: &Agent,
+    read: &State,
+    from: u64,
+) -> Result<bool> {
     Ok(events_from(agent, from)?.iter().any(|event| {
-        let by = event.payload["agent_id"].as_str();
-        ![derive::READ_PROMPT, derive::READ_TURN_END].contains(&event.kind.as_str())
-            && (by.is_none() || by == read.asked_by.as_deref())
+        let repeats = event.kind == "Notification"
+            && read.question.is_some()
+            && event.payload["message"].as_str() == read.question.as_deref();
+        said(event, read) && !repeats
     }))
+}
+
+/// Whether `event` is the agent saying something while `read` was its
+/// record; see [`told_since`].
+fn said(event: &Event, read: &State) -> bool {
+    let by = event.payload["agent_id"].as_str();
+    ![derive::READ_PROMPT, derive::READ_TURN_END].contains(&event.kind.as_str())
+        && (by.is_none() || by == read.asked_by.as_deref())
 }
 
 /// The refusal for a pane that went away since the caller's reading.
