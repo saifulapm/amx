@@ -179,6 +179,8 @@ fn hold(state_root: &Path, bytes: &[u8], extension: &str) -> Result<PathBuf> {
     let holding = dir.join(name);
     let mut file = std::fs::File::create_new(&holding)
         .with_context(|| format!("creating {}", holding.display()))?;
+    // A screenshot can hold anything that was on the screen.
+    paths::keep_to_the_owner(&holding, 0o600)?;
     std::io::Write::write_all(&mut file, bytes)
         .with_context(|| format!("writing {}", holding.display()))?;
     Ok(holding)
