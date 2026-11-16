@@ -367,7 +367,10 @@ fn a_task_line_starts_the_agent_with_its_image_and_lets_the_holding_file_go() {
         std::fs::read(amx.agent_dir(&id).join("images/1.png")).unwrap(),
         PNG
     );
-    assert!(held(&amx).is_empty(), "nothing is held: {:?}", held(&amx));
+    // The pane can start before the view lets the line go.
+    amx.until("the holding file to go", || {
+        held(&amx).is_empty().then_some(())
+    });
 }
 
 #[test]
@@ -397,7 +400,10 @@ fn a_reply_from_an_idle_claudes_card_hands_it_the_image() {
     amx.until("the image on claude's pane", || {
         said_in(&amx, &pane).contains(&want).then_some(())
     });
-    assert!(held(&amx).is_empty(), "nothing is held: {:?}", held(&amx));
+    // The pane can show the message before the view lets the line go.
+    amx.until("the holding file to go", || {
+        held(&amx).is_empty().then_some(())
+    });
 }
 
 #[test]
