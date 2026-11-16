@@ -630,8 +630,10 @@ fn a_relative_xdg_config_home_is_ignored_for_the_one_under_home() {
 #[test]
 fn find_prints_the_one_agent_whose_conversation_mentions_the_text() {
     let amx = Harness::new();
-    started(&amx, "port-a1b", "carries-usage", &[]);
-    started(&amx, "login-b2c", "carries-usage", &[]);
+    // In the harness's home, not a repository, so no tree is cut.
+    let home = amx.home().to_string_lossy().into_owned();
+    started(&amx, "port-a1b", "carries-usage", &["--dir", &home]);
+    started(&amx, "login-b2c", "carries-usage", &["--dir", &home]);
     amx.until_state("port-a1b", "idle");
     amx.until_state("login-b2c", "idle");
     // The stand-in's transcript says hello; one of them talks of the importer.
