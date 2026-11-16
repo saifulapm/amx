@@ -795,6 +795,48 @@ fn a_config_dir_whose_skills_are_homes_is_wired_once_and_unwired_once() {
 }
 
 #[test]
+fn a_launcher_that_picks_the_account_is_judged_by_the_account_claude_ran_under() {
+    // The agent is a launcher script that exports CLAUDE_CONFIG_DIR itself and
+    // execs claude, so amx never sees the account dir in its own environment.
+    // The transcript of a claude it started says which dir claude used.
+    let amx = Harness::new();
+    let account = tempfile::TempDir::new().unwrap();
+    let dir = account.path().canonicalize().unwrap();
+    let bin = tempfile::TempDir::new().unwrap();
+    let launcher = bin.path().join("claude");
+    let transcript = dir.join("projects/-work/6f1c9f4e.jsonl");
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nexport CLAUDE_CONFIG_DIR='{}'\nexport MOCK_CLAUDE_TRANSCRIPT='{}'\nexec '{}' \"$@\"\n",
+            dir.display(),
+            transcript.display(),
+            amx.mock()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, PermissionsExt::from_mode(0o755)).unwrap();
+    amx.config(&format!("agent = \"{}\"\n", launcher.display()));
+
+    let (code, printed) = amx_with(&amx, &["setup", "claude"], &[]);
+    assert_eq!(code, 0, "{printed}");
+    assert!(!dir.join("skills").exists(), "setup wrote under home alone");
+
+    amx.play_through("lh1", "happy-turn", &launcher);
+    amx.until("the transcript to be named", || {
+        amx.meta("lh1")["transcript"].is_string().then_some(())
+    });
+
+    let (ok, line) = hooks_line(&doctor(&amx), "claude");
+    assert!(!ok, "the account claude ran under has no plugin: {line}");
+    assert!(line.contains(&dir.display().to_string()), "{line}");
+
+    std::os::unix::fs::symlink(amx.home().join(".claude/skills"), dir.join("skills")).unwrap();
+    let (ok, line) = hooks_line(&doctor(&amx), "claude");
+    assert!(ok, "its skills are home's, so the plugin is there: {line}");
+}
+
+#[test]
 fn uninstall_takes_claudes_plugin_out_of_the_config_dir_too() {
     let amx = Harness::new();
     let account = tempfile::TempDir::new().unwrap();

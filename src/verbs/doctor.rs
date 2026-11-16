@@ -314,7 +314,15 @@ fn wiring_check(found: &VendorWiring) -> Check {
         install::Wired::File { .. } | install::Wired::Nothing => Check::wrong(
             "hooks",
             format!("{who}: no {what} at {wire}"),
-            setup_with(who),
+            match hooks.wire {
+                // The plugin sits under a config dir, and a claude that runs
+                // under another one loads nothing from home.
+                Wire::Plugin { .. } => format!(
+                    "{}, with CLAUDE_CONFIG_DIR set to the dir above skills/ if claude runs under it, or link that dir's skills to the ones under home",
+                    setup_with(who)
+                ),
+                _ => setup_with(who),
+            },
         ),
     }
 }
@@ -741,6 +749,71 @@ fn wirings(agent: &str, home: &Path, env: install::Env, path: Option<&OsStr>) ->
         .collect()
 }
 
+/// The config dirs claude ran under, read off the transcripts of the records
+/// of claude agents under `root`.
+///
+/// A transcript lives at `<config dir>/projects/<slug>/<session>.jsonl`, so
+/// the config dir is the parent of the nearest `projects` above it.
+fn config_dirs_ran_under(root: &Path) -> BTreeSet<PathBuf> {
+    store::list(root)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|id| store::Agent::open(root, id).ok()?.meta().ok())
+        .filter(|meta| {
+            meta.agent
+                .as_deref()
+                .and_then(registry::read_as)
+                .is_some_and(|vendor| vendor.name == "claude")
+        })
+        .filter_map(|meta| {
+            let transcript = meta.transcript?;
+            let projects = transcript
+                .ancestors()
+                .find(|dir| dir.file_name() == Some(OsStr::new("projects")))?;
+            Some(projects.parent()?.to_path_buf())
+        })
+        .collect()
+}
+
+/// Have `wiring` stand for the first of `dirs` whose plugin it lacks, when the
+/// plugin it already judged is in place.
+///
+/// Dirs compare by what they resolve to, so one whose skills are a symlink to
+/// home's is the same plugin and is judged where `wiring` already judged it.
+fn judge_under(wiring: &mut VendorWiring, dirs: &BTreeSet<PathBuf>, home: &Path) {
+    let Some(Hooks {
+        wire: wire @ Wire::Plugin { dir_env, .. },
+        ..
+    }) = wiring.hooks
+    else {
+        return;
+    };
+    let in_place = |wired: &install::Wired| {
+        matches!(
+            wired,
+            install::Wired::File {
+                present: true,
+                current: true
+            }
+        )
+    };
+    if !in_place(&wiring.wired) {
+        return;
+    }
+    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let judged = real(&wiring.wire);
+    for dir in dirs {
+        let env = |name: &str| (name == *dir_env).then(|| dir.as_os_str().to_owned());
+        let path = install::wire_path(wire, home, &env);
+        let wired = install::wired(wire, home, &env);
+        if real(&path) != judged && !in_place(&wired) {
+            wiring.wire = path;
+            wiring.wired = wired;
+            return;
+        }
+    }
+}
+
 /// Gather the findings under `config`, including `dir` when doctor was
 /// pointed at one.
 pub fn gather(
@@ -754,8 +827,13 @@ pub fn gather(
     // The plugin a spawned claude loads, under the config dir its pane gets.
     let table = config.harness("claude").env;
     let env = install::claude_env(&table, &install::process_env);
-    let wirings = wirings(&config.agent, &home, &env, path.as_deref());
+    let mut wirings = wirings(&config.agent, &home, &env, path.as_deref());
     let state_root = crate::paths::state_root()?;
+    // A launcher can export its own config dir, which only a record shows.
+    let ran_under = config_dirs_ran_under(&state_root);
+    for wiring in &mut wirings {
+        judge_under(wiring, &ran_under, &home);
+    }
     // Only a vendor whose trust screen amx answers by writing its store has
     // keys of amx's in it. An unreadable store yields no stale trees.
     let store = trust::writes_a_store(&config.agent)

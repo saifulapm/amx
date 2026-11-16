@@ -236,6 +236,12 @@ impl Harness {
     /// The pane waits for the record before it starts the stand-in, so the
     /// first hook has a record to land in, as with `amx new`.
     pub fn play(&self, id: &str, scenario: &str) -> String {
+        self.play_through(id, scenario, &fixtures().join("mock-claude"))
+    }
+
+    /// [`play`](Self::play) with `program` started in place of mock-claude,
+    /// as a launcher script that execs it would be.
+    pub fn play_through(&self, id: &str, scenario: &str, program: &Path) -> String {
         let pane = self.tmux(&[
             "new-session",
             "-d",
@@ -245,7 +251,7 @@ impl Harness {
             "--",
             "sh",
             "-c",
-            &self.pane_script(id, scenario),
+            &self.pane_script(id, scenario, program),
         ]);
         self.record(id, &pane);
         pane
@@ -409,10 +415,9 @@ impl Harness {
 
     /// The shell line a [`play`](Self::play) pane runs: mock-claude, then
     /// `amx _exit` with its status.
-    fn pane_script(&self, id: &str, scenario: &str) -> String {
+    fn pane_script(&self, id: &str, scenario: &str, mock: &Path) -> String {
         let state = self.state.path().display();
         let home = self.home.path().display();
-        let mock = fixtures().join("mock-claude");
         let scenario = self.scenario(scenario);
         let transcript = self.transcript(id);
 
