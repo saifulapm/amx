@@ -160,8 +160,8 @@ ever added, never renamed or removed.
 | `created`, `since`, `last_event`, `ended` | Unix timestamps. |
 | `age` | Seconds: how long a finished run worked, how long a waiting agent has waited, or how long since a working one was heard from. |
 | `worked` | Seconds spent working. |
-| `context` | Input tokens of the conversation at the last turn, or null. |
-| `last_words` | The agent's last message in its transcript, or null. |
+| `context` | Input tokens of the conversation at the last turn, or null. Null for an ended run (`done`, `failed`, `stopped`), whose transcript is not read. |
+| `last_words` | The agent's last message in its transcript, or null. Null for an ended run too. |
 | `pane`, `socket`, `session` | tmux pane, tmux socket, vendor session id. |
 | `queued` | `status --json` only: messages sent and not yet taken, oldest first. |
 
