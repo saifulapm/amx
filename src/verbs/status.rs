@@ -123,6 +123,11 @@ fn evidence(view: &View, now: u64) -> String {
             "the screen, matching `{}`, with no hook for {age}s",
             view.verdict.rule.as_deref().unwrap_or("a rule")
         ),
+        Evidence::SessionFile => {
+            format!(
+                "the vendor's sessions file, with no hook for {age}s and no rule matching the screen"
+            )
+        }
         Evidence::Unknown => {
             format!("none: no hooks for {age}s, and no rule matches the screen")
         }

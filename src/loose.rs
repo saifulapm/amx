@@ -120,6 +120,30 @@ pub fn live_on(
         .map(|it| it.pid)
 }
 
+/// The status claude's sessions file gives a session, `idle`, `busy` or
+/// `shell`, while the process it names still runs. A file left by a killed
+/// claude, or naming a pid now used by another process, says nothing.
+pub fn status_of(
+    dirs: &[PathBuf],
+    session: &str,
+    running: impl Fn(u32) -> Option<String>,
+) -> Option<String> {
+    files(dirs)
+        .into_iter()
+        .find(|it| it.session == session && it.runs(&running))
+        .map(|it| it.status)
+}
+
+/// The phase a sessions file's status means: `idle` at the prompt, `busy`
+/// in a turn. `shell` and anything newer say nothing amx can rely on.
+pub fn phase_of(status: &str) -> Option<crate::store::Phase> {
+    match status {
+        "idle" => Some(crate::store::Phase::Idle),
+        "busy" => Some(crate::store::Phase::Working),
+        _ => None,
+    }
+}
+
 impl Loose {
     /// Whether the process the file names still runs: its pid is alive with
     /// the start time the file gives.
@@ -224,6 +248,32 @@ mod tests {
     /// Every pid runs, started at 777.
     fn all_running(_: u32) -> Option<String> {
         Some("777".to_string())
+    }
+
+    #[test]
+    fn a_sessions_status_is_read_only_while_its_process_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = [dir.path().to_path_buf()];
+        a_file(dir.path(), 41, idle(41, "s-1"));
+        assert_eq!(
+            status_of(&dirs, "s-1", all_running).as_deref(),
+            Some("idle")
+        );
+        assert_eq!(
+            status_of(&dirs, "s-2", all_running),
+            None,
+            "another session"
+        );
+        // The claude exited and its pid went to another process, which started
+        // later; or nothing runs on it at all.
+        assert_eq!(status_of(&dirs, "s-1", |_| Some("900".to_string())), None);
+        assert_eq!(status_of(&dirs, "s-1", |_| None), None);
+
+        use crate::store::Phase;
+        assert_eq!(phase_of("idle"), Some(Phase::Idle));
+        assert_eq!(phase_of("busy"), Some(Phase::Working));
+        assert_eq!(phase_of("shell"), None);
+        assert_eq!(phase_of("some_future_status"), None);
     }
 
     #[test]

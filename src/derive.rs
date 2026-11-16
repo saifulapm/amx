@@ -84,6 +84,10 @@ pub enum Evidence {
     Hooks,
     /// The screen: a rule that claimed it, or a command's own output.
     Screen,
+    /// The vendor's own account of the session (claude's sessions file),
+    /// read when the hooks are quiet and no rule claims the screen.
+    #[serde(rename = "session file")]
+    SessionFile,
     /// Nothing accounts for the screen.
     Unknown,
 }
@@ -724,15 +728,8 @@ pub fn in_words(seconds: u64) -> String {
     }
 }
 
-/// Works out what an agent is doing.
-///
-/// - `alive`: whether the pane still answers for this agent.
-/// - `capture`: called only if the screen is needed, so a fresh record costs
-///   no tmux call.
-/// - `created`: when the agent started, for an ended run with no spans.
-/// - `held`: seconds the screen has held still; see [`held_still`].
-/// - `reports`: whether the vendor reports through hooks; see [`reports`].
-/// - `heartbeat`: when the vendor last beat; see [`heard`].
+/// [`read_beside`] with no sessions file to ask.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn read(
     state: &State,
@@ -744,6 +741,44 @@ pub fn read(
     now: u64,
     held: u64,
     heartbeat: Option<u64>,
+) -> Reading {
+    read_beside(
+        state,
+        created,
+        alive,
+        capture,
+        rules,
+        reports,
+        now,
+        held,
+        heartbeat,
+        || None,
+    )
+}
+
+/// Works out what an agent is doing.
+///
+/// - `alive`: whether the pane still answers for this agent.
+/// - `capture`: called only if the screen is needed, so a fresh record costs
+///   no tmux call.
+/// - `created`: when the agent started, for an ended run with no spans.
+/// - `held`: seconds the screen has held still; see [`held_still`].
+/// - `reports`: whether the vendor reports through hooks; see [`reports`].
+/// - `heartbeat`: when the vendor last beat; see [`heard`].
+/// - `session`: the phase the vendor's own sessions file says, asked only
+///   when the hooks are quiet and no rule claims the screen.
+#[allow(clippy::too_many_arguments)]
+fn read_beside(
+    state: &State,
+    created: u64,
+    alive: bool,
+    capture: impl FnOnce() -> Option<String>,
+    rules: &Ruleset,
+    reports: bool,
+    now: u64,
+    held: u64,
+    heartbeat: Option<u64>,
+    session: impl FnOnce() -> Option<Phase>,
 ) -> Reading {
     // Staleness decides whether the record is believed over the pane. The
     // seconds shown beside the agent are `clock`'s question.
@@ -857,13 +892,17 @@ pub fn read(
         Claim::Unclaimed if reports && matches!(state.state, Phase::Idle | Phase::Waiting) => {
             told(state.state, Evidence::Hooks, None)
         }
-        // A turn heard from lately is taken at its word over a screen nobody
-        // has measured: a view claude draws over its composer reads `unknown`
-        // a few seconds into every look otherwise.
-        Claim::Unclaimed if reports && state.state == Phase::Working && quiet <= HEARD_LATELY => {
-            told(Phase::Working, Evidence::Hooks, None)
-        }
-        Claim::Unclaimed => told(Phase::Unknown, Evidence::Unknown, None),
+        Claim::Unclaimed => match session() {
+            // The vendor's own word on the session breaks the tie.
+            Some(phase) => told(phase, Evidence::SessionFile, None),
+            // A turn heard from lately is taken at its word over a screen
+            // nobody has measured: a view claude draws over its composer reads
+            // `unknown` a few seconds into every look otherwise.
+            None if reports && state.state == Phase::Working && quiet <= HEARD_LATELY => {
+                told(Phase::Working, Evidence::Hooks, None)
+            }
+            None => told(Phase::Unknown, Evidence::Unknown, None),
+        },
     }
 }
 
@@ -884,7 +923,7 @@ fn conclude(
     if alive && runs_a_command(meta, state) {
         return read_a_command(state, meta.created, capture().as_deref(), now, heartbeat);
     }
-    read(
+    read_beside(
         state,
         meta.created,
         alive,
@@ -894,7 +933,24 @@ fn conclude(
         now,
         held,
         heartbeat,
+        || session_says(meta, crate::loose::claude_start),
     )
+}
+
+/// The phase claude's sessions file gives this record's session: `idle` or
+/// `busy`. Any other status, another vendor, a session not named yet, or a
+/// file whose process no longer runs says nothing; see
+/// [`crate::loose::status_of`].
+fn session_says(meta: &Meta, running: impl Fn(u32) -> Option<String>) -> Option<Phase> {
+    if vendor_of(meta)?.name != "claude" {
+        return None;
+    }
+    let session = meta.session.as_deref()?;
+    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let home = std::env::home_dir()?;
+    let config = crate::config::for_dir(&meta.dir).0;
+    let dirs = crate::loose::config_dirs(&env, &home, &config);
+    crate::loose::phase_of(&crate::loose::status_of(&dirs, session, running)?)
 }
 
 /// Reads a running command: working for as long as its pane is there.
@@ -4328,6 +4384,68 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         assert_eq!(live.phase, Phase::Working, "{live:?}");
         assert_eq!(live.rule.as_deref(), Some("background_agents"), "{live:?}");
+    }
+
+    #[test]
+    fn reader_takes_claudes_sessions_file_over_a_quiet_unclaimed_screen() {
+        let running = state(Phase::Working, 1_000);
+        let look = |now, screen: &str, session: Option<Phase>| {
+            read_beside(
+                &running,
+                0,
+                true,
+                || Some(screen.to_string()),
+                rules::of("claude"),
+                true,
+                now,
+                1,
+                None,
+                || session,
+            )
+            .verdict
+        };
+        let said = look(1_020, A_SHELL, Some(Phase::Idle));
+        assert_eq!(said.phase, Phase::Idle, "{said:?}");
+        assert_eq!(said.evidence, Evidence::SessionFile);
+        assert_eq!(
+            serde_json::to_value(&said.evidence).unwrap(),
+            "session file",
+            "as ls --json prints it"
+        );
+
+        // Without a word from the file, the 10-minute rule stands.
+        assert_eq!(look(1_020, A_SHELL, None).phase, Phase::Working);
+
+        // The file is not asked while the hooks are fresh or a rule claims
+        // the screen.
+        let never = || -> Option<Phase> { panic!("the sessions file was read") };
+        for (now, screen) in [(1_004, A_SHELL), (1_020, IDLE_SCREEN)] {
+            read_beside(
+                &running,
+                0,
+                true,
+                || Some(screen.to_string()),
+                rules::of("claude"),
+                true,
+                now,
+                1,
+                None,
+                never,
+            );
+        }
+    }
+
+    #[test]
+    fn reader_reads_no_sessions_file_for_another_vendor_or_an_unnamed_session() {
+        let every = |_: u32| Some("777".to_string());
+        let mut pi = meta();
+        pi.agent = Some("pi".to_string());
+        pi.session = Some("s-1".to_string());
+        assert_eq!(session_says(&pi, every), None);
+        let mut unnamed = meta();
+        unnamed.agent = Some("claude".to_string());
+        unnamed.session = None;
+        assert_eq!(session_says(&unnamed, every), None);
     }
 
     #[test]

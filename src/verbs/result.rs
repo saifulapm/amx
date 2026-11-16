@@ -246,7 +246,7 @@ pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
 /// How long to wait before reading again, given what the last reading cost.
 pub(crate) fn pace(evidence: &Evidence) -> Duration {
     match evidence {
-        Evidence::Screen | Evidence::Unknown => LOOK,
+        Evidence::Screen | Evidence::SessionFile | Evidence::Unknown => LOOK,
         Evidence::Record | Evidence::Gone | Evidence::LetGo | Evidence::Hooks => POLL,
     }
 }
