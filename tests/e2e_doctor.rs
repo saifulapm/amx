@@ -704,7 +704,13 @@ fn setup_wires_claude_under_the_config_dir_its_table_names() {
         "agent = \"claude\"\n[claude.env]\nCLAUDE_CONFIG_DIR = \"{}\"\n",
         dir.display()
     ));
-    wires_claude_under(&amx, &dir, &[]);
+    // The pane gets the table's value over the one amx was started with.
+    let inherited = tempfile::TempDir::new().unwrap();
+    wires_claude_under(&amx, &dir, &[("CLAUDE_CONFIG_DIR", inherited.path())]);
+    assert!(
+        !inherited.path().join("skills").exists(),
+        "no claude amx starts loads from the inherited dir"
+    );
 }
 
 #[test]
