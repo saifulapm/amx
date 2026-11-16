@@ -127,6 +127,7 @@ mod tests {
             (Phase::Waiting, "⚠1"),
             (Phase::Unknown, "⚠1"),
             (Phase::Idle, ""),
+            (Phase::Limited, ""),
             (Phase::Done, ""),
             (Phase::Failed, ""),
             (Phase::Stopped, ""),
@@ -225,5 +226,28 @@ mod tests {
         }
 
         assert_eq!(String::from_utf8(printed(root.path())).unwrap(), "⚠1\n");
+    }
+
+    #[test]
+    fn a_limited_agent_is_counted_as_neither_working_nor_waiting() {
+        let root = TempDir::new().unwrap();
+        for (id, phase) in [
+            ("fix-login-a1b", Phase::Working),
+            ("port-importer-c3d", Phase::Limited),
+        ] {
+            let mut meta = meta(id);
+            meta.socket = Socket::Name(format!("amx-no-such-server-{}", std::process::id()));
+            let agent = Agent::create(root.path(), &meta).unwrap();
+            agent
+                .writer()
+                .unwrap()
+                .update_state(|state| {
+                    state.state = phase;
+                    state.parked_at = 1;
+                })
+                .unwrap();
+        }
+
+        assert_eq!(String::from_utf8(printed(root.path())).unwrap(), "✽1\n");
     }
 }
