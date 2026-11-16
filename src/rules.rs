@@ -1190,6 +1190,52 @@ pub(crate) mod tests {
  Enter to confirm · Esc to cancel
 ";
 
+    /// claude 2.1.325's first-run consent for bypass-permissions mode at 100
+    /// columns. The choices are numbered, like the other Select menus.
+    const BYPASS_CONSENT_100: &str = r"
+ WARNING: Claude Code running in Bypass Permissions mode
+
+ In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially
+ dangerous commands.
+ This mode should only be used in a sandboxed container/VM that has restricted internet access and
+ can easily be restored if damaged.
+
+ By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions
+ mode.
+
+ https://code.claude.com/docs/en/security
+
+ ❯ 1. No, exit
+   2. Yes, I accept
+
+ Enter to confirm · Esc to cancel
+";
+
+    /// The same screen at 40 columns, where the title wraps between words.
+    const BYPASS_CONSENT_40: &str = r"
+ WARNING: Claude Code running in Bypass
+ Permissions mode
+
+ In Bypass Permissions mode, Claude Code
+ will not ask for your approval before
+ running potentially dangerous commands.
+ This mode should only be used in a
+ sandboxed container/VM that has
+ restricted internet access and can
+ easily be restored if damaged.
+
+ By proceeding, you accept all
+ responsibility for actions taken while
+ running in Bypass Permissions mode.
+
+ https://code.claude.com/docs/en/security
+
+ ❯ 1. No, exit
+   2. Yes, I accept
+
+ Enter to confirm · Esc to cancel
+";
+
     /// The same screen, v2.1.259 at 54 columns. The wording is unchanged from
     /// 2.1.240, but the choices lost their numbers and swapped places: the
     /// only `❯` is the cursor on the exit, and the confirm footer is the only
@@ -2730,6 +2776,7 @@ Only showing models from configured providers. Use /login to add providers.
             names,
             [
                 "folder_trust",
+                "bypass_consent",
                 "permission_prompt",
                 "ask_menu",
                 "plan_approval",
@@ -2966,6 +3013,29 @@ Only showing models from configured providers. Use /login to add providers.
                 asked.walked, walked,
                 "{what}: a list amx numbered off the mark is walked, and one \
                  the vendor numbered itself is not"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_the_bypass_consent_screen_is_a_question_with_choices_1_and_2() {
+        for (width, screen) in [("100", BYPASS_CONSENT_100), ("40", BYPASS_CONSENT_40)] {
+            let rule = claim(claude(), screen, Phase::Working);
+            assert_eq!(
+                rule.rule_name(),
+                Some("bypass_consent"),
+                "at {width} columns"
+            );
+            assert_eq!(rule.phase(), Some(Phase::Waiting), "at {width} columns");
+            let asked = asked(claude(), screen);
+            assert_eq!(
+                asked.text, "WARNING: Claude Code running in Bypass Permissions mode",
+                "at {width} columns"
+            );
+            assert_eq!(
+                asked.options,
+                ["No, exit", "Yes, I accept"],
+                "at {width} columns"
             );
         }
     }

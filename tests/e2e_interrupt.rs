@@ -184,6 +184,37 @@ fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
 }
 
 #[test]
+fn the_bypass_consent_screen_is_a_question_answered_by_typing_its_number() {
+    let amx = Harness::new();
+    let id = "consent-a1b";
+    let pane = amx.play(id, "stops-on-bypass-consent");
+    amx.until("the screen to be drawn", || {
+        amx.capture(&pane)
+            .contains("Enter to confirm")
+            .then_some(())
+    });
+
+    let agent = status(&amx, id);
+    assert_eq!(agent["state"], "waiting", "{agent}");
+    assert_eq!(agent["rule"], "bypass_consent", "{agent}");
+    assert_eq!(
+        agent["question"], "WARNING: Claude Code running in Bypass Permissions mode",
+        "{agent}"
+    );
+    assert_eq!(
+        agent["options"],
+        serde_json::json!(["No, exit", "Yes, I accept"])
+    );
+
+    // The scenario goes on only when `2` arrives.
+    let out = amx.amx(&["answer", id, "2"]);
+    assert_eq!(out.status.code(), Some(0), "{}", common::stderr(&out));
+    amx.until("the key to reach the pane", || {
+        amx.capture(&pane).contains("accepted").then_some(())
+    });
+}
+
+#[test]
 fn an_agent_at_its_prompt_with_a_shell_out_is_refused_and_gets_no_escape() {
     let amx = Harness::new();
     let id = "dev-server-a1b";

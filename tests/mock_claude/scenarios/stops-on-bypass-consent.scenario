@@ -1,0 +1,23 @@
+# claude's first-run consent for bypass-permissions mode at 100 columns, as
+# 2.1.325 draws it. No hooks: the screen comes before the session. Only the
+# key `2` accepts it.
+print
+print  WARNING: Claude Code running in Bypass Permissions mode
+print
+print  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially
+print  dangerous commands.
+print  This mode should only be used in a sandboxed container/VM that has restricted internet access and
+print  can easily be restored if damaged.
+print
+print  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions
+print  mode.
+print
+print  https://code.claude.com/docs/en/security
+print
+print  ❯ 1. No, exit
+print    2. Yes, I accept
+print
+print  Enter to confirm · Esc to cancel
+await 2
+print accepted
+sleep 600000

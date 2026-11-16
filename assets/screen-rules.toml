@@ -144,6 +144,35 @@ not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
 asks = { sentence = "quick" }
 marks = "❯"
 
+# The first-run consent for bypass-permissions mode, as claude 2.1.325 draws it
+# (wording from the binary, layout like its other Select menus):
+#
+#   WARNING: Claude Code running in Bypass Permissions mode
+#
+#   In Bypass Permissions mode, Claude Code will not ask for your approval
+#   before running potentially dangerous commands. …
+#
+#   https://code.claude.com/docs/en/security
+#
+#   ❯ 1. No, exit
+#     2. Yes, I accept
+#
+#   Enter to confirm · Esc to cancel
+#
+# The body wraps at narrow widths, so the rule stands on single words from the
+# title and on the confirm footer. `asks` names the title's sentence, since the
+# row above the choices is the link, not a question. `bypass` keeps a quoted
+# `warning` from claiming.
+[[rule]]
+name = "bypass_consent"
+state = "waiting"
+kind = "question"
+all = ["warning", "bypass"]
+any = ["enter to confirm"]
+within = 30
+not_below = ["⏵⏵", "⏸", "shift+tab to cycle", "? for shortcuts"]
+asks = { sentence = "warning" }
+
 # The permission box, as claude 2.1.226 and 2.1.237 draw it for Bash, Write and
 # Edit. Seen only in manual mode or under an `ask` rule; auto mode approves
 # without asking.
