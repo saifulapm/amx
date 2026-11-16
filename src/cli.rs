@@ -856,10 +856,11 @@ fn a_phase(word: &str) -> Result<Phase, String> {
 }
 
 /// Every state, in the order a turn goes through them.
-const PHASES: [Phase; 8] = [
+const PHASES: [Phase; 9] = [
     Phase::Starting,
     Phase::Working,
     Phase::Waiting,
+    Phase::Limited,
     Phase::Idle,
     Phase::Done,
     Phase::Failed,
@@ -1302,12 +1303,12 @@ mod tests {
         assert!(any);
         assert_eq!(state, Some(Phase::Idle));
 
-        // Every word `ls --json` prints parses, and the error lists all eight.
-        for phase in PHASES {
+        // Every word `ls --json` prints parses, and the error lists them all.
+        for phase in every_phase() {
             assert_eq!(a_phase(phase.as_str()), Ok(phase));
         }
         let refusal = a_phase("sleeping").unwrap_err();
-        for phase in PHASES {
+        for phase in every_phase() {
             assert!(refusal.contains(phase.as_str()), "{refusal}");
         }
     }

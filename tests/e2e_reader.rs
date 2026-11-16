@@ -230,8 +230,14 @@ fn a_turn_a_limit_ended_reads_limited_until_its_reset() {
         "the limit's words are no answer"
     );
 
+    // A run that crosses 15:00 between the hook and `ls` reads plain
+    // `limited`, since the reset has passed.
     let table = stdout(&amx.amx(&["ls"]));
-    assert!(table.contains("limited · resumes 15:00"), "{table}");
+    assert!(
+        table.contains("limited · resumes 15:00")
+            || table.contains("limited ") && !table.contains("resumes"),
+        "{table}"
+    );
 }
 
 #[test]

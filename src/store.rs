@@ -605,17 +605,17 @@ impl State {
         self.reported = false;
     }
 
-    /// The state a new session of the same agent starts from, for `resume`
-    /// and `/clear`.
-    ///
-    /// The previous session's answer and exit code are dropped. The send
-    /// count, the seconds worked and the display name are kept.
     /// Clear what a limit or an error left, as the vendor gets back to work.
     pub fn back_to_work(&mut self) {
         self.resumes_at = 0;
         self.error = None;
     }
 
+    /// The state a new session of the same agent starts from, for `resume`
+    /// and `/clear`.
+    ///
+    /// The previous session's answer and exit code are dropped. The send
+    /// count, the seconds worked and the display name are kept.
     pub fn for_a_new_session(&self) -> State {
         State {
             seq: self.seq,
