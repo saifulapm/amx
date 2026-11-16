@@ -60,7 +60,7 @@ fn glyph(phase: Phase) -> Option<char> {
     match phase {
         Phase::Starting | Phase::Working => Some(PULSE),
         Phase::Waiting | Phase::Unknown => Some(WARNING),
-        Phase::Idle | Phase::Done | Phase::Failed | Phase::Stopped => None,
+        Phase::Idle | Phase::Limited | Phase::Done | Phase::Failed | Phase::Stopped => None,
     }
 }
 

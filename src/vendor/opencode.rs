@@ -246,6 +246,8 @@ pub const HOOKS: Hooks = Hooks {
     question_kinds: &["question"],
     agent_tools: &[],
     shell_tool: "",
+    limit_error: "",
+    resume_notice: "",
 };
 
 #[cfg(test)]

@@ -143,7 +143,7 @@ ever added, never renamed or removed.
 | --- | --- |
 | `id` | The agent's id. |
 | `name` | The name set with `rename`, or null. |
-| `state` | `starting`, `working`, `waiting`, `idle`, `done`, `failed`, `stopped` or `unknown`. |
+| `state` | `starting`, `working`, `waiting`, `limited`, `idle`, `done`, `failed`, `stopped` or `unknown`. |
 | `evidence` | Where the state came from: the record, the hooks, the screen, and so on. |
 | `rule` | The screen rule that matched, when the screen was read. |
 | `summary` | One recorded line about what it is doing, such as `Running Bash`. |
@@ -164,9 +164,11 @@ ever added, never renamed or removed.
 | `pane`, `socket`, `session` | tmux pane, tmux socket, vendor session id. |
 | `queued` | `status --json` only: messages sent and not yet taken, oldest first. |
 
-`state` is one of `starting`, `working`, `waiting`, `idle`, `done`, `failed`,
-`stopped` and `unknown`. `done`, `failed` and `stopped` are endings; the others
-can still change. The `ls` table prints `idle` as `done`; the JSON keeps `idle`.
+`state` is one of `starting`, `working`, `waiting`, `limited`, `idle`, `done`,
+`failed`, `stopped` and `unknown`. `done`, `failed` and `stopped` are endings; the
+others can still change. `limited` is a turn a usage limit ended: claude resumes
+it by itself once the limit lifts. The `ls` table prints `idle` as `done`; the
+JSON keeps `idle`.
 
 ```sh
 amx ls --json | jq -r '.[] | select(.state == "waiting") | .id'

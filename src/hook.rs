@@ -709,6 +709,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
         Moment::Prompted => {
             state.state = Phase::Working;
             state.turn_open = true;
+            state.back_to_work();
             // Anything an interrupt put back in the composer went out with this
             // prompt or was cleared.
             state.composer_holds.clear();
@@ -739,6 +740,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Calling if menu(hooks, payload) => {
             state.state = Phase::Waiting;
+            state.back_to_work();
             // The menu is what it is doing.
             state.summary = None;
             state.background = 0;
@@ -755,6 +757,7 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Calling => {
             state.state = Phase::Working;
+            state.back_to_work();
             // A call carries no list of running tasks, so the calls that start
             // one are counted until a subagent's or the turn's end lists them.
             if hooks
@@ -842,6 +845,24 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             return None;
         }
 
+        // The prompt a limit leaves is not the end of a turn: the vendor will
+        // resume it.
+        Moment::Notified if typed(payload, hooks.idle_notice) && state.state == Phase::Limited => {
+            return None;
+        }
+
+        // The vendor resuming the turn a limit cut off.
+        Moment::Notified
+            if !hooks.resume_notice.is_empty()
+                && typed(payload, hooks.resume_notice)
+                && state.state == Phase::Limited =>
+        {
+            state.state = Phase::Working;
+            state.turn_open = true;
+            state.back_to_work();
+            Screen::Clear
+        }
+
         Moment::Notified if typed(payload, hooks.idle_notice) => {
             // Already idle, the nudge repeats that the turn ended, and the
             // finished turn's line stays: it is asked for once per turn.
@@ -891,6 +912,41 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
                 state.kind = Some(Kind::Question);
             }
             Screen::Waiting
+        }
+
+        // claude's Stop after its StopFailure says the same turn ended; the
+        // failure said how.
+        Moment::Ended if state.state == Phase::Limited || state.error.is_some() => return None,
+
+        // A usage limit waits for its reset, which the vendor's words name;
+        // any other error leaves the agent at its prompt. Neither leaves an
+        // answer: the words are the vendor's, not the model's.
+        Moment::Errored => {
+            state.turn_open = false;
+            state.summary = None;
+            state.asks(None);
+            let class = payload["error"].as_str().unwrap_or("unknown");
+            match !hooks.limit_error.is_empty() && class == hooks.limit_error {
+                true => {
+                    state.state = Phase::Limited;
+                    state.resumes_at = ["last_assistant_message", "error_details"]
+                        .iter()
+                        .filter_map(|field| payload[field].as_str())
+                        .find_map(|said| {
+                            crate::limit::resets_at(
+                                said,
+                                crate::store::now(),
+                                &jiff::tz::TimeZone::system(),
+                            )
+                        })
+                        .unwrap_or(0);
+                }
+                false => {
+                    state.state = Phase::Idle;
+                    state.error = Some(class.to_string());
+                }
+            }
+            Screen::Clear
         }
 
         Moment::Ended => {
@@ -4533,5 +4589,195 @@ mod tests {
         let root = TempDir::new().unwrap();
         assert_eq!(exited(root.path(), "never-made-abc", 1, &quiet()), exit::OK);
         assert_eq!(exited(root.path(), "../elsewhere", 1, &quiet()), exit::OK);
+    }
+
+    /// A StopFailure for `error`, saying `said` as claude's last words.
+    fn failed(error: &str, said: &str) -> Value {
+        json!({
+            "hook_event_name": named(Moment::Errored),
+            "session_id": "S",
+            "error": error,
+            "error_details": "",
+            "last_assistant_message": said
+        })
+    }
+
+    /// A record mid-turn, as a prompt and a call leave it.
+    fn mid_turn() -> State {
+        State {
+            state: Phase::Working,
+            turn_open: true,
+            summary: Some("Running Bash".to_string()),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn hook_a_rate_limit_ends_the_turn_limited_until_its_reset() {
+        let mut state = mid_turn();
+        let notice = apply(
+            &failed("rate_limit", "You have hit your limit · resets 3pm"),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Limited);
+        assert!(!state.turn_open);
+        assert_eq!(state.summary, None);
+        assert_eq!(state.error, None, "a limit is not an error");
+        assert_eq!(state.result, None, "the limit's words are not an answer");
+        assert_eq!(notice, None);
+        let now = crate::store::now();
+        assert!(
+            state.resumes_at > now && state.resumes_at <= now + 86_400,
+            "{} is the next 3pm after {now}",
+            state.resumes_at
+        );
+        let hour = jiff::Timestamp::from_second(state.resumes_at as i64)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::system())
+            .hour();
+        assert_eq!(hour, 15);
+    }
+
+    #[test]
+    fn hook_a_rate_limit_with_no_readable_time_is_plain_limited() {
+        for said in ["You have hit your limit", "", "resets whenever"] {
+            let mut state = mid_turn();
+            apply(&failed("rate_limit", said), &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Limited, "{said:?}");
+            assert_eq!(state.resumes_at, 0, "{said:?}");
+        }
+    }
+
+    #[test]
+    fn hook_every_other_error_leaves_the_agent_idle_with_its_class() {
+        for class in [
+            "authentication_failed",
+            "oauth_org_not_allowed",
+            "account_on_hold",
+            "verification_required",
+            "billing_error",
+            "overloaded",
+            "invalid_request",
+            "model_not_found",
+            "server_error",
+            "unknown",
+            "max_output_tokens",
+            "cloud_credential_error",
+        ] {
+            let mut state = mid_turn();
+            apply(&failed(class, "API Error: 529"), &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Idle, "{class}");
+            assert_eq!(state.error.as_deref(), Some(class));
+            assert!(!state.turn_open, "{class}");
+            assert_eq!(state.result, None, "{class}: the error is not an answer");
+        }
+        let mut state = mid_turn();
+        apply(
+            &json!({ "hook_event_name": named(Moment::Errored) }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.error.as_deref(), Some("unknown"), "no class named");
+    }
+
+    #[test]
+    fn hook_a_stop_after_the_failure_leaves_limited_and_the_error_alone() {
+        let stop = json!({
+            "hook_event_name": named(Moment::Ended),
+            "last_assistant_message": "You have hit your limit · resets 3pm"
+        });
+        let mut state = mid_turn();
+        apply(&failed("rate_limit", "resets 3pm"), &mut state, &mut meta());
+        let limited = state.clone();
+        apply(&stop, &mut state, &mut meta());
+        assert_eq!(state, limited);
+
+        let mut state = mid_turn();
+        apply(&failed("overloaded", "API Error"), &mut state, &mut meta());
+        apply(&stop, &mut state, &mut meta());
+        assert_eq!(state.state, Phase::Idle);
+        assert_eq!(state.error.as_deref(), Some("overloaded"));
+        assert_eq!(state.result, None);
+    }
+
+    #[test]
+    fn hook_an_idle_nudge_leaves_a_limited_agent_limited() {
+        let mut state = mid_turn();
+        apply(&failed("rate_limit", "resets 3pm"), &mut state, &mut meta());
+        let limited = state.clone();
+        apply(
+            &json!({
+                "hook_event_name": named(Moment::Notified),
+                "message": "Claude is waiting for your input",
+                "notification_type": claude::HOOKS.idle_notice
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state, limited);
+    }
+
+    #[test]
+    fn hook_a_resume_a_prompt_or_a_call_puts_a_limited_agent_back_to_work() {
+        for next in [
+            json!({
+                "hook_event_name": named(Moment::Notified),
+                "message": "Resuming",
+                "notification_type": claude::HOOKS.resume_notice
+            }),
+            json!({ "hook_event_name": named(Moment::Prompted), "prompt": "continue" }),
+            json!({ "hook_event_name": named(Moment::Calling), "tool_name": "Bash" }),
+        ] {
+            let mut state = mid_turn();
+            apply(&failed("rate_limit", "resets 3pm"), &mut state, &mut meta());
+            apply(&next, &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Working, "{next}");
+            assert_eq!(state.resumes_at, 0, "{next}");
+        }
+    }
+
+    #[test]
+    fn hook_the_next_prompt_or_call_clears_the_error() {
+        for next in [
+            json!({ "hook_event_name": named(Moment::Prompted), "prompt": "try again" }),
+            json!({ "hook_event_name": named(Moment::Calling), "tool_name": "Bash" }),
+        ] {
+            let mut state = mid_turn();
+            apply(&failed("overloaded", "API Error"), &mut state, &mut meta());
+            apply(&next, &mut state, &mut meta());
+            assert_eq!(state.state, Phase::Working, "{next}");
+            assert_eq!(state.error, None, "{next}");
+        }
+    }
+
+    #[test]
+    fn hook_a_resume_notice_moves_nothing_on_an_agent_that_is_not_limited() {
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("Fixed it.".to_string()),
+            ..State::default()
+        };
+        let before = state.clone();
+        apply(
+            &json!({
+                "hook_event_name": named(Moment::Notified),
+                "notification_type": claude::HOOKS.resume_notice
+            }),
+            &mut state,
+            &mut meta(),
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn hook_a_subagents_failure_changes_nothing() {
+        let mut state = mid_turn();
+        let before = state.clone();
+        let mut payload = failed("rate_limit", "resets 3pm");
+        payload["agent_id"] = json!("sub-1");
+        apply(&payload, &mut state, &mut meta());
+        assert_eq!(state, before);
     }
 }

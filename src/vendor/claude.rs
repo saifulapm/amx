@@ -198,6 +198,8 @@ pub const HOOKS: Hooks = Hooks {
         Wiring::with_matcher(Moment::Refused, "PermissionDenied"),
         Wiring::new(Moment::Notified, "Notification"),
         Wiring::new(Moment::Ended, "Stop"),
+        // A turn ended by an API error or a usage limit (2.1.325).
+        Wiring::new(Moment::Errored, "StopFailure"),
         // The only word from a subagent whose approved call was its last.
         Wiring::new(Moment::Returned, "SubagentStop"),
     ],
@@ -227,6 +229,10 @@ pub const HOOKS: Hooks = Hooks {
     // releases named the tool Task.
     agent_tools: &["Agent", "Task"],
     shell_tool: "Bash",
+    // StopFailure's error classes and the notice autoContinueAtUsageLimit
+    // sends (2.1.325 binary, read 2026-11-16).
+    limit_error: "rate_limit",
+    resume_notice: "quota_auto_resume_fired",
 };
 
 #[cfg(test)]
@@ -377,6 +383,7 @@ mod tests {
                 (Moment::Refused, "PermissionDenied", true),
                 (Moment::Notified, "Notification", false),
                 (Moment::Ended, "Stop", false),
+                (Moment::Errored, "StopFailure", false),
                 (Moment::Returned, "SubagentStop", false),
             ]
         );

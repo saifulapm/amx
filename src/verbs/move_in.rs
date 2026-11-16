@@ -294,7 +294,7 @@ fn settles(root: &Path, id: &str) -> bool {
             .and_then(|agent| agent.state())
             .map(|state| state.state);
         match phase {
-            Ok(Phase::Idle | Phase::Working | Phase::Waiting) => return true,
+            Ok(Phase::Idle | Phase::Working | Phase::Waiting | Phase::Limited) => return true,
             Ok(phase) if phase.is_terminal() => return false,
             _ => std::thread::sleep(Duration::from_millis(50)),
         }

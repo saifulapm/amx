@@ -72,6 +72,9 @@ pub enum Phase {
     Working,
     /// Stopped on a question.
     Waiting,
+    /// The turn ended on a usage or rate limit. The vendor resumes it by
+    /// itself once the limit lifts; see [`State::resumes_at`].
+    Limited,
     /// The turn ended; the agent is at its prompt.
     Idle,
     /// The command exited successfully.
@@ -95,6 +98,7 @@ impl Phase {
             Phase::Starting => "starting",
             Phase::Working => "working",
             Phase::Waiting => "waiting",
+            Phase::Limited => "limited",
             Phase::Idle => "idle",
             Phase::Done => "done",
             Phase::Failed => "failed",
@@ -442,6 +446,13 @@ pub struct State {
     /// claude draws a subagent's box on the agent's screen, and only that
     /// subagent's next event says the box closed. Cleared with the question.
     pub asked_by: Option<String>,
+    /// Epoch seconds when the usage limit that ended the turn lifts, 0 when
+    /// unknown or not [`Phase::Limited`]. Read from the vendor's own words;
+    /// see [`crate::limit::resets_at`].
+    pub resumes_at: u64,
+    /// The class of the API error that ended the turn, such as `overloaded`.
+    /// The agent stays idle; the vendor's next prompt or call clears it.
+    pub error: Option<String>,
 }
 
 /// A screen a reader saw, and when it first appeared.
@@ -599,6 +610,12 @@ impl State {
     ///
     /// The previous session's answer and exit code are dropped. The send
     /// count, the seconds worked and the display name are kept.
+    /// Clear what a limit or an error left, as the vendor gets back to work.
+    pub fn back_to_work(&mut self) {
+        self.resumes_at = 0;
+        self.error = None;
+    }
+
     pub fn for_a_new_session(&self) -> State {
         State {
             seq: self.seq,
@@ -651,6 +668,14 @@ struct Wire {
     composer_holds: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     asked_by: Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    resumes_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A known phase, or [`Phase::Unknown`] for one this build does not know.
@@ -775,6 +800,8 @@ impl From<State> for Wire {
             turn_open,
             composer_holds,
             asked_by,
+            resumes_at,
+            error,
         } = state;
 
         Wire {
@@ -827,6 +854,8 @@ impl From<State> for Wire {
             turn_open,
             composer_holds,
             asked_by,
+            resumes_at,
+            error,
         }
     }
 }
@@ -876,6 +905,8 @@ impl From<Wire> for State {
             turn_open: wire.turn_open,
             composer_holds: wire.composer_holds,
             asked_by: wire.asked_by,
+            resumes_at: wire.resumes_at,
+            error: wire.error,
         }
     }
 }

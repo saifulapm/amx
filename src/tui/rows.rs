@@ -79,7 +79,8 @@ impl Group {
         }
         match phase {
             Phase::Waiting => Group::NeedsInput,
-            Phase::Starting | Phase::Working => Group::Working,
+            // A limit pauses the turn; the vendor resumes it.
+            Phase::Starting | Phase::Working | Phase::Limited => Group::Working,
             _ if reviewable => Group::Review,
             _ => Group::Completed,
         }
@@ -1144,7 +1145,7 @@ impl List {
             .into_iter()
             .filter_map(|m| match self.views[m].phase() {
                 Phase::Waiting => Some(Group::NeedsInput),
-                Phase::Starting | Phase::Working => Some(Group::Working),
+                Phase::Starting | Phase::Working | Phase::Limited => Some(Group::Working),
                 _ => None,
             })
             .min();
@@ -1492,7 +1493,7 @@ impl List {
             .into_iter()
             .filter_map(|at| match self.views[at].phase() {
                 Phase::Waiting => Some(Group::NeedsInput),
-                Phase::Starting | Phase::Working => Some(Group::Working),
+                Phase::Starting | Phase::Working | Phase::Limited => Some(Group::Working),
                 _ => None,
             })
             .min()

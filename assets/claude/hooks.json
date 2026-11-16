@@ -38,6 +38,11 @@
         "hooks": [{ "type": "command", "command": "amx _hook" }]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [{ "type": "command", "command": "amx _hook" }]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [{ "type": "command", "command": "amx _hook" }]

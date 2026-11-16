@@ -104,6 +104,9 @@ pub enum Moment {
     Notified,
     /// The turn ended.
     Ended,
+    /// The turn ended on an API error or a usage limit, which the payload
+    /// names. claude sends this instead of [`Moment::Ended`].
+    Errored,
     /// A subagent the agent started finished.
     Returned,
 }
@@ -111,7 +114,7 @@ pub enum Moment {
 #[cfg(test)]
 impl Moment {
     /// Every moment amx listens for.
-    pub const ALL: [Moment; 9] = [
+    pub const ALL: [Moment; 10] = [
         Moment::Started,
         Moment::Prompted,
         Moment::Taken,
@@ -120,6 +123,7 @@ impl Moment {
         Moment::Refused,
         Moment::Notified,
         Moment::Ended,
+        Moment::Errored,
         Moment::Returned,
     ];
 }
@@ -197,6 +201,12 @@ pub struct Hooks {
     /// The tool that starts a background shell when its input sets
     /// `run_in_background`. Empty means none does.
     pub shell_tool: &'static str,
+    /// The [`Moment::Errored`] error class that means a usage or rate limit.
+    /// Empty means none does.
+    pub limit_error: &'static str,
+    /// The notification type sent when the vendor resumes a limited turn by
+    /// itself. Empty means none.
+    pub resume_notice: &'static str,
 }
 
 /// How amx's hook command is installed for a vendor. Paths are relative to

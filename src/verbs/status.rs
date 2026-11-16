@@ -107,7 +107,7 @@ pub fn run(root: &Path, id: &str, json: bool, now: u64, out: &mut impl Write) ->
     // turn, an idle one after a turn cut short by hand. An ended agent never
     // takes them.
     let queued = match view.phase() {
-        Phase::Working | Phase::Idle => {
+        Phase::Working | Phase::Idle | Phase::Limited => {
             send::still_queued(&view.meta, &Agent::open(root, id)?.events()?)
         }
         _ => Vec::new(),

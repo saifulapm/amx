@@ -2031,6 +2031,7 @@ mod tests {
             Phase::Starting,
             Phase::Working,
             Phase::Waiting,
+            Phase::Limited,
             Phase::Idle,
             Phase::Done,
             Phase::Failed,
@@ -2042,6 +2043,7 @@ mod tests {
                 Phase::Starting
                 | Phase::Working
                 | Phase::Waiting
+                | Phase::Limited
                 | Phase::Idle
                 | Phase::Done
                 | Phase::Failed

@@ -570,9 +570,12 @@ pub(super) const COMMAND_GLYPH: &str = "$";
 /// showed.
 pub(super) fn resting(phase: Phase) -> &'static str {
     match phase {
-        Phase::Waiting | Phase::Starting | Phase::Working | Phase::Idle | Phase::Unknown => {
-            set()[LIVE]
-        }
+        Phase::Waiting
+        | Phase::Starting
+        | Phase::Working
+        | Phase::Idle
+        | Phase::Limited
+        | Phase::Unknown => set()[LIVE],
         Phase::Done | Phase::Failed | Phase::Stopped => ENDED,
     }
 }

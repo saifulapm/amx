@@ -123,7 +123,10 @@ fn running_now(now: &State) -> Cut {
     match now.state {
         _ if now.parked_at > 0 => Cut::Nothing,
         Phase::Waiting => Cut::Question,
-        phase if phase == Phase::Idle || phase.is_terminal() => Cut::Nothing,
+        // A limited turn has already stopped; the vendor resumes it.
+        phase if matches!(phase, Phase::Idle | Phase::Limited) || phase.is_terminal() => {
+            Cut::Nothing
+        }
         _ => Cut::Turn,
     }
 }

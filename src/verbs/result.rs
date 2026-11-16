@@ -239,7 +239,7 @@ pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
         (Phase::Idle, Ended::NotYet) => Settled::NotYet,
         (Phase::Done, Ended::NotYet) => Settled::Unanswered,
         (Phase::Failed | Phase::Stopped, _) => Settled::Nothing,
-        (Phase::Starting | Phase::Working | Phase::Unknown, _) => Settled::NotYet,
+        (Phase::Starting | Phase::Working | Phase::Limited | Phase::Unknown, _) => Settled::NotYet,
     }
 }
 

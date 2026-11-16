@@ -121,6 +121,8 @@ pub const HOOKS: Hooks = Hooks {
     question_kinds: &["pick"],
     agent_tools: &[],
     shell_tool: "",
+    limit_error: "",
+    resume_notice: "",
 };
 
 /// Screen rules for the fixture, differing from claude's in footer, rule
