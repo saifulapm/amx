@@ -6,8 +6,8 @@
 //! into a spawn that fails.
 
 use super::{
-    Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Models, Moment, Place, Resume,
-    SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
+    Attach, Capability, Catalog, DEFAULT, DialSpec, ForkSpec, Hooks, Images, Models, Moment, Place,
+    Resume, SessionSpec, Transcript, Unasked, Vendor, Wire, Wiring,
 };
 
 /// codex's entry in the table.
@@ -170,7 +170,14 @@ pub const VENDOR: Vendor = Vendor {
             ..Unasked::valued("--config")
         },
     ],
-    images: None,
+    // `-i, --image <FILE>...` is variadic and would eat the prompt, so each
+    // image is its own `--image=` word. In the composer a pasted path to an
+    // image becomes an `[Image #N]` chip; a path with a space is left as
+    // text unless it is quoted.
+    images: Some(Images {
+        start: Attach::Flag("--image"),
+        send: Attach::Pasted { chip: "[Image #" },
+    }),
 };
 
 /// codex's hook events and the words its payloads use.

@@ -83,6 +83,10 @@ fn opencode(amx: &Harness, scenario: &Path, args: &[&str]) -> Output {
     )
 }
 
+fn codex(amx: &Harness, scenario: &Path, args: &[&str]) -> Output {
+    as_stand_in(amx, "mock_codex", "MOCK_CODEX_SCENARIO", scenario, args)
+}
+
 fn scenario_of(stand_in: &str, name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -315,6 +319,38 @@ fn opencode_is_given_an_image_line_inside_its_prompt_word() {
     amx.until("opencode to say its prompt", || {
         said_in(&amx, &pane).contains(&want).then_some(())
     });
+}
+
+#[test]
+fn codex_is_given_each_image_as_an_image_flag_before_its_options_end() {
+    let amx = Harness::new();
+    an_image(&amx, "a.png", PNG);
+    let id = id_of(&codex(
+        &amx,
+        &scenario_of("mock_codex", "takes-a-turn"),
+        &[
+            "new",
+            "--no-worktree",
+            "--agent",
+            "codex",
+            "--image",
+            "a.png",
+            "x",
+        ],
+    ));
+
+    let pane = amx.pane_of(&id);
+    let argv = amx.until("codex to say how it was called", || {
+        said_in(&amx, &pane)
+            .lines()
+            .find(|line| line.starts_with("argv:"))
+            .map(str::to_string)
+    });
+    let want = format!(
+        "argv: --no-daemon --image={}/{id}/images/1.png -- x",
+        amx.state_root().display()
+    );
+    assert_eq!(argv, want);
 }
 
 #[test]

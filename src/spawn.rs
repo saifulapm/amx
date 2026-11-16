@@ -211,6 +211,7 @@ pub fn vendor_command(
         &dials.effort,
         &args,
     ));
+    command.extend(image_flags(registry::entry(agent), images));
     command.extend(
         registry::entry(agent)
             .and_then(|vendor| vendor.ends_options)
@@ -218,6 +219,19 @@ pub fn vendor_command(
     );
     command.extend(task_words(registry::entry(agent), task, images));
     command
+}
+
+/// The option words that hand `images` over at start, for a vendor that
+/// takes them as a flag ([`Attach::Flag`]). They go before the end-of-options
+/// word, after which the vendor reads every word as the prompt.
+pub fn image_flags(vendor: Option<&Vendor>, images: &[PathBuf]) -> Vec<String> {
+    match vendor
+        .and_then(|vendor| vendor.images)
+        .map(|takes| takes.start)
+    {
+        Some(Attach::Flag(flag)) => crate::images::flagged(flag, images),
+        _ => Vec::new(),
+    }
 }
 
 /// The argv words that end a start command: the task as [`as_words`] writes
@@ -232,7 +246,7 @@ pub fn task_words(vendor: Option<&Vendor>, task: &str, images: &[PathBuf]) -> Ve
         .filter(|_| !images.is_empty())
         .map(|takes| takes.start);
     match start {
-        None => vec![as_words(vendor, task)],
+        None | Some(Attach::Flag(_) | Attach::Pasted { .. }) => vec![as_words(vendor, task)],
         Some(Attach::Argument) => crate::images::arguments(images)
             .into_iter()
             .chain((!task.is_empty()).then(|| as_words(vendor, task)))

@@ -503,6 +503,15 @@ pub enum Attach {
     /// model reads the file itself (pi in a send, opencode at start and in a
     /// send). At start the lines ride inside the prompt flag's word.
     Lines,
+    /// One `<flag>=<path>` argv word per image before the end-of-options
+    /// word (codex's `--image`, at start only). The `=` form, since the
+    /// spaced flag takes values until the next option and would take the
+    /// message as an image too.
+    Flag(&'static str),
+    /// Each path pasted alone, which the vendor turns into a chip holding
+    /// the image, and the message pasted only once the pane shows one more
+    /// chip than it did before (codex's `[Image #N]`, in a send).
+    Pasted { chip: &'static str },
 }
 
 /// A flag that lowers what a vendor asks before acting, or settles its

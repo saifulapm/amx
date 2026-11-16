@@ -107,8 +107,9 @@ pub fn filed(agent_dir: &Path, images: &[PathBuf]) -> Result<Vec<PathBuf>> {
 
 /// `message` with `images` attached the way `attach` says.
 ///
-/// [`Attach::Argument`] puts the images in argv words of their own
-/// ([`arguments`]), so the message is answered as it is.
+/// [`Attach::Argument`] and [`Attach::Flag`] put the images in argv words of
+/// their own ([`arguments`], [`flagged`]), and [`Attach::Pasted`] in pastes
+/// of their own, so the message is answered as it is.
 pub fn attached(attach: Attach, images: &[PathBuf], message: &str) -> String {
     let with = |each: fn(&Path) -> String, between: &str| {
         images
@@ -121,8 +122,16 @@ pub fn attached(attach: Attach, images: &[PathBuf], message: &str) -> String {
     match attach {
         Attach::Mentioned => with(mention, " "),
         Attach::Lines => with(|image| format!("image: {}", image.display()), "\n"),
-        Attach::Argument => message.to_string(),
+        Attach::Argument | Attach::Flag(_) | Attach::Pasted { .. } => message.to_string(),
     }
+}
+
+/// One `<flag>=<path>` argv word per image.
+pub fn flagged(flag: &str, images: &[PathBuf]) -> Vec<String> {
+    images
+        .iter()
+        .map(|image| format!("{flag}={}", image.display()))
+        .collect()
 }
 
 /// One `@<path>` argv word per image, unquoted: the word is the path whole.

@@ -321,6 +321,7 @@ fn build_copy(
         push_flag(&mut command, start, spec.joined(), copy);
     }
     if prompt.is_some() || !images.is_empty() {
+        command.extend(spawn::image_flags(vendor, images));
         command.extend(ends_options.map(str::to_string));
         command.extend(spawn::task_words(
             vendor,
@@ -743,6 +744,31 @@ mod tests {
         assert_eq!(
             build_copy(&started, "abc-123", "port-it-b2c", None, branching, &[]),
             ["second", "fork", "abc-123", "-m", "fork"]
+        );
+    }
+
+    #[test]
+    fn a_codex_copy_takes_its_image_as_a_flag_before_its_options_end() {
+        let codex = crate::registry::entry("codex");
+        let started = handoff(&["codex", "--no-daemon", "--", "go"], "go");
+        assert_eq!(
+            build_copy(
+                &started,
+                "abc-123",
+                "port-it-b2c",
+                Some("next"),
+                codex,
+                &[PathBuf::from("/state/agents/port-it-b2c/images/1.png")]
+            ),
+            [
+                "codex",
+                "fork",
+                "abc-123",
+                "--no-daemon",
+                "--image=/state/agents/port-it-b2c/images/1.png",
+                "--",
+                "next"
+            ]
         );
     }
 

@@ -94,6 +94,7 @@ for arg do
 	case $arg in
 	--) ended=yes ;;
 	--no-daemon) daemonless=$((daemonless + 1)) ;;
+	--image=*) ;;
 	-c | --config | -s | --sandbox | -a | --ask-for-approval) value_of=other ;;
 	-m | --model) value_of=model ;;
 	--last | --all | --include-non-interactive)
