@@ -59,10 +59,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 61] = [
     ("home end", "the row's ends · ctrl+a ctrl+e the line's"),
     ("backspace", "a character · delete ahead · ctrl+w a word"),
     ("ctrl+k", "delete to the row's end · ctrl+u to its start"),
-    (
-        "alt+d ctrl+y",
-        "delete the next word · put back the last cut",
-    ),
+    ("ctrl+y", "put back the last cut · alt+d deletes a word"),
     ("ctrl+g", "edit the line in $EDITOR"),
     ("ctrl+v", "paste an image or text from the clipboard"),
     (
@@ -637,6 +634,16 @@ mod tests {
         let drawn = painted(&screen, SHORT_SCREEN).join("\n");
         assert!(drawn.contains("no keys match"), "{drawn}");
         assert!(drawn.contains("find zzzz▌"), "{drawn}");
+    }
+
+    #[test]
+    fn every_key_leaves_a_gap_before_what_it_does() {
+        for (key, _) in HELP {
+            assert!(
+                crate::tui::paint::text::width_of(key) < KEY,
+                "`{key}` fills the key column and runs into its description"
+            );
+        }
     }
 
     #[test]
