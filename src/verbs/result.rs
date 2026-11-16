@@ -73,7 +73,7 @@ pub fn run(
         // No spinner line: a waiter branches on the phase alone.
         let view = derive::view_for(root, id, store::now(), derive::Wants::Phase)?;
         let phase = view.phase();
-        match reading(&view.state, turns.ended(phase)) {
+        match reading(phase, &view.state, turns.ended(phase)) {
             Settled::Answer => return answer(&view, to_terminal, out),
             Settled::Limited | Settled::Error => return stopped(&view, out),
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
@@ -151,7 +151,7 @@ pub fn run_family(
     for id in &children {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        let settled = reading(&view.state, Turns::of(root, id)?.ended(phase));
+        let settled = reading(phase, &view.state, Turns::of(root, id)?.ended(phase));
         // After an interrupt or an unanswered message the recorded answer is
         // the previous turn's, and a limit or an error left none.
         let answer = match settled {
@@ -176,7 +176,7 @@ pub fn run_family(
                 super::print_question(question, &view.state.options, to_terminal, out)?;
             } else if let Some(answer) = &answer {
                 send::line(&send::rendered(answer, to_terminal), out)?;
-            } else if let Some(words) = stop_words(&view.state, store::now(), &local) {
+            } else if let Some(words) = stop_words(phase, &view.state, store::now(), &local) {
                 send::line(&words, out)?;
             }
         }
@@ -256,36 +256,38 @@ pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
     }
 }
 
-/// [`settled`] for a whole record: an error turn left no answer, so an `Answer`
-/// on a record with an error set is an `Error` whatever result text it holds.
-pub(crate) fn reading(state: &State, ended: Ended) -> Settled {
-    match settled(state.state, ended) {
-        Settled::Answer if state.error.is_some() => Settled::Error,
+/// [`settled`] for a reading in `phase` of the record `state`: an error turn
+/// left no answer, so an `Answer` read idle off a record with an error set is
+/// an `Error`, whatever result text it holds.
+///
+/// The phase is the reading's, never the record's: a pane that went, or a
+/// question only the screen shows, must settle as the reading says.
+pub(crate) fn reading(phase: Phase, state: &State, ended: Ended) -> Settled {
+    match settled(phase, ended) {
+        Settled::Answer if phase == Phase::Idle && state.error.is_some() => Settled::Error,
         settled => settled,
     }
 }
 
-/// What `result` prints for a limited or errored record, `None` for any other.
-fn stop_words(state: &State, now: u64, local: &jiff::tz::TimeZone) -> Option<String> {
-    if state.state == Phase::Limited {
-        return Some(
+/// What `result` prints for a reading in `phase` that is limited or that an
+/// error left idle, `None` for any other.
+fn stop_words(phase: Phase, state: &State, now: u64, local: &jiff::tz::TimeZone) -> Option<String> {
+    match phase {
+        Phase::Limited => Some(
             match crate::limit::resumes_words(state.resumes_at, now, local) {
                 Some(when) => format!("limited until {when}"),
                 None => "limited".to_string(),
             },
-        );
+        ),
+        Phase::Idle => state.error.as_ref().map(|class| format!("error: {class}")),
+        _ => None,
     }
-    let class = state
-        .error
-        .as_ref()
-        .filter(|_| state.state == Phase::Idle)?;
-    Some(format!("error: {class}"))
 }
 
 /// Print [`stop_words`] and fail.
 fn stopped(view: &View, out: &mut impl Write) -> Result<i32> {
     let local = jiff::tz::TimeZone::system();
-    if let Some(words) = stop_words(&view.state, store::now(), &local) {
+    if let Some(words) = stop_words(view.phase(), &view.state, store::now(), &local) {
         send::line(&words, out)?;
     }
     Ok(exit::FAILURE)
@@ -967,6 +969,44 @@ mod tests {
     const TURN_END: &str = "Stop";
 
     #[test]
+    fn a_reading_settles_as_the_screen_says_when_the_record_disagrees() {
+        // A pane gone mid-turn, a question only the screen shows, and a
+        // limit claude resumed before its hook landed.
+        let working = State {
+            state: Phase::Working,
+            ..State::default()
+        };
+        assert_eq!(
+            reading(Phase::Stopped, &working, Ended::NotYet),
+            Settled::Nothing
+        );
+        assert_eq!(
+            reading(Phase::Waiting, &working, Ended::NotYet),
+            Settled::Question
+        );
+        let errored = State {
+            state: Phase::Idle,
+            error: Some("overloaded".to_string()),
+            ..State::default()
+        };
+        assert_eq!(
+            reading(Phase::Stopped, &errored, Ended::Turn),
+            Settled::Nothing
+        );
+        let limited = State {
+            state: Phase::Limited,
+            resumes_at: 5_000,
+            ..State::default()
+        };
+        assert_eq!(
+            reading(Phase::Working, &limited, Ended::NotYet),
+            Settled::NotYet
+        );
+        assert_eq!(stop_words(Phase::Working, &limited, 1, &zone()), None);
+        assert_eq!(stop_words(Phase::Working, &errored, 1, &zone()), None);
+    }
+
+    #[test]
     fn a_limit_is_a_settled_reading_whatever_the_log_says() {
         assert_eq!(settled(Phase::Limited, Ended::NotYet), Settled::Limited);
         assert_eq!(settled(Phase::Limited, Ended::Turn), Settled::Limited);
@@ -979,11 +1019,11 @@ mod tests {
             result: Some("a stale answer".to_string()),
             ..State::default()
         };
-        assert_eq!(reading(&state, Ended::Turn), Settled::Answer);
+        assert_eq!(reading(state.state, &state, Ended::Turn), Settled::Answer);
         state.error = Some("overloaded".to_string());
-        assert_eq!(reading(&state, Ended::Turn), Settled::Error);
+        assert_eq!(reading(state.state, &state, Ended::Turn), Settled::Error);
         // A message still queued behind the error keeps the wait going.
-        assert_eq!(reading(&state, Ended::NotYet), Settled::NotYet);
+        assert_eq!(reading(state.state, &state, Ended::NotYet), Settled::NotYet);
     }
 
     #[test]
@@ -1024,22 +1064,22 @@ mod tests {
             ..State::default()
         };
         assert_eq!(
-            stop_words(&state, now, &zone()),
+            stop_words(state.state, &state, now, &zone()),
             Some("limited until 15:00".to_string())
         );
         state.resumes_at = dhaka(20, 9);
         assert_eq!(
-            stop_words(&state, now, &zone()),
+            stop_words(state.state, &state, now, &zone()),
             Some("limited until Nov 20 09:00".to_string())
         );
         state.resumes_at = 0;
         assert_eq!(
-            stop_words(&state, now, &zone()),
+            stop_words(state.state, &state, now, &zone()),
             Some("limited".to_string())
         );
         state.resumes_at = dhaka(16, 8);
         assert_eq!(
-            stop_words(&state, now, &zone()),
+            stop_words(state.state, &state, now, &zone()),
             Some("limited".to_string())
         );
     }
@@ -1051,10 +1091,10 @@ mod tests {
             result: Some("a stale answer".to_string()),
             ..State::default()
         };
-        assert_eq!(stop_words(&state, 1, &zone()), None);
+        assert_eq!(stop_words(state.state, &state, 1, &zone()), None);
         state.error = Some("overloaded".to_string());
         assert_eq!(
-            stop_words(&state, 1, &zone()),
+            stop_words(state.state, &state, 1, &zone()),
             Some("error: overloaded".to_string())
         );
     }
