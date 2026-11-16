@@ -3098,12 +3098,16 @@ impl Screen {
         let page = self.scroll.page.get().max(1);
         let away = self.scroll.away.get();
         let first = match &self.card {
-            Some(card) if self.look == Look::Screen && self.heard.more() => match card.forward() {
-                true => away == 0,
-                // A live conversation counts from its last row, and its body
-                // has as many rows as its anchor.
-                false => away + page >= card.body.anchor(),
-            },
+            // Only the card on screen says whether `heard` is its transcript:
+            // a command or question card leaves the last one read there.
+            Some(card) if self.look == Look::Screen && card.body.earlier_turns() => {
+                match card.forward() {
+                    true => away == 0,
+                    // A live conversation counts from its last row, and its body
+                    // has as many rows as its anchor.
+                    false => away + page >= card.body.anchor(),
+                }
+            }
             _ => false,
         };
         // The vendor as `conversation_of` reads it.
@@ -3685,8 +3689,8 @@ impl Heard {
         true
     }
 
-    /// Everything said in the transcript at `path`, or nothing where it
-    /// cannot be read.
+    /// What was said in the transcript at `path`, from its last window on for
+    /// claude and codex, or nothing where it cannot be read.
     fn of(&mut self, path: &Path, format: Transcript) -> &[crate::conversation::Said] {
         use std::io::{Read, Seek, SeekFrom};
         use std::os::unix::fs::MetadataExt;

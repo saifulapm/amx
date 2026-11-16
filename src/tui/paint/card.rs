@@ -272,6 +272,11 @@ impl Body {
         Body { earlier, ..self }
     }
 
+    /// Whether earlier turns come before the body.
+    pub(in crate::tui) fn earlier_turns(&self) -> bool {
+        self.earlier
+    }
+
     /// The row a forward card opens on.
     pub(in crate::tui) fn anchor(&self) -> usize {
         self.anchor
