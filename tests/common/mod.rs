@@ -96,6 +96,7 @@ impl Harness {
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             // Keep the test off the developer's own amx server.
             .env("AMX_TMUX_SOCKET", &self.socket)
+            .env("PATH", quiet_path())
             // Tests that want a tmux client set these themselves. `AMX_ID`
             // from an outer agent would make every spawn its child.
             .env_remove("TMUX")
@@ -205,7 +206,8 @@ impl Harness {
             .args(["-L", &self.socket, "-f", "/dev/null"])
             .args(args)
             .env("AMX_STATE_DIR", self.state.path())
-            .env("HOME", self.home.path());
+            .env("HOME", self.home.path())
+            .env("PATH", quiet_path());
         // Panes inherit their environment from the server this may start.
         leaks_nothing(&mut command);
         command.output().expect("running tmux")
@@ -499,6 +501,7 @@ impl Harness {
             .env("AMX_TMUX_SOCKET", &self.socket)
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             .env("AMX_BIN", AMX)
+            .env("PATH", quiet_path())
             .env("MOCK_CLAUDE_SCENARIO", self.scenario(scenario))
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
@@ -1277,12 +1280,41 @@ pub fn a_logging_tmux(amx: &Harness) -> (PathBuf, PathBuf) {
     )
 }
 
-/// PATH with `bin` first.
+/// PATH with `bin` first, then [`quiet_bin`].
 pub fn path_with(bin: &Path) -> String {
+    format!("{}:{}", bin.display(), quiet_path())
+}
+
+/// PATH with [`quiet_bin`] first.
+pub fn quiet_path() -> String {
     match std::env::var("PATH") {
-        Ok(rest) => format!("{}:{rest}", bin.display()),
-        Err(_) => bin.display().to_string(),
+        Ok(rest) => format!("{}:{rest}", quiet_bin().display()),
+        Err(_) => quiet_bin().display().to_string(),
     }
+}
+
+/// A folder holding a `notify-send` that prints nothing and exits at once.
+///
+/// It goes first on PATH for every command and pane the harness starts, so
+/// no test raises a notice on the desktop of whoever runs the suite. amx's
+/// notifier waits for a click on a notice with buttons, so a real one would
+/// also leave processes behind. A test that wants its own fake puts it in
+/// front with [`path_with`].
+pub fn quiet_bin() -> &'static Path {
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let bin = Path::new(env!("CARGO_TARGET_TMPDIR")).join("quiet-bin");
+        std::fs::create_dir_all(&bin).expect("the quiet bin folder");
+        // Written aside and moved in, since test binaries run at once and a
+        // half-written script would fail to run.
+        let aside = bin.join(format!("notify-send.{}", std::process::id()));
+        std::fs::write(&aside, "#!/bin/sh\nexit 0\n").expect("the quiet notify-send");
+        let mut mode = std::fs::metadata(&aside).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+        std::fs::set_permissions(&aside, mode).unwrap();
+        std::fs::rename(&aside, bin.join("notify-send")).expect("the quiet notify-send");
+        bin
+    })
 }
 
 /// The calls a [`a_logging`] stand-in logged, one per line; none when it was
