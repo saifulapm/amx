@@ -141,6 +141,8 @@ pub const VENDOR: Vendor = Vendor {
     // A message word starting with `-` is read as a flag until `--`
     // (dist/cli/args.js:23, 0.87.1).
     ends_options: Some("--"),
+    names: &[],
+    remote_flag: None,
     // A word starting with `@` is a file to attach on either side of `--`
     // (args.js:25 and :224); a leading space makes it plain text:
     // `pi -p -- ' @README say hello'` says hello (0.87.1).

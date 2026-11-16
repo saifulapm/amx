@@ -464,6 +464,13 @@ pub struct Vendor {
     /// written before a task, resume message or fork prompt so that one
     /// starting with `-` or `@` is not read as a flag or attachment.
     pub ends_options: Option<&'static str>,
+    /// The flags that name a session, amx's spelling first: amx writes it
+    /// with the agent's id so the vendor's own pickers show that id, and
+    /// stands down when the person wrote any of them.
+    pub names: &'static [&'static str],
+    /// The flag that opens a session to remote control under a name, written
+    /// with the agent's id when the harness table turns `remote_control` on.
+    pub remote_flag: Option<&'static str>,
     /// Whether a message word starting with `@` is still read as a file to
     /// attach after [`ends_options`](Self::ends_options). amx prefixes such a
     /// word with a space.

@@ -124,6 +124,10 @@ pub struct HarnessConfig {
     /// Values are literal except a leading `~`, which is expanded because no
     /// shell runs between this file and the pane.
     pub env: BTreeMap<String, String>,
+    /// Whether every agent this harness runs is opened to remote control
+    /// under its id, for a vendor that has such a flag (claude's
+    /// `--remote-control`). Only the person's own config can turn it on.
+    pub remote_control: bool,
 }
 
 /// The settings amx runs with, merged from the config files.
@@ -594,6 +598,14 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
         *agent = kept.join(" ");
     }
     for (harness, value) in keys.iter_mut() {
+        if let Some(table) = value.as_table_mut()
+            && table.remove("remote_control").is_some()
+        {
+            said.push(format!(
+                "{}: ignoring `{harness}.remote_control`: only your own config can set it",
+                file.display()
+            ));
+        }
         if let Some(args) = value
             .as_table_mut()
             .and_then(|table| table.get_mut("args"))
@@ -1939,6 +1951,22 @@ mod tests {
               only your own config can set it"
             ]
         );
+    }
+
+    #[test]
+    fn a_project_file_never_opens_its_agents_to_remote_control() {
+        let (keys, warnings) = fenced("[claude]\nremote_control = true\nargs = [\"--verbose\"]\n");
+        assert!(keys["claude"].get("remote_control").is_none(), "{keys:?}");
+        assert_eq!(args_of(&keys, "claude"), ["--verbose"]);
+        assert_eq!(
+            warnings,
+            [
+                "/p/.amx/config.toml: ignoring `claude.remote_control`: only your own config can set it"
+            ]
+        );
+        let (c, w) = parse("[claude]\nremote_control = true\n").unwrap();
+        assert!(c.harness("claude").remote_control, "{w:?}");
+        assert!(!Config::default().harness("claude").remote_control);
     }
 
     #[test]

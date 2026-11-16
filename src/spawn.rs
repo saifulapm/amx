@@ -181,8 +181,9 @@ impl Default for Dials {
 /// The configured command and launch words, the turned dials, the session and
 /// trust flags, `vendor_args`, the end-of-options word and the task.
 ///
-/// `session` is the id offered to a vendor with a start flag
-/// ([`opens_under_id`] answers that without building the argv). `trust` is the
+/// `session` is the agent's id: offered to a vendor with a start flag
+/// ([`opens_under_id`] answers that without building the argv), and written
+/// with the vendor's name flag ([`with_name`]). `trust` is the
 /// config key; without it no trust flag is written. Every flag amx adds yields
 /// to one already on the command line, so the vendor never gets a flag twice.
 /// `images` are paths in the record, handed over as the vendor's table entry
@@ -211,10 +212,55 @@ pub fn vendor_command(
         &dials.effort,
         &args,
     ));
+    if let Some(id) = session {
+        command = with_name(registry::entry(agent), command, id);
+    }
     command.extend(image_flags(registry::entry(agent), images));
     command.extend(ends_options(registry::entry(agent), &command));
     command.extend(task_words(registry::entry(agent), task, images));
     command
+}
+
+/// `command` with the vendor's name flag naming the agent `id`, unless the
+/// command already names its session in any of the vendor's spellings.
+///
+/// Written right after the program, so it lands ahead of a `--` anywhere
+/// after it.
+pub fn with_name(vendor: Option<&Vendor>, mut command: Vec<String>, id: &str) -> Vec<String> {
+    let Some(vendor) = vendor else {
+        return command;
+    };
+    let Some(flag) = vendor.names.first() else {
+        return command;
+    };
+    let carried: Vec<&str> = command.iter().skip(1).map(String::as_str).collect();
+    if vendor.names.iter().any(|name| already(name, &carried, &[])) {
+        return command;
+    }
+    drop(command.splice(1..1, [flag.to_string(), id.to_string()]));
+    command
+}
+
+/// `command` carried over from another agent, with the values of amx's own
+/// name and remote-control flags pointed at `id`, and a name added where
+/// there was none. A name the person spelled another way is kept.
+pub fn renamed(vendor: Option<&Vendor>, mut command: Vec<String>, id: &str) -> Vec<String> {
+    let Some(found) = vendor else {
+        return command;
+    };
+    let ours: Vec<&str> = found
+        .names
+        .first()
+        .into_iter()
+        .chain(&found.remote_flag)
+        .copied()
+        .collect();
+    for at in 1..command.len().saturating_sub(1) {
+        if ours.contains(&command[at].as_str()) && !command[at + 1].starts_with('-') {
+            command[at + 1] = id.to_string();
+        }
+    }
+    with_name(vendor, command, id)
 }
 
 /// The vendor's end-of-options word to write before a message appended to
@@ -1144,9 +1190,9 @@ mod tests {
     }
 
     #[test]
-    fn spawn_claude_declares_no_start_flag_and_its_argv_is_unchanged() {
+    fn spawn_claude_declares_no_start_flag_and_the_id_only_names_it() {
         // claude's SessionStart hook reports the session it opened, so its
-        // entry declares no start flag and a session id changes nothing.
+        // entry declares no start flag: the agent's id is only its name.
         let without = vendor_command(
             "claude",
             &Dials::default(),
@@ -1165,8 +1211,11 @@ mod tests {
             false,
             &[],
         );
-        assert_eq!(with, without);
-        assert_eq!(with, ["claude", "--", "fix the login bug"]);
+        assert_eq!(without, ["claude", "--", "fix the login bug"]);
+        assert_eq!(
+            with,
+            ["claude", "-n", "fix-login-a1b", "--", "fix the login bug"]
+        );
     }
 
     #[test]
@@ -1354,6 +1403,61 @@ mod tests {
             dash("claude", &["--add-dir", "/srv", "--"], "fix it"),
             ["claude", "--add-dir", "/srv", "--", "fix it"]
         );
+    }
+
+    #[test]
+    fn spawn_names_every_claude_after_its_id_unless_a_name_is_written() {
+        // claude's /resume picker and title then show the amx id. The name
+        // goes right after the program, ahead of any `--` the args hold.
+        let named = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            vendor_command(
+                "claude",
+                &Dials::default(),
+                &args,
+                "fix it",
+                Some("fix-it-a1b"),
+                false,
+                &[],
+            )
+        };
+        assert_eq!(named(&[]), ["claude", "-n", "fix-it-a1b", "--", "fix it"]);
+        assert_eq!(
+            named(&["--add-dir", "/srv", "--"]),
+            [
+                "claude",
+                "-n",
+                "fix-it-a1b",
+                "--add-dir",
+                "/srv",
+                "--",
+                "fix it"
+            ]
+        );
+        // A name the person wrote wins, in either spelling.
+        assert_eq!(
+            named(&["--name", "mine"]),
+            ["claude", "--name", "mine", "--", "fix it"]
+        );
+        assert_eq!(
+            named(&["-n", "mine"]),
+            ["claude", "-n", "mine", "--", "fix it"]
+        );
+        assert_eq!(
+            named(&["--name=mine"]),
+            ["claude", "--name=mine", "--", "fix it"]
+        );
+        // Other vendors have no such flag.
+        let pi = vendor_command(
+            "pi",
+            &Dials::default(),
+            &[],
+            "fix it",
+            Some("fix-it-a1b"),
+            false,
+            &[],
+        );
+        assert!(!pi.contains(&"-n".to_string()), "{pi:?}");
     }
 
     #[test]
@@ -2201,6 +2305,7 @@ mod tests {
                     models: Vec::new(),
                     args: Vec::new(),
                     env: vars(env).into_iter().collect(),
+                    remote_control: false,
                 },
             )]),
             ..Default::default()

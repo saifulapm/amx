@@ -766,7 +766,17 @@ fn set_up(
         agent_dir,
         &Handoff {
             task: task.to_string(),
-            command: launched(args, lined, launch, id, config.trust, &images),
+            command: launched(
+                args,
+                lined,
+                launch,
+                id,
+                config.trust,
+                config
+                    .harness(registry::program(&launch.agent))
+                    .remote_control,
+                &images,
+            ),
         },
     )?;
 
@@ -843,13 +853,16 @@ fn dial_written(exec: bool, dial: &str) -> Option<String> {
 ///
 /// `id` is the session a vendor with a start flag opens under. `trust` is the
 /// config key; vendors that answer folder trust with a flag get it here, since
-/// `spawn` has no config. `images` are the copies in the record.
+/// `spawn` has no config. `remote` is the harness's `remote_control` key,
+/// which opens the vendor to remote control under `id`. `images`
+/// are the copies in the record.
 fn launched(
     args: &NewArgs,
     task: &str,
     launch: &Launch,
     id: &str,
     trust: bool,
+    remote: bool,
     images: &[PathBuf],
 ) -> Vec<String> {
     match args.exec {
@@ -874,6 +887,13 @@ fn launched(
                 if command.last().map(String::as_str) == ends {
                     command.pop();
                 }
+            }
+            let flag = registry::entry(&launch.agent).and_then(|vendor| vendor.remote_flag);
+            if let Some(flag) = flag.filter(|_| remote)
+                && !command.iter().any(|word| word == flag)
+            {
+                // After the program, so a `--` in the args cannot swallow it.
+                drop(command.splice(1..1, [flag.to_string(), id.to_string()]));
             }
             command
         }
@@ -1341,6 +1361,7 @@ mod tests {
                             models: models.iter().map(|model| model.to_string()).collect(),
                             args: Vec::new(),
                             env: BTreeMap::new(),
+                            remote_control: false,
                         },
                     )
                 })
@@ -1358,6 +1379,7 @@ mod tests {
                     models: Vec::new(),
                     args: args.iter().map(|arg| arg.to_string()).collect(),
                     env: BTreeMap::new(),
+                    remote_control: false,
                 },
             )]),
             ..Config::default()
@@ -1526,6 +1548,7 @@ mod tests {
                     models: vec!["openai/gpt-5".to_string()],
                     args: vec!["--approve".to_string()],
                     env: BTreeMap::new(),
+                    remote_control: false,
                 },
             )]),
             ..Config::default()
@@ -1558,9 +1581,18 @@ mod tests {
                 &launch,
                 "port-it-b2c",
                 false,
+                false,
                 &[]
             ),
-            ["claude", "--model", "opus", "--", "port the importer"]
+            [
+                "claude",
+                "-n",
+                "port-it-b2c",
+                "--model",
+                "opus",
+                "--",
+                "port the importer"
+            ]
         );
     }
 
@@ -1586,6 +1618,7 @@ mod tests {
                 &launch,
                 "port-it-b2c",
                 false,
+                false,
                 &[]
             ),
             ["sh", "-c", "cargo test"],
@@ -1598,10 +1631,44 @@ mod tests {
                 &launch,
                 "port-it-b2c",
                 false,
+                false,
                 &[]
             ),
-            ["claude", "--", "port the importer"],
+            ["claude", "-n", "port-it-b2c", "--", "port the importer"],
             "and an ordinary spawn is launched the way it always was"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_remote_control_on_opens_each_claude_to_it_under_its_id() {
+        let launch =
+            Launch::resolve(&Config::default(), &spawn(Some("claude"), [None; 3])).unwrap();
+        let task = &spawn(Some("claude"), [None; 3]);
+        assert_eq!(
+            launched(task, "go", &launch, "port-it-b2c", false, true, &[]),
+            [
+                "claude",
+                "--remote-control",
+                "port-it-b2c",
+                "-n",
+                "port-it-b2c",
+                "--",
+                "go"
+            ]
+        );
+        let pi = Launch::resolve(&Config::default(), &spawn(Some("pi"), [None; 3])).unwrap();
+        assert_eq!(
+            launched(
+                &spawn(Some("pi"), [None; 3]),
+                "go",
+                &pi,
+                "port-it-b2c",
+                false,
+                true,
+                &[]
+            ),
+            ["pi", "--session-id", "port-it-b2c", "--", "go"],
+            "a vendor with no such flag gets none"
         );
     }
 
@@ -1618,9 +1685,10 @@ mod tests {
                 &launch,
                 "port-it-b2c",
                 false,
+                false,
                 &[]
             ),
-            ["claude"]
+            ["claude", "-n", "port-it-b2c"]
         );
     }
 
@@ -2122,6 +2190,7 @@ mod tests {
                 &launch,
                 "port-it-b2c",
                 true,
+                false,
                 &[]
             ),
             [
@@ -2139,6 +2208,7 @@ mod tests {
                 "port the importer",
                 &launch,
                 "port-it-b2c",
+                false,
                 false,
                 &[]
             ),

@@ -124,6 +124,8 @@ pub const VENDOR: Vendor = Vendor {
     // subcommand's name as that subcommand, until `--` (cli/src/main.rs:125-140):
     // `codex --no-daemon -- resume` sends the prompt `resume`.
     ends_options: Some("--"),
+    names: &[],
+    remote_flag: None,
     // The argv prompt is sent as is, with no `@` expansion
     // (tui/src/chatwidget/user_messages.rs:196-221).
     attaches_at: false,

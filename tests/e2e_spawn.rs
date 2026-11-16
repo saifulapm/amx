@@ -2940,3 +2940,32 @@ fn a_task_starting_with_a_dash_reaches_claude_past_its_options() {
     assert!(argv.ends_with("-- - other"), "{argv}");
     assert_eq!(argv.matches(" -- ").count(), 1, "{argv}");
 }
+
+#[test]
+fn every_claude_is_named_after_its_id_and_opened_to_remote_control_when_asked() {
+    let amx = Harness::new();
+    let plain = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "fix the login bug"],
+    ));
+    let argv = argv_of(&amx, &plain);
+    assert!(argv.contains(&format!("-n {plain} ")), "{argv}");
+    assert!(
+        !argv.contains("--remote-control"),
+        "off unless asked: {argv}"
+    );
+
+    amx.config("[claude]\nremote_control = true\n");
+    let remote = id_of(&new_as_claude(
+        &amx,
+        "a-dispatched-worker",
+        &["--no-worktree", "port the importer"],
+    ));
+    let argv = argv_of(&amx, &remote);
+    assert!(argv.contains(&format!("-n {remote} ")), "{argv}");
+    assert!(
+        argv.contains(&format!("--remote-control {remote} ")),
+        "{argv}"
+    );
+}

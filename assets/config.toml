@@ -160,6 +160,9 @@ shelve_after = 259200
 #           harness, laid over your environment. Values are literal, except a
 #           leading ~. amx's own AMX_ID, AMX_BIN, AMX_DIR and AMX_AGENT_DIR
 #           always win.
+#   remote_control: true opens every claude to remote control under its
+#           amx id (`--remote-control <id>`). Off by default; a project's
+#           file cannot turn it on.
 #
 # A project's env cannot set PATH, HOME, SHELL, CLAUDE_CONFIG_DIR, CODEX_HOME,
 # OPENCODE_CONFIG_DIR, OPENCODE_CONFIG, OPENCODE_CONFIG_CONTENT, or anything
@@ -168,6 +171,7 @@ shelve_after = 259200
 [claude]
 # models = ["opus", "sonnet"]
 # args = ["--add-dir", "/srv/shared"]
+# remote_control = true
 # [claude.env]
 # CLAUDE_CONFIG_DIR = "~/.claude-work"
 

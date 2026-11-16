@@ -198,6 +198,7 @@ mod tests {
                     models: models.iter().map(|model| model.to_string()).collect(),
                     args: Vec::new(),
                     env: BTreeMap::new(),
+                    remote_control: false,
                 },
             )]),
             ..Config::default()

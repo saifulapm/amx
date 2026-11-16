@@ -163,6 +163,8 @@ pub const VENDOR: Vendor = Vendor {
     // The task goes on `--prompt=`, since the root command's only positional
     // is a directory (cli/src/commands/commands.ts:43-46).
     ends_options: None,
+    names: &[],
+    remote_flag: None,
     // The v2 server parses no `@path` in text (core/src/session/prompt.ts:45-83);
     // `@` opens a popup instead, see `popups`.
     attaches_at: false,

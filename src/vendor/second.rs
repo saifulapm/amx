@@ -31,6 +31,8 @@ pub const SECOND: Vendor = Vendor {
     transcript: None,
     catalog: None,
     ends_options: None,
+    names: &[],
+    remote_flag: None,
     attaches_at: false,
     restores_queued_on_cancel: false,
     menus_take_letters: true,
@@ -68,6 +70,8 @@ pub const BRANCHING: Vendor = Vendor {
     ],
     hooks: Some(HOOKS),
     ends_options: Some("--"),
+    names: &[],
+    remote_flag: None,
     ..SECOND
 };
 

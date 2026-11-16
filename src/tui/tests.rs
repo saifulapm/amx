@@ -504,6 +504,7 @@ fn header_dials_the_model_dial_stays_on_the_harness_on_the_row() {
         models: models.iter().map(|model| model.to_string()).collect(),
         args: Vec::new(),
         env: BTreeMap::new(),
+        remote_control: false,
     };
     let config = Config {
         agent: "claude".to_string(),
@@ -539,6 +540,7 @@ fn header_dials_the_model_dial_takes_this_harnesss_written_models() {
         models: models.iter().map(|model| model.to_string()).collect(),
         args: Vec::new(),
         env: BTreeMap::new(),
+        remote_control: false,
     };
     let config = Config {
         agent: "claude --add-dir ..".to_string(),

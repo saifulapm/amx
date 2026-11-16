@@ -140,6 +140,8 @@ pub const VENDOR: Vendor = Vendor {
     // Without it a task starting with `-` is read as a flag, and one after a
     // variadic flag such as `--add-dir` as another of its values (2.1.325).
     ends_options: Some("--"),
+    names: &["-n", "--name"],
+    remote_flag: Some("--remote-control"),
     attaches_at: false,
     restores_queued_on_cancel: false,
     // 2.1.284's permission menu ignores `y`; digits work.

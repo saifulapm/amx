@@ -295,7 +295,7 @@ fn build_copy(
         .fork
         .expect("a copy is only asked of a vendor that declares how it branches");
 
-    let mut command = resume::without_session(handoff, vendor, spec);
+    let mut command = spawn::renamed(vendor, resume::without_session(handoff, vendor, spec), copy);
     if let ForkSpec::Marker(marker) = fork {
         // A marker takes no value. Drop an old one so a copy of a copy
         // branches once.
@@ -432,6 +432,8 @@ mod tests {
             copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
+                "-n",
+                "port-it-b2c",
                 "--model",
                 "opus",
                 "--resume=abc-123",
@@ -450,6 +452,8 @@ mod tests {
             copying(&started, "abc-123", "port-it-b2c", Some("x"), &[image]),
             [
                 "claude",
+                "-n",
+                "port-it-b2c",
                 "--resume=abc-123",
                 "--fork-session",
                 "--",
@@ -492,6 +496,72 @@ mod tests {
                 "--",
                 " @bob too"
             ]
+        );
+    }
+
+    #[test]
+    fn fork_names_the_copy_after_its_own_id_not_its_origins() {
+        // The origin's `-n` and `--remote-control` name the origin; a copy,
+        // and a copy of that copy, each carry their own id once.
+        let started = handoff(
+            &[
+                "claude",
+                "-n",
+                "port-it-a1b",
+                "--remote-control",
+                "port-it-a1b",
+                "--",
+                "go",
+            ],
+            "go",
+        );
+        let copy = copying(&started, "abc-123", "port-it-b2c", None, &[]);
+        assert_eq!(
+            copy,
+            [
+                "claude",
+                "-n",
+                "port-it-b2c",
+                "--remote-control",
+                "port-it-b2c",
+                "--resume=abc-123",
+                "--fork-session"
+            ]
+        );
+        let again = copying(
+            &handoff(&copy.iter().map(String::as_str).collect::<Vec<_>>(), ""),
+            "def-456",
+            "port-it-c3d",
+            None,
+            &[],
+        );
+        assert_eq!(
+            again.iter().filter(|word| *word == "-n").count(),
+            1,
+            "{again:?}"
+        );
+        assert!(
+            again.windows(2).any(|pair| pair == ["-n", "port-it-c3d"]),
+            "{again:?}"
+        );
+        assert!(
+            again
+                .windows(2)
+                .any(|pair| pair == ["--remote-control", "port-it-c3d"]),
+            "{again:?}"
+        );
+
+        // An origin started before amx named its claudes gets a name too,
+        // and a name the person wrote is theirs to keep.
+        let unnamed = handoff(&["claude", "--", "go"], "go");
+        assert_eq!(
+            copying(&unnamed, "abc-123", "port-it-b2c", None, &[])[..3],
+            ["claude", "-n", "port-it-b2c"]
+        );
+        let theirs = handoff(&["claude", "--name", "mine", "--", "go"], "go");
+        assert_eq!(
+            copying(&theirs, "abc-123", "port-it-b2c", None, &[])[..3],
+            ["claude", "--name", "mine"]
         );
     }
 
@@ -540,6 +610,8 @@ mod tests {
             ),
             [
                 "claude",
+                "-n",
+                "port-it-b2c",
                 "--model",
                 "opus",
                 "--resume=abc-123",
@@ -560,7 +632,13 @@ mod tests {
         );
         assert_eq!(
             copying(&started, "abc-123", "port-it-b2c", None, &[]),
-            ["claude", "--resume=abc-123", "--fork-session"]
+            [
+                "claude",
+                "-n",
+                "port-it-b2c",
+                "--resume=abc-123",
+                "--fork-session"
+            ]
         );
 
         let started = handoff(
@@ -598,6 +676,8 @@ mod tests {
             copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
+                "-n",
+                "port-it-b2c",
                 "--model",
                 "opus",
                 "--add-dir",
@@ -631,6 +711,8 @@ mod tests {
                 copying(&started, "def-456", "port-it-b2c", None, &[]),
                 [
                     "claude",
+                    "-n",
+                    "port-it-b2c",
                     "--add-dir",
                     "/srv/data",
                     "--resume=def-456",
@@ -644,7 +726,14 @@ mod tests {
         let started = handoff(&["claude", "--resume", "--verbose", "go"], "go");
         assert_eq!(
             copying(&started, "def-456", "port-it-b2c", None, &[]),
-            ["claude", "--verbose", "--resume=def-456", "--fork-session"]
+            [
+                "claude",
+                "-n",
+                "port-it-b2c",
+                "--verbose",
+                "--resume=def-456",
+                "--fork-session"
+            ]
         );
     }
 
@@ -827,6 +916,8 @@ mod tests {
             copying(&started, "abc-123", "port-it-b2c", None, &[]),
             [
                 "claude",
+                "-n",
+                "port-it-b2c",
                 "--model",
                 "opus",
                 "--resume=abc-123",
