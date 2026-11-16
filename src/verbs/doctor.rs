@@ -1059,7 +1059,34 @@ pub fn from_env(fix: bool, dir: Option<&Path>) -> Result<i32> {
     let (config, warnings) = config_in(dir, cwd.as_deref(), &root);
     let found = gather(&config, warnings, dir)?;
     let mut out = std::io::stdout().lock();
-    run(&found, fix, crate::store::now(), &mut out)
+    let code = run(&found, fix, crate::store::now(), &mut out)?;
+    // A warning, not a check: a claude with hooks off still starts, so it
+    // must not turn the exit code.
+    for warning in hooks_off(&config) {
+        writeln!(out, "  warn hooks   {warning}")?;
+    }
+    Ok(code)
+}
+
+/// What in the config has a claude start with its hooks off, worded as a
+/// warning. Empty for any other agent.
+fn hooks_off(config: &Config) -> Vec<String> {
+    let is_claude = registry::read_as(&config.agent).is_some_and(|vendor| vendor.name == "claude");
+    if !is_claude {
+        return Vec::new();
+    }
+    let harness = config.harness("claude");
+    let flags = config
+        .agent
+        .split_whitespace()
+        .chain(harness.args.iter().map(String::as_str))
+        .filter(|word| matches!(*word, "--bare" | "--safe-mode"))
+        .map(|flag| format!("claude starts with {flag}, so hooks will not fire"));
+    let simple = harness
+        .env
+        .contains_key("CLAUDE_CODE_SIMPLE")
+        .then(|| "[claude.env] sets CLAUDE_CODE_SIMPLE, so hooks will not fire".to_string());
+    flags.chain(simple).collect()
 }
 
 /// The config an agent started in `dir`, else `cwd`, would run under, since a
@@ -2529,5 +2556,43 @@ mod tests {
         let why = usable(&root);
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(why.is_some(), "a root amx cannot list is a root to report");
+    }
+
+    fn claude_config(agent: &str, args: &[&str], env: &[(&str, &str)]) -> Config {
+        let mut config = Config {
+            agent: agent.to_string(),
+            ..Config::default()
+        };
+        config.harnesses.insert(
+            "claude".to_string(),
+            crate::config::HarnessConfig {
+                args: args.iter().map(|a| a.to_string()).collect(),
+                env: env
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn doctor_names_each_way_a_claude_would_start_with_hooks_off() {
+        let said = |config: &Config| hooks_off(config).join("\n");
+        assert!(said(&claude_config("claude", &["--bare"], &[])).contains("--bare"));
+        assert!(said(&claude_config("claude", &["--safe-mode"], &[])).contains("--safe-mode"));
+        assert!(said(&claude_config("claude --bare", &[], &[])).contains("--bare"));
+        assert!(
+            said(&claude_config(
+                "claude",
+                &[],
+                &[("CLAUDE_CODE_SIMPLE", "1")]
+            ))
+            .contains("CLAUDE_CODE_SIMPLE")
+        );
+        assert!(said(&claude_config("claude", &["--bare"], &[])).contains("hooks will not fire"));
+        assert!(hooks_off(&claude_config("claude", &["--model", "x"], &[])).is_empty());
+        assert!(hooks_off(&claude_config("pi", &["--bare"], &[])).is_empty());
     }
 }

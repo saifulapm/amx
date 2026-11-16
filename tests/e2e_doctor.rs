@@ -582,3 +582,49 @@ fn doctor_names_an_id_directory_a_spawn_died_in_and_leaves_a_young_one_to_fix() 
     assert!(!said.contains("removed"), "{said}");
     assert!(amx.state_root().join("lost-a1b").exists());
 }
+
+#[test]
+fn doctor_warns_of_a_claude_that_starts_with_hooks_off_and_still_exits_clean() {
+    let amx = Harness::new();
+    amx.amx(&["setup", "claude"]);
+    let bin = tempfile::TempDir::new().unwrap();
+    let claude = bin.path().join("claude");
+    std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&claude, PermissionsExt::from_mode(0o755)).unwrap();
+    // The stand-in claude first, then the amx under test and the real PATH.
+    let amx_dir = Path::new(env!("CARGO_BIN_EXE_amx")).parent().unwrap();
+    let mut path = vec![bin.path().to_path_buf(), amx_dir.to_path_buf()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let run = |config: &str| {
+        amx.config(config);
+        let out = amx
+            .amx_command(&["doctor"])
+            .env("PATH", std::env::join_paths(&path).unwrap())
+            .output()
+            .expect("running amx doctor");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+
+    let (code, printed) = run("agent = \"claude\"\n");
+    assert!(!printed.contains("hooks will not fire"), "{printed}");
+    // Other agents on this machine may fail doctor for their own reasons, so
+    // the warning is judged against the same machine without it.
+    let clean = code;
+
+    let (code, printed) = run("agent = \"claude\"\n[claude]\nargs = [\"--bare\"]\n");
+    let line = printed
+        .lines()
+        .find(|line| line.contains("--bare"))
+        .unwrap_or_else(|| panic!("no line names --bare:\n{printed}"));
+    assert!(line.contains("hooks will not fire"), "{line}");
+    assert!(!line.trim_start().starts_with("ok"), "{line}");
+    assert_eq!(
+        code, clean,
+        "a warning alone does not fail doctor:\n{printed}"
+    );
+}
