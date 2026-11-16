@@ -185,6 +185,9 @@ fn send_to_an_agent_working_only_on_its_background_agents_is_not_queued() {
     let amx = Harness::new();
     amx.play("review-diff-c3d", "takes-a-message-with-an-agent-out");
     amx.until_state("review-diff-c3d", "working");
+    // The first prompt reads working too; the prompt is drawn only once the
+    // turn has ended with its agent out.
+    amx.until_shown("review-diff-c3d", "auto mode on");
 
     let out = amx.amx(&["send", "review-diff-c3d", "and now the linter"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
