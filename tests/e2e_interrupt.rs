@@ -44,6 +44,7 @@ fn interrupting_a_turn_ends_it_at_the_pane_with_no_word_from_the_vendor() {
     let amx = Harness::new();
     let pane = amx.play("port-importer-c3d", "interrupted");
     amx.until_state("port-importer-c3d", "working");
+    // mid-turn on purpose: the interrupt is what ends the turn.
 
     // The key lands within a second of the turn starting. The interrupt amx
     // records must stand on its own against the hook just before it.
@@ -151,6 +152,7 @@ fn a_turn_cut_short_at_the_pane_runs_the_idle_command_and_parks() {
     let id = "port-importer-c3d";
     let pane = amx.play(id, "interrupted");
     amx.until_state(id, "working");
+    // mid-turn on purpose: the interrupt is what ends the turn.
 
     let out = amx.amx(&["interrupt", id]);
     assert_eq!(out.status.code(), Some(0));

@@ -2390,6 +2390,7 @@ fn a_message_a_pi_holds_behind_its_turn_is_queued_until_it_goes_in() {
     let id = "fix-login-a1b";
     start(&amx, id, "takes-a-message-mid-turn");
     amx.until_state(id, "working");
+    // mid-turn on purpose: the send is what is held behind the turn.
 
     let out = amx.amx(&["send", id, "hi"]);
     assert_eq!(

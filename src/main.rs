@@ -584,6 +584,58 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_test_acts_only_after_the_last_sign_its_scenario_makes() {
+        // `working` and `starting` are read before the stand-in finishes its
+        // step: the first prompt reads working too. A step acting right after
+        // one ran mid-step under load (c073131a, d06c763f). It waits for a
+        // later sign, or says it acts mid-turn on purpose.
+        let early = ["\"working\")", "\"starting\")"];
+        let acts = ["send", "answer", "interrupt", "stop", "park"];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut raced = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            for (at, line) in lines.iter().enumerate() {
+                if !(line.contains("until_state(") && early.iter().any(|it| line.contains(it))) {
+                    continue;
+                }
+                let between: Vec<&str> = lines[at + 1..]
+                    .iter()
+                    .take_while(|it| it.is_empty() || it.starts_with("//"))
+                    .copied()
+                    .collect();
+                if between.iter().any(|it| it.contains("mid-turn on purpose")) {
+                    continue;
+                }
+                let next = lines
+                    .get(at + 1 + between.len())
+                    .copied()
+                    .unwrap_or_default();
+                if acts
+                    .iter()
+                    .any(|verb| next.contains(&format!("amx(&[\"{verb}\"")))
+                {
+                    raced.push(format!("{}:{}: {next}", path.display(), at + 1));
+                }
+            }
+        }
+        assert!(
+            raced.is_empty(),
+            "these act on an agent right after it reads working or starting, \
+             which the stand-in shows before it finishes its step; wait for the \
+             last sign the scenario makes first (`until_shown` of the line it \
+             prints after the hook), or put a `// mid-turn on purpose` comment \
+             above the step:\n{}",
+            raced.join("\n")
+        );
+    }
+
+    #[test]
     fn every_read_of_a_records_own_phase_says_what_covers_a_reading_that_disagrees() {
         let sources = production_sources();
         let mut unlisted = Vec::new();

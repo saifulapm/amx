@@ -194,6 +194,7 @@ fn stopping_an_agent_runs_the_stopped_command() {
     let said = writes_down(&amx, "on_stopped");
     start(&amx, "watch-the-log-c3d", "works-without-end");
     amx.until_state("watch-the-log-c3d", "working");
+    // mid-turn on purpose: the scenario works without end.
 
     let out = amx.amx(&["stop", "watch-the-log-c3d", "--force"]);
     assert!(
