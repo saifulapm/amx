@@ -352,7 +352,7 @@ The line edits like a shell prompt:
 | `ctrl+w` `alt+backspace` | The word before the cursor. |
 | `shift+enter` | A newline. Needs a terminal that reports it; see below. |
 | `alt+enter` `ctrl+j` | A newline, on any terminal. |
-| `↑` `↓` | A row of the line as drawn, in the same column. On a task line, past the first or last row, an earlier or later task. |
+| `↑` `↓` | A row of the line as drawn, in the same column; past the first or last row, an earlier or later line. An empty reply line leaves them to the card. |
 | `alt+↑` `alt+↓` | Earlier tasks or replies. |
 
 The last 50 tasks and 50 replies are kept in `~/.local/state/amx/view.json`.

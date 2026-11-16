@@ -1897,6 +1897,41 @@ fn keys_up_climbs_the_rows_of_a_task_line_before_it_brings_back_a_task() {
 }
 
 #[test]
+fn keys_plain_arrows_on_a_card_line_holding_text_walk_its_rows_not_the_card() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let mut screen = watching(vec![
+        finished_saying("done-a1b", "the answer"),
+        finished_saying("done-b2c", "another"),
+    ]);
+    let press =
+        |screen: &mut Screen, key: KeyEvent| screen.act(key, root.path(), &config, None).unwrap();
+    let on = |screen: &Screen| screen.card.as_ref().map(|card| card.id.clone());
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char(' ')));
+    let opened_on = on(&screen);
+    for typed in "abc".chars() {
+        press(&mut screen, KeyEvent::from(KeyCode::Char(typed)));
+    }
+    press(&mut screen, KeyEvent::from(KeyCode::Down));
+    assert_eq!(on(&screen), opened_on, "the card stays on its agent");
+
+    press(
+        &mut screen,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+    );
+    press(&mut screen, KeyEvent::from(KeyCode::Char('d')));
+    press(&mut screen, KeyEvent::from(KeyCode::Up));
+    let line = screen.answering().expect("the card's line");
+    assert_eq!(
+        (line.text.as_str(), line.at),
+        ("abc\nd", 1),
+        "up went a row"
+    );
+    assert_eq!(on(&screen), opened_on);
+}
+
+#[test]
 fn replied_keeps_the_line_it_sent_and_not_one_refused() {
     let mut screen = watching(vec![finished_saying("done-a1b", "the answer")]);
     let mut sent = Composer::new(Asking::Reply);
@@ -2901,6 +2936,13 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
     });
     for key in [plain(KeyCode::Up), plain(KeyCode::Down)] {
         assert!(the_lines(&offering, key), "{key:?} walks the words offered");
+    }
+
+    // And while the line holds text: they walk its rows.
+    let mut holding = Composer::new(Asking::Reply);
+    holding.insert("abc");
+    for key in [plain(KeyCode::Up), plain(KeyCode::Down)] {
+        assert!(the_lines(&holding, key), "{key:?} walks the line's rows");
     }
 }
 

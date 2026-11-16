@@ -478,8 +478,8 @@ fn chord(key: KeyEvent) -> KeyModifiers {
 /// The line takes plain characters, editing and cursor keys, enter, esc, tab,
 /// `ctrl+a`, `ctrl+e` and `ctrl+w`, `ctrl+g` for the editor, `ctrl+j` for a
 /// newline and `ctrl+v` for the clipboard. Plain up and down go to the line
-/// only while it offers suggestions; alt+up and alt+down always do, for
-/// history.
+/// only while it offers suggestions or holds text; alt+up and alt+down always
+/// do, for history.
 fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
     let plain = chord(key).is_empty();
     let ctrl = chord(key) == KeyModifiers::CONTROL;
@@ -491,7 +491,8 @@ fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
         KeyCode::Backspace => plain || chord(key) == KeyModifiers::ALT,
         KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => true,
         KeyCode::Up | KeyCode::Down => {
-            (plain && composer.suggest.is_some()) || chord(key) == KeyModifiers::ALT
+            (plain && (composer.suggest.is_some() || !composer.text.is_empty()))
+                || chord(key) == KeyModifiers::ALT
         }
         _ => false,
     }
@@ -2304,9 +2305,12 @@ impl Screen {
                 let sent = self.sent.lines_for(&composer.asking);
                 composer.recall(sent, key.code == KeyCode::Up);
             }
-            // Plain arrows on a task line walk its rows, then history.
+            // Plain arrows on a task line, or a reply line holding text, walk
+            // its rows, then history. An empty reply line left them to the
+            // card.
             KeyCode::Up | KeyCode::Down
-                if chord(key).is_empty() && matches!(composer.asking, Asking::Task) =>
+                if chord(key).is_empty()
+                    && matches!(composer.asking, Asking::Task | Asking::Reply) =>
             {
                 let sent = self.sent.lines_for(&composer.asking);
                 composer.arrow(sent, key.code == KeyCode::Up);
