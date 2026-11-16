@@ -93,11 +93,7 @@ fn pi_fixtures() -> PathBuf {
 
 /// PATH with the mock pi directory first.
 fn path_to_pi() -> String {
-    let ours = pi_fixtures().to_string_lossy().into_owned();
-    match std::env::var("PATH") {
-        Ok(rest) => format!("{ours}:{rest}"),
-        Err(_) => ours,
-    }
+    common::path_with(&pi_fixtures())
 }
 
 /// Start an agent on pi, with mock pi playing `scenario`.
@@ -593,15 +589,12 @@ fn doctor_warns_of_a_claude_that_starts_with_hooks_off_and_still_exits_clean() {
     std::fs::set_permissions(&claude, PermissionsExt::from_mode(0o755)).unwrap();
     // The stand-in claude first, then the amx under test and the real PATH.
     let amx_dir = Path::new(env!("CARGO_BIN_EXE_amx")).parent().unwrap();
-    let mut path = vec![bin.path().to_path_buf(), amx_dir.to_path_buf()];
-    path.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    let path = format!("{}:{}", bin.path().display(), common::path_with(amx_dir));
     let run = |config: &str| {
         amx.config(config);
         let out = amx
             .amx_command(&["doctor"])
-            .env("PATH", std::env::join_paths(&path).unwrap())
+            .env("PATH", &path)
             .output()
             .expect("running amx doctor");
         (

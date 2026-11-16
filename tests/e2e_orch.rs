@@ -320,12 +320,7 @@ fn two_answers_started_together_answer_one_box_and_never_the_next() {
 /// A folder holding a `tmux` that fails every `send-keys ... Enter` and hands
 /// every other call to the real one.
 fn a_tmux_that_drops_the_enter(amx: &Harness) -> std::path::PathBuf {
-    let real = std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .map(|dir| std::path::Path::new(dir).join("tmux"))
-        .find(|tmux| tmux.is_file())
-        .expect("a tmux on PATH");
+    let real = common::the_real("tmux");
     let bin = amx.home().join("drops-the-enter");
     std::fs::create_dir_all(&bin).unwrap();
     let script = bin.join("tmux");

@@ -82,11 +82,7 @@ fn a_view_that_can_start_claude(amx: &Harness, config: &str) -> String {
     let bin = amx.home().join("bin");
     std::fs::create_dir_all(&bin).expect("a directory for the stand-in");
     std::fs::copy(amx.mock(), bin.join("claude")).expect("the stand-in under claude's name");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = common::path_with(&bin);
 
     amx.config(config);
     let scenario = amx.scenario("happy-turn").to_string_lossy().into_owned();

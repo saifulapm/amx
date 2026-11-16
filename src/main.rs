@@ -673,6 +673,36 @@ mod tests {
     }
 
     #[test]
+    fn a_suite_builds_its_path_through_the_harness_and_its_quiet_notify_send() {
+        // A suite that put its own PATH together from the test's left the
+        // real notify-send on it, and every full run raised notices on the
+        // desktop of whoever ran it (5e077d83).
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut loud = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if code.contains("var(\"PATH\")") || code.contains("var_os(\"PATH\")") {
+                    let file = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
+                    loud.push(format!("{}:{}: {}", file.display(), at + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            loud.is_empty(),
+            "these read the test's own PATH, which holds the real notify-send; \
+             build it with common::quiet_path() or path_with(), or find a \
+             real program with common::the_real():\n{}",
+            loud.join("\n")
+        );
+    }
+
+    #[test]
     fn every_read_of_a_records_own_phase_says_what_covers_a_reading_that_disagrees() {
         let sources = production_sources();
         let mut unlisted = Vec::new();

@@ -62,11 +62,7 @@ fn new_as_claude(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
 /// [`new_as_claude`] started: resume and fork run the recorded command,
 /// which is `claude`.
 fn path_with_the_stand_in(amx: &Harness) -> String {
-    format!(
-        "{}:{}",
-        amx.home().join("bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
+    common::path_with(&amx.home().join("bin"))
 }
 
 /// The value a `ls --json` row prints under `key`, panicking if the key is
@@ -1525,11 +1521,7 @@ exit 1
 /// Run `amx new` with the harness's `bin`, which holds the fake gh, first on
 /// PATH.
 fn new_with_gh(amx: &Harness, scenario: &str, args: &[&str]) -> Output {
-    let path = format!(
-        "{}:{}",
-        amx.home().join("bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = common::path_with(&amx.home().join("bin"));
     amx.amx_command(&[&["new"], args].concat())
         .env("MOCK_CLAUDE_SCENARIO", amx.scenario(scenario))
         .env("PATH", path)

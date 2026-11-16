@@ -235,17 +235,14 @@ fn a_hung_tmux_cannot_stall_the_hook_that_ends_a_turn() {
     let tmux = bin.path().join("tmux");
     std::fs::write(&tmux, "#!/bin/sh\nsleep 10\n").unwrap();
     std::fs::set_permissions(&tmux, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let mut path = vec![bin.path().to_path_buf()];
-    path.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    let path = common::path_with(bin.path());
 
     use std::io::Write;
     let began = std::time::Instant::now();
     let mut child = amx
         .amx_command(&["_hook"])
         .env("AMX_ID", id)
-        .env("PATH", std::env::join_paths(&path).unwrap())
+        .env("PATH", &path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
