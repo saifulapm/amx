@@ -720,6 +720,56 @@ mod tests {
     }
 
     #[test]
+    fn the_view_reads_the_home_once_and_hands_it_to_what_offers_words() {
+        // The card line's offers read the home themselves, so a unit test
+        // run over a home holding an implementer agent offered @implementer
+        // (5e56b943). The view reads it when it opens and hands it on; the
+        // other reads only shorten a path or find claudes outside amx, which
+        // tests swap out.
+        let allowed = [
+            ("src/tui/mod.rs", "watch"),
+            ("src/tui/mod.rs", "move_in"),
+            ("src/tui/rows.rs", "default"),
+            ("src/tui/rows.rs", "outside_amx"),
+            ("src/tui/act.rs", "about"),
+        ];
+        fn walk(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    found.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src/tui"), &mut files);
+        let mut reads = Vec::new();
+        for path in files {
+            let file = path.strip_prefix(root).unwrap().display().to_string();
+            let mut within = "";
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, line) in text.lines().enumerate() {
+                if let Some((_, after)) = line.split_once("fn ") {
+                    within = after.split(['(', '<']).next().unwrap_or_default();
+                }
+                let code = line.split("//").next().unwrap_or_default();
+                if code.contains("home_dir()") && !allowed.contains(&(file.as_str(), within)) {
+                    reads.push(format!("{file}:{}: in {within}", at + 1));
+                }
+            }
+        }
+        assert!(
+            reads.is_empty(),
+            "these read the home of whoever runs the view, or the tests: take \
+             the Screen's `home`, which tests leave empty:\n{}",
+            reads.join("\n")
+        );
+    }
+
+    #[test]
     fn every_read_of_a_records_own_phase_says_what_covers_a_reading_that_disagrees() {
         let sources = production_sources();
         let mut unlisted = Vec::new();

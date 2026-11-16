@@ -22,7 +22,7 @@ fn the_harness_refuses_a_test_binary_built_for_another_checkout() {
     // cargo runs a test in the checkout it was built for. A run that reused
     // binaries a removed worktree had built into the shared target dir read
     // fixtures from the removed folder, and 74 tests failed far from the
-    // cause (lessons 2026-11-16).
+    // cause.
     let elsewhere = tempfile::TempDir::new().unwrap();
     let out = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -33,7 +33,12 @@ fn the_harness_refuses_a_test_binary_built_for_another_checkout() {
         .output()
         .expect("running this test binary");
     assert!(!out.status.success());
-    let said = String::from_utf8_lossy(&out.stdout);
+    // The panic is on stdout when libtest captures it, on stderr when not.
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         said.contains(&format!(
             "this test binary was built for {}",
@@ -41,6 +46,21 @@ fn the_harness_refuses_a_test_binary_built_for_another_checkout() {
         )),
         "{said}"
     );
+}
+
+#[test]
+fn the_harness_paths_find_the_quiet_notify_send_before_the_real_one() {
+    // amx's notifier waits for a click on a notice with buttons, so a real
+    // one on a test's PATH raises it on the desktop and leaves a process.
+    let first = |path: &str| {
+        path.split(':')
+            .map(|dir| std::path::Path::new(dir).join("notify-send"))
+            .find(|found| found.is_file())
+    };
+    let quiet = Some(common::quiet_bin().join("notify-send"));
+    let stand_ins = tempfile::TempDir::new().unwrap();
+    assert_eq!(first(&common::quiet_path()), quiet);
+    assert_eq!(first(&common::path_with(stand_ins.path())), quiet);
 }
 
 #[test]
