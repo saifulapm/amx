@@ -13,7 +13,7 @@ about it, `result` takes its answer, `stop` ends it.
 | Code | Meaning |
 | --- | --- |
 | `0` | Done. Any answer is on stdout. |
-| `1` | Failed, stopped, or ended with no answer. Also: an id that names no agent. |
+| `1` | Failed, stopped, or ended with no answer, including a turn a usage limit or an API error ended (`result` prints `limited until 15:00` or `error: overloaded`). Also: an id that names no agent. |
 | `2` | Blocked. See below. |
 | `3` | `--timeout` ran out. The agent is still going. |
 | `64` | The command line was wrong, including an answer the question would not take. Nothing reached the agent. |

@@ -202,6 +202,32 @@ mod tests {
     }
 
     #[test]
+    fn a_limited_agent_ends_a_wait_whatever_the_log_says() {
+        assert!(settled(Phase::Limited, None, Ended::NotYet));
+        assert!(settled(Phase::Limited, None, Ended::Turn));
+        assert!(settled(Phase::Limited, Some(Phase::Limited), Ended::NotYet));
+    }
+
+    #[test]
+    fn an_agent_an_error_left_idle_ends_a_wait_with_no_stop_after_it() {
+        // claude may log only the failure hook for the turn the message began.
+        let root = tempfile::TempDir::new().unwrap();
+        record(root.path(), "a", Phase::Idle);
+        let agent = Agent::open(root.path(), "a").unwrap();
+        let writer = agent.writer().unwrap();
+        for kind in [crate::verbs::send::SEND, "UserPromptSubmit", "StopFailure"] {
+            writer
+                .append(&Event::new(kind, serde_json::json!({})))
+                .unwrap();
+        }
+        drop(writer);
+
+        let patience = Some(Duration::ZERO);
+        let (code, printed) = waited(root.path(), &["a"], false, None, patience);
+        assert_eq!((code, printed.as_str()), (exit::OK, "a idle\n"));
+    }
+
+    #[test]
     fn a_message_nothing_has_answered_keeps_an_idle_agent_from_settling() {
         // Idle after a turn cut short by hand, with the sent message still
         // queued: the recorded answer belongs to the previous turn.

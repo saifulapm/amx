@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::derive::{self, Evidence, View};
-use crate::store::{Agent, Event, Phase};
+use crate::store::{Agent, Event, Phase, State};
 use crate::vendor::{Hooks, Moment};
 use crate::verbs::interrupt::INTERRUPT;
 use crate::verbs::park::PARKED;
@@ -73,8 +73,9 @@ pub fn run(
         // No spinner line: a waiter branches on the phase alone.
         let view = derive::view_for(root, id, store::now(), derive::Wants::Phase)?;
         let phase = view.phase();
-        match settled(phase, turns.ended(phase)) {
+        match reading(&view.state, turns.ended(phase)) {
             Settled::Answer => return answer(&view, to_terminal, out),
+            Settled::Limited | Settled::Error => return stopped(&view, out),
             Settled::Question => return waiting_on_a_question(&view, to_terminal, out),
             // A command exited before answering the last message.
             Settled::Unanswered => {
@@ -143,22 +144,27 @@ pub fn run_family(
     )?;
     let timed_out = waited == exit::TIMEOUT;
 
+    let local = jiff::tz::TimeZone::system();
     let mut waiting = false;
     let mut failed = false;
     let mut family = serde_json::Map::new();
     for id in &children {
         let view = derive::view(root, id, store::now())?;
         let phase = view.phase();
-        let settled = settled(phase, Turns::of(root, id)?.ended(phase));
+        let settled = reading(&view.state, Turns::of(root, id)?.ended(phase));
         // After an interrupt or an unanswered message the recorded answer is
-        // the previous turn's.
+        // the previous turn's, and a limit or an error left none.
         let answer = match settled {
-            Settled::Interrupted | Settled::Unanswered => None,
+            Settled::Interrupted | Settled::Unanswered | Settled::Limited | Settled::Error => None,
             _ => view.state.result.clone().or_else(|| transcript(&view)),
         };
         match settled {
             Settled::Question => waiting = true,
-            Settled::Nothing | Settled::Interrupted | Settled::Unanswered => failed = true,
+            Settled::Nothing
+            | Settled::Interrupted
+            | Settled::Unanswered
+            | Settled::Limited
+            | Settled::Error => failed = true,
             Settled::Answer if answer.is_none() => failed = true,
             _ => {}
         }
@@ -170,6 +176,8 @@ pub fn run_family(
                 super::print_question(question, &view.state.options, to_terminal, out)?;
             } else if let Some(answer) = &answer {
                 send::line(&send::rendered(answer, to_terminal), out)?;
+            } else if let Some(words) = stop_words(&view.state, store::now(), &local) {
+                send::line(&words, out)?;
             }
         }
     }
@@ -213,6 +221,10 @@ pub(crate) enum Settled {
     Interrupted,
     /// Failed or stopped; no answer is coming.
     Nothing,
+    /// A usage limit ended the turn; no answer until it lifts.
+    Limited,
+    /// An API error left the agent idle with no answer.
+    Error,
     /// Still going.
     NotYet,
 }
@@ -239,8 +251,44 @@ pub(crate) fn settled(phase: Phase, ended: Ended) -> Settled {
         (Phase::Idle, Ended::NotYet) => Settled::NotYet,
         (Phase::Done, Ended::NotYet) => Settled::Unanswered,
         (Phase::Failed | Phase::Stopped, _) => Settled::Nothing,
-        (Phase::Starting | Phase::Working | Phase::Limited | Phase::Unknown, _) => Settled::NotYet,
+        (Phase::Limited, _) => Settled::Limited,
+        (Phase::Starting | Phase::Working | Phase::Unknown, _) => Settled::NotYet,
     }
+}
+
+/// [`settled`] for a whole record: an error turn left no answer, so an `Answer`
+/// on a record with an error set is an `Error` whatever result text it holds.
+pub(crate) fn reading(state: &State, ended: Ended) -> Settled {
+    match settled(state.state, ended) {
+        Settled::Answer if state.error.is_some() => Settled::Error,
+        settled => settled,
+    }
+}
+
+/// What `result` prints for a limited or errored record, `None` for any other.
+fn stop_words(state: &State, now: u64, local: &jiff::tz::TimeZone) -> Option<String> {
+    if state.state == Phase::Limited {
+        return Some(
+            match crate::limit::resumes_words(state.resumes_at, now, local) {
+                Some(when) => format!("limited until {when}"),
+                None => "limited".to_string(),
+            },
+        );
+    }
+    let class = state
+        .error
+        .as_ref()
+        .filter(|_| state.state == Phase::Idle)?;
+    Some(format!("error: {class}"))
+}
+
+/// Print [`stop_words`] and fail.
+fn stopped(view: &View, out: &mut impl Write) -> Result<i32> {
+    let local = jiff::tz::TimeZone::system();
+    if let Some(words) = stop_words(&view.state, store::now(), &local) {
+        send::line(&words, out)?;
+    }
+    Ok(exit::FAILURE)
 }
 
 /// How long to wait before reading again, given what the last reading cost.
@@ -359,7 +407,10 @@ fn a_turn_began(hooks: Option<&Hooks>, event: &Event) -> bool {
 /// amx cutting the turn short (see [`cut_short`]), which vendors may never
 /// report. Subagent events share the log and are ignored.
 fn a_turn_ended(hooks: Option<&Hooks>, event: &Event) -> bool {
-    (turn_end(hooks, event) || event.kind == derive::READ_TURN_END || cut_short(event))
+    (turn_end(hooks, event)
+        || moment(hooks, event) == Some(Moment::Errored)
+        || event.kind == derive::READ_TURN_END
+        || cut_short(event))
         && event.payload["agent_id"].is_null()
 }
 
@@ -914,6 +965,165 @@ mod tests {
 
     /// claude's turn-end hook event.
     const TURN_END: &str = "Stop";
+
+    #[test]
+    fn a_limit_is_a_settled_reading_whatever_the_log_says() {
+        assert_eq!(settled(Phase::Limited, Ended::NotYet), Settled::Limited);
+        assert_eq!(settled(Phase::Limited, Ended::Turn), Settled::Limited);
+    }
+
+    #[test]
+    fn an_idle_record_with_an_error_settles_as_an_error() {
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("a stale answer".to_string()),
+            ..State::default()
+        };
+        assert_eq!(reading(&state, Ended::Turn), Settled::Answer);
+        state.error = Some("overloaded".to_string());
+        assert_eq!(reading(&state, Ended::Turn), Settled::Error);
+        // A message still queued behind the error keeps the wait going.
+        assert_eq!(reading(&state, Ended::NotYet), Settled::NotYet);
+    }
+
+    #[test]
+    fn an_errored_turn_ends_with_or_without_a_stop_after_it() {
+        let failure = "StopFailure";
+        assert_eq!(
+            claudes(&log(&[send::SEND, "UserPromptSubmit", failure])),
+            Ended::Turn
+        );
+        assert_eq!(
+            claudes(&log(&[send::SEND, "UserPromptSubmit", failure, TURN_END])),
+            Ended::Turn
+        );
+        let events = vec![
+            Event::new(send::SEND, json!({})),
+            Event::new("UserPromptSubmit", json!({})),
+            Event::new(failure, json!({ "agent_id": "sub-1" })),
+        ];
+        assert_eq!(claudes(&events), Ended::NotYet);
+    }
+
+    fn zone() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("Asia/Dhaka").unwrap()
+    }
+
+    /// Epoch second of 2026-11-16 at `hour:00` in [`zone`].
+    fn dhaka(day: i8, hour: i8) -> u64 {
+        let at = jiff::civil::date(2026, 11, day).at(hour, 0, 0, 0);
+        at.to_zoned(zone()).unwrap().timestamp().as_second() as u64
+    }
+
+    #[test]
+    fn the_words_for_a_limit_name_when_it_lifts() {
+        let now = dhaka(16, 9);
+        let mut state = State {
+            state: Phase::Limited,
+            resumes_at: dhaka(16, 15),
+            ..State::default()
+        };
+        assert_eq!(
+            stop_words(&state, now, &zone()),
+            Some("limited until 15:00".to_string())
+        );
+        state.resumes_at = dhaka(20, 9);
+        assert_eq!(
+            stop_words(&state, now, &zone()),
+            Some("limited until Nov 20 09:00".to_string())
+        );
+        state.resumes_at = 0;
+        assert_eq!(
+            stop_words(&state, now, &zone()),
+            Some("limited".to_string())
+        );
+        state.resumes_at = dhaka(16, 8);
+        assert_eq!(
+            stop_words(&state, now, &zone()),
+            Some("limited".to_string())
+        );
+    }
+
+    #[test]
+    fn the_words_for_an_error_name_its_class_and_beat_a_stale_answer() {
+        let mut state = State {
+            state: Phase::Idle,
+            result: Some("a stale answer".to_string()),
+            ..State::default()
+        };
+        assert_eq!(stop_words(&state, 1, &zone()), None);
+        state.error = Some("overloaded".to_string());
+        assert_eq!(
+            stop_words(&state, 1, &zone()),
+            Some("error: overloaded".to_string())
+        );
+    }
+
+    /// Run `result` over a parked agent that left `state` after `events`.
+    fn result_over(
+        id: &str,
+        events: &[&str],
+        record: impl FnOnce(&mut crate::store::State),
+    ) -> (i32, String) {
+        let root = tempfile::TempDir::new().unwrap();
+        let meta = Meta {
+            role: None,
+            parent: None,
+            depth: 0,
+            id: id.to_string(),
+            task: "fix the login bug".to_string(),
+            agent: Some("claude".to_string()),
+            model: None,
+            effort: None,
+            dir: std::path::PathBuf::from("/srv/app"),
+            worktree: None,
+            branch: None,
+            base: None,
+            socket: Socket::Name(format!("amx-no-such-server-{}", std::process::id())),
+            pane: PaneId::new("%404").unwrap(),
+            bg: false,
+            session: None,
+            transcript: None,
+            created: 1,
+        };
+        let agent = Agent::create(root.path(), &meta).unwrap();
+        let writer = agent.writer().unwrap();
+        for kind in events {
+            writer.append(&Event::new(*kind, json!({}))).unwrap();
+        }
+        writer
+            .observe(|state| {
+                record(state);
+                state.parked_at = 4_600;
+            })
+            .unwrap();
+        drop(writer);
+        let mut out = Vec::new();
+        let code = run(root.path(), id, None, false, &mut out).unwrap();
+        (code, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn result_over_a_limited_agent_says_so_and_fails() {
+        let (code, printed) = result_over("limit-a1b", &[send::SEND], |state| {
+            state.state = Phase::Limited;
+        });
+        assert_eq!((code, printed.as_str()), (exit::FAILURE, "limited\n"));
+    }
+
+    #[test]
+    fn result_over_an_errored_agent_says_the_class_and_fails() {
+        let events = [send::SEND, "UserPromptSubmit", "StopFailure"];
+        let (code, printed) = result_over("error-a1b", &events, |state| {
+            state.state = Phase::Idle;
+            state.result = Some("a stale answer".to_string());
+            state.error = Some("overloaded".to_string());
+        });
+        assert_eq!(
+            (code, printed.as_str()),
+            (exit::FAILURE, "error: overloaded\n")
+        );
+    }
 
     #[test]
     fn a_subagents_turn_is_not_the_agents_turn() {

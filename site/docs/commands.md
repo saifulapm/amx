@@ -217,6 +217,11 @@ If the agent stops on a question, `result` returns at once with exit 2 and
 prints the question and numbered choices. After a `send`, it waits for the turn
 that message started. An agent that has already ended returns immediately.
 
+A turn that a usage limit ended exits 1 and prints `limited until 15:00` (or
+`limited until Nov 20 09:00` when the limit lifts a day or more away, and plain
+`limited` when the time is unknown). An agent an API error left idle exits 1
+and prints `error: overloaded`, with the error class in place of `overloaded`.
+
 ```sh
 answer=$(amx result "$id" --timeout 900)
 ```
