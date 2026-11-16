@@ -515,7 +515,13 @@ impl State {
     /// The first unanswered question is mirrored into `question` and
     /// `options`, where readers look for the question on screen.
     pub fn asks_all(&mut self, asking: Vec<Ask>) {
-        self.asking = asking;
+        self.asking = asking
+            .into_iter()
+            .map(|ask| Ask {
+                text: kept_words(&ask.text),
+                ..ask
+            })
+            .collect();
         self.shows_the_pending_one();
     }
 
@@ -2364,6 +2370,25 @@ mod tests {
                 answer: None,
             },
         ]
+    }
+
+    #[test]
+    fn store_keeps_a_forged_question_of_a_call_short_and_inert() {
+        // A payload is anyone's to write, and ls and the card print the
+        // question a call asks, as they print a notification's.
+        let mut state = State::default();
+        state.asks_all(vec![Ask {
+            text: format!("Pick \u{1b}[2J one\n{}", "C".repeat(10_000)),
+            ..Ask::default()
+        }]);
+        for said in [&state.asking[0].text, state.question.as_ref().unwrap()] {
+            assert!(
+                said.chars().count() <= WORDS_ROOM,
+                "{} chars",
+                said.chars().count()
+            );
+            assert!(!said.chars().any(char::is_control), "{said:?}");
+        }
     }
 
     #[test]

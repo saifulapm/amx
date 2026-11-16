@@ -31,6 +31,12 @@ through `sh -c`, followed by `amx _exit <id> <status>` so the record learns
 how the process ended. The pane's environment carries `AMX_ID`, `AMX_DIR` and
 `AMX_AGENT_DIR` so everything running inside it can find the record.
 
+Each agent also gets a TCP port of its own from 4100-4999, as `AMX_PORT` and
+`PORT`, so dev servers in two agents do not collide. The port is picked when
+the agent starts or resumes, skipping ports another agent holds or a process
+listens on, and goes back to the pool when the agent stops. With every port
+taken, the spawn warns and the agent starts without either variable.
+
 The underscore verbs are amx calling itself and are hidden from `--help`:
 
 | Verb | Called by | Does |

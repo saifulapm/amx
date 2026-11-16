@@ -109,8 +109,12 @@ idle. How long a question has been waiting is on the card.
 When the branch has pull requests, the row shows the number, coloured by its
 state. See [Worktrees](worktrees.md#the-pull-request-column).
 
-`v` adds the vendor, model and effort to every row. Press it again to hide
-them.
+`v` adds the vendor, model and effort to every row. Press it again to show
+how full each agent's context window is instead, as `ctx 41% · 412k`: the
+share of the model's window its next turn sends, and the tokens. A third
+press hides the column; the view opens on whichever you left. The card's
+rule shows the same gauge after the vendor words. An agent whose vendor has
+reported no usage yet shows none.
 
 ## Gathering by directory or repository
 
@@ -527,7 +531,7 @@ returns to the list, `q` closes the view.
 | `?` | The keys screen. |
 | `q` `ctrl+c` | Close the view. |
 | `space` | Open the card. |
-| `v` | Show vendor, model and effort per row. |
+| `v` | Show vendor, model and effort per row, then how full each context is, then neither. |
 | `enter` `→` `l` | Go into the agent; open or shut a group. |
 | `d` | The diff card. |
 | `o` | Open the pull request in the browser. |
