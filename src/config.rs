@@ -318,6 +318,7 @@ impl Default for Config {
 pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
     let table: toml::Table = text.parse().context("not valid TOML")?;
     let mut warnings = unknown_keys(&table);
+    warnings.extend(unread_notify(&table));
     let mut config: Config = table.clone().try_into()?;
     config.harnesses = harness_tables(&table)?;
     warnings.extend(check_dials(&mut config));
@@ -342,6 +343,20 @@ fn unknown_keys(table: &toml::Table) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The warning for a `[notify]` table that does not read, which is then read
+/// as its default. serde's reason may echo the file's text, so its control
+/// characters become spaces.
+fn unread_notify(table: &toml::Table) -> Option<String> {
+    let e = table.get("notify")?.clone().try_into::<Notify>().err()?;
+    let reason: String = e
+        .to_string()
+        .trim_end()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    Some(format!("ignoring [notify]: {reason}"))
 }
 
 /// The file's harness tables, keyed by program name.
@@ -784,6 +799,7 @@ fn keys_in(path: &Path, read: Result<Option<toml::Table>>) -> (toml::Table, Vec<
         Ok(Some(keys)) => {
             let said = unknown_keys(&keys)
                 .into_iter()
+                .chain(unread_notify(&keys))
                 .map(|warning| format!("{}: {warning}", path.display()))
                 .collect();
             (keys, said)
@@ -1407,6 +1423,30 @@ mod tests {
             let (c, w) = layered(&[wrote(dir.path(), "config.toml", &text)]);
             assert_eq!(c.max_agents, 9, "and the file still layers: {forged} {w:?}");
         }
+    }
+
+    #[test]
+    fn a_notify_table_that_does_not_read_says_so_once_with_the_key_and_the_reason() {
+        let text = "shelve_after = 60\n[notify]\nopen = 7\n";
+        let (c, w) = parse(text).unwrap();
+        assert_eq!(c.shelve_after, 60);
+        assert_eq!(c.notify.open, None);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("ignoring [notify]: "), "{w:?}");
+        assert!(w[0].contains("open"), "names the key: {w:?}");
+        assert!(w[0].contains("integer"), "and serde's reason: {w:?}");
+
+        let dir = TempDir::new().unwrap();
+        let (c, w) = layered(&[wrote(dir.path(), "config.toml", text)]);
+        assert_eq!(c.shelve_after, 60);
+        assert_eq!(w.len(), 1, "the layered read says it too: {w:?}");
+        assert!(w[0].contains(": ignoring [notify]: "), "{w:?}");
+
+        // serde echoes a string it did not expect, escapes and all.
+        let (_, w) = parse("notify = \"\\u001b]0;owned\\u0007\\nnext\"\n").unwrap();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("ignoring [notify]: "), "{w:?}");
+        assert!(!w[0].chars().any(char::is_control), "{w:?}");
     }
 
     #[test]

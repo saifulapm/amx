@@ -849,3 +849,18 @@ fn uninstall_takes_claudes_plugin_out_of_the_config_dir_too() {
     assert!(!dir.join("skills/amx").exists(), "{printed}");
     assert!(!amx.home().join(".claude/skills/amx").exists(), "{printed}");
 }
+
+#[test]
+fn a_notify_table_that_does_not_read_is_named_on_the_config_line() {
+    let amx = Harness::new();
+    amx.config("agent = \"claude\"\n[notify]\nopen = 7\n");
+
+    let printed = doctor(&amx);
+    let (ok, line) = check_line(&printed, "config");
+    assert!(!ok, "{printed}");
+    assert!(
+        line.contains("config.toml: ignoring [notify]: "),
+        "{printed}"
+    );
+    assert!(line.contains("open"), "names the key: {printed}");
+}
