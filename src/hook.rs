@@ -714,9 +714,13 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             state.composer_holds.clear();
             state.summary = None;
             state.asks(None);
-            // The shell count belonged to the previous turn.
-            state.background = 0;
-            state.agents = 0;
+            // The shell count belonged to the previous turn, unless the vendor
+            // typed this prompt itself: a subagent's message or a task's end,
+            // with the rest of the work still out.
+            if !injected(hooks, payload) {
+                state.background = 0;
+                state.agents = 0;
+            }
             // A new turn clears the last answer, so a turn that ends without
             // one does not hand the old answer to `result`. A prompt the vendor
             // injected itself keeps it.
@@ -2767,6 +2771,37 @@ mod tests {
             apply(&payload, &mut state, &mut meta());
             assert_eq!(state.background, 0, "{payload}");
         }
+    }
+
+    #[test]
+    fn hook_a_prompt_claude_types_itself_keeps_the_work_out() {
+        // A subagent's message to the agent arrives as a prompt claude submits
+        // itself, while the other subagent and the shell still run. Zeroed,
+        // the row read plain `working` until the next turn ended.
+        let mut state = State::default();
+        let mut meta = meta();
+        for payload in [
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "start two reviewers" }),
+            json!({ "hook_event_name": "Stop", "last_assistant_message": "started", "background_tasks": [
+                { "id": "a1", "type": "subagent", "status": "running" },
+                { "id": "a2", "type": "subagent", "status": "running" },
+                { "id": "b1", "type": "shell", "status": "running" }
+            ] }),
+            json!({ "hook_event_name": "UserPromptSubmit",
+                    "prompt": "<agent-message from=\"a1\">ok</agent-message>" }),
+        ] {
+            apply(&payload, &mut state, &mut meta);
+        }
+        assert!(state.turn_open);
+        assert_eq!((state.agents, state.background), (2, 3));
+
+        // A prompt somebody typed starts afresh.
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "and now the docs" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!((state.agents, state.background), (0, 0));
     }
 
     #[test]
