@@ -3930,6 +3930,33 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     }
 
     #[test]
+    fn reader_ends_a_declined_box_on_the_idle_prompt_after_two_still_looks() {
+        // Esc on a permission or plan box sends no hook, so the record stays
+        // waiting. The prompt under it is the only sign, and a turn's thirty
+        // looks of stillness left the row asking for half a minute.
+        let mut asked = state(Phase::Waiting, 1_000);
+        asked.question = Some("Run echo hi?".to_string());
+        let look = |held| {
+            read(
+                &asked,
+                0,
+                true,
+                || Some(IDLE_SCREEN.to_string()),
+                rules::of("claude"),
+                true,
+                1_100,
+                held,
+                None,
+            )
+            .verdict
+        };
+        assert_eq!(look(1).phase, Phase::Waiting, "one look decides nothing");
+        let ended = look(2);
+        assert_eq!(ended.phase, Phase::Idle, "{ended:?}");
+        assert_eq!(ended.rule.as_deref(), Some("idle_prompt"));
+    }
+
+    #[test]
     fn reader_leaves_a_turn_whose_shells_are_still_running_at_work() {
         // A finished turn's prompt and one with shells still running behind it
         // look alike. The count the Stop hook wrote tells them apart, so the

@@ -35,6 +35,11 @@ pub const FLOOR_LINES: usize = 24;
 /// [`crate::store::Still`].
 pub const SETTLED_LOOKS: u64 = 30;
 
+/// Seconds a screen must hold still before a quiescent rule may end a wait
+/// the record says is open. Unlike a turn, a wait has no pause in output to
+/// mistake for its end. See [`Rule::may_decide`].
+pub const DECLINED_LOOKS: u64 = 2;
+
 /// Everything amx can read on one vendor's screens: the rules, in the order
 /// they are tried, and the chrome under them.
 #[derive(Debug, Deserialize)]
@@ -406,7 +411,7 @@ impl Rule {
     /// Whether this rule may decide, given the recorded phase.
     ///
     /// A quiescent rule may end a turn only after [`SETTLED_LOOKS`] seconds of
-    /// stillness. From `starting` or `unknown` there is no turn to end, so it
+    /// stillness, and a wait after [`DECLINED_LOOKS`]. From `starting` or `unknown` there is no turn to end, so it
     /// decides at once; that is what names a parked agent. A deferring rule
     /// never decides.
     fn may_decide(&self, recorded: Phase, held: u64) -> bool {
@@ -419,6 +424,10 @@ impl Rule {
         match recorded {
             // Nothing outstanding, so no turn to end.
             Phase::Starting | Phase::Unknown => true,
+            // A box refused with Esc sends no hook. A screen with a box on it
+            // is claimed by the box's own rule first, so this one claiming it
+            // means the box is gone; two looks guard against a redraw.
+            Phase::Waiting => held >= DECLINED_LOOKS,
             _ => held >= SETTLED_LOOKS,
         }
     }
