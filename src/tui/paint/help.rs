@@ -23,7 +23,7 @@ use crate::tui::keyname::Bound;
 /// acted is listed here. Ordered by [`GROUPS`], which cuts it into runs, so
 /// each key is in exactly one group. The README test reads this file as text,
 /// since the table is not visible outside the crate's `tui` module.
-pub(in crate::tui) const HELP: [(&str, &str); 57] = [
+pub(in crate::tui) const HELP: [(&str, &str); 58] = [
     // walk
     ("↑ ↓ j k", "walk the agents"),
     ("gg G", "top and bottom of the list"),
@@ -58,6 +58,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 57] = [
     ("← → ctrl+←", "move by character or word · home end"),
     ("backspace", "a character · delete ahead · ctrl+w a word"),
     ("ctrl+g", "edit the line in $EDITOR"),
+    ("ctrl+v", "paste an image or text from the clipboard"),
     ("alt+↑ alt+↓", "earlier lines · ↑ ↓ too on a task line"),
     // arrange
     ("ctrl+s", "group by state, directory, state, repo"),
@@ -92,7 +93,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 57] = [
 pub(super) const GROUPS: [(&str, usize); 5] = [
     ("walk", 8),
     ("look", 12),
-    ("start", 12),
+    ("start", 13),
     ("arrange", 13),
     ("dials", 12),
 ];

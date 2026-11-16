@@ -75,6 +75,13 @@ pub fn visited_file(state_root: &Path) -> Option<PathBuf> {
 
 const VISITED: &str = "visited.json";
 
+/// Where the view keeps an image pasted onto a line until the line is sent.
+pub fn holding_dir(state_root: &Path) -> Option<PathBuf> {
+    beside_the_agents(state_root, HOLDING)
+}
+
+const HOLDING: &str = "holding";
+
 /// When the view last asked the forge about each repository; see
 /// [`crate::pr::refresh`].
 pub fn schedule_file(state_root: &Path) -> Option<PathBuf> {

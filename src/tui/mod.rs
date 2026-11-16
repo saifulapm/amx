@@ -15,6 +15,7 @@
 
 mod act;
 mod clip;
+mod clipboard;
 mod grid;
 mod keyname;
 mod paint;
@@ -475,14 +476,15 @@ fn chord(key: KeyEvent) -> KeyModifiers {
 /// list.
 ///
 /// The line takes plain characters, editing and cursor keys, enter, esc, tab,
-/// `ctrl+a`, `ctrl+e` and `ctrl+w`, `ctrl+g` for the editor and `ctrl+j` for a
-/// newline. Plain up and down go to the line only while it offers
-/// suggestions; alt+up and alt+down always do, for history.
+/// `ctrl+a`, `ctrl+e` and `ctrl+w`, `ctrl+g` for the editor, `ctrl+j` for a
+/// newline and `ctrl+v` for the clipboard. Plain up and down go to the line
+/// only while it offers suggestions; alt+up and alt+down always do, for
+/// history.
 fn the_lines(composer: &Composer, key: KeyEvent) -> bool {
     let plain = chord(key).is_empty();
     let ctrl = chord(key) == KeyModifiers::CONTROL;
     match key.code {
-        KeyCode::Char('a' | 'e' | 'w' | 'g' | 'j') if ctrl => true,
+        KeyCode::Char('a' | 'e' | 'w' | 'g' | 'j' | 'v') if ctrl => true,
         // A chord on a character goes to the list.
         KeyCode::Char(_) => plain,
         KeyCode::Enter | KeyCode::Esc | KeyCode::Tab => true,
@@ -2253,6 +2255,17 @@ impl Screen {
             KeyCode::Char('g') if chord(key) == KeyModifiers::CONTROL => {
                 self.mode = Mode::Typing(composer);
                 return Ok(Doing::Edit);
+            }
+            // The clipboard goes onto the lines that are sent to an agent. A
+            // name or a search has no use for an image.
+            KeyCode::Char('v')
+                if chord(key) == KeyModifiers::CONTROL
+                    && matches!(
+                        composer.asking,
+                        Asking::Task | Asking::Reply | Asking::Fork { .. }
+                    ) =>
+            {
+                self.notice = clipboard::paste_onto(&mut composer, root);
             }
             KeyCode::Backspace if chord(key) == KeyModifiers::ALT => composer.delete_word_back(),
             KeyCode::Char('w') if chord(key) == KeyModifiers::CONTROL => {

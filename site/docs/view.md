@@ -196,7 +196,9 @@ Every card ends with a line. Type on it and `enter` sends what you typed.
 On an empty line, `space` closes the card and `enter` attaches, as they do
 without a card. Once you type a character they become a space and send. `esc`
 closes the card and the line together. `shift+enter`, `alt+enter` or `ctrl+j`
-adds a newline. `ctrl+g` opens the line in `$VISUAL` or `$EDITOR`.
+adds a newline. `ctrl+g` opens the line in `$VISUAL` or `$EDITOR`. `ctrl+v`
+pastes the clipboard, an image as `[Image #1]`; see
+[Starting an agent](#starting-an-agent).
 
 With a card open, letters go to the line. Arrows, page keys, `ctrl+x`,
 `ctrl+t`, `ctrl+s`, `alt+1..9` and `shift+↑` `shift+↓` still act on the list.
@@ -243,6 +245,20 @@ back.
 
 `ctrl+g` writes the task in your editor. Pressed on the list, it opens a task
 line first.
+
+`ctrl+v` pastes the Wayland clipboard, through `wl-paste`. An image (PNG,
+JPEG, WebP or GIF, up to 20 MB) goes on the line as `[Image #1]`, numbered
+from one on each line, and backspace removes the marker whole. Text goes on
+the way a paste does. It works on the task, fork and reply lines; a rename or
+the find line ignores it. When there is nothing to paste, the line stays as
+it was and the keys row says why:
+
+| Notice | Means |
+| --- | --- |
+| `no clipboard (wl-paste not found)` | Install wl-clipboard. |
+| `no clipboard (no Wayland session)` | `WAYLAND_DISPLAY` is not set. |
+| `the clipboard holds no image or text` | The clipboard is empty, or holds another type. |
+| `the image is 21 MB; the limit is 20 MB` | The image is too big to attach. |
 
 ### Changing the dials
 
@@ -502,6 +518,7 @@ returns to the list, `q` closes the view.
 | `!` | At the front of the task line: run a command. |
 | `tab` | Take an offer; on an empty line, open `@` offers. |
 | `ctrl+g` | Write the line in `$EDITOR`. |
+| `ctrl+v` | Paste an image or text from the clipboard. |
 | `alt+↑` `alt+↓` | Earlier lines. |
 | `ctrl+s` | Group by state, directory, state, repository. |
 | `ctrl+t` | Pin or unpin. |
