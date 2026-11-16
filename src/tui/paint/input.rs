@@ -11,6 +11,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::ops::Range;
 
 use super::card::{notes, pages};
 use super::style::{bold, dim, prospective};
@@ -104,28 +105,44 @@ fn cut(paragraph: &str, room: usize) -> Vec<String> {
     rows
 }
 
+/// Each row [`composer_lines`] draws, as the range of `text`'s characters it
+/// holds. The `\n` between paragraphs is on no row.
+///
+/// Drawing and the keys that move by row both read rows here, so the cursor
+/// moves over the rows as drawn.
+pub(in crate::tui) fn visual_rows(text: &str, room: usize) -> Vec<Range<usize>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for paragraph in text.split('\n') {
+        for row in cut(paragraph, room) {
+            let end = start + row.chars().count();
+            rows.push(start..end);
+            start = end;
+        }
+        // Step over the newline.
+        start += 1;
+    }
+    rows
+}
+
 /// The cursor's (row, char offset) in the rows [`composer_lines`] produces.
 ///
-/// At the end of a full row the offset is one past the last char, which is
-/// off screen; [`last_cell`] moves the block back onto the row.
+/// A cursor at the end of a wrapped row is at the start of the next, unless
+/// the row ends its paragraph. At the end of a full row the offset is one past
+/// the last char, which is off screen; [`last_cell`] moves the block back onto
+/// the row.
 pub(super) fn cursor_cell(composer: &Composer, room: usize) -> (u16, u16) {
-    let mut left = composer.at.min(composer.text.chars().count());
-    let mut row = 0;
-    for paragraph in composer.text.split('\n') {
-        let rows = cut(paragraph, room);
-        let last = rows.len() - 1;
-        for (down, text) in rows.iter().enumerate() {
-            let length = text.chars().count();
-            if left < length || (down == last && left == length) {
-                return ((row + down) as u16, left as u16);
-            }
-            left -= length;
-        }
-        // Step over the newline between paragraphs.
-        left -= 1;
-        row += rows.len();
-    }
-    (row.saturating_sub(1) as u16, 0)
+    let rows = visual_rows(&composer.text, room);
+    let at = composer.at.min(composer.text.chars().count());
+    let row = rows
+        .iter()
+        .enumerate()
+        .position(|(down, row)| {
+            let ends_paragraph = rows.get(down + 1).is_none_or(|next| next.start > row.end);
+            at < row.end || (at == row.end && ends_paragraph)
+        })
+        .unwrap_or(rows.len() - 1);
+    (row as u16, (at - rows[row].start) as u16)
 }
 
 /// The rule's row above the composer.
@@ -249,6 +266,7 @@ pub(super) fn typed_rows(
 ) {
     let prompt = GUTTER.to_string();
     let room = composer_room(band.width);
+    composer.room.set(room);
     let rows = composer_lines(&composer.text, room);
     let (row, column) = cursor_cell(composer, room);
     let (row, column) = (row as usize, column as usize);
@@ -1318,6 +1336,33 @@ mod tests {
             text,
             "no character is lost"
         );
+    }
+
+    #[test]
+    fn visual_rows_are_the_drawn_rows_as_char_ranges_without_their_newlines() {
+        let text = "you need to attach it\n\nab";
+        assert_eq!(
+            composer_lines(text, 10),
+            ["you need ", "to attach ", "it", "", "ab"]
+        );
+        assert_eq!(visual_rows(text, 10), [0..9, 9..19, 19..21, 22..22, 23..25]);
+        assert_eq!(visual_rows("", 10), [Range { start: 0, end: 0 }]);
+        assert_eq!(
+            visual_rows("日本語の文", 4),
+            [0..2, 2..4, 4..5],
+            "a wide character takes two cells"
+        );
+    }
+
+    #[test]
+    fn drawing_the_line_tells_it_the_width_its_rows_were_cut_at() {
+        let screen = typing("port the importer");
+        let Mode::Typing(composer) = &screen.mode else {
+            unreachable!()
+        };
+        assert_eq!(composer.room.get(), usize::MAX, "undrawn, it does not wrap");
+        painted(&screen, TALL);
+        assert_eq!(composer.room.get(), composer_room(TALL.0));
     }
 
     #[test]

@@ -57,6 +57,9 @@ pub struct Composer {
     pub images: Vec<PathBuf>,
     /// The walk through sent lines, while one is under way.
     pub walking: Option<Walking>,
+    /// The cells of text a row of the line was last drawn with, so the keys
+    /// move over the rows as drawn. Unbounded until the line is first drawn.
+    pub room: Cell<usize>,
 }
 
 /// A walk through the lines sent before.
@@ -171,6 +174,7 @@ impl Composer {
             pastes: Vec::new(),
             images: Vec::new(),
             walking: None,
+            room: Cell::new(usize::MAX),
         }
     }
 
