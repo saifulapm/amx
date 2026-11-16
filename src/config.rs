@@ -574,6 +574,33 @@ fn a_project_may_set_env(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix))
 }
 
+/// `words` without the vendor's remote-control flag, alone, as `flag=name` or
+/// followed by a name, and the spellings dropped. Opening agents to remote
+/// control is the person's call, as `remote_control` is.
+fn without_remote(
+    vendor: Option<&crate::vendor::Vendor>,
+    words: Vec<String>,
+) -> (Vec<String>, Vec<String>) {
+    let Some(flag) = vendor.and_then(|vendor| vendor.remote_flag) else {
+        return (words, Vec::new());
+    };
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    let mut words = words.into_iter().peekable();
+    while let Some(word) = words.next() {
+        if word == flag {
+            match words.next_if(|next| !next.starts_with('-')) {
+                Some(name) => dropped.push(format!("{word} {name}")),
+                None => dropped.push(word),
+            }
+        } else if word.starts_with(&format!("{flag}=")) {
+            dropped.push(word);
+        } else {
+            kept.push(word);
+        }
+    }
+    (kept, dropped)
+}
+
 /// Remove the keys and env variables a project may not set, with a warning
 /// for each.
 fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<String> {
@@ -588,7 +615,10 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
     }
     if let Some(toml::Value::String(agent)) = keys.get_mut("agent") {
         let words: Vec<String> = agent.split_whitespace().map(String::from).collect();
-        let (kept, dropped) = crate::vendor::without_unasked(crate::vendor::find(agent), &words);
+        let vendor = crate::vendor::find(agent);
+        let (kept, mut dropped) = crate::vendor::without_unasked(vendor, &words);
+        let (kept, remote) = without_remote(vendor, kept);
+        dropped.extend(remote);
         for spelling in dropped {
             said.push(format!(
                 "{}: ignoring `agent` `{spelling}`: only your own config can set it",
@@ -621,7 +651,9 @@ fn only_what_a_project_may_set(file: &Path, keys: &mut toml::Table) -> Vec<Strin
             let vendor = crate::vendor::table()
                 .iter()
                 .find(|vendor| vendor.name == harness);
-            let (kept, dropped) = crate::vendor::without_unasked(vendor, &words);
+            let (kept, mut dropped) = crate::vendor::without_unasked(vendor, &words);
+            let (kept, remote) = without_remote(vendor, kept);
+            dropped.extend(remote);
             for spelling in dropped {
                 said.push(format!(
                     "{}: ignoring `{harness}.args` `{spelling}`: only your own config can set it",
@@ -1964,6 +1996,23 @@ mod tests {
                 "/p/.amx/config.toml: ignoring `claude.remote_control`: only your own config can set it"
             ]
         );
+        // Nor through its args, in either spelling, with or without a name.
+        for args in [
+            "[\"--remote-control\", \"x\", \"--verbose\"]",
+            "[\"--remote-control\", \"--verbose\"]",
+            "[\"--remote-control=x\", \"--verbose\"]",
+        ] {
+            let (keys, warnings) = fenced(&format!("[claude]\nargs = {args}\n"));
+            assert_eq!(args_of(&keys, "claude"), ["--verbose"], "{args}");
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(
+                warnings[0].contains("`claude.args` `--remote-control"),
+                "{warnings:?}"
+            );
+        }
+        let (keys, warnings) = fenced("agent = \"claude --remote-control x --verbose\"\n");
+        assert_eq!(keys["agent"].as_str(), Some("claude --verbose"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
         let (c, w) = parse("[claude]\nremote_control = true\n").unwrap();
         assert!(c.harness("claude").remote_control, "{w:?}");
         assert!(!Config::default().harness("claude").remote_control);
