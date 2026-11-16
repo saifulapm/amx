@@ -584,23 +584,6 @@ fn running(payload: &Value) -> (u32, u32) {
         })
 }
 
-/// The summary line for tasks still running.
-fn still_running(shells: u32, agents: u32) -> String {
-    let counted = |n: u32, one: &str| match n {
-        1 => format!("1 {one}"),
-        many => format!("{many} {one}s"),
-    };
-    match (shells, agents) {
-        (shells, 0) => format!("{} running", counted(shells, "shell")),
-        (0, agents) => format!("{} running", counted(agents, "agent")),
-        (shells, agents) => format!(
-            "{} and {} running",
-            counted(shells, "shell"),
-            counted(agents, "agent")
-        ),
-    }
-}
-
 /// Fold one payload into the state and meta.
 ///
 /// Events are read through the record vendor's own hook table:
@@ -921,13 +904,12 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
             // turn and the park timer ends it, and both are about the agent:
             // `_park` once took a pane whose shells were still running ten
             // minutes after the stop. So the agent stays working.
-            if state.background > 0 {
-                state.state = Phase::Working;
-                state.summary = Some(still_running(shells, agents));
-            } else {
-                state.state = Phase::Idle;
-                state.summary = None;
-            }
+            // The counts are the row's to show, beside the answer.
+            state.summary = None;
+            state.state = match state.background > 0 {
+                true => Phase::Working,
+                false => Phase::Idle,
+            };
             if held {
                 state.state = Phase::Waiting;
             }
@@ -2525,7 +2507,10 @@ mod tests {
         }));
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.background, 2, "the finished one is not one of them");
-        assert_eq!(state.summary.as_deref(), Some("2 shells running"));
+        assert_eq!(
+            state.summary, None,
+            "the row shows the count beside the answer"
+        );
         assert_eq!(
             state.result.as_deref(),
             Some("I started the build."),
@@ -2540,7 +2525,7 @@ mod tests {
             "hook_event_name": "Stop",
             "background_tasks": [{ "id": "bash_1", "type": "shell", "status": "running" }]
         }));
-        assert_eq!(one.summary.as_deref(), Some("1 shell running"));
+        assert_eq!((one.background, one.agents), (1, 0), "one shell");
     }
 
     #[test]
@@ -2559,10 +2544,7 @@ mod tests {
         assert_eq!(state.state, Phase::Working);
         assert_eq!(state.background, 3);
         assert_eq!(state.agents, 2, "the reader holds the turn on these");
-        assert_eq!(
-            state.summary.as_deref(),
-            Some("1 shell and 2 agents running")
-        );
+        assert_eq!(state.summary, None);
         assert_eq!(
             state.result.as_deref(),
             Some("Two reviewers are reading the diff.")
@@ -2572,7 +2554,7 @@ mod tests {
             "hook_event_name": "Stop",
             "background_tasks": [{ "id": "a1", "type": "local_agent", "status": "running" }]
         }));
-        assert_eq!(agents.summary.as_deref(), Some("1 agent running"));
+        assert_eq!((agents.background, agents.agents), (1, 1), "one agent");
     }
 
     #[test]

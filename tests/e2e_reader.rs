@@ -252,6 +252,14 @@ fn the_listing_reads_an_agent_at_its_prompt_with_a_shell_out_as_idle() {
     let out = amx.amx(&["ls"]);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("idle · 1 shell dev-server-a1b"), "{text}");
+    assert!(
+        !text.contains("shell running"),
+        "the count is said once, beside the answer: {text}"
+    );
+
+    let out = amx.amx(&["status", "dev-server-a1b"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("dev-server-a1b  idle · 1 shell"), "{text}");
 
     let listed = ls(&amx);
     assert_eq!(listed[0]["state"], "idle", "{}", listed[0]);

@@ -367,11 +367,12 @@ fn row(
     let room = room.saturating_sub(age - widths.age);
     // Background work makes the words longer than the state cell. The row
     // widens its own cell and takes the cells from its summary, as a wake time
-    // does, since a cut state word misleads.
+    // does, since a cut state word misleads. Past the summary's last cell the
+    // words are cut instead, so the age stays on the row.
     let words = view.state_words();
     let state = match widths.state {
         0 => 0,
-        cell => cell.max(width_of(&words)),
+        cell => cell.max(width_of(&words)).min(cell + room),
     };
     let room = room.saturating_sub(state - widths.state);
     let armed = moment.armed.iter().position(|id| id == view.id());
@@ -2304,6 +2305,18 @@ mod tests {
             "{:?}",
             row("heard-b2c")
         );
+    }
+
+    #[test]
+    fn rows_cut_the_widened_state_cell_before_they_lose_the_age() {
+        // At 50 columns the summary has fewer cells than the words want; the
+        // words are cut, and the row still ends in its age.
+        let screen = by_project(vec![at(with_work_out("busy-a1b", true, 3, 2), "/src/api")]);
+        let lines = painted(&screen, (50, 10));
+        let row = lines.iter().find(|line| line.contains("busy-a1b")).unwrap();
+        assert!(row.trim_end().ends_with("3s"), "{row:?}");
+        assert_eq!(row.chars().count(), 50, "{row:?}");
+        assert!(row.contains("working"), "{row:?}");
     }
 
     #[test]
