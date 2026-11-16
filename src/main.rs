@@ -187,9 +187,21 @@ fn run(cli: &cli::Cli) -> i32 {
         Some(cli::Command::Fork { id, task, image }) => {
             finish(verbs::fork::from_env(id, task.as_deref(), image))
         }
-        Some(cli::Command::Events { ids, follow, json }) => {
-            finish(verbs::events::from_env(ids, *follow, *json))
-        }
+        Some(cli::Command::Events {
+            ids,
+            follow,
+            json,
+            newest,
+            since,
+        }) => finish(verbs::events::from_env(
+            ids,
+            verbs::events::Reading {
+                newest: *newest,
+                since: *since,
+            },
+            *follow,
+            *json,
+        )),
         Some(cli::Command::Statusline) => finish(verbs::statusline::from_env()),
         Some(cli::Command::Boot { id }) => finish(spawn::boot_from_env(id)),
         Some(cli::Command::Park { id }) => finish(verbs::park::from_env(id)),

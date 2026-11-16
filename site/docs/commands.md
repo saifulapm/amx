@@ -388,15 +388,19 @@ answer amx recorded. For a command row it reads what the command printed.
 Print the event log of one or more agents, merged in time order.
 
 ```sh
-amx events [IDS...] [--follow] [--json]
+amx events [IDS...] [-n <N>] [--since <SPAN>] [--follow] [--json]
 ```
 
 | Flag | Does |
 | --- | --- |
-| `-f`, `--follow` | Keep printing as events arrive. |
+| `-n <N>` | Print only the newest N events, oldest first. |
+| `--since <SPAN>` | Print only events of the last span: a number and `s`, `m`, `h` or `d`, as in `30s`, `10m`, `2h`, `7d`. |
+| `-f`, `--follow` | Keep printing as events arrive. On its own it starts at the end, so it prints nothing until something new happens. With `-n` or `--since` it prints that selection first. |
 | `--json` | One JSON object per event, with the full payload. |
 
-With no ids it reads every agent.
+With no ids it reads every agent. With both `-n` and `--since` you get the
+newest N events of the span. Each log is read from its end, only as far as
+the selection reaches, so a long history costs nothing.
 
 ```
 $ amx events echo-hello-from-the-5iu

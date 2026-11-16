@@ -435,6 +435,12 @@ pub enum Command {
         /// Print one JSON object per event instead of the table.
         #[arg(long)]
         json: bool,
+        /// Print only the newest N events.
+        #[arg(short = 'n', value_name = "N")]
+        newest: Option<usize>,
+        /// Print only events from the last span: a number and s, m, h or d.
+        #[arg(long, value_name = "SPAN", value_parser = a_span)]
+        since: Option<u64>,
     },
 
     /// Print agent counts for a status line: ✽ moving, ⚠ waiting.
@@ -847,6 +853,27 @@ fn a_task(text: &str) -> Result<String, String> {
     match text.trim().is_empty() {
         true => Err("the text is empty".to_string()),
         false => Ok(text.to_string()),
+    }
+}
+
+/// Parse a span such as `30s`, `10m`, `2h` or `7d` into seconds.
+fn a_span(text: &str) -> Result<u64, String> {
+    let bad = || format!("`{text}` is not a span; use a number and s, m, h or d, as in 10m");
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let each: u64 = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return Err(bad()),
+    };
+    match number.bytes().all(|byte| byte.is_ascii_digit()) && !number.is_empty() {
+        true => number
+            .parse::<u64>()
+            .ok()
+            .and_then(|count| count.checked_mul(each))
+            .ok_or_else(bad),
+        false => Err(bad()),
     }
 }
 
@@ -1632,6 +1659,35 @@ mod tests {
             panic!("expected new");
         };
         assert_eq!(args.task.as_deref(), Some("  fix the login bug\n"));
+    }
+
+    #[test]
+    fn events_reads_a_count_and_a_span() {
+        let Some(Command::Events { newest, since, .. }) =
+            parse(&["amx", "events", "-n", "5", "--since", "10m"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected events");
+        };
+        assert_eq!((newest, since), (Some(5), Some(600)));
+
+        for (said, seconds) in [("30s", 30), ("2h", 7_200), ("7d", 604_800)] {
+            let Some(Command::Events { since, .. }) =
+                parse(&["amx", "events", "--since", said]).unwrap().command
+            else {
+                panic!("expected events");
+            };
+            assert_eq!(since, Some(seconds), "{said}");
+        }
+
+        for bad in ["10", "m", "10x", "-5m", "1.5h", ""] {
+            assert_eq!(
+                code(&["amx", "events", "--since", bad]),
+                exit::USAGE,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
