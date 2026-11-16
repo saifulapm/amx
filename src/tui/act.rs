@@ -52,6 +52,9 @@ pub struct Composer {
     /// The text each paste marker stands for: `[Pasted text #1]` is
     /// `pastes[0]`.
     pub pastes: Vec<String>,
+    /// The holding file each image marker stands for: `[Image #1]` is
+    /// `images[0]`.
+    pub images: Vec<PathBuf>,
     /// The walk through sent lines, while one is under way.
     pub walking: Option<Walking>,
 }
@@ -166,6 +169,7 @@ impl Composer {
             listed: RefCell::new(None),
             under: None,
             pastes: Vec::new(),
+            images: Vec::new(),
             walking: None,
         }
     }
@@ -244,6 +248,16 @@ impl Composer {
         self.insert(&marker(self.pastes.len()));
     }
 
+    /// Inserts an `[Image #N]` marker at the cursor for the image held in
+    /// `holding`.
+    ///
+    /// Unlike a paste, the same image twice is two markers: each is its own
+    /// attachment.
+    pub fn attach(&mut self, holding: PathBuf) {
+        self.images.push(holding);
+        self.insert(&image_marker(self.images.len()));
+    }
+
     /// The byte range of the marker for an earlier paste equal to `text`, if
     /// that marker is still on the line.
     fn standing(&self, text: &str) -> Option<Range<usize>> {
@@ -306,10 +320,11 @@ impl Composer {
         self.text.replace_range(from..to, "");
     }
 
-    /// The length in characters of a paste marker ending at the cursor.
+    /// The length in characters of a paste or image marker ending at the
+    /// cursor.
     ///
-    /// Only markers for pastes this line holds count; a bracket typed by hand
-    /// is plain text.
+    /// Only markers for pastes and images this line holds count; a bracket
+    /// typed by hand is plain text.
     fn marker_behind(&self) -> Option<usize> {
         let before = &self.text[..self.byte()];
         self.markers()
@@ -325,7 +340,9 @@ impl Composer {
     }
 
     fn markers(&self) -> impl Iterator<Item = String> {
-        (1..=self.pastes.len()).map(marker)
+        (1..=self.pastes.len())
+            .map(marker)
+            .chain((1..=self.images.len()).map(image_marker))
     }
 
     /// Moves one character left, stopping at the start of the line.
@@ -535,6 +552,11 @@ const PASTED_ROWS: usize = 3;
 /// The marker for the `nth` paste on a line, numbered from one per line.
 fn marker(nth: usize) -> String {
     format!("[Pasted text #{nth}]")
+}
+
+/// The marker for the `nth` image on a line, numbered from one per line.
+fn image_marker(nth: usize) -> String {
+    format!("[Image #{nth}]")
 }
 
 /// Reads a find line made only of `s:` tokens as a state narrowing.
@@ -1978,6 +2000,40 @@ mod tests {
         line.insert("[Pasted text #1]");
         line.delete_back();
         assert_eq!(line.text, "[Pasted text #1");
+    }
+
+    #[test]
+    fn composer_numbers_the_images_it_holds_and_takes_each_marker_whole() {
+        let mut line = Composer::new(Asking::Task);
+        line.attach(PathBuf::from("/state/holding/a.png"));
+        line.attach(PathBuf::from("/state/holding/b.jpg"));
+        assert_eq!(line.text, "[Image #1][Image #2]");
+        assert_eq!(
+            line.images,
+            vec![
+                PathBuf::from("/state/holding/a.png"),
+                PathBuf::from("/state/holding/b.jpg")
+            ],
+            "and the holding files in marker order"
+        );
+
+        // One backspace takes the whole second marker.
+        line.delete_back();
+        assert_eq!(line.text, "[Image #1]");
+
+        // Delete and ctrl+w take one whole, from either side.
+        line.home();
+        line.delete_forward();
+        assert_eq!(line.text, "");
+        line.attach(PathBuf::from("/state/holding/c.gif"));
+        line.delete_word_back();
+        assert_eq!(line.text, "");
+
+        // The same characters typed by hand are plain text.
+        let mut line = Composer::new(Asking::Task);
+        line.insert("[Image #1]");
+        line.delete_back();
+        assert_eq!(line.text, "[Image #1");
     }
 
     #[test]
