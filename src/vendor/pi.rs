@@ -137,6 +137,7 @@ pub const VENDOR: Vendor = Vendor {
         ],
         sigil: '/',
         skill_prefix: "skill:",
+        runs_unlisted: false,
     }),
     // A message word starting with `-` is read as a flag until `--`
     // (dist/cli/args.js:23, 0.87.1).

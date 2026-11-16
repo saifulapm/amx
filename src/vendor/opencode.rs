@@ -159,6 +159,7 @@ pub const VENDOR: Vendor = Vendor {
         ],
         sigil: '/',
         skill_prefix: "",
+        runs_unlisted: false,
     }),
     // The task goes on `--prompt=`, since the root command's only positional
     // is a directory (cli/src/commands/commands.ts:43-46).

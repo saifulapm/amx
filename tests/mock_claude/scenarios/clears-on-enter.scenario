@@ -1,0 +1,12 @@
+# An agent at its prompt that answers Enter as claude answers /clear: only a
+# SessionStart for a new session, and no prompt hook.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "run the tests"}
+hook Stop {"last_assistant_message": "the tests pass now"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+await Enter
+hook SessionStart {"source": "clear", "session_id": "@SESSION2@"}
+print ❯
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

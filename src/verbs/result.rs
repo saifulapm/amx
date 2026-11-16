@@ -357,13 +357,16 @@ impl Turns {
 /// stale. What counts as an ending is [`a_turn_ended`].
 ///
 /// A send that [`send::UNSENT`] follows never reached the vendor, so the fold
-/// goes back to where it stood before that send.
+/// goes back to where it stood before that send. A [`send::COMMAND`] opens no
+/// turn, so it and an `UNSENT` after it change nothing.
 #[derive(Debug, Clone, Copy)]
 struct Fold {
     ended: Ended,
     open: bool,
     /// `ended` and `open` before the last send.
     before: (Ended, bool),
+    /// Whether the last event was a send, which an `UNSENT` takes back.
+    sent_last: bool,
 }
 
 impl Fold {
@@ -371,15 +374,19 @@ impl Fold {
         ended: Ended::Turn,
         open: true,
         before: (Ended::Turn, true),
+        sent_last: false,
     };
 
     fn step(&mut self, hooks: Option<&Hooks>, event: &Event) {
+        let sent_last = std::mem::replace(&mut self.sent_last, event.kind == send::SEND);
         if event.kind == send::SEND {
             self.before = (self.ended, self.open);
             self.ended = Ended::NotYet;
             self.open = true;
         } else if event.kind == send::UNSENT {
-            (self.ended, self.open) = self.before;
+            if sent_last {
+                (self.ended, self.open) = self.before;
+            }
         } else if a_turn_ended(hooks, event) {
             if self.open {
                 self.ended = match cut_short(event) {
@@ -616,6 +623,24 @@ mod tests {
             Ended::NotYet,
             "and one that ended before the message is the turn before it"
         );
+    }
+
+    #[test]
+    fn a_command_the_vendor_runs_itself_opens_no_turn() {
+        use crate::verbs::send::{COMMAND, UNSENT};
+        // The answer before a /clear still stands.
+        assert_eq!(claudes(&log(&["Stop", COMMAND])), Ended::Turn);
+        assert_eq!(
+            claudes(&log(&["Stop", COMMAND, "SessionStart"])),
+            Ended::Turn
+        );
+        // One that never reached the vendor takes back no send before it.
+        assert_eq!(
+            claudes(&log(&[send::SEND, "Stop", COMMAND, UNSENT])),
+            Ended::Turn
+        );
+        // A message sent before the command is still waited on.
+        assert_eq!(claudes(&log(&["Stop", send::SEND, COMMAND])), Ended::NotYet);
     }
 
     #[test]

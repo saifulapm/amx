@@ -1,0 +1,16 @@
+# An agent at its prompt that runs what Enter submits itself, as claude runs
+# /context: no hook fires, and its composer holds nothing afterwards.
+hook SessionStart {"source": "startup"}
+hook UserPromptSubmit {"prompt": "run the tests"}
+hook Stop {"last_assistant_message": "the tests pass now"}
+print ────────────────────────────────────────────────────────────
+print ❯
+print ────────────────────────────────────────────────────────────
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+await Enter
+print   ⎿  Context Usage 12%
+print ────────────────────────────────────────────────────────────
+print ❯
+print ────────────────────────────────────────────────────────────
+print   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+sleep 600000

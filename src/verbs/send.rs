@@ -29,6 +29,11 @@ use crate::{complain, exit, paths, registry, spawn, store, warn};
 /// The event amx records for a message it sent.
 pub const SEND: &str = "send";
 
+/// The event amx records instead of a [`SEND`] for a command the vendor runs
+/// itself, such as claude's `/clear` ([`runs_itself`]). No turn follows one,
+/// so nothing waits for its answer and it is never queued.
+pub const COMMAND: &str = "local_command";
+
 /// The event amx records right after a [`SEND`] whose paste or Enter failed:
 /// the message never reached the vendor, so it opens no turn.
 pub const UNSENT: &str = "unsent";
@@ -51,6 +56,10 @@ const CONFIRM: Duration = Duration::from_secs(5);
 /// How long a send waits for the vendor to show a pasted image as a chip
 /// before it gives up on the message ([`Attach::Pasted`]).
 const CHIP: Duration = Duration::from_secs(5);
+
+/// How long a send of a command the vendor runs itself waits for any hook,
+/// or for the composer to let the command go.
+const LETS_GO: Duration = Duration::from_secs(2);
 
 /// How often the event log is polled while waiting.
 const POLL: Duration = Duration::from_millis(50);
@@ -124,8 +133,8 @@ pub fn run(
 
     let images = crate::images::filed(agent.dir(), images)?;
     let server = Server::from_socket(view.meta.socket.clone());
-    match delivered(&agent, &server, &view.meta.pane, text, &images)? {
-        Delivered::Sent => {}
+    let local = match delivered(&agent, &server, &view.meta.pane, text, &images)? {
+        Delivered::Sent { local } => local,
         Delivered::Refused(why) | Delivered::Failed(why) => {
             complain!("amx: {why}");
             return Ok(exit::FAILURE);
@@ -140,7 +149,7 @@ pub fn run(
                 out,
             );
         }
-    }
+    };
 
     // A working agent takes the message only when its current turn ends. One
     // whose turn ended with background tasks still running is at its prompt
@@ -151,6 +160,16 @@ pub fn run(
         return Ok(exit::OK);
     }
 
+    if local {
+        if let_go(&view.meta, &agent, &server, from, text)? {
+            return Ok(exit::OK);
+        }
+        complain!(
+            "amx: {id} did not run {text} within {}s; it may still be in its input",
+            LETS_GO.as_secs()
+        );
+        return Ok(exit::FAILURE);
+    }
     if took_it(root, &view.meta, &agent, from, CONFIRM)? {
         return Ok(exit::OK);
     }
@@ -181,7 +200,7 @@ pub fn deliver(
     images: &[PathBuf],
 ) -> Result<()> {
     match delivered(agent, server, pane, text, images)? {
-        Delivered::Sent => Ok(()),
+        Delivered::Sent { .. } => Ok(()),
         Delivered::Refused(why) | Delivered::Failed(why) => bail!(why),
         Delivered::Waiting(_) => bail!(
             "{} is waiting on a question; the message was not sent",
@@ -192,7 +211,9 @@ pub fn deliver(
 
 /// Outcome of [`delivered`].
 enum Delivered {
-    Sent,
+    /// Typed and submitted; `local` when it was a command the vendor runs
+    /// itself, logged as [`COMMAND`].
+    Sent { local: bool },
     /// Nothing typed or recorded, for the reason given.
     Refused(String),
     /// The record turned to waiting since the caller read it. Nothing typed or
@@ -242,7 +263,9 @@ fn delivered(
 
     // Logged as given; typed with a trailing space if the last word opens a
     // popup.
-    let vendor = agent.meta()?.agent.as_deref().and_then(registry::entry);
+    let meta = agent.meta()?;
+    let vendor = meta.agent.as_deref().and_then(registry::entry);
+    let local = images.is_empty() && runs_itself(&meta, text);
     let typed = spawn::as_typed(vendor, text);
     let takes = vendor
         .and_then(|vendor| vendor.images)
@@ -252,7 +275,11 @@ fn delivered(
         Some(attach) => crate::images::attached(attach, images, &typed),
         None => typed,
     };
-    writer.append(&Event::new(SEND, sent(text, images)))?;
+    let kind = match local {
+        true => COMMAND,
+        false => SEND,
+    };
+    writer.append(&Event::new(kind, sent(text, images)))?;
     writer.observe(|state| state.seq += 1)?;
     let unsent = || writer.append(&Event::new(UNSENT, sent(text, images)));
     // Each image goes alone, and the words only after the vendor shows that
@@ -284,7 +311,76 @@ fn delivered(
              submit or clear it with `amx attach {id}`"
         )));
     }
-    Ok(Delivered::Sent)
+    Ok(Delivered::Sent { local })
+}
+
+/// Whether `text` is a command `meta`'s vendor runs itself: one line opening
+/// with the catalog's sigil and a word the catalog does not list, where the
+/// catalog says such words are the vendor's own (claude's `/clear`).
+fn runs_itself(meta: &Meta, text: &str) -> bool {
+    let catalog = meta
+        .agent
+        .as_deref()
+        .and_then(registry::entry)
+        .and_then(|vendor| vendor.catalog)
+        .filter(|catalog| catalog.runs_unlisted);
+    let (Some(catalog), Some(home)) = (catalog, std::env::home_dir()) else {
+        return false;
+    };
+    let Some(word) = text.trim().strip_prefix(catalog.sigil) else {
+        return false;
+    };
+    let name = word.split_whitespace().next().unwrap_or_default();
+    if name.is_empty() || text.trim().contains('\n') {
+        return false;
+    }
+    let spelled = format!("{}{name}", catalog.sigil);
+    !crate::catalog::listing(&catalog, &home, &meta.dir)
+        .iter()
+        .any(|entry| entry.spelled == spelled)
+}
+
+/// Wait up to [`LETS_GO`] for a sign that the vendor ran the command `text`:
+/// any hook of its own logged after byte `from`, or its composer letting go of
+/// the command after holding it.
+///
+/// A composer that never showed the command counts only once the wait is
+/// over, since a look before the vendor drew the paste would see it empty
+/// too. A composer still holding it, or one the walk cannot find, does not.
+fn let_go(meta: &Meta, agent: &Agent, server: &Server, from: u64, text: &str) -> Result<bool> {
+    let hooks = crate::vendor::hooks_for(meta.agent.as_deref().unwrap_or_default());
+    let chrome =
+        crate::rules::of(meta.agent.as_deref().map_or("", crate::registry::program)).furniture();
+    let command = text.trim();
+    let deadline = Instant::now() + LETS_GO;
+    let mut held = false;
+    loop {
+        let heard = events_from(agent, from)?.iter().any(|event| {
+            hooks
+                .as_ref()
+                .is_some_and(|hooks| hooks.moment(&event.kind).is_some())
+                && event.payload["agent_id"].is_null()
+        });
+        if heard {
+            return Ok(true);
+        }
+        // A failed capture is just a missed look; the deadline covers it.
+        let holds = server.capture(&meta.pane).ok().and_then(|screen| {
+            let rows: Vec<&str> = screen.lines().collect();
+            chrome
+                .staged(&rows)
+                .map(|staged| staged.iter().any(|row| row.contains(command)))
+        });
+        match holds {
+            Some(true) => held = true,
+            Some(false) if held => return Ok(true),
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            return Ok(holds == Some(false));
+        }
+        std::thread::sleep(LOOK);
+    }
 }
 
 /// Paste `image`'s path alone and wait up to [`CHIP`] for the pane to show
@@ -1200,6 +1296,34 @@ mod tests {
             ["1. the sqlite one", "2. the docker one"]
         );
         assert_eq!(numbered(&[]).count(), 0);
+    }
+
+    #[test]
+    fn send_reads_an_unlisted_slash_word_as_a_command_claude_runs_itself() {
+        let project = tempfile::TempDir::new().unwrap();
+        let skill = project.path().join(".claude/skills/ship-it");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---\ndescription: ships it\n---\n").unwrap();
+        let on = |agent: &str| Meta {
+            agent: Some(agent.to_string()),
+            dir: project.path().to_path_buf(),
+            ..asking(None, &[], None).meta
+        };
+        let claude = on("claude");
+        assert!(runs_itself(&claude, "/clear"));
+        assert!(runs_itself(&claude, "/compact keep the test plan"));
+        assert!(runs_itself(
+            &on("/home/u/.local/libexec/dots/claude"),
+            "/context"
+        ));
+        // A skill or built-in prompt starts a turn like any message.
+        assert!(!runs_itself(&claude, "/ship-it"));
+        assert!(!runs_itself(&claude, "/review"));
+        assert!(!runs_itself(&claude, "fix /clear"));
+        assert!(!runs_itself(&claude, "/clear\nand then the tests"));
+        assert!(!runs_itself(&claude, "/"));
+        // Only a vendor whose catalog says so.
+        assert!(!runs_itself(&on("pi"), "/clear"));
     }
 
     #[test]

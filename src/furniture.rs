@@ -109,6 +109,23 @@ impl Furniture {
         self.above_composer(rows, self.composer(rows).ok()?)
     }
 
+    /// The rows staged in the composer box, between its top and bottom
+    /// borders, prompt glyph included. `None` when the walk finds no composer.
+    pub fn staged<'b>(&self, rows: &[&'b str]) -> Option<Vec<&'b str>> {
+        let mut top = self.composer(rows).ok()?;
+        if !self.ends_in_rule(rows[top]) {
+            // The hint row hung off the top border.
+            top += 1;
+        }
+        Some(
+            rows[top + 1..]
+                .iter()
+                .take_while(|row| !self.rule_row(row))
+                .copied()
+                .collect(),
+        )
+    }
+
     /// The first non-blank row above `at`, past a tip row under the spinner.
     fn above_composer(&self, rows: &[&str], at: usize) -> Option<usize> {
         let row = rows[..at].iter().rposition(|row| !blank(row))?;
@@ -743,6 +760,26 @@ mod tests {
 
         let claude = crate::rules::of("claude").furniture();
         assert_eq!(claude.cut(A_CLAUDE_PANE), ["  Ran the migration.", ""]);
+    }
+
+    #[test]
+    fn furniture_reads_what_the_composer_holds_and_nothing_above_it() {
+        assert_eq!(claude().staged(A_CLAUDE_PANE), Some(vec!["❯ "]));
+        let mut holding = A_CLAUDE_PANE.to_vec();
+        holding[3] = "❯ /context";
+        holding.insert(4, "  and more");
+        assert_eq!(
+            claude().staged(&holding),
+            Some(vec!["❯ /context", "  and more"])
+        );
+        assert_eq!(
+            claude()
+                .staged(A_BACKGROUND_LINE_PANE)
+                .map(|rows| rows.len()),
+            Some(1),
+            "the hint row over the top border is not staged"
+        );
+        assert_eq!(claude().staged(&A_CLAUDE_PANE[..2]), None);
     }
 
     #[test]

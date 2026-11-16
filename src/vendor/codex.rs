@@ -119,6 +119,7 @@ pub const VENDOR: Vendor = Vendor {
         builtins: &[],
         sigil: '$',
         skill_prefix: "",
+        runs_unlisted: false,
     }),
     // clap reads a message word starting with `-` as a flag, and a
     // subcommand's name as that subcommand, until `--` (cli/src/main.rs:125-140):
@@ -417,6 +418,7 @@ mod tests {
                 builtins: &[],
                 sigil: '$',
                 skill_prefix: "",
+                runs_unlisted: false,
             }),
             "`$` opens a codex word, and a bare name follows it"
         );

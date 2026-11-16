@@ -1069,3 +1069,44 @@ fn a_wait_on_an_agent_whose_hooks_went_quiet_ends_on_its_idle_screen() {
     );
     assert_eq!(common::status(&amx, id)["state"], "idle");
 }
+
+#[test]
+fn send_of_a_command_claude_runs_itself_counts_once_any_hook_answers_it() {
+    // claude answers /clear with a SessionStart and no prompt hook.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    amx.play(id, "clears-on-enter");
+    amx.until_state(id, "idle");
+
+    let started = std::time::Instant::now();
+    let out = amx.amx(&["send", id, "/clear"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let status = common::status(&amx, id);
+    assert_eq!(status["queued"], json!([]), "{status}");
+
+    // No turn follows a command, so result does not wait for one.
+    let started = std::time::Instant::now();
+    amx.amx(&["result", id, "--timeout", "5"]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn send_of_a_command_claude_runs_without_a_hook_counts_once_its_input_lets_it_go() {
+    // claude answers /context with no hook at all; its input lets go of it.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    amx.play(id, "runs-a-command-itself");
+    amx.until_state(id, "idle");
+
+    let started = std::time::Instant::now();
+    let out = amx.amx(&["send", id, "/context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let status = common::status(&amx, id);
+    assert_eq!(status["queued"], json!([]), "{status}");
+}

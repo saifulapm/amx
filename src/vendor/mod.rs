@@ -702,6 +702,10 @@ pub struct Catalog {
     /// What goes between the sigil and a skill's name: `skill:` for pi, empty
     /// for claude.
     pub skill_prefix: &'static str,
+    /// Whether a sigil word this catalog does not list is a command the
+    /// vendor runs itself, with no turn and so no prompt hook: claude's
+    /// `/clear`, `/compact` and `/context`.
+    pub runs_unlisted: bool,
 }
 
 /// The format of a vendor's on-disk conversation, one JSON document per line.

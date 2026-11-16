@@ -136,6 +136,7 @@ pub const VENDOR: Vendor = Vendor {
         ],
         sigil: '/',
         skill_prefix: "",
+        runs_unlisted: true,
     }),
     // Without it a task starting with `-` is read as a flag, and one after a
     // variadic flag such as `--add-dir` as another of its values (2.1.325).
