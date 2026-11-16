@@ -947,17 +947,21 @@ fn read_beside(
         Claim::Unclaimed if reports && matches!(state.state, Phase::Idle | Phase::Waiting) => {
             told(state.state, Evidence::Hooks, None)
         }
-        Claim::Unclaimed => match session() {
-            // The vendor's own word on the session breaks the tie.
-            Some(phase) => told(phase, Evidence::SessionFile, None),
-            // A turn heard from lately is taken at its word over a screen
-            // nobody has measured: a view claude draws over its composer reads
-            // `unknown` a few seconds into every look otherwise.
-            None if reports && state.state == Phase::Working && quiet <= HEARD_LATELY => {
-                told(Phase::Working, Evidence::Hooks, None)
+        // The vendor's own word on the session breaks the tie, except an idle
+        // one over work still running: claude says idle once the model is at
+        // its prompt, and the record keeps the turn for wait and result.
+        Claim::Unclaimed => {
+            match session().filter(|said| *said != Phase::Idle || state.background == 0) {
+                Some(phase) => told(phase, Evidence::SessionFile, None),
+                // A turn heard from lately is taken at its word over a screen
+                // nobody has measured: a view claude draws over its composer reads
+                // `unknown` a few seconds into every look otherwise.
+                None if reports && state.state == Phase::Working && quiet <= HEARD_LATELY => {
+                    told(Phase::Working, Evidence::Hooks, None)
+                }
+                None => told(Phase::Unknown, Evidence::Unknown, None),
             }
-            None => told(Phase::Unknown, Evidence::Unknown, None),
-        },
+        }
     }
 }
 
@@ -1012,10 +1016,18 @@ pub const NO_HOOKS_AFTER: u64 = 15;
 /// Whether a vendor that reports through hooks has sent none since its spawn
 /// [`NO_HOOKS_AFTER`] seconds ago: its hooks are not wired where it reads
 /// them, or it runs with them off. Its phase is read off the screen alone.
+///
+/// A gate in front of the work (the folder-trust screen) holds the session
+/// before it starts, so silence there says nothing yet.
 pub fn no_hooks(view: &View, now: u64) -> bool {
+    let gated = own_screens(&view.meta)
+        .rules()
+        .iter()
+        .any(|rule| rule.setup && view.verdict.rule.as_deref() == Some(rule.name.as_str()));
     reports(vendor_of(&view.meta))
         && view.state.last_event == 0
         && !view.phase().is_terminal()
+        && !gated
         && now.saturating_sub(view.meta.created) > NO_HOOKS_AFTER
 }
 
@@ -4503,6 +4515,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                 let verdict = decided(&state(recorded, 1_000), true, Some(screen), 1_020);
                 assert_eq!(verdict.phase, recorded, "{what} over {recorded:?}");
                 assert_eq!(verdict.evidence, Evidence::Hooks, "{what}");
+                assert!(verdict.rule.is_some(), "{what}: a rule names the screen");
             }
         }
     }
@@ -4594,6 +4607,14 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         );
         assert!(no_hooks(&unheard, 1_016));
 
+        // Held at the trust gate, the session has not started yet.
+        let gated = View::new(
+            claude.clone(),
+            State::default(),
+            verdict(Phase::Waiting, Evidence::Screen, Some("folder_trust")),
+        );
+        assert!(!no_hooks(&gated, 1_016));
+
         // One hook is enough, and a vendor without hooks never had any.
         let heard = View::new(
             claude.clone(),
@@ -4609,6 +4630,29 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             verdict(Phase::Working, Evidence::Screen, None),
         );
         assert!(!no_hooks(&command, 1_016));
+    }
+
+    #[test]
+    fn reader_keeps_an_agent_at_rest_working_whatever_the_sessions_file_says() {
+        // claude's file says idle once the model is at its prompt, shells or
+        // not. Taken over the record, wait and result came back while the
+        // shell still ran.
+        let mut resting = state(Phase::Working, 1_000);
+        resting.background = 1;
+        let verdict = read_beside(
+            &resting,
+            0,
+            true,
+            || Some(A_SHELL.to_string()),
+            rules::of("claude"),
+            true,
+            1_020,
+            1,
+            None,
+            || Some(Phase::Idle),
+        )
+        .verdict;
+        assert_eq!(verdict.phase, Phase::Working, "{verdict:?}");
     }
 
     #[test]

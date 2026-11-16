@@ -52,16 +52,17 @@ fn signals(
     now: u64,
     out: &mut impl Write,
 ) -> Result<()> {
-    // The vendor's last word, by the name it gave it.
-    let heard = events
-        .iter()
-        .rev()
-        .find_map(|event| event.payload["hook_event_name"].as_str());
-    match (heard, view.state.last_event) {
-        (Some(kind), at) if at > 0 => {
-            writeln!(out, "hooks: {kind} {}s ago", now.saturating_sub(at))?
-        }
-        _ => writeln!(
+    // The agent's own last word, by the name the vendor gave it, and dated
+    // by itself. A subagent's word is not the agent's.
+    let heard = events.iter().rev().find_map(|event| {
+        let kind = event.payload["hook_event_name"].as_str()?;
+        event.payload["agent_id"]
+            .is_null()
+            .then_some((kind, event.at))
+    });
+    match heard {
+        Some((kind, at)) => writeln!(out, "hooks: {kind} {}s ago", now.saturating_sub(at))?,
+        None => writeln!(
             out,
             "hooks: none since the spawn {}s ago",
             now.saturating_sub(view.meta.created)
@@ -275,6 +276,30 @@ mod tests {
             },
             doing: None,
         }
+    }
+
+    #[test]
+    fn reader_why_dates_the_agents_own_last_hook_and_not_a_subagents() {
+        // A subagent's calls are logged without moving `last_event`, so the
+        // newest event's name beside the record's age paired two events.
+        let mut view = view(Phase::Working, Evidence::Hooks, None, 300);
+        view.state.last_event = 700;
+        let at = |at, payload: serde_json::Value| Event {
+            at,
+            kind: payload["hook_event_name"].as_str().unwrap().to_string(),
+            payload,
+        };
+        let events = [
+            at(700, serde_json::json!({ "hook_event_name": "Stop" })),
+            at(
+                999,
+                serde_json::json!({ "hook_event_name": "PreToolUse", "agent_id": "sub-1" }),
+            ),
+        ];
+        let mut out = Vec::new();
+        signals(&view, &events, None, None, 1_000, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("hooks: Stop 300s ago\n"), "{text}");
     }
 
     fn printed(view: &View) -> String {
