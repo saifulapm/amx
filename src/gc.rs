@@ -2,12 +2,14 @@
 //!
 //! Only `done` and `failed` records older than [`KEEP`] are removed. A stopped
 //! agent is kept, since its record names the branch it left behind, and so is
-//! any record whose worktree still exists. A stopped or parked record idle for
-//! [`ARCHIVE_AFTER`] moves to the archive, which the readers skip and `amx
-//! resume` brings it back from. Nothing archived is deleted. The pass runs on
-//! `ls`.
+//! any record whose worktree still exists. A record with no pane (stopped,
+//! parked, or left by a reboot) idle for [`ARCHIVE_AFTER`] moves to the
+//! archive, which the readers skip and `amx resume` brings it back from.
+//! Nothing archived is deleted. The pass runs on `ls`.
 
-use crate::derive::Record;
+use std::path::Path;
+
+use crate::derive::{Record, View};
 use crate::store::{Agent, Meta, Phase, State};
 use crate::tmux::Server;
 
@@ -17,31 +19,58 @@ pub const KEEP: u64 = 7 * 24 * 60 * 60;
 /// How long a stopped or parked agent's record stays among the live ones.
 pub const ARCHIVE_AFTER: u64 = 14 * 24 * 60 * 60;
 
-/// Remove the records past keeping, archive the ones past
-/// [`ARCHIVE_AFTER`], and return the rest.
+/// Remove the records past keeping and return the rest.
 ///
 /// Candidates are picked from the listing's own reading, so most records are
 /// read once. Each candidate is checked again under its writer lock before it
-/// is removed or moved, because the reading may predate a resume.
+/// is removed, because the reading may predate a resume.
 pub fn sweep(records: Vec<Record>, now: u64) -> Vec<Record> {
     let mut kept = Vec::new();
     for record in records {
         // A record that fails to go is kept in the listing.
-        let gone = (past_keeping(&record.state, now)
+        let gone = past_keeping(&record.state, now)
             && !holding(&record.meta)
-            && under_lock(&record, now, forgettable, Agent::remove))
-            || (past_live(&record.state, now)
-                && under_lock(
-                    &record,
-                    now,
-                    |_, state, now| past_live(state, now),
-                    Agent::archive,
-                ));
+            && under_lock(&record.agent, now, forgettable, Agent::remove);
         if !gone {
             kept.push(record);
         }
     }
     kept
+}
+
+/// Archive the agents a reading found without a pane for more than
+/// [`ARCHIVE_AFTER`], and return the rest.
+///
+/// The reading's phase picks them, since only the pane tells a record left
+/// working by a reboot from one at work, and the reading asked tmux once for
+/// every record. Each is checked again under its writer lock before it moves.
+pub fn archive(root: &Path, views: Vec<View>, now: u64) -> Vec<View> {
+    views
+        .into_iter()
+        .filter(|view| {
+            // A record that fails to move is kept in the listing.
+            !(shelvable(view, now)
+                && Agent::open(root, view.id()).is_ok_and(|agent| {
+                    under_lock(
+                        &agent,
+                        now,
+                        |_, state, now| past_live(state, now),
+                        Agent::archive,
+                    )
+                }))
+        })
+        .collect()
+}
+
+/// Whether a reading shows an agent with no pane, stopped or parked, idle for
+/// more than [`ARCHIVE_AFTER`].
+fn shelvable(view: &View, now: u64) -> bool {
+    let resting = match view.phase() {
+        Phase::Stopped => true,
+        Phase::Idle => view.state.parked_at != 0,
+        _ => false,
+    };
+    resting && past_live(&view.state, now)
 }
 
 /// Whether a record read again under its lock may still be removed.
@@ -57,15 +86,15 @@ fn forgettable(meta: &Meta, state: &State, now: u64) -> bool {
 /// answers is kept whatever its phase, and so is one whose tmux cannot be
 /// asked.
 fn under_lock(
-    record: &Record,
+    agent: &Agent,
     now: u64,
     still: impl Fn(&Meta, &State, u64) -> bool,
     take: impl Fn(&Agent) -> anyhow::Result<()>,
 ) -> bool {
-    let Ok(_writer) = record.agent.writer() else {
+    let Ok(_writer) = agent.writer() else {
         return false;
     };
-    let (Ok(meta), Ok(state)) = (record.agent.meta(), record.agent.state()) else {
+    let (Ok(meta), Ok(state)) = (agent.meta(), agent.state()) else {
         return false;
     };
     still(&meta, &state, now)
@@ -75,7 +104,7 @@ fn under_lock(
             Server::from_socket(meta.socket.clone()).answers_for_now(&meta.pane, &meta.id),
             Ok(false)
         )
-        && take(&record.agent).is_ok()
+        && take(agent).is_ok()
 }
 
 /// Whether a record's worktree still exists. The record is the only thing
@@ -89,16 +118,16 @@ fn past_keeping(state: &State, now: u64) -> bool {
     matches!(state.state, Phase::Done | Phase::Failed) && idle_for(state, now) > KEEP
 }
 
-/// Whether a record is a stopped or parked agent idle for more than
-/// [`ARCHIVE_AFTER`]. An idle agent whose pane was never let go is at its
-/// prompt, and is not archived.
+/// Whether a record may be an agent with no pane, idle for more than
+/// [`ARCHIVE_AFTER`]: stopped, parked, or one whose pane went whatever its
+/// record last said, as after a reboot. Only the pane tells, so
+/// [`under_lock`] asks it; an agent whose pane answers is in use. A finished
+/// command is left to [`KEEP`], and a record with no date at all, whose age
+/// is unknown, stays.
 fn past_live(state: &State, now: u64) -> bool {
-    let resting = match state.state {
-        Phase::Stopped => true,
-        Phase::Idle => state.parked_at != 0,
-        _ => false,
-    };
-    resting && idle_for(state, now) > ARCHIVE_AFTER
+    !matches!(state.state, Phase::Done | Phase::Failed)
+        && state.last_event.max(state.since) > 0
+        && idle_for(state, now) > ARCHIVE_AFTER
 }
 
 /// How long since the record last heard anything. A record dated after `now`,
@@ -293,7 +322,20 @@ mod tests {
         .unwrap();
     }
 
-    fn archive(root: &Path) -> Vec<String> {
+    /// What a listing's pass leaves listed: the sweep, the reading, then the
+    /// archive.
+    fn pass(root: &Path, records: Vec<Record>) -> Vec<String> {
+        let views =
+            crate::derive::views_of(root, sweep(records, NOW), NOW, crate::derive::Wants::Card);
+        let mut ids: Vec<String> = archive(root, views, NOW)
+            .iter()
+            .map(|view| view.id().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn shelved(root: &Path) -> Vec<String> {
         let mut ids = crate::store::list(&root.join(crate::store::ARCHIVE)).unwrap();
         ids.sort();
         ids
@@ -318,11 +360,11 @@ mod tests {
         parked(root.path(), "young-parked-g7h", NOW - 13 * DAY);
 
         assert_eq!(
-            ids(&sweep(read(root.path()), NOW)),
+            pass(root.path(), read(root.path())),
             ["young-parked-g7h", "young-stopped-e5f"]
         );
         assert_eq!(left(root.path()), ["young-parked-g7h", "young-stopped-e5f"]);
-        assert_eq!(archive(root.path()), ["old-parked-c3d", "old-stopped-a1b"]);
+        assert_eq!(shelved(root.path()), ["old-parked-c3d", "old-stopped-a1b"]);
         assert!(
             root.path()
                 .join(".archive/old-stopped-a1b/meta.json")
@@ -333,16 +375,72 @@ mod tests {
 
     #[test]
     fn a_record_still_in_use_is_never_archived_however_old() {
+        // Each pane still answers for its agent, so each is in use, whatever
+        // its record last said.
+        let server =
+            Server::named(format!("amx-test-gc-use-{}", std::process::id())).with_conf("/dev/null");
         let root = TempDir::new().unwrap();
-        record(root.path(), "working-a1b", Phase::Working, NOW - 30 * DAY);
-        record(root.path(), "waiting-c3d", Phase::Waiting, NOW - 30 * DAY);
-        record(root.path(), "limited-e5f", Phase::Limited, NOW - 30 * DAY);
-        // Idle with its pane kept is an agent at its prompt, not a parked one.
-        record(root.path(), "idle-g7h", Phase::Idle, NOW - 30 * DAY);
-        record(root.path(), "starting-i9j", Phase::Starting, NOW - 30 * DAY);
+        let phases = [
+            ("working-a1b", Phase::Working),
+            ("waiting-c3d", Phase::Waiting),
+            ("limited-e5f", Phase::Limited),
+            ("idle-g7h", Phase::Idle),
+            ("starting-i9j", Phase::Starting),
+        ];
+        for (id, phase) in phases {
+            let name = format!("amx-{id}");
+            let (_, pane) = server
+                .new_session(&Spawn {
+                    name: Some(&name),
+                    command: &["sh", "-c", "while :; do sleep 0.05; done"],
+                    ..Spawn::default()
+                })
+                .unwrap();
+            record(root.path(), id, phase, NOW - 30 * DAY);
+            let agent = Agent::open(root.path(), id).unwrap();
+            agent
+                .writer()
+                .unwrap()
+                .update_meta(|meta| {
+                    meta.socket = server.socket().clone();
+                    meta.pane = pane.clone();
+                })
+                .unwrap();
+            wrote(&agent, phase, NOW - 30 * DAY);
+        }
 
-        assert_eq!(sweep(read(root.path()), NOW).len(), 5);
-        assert!(archive(root.path()).is_empty());
+        let kept = pass(root.path(), read(root.path()));
+        let _ = server.kill();
+        assert_eq!(kept.len(), 5);
+        assert!(shelved(root.path()).is_empty());
+    }
+
+    #[test]
+    fn a_record_whose_pane_went_is_archived_whatever_it_last_said() {
+        // A tmux killed or a machine rebooted leaves records that last said
+        // working, waiting or idle, with no pane: they read as stopped.
+        let root = TempDir::new().unwrap();
+        record(root.path(), "working-a1b", Phase::Working, NOW - 20 * DAY);
+        record(root.path(), "waiting-c3d", Phase::Waiting, NOW - 20 * DAY);
+        record(root.path(), "idle-e5f", Phase::Idle, NOW - 20 * DAY);
+        record(root.path(), "unknown-g7h", Phase::Unknown, NOW - 20 * DAY);
+        // Still a finished command: the week's sweep is what takes it.
+        let tree = root.path().join("repo/.amx/worktrees/done-i9j");
+        std::fs::create_dir_all(&tree).unwrap();
+        record(root.path(), "done-i9j", Phase::Done, NOW - 20 * DAY);
+        let agent = Agent::open(root.path(), "done-i9j").unwrap();
+        agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.worktree = Some(tree.clone()))
+            .unwrap();
+        wrote(&agent, Phase::Done, NOW - 20 * DAY);
+
+        assert_eq!(pass(root.path(), read(root.path())), ["done-i9j"]);
+        assert_eq!(
+            shelved(root.path()),
+            ["idle-e5f", "unknown-g7h", "waiting-c3d", "working-a1b"]
+        );
     }
 
     #[test]
@@ -352,8 +450,18 @@ mod tests {
         record(root.path(), "stopped-a1b", Phase::Stopped, NOW + 30 * DAY);
         parked(root.path(), "parked-c3d", NOW + 30 * DAY);
 
-        assert_eq!(sweep(read(root.path()), NOW).len(), 2);
-        assert!(archive(root.path()).is_empty());
+        assert_eq!(pass(root.path(), read(root.path())).len(), 2);
+        assert!(shelved(root.path()).is_empty());
+    }
+
+    #[test]
+    fn a_record_with_no_date_is_not_archived() {
+        // Neither a last event nor a phase start: its age is unknown.
+        let root = TempDir::new().unwrap();
+        record(root.path(), "stopped-a1b", Phase::Stopped, 0);
+
+        assert_eq!(pass(root.path(), read(root.path())), ["stopped-a1b"]);
+        assert!(shelved(root.path()).is_empty());
     }
 
     #[test]
@@ -369,16 +477,16 @@ mod tests {
             );
             parked(root.path(), &format!("parked-{n}"), NOW - age);
         }
-        let count = |root: &Path| left(root).len() + archive(root).len();
+        let count = |root: &Path| left(root).len() + shelved(root).len();
         let before = count(root.path());
 
-        sweep(read(root.path()), NOW);
-        assert_eq!(archive(root.path()).len(), 6);
+        pass(root.path(), read(root.path()));
+        assert_eq!(shelved(root.path()).len(), 6);
         assert_eq!(count(root.path()), before);
         // A second pass finds nothing more to move.
-        sweep(read(root.path()), NOW);
+        pass(root.path(), read(root.path()));
         assert_eq!(count(root.path()), before);
-        assert_eq!(archive(root.path()).len(), 6);
+        assert_eq!(shelved(root.path()).len(), 6);
     }
 
     #[test]
@@ -393,9 +501,9 @@ mod tests {
             NOW,
         );
 
-        assert_eq!(ids(&sweep(records, NOW)), ["stopped-a1b"]);
+        assert_eq!(pass(root.path(), records), ["stopped-a1b"]);
         assert_eq!(left(root.path()), ["stopped-a1b"]);
-        assert!(archive(root.path()).is_empty());
+        assert!(shelved(root.path()).is_empty());
     }
 
     #[test]
@@ -424,10 +532,10 @@ mod tests {
             .unwrap();
         wrote(&agent, Phase::Stopped, NOW - 20 * DAY);
 
-        let kept = sweep(read(root.path()), NOW);
+        let kept = pass(root.path(), read(root.path()));
         let _ = server.kill();
-        assert_eq!(ids(&kept), ["stopped-a1b"]);
-        assert!(archive(root.path()).is_empty());
+        assert_eq!(kept, ["stopped-a1b"]);
+        assert!(shelved(root.path()).is_empty());
     }
 
     #[test]

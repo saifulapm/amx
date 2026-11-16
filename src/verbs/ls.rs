@@ -25,11 +25,12 @@ pub fn from_env(json: bool, dir: Option<&Path>, archived: bool) -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 pub fn run(root: &Path, json: bool, scope: &Scope, now: u64, out: &mut impl Write) -> Result<i32> {
-    // Read once: the sweep drops what it forgets and moves aside what it
-    // archives, and the reading takes the rest, so no state document is
-    // parsed twice.
+    // Read once: the sweep drops what it forgets, the reading takes the rest,
+    // and the archive moves aside what that reading found long without a
+    // pane, so no state document is parsed twice.
     let records = gc::sweep(derive::records(root)?, now);
-    shown(root, records, json, scope, now, out)
+    let views = gc::archive(root, read(root, records, scope, now), now);
+    shown(&views, json, out)
 }
 
 /// `amx ls --archived`: the records the gc pass moved aside, read where they
@@ -42,30 +43,28 @@ pub fn archive(
     out: &mut impl Write,
 ) -> Result<i32> {
     let shelf = root.join(store::ARCHIVE);
-    shown(&shelf, derive::records(&shelf)?, json, scope, now, out)
+    let views = read(&shelf, derive::records(&shelf)?, scope, now);
+    shown(&views, json, out)
 }
 
-/// The rows of `records`, read under `root`, as a table or as JSON.
-fn shown(
-    root: &Path,
-    records: Vec<derive::Record>,
-    json: bool,
-    scope: &Scope,
-    now: u64,
-    out: &mut impl Write,
-) -> Result<i32> {
+/// The views of the records under `root` that `scope` covers.
+fn read(root: &Path, records: Vec<derive::Record>, scope: &Scope, now: u64) -> Vec<View> {
     // Narrowed before the reading, so an agent outside the scope costs no
     // screen and no summary.
     let records = records
         .into_iter()
         .filter(|record| scope.covers(&record.meta))
         .collect();
-    let views = derive::views_of(root, records, now, derive::Wants::Card);
+    derive::views_of(root, records, now, derive::Wants::Card)
+}
+
+/// The rows, as a table or as JSON.
+fn shown(views: &[View], json: bool, out: &mut impl Write) -> Result<i32> {
     if json {
         let listed: Vec<_> = views.iter().map(View::json).collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&listed)?)?;
     } else {
-        table(&views, out)?;
+        table(views, out)?;
     }
     Ok(exit::OK)
 }
