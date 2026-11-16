@@ -1537,10 +1537,9 @@ pub struct Claim {
 }
 
 impl Claim {
-    /// Claim a place in `dir` for an agent of `project`, and keep `port` as
-    /// its port, or none.
+    /// Claim a place in `dir` for an agent of `project`, given `port`, or
+    /// none.
     pub fn hold(dir: &Path, project: &Path, port: Option<u16>) -> Result<Claim> {
-        keep_port(dir, port)?;
         let path = dir.join(CLAIM);
         let mut file = OpenOptions::new()
             .write(true)
@@ -1578,7 +1577,7 @@ pub fn port(dir: &Path) -> Option<u16> {
 
 /// Keep `port` in the agent directory `dir`, or remove the one a spawn before
 /// kept, so the agent never names a port it was not given.
-fn keep_port(dir: &Path, port: Option<u16>) -> Result<()> {
+pub fn keep_port(dir: &Path, port: Option<u16>) -> Result<()> {
     let path = dir.join(PORT);
     match port {
         Some(port) => write_atomic(&path, port.to_string().as_bytes()),
@@ -3330,9 +3329,8 @@ mod tests {
     #[test]
     fn store_reads_a_port_that_does_not_read_as_none() {
         let dir = TempDir::new().unwrap();
-        let claim = Claim::hold(dir.path(), Path::new("/src/app"), Some(4123)).unwrap();
+        keep_port(dir.path(), Some(4123)).unwrap();
         assert_eq!(port(dir.path()), Some(4123));
-        drop(claim);
 
         std::fs::write(dir.path().join(PORT), "41x3").unwrap();
         assert_eq!(port(dir.path()), None, "a hand edit");
@@ -3341,7 +3339,7 @@ mod tests {
 
         // A spawn that found no port takes away the one a spawn before kept.
         std::fs::write(dir.path().join(PORT), "4123").unwrap();
-        let _claim = Claim::hold(dir.path(), Path::new("/src/app"), None).unwrap();
+        keep_port(dir.path(), None).unwrap();
         assert_eq!(port(dir.path()), None);
     }
 

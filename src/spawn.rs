@@ -944,26 +944,40 @@ pub fn take_a_place<T>(
         return Ok(Err(full));
     }
     let (claimed, dir) = claim()?;
-    let port = crate::port::pick(crate::port::range(), &held_ports(root)?);
-    let held = crate::store::Claim::hold(&dir, project, port)?;
-    Ok(Ok((claimed, held)))
+    let mut held = held_ports(root)?;
+    // An agent already on keeps its port: a second resume of it takes a
+    // place before it finds the agent running.
+    let ours = dir
+        .file_name()
+        .and_then(|id| held.remove(&id.to_string_lossy().into_owned()));
+    let port = match ours {
+        Some(port) => Some(port),
+        None => {
+            let port = crate::port::pick(crate::port::range(), &held.into_values().collect());
+            crate::store::keep_port(&dir, port)?;
+            port
+        }
+    };
+    let place = crate::store::Claim::hold(&dir, project, port)?;
+    Ok(Ok((claimed, place)))
 }
 
-/// The ports held by spawns still setting up and by agents whose pane still
-/// answers for them, short of an end.
+/// The port of each agent that holds one: a spawn still setting up, or an
+/// agent whose pane still answers for it, short of an end.
 ///
 /// A record left working over a dead pane holds nothing, and neither does a
 /// parked agent: it has no pane, and its resume picks a port again.
-fn held_ports(root: &Path) -> Result<BTreeSet<u16>> {
-    let setting_up = crate::store::claims(root)?
-        .into_iter()
-        .filter_map(|(id, _)| crate::paths::agent_dir_in(root, &id).ok());
+fn held_ports(root: &Path) -> Result<BTreeMap<String, u16>> {
+    let setting_up = crate::store::claims(root)?.into_iter().map(|(id, _)| id);
     let on = answering(root, |phase, _| !phase.is_terminal())?
         .into_iter()
-        .filter_map(|meta| crate::paths::agent_dir_in(root, &meta.id).ok());
+        .map(|meta| meta.id);
     Ok(setting_up
         .chain(on)
-        .filter_map(|dir| crate::store::port(&dir))
+        .filter_map(|id| {
+            let dir = crate::paths::agent_dir_in(root, &id).ok()?;
+            Some((id, crate::store::port(&dir)?))
+        })
         .collect())
 }
 
@@ -2200,6 +2214,47 @@ mod tests {
         // A spawn that gives up leaves its place for the next.
         drop(started);
         assert_eq!(at_capacity(&root, project.path(), 2, None).unwrap(), None);
+    }
+
+    #[test]
+    fn spawn_a_second_resume_of_a_running_agent_leaves_its_port_alone() {
+        // Two resumes of one agent both take a place before one finds it
+        // running. The loser must not hand the winner's pane another port.
+        let home = TempDir::new().unwrap();
+        let root = home.path().join("agents");
+        let dir = root.join("fix-login-a1b");
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = TempDir::new().unwrap();
+        let server =
+            Own(Server::named(format!("amx-port-{}", std::process::id())).with_conf("/dev/null"));
+        let take = || {
+            take_a_place(&root, project.path(), 5, None, || Ok(((), dir.clone())))
+                .unwrap()
+                .unwrap()
+                .1
+        };
+
+        let first = take().port().expect("a free port");
+        Agent::create(
+            &root,
+            &meta(
+                "fix-login-a1b",
+                server.0.socket().clone(),
+                placed(&server.0, "fix-login-a1b"),
+            ),
+        )
+        .expect("a record");
+
+        assert_eq!(
+            take().port(),
+            Some(first),
+            "the claim names the port it has"
+        );
+        assert_eq!(
+            crate::store::port(&dir),
+            Some(first),
+            "and so does its file"
+        );
     }
 
     #[test]
