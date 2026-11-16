@@ -2888,6 +2888,9 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
         ctrl('w'),
         ctrl('g'),
         ctrl('j'),
+        ctrl('y'),
+        alt(KeyCode::Char('b')),
+        alt(KeyCode::Char('f')),
         alt(KeyCode::Up),
         alt(KeyCode::Down),
     ] {
@@ -2915,6 +2918,7 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
         ctrl('r'),
         alt(KeyCode::Char('1')),
         alt(KeyCode::Char('a')),
+        alt(KeyCode::Char('d')),
     ] {
         assert!(
             !the_lines(&Composer::new(Asking::Reply), key),
@@ -2944,6 +2948,9 @@ fn card_line_takes_the_keys_a_line_reads_and_no_others() {
     for key in [plain(KeyCode::Up), plain(KeyCode::Down)] {
         assert!(the_lines(&holding, key), "{key:?} walks the line's rows");
     }
+    // alt+d opens the patch from an empty line and deletes a word from one
+    // holding text.
+    assert!(the_lines(&holding, alt(KeyCode::Char('d'))));
 }
 
 #[test]

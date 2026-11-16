@@ -58,6 +58,9 @@ pub struct Composer {
     pub images: Vec<PathBuf>,
     /// The walk through sent lines, while one is under way.
     pub walking: Option<Walking>,
+    /// What the last ctrl+u, ctrl+k, alt+d or ctrl+w deleted, for ctrl+y to
+    /// put back. One slot, not a ring.
+    pub yanked: String,
     /// The cells of text a row of the line was last drawn with, so the keys
     /// move over the rows as drawn. Unbounded until the line is first drawn.
     pub room: Cell<usize>,
@@ -177,6 +180,7 @@ impl Composer {
             pastes: Vec::new(),
             images: Vec::new(),
             walking: None,
+            yanked: String::new(),
             room: Cell::new(usize::MAX),
         }
     }
@@ -422,15 +426,34 @@ impl Composer {
     }
 
     /// Deletes the word before the cursor, by the same rule as
-    /// [`word_left`](Self::word_left). A marker counts as one word.
+    /// [`word_left`](Self::word_left), for ctrl+y to put back.
     pub fn delete_word_back(&mut self) {
-        if self.marker_behind().is_some() {
-            return self.delete_back();
-        }
-        let to = self.byte();
+        let to = self.at;
         self.word_left();
-        let from = self.byte();
-        self.text.replace_range(from..to, "");
+        self.cut(self.at..to);
+    }
+
+    /// Deletes the word after the cursor, by the same rule as
+    /// [`word_right`](Self::word_right), for ctrl+y to put back.
+    pub fn delete_word_forward(&mut self) {
+        let from = self.at;
+        self.word_right();
+        self.cut(from..self.at);
+    }
+
+    /// Deletes the characters `chars` into the one slot ctrl+y puts back
+    /// from, and leaves the cursor at their start.
+    fn cut(&mut self, chars: Range<usize>) {
+        let bytes = self.byte_at(chars.start)..self.byte_at(chars.end);
+        self.yanked = self.text[bytes.clone()].to_string();
+        self.text.replace_range(bytes, "");
+        self.at = chars.start;
+    }
+
+    /// Inserts what the last cut deleted, at the cursor.
+    pub fn yank(&mut self) {
+        let yanked = self.yanked.clone();
+        self.insert(&yanked);
     }
 
     /// The length in characters of a paste or image marker ending at the
@@ -495,29 +518,36 @@ impl Composer {
 
     /// Moves to the start of the previous word.
     ///
-    /// Words split on whitespace only, so a dial like `m:opus` is one word.
+    /// Words split on whitespace only, so a dial like `m:opus` is one word,
+    /// and a paste or image marker is one word, spaces and all.
     pub fn word_left(&mut self) {
         let line: Vec<char> = self.text.chars().collect();
-        let mut at = self.at.min(line.len());
-        while at > 0 && line[at - 1].is_whitespace() {
-            at -= 1;
+        self.at = self.at.min(line.len());
+        while self.at > 0 && line[self.at - 1].is_whitespace() {
+            self.at -= 1;
         }
-        while at > 0 && !line[at - 1].is_whitespace() {
-            at -= 1;
+        if let Some(marker) = self.marker_behind() {
+            self.at -= marker;
+            return;
         }
-        self.at = at;
+        while self.at > 0 && !line[self.at - 1].is_whitespace() {
+            self.at -= 1;
+        }
     }
 
     pub fn word_right(&mut self) {
         let line: Vec<char> = self.text.chars().collect();
-        let mut at = self.at.min(line.len());
-        while at < line.len() && line[at].is_whitespace() {
-            at += 1;
+        self.at = self.at.min(line.len());
+        while self.at < line.len() && line[self.at].is_whitespace() {
+            self.at += 1;
         }
-        while at < line.len() && !line[at].is_whitespace() {
-            at += 1;
+        if let Some(marker) = self.marker_ahead() {
+            self.at += marker;
+            return;
         }
-        self.at = at;
+        while self.at < line.len() && !line[self.at].is_whitespace() {
+            self.at += 1;
+        }
     }
 
     /// Moves the highlight through the suggestions, wrapping at both ends.
@@ -4208,6 +4238,60 @@ mod tests {
         two.at = 1;
         two.row_end();
         assert_eq!(two.at, 3, "before the newline");
+    }
+
+    #[test]
+    fn alt_b_and_alt_f_move_a_word_and_alt_d_deletes_the_next() {
+        let mut composer = drawn("one two three", 40);
+        composer.word_left();
+        assert_eq!(composer.at, 8, "alt+b: before three");
+        composer.at = 0;
+        composer.word_right();
+        assert_eq!(composer.at, 3, "alt+f: after one");
+        composer.at = 0;
+        composer.delete_word_forward();
+        assert_eq!(composer.text, " two three");
+        composer.yank();
+        assert_eq!(
+            (composer.text.as_str(), composer.at),
+            ("one two three", 3),
+            "ctrl+y puts the deleted word back at the cursor"
+        );
+    }
+
+    #[test]
+    fn a_marker_is_one_word_to_move_over_and_delete() {
+        let mut composer = drawn("see ", 40);
+        composer.paste(&"x\n".repeat(PASTED_ROWS + 1));
+        composer.insert(" now");
+        assert_eq!(composer.text, "see [Pasted text #1] now");
+        composer.at = 4;
+        composer.word_right();
+        assert_eq!(composer.at, 20, "alt+f steps over the marker whole");
+        composer.word_left();
+        assert_eq!(composer.at, 4, "and alt+b back over it");
+        composer.at = 3;
+        composer.delete_word_forward();
+        assert_eq!(
+            composer.text, "see now",
+            "alt+d takes the space and the marker"
+        );
+        composer.yank();
+        assert_eq!(composer.text, "see [Pasted text #1] now");
+        assert_eq!(
+            composer.whole(),
+            format!("see {} now", "x\n".repeat(PASTED_ROWS + 1))
+        );
+    }
+
+    #[test]
+    fn ctrl_y_puts_back_what_ctrl_w_deleted() {
+        let mut composer = drawn("one two", 40);
+        composer.delete_word_back();
+        assert_eq!(composer.text, "one ");
+        composer.at = 0;
+        composer.yank();
+        assert_eq!(composer.text, "twoone ");
     }
 
     #[test]
