@@ -226,6 +226,8 @@ pub const HOOKS: Hooks = Hooks {
     fresh_start: Some("startup"),
     // Notices are not hooks, so no payload says what a question is.
     question_kinds: &[],
+    agent_tools: &[],
+    shell_tool: "",
 };
 
 #[cfg(test)]

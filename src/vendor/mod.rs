@@ -192,6 +192,11 @@ pub struct Hooks {
     pub fresh_start: Option<&'static str>,
     /// Payload `kind` values that make a notice a question for the person.
     pub question_kinds: &'static [&'static str],
+    /// The tools that start a subagent in the background.
+    pub agent_tools: &'static [&'static str],
+    /// The tool that starts a background shell when its input sets
+    /// `run_in_background`. Empty means none does.
+    pub shell_tool: &'static str,
 }
 
 /// How amx's hook command is installed for a vendor. Paths are relative to

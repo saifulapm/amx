@@ -244,6 +244,8 @@ pub const HOOKS: Hooks = Hooks {
     // `form.created` is only sent for `metadata.kind` `question`, and carries
     // it as `kind`.
     question_kinds: &["question"],
+    agent_tools: &[],
+    shell_tool: "",
 };
 
 #[cfg(test)]

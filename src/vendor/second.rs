@@ -119,6 +119,8 @@ pub const HOOKS: Hooks = Hooks {
     injected: &["[second]"],
     fresh_start: Some("new"),
     question_kinds: &["pick"],
+    agent_tools: &[],
+    shell_tool: "",
 };
 
 /// Screen rules for the fixture, differing from claude's in footer, rule

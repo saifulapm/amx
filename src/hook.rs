@@ -626,6 +626,7 @@ fn still_running(shells: u32, agents: u32) -> String {
 ///   permission box, which waits on the person, and that subagent's next
 ///   call, refusal or finish, which says the box closed. The agent's own calls
 ///   leave that box up, and so does its turn ending while subagents still run.
+///   A subagent's finish also sets the counts of tasks still running.
 ///   A payload for an ended record changes nothing.
 /// - Any event about the agent clears the interrupt and park stamps, since
 ///   the vendor spoke.
@@ -648,6 +649,13 @@ pub fn apply(payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Noti
 fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) -> Option<Notice> {
     if state.state.is_terminal() {
         return None;
+    }
+    // A subagent's finish lists every task still running, the only word on
+    // them before the turn ends.
+    if moment(hooks, payload) == Some(Moment::Returned) && payload["background_tasks"].is_array() {
+        let (shells, agents) = running(payload);
+        state.background = shells + agents;
+        state.agents = agents;
     }
     if let Some(sub) = payload["agent_id"].as_str() {
         match moment(hooks, payload)? {
@@ -760,8 +768,20 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
 
         Moment::Calling => {
             state.state = Phase::Working;
-            state.background = 0;
-            state.agents = 0;
+            // A call carries no list of running tasks, so the calls that start
+            // one are counted until a subagent's or the turn's end lists them.
+            if hooks
+                .agent_tools
+                .iter()
+                .any(|tool| payload["tool_name"] == *tool)
+            {
+                state.agents += 1;
+                state.background += 1;
+            } else if payload["tool_name"] == hooks.shell_tool
+                && payload["tool_input"]["run_in_background"] == true
+            {
+                state.background += 1;
+            }
             if let Some(tool) = payload["tool_name"].as_str() {
                 state.summary = Some(format!("Running {tool}"));
             }
@@ -2748,8 +2768,8 @@ mod tests {
 
     #[test]
     fn hook_the_next_thing_the_agent_does_retires_the_shell_count() {
-        // The count belongs to the ended turn; the next prompt or tool call
-        // clears it.
+        // The count belongs to the ended turn; the next prompt or menu clears
+        // it.
         let ended = State {
             state: Phase::Working,
             summary: Some("2 shells running".to_string()),
@@ -2759,13 +2779,85 @@ mod tests {
 
         for payload in [
             json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
-            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash" }),
             json!({ "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion" }),
         ] {
             let mut state = ended.clone();
             apply(&payload, &mut state, &mut meta());
             assert_eq!(state.background, 0, "{payload}");
         }
+    }
+
+    #[test]
+    fn hook_a_running_turn_counts_the_shells_and_subagents_it_starts() {
+        // Only the turn-end and subagent-end payloads list running tasks, so
+        // mid-turn the count comes from the calls that start them.
+        let mut state = State::default();
+        let mut meta = meta();
+        for payload in [
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "review the diff" }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                    "tool_input": { "description": "review", "prompt": "read it", "subagent_type": "general-purpose" } }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Task",
+                    "tool_input": { "description": "test", "prompt": "run it" } }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                    "tool_input": { "command": "cargo build", "run_in_background": true } }),
+        ] {
+            apply(&payload, &mut state, &mut meta);
+        }
+        assert_eq!(state.agents, 2);
+        assert_eq!(state.background, 3);
+        assert_eq!(state.state, Phase::Working);
+
+        // A call that starts nothing in the background, and a subagent's own
+        // shell, leave the agent's counts alone.
+        for payload in [
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                    "tool_input": { "command": "ls" } }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Read",
+                    "tool_input": { "file_path": "/srv/app/main.rs" } }),
+            json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "agent_id": "sub-1",
+                    "tool_input": { "command": "cargo test", "run_in_background": true } }),
+        ] {
+            apply(&payload, &mut state, &mut meta);
+            assert_eq!((state.agents, state.background), (2, 3), "{payload}");
+        }
+
+        // A subagent's finish lists what still runs, itself as completed.
+        apply(
+            &json!({
+                "hook_event_name": "SubagentStop",
+                "agent_id": "sub-1",
+                "agent_type": "general-purpose",
+                "background_tasks": [
+                    { "id": "sub-1", "type": "local_agent", "status": "completed" },
+                    { "id": "sub-2", "type": "local_agent", "status": "running" },
+                    { "id": "bash_1", "type": "shell", "status": "running" }
+                ]
+            }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!(state.agents, 1);
+        assert_eq!(state.background, 2);
+        assert_eq!(state.state, Phase::Working);
+
+        apply(
+            &json!({ "hook_event_name": "Stop", "last_assistant_message": "Reviewed.", "background_tasks": [] }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!((state.agents, state.background), (0, 0));
+        assert_eq!(state.state, Phase::Idle);
+
+        // The next turn starts from nothing.
+        state.agents = 1;
+        state.background = 1;
+        apply(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "carry on" }),
+            &mut state,
+            &mut meta,
+        );
+        assert_eq!((state.agents, state.background), (0, 0));
     }
 
     #[test]

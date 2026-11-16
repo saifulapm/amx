@@ -220,6 +220,8 @@ pub const HOOKS: Hooks = Hooks {
     // (dist/core/extensions/runner.js:321-325, 0.87.1). `custom` is left out:
     // it is whatever an extension draws, not a question.
     question_kinds: &["input", "editor", "select", "confirm"],
+    agent_tools: &[],
+    shell_tool: "",
 };
 
 #[cfg(test)]

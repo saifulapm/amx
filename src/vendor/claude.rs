@@ -223,6 +223,10 @@ pub const HOOKS: Hooks = Hooks {
     fresh_start: Some("startup"),
     // Notices carry a type but no kind; questions come from the question tool.
     question_kinds: &[],
+    // Every Agent call runs in the background (claude 2.1.325); older
+    // releases named the tool Task.
+    agent_tools: &["Agent", "Task"],
+    shell_tool: "Bash",
 };
 
 #[cfg(test)]
