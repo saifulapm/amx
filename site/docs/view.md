@@ -393,6 +393,11 @@ s:failed
 `done`, `asleep`, `shelved`) and the record's states (`idle`, `failed`, `stopped`, and so
 on).
 
+A find line that starts with `t:` narrows to the agents whose conversation
+holds the text after it, as `amx find` does: `t:importer`. The conversations
+are read when you press `enter`, not as you type, newest agents first and at
+most 128 MB of them; the notice line says so when the search stopped there.
+
 ## Arranging
 
 | Key | Does |

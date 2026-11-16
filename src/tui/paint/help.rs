@@ -79,7 +79,7 @@ pub(in crate::tui) const HELP: [(&str, &str); 61] = [
     ("ctrl+x", "stop it · again forgets · a heading, the group"),
     ("c", "mark the finished · again clears them"),
     ("/", "find by name, task or #12, as you type"),
-    ("s:", "filter by state, on the find line"),
+    ("s: t:", "by state, or by what was said, on the find line"),
     // dials
     ("alt+a", "which vendor the next agent runs"),
     ("alt+m", "which model the next agent uses"),

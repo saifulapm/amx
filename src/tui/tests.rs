@@ -1501,6 +1501,54 @@ fn showing_ids(screen: &Screen) -> Vec<String> {
 }
 
 #[test]
+fn find_t_narrows_on_enter_to_the_agents_whose_conversation_holds_the_text() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    // On disk, where the search reads: only ask-a1b's conversation mentions
+    // the importer, though port-b2c's task does too.
+    for (id, said) in [
+        ("ask-a1b", "{\"text\":\"the importer breaks on login\"}\n"),
+        ("port-b2c", "{\"text\":\"done\"}\n"),
+    ] {
+        let transcript = root.path().join(format!("{id}.jsonl"));
+        std::fs::write(&transcript, said).unwrap();
+        let meta: crate::store::Meta = serde_json::from_value(serde_json::json!({
+            "id": id, "task": "a task", "dir": "/srv/app", "socket": {"name": "amx"},
+            "pane": "%1", "bg": false, "depth": 0, "created": 1, "transcript": transcript,
+        }))
+        .unwrap();
+        crate::store::Agent::create(root.path(), &meta).unwrap();
+    }
+    let mut screen = watching(a_fleet_to_search());
+    let press = |screen: &mut Screen, key: KeyEvent| {
+        screen.act(key, root.path(), &config, None).unwrap();
+    };
+
+    press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+    for typed in "t:importer".chars() {
+        press(&mut screen, KeyEvent::from(KeyCode::Char(typed)));
+    }
+    assert_eq!(
+        showing_ids(&screen),
+        ["ask-a1b", "port-b2c"],
+        "no conversation is read as it is typed"
+    );
+
+    press(&mut screen, KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        showing_ids(&screen),
+        ["ask-a1b"],
+        "enter reads them, and leaves the agent whose conversation holds it"
+    );
+    assert_eq!(screen.list.narrowing().as_deref(), Some("t:importer"));
+
+    // Esc on a new find line widens it again.
+    press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
+    press(&mut screen, KeyEvent::from(KeyCode::Esc));
+    assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+}
+
+#[test]
 fn find_slash_narrows_the_list_as_it_is_typed_and_enter_keeps_it() {
     let root = TempDir::new().unwrap();
     let config = Config::default();

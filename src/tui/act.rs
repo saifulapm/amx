@@ -834,6 +834,15 @@ pub fn narrowing(line: &str) -> Option<Vec<Narrow>> {
 /// The find-line token that narrows by state.
 pub const STATE: &str = "s:";
 
+/// The find-line token that narrows to the agents whose conversation holds
+/// the text after it.
+pub const TEXT: &str = "t:";
+
+/// The text a `t:` find line asks for, or `None` for any other line.
+pub fn conversing(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(TEXT).map(str::trim)
+}
+
 /// What a find line narrows the wall to.
 ///
 /// A line of only `s:` tokens narrows by state. Anything else is one name
@@ -842,6 +851,11 @@ pub const STATE: &str = "s:";
 pub fn finding(line: &str) -> Vec<Narrow> {
     if let Some(narrowing) = narrowing(line) {
         return narrowing;
+    }
+    // A `t:` line reads conversations, which waits for enter; the name its
+    // first letter narrowed by goes.
+    if conversing(line).is_some() {
+        return vec![Narrow::Name(None)];
     }
     let want = line.trim();
     vec![Narrow::Name((!want.is_empty()).then(|| want.to_string()))]

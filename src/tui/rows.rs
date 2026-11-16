@@ -553,6 +553,9 @@ impl On {
 pub enum Narrow {
     State(Option<String>),
     Name(Option<String>),
+    /// The agents whose conversation holds the text, found when the find
+    /// line was entered (see [`crate::verbs::find`]).
+    Held(Option<(String, BTreeSet<String>)>),
 }
 
 /// The active narrowing. The state and name parts must both match when set.
@@ -563,6 +566,8 @@ pub enum Narrow {
 struct Filters {
     state: Vec<String>,
     name: Option<String>,
+    /// The text a `t:` line asked for, and the agents found holding it.
+    held: Option<(String, BTreeSet<String>)>,
 }
 
 impl Filters {
@@ -589,7 +594,11 @@ impl Filters {
                 || holds(&view.meta.task, want)
                 || prs.iter().any(|pr| holds(&pr.label(), want))
         });
-        state && name
+        let held = self
+            .held
+            .as_ref()
+            .is_none_or(|(_, ids)| ids.contains(view.id()));
+        state && name && held
     }
 
     /// The narrowing as the find line would spell it (`s:waiting /port`).
@@ -599,6 +608,7 @@ impl Filters {
             .iter()
             .map(|want| format!("s:{want}"))
             .chain(self.name.as_ref().map(|want| format!("/{want}")))
+            .chain(self.held.as_ref().map(|(want, _)| format!("t:{want}")))
             .collect();
         (!said.is_empty()).then(|| said.join(" "))
     }
@@ -1275,6 +1285,7 @@ impl List {
             match change {
                 Narrow::State(state) => states.get_or_insert_default().extend(state),
                 Narrow::Name(named) => name = Some(named),
+                Narrow::Held(held) => self.filters.held = held,
             }
         }
         match states {

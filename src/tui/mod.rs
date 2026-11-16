@@ -2226,8 +2226,14 @@ impl Screen {
             }
             KeyCode::Enter => {
                 // A search has already narrowed the list; enter only closes
-                // the line.
+                // the line, except on a `t:` line, which reads the
+                // conversations now rather than on every key.
                 if let Asking::Find = composer.asking {
+                    if let Some(text) = act::conversing(&composer.text)
+                        && !text.is_empty()
+                    {
+                        self.read_the_conversations(root, text);
+                    }
                     return Ok(Doing::Carry);
                 }
                 // Rename. A refused name keeps the line open.
@@ -3099,10 +3105,34 @@ impl Screen {
         self.follow_the_cursor();
     }
 
-    /// Clear both the state and the name narrowing, whichever a search set.
+    /// Clear the state, name and conversation narrowing, whichever a search
+    /// set.
     fn widen(&mut self) {
-        self.list
-            .narrow(vec![Narrow::State(None), Narrow::Name(None)]);
+        self.list.narrow(vec![
+            Narrow::State(None),
+            Narrow::Name(None),
+            Narrow::Held(None),
+        ]);
+        self.follow_the_cursor();
+    }
+
+    /// Narrow the wall to the agents whose conversation holds `text`, saying
+    /// so when the search stopped at its budget.
+    fn read_the_conversations(&mut self, root: &Path, text: &str) {
+        match verbs::find::search(root, text, verbs::find::BUDGET) {
+            Ok(found) => {
+                let ids = found.hits.into_iter().map(|hit| hit.id).collect();
+                self.list
+                    .narrow(vec![Narrow::Held(Some((text.to_string(), ids)))]);
+                if found.stopped {
+                    self.notice = Some(Notice::Advice(format!(
+                        "stopped after {} MB of conversation",
+                        verbs::find::BUDGET / (1024 * 1024)
+                    )));
+                }
+            }
+            Err(e) => self.notice = Some(Notice::Failed(format!("{e:#}"))),
+        }
         self.follow_the_cursor();
     }
 
