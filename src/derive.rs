@@ -1119,21 +1119,28 @@ fn held_still(
     rules: &Ruleset,
     now: u64,
 ) -> u64 {
-    let Some(screen) = screen else { return 0 };
-    let rows: Vec<&str> = screen.lines().collect();
-    let seen = hashed(rules.furniture().cut(&rows));
-
-    let still = match state.still {
-        Some(still) if still.screen == seen => still,
-        _ => Still {
-            screen: seen,
-            since: now,
-        },
+    let Some(still) = still_since(state, screen, rules, now) else {
+        return 0;
     };
     if state.still != Some(still) {
         write_the_screen(agent, state, still);
     }
     now.saturating_sub(still.since)
+}
+
+/// The screen this look found and when it went up: the recorded stamp if the
+/// screen is the one recorded, else now. `None` without a screen.
+fn still_since(state: &State, screen: Option<&str>, rules: &Ruleset, now: u64) -> Option<Still> {
+    let rows: Vec<&str> = screen?.lines().collect();
+    let seen = hashed(rules.furniture().cut(&rows));
+
+    Some(match state.still {
+        Some(still) if still.screen == seen => still,
+        _ => Still {
+            screen: seen,
+            since: now,
+        },
+    })
 }
 
 /// Records the screen and when it went up, without moving the record's
@@ -1959,11 +1966,23 @@ pub fn view_for(root: &Path, id: &str, now: u64, wants: Wants) -> Result<View> {
         screen,
         now,
         beat,
+        Writes::Back,
     ))
 }
 
+/// Whether a reading writes back to the record what it saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Writes {
+    /// The screen's stamp, its question, a turn edge, and what idle runs.
+    Back,
+    /// Nothing: the phase alone, for a reader on a timer.
+    Nothing,
+}
+
 /// Conclude about one agent off a screen already taken, write down what the
-/// reading leaves on the record, and hand back the view.
+/// reading leaves on the record (unless `writes` says not to), and hand back
+/// the view.
+#[allow(clippy::too_many_arguments)]
 fn look(
     root: &Path,
     record: Record,
@@ -1971,6 +1990,7 @@ fn look(
     screen: Option<String>,
     now: u64,
     beat: Option<u64>,
+    writes: Writes,
 ) -> View {
     let Record {
         agent,
@@ -1979,11 +1999,16 @@ fn look(
     } = record;
     let rules = own_screens(&meta);
     // Only a quiescent rule reads `held`, and no rule reads a command's pane.
-    let held = match runs_a_command(&meta, &state) {
-        true => 0,
-        false => held_still(&agent, &mut state, screen.as_deref(), rules, now),
+    let held = match (runs_a_command(&meta, &state), writes) {
+        (true, _) => 0,
+        (false, Writes::Back) => held_still(&agent, &mut state, screen.as_deref(), rules, now),
+        (false, Writes::Nothing) => still_since(&state, screen.as_deref(), rules, now)
+            .map_or(0, |still| now.saturating_sub(still.since)),
     };
     let reading = conclude(&meta, &state, alive, || screen, rules, now, held, beat);
+    if writes == Writes::Nothing {
+        return View::new(meta, state, reading.verdict);
+    }
     note(&agent, rules, &mut state, &reading);
     if is_the_record(&meta, &reading) {
         let said = worth_writing_down(&meta, &reading);
@@ -2046,6 +2071,29 @@ pub fn views(root: &Path, now: u64) -> Result<Vec<View>> {
 /// server, then one capture call per server for every screen needed. Each
 /// record is read against its own vendor's screens.
 pub fn views_of(root: &Path, records: Vec<Record>, now: u64, wants: Wants) -> Vec<View> {
+    read_all(root, records, now, wants, Writes::Back)
+}
+
+/// Each record's phase as [`views_of`] reads it for a card, with nothing
+/// written back: no screen stamp, question or turn edge on the record, and
+/// no `on_idle` or park that a turn's end would start.
+///
+/// For a reader on a timer, which would otherwise write on every tick.
+pub fn phases_of(root: &Path, records: Vec<Record>, now: u64) -> Vec<Phase> {
+    read_all(root, records, now, Wants::Card, Writes::Nothing)
+        .iter()
+        .map(View::phase)
+        .collect()
+}
+
+/// [`views_of`], writing back what each reading saw only if `writes` says to.
+fn read_all(
+    root: &Path,
+    records: Vec<Record>,
+    now: u64,
+    wants: Wants,
+    writes: Writes,
+) -> Vec<View> {
     let mut pending: Vec<Pending> = Vec::new();
     let mut listings = crate::tmux::Listings::default();
     let mut views = Vec::new();
@@ -2083,7 +2131,7 @@ pub fn views_of(root: &Path, records: Vec<Record>, now: u64, wants: Wants) -> Ve
         } = item;
         // Taken, since only one reading uses it.
         let screen = screens[at].take();
-        views.push(look(root, record, alive, screen, now, beat));
+        views.push(look(root, record, alive, screen, now, beat, writes));
     }
 
     views.sort_by_key(|view| (view.meta.created, view.meta.id.clone()));
@@ -4615,6 +4663,7 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
                 Some(screen.to_string()),
                 now,
                 None,
+                Writes::Back,
             );
             assert_eq!(view.phase(), Phase::Working);
         }

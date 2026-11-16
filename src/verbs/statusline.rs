@@ -10,7 +10,7 @@ use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
 
-use crate::derive::{self, View};
+use crate::derive;
 use crate::store::{Phase, now};
 use crate::{exit, paths};
 
@@ -28,8 +28,9 @@ pub fn from_env() -> Result<i32> {
 
 /// The verb, with the state directory and the clock named.
 ///
-/// Unlike `ls`, this does not sweep finished records: it runs on a timer, and
-/// housekeeping on a timer would make amx a background job.
+/// Unlike `ls`, this does not sweep finished records or write back what it
+/// read: it runs on a timer, and housekeeping on a timer would make amx a
+/// background job.
 pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
     // An ended record reads as its own phase, which has no glyph, so only the
     // live ones need a reading.
@@ -37,10 +38,7 @@ pub fn run(root: &Path, now: u64, out: &mut impl Write) -> Result<i32> {
         .into_iter()
         .filter(|record| !record.state.state.is_terminal())
         .collect();
-    let phases: Vec<Phase> = derive::views_of(root, live, now, derive::Wants::Card)
-        .iter()
-        .map(View::phase)
-        .collect();
+    let phases = derive::phases_of(root, live, now);
 
     let line = summary(&phases);
     // No bytes at all when there is nothing to count: an empty line would

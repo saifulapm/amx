@@ -674,3 +674,62 @@ fn a_reading_over_two_servers_lists_and_captures_each_once() {
     assert_eq!(on(amx.socket()), 2, "{:?}", common::calls(&log));
     assert_eq!(on(&other.0), 2, "{:?}", common::calls(&log));
 }
+
+/// claude 2.1.x at its prompt after esc cut a turn in the pane: no hook says
+/// so, and a reader ends the turn on its first look.
+const AN_INTERRUPTED_SCREEN: &str = "\
+● Bash(sleep 120)
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  Opus 5 │ ◈ 2% │ amx-measure (HEAD)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+
+#[test]
+fn the_statusline_reads_a_pane_without_writing_what_it_saw() {
+    let amx = Harness::new();
+    let ran = amx.home().join("ran-on-idle");
+    amx.config(&format!("on_idle = \"echo ran >> '{}'\"\n", ran.display()));
+    let pane = a_pane_showing(&amx, AN_INTERRUPTED_SCREEN);
+    amx.until("the interrupted turn to be drawn", || {
+        amx.capture(&pane).contains("⏵⏵").then_some(())
+    });
+    amx.record("cut-short-a1b", &pane);
+    gone_quiet(&amx, "cut-short-a1b");
+
+    let dir = amx.agent_dir("cut-short-a1b");
+    let modified = || {
+        std::fs::metadata(dir.join("state.json"))
+            .and_then(|meta| meta.modified())
+            .unwrap()
+    };
+    let (before, at) = (common::tree(&dir), modified());
+
+    // The pane says the turn ended, so nothing counts as running. A reading of
+    // the record alone would have printed the working agent.
+    let out = amx.amx(&["statusline"]);
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(
+        common::tree(&dir),
+        before,
+        "the record and its log as they were"
+    );
+    assert_eq!(modified(), at, "state.json not even rewritten in place");
+    // An errand would have started by now: `ls` below finds it within the
+    // same wait.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!ran.exists(), "the statusline ran on_idle");
+
+    // The same pane read by `ls` writes the turn's end and runs the errand,
+    // so the statusline wrote nothing by choice.
+    let listed = ls(&amx);
+    assert_eq!(listed[0]["state"], "idle", "{}", listed[0]);
+    assert_eq!(amx.state("cut-short-a1b")["state"], "idle");
+    assert_eq!(amx.event_kinds("cut-short-a1b"), ["read.turn-end"]);
+    amx.until("ls to run on_idle", || ran.exists().then_some(()));
+}
