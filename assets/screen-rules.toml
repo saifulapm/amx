@@ -302,6 +302,44 @@ state = "unknown"
 defers = true
 all = ["◯ main"]
 
+# Claude's views of its own work, drawn in place of the composer and footer, so
+# no other rule claims them: the Background dialog (`/bashes`, `/tasks`), the
+# details of one shell in it, and the ctrl+o transcript. A Stop with shells
+# still running leaves the record working for as long as they run, and these
+# screens read `unknown` over it after a few seconds. They say nothing about
+# the agent, so `defers` leaves the record standing. claude 2.1.325, one
+# `sleep 600` running (100, 54, 40, 30 and 24 columns):
+#
+#   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔                ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+#      Background                              Shell details
+#      1 active shell                          Status:   running
+#      ❯ ● sleep 600   running                 ...
+#          Earlier in this session (0)         ← to go back · Esc/Enter/Space
+#      ↑/↓ to select · Enter to view · x       to close · x to stop
+#
+# The dialog's history row is cut to `Earlier in th…` at 24 columns and its key
+# hint wraps at every width under 100, so the anchors are the top border's
+# glyph and the history row's opening. The details' key hint wraps too, but
+# `Esc/Enter/Space` stays on one row. The transcript's footer is cut from the
+# middle, `Showing detaile…verbos` at 24 columns, as `idle_prompt`'s `not` says.
+[[rule]]
+name = "background_tasks"
+state = "unknown"
+defers = true
+all = ["▔", "earlier in th"]
+
+[[rule]]
+name = "shell_details"
+state = "unknown"
+defers = true
+all = ["shell details", "esc/enter/space"]
+
+[[rule]]
+name = "transcript_view"
+state = "unknown"
+defers = true
+all = ["showing detaile"]
+
 # A running turn. claude spins one row over the composer: a cycling glyph (`✻ ✽
 # ✢ ✶ · *`), a gerund, `…`, then a parenthesised tail it drops from the right as
 # the pane narrows (claude 2.1.259):

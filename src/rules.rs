@@ -703,7 +703,7 @@ fn wrapped(row: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::vendor::second::SECOND;
     use crate::vendor::{claude, pi};
@@ -2693,6 +2693,9 @@ Only showing models from configured providers. Use /login to add providers.
                 "ask_menu",
                 "plan_approval",
                 "subagent_view",
+                "background_tasks",
+                "shell_details",
+                "transcript_view",
                 "spinner",
                 "background_agents",
                 "agents_panel",
@@ -3116,6 +3119,196 @@ Only showing models from configured providers. Use /login to add providers.
         }
     }
 
+    /// claude 2.1.325's Background dialog (`/bashes`) at 100 columns, one `sleep 600` running. No composer and no mode footer.
+    pub(crate) const BACKGROUND_DIALOG_325_100: &str = "\
+● started
+
+✻ Brewed for 5s · done 3:04 PM · 1 shell still running
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Background
+   1 active shell
+
+   ❯ ● sleep 600   running
+
+       Earlier in this session (0)
+
+   ↑/↓ to select · Enter to view · x to stop · Esc to close
+";
+
+    /// The Background dialog at 24 columns: the key hint wraps over four rows.
+    pub(crate) const BACKGROUND_DIALOG_325_24: &str = "\
+  Ran 1 shell command
+
+● started
+
+✻ Brewed for 5s · done
+  3:04 PM · 1 shell
+  still running
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Background
+   1 active shell
+
+   ❯ ● sleep 600
+
+       Earlier in th…
+
+   ↑/↓ to select ·
+   Enter to view · x
+   to stop · Esc to
+   close
+";
+
+    /// claude 2.1.325's Shell details, Enter on a shell in the Background dialog, at 100 columns.
+    pub(crate) const SHELL_DETAILS_325_100: &str = "\
+● started
+
+✻ Brewed for 5s · done 3:04 PM · 1 shell still running
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Shell details
+
+   Status:   running
+   Runtime:  56s
+   Command:  sleep 600
+
+   Output:
+   No output available
+
+   ← to go back · Esc/Enter/Space to close · x to stop
+";
+
+    /// Shell details at 24 columns: the key hint wraps, `Esc/Enter/Space` stays whole.
+    pub(crate) const SHELL_DETAILS_325_24: &str = "\
+● started
+
+✻ Brewed for 5s · done
+  3:04 PM · 1 shell
+  still running
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Shell details
+
+   Status:   running
+   Runtime:  49s
+   Command:  sleep
+             600
+
+   Output:
+   No output
+   available
+
+   ← to go back ·
+   Esc/Enter/Space to
+   close · x to stop
+";
+
+    /// claude 2.1.325's ctrl+o transcript at 100 columns, over a finished turn with a shell running.
+    pub(crate) const TRANSCRIPT_325_100: &str = "\
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode
+
+                                                                   03:04 PM claude-haiku-5-5
+● started
+
+✻ Brewed for 5s · done 3:04 PM · 1 shell still running
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Showing detailed transcript · ctrl+o to toggle · ? for shortcuts                          verbose
+";
+
+    /// The ctrl+o transcript at 24 columns: its footer is cut to `Showing detaile…`.
+    pub(crate) const TRANSCRIPT_325_24: &str = "\
+  run_in_background
+  true to run: sleep
+  600. Then reply with
+  only the word
+  started.
+
+● Bash(sleep 600)
+  ⎿  Running in the
+  ⎿  Allowed by
+
+claude-haiku-5-5
+● started
+
+✻ Brewed for 5s · done
+  3:04 PM · 1 shell
+  still running
+
+────────────────────────
+  Showing detaile…verbos
+                  e
+";
+
+    #[test]
+    fn rules_claudes_views_of_its_own_work_leave_the_agent_to_its_record() {
+        // The Background dialog, a shell's details and the ctrl+o transcript
+        // take the composer's place, so nothing claimed them and a record
+        // working on its shells read `unknown` a few seconds in.
+        let rules = claude();
+        for (what, screen, named) in [
+            (
+                "the Background dialog, 100",
+                BACKGROUND_DIALOG_325_100,
+                "background_tasks",
+            ),
+            (
+                "the Background dialog, 24",
+                BACKGROUND_DIALOG_325_24,
+                "background_tasks",
+            ),
+            ("shell details, 100", SHELL_DETAILS_325_100, "shell_details"),
+            ("shell details, 24", SHELL_DETAILS_325_24, "shell_details"),
+            ("the transcript, 100", TRANSCRIPT_325_100, "transcript_view"),
+            ("the transcript, 24", TRANSCRIPT_325_24, "transcript_view"),
+            (
+                "the transcript, 2.1.270 at 54",
+                TRANSCRIPT_270_54,
+                "transcript_view",
+            ),
+            (
+                "the transcript, 2.1.270 at 40",
+                TRANSCRIPT_270_40,
+                "transcript_view",
+            ),
+            (
+                "the transcript, 2.1.270 at 30",
+                TRANSCRIPT_270_30,
+                "transcript_view",
+            ),
+        ] {
+            for recorded in [Phase::Working, Phase::Idle] {
+                let claimed = claim(rules, screen, recorded);
+                assert_eq!(
+                    claimed.rule_name(),
+                    Some(named),
+                    "{what}, recorded {recorded:?}"
+                );
+                assert_eq!(claimed.phase(), None, "{what}: the record decides");
+            }
+        }
+    }
+
     #[test]
     fn rules_a_subagents_screen_leaves_the_agent_to_its_record() {
         // Looking at a subagent says nothing about the agent: its turn may be
@@ -3195,28 +3388,32 @@ Only showing models from configured providers. Use /login to add providers.
         // transcript during a long tool call said the turn had ended. The /btw
         // overlay sits in the composer's slot.
         //
-        // Unclaimed is right for both: an idle or waiting record keeps its
-        // word, and a record mid-turn reads unknown rather than being ended.
+        // Neither may end the turn. The viewer defers to the record; the
+        // overlay is unclaimed, so a record mid-turn reads unknown rather than
+        // being ended.
         let rules = claude();
         assert!(
             TRANSCRIPT_270_100.contains("? for shortcuts"),
             "the anchor that claimed this screen is still drawn on it, and \
              `not` is what keeps the rule off it"
         );
+        // The viewer has its own rule, which leaves the record standing.
         for (what, screen) in [
             ("the viewer at 100 columns", TRANSCRIPT_270_100),
             ("at 54", TRANSCRIPT_270_54),
             ("at 40", TRANSCRIPT_270_40),
             ("at 30", TRANSCRIPT_270_30),
             ("at 24", TRANSCRIPT_270_24),
-            ("the answered /btw overlay", BTW_ANSWERED_270_100),
         ] {
-            assert_eq!(
-                claim(rules, screen, Phase::Working),
-                Claim::Unclaimed,
-                "{what} must claim nothing"
-            );
+            let claimed = claim(rules, screen, Phase::Working);
+            assert_eq!(claimed.rule_name(), Some("transcript_view"), "{what}");
+            assert_eq!(claimed.phase(), None, "{what} must not end the turn");
         }
+        assert_eq!(
+            claim(rules, BTW_ANSWERED_270_100, Phase::Working),
+            Claim::Unclaimed,
+            "the answered /btw overlay must claim nothing"
+        );
 
         // The overlay while it answers has claude's own gerund and ellipsis,
         // but in the composer's slot with no composer under it, so it is not

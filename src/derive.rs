@@ -4246,6 +4246,26 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
     }
 
     #[test]
+    fn reader_leaves_an_agent_to_its_record_while_claude_shows_its_own_work() {
+        // A Stop with shells running leaves the record working while they
+        // run, so looking at them read `unknown` once the hooks went quiet.
+        use crate::rules::tests::{
+            BACKGROUND_DIALOG_325_24, SHELL_DETAILS_325_100, TRANSCRIPT_325_24,
+        };
+        for (what, screen) in [
+            ("the Background dialog", BACKGROUND_DIALOG_325_24),
+            ("shell details", SHELL_DETAILS_325_100),
+            ("the transcript at 24 columns", TRANSCRIPT_325_24),
+        ] {
+            for recorded in [Phase::Working, Phase::Idle] {
+                let verdict = decided(&state(recorded, 1_000), true, Some(screen), 1_020);
+                assert_eq!(verdict.phase, recorded, "{what} over {recorded:?}");
+                assert_eq!(verdict.evidence, Evidence::Hooks, "{what}");
+            }
+        }
+    }
+
+    #[test]
     fn reader_says_unknown_rather_than_guessing() {
         let verdict = decided(&state(Phase::Working, 1_000), true, Some(A_SHELL), 1_500);
         assert_eq!(verdict.phase, Phase::Unknown);
