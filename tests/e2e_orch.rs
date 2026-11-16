@@ -1096,8 +1096,9 @@ fn send_of_a_command_claude_runs_itself_counts_once_any_hook_answers_it() {
 }
 
 #[test]
-fn send_of_a_command_claude_runs_without_a_hook_counts_once_its_input_lets_it_go() {
-    // claude answers /context with no hook at all; its input lets go of it.
+fn send_of_a_command_claude_runs_without_a_hook_counts_once_its_input_stays_empty() {
+    // claude answers /context with no hook at all. This stand-in never draws
+    // the paste, so the send counts it once 2 s pass with its input empty.
     let amx = Harness::new();
     let id = "fix-login-a1b";
     amx.play(id, "runs-a-command-itself");

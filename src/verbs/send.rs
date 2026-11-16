@@ -284,7 +284,12 @@ fn delivered(
     // popup.
     let meta = agent.meta()?;
     let vendor = meta.agent.as_deref().and_then(registry::entry);
-    let local = images.is_empty() && runs_itself(&meta, text);
+    let table = crate::config::current().harness("claude").env;
+    let account =
+        crate::install::claude_env(&table, &crate::install::process_env)("CLAUDE_CONFIG_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from);
+    let local = images.is_empty() && runs_itself(&meta, account.as_deref(), text);
     let typed = spawn::as_typed(vendor, text);
     let takes = vendor
         .and_then(|vendor| vendor.images)
@@ -337,7 +342,7 @@ fn delivered(
 /// (claude's `!ls`), or one line opening with the catalog's sigil and a word
 /// the catalog does not list, where the catalog says such words are the
 /// vendor's own (claude's `/clear`).
-fn runs_itself(meta: &Meta, text: &str) -> bool {
+fn runs_itself(meta: &Meta, account: Option<&Path>, text: &str) -> bool {
     if runs_in_a_shell(meta, text).is_some() {
         return true;
     }
@@ -354,13 +359,29 @@ fn runs_itself(meta: &Meta, text: &str) -> bool {
         return false;
     };
     let name = word.split_whitespace().next().unwrap_or_default();
-    if name.is_empty() || text.trim().contains('\n') {
+    // claude's own commands are plain words. A path, an MCP prompt
+    // (`mcp__server__name`) or a plugin's `plugin:skill` is a prompt.
+    let plain = name.starts_with(|first: char| first.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !plain || text.trim().contains('\n') {
         return false;
     }
+    // A skill or command of the account claude runs under, which may not be
+    // the one under home.
+    let ours = account.is_some_and(|account| {
+        account.join("skills").join(name).join("SKILL.md").is_file()
+            || account
+                .join("commands")
+                .join(format!("{name}.md"))
+                .is_file()
+    });
     let spelled = format!("{}{name}", catalog.sigil);
-    !crate::catalog::listing(&catalog, &home, &meta.dir)
-        .iter()
-        .any(|entry| entry.spelled == spelled)
+    !ours
+        && !crate::catalog::listing(&catalog, &home, &meta.dir)
+            .iter()
+            .any(|entry| entry.spelled == spelled)
 }
 
 /// Wait up to [`LETS_GO`] for a sign that the vendor ran the command `text`:
@@ -394,15 +415,25 @@ fn let_go(meta: &Meta, agent: &Agent, server: &Server, from: u64, text: &str) ->
                 .staged(&rows)
                 .map(|staged| staged.iter().any(|row| row.contains(command)))
         });
-        match holds {
-            Some(true) => held = true,
-            Some(false) if held => return Ok(true),
-            _ => {}
-        }
-        if Instant::now() >= deadline {
-            return Ok(holds == Some(false));
+        let answer;
+        (held, answer) = looked(held, holds, Instant::now() >= deadline);
+        if let Some(ran) = answer {
+            return Ok(ran);
         }
         std::thread::sleep(LOOK);
+    }
+}
+
+/// One look at the composer during [`let_go`], given whether it held the
+/// command before: whether it has held it now, and the answer once there is
+/// one. `holds` is `None` when no composer was found; `over` once the wait
+/// is out.
+fn looked(held: bool, holds: Option<bool>, over: bool) -> (bool, Option<bool>) {
+    let held = held || holds == Some(true);
+    match holds {
+        Some(false) if held => (held, Some(true)),
+        _ if over => (held, Some(holds == Some(false))),
+        _ => (held, None),
     }
 }
 
@@ -1358,20 +1389,54 @@ mod tests {
             ..asking(None, &[], None).meta
         };
         let claude = on("claude");
-        assert!(runs_itself(&claude, "/clear"));
-        assert!(runs_itself(&claude, "/compact keep the test plan"));
+        assert!(runs_itself(&claude, None, "/clear"));
+        assert!(runs_itself(&claude, None, "/compact keep the test plan"));
         assert!(runs_itself(
             &on("/home/u/.local/libexec/dots/claude"),
+            None,
             "/context"
         ));
         // A skill or built-in prompt starts a turn like any message.
-        assert!(!runs_itself(&claude, "/ship-it"));
-        assert!(!runs_itself(&claude, "/review"));
-        assert!(!runs_itself(&claude, "fix /clear"));
-        assert!(!runs_itself(&claude, "/clear\nand then the tests"));
-        assert!(!runs_itself(&claude, "/"));
+        assert!(!runs_itself(&claude, None, "/ship-it"));
+        assert!(!runs_itself(&claude, None, "/review"));
+        assert!(!runs_itself(&claude, None, "fix /clear"));
+        assert!(!runs_itself(&claude, None, "/clear\nand then the tests"));
+        assert!(!runs_itself(&claude, None, "/"));
         // Only a vendor whose catalog says so.
-        assert!(!runs_itself(&on("pi"), "/clear"));
+        assert!(!runs_itself(&on("pi"), None, "/clear"));
+        // A message opening with a path, an MCP prompt or a plugin's skill
+        // is a prompt.
+        assert!(!runs_itself(&claude, None, "/tmp/brief.md has your task"));
+        assert!(!runs_itself(&claude, None, "/mcp__docs__search the api"));
+        assert!(!runs_itself(&claude, None, "/tools:ship it"));
+        assert!(!runs_itself(&claude, None, "/Clear"));
+        // A skill or command under the config dir claude runs with is too.
+        let account = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(account.path().join("skills/deploy")).unwrap();
+        std::fs::write(account.path().join("skills/deploy/SKILL.md"), "x").unwrap();
+        std::fs::create_dir_all(account.path().join("commands")).unwrap();
+        std::fs::write(account.path().join("commands/triage.md"), "x").unwrap();
+        for word in ["/deploy", "/triage now"] {
+            assert!(runs_itself(&claude, None, word), "{word}");
+            assert!(!runs_itself(&claude, Some(account.path()), word), "{word}");
+        }
+    }
+
+    #[test]
+    fn send_counts_a_command_run_once_the_composer_lets_go_of_it() {
+        // Held, then gone: run, without waiting the time out.
+        let (held, answer) = looked(false, Some(true), false);
+        assert_eq!((held, answer), (true, None));
+        assert_eq!(looked(held, Some(false), false), (true, Some(true)));
+        // Still held when the time is out: it never left the input.
+        assert_eq!(looked(true, Some(true), true), (true, Some(false)));
+        // Never seen held: empty counts only once the time is out, since an
+        // early look may come before the vendor drew the paste.
+        assert_eq!(looked(false, Some(false), false), (false, None));
+        assert_eq!(looked(false, Some(false), true), (false, Some(true)));
+        // No composer found: nothing to say it ran.
+        assert_eq!(looked(false, None, false), (false, None));
+        assert_eq!(looked(true, None, true), (true, Some(false)));
     }
 
     #[test]

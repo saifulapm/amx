@@ -269,9 +269,11 @@ amx send <ID> --file <PATH>
 
 A message sent mid-turn waits in the vendor's queue until the agent takes it.
 A command claude runs itself, such as `/clear`, `/compact`, `/context` or any
-slash word that is not one of your skills or commands, starts no turn: `send`
-counts it as sent once any hook arrives or claude's input lets go of it within
-2 s, and `result` does not wait for an answer to it.
+plain slash word (lowercase letters, digits and dashes) that is not one of your
+skills or commands, starts no turn: `send` counts it as sent once any hook
+arrives or claude's input lets go of it within 2 s, and `result` does not wait
+for an answer to it. A path such as `/tmp/notes.md`, an MCP prompt or a
+plugin's `plugin:skill` is sent as a message.
 `send` refuses (exit 2) while the agent is waiting on a question, since text
 typed there would answer it: use `answer`. It also refuses a parked agent and
 tells you to `resume` it.

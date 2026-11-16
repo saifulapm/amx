@@ -358,7 +358,8 @@ impl Turns {
 ///
 /// A send that [`send::UNSENT`] follows never reached the vendor, so the fold
 /// goes back to where it stood before that send. A [`send::COMMAND`] opens no
-/// turn, so it and an `UNSENT` after it change nothing.
+/// turn, so it and an `UNSENT` after it change nothing, unless the vendor
+/// answers it at once with a prompt.
 #[derive(Debug, Clone, Copy)]
 struct Fold {
     ended: Ended,
@@ -367,6 +368,9 @@ struct Fold {
     before: (Ended, bool),
     /// Whether the last event was a send, which an `UNSENT` takes back.
     sent_last: bool,
+    /// Whether the last event was a [`send::COMMAND`]: a prompt right after
+    /// one says it was a message after all.
+    ran_last: bool,
 }
 
 impl Fold {
@@ -375,10 +379,12 @@ impl Fold {
         open: true,
         before: (Ended::Turn, true),
         sent_last: false,
+        ran_last: false,
     };
 
     fn step(&mut self, hooks: Option<&Hooks>, event: &Event) {
         let sent_last = std::mem::replace(&mut self.sent_last, event.kind == send::SEND);
+        let ran_last = std::mem::replace(&mut self.ran_last, event.kind == send::COMMAND);
         if event.kind == send::SEND {
             self.before = (self.ended, self.open);
             self.ended = Ended::NotYet;
@@ -396,6 +402,9 @@ impl Fold {
             }
             self.open = false;
         } else if a_turn_began(hooks, event) {
+            if ran_last {
+                self.ended = Ended::NotYet;
+            }
             self.open = true;
         }
     }
@@ -637,6 +646,16 @@ mod tests {
         // One that never reached the vendor takes back no send before it.
         assert_eq!(
             claudes(&log(&[send::SEND, "Stop", COMMAND, UNSENT])),
+            Ended::Turn
+        );
+        // A word taken for a command that claude answers with a prompt hook
+        // was a prompt after all, and its turn is waited on.
+        assert_eq!(
+            claudes(&log(&["Stop", COMMAND, "UserPromptSubmit"])),
+            Ended::NotYet
+        );
+        assert_eq!(
+            claudes(&log(&["Stop", COMMAND, "UserPromptSubmit", "Stop"])),
             Ended::Turn
         );
         // A message sent before the command is still waited on.
