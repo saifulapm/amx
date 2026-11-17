@@ -220,6 +220,12 @@ fn an_interrupt_presses_escape_twice_and_the_plugin_ends_the_turn() {
             .iter()
             .any(|kind| kind == "session.execution.ended")
     );
+    let pane = amx.pane_of(id);
+    amx.until("the interrupted screen", || {
+        amx.capture(&pane)
+            .contains("Tool execution interrupted")
+            .then_some(())
+    });
 
     let out = amx.amx(&["result", id, "--timeout", "5"]);
     assert_eq!(out.status.code(), Some(1), "no answer to hand back");

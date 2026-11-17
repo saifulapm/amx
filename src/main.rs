@@ -1003,6 +1003,88 @@ mod tests {
         }
     }
 
+    /// Each screen a stand-in draws on its own, not because a scenario said
+    /// so: the stand-in, the screen, and the test that reads the pane for it.
+    const OWN_SCREENS: [(&str, &str, &str, &str); 2] = [
+        (
+            "tests/mock_codex/codex",
+            "skills",
+            "tests/e2e_codex.rs",
+            "the_stand_in_draws_codexs_skill_popup_and_it_takes_the_enter_under_it",
+        ),
+        (
+            "tests/mock_opencode/opencode",
+            "interrupted",
+            "tests/e2e_opencode.rs",
+            "an_interrupt_presses_escape_twice_and_the_plugin_ends_the_turn",
+        ),
+    ];
+
+    #[test]
+    fn every_screen_a_stand_in_draws_on_its_own_names_the_test_that_reads_it_off_the_pane() {
+        // mock codex's skill popup opened only on a paste amx no longer sent,
+        // so it could stop drawing with the suite green. A screen a stand-in
+        // draws itself is listed with a test that captures the pane for it.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut drawn = Vec::new();
+        for dir in std::fs::read_dir(manifest.join("tests")).unwrap() {
+            let dir = dir.unwrap().path();
+            let is_a_stand_in = dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("mock_"));
+            if !is_a_stand_in || !dir.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(&dir).unwrap() {
+                let file = file.unwrap().path();
+                if !file.is_file() {
+                    continue;
+                }
+                let name = file.strip_prefix(manifest).unwrap().display().to_string();
+                for line in std::fs::read_to_string(&file).unwrap().lines() {
+                    let Some(screen) = line.trim().strip_prefix("draw ") else {
+                        continue;
+                    };
+                    if !screen.starts_with(['"', '$']) {
+                        drawn.push((name.clone(), screen.to_string()));
+                    }
+                }
+            }
+        }
+        let unlisted: Vec<_> = drawn
+            .iter()
+            .filter(|(file, screen)| {
+                !OWN_SCREENS
+                    .iter()
+                    .any(|(at, own, _, _)| at == file && own == screen)
+            })
+            .map(|(file, screen)| format!("{file}: draw {screen}"))
+            .collect();
+        assert!(
+            unlisted.is_empty(),
+            "these stand-ins draw a screen of their own that no listed test reads; \
+             drive the pane to it through tmux in a test, capture it, and list it \
+             in OWN_SCREENS:\n{}",
+            unlisted.join("\n")
+        );
+
+        for (file, screen, tests, test) in OWN_SCREENS {
+            assert!(
+                drawn.iter().any(|(at, own)| at == file && own == screen),
+                "{file} no longer draws {screen}"
+            );
+            let whole = std::fs::read_to_string(manifest.join(tests)).unwrap();
+            let body = whole
+                .split_once(&format!("fn {test}()"))
+                .map(|(_, rest)| rest.split("\n#[test]").next().unwrap_or(rest))
+                .unwrap_or_else(|| panic!("{screen}: {tests} holds no test {test}"));
+            assert!(
+                body.contains(".capture("),
+                "{screen}: {test} never reads the pane"
+            );
+        }
+    }
+
     #[test]
     fn a_verb_that_cannot_reach_its_agent_fails_with_the_reason() {
         assert_eq!(finish(Ok(exit::BLOCKED)), exit::BLOCKED);
