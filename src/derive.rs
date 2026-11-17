@@ -2038,17 +2038,18 @@ fn paired(agent: &Agent) -> Result<(Meta, State)> {
     paired_by(agent, || {})
 }
 
-/// [`paired`], running `between` between its reads.
+/// [`paired`], running `between` before each read after the first.
 fn paired_by(agent: &Agent, mut between: impl FnMut()) -> Result<(Meta, State)> {
     let first = agent.state()?;
     between();
     let meta = agent.meta()?;
     between();
     let state = agent.state()?;
-    match state == first {
-        true => Ok((meta, state)),
-        false => Ok((agent.meta()?, state)),
+    if state == first {
+        return Ok((meta, state));
     }
+    between();
+    Ok((agent.meta()?, state))
 }
 
 /// One agent's record read off disk, parsed once for both the sweep and the
@@ -3736,10 +3737,11 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
         let agent = Agent::create(root.path(), &meta()).unwrap();
         let old = agent.meta().unwrap().pane;
         let new = crate::tmux::PaneId::new("%42").unwrap();
+        // Between the meta read and the state read.
         let mut reads = 0;
         let (meta, state) = paired_by(&agent, || {
             reads += 1;
-            if reads == 1 {
+            if reads == 2 {
                 let writer = agent.writer().unwrap();
                 writer.update_meta(|meta| meta.pane = new.clone()).unwrap();
                 writer
@@ -3775,7 +3777,8 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             writer.update_state(|state| state.seq = moves).unwrap();
         })
         .unwrap();
-        assert!(moves <= 2, "read again more than once: {moves}");
+        // State, meta, state, then meta once more: three gaps between reads.
+        assert_eq!(moves, 3, "read again more than once");
         // The pane read last is at least as new as the state it goes with.
         let pane: u64 = meta.pane.as_str()[1..].parse().unwrap();
         assert!(pane >= state.seq, "{pane} under seq {}", state.seq);
