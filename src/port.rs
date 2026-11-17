@@ -20,15 +20,21 @@ const RANGE_ENV: &str = "AMX_PORT_RANGE";
 const RANGE: RangeInclusive<u16> = 4100..=4999;
 
 /// The ports to pick from: `$AMX_PORT_RANGE` as `<first>-<last>`, else
-/// 4100-4999. A value that does not read as a range is ignored.
+/// 4100-4999.
 pub fn range() -> RangeInclusive<u16> {
-    std::env::var(RANGE_ENV)
-        .ok()
+    read_range(std::env::var(RANGE_ENV).ok().as_deref())
+}
+
+/// `value` as a range of ports, else 4100-4999. A value that does not read as
+/// a range is ignored, and so is one holding port 0, which binds whatever
+/// port the system picks and so always reads free.
+fn read_range(value: Option<&str>) -> RangeInclusive<u16> {
+    value
         .and_then(|value| {
             let (first, last) = value.split_once('-')?;
             Some(first.trim().parse().ok()?..=last.trim().parse().ok()?)
         })
-        .filter(|range: &RangeInclusive<u16>| !range.is_empty())
+        .filter(|range: &RangeInclusive<u16>| !range.is_empty() && *range.start() > 0)
         .unwrap_or(RANGE)
 }
 
@@ -77,6 +83,20 @@ mod tests {
 
     /// What `bind(2)` says for `::1` with IPv6 turned off by sysctl.
     const EADDRNOTAVAIL: i32 = 99;
+
+    #[test]
+    fn a_range_holding_port_0_or_not_reading_as_one_is_the_usual_range() {
+        assert_eq!(read_range(Some("4990-4991")), 4990..=4991);
+        for value in [
+            None,
+            Some("abc"),
+            Some("5000-4000"),
+            Some("0-0"),
+            Some("0-4990"),
+        ] {
+            assert_eq!(read_range(value), RANGE, "{value:?}");
+        }
+    }
 
     #[test]
     fn a_port_is_free_when_both_families_bind() {
