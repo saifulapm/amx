@@ -1907,14 +1907,6 @@ impl List {
         }
     }
 
-    /// Nesting levels every root is padded by: always 0.
-    ///
-    /// A child's connector starts in its parent's glyph column, so roots keep
-    /// their column when a family appears.
-    pub fn root_pad(&self) -> usize {
-        0
-    }
-
     /// The nesting depth of an agent line, 0 for anything else. The name
     /// column gives up two cells per level so later columns stay aligned.
     pub(super) fn depth(&self, item: Item) -> usize {
@@ -3039,7 +3031,6 @@ mod tests {
             "other-d4e",
             "a root on a wall with no family stands at the wall's own column"
         );
-        assert_eq!(family.root_pad(), 0, "and no root is padded for a family");
         assert_eq!(
             gutters(&family),
             [

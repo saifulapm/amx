@@ -45,12 +45,7 @@ pub(super) fn agents(
     }
 
     let width = area.width as usize;
-    let widths = grid::widths(
-        width,
-        list.axis(),
-        moment.extra != crate::tui::Extra::Off,
-        list.root_pad(),
-    );
+    let widths = grid::widths(width, list.axis(), moment.extra != crate::tui::Extra::Off);
     let requests = request_column(list);
 
     let lines: Vec<Line> = list

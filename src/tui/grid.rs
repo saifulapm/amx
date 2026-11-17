@@ -52,13 +52,11 @@ pub(super) struct Widths {
     pub summary: usize,
     /// How long the agent has worked.
     pub age: usize,
-    /// Levels of nesting every root is padded by; the summary pays for them.
-    pub depth: usize,
 }
 
 /// The columns of a row at this width and axis, with or without the vendor
-/// column, and every root padded by `depth` levels of [`NEST`] cells.
-pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Widths {
+/// column.
+pub(super) fn widths(width: usize, axis: Axis, vendor: bool) -> Widths {
     let name = match width >= WIDE {
         true => WIDE_NAME,
         false => NARROW_NAME,
@@ -78,24 +76,18 @@ pub(super) fn widths(width: usize, axis: Axis, vendor: bool, depth: usize) -> Wi
         .filter(|column| *column > 0)
         .map(|column| column + GAP)
         .sum::<usize>();
-    let spent = PREFIX + nest(depth) + name + GAP + inserted + GAP + AGE;
+    let spent = PREFIX + name + GAP + inserted + GAP + AGE;
     Widths {
         name,
         vendor,
         state,
         summary: width.saturating_sub(spent),
         age: AGE,
-        depth,
     }
 }
 
 /// Cells one level of nesting adds before the glyph: `├─`, `└─` or `│ `.
 pub(super) const NEST: usize = 2;
-
-/// Cells a root spends on `depth` levels of padding.
-pub(super) fn nest(depth: usize) -> usize {
-    NEST * depth
-}
 
 /// Cells a path heading can spend on the path itself, given the `suffix`
 /// that follows it.
@@ -185,14 +177,14 @@ mod tests {
             .filter(|column| *column > 0)
             .map(|column| column + GAP)
             .sum();
-        PREFIX + nest(widths.depth) + widths.name + GAP + inserted + GAP + widths.age
+        PREFIX + widths.name + GAP + inserted + GAP + widths.age
     }
 
     #[test]
     fn name_column_is_22_cells_at_100_and_wider() {
         for width in [100, 120, 200] {
             assert_eq!(
-                widths(width, Axis::State, false, 0).name,
+                widths(width, Axis::State, false).name,
                 22,
                 "a {width}-cell screen has room for the wide name column"
             );
@@ -203,7 +195,7 @@ mod tests {
     fn name_column_drops_to_16_cells_below_100() {
         for width in [80, 99] {
             assert_eq!(
-                widths(width, Axis::State, false, 0).name,
+                widths(width, Axis::State, false).name,
                 16,
                 "a {width}-cell screen does not"
             );
@@ -213,12 +205,12 @@ mod tests {
     #[test]
     fn state_word_is_8_cells_on_the_dir_axis_and_nothing_on_the_state_axis() {
         assert_eq!(
-            widths(100, Axis::Project, false, 0).state,
+            widths(100, Axis::Project, false).state,
             8,
             "which is what `starting` needs"
         );
         assert_eq!(
-            widths(100, Axis::State, false, 0).state,
+            widths(100, Axis::State, false).state,
             0,
             "the heading over the row says it there"
         );
@@ -227,7 +219,7 @@ mod tests {
     #[test]
     fn state_word_keeps_its_8_cells_on_a_narrow_screen() {
         assert_eq!(
-            widths(80, Axis::Project, false, 0).state,
+            widths(80, Axis::Project, false).state,
             8,
             "a cut state word would be a lie"
         );
@@ -236,12 +228,12 @@ mod tests {
     #[test]
     fn vendor_column_is_18_cells_when_it_is_asked_for_and_nothing_when_it_is_not() {
         assert_eq!(
-            widths(100, Axis::State, true, 0).vendor,
+            widths(100, Axis::State, true).vendor,
             18,
             "which is what `claude sonnet high` needs"
         );
         assert_eq!(
-            widths(100, Axis::State, false, 0).vendor,
+            widths(100, Axis::State, false).vendor,
             0,
             "and a column nobody asked for costs the row nothing"
         );
@@ -250,7 +242,7 @@ mod tests {
     #[test]
     fn vendor_column_keeps_its_18_cells_on_a_narrow_screen() {
         assert_eq!(
-            widths(80, Axis::Project, true, 0).vendor,
+            widths(80, Axis::Project, true).vendor,
             18,
             "a key somebody pressed is answered at whatever width they pressed it"
         );
@@ -260,8 +252,8 @@ mod tests {
     fn summary_pays_for_the_vendor_column_and_nothing_else_moves() {
         for width in [80, 100, 160] {
             for axis in [Axis::State, Axis::Project] {
-                let off = widths(width, axis, false, 0);
-                let on = widths(width, axis, true, 0);
+                let off = widths(width, axis, false);
+                let on = widths(width, axis, true);
                 assert_eq!(off.name, on.name, "the name column does not move");
                 assert_eq!(off.age, on.age, "nor does the age column");
                 assert_eq!(off.state, on.state, "nor does the state word");
@@ -276,31 +268,15 @@ mod tests {
 
     #[test]
     fn age_column_is_4_cells_on_either_axis() {
-        assert_eq!(widths(100, Axis::State, false, 0).age, 4);
-        assert_eq!(widths(80, Axis::Project, false, 0).age, 4);
-    }
-
-    #[test]
-    fn nesting_takes_its_cells_out_of_the_summary_and_nothing_else_moves() {
-        for depth in 0..=3 {
-            let flat = widths(100, Axis::State, false, 0);
-            let deep = widths(100, Axis::State, false, depth);
-            assert_eq!(deep.name, flat.name, "the name column does not move");
-            assert_eq!(deep.age, flat.age, "nor does the age column");
-            assert_eq!(
-                flat.summary - deep.summary,
-                nest(depth),
-                "the summary pays for {depth} levels of nesting"
-            );
-            assert_eq!(deep.depth, depth, "and the rows are told how deep");
-        }
+        assert_eq!(widths(100, Axis::State, false).age, 4);
+        assert_eq!(widths(80, Axis::Project, false).age, 4);
     }
 
     #[test]
     fn summary_pays_for_the_state_word_and_nothing_else_moves() {
         for width in [80, 100, 160] {
-            let state = widths(width, Axis::State, false, 0);
-            let dir = widths(width, Axis::Project, false, 0);
+            let state = widths(width, Axis::State, false);
+            let dir = widths(width, Axis::Project, false);
             assert_eq!(state.name, dir.name, "the name column does not move");
             assert_eq!(state.age, dir.age, "nor does the age column");
             assert_eq!(
@@ -316,7 +292,7 @@ mod tests {
         for width in 80..=200 {
             for axis in [Axis::State, Axis::Project] {
                 for vendor in [false, true] {
-                    let widths = widths(width, axis, vendor, 0);
+                    let widths = widths(width, axis, vendor);
                     assert_eq!(
                         spent(widths) + widths.summary,
                         width,
@@ -330,7 +306,7 @@ mod tests {
     #[test]
     fn summary_stops_at_nothing_below_the_designs_floor() {
         assert_eq!(
-            widths(30, Axis::Project, false, 0).summary,
+            widths(30, Axis::Project, false).summary,
             0,
             "the summary is the first column to go and the last to be missed"
         );
