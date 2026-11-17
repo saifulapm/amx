@@ -384,6 +384,43 @@ fn a_message_ending_in_a_skill_submits_past_codexs_skill_popup() {
 }
 
 #[test]
+fn the_stand_in_draws_codexs_skill_popup_and_it_takes_the_enter_under_it() {
+    // What codex 0.169.0 did with a paste ending in a `$word` and no space:
+    // the popup opened and the Enter under it submitted nothing. amx never
+    // pastes that since codex names `$` a popup character, so paste it here.
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-message", Some(TASK));
+    amx.until("the first turn to end", || {
+        (status(&amx, id)["result"] == json!("the tests pass now")).then_some(())
+    });
+    let pane = amx.pane_of(id);
+    amx.tmux(&["set-buffer", "-b", "unpadded", "reply ok $review"]);
+    amx.tmux(&["paste-buffer", "-p", "-d", "-b", "unpadded", "-t", &pane]);
+    amx.until("the skill popup", || {
+        amx.capture(&pane).contains("enter insert").then_some(())
+    });
+
+    amx.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    amx.until("the popup to take the Enter", || {
+        said_in(&amx, &pane)
+            .contains("popup: took an Enter")
+            .then_some(())
+    });
+    assert!(
+        !amx.capture(&pane).contains("enter insert"),
+        "the popup closed"
+    );
+    assert!(
+        !said_in(&amx, &pane).contains("typed: reply ok"),
+        "and nothing was submitted"
+    );
+
+    amx.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    assert_eq!(said(&amx, id, "typed: "), "reply ok $review");
+}
+
+#[test]
 fn a_skill_mid_message_and_a_message_with_none_type_as_they_are() {
     for text in ["run $review on it", "and now the linter"] {
         let (amx, id, typed) = a_message_sent_after_the_first_turn(text);
