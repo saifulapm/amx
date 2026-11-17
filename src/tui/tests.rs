@@ -1669,6 +1669,53 @@ fn find_t_reads_the_conversations_while_keys_keep_working() {
 }
 
 #[test]
+fn find_t_a_find_line_opened_while_a_search_reads_is_drawn_with_what_is_typed() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let fifo = on_disk(root.path(), "ask-a1b", "a task", None);
+    on_disk(
+        root.path(),
+        "port-b2c",
+        "a task",
+        Some("{\"text\":\"done\"}\n"),
+    );
+    let mut screen = watching(a_fleet_to_search());
+    let footer = |screen: &Screen| -> String {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|frame| paint::draw(frame, screen)).unwrap();
+        (0..20)
+            .map(|row| {
+                (0..60)
+                    .map(|column| terminal.backend().buffer()[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    search_for(&mut screen, root.path(), &config, "importer");
+    for typed in "/t:oth".chars() {
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char(typed)),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+    }
+    // A frame passes with the search still reading.
+    screen.take_the_search();
+    let drawn = footer(&screen);
+    assert!(
+        drawn.contains("t:oth") && !drawn.contains("reading conversations"),
+        "the line being typed is drawn, not the search's notice:\n{drawn}"
+    );
+
+    release(&fifo, "{\"text\":\"nothing\"}\n");
+}
+
+#[test]
 fn find_t_a_second_enter_drops_the_first_search() {
     let root = TempDir::new().unwrap();
     let config = Config::default();

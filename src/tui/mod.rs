@@ -3199,15 +3199,17 @@ impl Screen {
     /// Take a finished `t:` search's answer, if one has arrived: narrow the
     /// wall to the agents whose conversation holds the text, saying so when
     /// the search stopped at its budget. While it reads, the notice says so
-    /// whenever no other notice is showing.
+    /// whenever the list shows no other notice.
     fn take_the_search(&mut self) {
         let Some((text, answered)) = &self.searching else {
             return;
         };
         let answer = match answered.try_recv() {
             Ok(answer) => answer,
+            // Only over the list's hints: a notice is drawn before a line
+            // being typed, and would hide it.
             Err(mpsc::TryRecvError::Empty) => {
-                if self.notice.is_none() {
+                if self.notice.is_none() && matches!(self.mode, Mode::List) {
                     self.notice = Some(Notice::Advice(READING.to_string()));
                 }
                 return;
