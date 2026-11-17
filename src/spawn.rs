@@ -2298,13 +2298,16 @@ mod tests {
         assert_ne!(spawning.port(), moving.port());
         assert_eq!(crate::store::port(&adopted), moving.port());
 
-        // And the other way round: a spawn counts the adopt's claim.
-        drop(spawning);
-        let again = take_a_place(&root, project.path(), 5, None, || Ok(((), new.clone())))
+        // And the other way round: with the adopt holding the lowest free
+        // port, a spawn counts its claim and takes another.
+        drop((spawning, moving));
+        let moving = hold_a_port(&root, &adopted, project.path()).unwrap();
+        let spawning = take_a_place(&root, project.path(), 5, None, || Ok(((), new.clone())))
             .unwrap()
             .unwrap()
             .1;
-        assert_ne!(again.port(), moving.port());
+        assert!(spawning.port().is_some());
+        assert_ne!(spawning.port(), moving.port());
     }
 
     #[test]
