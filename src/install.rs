@@ -335,6 +335,9 @@ pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)]) -> Result<Report> {
     if !is_amx_plugin(dir) {
         return Ok(report);
     }
+    // A copy goes only once the manifest has: until then a rerun removes
+    // every file again, the restored ones too, and puts each back from it.
+    let mut restored = Vec::new();
     for (name, _) in manifest_last(files) {
         let path = dir.join(name);
         match std::fs::remove_file(&path) {
@@ -345,9 +348,12 @@ pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)]) -> Result<Report> {
         if let Some(kept) = latest_backup(&path)? {
             std::fs::copy(&kept, &path)
                 .with_context(|| format!("putting {} back", path.display()))?;
-            put_back(&kept)?;
+            restored.push(kept.clone());
             report.backup = Some(kept);
         }
+    }
+    for kept in &restored {
+        put_back(kept)?;
     }
     prune(dir, files);
     Ok(report)
@@ -1599,6 +1605,32 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&skill).unwrap(), "their skill\n");
         assert_eq!(backups_of(&skill), Vec::<String>::new(), "no copy is left");
+    }
+
+    #[test]
+    fn an_uninstall_cut_short_can_be_run_again_and_keeps_their_skill() {
+        let dir = TempDir::new().unwrap();
+        let skill = dir.path().join("SKILL.md");
+        std::fs::write(&skill, "their skill\n").unwrap();
+        let files = [
+            ("SKILL.md", "amx's skill\n"),
+            ("hooks/hooks.json", "{}\n"),
+            (MANIFEST, "{\"name\": \"amx\"}\n"),
+        ];
+        install_plugin(dir.path(), &files, 7).unwrap();
+        // A file the first run cannot remove, after it put the skill back.
+        let stuck = dir.path().join("hooks/hooks.json");
+        std::fs::remove_file(&stuck).unwrap();
+        std::fs::create_dir(&stuck).unwrap();
+        assert!(uninstall_plugin(dir.path(), &files).is_err());
+        std::fs::remove_dir(&stuck).unwrap();
+
+        uninstall_plugin(dir.path(), &files).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&skill).ok().as_deref(),
+            Some("their skill\n")
+        );
     }
 
     #[test]
