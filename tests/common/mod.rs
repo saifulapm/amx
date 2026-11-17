@@ -705,26 +705,56 @@ pub fn argv_of(amx: &Harness, id: &str) -> String {
     })
 }
 
+/// A pane's environment, by name.
+///
+/// A pane inherits the test runner's environment, live tokens among them, so
+/// `Debug` names the variables and prints no value: an assertion that formats
+/// one with `{env:?}` cannot carry a secret into the test's output.
+pub struct PaneEnv(std::collections::BTreeMap<String, String>);
+
+impl PaneEnv {
+    /// Read from the NUL-separated `NAME=VALUE` entries `/proc` gives.
+    pub fn from_environ(raw: &[u8]) -> Self {
+        Self(
+            raw.split(|&byte| byte == 0)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    let text = String::from_utf8_lossy(entry);
+                    let (name, value) = text.split_once('=').expect("NAME=VALUE");
+                    (name.to_string(), value.to_string())
+                })
+                .collect(),
+        )
+    }
+
+    pub fn get(&self, name: &str) -> Option<&String> {
+        self.0.get(name)
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+}
+
+impl std::fmt::Debug for PaneEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
 /// A process's environment read from `/proc`, which shows what the pane
 /// really started with, independent of anything amx recorded.
-pub fn pane_environ(pid: &str) -> std::collections::BTreeMap<String, String> {
+pub fn pane_environ(pid: &str) -> PaneEnv {
     let raw = std::fs::read(format!("/proc/{pid}/environ"))
         .unwrap_or_else(|e| panic!("reading /proc/{pid}/environ: {e}"));
-    raw.split(|&byte| byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            let text = String::from_utf8_lossy(entry);
-            let (name, value) = text.split_once('=').expect("NAME=VALUE");
-            (name.to_string(), value.to_string())
-        })
-        .collect()
+    PaneEnv::from_environ(&raw)
 }
 
 /// The environment of the agent's pane process, once the vendor runs in it.
 ///
 /// Once the stand-in prints its argv, `_boot` has read the boot file and
 /// exec'd the vendor, so the pane's environment is the one amx handed over.
-pub fn pane_env(amx: &Harness, id: &str) -> std::collections::BTreeMap<String, String> {
+pub fn pane_env(amx: &Harness, id: &str) -> PaneEnv {
     argv_of(amx, id);
     let pid = amx.tmux(&[
         "display-message",

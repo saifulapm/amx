@@ -9,6 +9,18 @@ use common::Harness;
 use std::process::Command;
 
 #[test]
+fn a_panes_environment_prints_its_names_and_never_a_value() {
+    // A pane inherits the runner's environment, live tokens among them, and a
+    // red assertion formats it with `{env:?}`.
+    let env = common::PaneEnv::from_environ(b"HUB_TOKEN=s3cret-value\0AMX_ID=fix-login-a1b\0");
+    assert_eq!(env.get("AMX_ID").map(String::as_str), Some("fix-login-a1b"));
+    let printed = format!("{env:?}");
+    assert!(printed.contains("HUB_TOKEN"), "{printed}");
+    assert!(!printed.contains("s3cret-value"), "{printed}");
+    assert!(!printed.contains("fix-login-a1b"), "{printed}");
+}
+
+#[test]
 fn the_harness_runs_amx_in_its_home_not_in_the_checkout() {
     // cargo runs a test in the checkout, where an `amx new` naming no `--dir`
     // would cut its tree and branch (483849b5).

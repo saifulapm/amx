@@ -4,8 +4,8 @@
 mod common;
 
 use common::{
-    AMX, Harness, a_project, adjacent_ports, argv_of, command_of, git, ls, pane_env, pane_environ,
-    port_of,
+    AMX, Harness, PaneEnv, a_project, adjacent_ports, argv_of, command_of, git, ls, pane_env,
+    pane_environ, port_of,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -758,7 +758,7 @@ fn every_pane_a_harness_starts_carries_what_its_table_sets() {
     amx.config("[claude.env]\nAMX_HARNESS_PROOF = \"~/proof\"\nAMX_ID = \"somebody-else\"\n");
     let home = amx.home().to_path_buf();
     let proof = home.join("proof").to_string_lossy().into_owned();
-    let carries = |env: &std::collections::BTreeMap<String, String>, id: &str| {
+    let carries = |env: &PaneEnv, id: &str| {
         assert_eq!(
             env.get("AMX_HARNESS_PROOF").map(String::as_str),
             Some(proof.as_str()),
