@@ -144,8 +144,10 @@ pub const VENDOR: Vendor = Vendor {
     // The approval box marks `y` on its first row, and `y` approves.
     menus_take_letters: true,
     prompt_flag: None,
-    // A word opening on `$` opens the skill popup, which takes the Enter
-    // (codex 0.157.1); a space after it closes the popup.
+    // A pasted message whose last word opens on `$` opens the skill popup,
+    // whose Enter inserts the skill and submits nothing (codex 0.157.1 and
+    // 0.169.0). With a space after the word, or a `$` word mid-message, no
+    // popup is drawn.
     popups: &['$'],
     cancel_presses: 1,
     interrupt_signal: None,

@@ -1,0 +1,40 @@
+ 
+  >_ OpenAI Codex (v0.1…
+     ~/…/codex-live
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+› review  [Skill]       
+  Review Agent  [Skill]
+ 
+  enter insert · esc clo
+ 
+› reply ok $review
+ 
+  GPT-6-Luna default ·
+  ~/.cache/amx-vendor-
+  words/codex-live

@@ -347,3 +347,22 @@ The questions the source reading left open, numbered as the code cites them.
 - A killed pane leaves its turn open in the rollout for good, with no
   `turn_aborted`, so a rollout reader has to treat a trailing `task_started`
   with nothing after it as ended.
+
+## The skill popup (codex 0.169.0)
+
+Measured on 2026-11-17 against codex-cli 0.169.0, the same way (`codex
+--no-daemon`, `capture-pane -p -J`, four widths, forty rows), in a scratch
+repository holding one project skill, `review`. The captures are
+`tests/codex/screens/skills-<width>.txt`.
+
+- A bracketed paste of `reply ok $review`, as `amx send` pastes, drew the
+  skill popup over the composer: one row per matching skill and the hint
+  `enter insert · esc close`.
+- Enter while it showed inserted the skill, closed the popup and submitted
+  nothing. This is why a send ending in a `$word` never started a turn.
+- A paste of `reply ok $review ` (a space after the word) drew no popup, nor
+  did `run $review on it`.
+- No rule in `screen-rules-codex.toml` claims the popup, so the record's own
+  phase stands while it shows. 0.169.0 also redrew the idle composer, which
+  still reads as `prompt` at 220, 100 and 54 columns but not at 24, and the
+  trust screen (`Folder access`, `Trust this folder?`).

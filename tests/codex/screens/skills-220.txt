@@ -1,0 +1,40 @@
+ 
+  >_ OpenAI Codex (v0.169.0)
+     ~/.cache/amx-vendor-words/codex-live
+ 
+ 
+
+
+
+
+
+
+                                                                                                               
+                                                                                                                        
+                                                                                                                          
+                                                                                                                           
+                                                                                                                            
+                                                                                                                            
+                                                                                                                             
+                                                                                                                              
+                                                                                                                              
+                                                                                                                               
+                                                                                                                              
+                                                                                                                              
+                                                                                                                             
+                                                                                                                           
+                                                                                                                        
+                                                                                                                       
+                                                                                                                     
+
+
+
+
+› review        [Skill] Read the diff.                                                                                                                                                                                      
+  Review Agent  [Skill] Find actionable bugs in code changes
+
+  enter insert · esc close
+                          
+› reply ok $review
+                                                           
+  GPT-6-Luna default · ~/.cache/amx-vendor-words/codex-live

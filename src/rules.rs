@@ -4744,6 +4744,20 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
 
     #[test]
+    fn rules_codex_leaves_the_skill_popup_to_the_record() {
+        // codex 0.169.0 draws its skill popup over the composer once a pasted
+        // message ends in `$word`. No rule claims it, so it is never read as
+        // a question somebody has to answer.
+        let codex = codex();
+        for (width, capture) in codex_widths!("skills") {
+            assert!(
+                codex.ruling(&as_read(capture)).is_none(),
+                "the skill popup at {width} columns"
+            );
+        }
+    }
+
+    #[test]
     fn rules_codex_names_what_a_turn_draws_around_its_status_row() {
         let codex = codex();
         for (screen, capture, rule) in [

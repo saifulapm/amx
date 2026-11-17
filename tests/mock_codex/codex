@@ -41,6 +41,12 @@
 #   transcript <json>   append a line to the rollout the payloads name.
 #   await line          block until a line is typed at the pane (a bracketed
 #                       paste and Enter, as amx sends). It is the next prompt.
+#                       A paste whose last word opens on `$` draws the skill
+#                       popup (the `skills` screen, captured off codex
+#                       0.169.0), and the Enter after it only closes the
+#                       popup and redraws the screen before it, as codex's
+#                       `enter insert` does: nothing is submitted. A space
+#                       after the word, or a `$` word mid-message, opens none.
 #                       A paste whose whole body is a path to a file, bare or
 #                       in single quotes, is an image: it prints
 #                       `[Image #N]`, N counting per line, and is left out of
@@ -191,7 +197,11 @@ case $width in '' | *[!0-9]*) width=80 ;; esac
 
 CLEAR=$(printf '\033[H\033[2J')
 
+# The screen last painted, which the skill popup closes back to.
+shown=idle
+
 draw() {
+	shown=$1
 	file=
 	for w in 24 54 100 220; do
 		[ -f "$screens/$1-$w.txt" ] || continue
@@ -284,15 +294,38 @@ await() {
 		stty -icanon min 1 time 0 </dev/tty
 		typed=
 		chip=0
+		popup=off
 		while :; do
 			key=$(dd bs=1 count=1 </dev/tty 2>/dev/null) || exit 0
-			# `$( )` drops a newline, so Enter reads as nothing.
-			[ -n "$key" ] || break
+			# `$( )` drops a newline, so Enter reads as nothing. While the
+			# skill popup shows, Enter picks from it and submits nothing.
+			if [ -z "$key" ]; then
+				[ "$popup" = on ] || break
+				popup=off
+				draw "$under"
+				printf 'popup: took an Enter\n'
+				continue
+			fi
 			typed=$typed$key
 			case $typed in
 			*"$esc[200~"*"$esc[201~")
 				body=${typed##*"$esc[200~"}
 				body=${body%"$esc[201~"}
+				# A last word opening on `$`, with nothing typed after it,
+				# opens the skill popup.
+				case $body in
+				*[[:space:]]) ;;
+				'$'* | *[[:space:]]'$'*)
+					last=${body##*[[:space:]]}
+					case $last in
+					'$'*)
+						popup=on
+						under=$shown
+						draw skills
+						;;
+					esac
+					;;
+				esac
 				path=${body#\'}
 				path=${path%\'}
 				if [ "$chips" = on ] && [ -f "$path" ]; then
