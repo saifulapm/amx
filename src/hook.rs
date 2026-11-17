@@ -23,7 +23,7 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -321,12 +321,11 @@ fn record(
     if state.state == Phase::Idle
         && state.result.is_none()
         && let Some(format) = format
-        && let Some(answer) = Agent::transcript_tail(&meta)
-            .and_then(|tail| crate::conversation::answer(format, &tail))
-            .or_else(|| {
-                let text = std::fs::read_to_string(meta.transcript.as_ref()?).ok()?;
-                crate::conversation::answer(format, &text)
-            })
+        && let Some(answer) = meta
+            .transcript
+            .as_ref()
+            .and_then(|path| std::fs::File::open(path).ok())
+            .and_then(|mut file| transcript_answer(format, &mut file))
     {
         state.result = Some(answer);
         state.source = Some(Source::Transcript);
@@ -388,6 +387,22 @@ fn record(
         writeln!(file, "export {NESTED_ENV}=1")?;
     }
     Ok(())
+}
+
+/// The answer at the end of a transcript, from its tail when that settles it
+/// and from the whole file only when the tail holds nothing that does.
+fn transcript_answer(
+    format: crate::vendor::Transcript,
+    transcript: &mut (impl Read + Seek),
+) -> Option<String> {
+    let tail = Agent::tail_of(transcript)?;
+    if let Some(settled) = crate::conversation::settled_answer(format, &tail) {
+        return settled;
+    }
+    transcript.seek(SeekFrom::Start(0)).ok()?;
+    let mut text = String::new();
+    transcript.read_to_string(&mut text).ok()?;
+    crate::conversation::answer(format, &text)
 }
 
 /// The payload without an answer that is really claude's synthetic note.
@@ -4519,6 +4534,96 @@ mod tests {
         assert_eq!(state.state, Phase::Idle);
         assert_eq!(state.result.as_deref(), Some("fin"));
         assert_eq!(state.source, Some(Source::Transcript));
+    }
+
+    /// A transcript of `len` bytes made up as it is read: filler lines, then
+    /// `end`. Counts every byte handed out.
+    struct Fabricated {
+        len: u64,
+        end: Vec<u8>,
+        at: u64,
+        read: u64,
+    }
+
+    impl Fabricated {
+        const FILLER: &[u8] =
+            b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"keep going\"}}\n";
+
+        fn new(len: u64, end: &[u8]) -> Self {
+            Fabricated {
+                len,
+                end: end.to_vec(),
+                at: 0,
+                read: 0,
+            }
+        }
+
+        fn byte(&self, at: u64) -> u8 {
+            let filler = self.len - self.end.len() as u64;
+            match at.checked_sub(filler) {
+                Some(into) => self.end[into as usize],
+                None => Self::FILLER[(at % Self::FILLER.len() as u64) as usize],
+            }
+        }
+    }
+
+    impl Read for Fabricated {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.len.saturating_sub(self.at) as usize);
+            for (into, slot) in buf[..n].iter_mut().enumerate() {
+                *slot = self.byte(self.at + into as u64);
+            }
+            self.at += n as u64;
+            self.read += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl Seek for Fabricated {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.at = match to {
+                SeekFrom::Start(at) => at,
+                SeekFrom::End(back) => self.len.saturating_add_signed(back),
+                SeekFrom::Current(by) => self.at.saturating_add_signed(by),
+            };
+            Ok(self.at)
+        }
+    }
+
+    #[test]
+    fn an_answer_the_tail_settles_empty_reads_no_more_of_the_transcript() {
+        // The turn ended on an assistant entry with no text: the tail holds
+        // the last word and there is nothing to find before it.
+        let end = format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":\
+             [{{\"type\":\"thinking\",\"thinking\":\"{}\"}}]}}}}\n",
+            "x".repeat(100 * 1024)
+        );
+        let mut transcript = Fabricated::new(100 * 1024 * 1024, end.as_bytes());
+
+        let answer = transcript_answer(crate::vendor::Transcript::Claude, &mut transcript);
+
+        assert_eq!(answer, None);
+        assert!(
+            transcript.read <= 2 * 1024 * 1024,
+            "read {} bytes of a 100 MB transcript",
+            transcript.read
+        );
+    }
+
+    #[test]
+    fn an_answer_behind_a_tail_of_bookkeeping_is_found_earlier_in_the_transcript() {
+        let mut text = String::from(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"found\"}]}}\n",
+        );
+        while text.len() < 256 * 1024 {
+            text.push_str("{\"type\":\"file-history-snapshot\",\"snapshot\":{}}\n");
+        }
+        let mut transcript = std::io::Cursor::new(text.into_bytes());
+
+        let answer = transcript_answer(crate::vendor::Transcript::Claude, &mut transcript);
+
+        assert_eq!(answer.as_deref(), Some("found"));
     }
 
     #[test]

@@ -118,12 +118,28 @@ pub fn answer(format: Transcript, jsonl: &str) -> Option<String> {
     last_answer(format, spoken(format, jsonl).rev())
 }
 
+/// [`answer`], or `None` when `jsonl` holds nothing the answer comes from: no
+/// voiced entry, or for codex and opencode no turn end. Of a transcript's
+/// tail, `Some` is the whole file's answer too, since the entry that settles
+/// it is the newest of its kind.
+pub fn settled_answer(format: Transcript, jsonl: &str) -> Option<Option<String>> {
+    settle(format, spoken(format, jsonl).rev())
+}
+
 /// The answer at the end of a walk given newest entry first. Stops at the
 /// first entry that settles it, so a lazy walk parses only the end.
 fn last_answer<V: Borrow<Value>>(
     format: Transcript,
-    mut newest: impl Iterator<Item = V>,
+    newest: impl Iterator<Item = V>,
 ) -> Option<String> {
+    settle(format, newest).flatten()
+}
+
+/// [`last_answer`], `None` when no entry in the walk settles it.
+fn settle<V: Borrow<Value>>(
+    format: Transcript,
+    mut newest: impl Iterator<Item = V>,
+) -> Option<Option<String>> {
     match format {
         Transcript::Codex => return codex_answer(newest),
         Transcript::Opencode => return opencode_answer(newest),
@@ -132,9 +148,9 @@ fn last_answer<V: Borrow<Value>>(
     let last = newest.find(|entry| voice(format, entry.borrow()).is_some())?;
     let last = last.borrow();
     if voice(format, last) != Some(Voice::Assistant) || synthetic(format, last) || cut_off(last) {
-        return None;
+        return Some(None);
     }
-    answer_text(last)
+    Some(answer_text(last))
 }
 
 /// Whether an assistant entry stopped short of an answer: `aborted` (cut
@@ -718,13 +734,15 @@ fn codex_turn_end<V: Borrow<Value>>(mut newest: impl Iterator<Item = V>) -> Opti
 /// An Esc'd turn has no `task_complete` even if it wrote a final answer, a
 /// turn that ended on a question has a null message, and a failed one carries
 /// an `error`.
-fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
+///
+/// `None` when the walk holds no turn edge at all.
+fn codex_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Option<String>> {
     let end = codex_turn_end(newest)?;
     let end = &end.borrow()["payload"];
     if end["type"] != "task_complete" || !end["error"].is_null() {
-        return None;
+        return Some(None);
     }
-    trimmed(end["last_agent_message"].as_str()?)
+    Some(end["last_agent_message"].as_str().and_then(trimmed))
 }
 
 /// Why a codex turn ended with nothing: aborted (Esc is `interrupted`), or
@@ -809,13 +827,14 @@ fn opencode_end<V: Borrow<Value>>(
 }
 
 /// An opencode turn's answer: its last step's text, if the turn succeeded.
-fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<String> {
-    match opencode_end(newest)? {
+/// `None` when the walk holds no turn end.
+fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Option<String>> {
+    Some(match opencode_end(newest)? {
         (outcome, Some(step)) if outcome == "succeeded" => {
             trimmed(&text_of(&step.borrow()["content"]))
         }
         _ => None,
-    }
+    })
 }
 
 /// Why an opencode turn ended with nothing: interrupted, or failed with its
@@ -1702,6 +1721,35 @@ mod tests {
                 tool("request_user_input", None),
             ],
             "and the empty final answer after the question is nothing said"
+        );
+    }
+
+    #[test]
+    fn a_tail_settles_the_answer_only_when_it_holds_what_the_answer_comes_from() {
+        // claude answers from the last voiced entry: bookkeeping alone
+        // settles nothing, and an assistant entry with no text settles it
+        // empty.
+        let bookkeeping = "{\"type\":\"file-history-snapshot\",\"snapshot\":{}}\n";
+        assert_eq!(settled_answer(Transcript::Claude, bookkeeping), None);
+        let silent = "{\"type\":\"assistant\",\"message\":{\"content\":\
+                      [{\"type\":\"thinking\",\"thinking\":\"hm\"}]}}\n";
+        assert_eq!(
+            settled_answer(Transcript::Claude, &format!("{silent}{bookkeeping}")),
+            Some(None)
+        );
+        // codex answers from its turn edge, whatever else is said around it.
+        let no_edge: String = CODEX_TURNS
+            .split_inclusive('\n')
+            .filter(|line| {
+                !["task_started", "task_complete", "turn_aborted"]
+                    .iter()
+                    .any(|edge| line.contains(edge))
+            })
+            .collect();
+        assert_eq!(settled_answer(Transcript::Codex, &no_edge), None);
+        assert_eq!(
+            settled_answer(Transcript::Codex, CODEX_TURNS),
+            Some(Some("pong".to_string()))
         );
     }
 

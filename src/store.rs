@@ -1195,14 +1195,18 @@ impl Agent {
     /// only `meta`, so callers without an open [`Agent`] can use it.
     pub fn transcript_tail(meta: &Meta) -> Option<String> {
         let path = meta.transcript.as_ref()?;
-        let mut file = File::open(path).ok()?;
-        let mut from = file.metadata().ok()?.len().saturating_sub(TAIL);
+        Self::tail_of(&mut File::open(path).ok()?)
+    }
+
+    /// [`Agent::transcript_tail`] of an open transcript.
+    pub fn tail_of(file: &mut (impl Read + Seek)) -> Option<String> {
+        let mut from = file.seek(SeekFrom::End(0)).ok()?.saturating_sub(TAIL);
         let mut bytes = Vec::new();
         file.seek(SeekFrom::Start(from)).ok()?;
         file.read_to_end(&mut bytes).ok()?;
         let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
         if from > 0 && !body.contains(&b'\n') {
-            from = Self::line_start(&mut file, from)?.saturating_sub(TAIL);
+            from = Self::line_start(file, from)?.saturating_sub(TAIL);
             bytes.clear();
             file.seek(SeekFrom::Start(from)).ok()?;
             file.read_to_end(&mut bytes).ok()?;
@@ -1212,7 +1216,7 @@ impl Agent {
 
     /// The start of the line holding `at`: just past the nearest line break
     /// before it, scanning back [`TAIL`] bytes at a time, or 0.
-    fn line_start(file: &mut File, at: u64) -> Option<u64> {
+    fn line_start(file: &mut (impl Read + Seek), at: u64) -> Option<u64> {
         let mut end = at;
         let mut chunk = Vec::new();
         while end > 0 {
