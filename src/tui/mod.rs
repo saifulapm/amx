@@ -1908,9 +1908,11 @@ impl Screen {
                     false => self.look_away(),
                 }
             }
-            // Esc peels one layer: the card first, then a standing search.
+            // Esc peels one layer: the card first, then a standing search or
+            // one still reading.
             KeyCode::Esc if plain => match (self.card.is_some(), self.list.narrowing()) {
                 (false, Some(_)) => self.widen(),
+                (false, None) if self.searching.is_some() => self.widen(),
                 _ => self.look_away(),
             },
             // On a heading, open or shut the group; on the fold, unfold; on a
@@ -2223,7 +2225,6 @@ impl Screen {
                 // Cancelling a search clears the narrowing it made, and drops
                 // the answer of a `t:` search still reading.
                 if let Asking::Find = composer.asking {
-                    self.searching = None;
                     self.widen();
                 }
                 return Ok(Doing::Carry);
@@ -2263,6 +2264,8 @@ impl Screen {
                 // the line, except on a `t:` line, which reads the
                 // conversations now rather than on every key.
                 if let Asking::Find = composer.asking {
+                    // Whatever this line asks for, an older search is done.
+                    self.searching = None;
                     if let Some(text) = act::conversing(&composer.text)
                         && !text.is_empty()
                     {
@@ -3173,8 +3176,9 @@ impl Screen {
     }
 
     /// Clear the state, name and conversation narrowing, whichever a search
-    /// set.
+    /// set, and drop a `t:` search still reading.
     fn widen(&mut self) {
+        self.searching = None;
         self.list.narrow(vec![
             Narrow::State(None),
             Narrow::Name(None),

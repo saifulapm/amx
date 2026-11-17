@@ -1779,6 +1779,56 @@ fn find_t_esc_on_the_line_drops_the_search() {
 }
 
 #[test]
+fn find_t_every_other_way_off_a_reading_search_drops_it_too() {
+    // Backspace on an empty find line and Esc on the list widen the wall;
+    // Enter on a name line asks for something else. None keeps the answer.
+    let ways: [(&str, &[KeyCode], Option<&str>); 3] = [
+        (
+            "backspace on an empty line",
+            &[KeyCode::Char('/'), KeyCode::Backspace],
+            None,
+        ),
+        ("esc on the list", &[KeyCode::Esc], None),
+        (
+            "enter on a name line",
+            &[
+                KeyCode::Char('/'),
+                KeyCode::Char('a'),
+                KeyCode::Char('s'),
+                KeyCode::Char('k'),
+                KeyCode::Enter,
+            ],
+            Some("/ask"),
+        ),
+    ];
+    for (way, keys, narrowed) in ways {
+        let root = TempDir::new().unwrap();
+        let config = Config::default();
+        let fifo = on_disk(root.path(), "ask-a1b", "a task", None);
+        on_disk(
+            root.path(),
+            "port-b2c",
+            "a task",
+            Some("{\"text\":\"done\"}\n"),
+        );
+        let mut screen = watching(a_fleet_to_search());
+
+        search_for(&mut screen, root.path(), &config, "importer");
+        for key in keys {
+            screen
+                .act(KeyEvent::from(*key), root.path(), &config, None)
+                .unwrap();
+        }
+        release(&fifo, "{\"text\":\"the importer\"}\n");
+        for _ in 0..30 {
+            screen.take_the_search();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(screen.list.narrowing().as_deref(), narrowed, "{way}");
+    }
+}
+
+#[test]
 fn find_t_q_closes_the_view_while_a_search_reads() {
     let root = TempDir::new().unwrap();
     let config = Config::default();
