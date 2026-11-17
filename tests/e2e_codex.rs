@@ -346,6 +346,56 @@ fn a_message_sent_to_codex_is_confirmed_by_its_prompt_and_answered_by_its_stop()
     heard_nothing_back(&amx, id);
 }
 
+/// Send `text` to a codex past its first turn, and what the stand-in read.
+fn a_message_sent_after_the_first_turn(text: &str) -> (Harness, String, String) {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    start(&amx, id, "takes-a-message", Some(TASK));
+    amx.until("the first turn to end", || {
+        (status(&amx, id)["result"] == json!("the tests pass now")).then_some(())
+    });
+
+    let out = amx.amx(&["send", id, text]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "codex took {text:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let typed = said(&amx, id, "typed: ");
+    (amx, id.to_string(), typed)
+}
+
+#[test]
+fn a_message_ending_in_a_skill_submits_past_codexs_skill_popup() {
+    // codex opens its skill popup on a word starting with `$`, and the popup
+    // takes the Enter, so the send never started a turn.
+    let (amx, id, typed) = a_message_sent_after_the_first_turn("reply ok $review");
+    assert_eq!(
+        typed.trim_end(),
+        "reply ok $review",
+        "with the space that closed the popup after it"
+    );
+    let pane = amx.pane_of(&id);
+    assert!(
+        !said_in(&amx, &pane).contains("popup: took an Enter"),
+        "the popup was closed before Enter"
+    );
+}
+
+#[test]
+fn a_skill_mid_message_and_a_message_with_none_type_as_they_are() {
+    for text in ["run $review on it", "and now the linter"] {
+        let (amx, id, typed) = a_message_sent_after_the_first_turn(text);
+        assert_eq!(typed, text, "nothing added");
+        let pane = amx.pane_of(&id);
+        assert!(
+            !said_in(&amx, &pane).contains("popup: took an Enter"),
+            "{text}"
+        );
+    }
+}
+
 #[test]
 fn resume_carries_codex_on_with_the_message_after_its_options_end() {
     let amx = Harness::new();
