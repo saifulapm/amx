@@ -48,8 +48,69 @@ pub fn pick(range: RangeInclusive<u16>, held: &BTreeSet<u16>) -> Option<u16> {
         .find(|port| listens_nobody(*port))
 }
 
-/// Whether nothing listens on `port`. Binding every address also fails over a
-/// listener on 127.0.0.1 alone.
+/// Whether nothing listens on `port`. Binding every IPv4 address also fails
+/// over a listener on 127.0.0.1 alone, but not over one on `[::1]` alone, so
+/// that is bound too. Each socket closes as soon as it is bound.
 fn listens_nobody(port: u16) -> bool {
-    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+    let ipv4 = std::net::TcpListener::bind(("0.0.0.0", port)).map(drop);
+    let ipv6 = std::net::TcpListener::bind(("::1", port)).map(drop);
+    free(ipv4, ipv6)
+}
+
+/// Whether a port whose IPv4 and IPv6 binds came to these is free. IPv6 holds
+/// a port only when its bind says the address is in use: a machine with IPv6
+/// off fails it for want of the family or of `::1`, and has the port free.
+fn free(ipv4: std::io::Result<()>, ipv6: std::io::Result<()>) -> bool {
+    ipv4.is_ok()
+        && ipv6
+            .err()
+            .is_none_or(|e| e.kind() != std::io::ErrorKind::AddrInUse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    /// What `socket(2)` says on a kernel built without IPv6.
+    const EAFNOSUPPORT: i32 = 97;
+
+    /// What `bind(2)` says for `::1` with IPv6 turned off by sysctl.
+    const EADDRNOTAVAIL: i32 = 99;
+
+    #[test]
+    fn a_port_is_free_when_both_families_bind() {
+        assert!(free(Ok(()), Ok(())));
+    }
+
+    #[test]
+    fn a_port_in_use_on_either_family_is_taken() {
+        assert!(!free(Err(ErrorKind::AddrInUse.into()), Ok(())));
+        assert!(!free(Ok(()), Err(ErrorKind::AddrInUse.into())));
+    }
+
+    #[test]
+    fn a_machine_without_ipv6_has_the_port_free() {
+        for errno in [EAFNOSUPPORT, EADDRNOTAVAIL] {
+            assert!(
+                free(Ok(()), Err(Error::from_raw_os_error(errno))),
+                "{errno}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ipv6_check_leaves_the_port_for_the_agents_own_server() {
+        let Ok(probe) = std::net::TcpListener::bind("[::1]:0") else {
+            return;
+        };
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        if listens_nobody(port) {
+            assert!(
+                std::net::TcpListener::bind(("::1", port)).is_ok(),
+                "the check let go of [::1]:{port}"
+            );
+        }
+    }
 }

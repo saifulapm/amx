@@ -3003,6 +3003,29 @@ fn a_port_another_process_listens_on_is_passed_over() {
 }
 
 #[test]
+fn a_port_held_on_the_ipv6_loopback_alone_is_passed_over() {
+    // A dev server listening on [::1] only is as much in the way as one on
+    // 127.0.0.1, though binding 0.0.0.0 succeeds over it.
+    let amx = Harness::new();
+    let mut ports = adjacent_ports(2);
+    let free = port_of(&ports.pop().expect("the second port"));
+    let busy = port_of(&ports[0]);
+    let Ok(_on_ipv6) = std::net::TcpListener::bind(("::1", busy)) else {
+        eprintln!("skipped: this machine cannot listen on [::1]:{busy}");
+        return;
+    };
+    drop(ports);
+
+    let id = id_of(&new_on_ports(
+        &amx,
+        &format!("{busy}-{free}"),
+        "fix the login bug",
+        &[],
+    ));
+    assert_eq!(port_in(&amx, &id), Some(free));
+}
+
+#[test]
 fn with_no_port_free_the_agent_starts_without_one() {
     let amx = Harness::new();
     let held = adjacent_ports(1);
