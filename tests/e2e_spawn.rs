@@ -3046,6 +3046,35 @@ fn with_no_port_free_the_agent_starts_without_one() {
 }
 
 #[test]
+fn a_fork_with_no_port_free_says_so_and_starts_without_one() {
+    let amx = Harness::new();
+    let (range, port) = one_free_port();
+    let origin = id_of(&new_on_ports(&amx, &range, "the first", &[]));
+    assert_eq!(port_in(&amx, &origin), Some(port));
+    amx.until("the hook to report a session", || {
+        amx.meta(&origin)["session"].as_str().map(str::to_string)
+    });
+
+    // The origin holds the one port in the range.
+    let forked = amx
+        .amx_command(&["fork", &origin])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("AMX_PORT_RANGE", &range)
+        .output()
+        .expect("running amx fork");
+    let said = String::from_utf8_lossy(&forked.stderr).into_owned();
+    assert!(forked.status.success(), "amx fork: {said}");
+    assert!(
+        said.contains(&format!(
+            "amx fork: no free port in {range}; the agent starts without $AMX_PORT and $PORT"
+        )),
+        "{said}"
+    );
+    let copy = String::from_utf8_lossy(&forked.stdout).trim().to_string();
+    assert_eq!(port_in(&amx, &copy), None);
+}
+
+#[test]
 fn a_stopped_agents_port_goes_to_the_next_one() {
     let amx = Harness::new();
     let (range, port) = one_free_port();

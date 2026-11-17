@@ -32,8 +32,9 @@ pub(crate) const RESUMED: &str = "resume";
 
 /// Outcome of a resume started from `amx attach` or the view.
 pub enum Comeback {
-    /// Back in a pane on its old session.
-    Back,
+    /// Back in a pane on its old session, with the no-free-port warning when
+    /// it came back without a port.
+    Back(Option<String>),
     /// Nothing was started, for this reason.
     No(String),
 }
@@ -58,12 +59,16 @@ pub fn picked_up(
     if let Err(why) = to_start(agent.dir(), id) {
         return Ok(Comeback::No(why));
     }
-    let _place = match take_a_place(root, id, &meta.dir)? {
+    let place = match take_a_place(root, id, &meta.dir)? {
         Ok(place) => place,
         Err(full) => return Ok(Comeback::No(full)),
     };
+    let portless = place
+        .port()
+        .is_none()
+        .then(|| crate::port::none_free(&crate::port::range()));
     bring_back(root, id, message, env, &BTreeMap::new())?;
-    Ok(Comeback::Back)
+    Ok(Comeback::Back(portless))
 }
 
 /// Whether the agent has both a usable session and a handoff to resume from.

@@ -201,6 +201,8 @@ enum Doing {
         id: String,
         on: Server,
         session: SessionId,
+        /// What to say once the terminal is back, if tmux attached.
+        then: Option<Notice>,
     },
     /// Lend the terminal to an editor for the line being typed.
     Edit,
@@ -1165,13 +1167,23 @@ where
         match doing {
             Doing::Carry => {}
             Doing::Close => return Ok(exit::OK),
-            Doing::Lend { id, on, session } => {
-                screen.notice = lend(terminal, &id, &on, &session)?;
+            Doing::Lend {
+                id,
+                on,
+                session,
+                then,
+            } => {
                 // Mark the row only if tmux attached. Either way the pointer
                 // position is stale.
-                match screen.notice.is_none() {
-                    true => screen.went_into(id),
-                    false => screen.hover = None,
+                match lend(terminal, &id, &on, &session)? {
+                    None => {
+                        screen.notice = then;
+                        screen.went_into(id);
+                    }
+                    failed => {
+                        screen.notice = failed;
+                        screen.hover = None;
+                    }
                 }
                 // The borrower may have changed the title; set it again.
                 called.clear();
@@ -2544,9 +2556,21 @@ impl Screen {
     fn arrived(&mut self, id: String, reached: Reach) -> Doing {
         match reached {
             // Inside tmux the client has already switched, so mark the row now.
-            Reach::There => self.went_into(id),
+            Reach::There(then) => {
+                if then.is_some() {
+                    self.notice = then;
+                }
+                self.went_into(id)
+            }
             Reach::Say(notice) => self.notice = Some(notice),
-            Reach::Lend(on, session) => return Doing::Lend { id, on, session },
+            Reach::Lend(on, session, then) => {
+                return Doing::Lend {
+                    id,
+                    on,
+                    session,
+                    then,
+                };
+            }
         }
         Doing::Carry
     }
@@ -3918,12 +3942,13 @@ impl Here {
 
 /// What going to an agent came to.
 enum Reach {
-    /// The agent is now in front of the user.
-    There,
+    /// The agent is now in front of the user, with what to say of it.
+    There(Option<Notice>),
     /// It is not; the notice says why, and how to reach it where possible.
     Say(Notice),
-    /// The view owns the terminal and lends it to this session.
-    Lend(Server, SessionId),
+    /// The view owns the terminal and lends it to this session, then says
+    /// what is given once it is back.
+    Lend(Server, SessionId, Option<Notice>),
 }
 
 /// Put the agent in front of the user, resuming it first if its pane is gone
@@ -3942,10 +3967,18 @@ fn reach(root: &Path, here: Option<&Here>, view: &View) -> Result<Reach> {
     match verbs::resume::picked_up(root, view.id(), None, &env)? {
         Comeback::No(why) => Ok(Reach::Say(Notice::Refused(why))),
         // Resuming moved the agent to a new pane, so read its record again.
-        Comeback::Back => {
+        // A notice of no free port waits until the agent is in front.
+        Comeback::Back(portless) => {
             let back = derive::view(root, view.id(), now())?;
             let server = Server::from_socket(back.meta.socket.clone());
-            Ok(noted(root, back.id(), reaching(server, here, &back)?))
+            let said = portless.map(Notice::Refused);
+            Ok(
+                match noted(root, back.id(), reaching(server, here, &back)?) {
+                    Reach::There(_) => Reach::There(said),
+                    Reach::Lend(on, session, _) => Reach::Lend(on, session, said),
+                    refused => refused,
+                },
+            )
         }
     }
 }
@@ -3953,7 +3986,7 @@ fn reach(root: &Path, here: Option<&Here>, view: &View) -> Result<Reach> {
 /// Record the agent in the visit trail `amx attach --last` follows, if the
 /// user actually got there.
 fn noted(root: &Path, id: &str, reached: Reach) -> Reach {
-    if matches!(reached, Reach::There | Reach::Lend(..)) {
+    if matches!(reached, Reach::There(_) | Reach::Lend(..)) {
         verbs::attach::note_visited(root, id);
     }
     reached
@@ -3988,7 +4021,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
         .with_context(|| format!("finding the session {} is in", view.id()))?;
 
     let Some(here) = here else {
-        return Ok(Reach::Lend(server, session));
+        return Ok(Reach::Lend(server, session, None));
     };
 
     // Switch the clients on the view's own session, by tty, since the server
@@ -4003,7 +4036,7 @@ fn reaching(server: Server, here: Option<&Here>, view: &View) -> Result<Reach> {
             server.run(&["switch-client", "-c", tty, "-t", session.as_str()])?;
         }
     }
-    Ok(Reach::There)
+    Ok(Reach::There(None))
 }
 
 #[cfg(test)]

@@ -97,7 +97,7 @@ pub fn run(
         let (copy, dir) = new::claim(root, None, task)?;
         Ok(((copy, dir.clone()), dir))
     })?;
-    let ((copy, dir), _place) = match taken {
+    let ((copy, dir), place) = match taken {
         Ok(taken) => taken,
         Err(full) => {
             writeln!(
@@ -108,6 +108,18 @@ pub fn run(
             return Ok(exit::BLOCKED);
         }
     };
+    if place.port().is_none() {
+        let warning = crate::port::none_free(&crate::port::range());
+        writeln!(
+            problems,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!("amx fork: {warning}"),
+                to_terminal
+            )
+        )?;
+    }
     // The argv needs the minted id for a vendor with a start flag.
     let images = match crate::images::filed(&dir, images) {
         Ok(images) => images,

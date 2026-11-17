@@ -20,7 +20,7 @@ use crate::store::{Agent, now};
 use crate::tmux::{self, PaneId, Server, SessionId};
 use crate::tui::rows::{self, Arrangement, Group};
 use crate::verbs::resume::{self, Comeback};
-use crate::{derive, exit, paths, spawn};
+use crate::{derive, exit, paths, spawn, warn};
 
 /// The variable tmux sets to the pane a process runs in.
 const PANE_ENV: &str = "TMUX_PANE";
@@ -181,7 +181,12 @@ pub fn run(
     if !Server::from_socket(meta.socket.clone()).pane_answers_for(&meta.pane, &meta.id) {
         match resume::picked_up(root, id, None, env)? {
             // The resume wrote a new pane on the record.
-            Comeback::Back => meta = agent.meta()?,
+            Comeback::Back(portless) => {
+                if let Some(warning) = portless {
+                    warn!("amx attach: {warning}");
+                }
+                meta = agent.meta()?
+            }
             Comeback::No(why) => bail!("{why}"),
         }
     }

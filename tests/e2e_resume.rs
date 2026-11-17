@@ -1209,6 +1209,69 @@ fn attach_brings_back_an_agent_whose_pane_is_gone() {
 }
 
 #[test]
+fn attach_says_when_the_agent_it_brings_back_has_no_port() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    ran_and_stopped(&amx, id);
+    let held = adjacent_ports(1);
+    let port = port_of(&held[0]);
+
+    // No terminal: the resume runs and says its piece, then tmux cannot
+    // attach.
+    let out = amx
+        .amx_command(&["attach", id])
+        .env("TMUX", "")
+        .env("TMUX_PANE", "")
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("MOCK_CLAUDE_SESSION_2", CONTINUED)
+        .env("AMX_PORT_RANGE", format!("{port}-{port}"))
+        .output()
+        .expect("running amx attach");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains(&format!(
+            "amx attach: no free port in {port}-{port}; the agent starts without $AMX_PORT and $PORT"
+        )),
+        "{said}"
+    );
+    until_continued(&amx, id);
+    assert_eq!(pane_env(&amx, id).get("AMX_PORT"), None);
+}
+
+#[test]
+fn enter_on_a_dead_agent_with_no_port_free_says_so_when_the_view_is_back() {
+    let amx = Harness::new();
+    let id = "fix-login-a1b";
+    ran_and_stopped(&amx, id);
+    let held = adjacent_ports(1);
+    let port = port_of(&held[0]);
+    let range = format!("{port}-{port}");
+
+    let scenario = amx.scenario("continues-a-session");
+    let view = amx.in_a_terminal(
+        &[
+            ("TMUX", ""),
+            ("TMUX_PANE", ""),
+            ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
+            ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+            ("AMX_PORT_RANGE", &range),
+        ],
+        &[],
+    );
+    amx.until("the row", || amx.capture(&view).contains(id).then_some(()));
+    amx.tmux(&["send-keys", "-t", &view, "Enter"]);
+    until_continued(&amx, id);
+    until_looking_at_it(&amx, &view);
+
+    amx.tmux(&["send-keys", "-t", &view, "C-z"]);
+    amx.until("the view to say it", || {
+        amx.capture(&view)
+            .contains(&format!("no free port in {range}"))
+            .then_some(())
+    });
+}
+
+#[test]
 fn attach_brings_back_an_agent_whose_pane_answers_for_somebody_else() {
     // The recorded pane belongs to another agent now. Attaching to it would
     // show that agent's work under this one's name.

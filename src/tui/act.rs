@@ -1768,7 +1768,10 @@ pub fn reply(root: &Path, id: &str, text: &str, images: &[PathBuf]) -> Result<Re
             }
             let env = spawn::env_snapshot(std::env::vars());
             match verbs::resume::picked_up(root, id, Some(text), &env)? {
-                Comeback::Back => Ok(Replied::Yes(format!("resumed {id}"))),
+                Comeback::Back(None) => Ok(Replied::Yes(format!("resumed {id}"))),
+                Comeback::Back(Some(portless)) => {
+                    Ok(Replied::Yes(format!("resumed {id}; {portless}")))
+                }
                 Comeback::No(why) => Ok(Replied::No(why)),
             }
         }

@@ -8,8 +8,8 @@
 mod common;
 
 use common::{
-    Harness, a_pane_showing, card_on, click, coloured_line, finished, now, press, types,
-    until_empty,
+    Harness, a_pane_showing, adjacent_ports, card_on, click, coloured_line, finished, now, port_of,
+    press, types, until_empty,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -1920,12 +1920,15 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
     assert_eq!(amx.state(id)["state"], "stopped");
 
     // The view runs the resume itself, so mock-claude's scenario comes from
-    // the view's environment.
+    // the view's environment. Its one port is held, so the resume says so.
     let scenario = amx.scenario("continues-a-session");
+    let held = adjacent_ports(1);
+    let range = format!("{0}-{0}", port_of(&held[0]));
     let view = amx.in_a_terminal(
         &[
             ("MOCK_CLAUDE_SCENARIO", &scenario.to_string_lossy()),
             ("MOCK_CLAUDE_SESSION_2", CONTINUED),
+            ("AMX_PORT_RANGE", &range),
         ],
         &[],
     );
@@ -1940,7 +1943,7 @@ fn card_line_brings_an_ended_agent_back_on_what_was_typed() {
     press(&amx, &view, "Enter");
     amx.until("the view to say the agent came back", || {
         amx.capture(&view)
-            .contains(&format!("resumed {id}"))
+            .contains(&format!("resumed {id}; no free port in {range}"))
             .then_some(())
     });
     amx.until("the continued session on the record", || {
