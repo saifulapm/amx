@@ -267,3 +267,40 @@ fn an_agent_sitting_at_its_prompt_has_no_turn_to_interrupt() {
         "a refusal writes nothing down: {kinds:?}"
     );
 }
+
+#[test]
+fn a_tmux_that_cannot_list_its_panes_is_named_and_gets_no_key() {
+    // Read as a gone pane, it said `no longer has a pane` over a turn that
+    // may still be running.
+    let amx = Harness::new();
+    amx.play("port-importer-c3d", "interrupted");
+    amx.until_state("port-importer-c3d", "working");
+    let real = common::the_real("tmux");
+    let (bin, calls) = common::a_logging(
+        &amx,
+        "tmux",
+        &format!(
+            "case \" $* \" in *\" list-panes \"*) \
+             echo 'error connecting to /x (Permission denied)' >&2; exit 1;; esac\n\
+             exec '{}' \"$@\"",
+            real.display()
+        ),
+    );
+
+    let out = amx
+        .amx_command(&["interrupt", "port-importer-c3d"])
+        .env("PATH", common::path_with(&bin))
+        .output()
+        .expect("running amx interrupt");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(said.contains("listing the tmux panes"), "{said}");
+    assert!(!said.contains("no longer has a pane"), "{said}");
+    let asked = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(!asked.contains("send-keys"), "{asked}");
+    let kinds = amx.event_kinds("port-importer-c3d");
+    assert!(
+        !kinds.iter().any(|kind| kind == "interrupt"),
+        "nothing was cut short: {kinds:?}"
+    );
+}

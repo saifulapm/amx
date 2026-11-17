@@ -107,8 +107,9 @@ fn cut(root: &Path, view: &View) -> Result<Cut> {
     if cut != Cut::Turn {
         return Ok(cut);
     }
+    // A tmux that cannot be asked is not a gone pane: the turn may still run.
     let server = Server::from_socket(view.meta.socket.clone());
-    if !server.pane_answers_for(&view.meta.pane, view.id()) {
+    if !server.answers_for_now(&view.meta.pane, view.id())? {
         return Ok(Cut::Gone);
     }
     recorded(&writer, &agent, view.meta.agent.as_deref())?;
@@ -714,6 +715,47 @@ mod tests {
             }
             assert_eq!(pane.escapes(), presses, "{vendor}");
         }
+    }
+
+    #[test]
+    fn interrupt_a_tmux_that_cannot_be_asked_is_an_error_and_gets_no_key() {
+        // Read as a gone pane, it said `no longer has a pane` over a pane
+        // that may still be running the turn.
+        let root = tempfile::TempDir::new().unwrap();
+        let pane = PaneId::new("%0").unwrap();
+        let (agent, view) = working(root.path(), "claude", crate::tmux::unaskable(), pane);
+
+        let why = cut(root.path(), &view).unwrap_err();
+        assert!(
+            format!("{why:#}").starts_with("listing the tmux panes: "),
+            "{why:#}"
+        );
+        assert!(agent.events().unwrap().is_empty(), "nothing is logged");
+        assert_eq!(agent.state().unwrap().interrupted_at, 0);
+    }
+
+    #[test]
+    fn interrupt_a_pane_gone_from_a_server_still_answering_is_the_no_pane_refusal() {
+        let root = tempfile::TempDir::new().unwrap();
+        let gone = Listening::new("gone");
+        // Another session keeps the server up once the agent's pane goes.
+        gone.server
+            .new_session(&crate::tmux::Spawn {
+                name: Some("someone-else"),
+                command: &["cat"],
+                ..crate::tmux::Spawn::default()
+            })
+            .expect("a second session");
+        let (agent, view) = working(
+            root.path(),
+            "claude",
+            gone.server.socket().clone(),
+            gone.pane.clone(),
+        );
+        gone.server.kill_pane(&gone.pane).unwrap();
+
+        assert_eq!(cut(root.path(), &view).unwrap(), Cut::Gone);
+        assert!(agent.events().unwrap().is_empty(), "nothing is logged");
     }
 
     #[test]
