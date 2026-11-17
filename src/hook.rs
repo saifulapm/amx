@@ -731,9 +731,16 @@ fn apply_in(hooks: &Hooks, payload: &Value, state: &mut State, meta: &mut Meta) 
     // event (see [`crate::derive::cut_short`]). Comparing timestamps does not
     // work: both are whole seconds and tie often.
     state.interrupted_at = 0;
-    // A vendor that speaks has a pane; `send` refuses a record still marked
-    // parked.
-    state.parked_at = 0;
+    // A vendor starting or taking a prompt has a pane; `send` refuses a record
+    // still marked parked. A parked vendor's last words on its way out (an end
+    // of session, a notice) leave the stamp: `_park` lets the writer go while
+    // the vendor dies, and a message must not be typed into that pane.
+    if matches!(
+        moment(hooks, payload),
+        Some(Moment::Started | Moment::Prompted)
+    ) {
+        state.parked_at = 0;
+    }
 
     // An adopted record has the session but not the transcript, whose path
     // was announced before the record existed. Take it from the first report
@@ -3408,6 +3415,30 @@ mod tests {
     fn written(agent: &Agent) -> Value {
         let text = std::fs::read_to_string(agent.dir().join("state.json")).unwrap();
         serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn hook_a_parked_vendors_last_words_on_its_way_out_leave_the_stamp() {
+        // `_park` lets the writer go while the vendor dies, and `send` refuses
+        // a stamped record. A stamp taken off here would let a message be
+        // typed into the dying pane.
+        let root = TempDir::new().unwrap();
+        let agent = an_agent(root.path());
+        for payload in [
+            r#"{"hook_event_name":"SessionEnd","reason":"other"}"#,
+            r#"{"hook_event_name":"Notification","message":"Claude is waiting for your input"}"#,
+        ] {
+            agent
+                .writer()
+                .unwrap()
+                .observe(|state| {
+                    state.state = Phase::Idle;
+                    state.parked_at = 1_000;
+                })
+                .unwrap();
+            assert_eq!(hook(root.path(), agent.id(), payload), exit::OK);
+            assert_eq!(agent.state().unwrap().parked_at, 1_000, "{payload}");
+        }
     }
 
     #[test]

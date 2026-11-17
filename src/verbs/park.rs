@@ -10,7 +10,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::store::{Agent, Event, Meta, Phase, State};
-use crate::tmux::Server;
+use crate::tmux::{PaneId, Server};
 use crate::tui::rows::Arrangement;
 use crate::verbs::stop;
 use crate::{config, exit, paths, store};
@@ -41,40 +41,66 @@ pub fn consider(root: &Path, id: &str, now: u64) -> Result<i32> {
 
 /// [`consider`] with `park_after` passed in, so tests need not set a config.
 fn let_go(root: &Path, agent: &Agent, meta: &Meta, park_after: u64, now: u64) -> Result<i32> {
-    // Held to the end, so a send or hook lands either before the reading (and
-    // park sees it) or after the stamp (and `send` refuses).
-    let writer = agent.writer()?;
-    let state = writer.state()?;
-    if !ripe(&state, park_after, now) {
-        return Ok(exit::OK);
-    }
+    let_go_by(root, agent, meta, park_after, now, stop::end)
+}
 
-    // A pane already gone means the agent ended, and a stamp would misreport it
-    // as parked. A pane number reused by another agent is not ours to end. A
-    // tmux that cannot be asked is an error.
+/// [`let_go`], ending the pane with `end`.
+fn let_go_by(
+    root: &Path,
+    agent: &Agent,
+    meta: &Meta,
+    park_after: u64,
+    now: u64,
+    end: impl FnOnce(&Server, &PaneId, &str) -> Result<()>,
+) -> Result<i32> {
     let server = Server::from_socket(meta.socket.clone());
-    if !server.answers_for_now(&meta.pane, &meta.id)? {
-        return Ok(exit::OK);
-    }
+    let state = {
+        // Held from the reading to the stamp, so a send or hook lands either
+        // before the reading (and park sees it) or after the stamp (and `send`
+        // refuses).
+        let writer = agent.writer()?;
+        let state = writer.state()?;
+        if !ripe(&state, park_after, now) {
+            return Ok(exit::OK);
+        }
 
-    // Someone is watching the pane, or pinned the agent in the view (read off
-    // the file the view saves, since it may be closed).
-    if server.pane_watched(&meta.pane) || Arrangement::from_disk(root).has_pinned(agent.id()) {
-        return Ok(exit::OK);
-    }
+        // A pane already gone means the agent ended, and a stamp would
+        // misreport it as parked. A pane number reused by another agent is not
+        // ours to end. A tmux that cannot be asked is an error.
+        if !server.answers_for_now(&meta.pane, &meta.id)? {
+            return Ok(exit::OK);
+        }
 
-    // Stamp before the kill, so a reader never sees a missing pane without the
-    // stamp and calls the agent stopped. A failed kill removes the stamp.
-    // `observe`, so `last_event` does not move and the row shows nothing new.
-    writer.observe(|state| state.parked_at = now)?;
+        // Someone is watching the pane, or pinned the agent in the view (read
+        // off the file the view saves, since it may be closed).
+        if server.pane_watched(&meta.pane) || Arrangement::from_disk(root).has_pinned(agent.id()) {
+            return Ok(exit::OK);
+        }
+
+        // Stamp before the kill, so a reader never sees a missing pane without
+        // the stamp and calls the agent stopped. `observe`, so `last_event`
+        // does not move and the row shows nothing new.
+        writer.observe(|state| state.parked_at = now)?;
+        state
+    };
 
     // stop's SIGTERM-then-SIGKILL ladder, so the vendor can flush the
-    // transcript the agent resumes from.
-    if let Err(e) = stop::end(&server, &meta.pane, &meta.id) {
+    // transcript the agent resumes from. The writer is let go first: the dying
+    // vendor's hooks write at once, and a send in the meantime finds the stamp
+    // and refuses, since only a vendor starting again takes it off.
+    let ended = end(&server, &meta.pane, &meta.id);
+
+    let writer = agent.writer()?;
+    // A resume since the end gave the agent a pane of its own, not ours to mark.
+    let now_in = agent.meta()?;
+    if now_in.pane != meta.pane || now_in.socket != meta.socket {
+        return ended.map(|()| exit::OK);
+    }
+    // A failed kill removes the stamp.
+    if let Err(e) = ended {
         writer.observe(|state| state.parked_at = 0)?;
         return Err(e);
     }
-
     writer.append(&Event::new(
         PARKED,
         serde_json::json!({ "idle": now.saturating_sub(state.since) }),
@@ -246,6 +272,81 @@ mod tests {
             .map(|event| event.kind)
             .collect();
         (agent.state().expect("the record").parked_at, kinds)
+    }
+
+    #[test]
+    fn park_lets_the_writer_go_while_stop_waits_out_its_grace() {
+        // The dying vendor's hooks write at once rather than after the grace,
+        // and a send in that window is refused with nothing typed.
+        let state = TempDir::new().unwrap();
+        let root = state_root(&state);
+        let it = Sitting::new(&root, "fix-login-a1b");
+        it.agent
+            .writer()
+            .unwrap()
+            .update_meta(|meta| meta.agent = Some("claude".to_string()))
+            .unwrap();
+        it.recorded(Phase::Idle, 1_000);
+        let meta = it.agent.meta().unwrap();
+
+        let mut sent = None;
+        let mut screen = String::new();
+        let end = |server: &Server, pane: &PaneId, id: &str| {
+            // Another writer, given two seconds: held by park, it never comes.
+            let (took, taken) = std::sync::mpsc::channel();
+            let (dir, owner) = (root.clone(), id.to_string());
+            std::thread::spawn(move || {
+                let agent = Agent::open(&dir, &owner).unwrap();
+                let _ = took.send(agent.writer().is_ok());
+            });
+            assert_eq!(
+                taken.recv_timeout(Duration::from_secs(2)),
+                Ok(true),
+                "another writer takes the lock while the end waits"
+            );
+            // The vendor's word on its way out, through the real hook.
+            let quiet = crate::config::Config {
+                notifications: crate::config::Delivery::Off,
+                park_after: 0,
+                ..crate::config::Config::default()
+            };
+            crate::hook::run(
+                Some(id),
+                None,
+                &root,
+                &mut br#"{"hook_event_name":"SessionEnd","reason":"other"}"#.as_slice(),
+                &mut std::io::sink(),
+                &quiet,
+                None,
+            );
+            sent = Some(crate::verbs::send::deliver(
+                &it.agent,
+                server,
+                pane,
+                "carry on with the importer",
+                &[],
+            ));
+            screen = server.capture(pane).unwrap_or_default();
+            stop::end(server, pane, id)
+        };
+
+        assert_eq!(
+            let_go_by(&root, &it.agent, &meta, 3_600, 4_600, end).unwrap(),
+            exit::OK
+        );
+        let refused = sent.expect("the end ran").unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("is parked and has no pane"),
+            "{refused:#}"
+        );
+        assert!(
+            !screen.contains("carry on"),
+            "typed into the dying pane: {screen}"
+        );
+        assert!(!it.has_a_pane());
+        let (stamp, kinds) = left(&it.agent);
+        assert_eq!(stamp, 4_600, "{kinds:?}");
+        assert_eq!(kinds.last().map(String::as_str), Some(PARKED), "{kinds:?}");
     }
 
     #[test]

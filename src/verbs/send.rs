@@ -247,8 +247,8 @@ enum Delivered {
 ///
 /// The caller's reading was taken without the lock, so the record is read
 /// again under the writer, which is held until Enter is pressed. `_park` holds
-/// the same lock from its check to its kill, so a send either lands first or
-/// sees the parked stamp.
+/// the same lock from its check to its stamp, and the stamp stays while the
+/// pane dies, so a send either lands first or sees the parked stamp.
 fn delivered(
     agent: &Agent,
     server: &Server,
