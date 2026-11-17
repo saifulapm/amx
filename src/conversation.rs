@@ -827,12 +827,14 @@ fn opencode_end<V: Borrow<Value>>(
 }
 
 /// An opencode turn's answer: its last step's text, if the turn succeeded.
-/// `None` when the walk holds no turn end.
+/// `None` when the walk holds no turn end, or a turn that succeeded without
+/// its step: a tail can start past a long one.
 fn opencode_answer<V: Borrow<Value>>(newest: impl Iterator<Item = V>) -> Option<Option<String>> {
     Some(match opencode_end(newest)? {
         (outcome, Some(step)) if outcome == "succeeded" => {
             trimmed(&text_of(&step.borrow()["content"]))
         }
+        (outcome, None) if outcome == "succeeded" => return None,
         _ => None,
     })
 }
@@ -1751,6 +1753,15 @@ mod tests {
             settled_answer(Transcript::Codex, CODEX_TURNS),
             Some(Some("pong".to_string()))
         );
+        // opencode answers from its last step, so a turn end without the step
+        // before it, as a tail past a long step has, settles nothing.
+        let idle = OPENCODE_TURN.lines().last().unwrap();
+        assert_eq!(settled_answer(Transcript::Opencode, idle), None);
+        assert_eq!(
+            settled_answer(Transcript::Opencode, OPENCODE_TURN),
+            Some(answer(Transcript::Opencode, OPENCODE_TURN))
+        );
+        assert!(answer(Transcript::Opencode, OPENCODE_TURN).is_some());
     }
 
     #[test]
