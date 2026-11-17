@@ -1604,6 +1604,10 @@ mod tests {
     #[test]
     fn a_restore_that_fails_keeps_its_copy() {
         use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::Uid::effective().is_root() {
+            eprintln!("skipping: running as root, which reads a mode 000 file");
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("amx.ts");
         std::fs::write(&path, "theirs\n").unwrap();
@@ -1624,17 +1628,66 @@ mod tests {
 
     #[test]
     fn latest_backup_breaks_a_tie_in_mtime_by_the_later_name() {
-        // Two copies taken within one clock tick carry the same mtime.
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-        let older = backup_path(&path, 9);
-        let newer = backup_path(&path, 10);
-        for backup in [&newer, &older] {
-            std::fs::write(backup, "{}\n").unwrap();
-            stamp_the_past(backup);
-        }
+        // Two copies taken within one clock tick carry the same mtime. Both
+        // orders of writing them, so the directory's listing order cannot
+        // decide it.
+        for newer_first in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("settings.json");
+            let older = backup_path(&path, 9);
+            let newer = backup_path(&path, 10);
+            let order = match newer_first {
+                true => [&newer, &older],
+                false => [&older, &newer],
+            };
+            for backup in order {
+                std::fs::write(backup, "{}\n").unwrap();
+                stamp_the_past(backup);
+            }
 
-        assert_eq!(latest_backup(&path).unwrap(), Some(newer));
+            assert_eq!(latest_backup(&path).unwrap(), Some(newer), "{newer_first}");
+        }
+    }
+
+    #[test]
+    fn uninstall_deletes_only_the_copy_it_put_back() {
+        // Two setups that each took a copy: uninstall puts the newer back and
+        // leaves the older, the person's file before amx ever touched it.
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join(CONFIG_FILE);
+        std::fs::write(&config, "model = \"gpt-5\"\n").unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+        let first = backups_of(&config);
+        std::fs::write(&config, "model = \"gpt-6\"\n").unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+
+        uninstall_hooks(dir.path(), codex_body()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "model = \"gpt-6\"\n"
+        );
+        assert_eq!(backups_of(&config), first, "the older copy stays");
+    }
+
+    #[test]
+    fn a_restore_of_codexs_config_that_fails_keeps_its_copy() {
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join(CONFIG_FILE);
+        std::fs::write(&config, "model = \"gpt-5\"\n").unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+        let kept = backups_of(&config);
+        // A directory where the restore stages its write, so the write fails
+        // after the copy was read.
+        let part = dir
+            .path()
+            .join(format!("{CONFIG_FILE}.amx-{}", std::process::id()));
+        std::fs::create_dir(&part).unwrap();
+
+        let failed = uninstall_hooks(dir.path(), codex_body());
+
+        assert!(failed.is_err(), "the config could not be written back");
+        assert_eq!(backups_of(&config), kept, "so its copy is still there");
     }
 
     #[test]
