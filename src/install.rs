@@ -845,19 +845,40 @@ fn is_amx_file(text: &str, body: &str) -> bool {
 /// Copy `path` to a timestamped backup beside it when `exists`, returning
 /// the backup's path.
 ///
-/// Fails rather than overwrite an existing backup of the same name.
+/// A backup already taken under this second's name keeps it, and this one
+/// takes the next number free, which sorts after it. Anything else standing
+/// at the name, such as a planted symlink, fails the copy rather than being
+/// written through.
 fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
     if !exists {
         return Ok(None);
     }
-    let backup = backup_path(path, now);
     let mut source =
         std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut dest = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&backup)
-        .with_context(|| format!("copying {} to {}", path.display(), backup.display()))?;
+    let mut stamp = now;
+    let (backup, mut dest) = loop {
+        let backup = backup_path(path, stamp);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup)
+        {
+            Ok(dest) => break (backup, dest),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AlreadyExists
+                    && std::fs::symlink_metadata(&backup).is_ok_and(|found| found.is_file()) =>
+            {
+                stamp = stamp
+                    .checked_add(1)
+                    .with_context(|| format!("no backup name left for {}", path.display()))?;
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("copying {} to {}", path.display(), backup.display())
+                });
+            }
+        }
+    };
     std::io::copy(&mut source, &mut dest)
         .with_context(|| format!("copying {} to {}", path.display(), backup.display()))?;
     Ok(Some(backup))
@@ -866,8 +887,9 @@ fn back_up(path: &Path, now: u64, exists: bool) -> Result<Option<PathBuf>> {
 /// The most recent backup of `path`, if any.
 ///
 /// Chosen by mtime among regular files only, not by the number in the name,
-/// which anyone can plant. `trust::back_up` relies on this to decide whether
-/// a copy is still needed.
+/// which anyone can plant. The number only breaks a tie: two copies taken
+/// within one clock tick share an mtime. `trust::back_up` relies on this to
+/// decide whether a copy is still needed.
 pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(None);
@@ -880,17 +902,17 @@ pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
         Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
     };
 
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut newest: Option<((std::time::SystemTime, u64), PathBuf)> = None;
     for entry in entries {
         let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
-        let is_backup = entry
+        let Some(stamp) = entry
             .file_name()
             .to_string_lossy()
             .strip_prefix(&prefix)
-            .is_some_and(|stamp| stamp.parse::<u64>().is_ok());
-        if !is_backup {
+            .and_then(|stamp| stamp.parse::<u64>().ok())
+        else {
             continue;
-        }
+        };
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
@@ -900,8 +922,11 @@ pub fn latest_backup(path: &Path) -> Result<Option<PathBuf>> {
         let Ok(modified) = metadata.modified() else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(seen, _)| modified > *seen) {
-            newest = Some((modified, entry.path()));
+        if newest
+            .as_ref()
+            .is_none_or(|(seen, _)| (modified, stamp) > *seen)
+        {
+            newest = Some(((modified, stamp), entry.path()));
         }
     }
     Ok(newest.map(|(_, path)| path))
@@ -1451,6 +1476,71 @@ mod tests {
             None,
             "a symlink is not a backup amx wrote, whatever number follows it"
         );
+    }
+
+    /// The hooks file amx ships for codex.
+    fn codex_body() -> &'static str {
+        match crate::vendor::codex::VENDOR
+            .hooks
+            .expect("codex reports")
+            .wire
+        {
+            Wire::Hooks { body, .. } => body,
+            _ => panic!("codex reports through a hooks file"),
+        }
+    }
+
+    /// The names of `path`'s backups, sorted.
+    fn backups_of(path: &Path) -> Vec<String> {
+        let prefix = format!(
+            "{}.amx-backup-",
+            path.file_name().unwrap().to_string_lossy()
+        );
+        let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&prefix))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_second_setup_in_the_same_second_keeps_its_copy_beside_the_first() {
+        // Their own config put back by hand, without amx's trust, then setup
+        // again within the second: the copy it takes needs a name of its own.
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join(CONFIG_FILE);
+        std::fs::write(&config, "model = \"gpt-5\"\n").unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+        std::fs::write(&config, "model = \"gpt-6\"\n").unwrap();
+
+        let report = install_hooks(dir.path(), codex_body(), 7).expect("the second setup");
+
+        let names = backups_of(&config);
+        assert_eq!(names.len(), 2, "two copies under two names: {names:?}");
+        let newest = latest_backup(&config).unwrap().expect("a copy");
+        assert_eq!(report.backup.as_ref(), Some(&newest), "{names:?}");
+        assert_eq!(
+            std::fs::read_to_string(&newest).unwrap(),
+            "model = \"gpt-6\"\n",
+            "the newest copy is the one the second setup took: {names:?}"
+        );
+    }
+
+    #[test]
+    fn latest_backup_breaks_a_tie_in_mtime_by_the_later_name() {
+        // Two copies taken within one clock tick carry the same mtime.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let older = backup_path(&path, 9);
+        let newer = backup_path(&path, 10);
+        for backup in [&newer, &older] {
+            std::fs::write(backup, "{}\n").unwrap();
+            stamp_the_past(backup);
+        }
+
+        assert_eq!(latest_backup(&path).unwrap(), Some(newer));
     }
 
     #[test]
