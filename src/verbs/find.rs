@@ -86,7 +86,8 @@ pub fn run(root: &Path, text: &str, json: bool, out: &mut impl Write) -> Result<
 
 /// The agents under `root` and its archive whose record or transcript holds
 /// `text`, ignoring ASCII case, newest record first, reading at most `budget`
-/// bytes of transcript.
+/// bytes of transcript. Past the budget, a record still matches on its task,
+/// name and title.
 pub fn search(root: &Path, text: &str, budget: u64) -> Result<Found> {
     let needle = text.to_ascii_lowercase().into_bytes();
     let mut found = Found::default();
@@ -117,17 +118,16 @@ pub fn search(root: &Path, text: &str, budget: u64) -> Result<Found> {
             Some(around(words.as_bytes(), at, needle.len()))
         }) {
             Some(line) => Some(line),
+            // Past the budget the transcripts go unread, but what the record
+            // itself says still matches.
             None => match &record.meta.transcript {
-                Some(path) => {
+                Some(path) if !found.stopped => {
                     let (line, read, stopped) = scan(path, &needle, left);
                     left -= read;
-                    if stopped {
-                        found.stopped = true;
-                        break;
-                    }
-                    line
+                    found.stopped = stopped;
+                    line.filter(|_| !stopped)
                 }
-                None => None,
+                _ => None,
             },
         };
         if let Some(line) = line {
@@ -229,11 +229,16 @@ mod tests {
     /// A record under `root` started at `created`, whose transcript holds
     /// `said`.
     fn record(root: &Path, id: &str, created: u64, said: &str) -> PathBuf {
+        record_doing(root, id, created, said, "a task")
+    }
+
+    /// [`record`], for `task`.
+    fn record_doing(root: &Path, id: &str, created: u64, said: &str, task: &str) -> PathBuf {
         let transcript = root.parent().unwrap().join(format!("{id}.jsonl"));
         std::fs::write(&transcript, said).unwrap();
         let meta = serde_json::from_value(json!({
             "id": id,
-            "task": "a task",
+            "task": task,
             "dir": "/srv/app",
             "socket": {"name": "amx"},
             "pane": "%1",
@@ -361,6 +366,43 @@ mod tests {
             String::from_utf8(out)
                 .unwrap()
                 .ends_with("stopped after 128 MB\n")
+        );
+    }
+
+    #[test]
+    fn find_past_its_budget_still_matches_an_older_agents_name_and_task() {
+        let home = TempDir::new().unwrap();
+        let root = agents(&home);
+        // A newer sparse transcript of 130 MB spends the budget on nothing.
+        let transcript = record(&root, "huge-a1b", 30, "");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_len(130 * 1024 * 1024)
+            .unwrap();
+        record(&root, "named-b2c", 20, "nothing here\n");
+        Agent::open(&root, "named-b2c")
+            .unwrap()
+            .writer()
+            .unwrap()
+            .update_state(|state| state.name = Some("importer".to_string()))
+            .unwrap();
+        record_doing(
+            &root,
+            "tasked-c3d",
+            10,
+            "nothing here\n",
+            "port the importer",
+        );
+
+        let mut out = Vec::new();
+        assert_eq!(run(&root, "importer", false, &mut out).unwrap(), exit::OK);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "named-b2c  importer\n\
+             tasked-c3d  port the importer\n\
+             stopped after 128 MB\n"
         );
     }
 
