@@ -1934,8 +1934,7 @@ pub fn view(root: &Path, id: &str, now: u64) -> Result<View> {
 /// Reads one agent for what `wants` needs.
 pub fn view_for(root: &Path, id: &str, now: u64, wants: Wants) -> Result<View> {
     let agent = Agent::open(root, id)?;
-    let meta = agent.meta()?;
-    let state = agent.state()?;
+    let (meta, state) = paired(&agent)?;
     let server = Server::from_socket(meta.socket.clone());
     let rules = own_screens(&meta);
 
@@ -2027,6 +2026,31 @@ fn look(
     seen(&agent, meta, state, reading)
 }
 
+/// An agent's meta and state as one moment of the record.
+///
+/// `amx resume` writes the new pane into meta before it writes state, so a
+/// meta read after a state is at least as new as it. Read meta then state, a
+/// reading that straddled a resume would put the old pane under the new
+/// state. The state is read on both sides of the meta instead, and when it
+/// moved in between, meta is read once more. Once: a record that moves on
+/// every read still gets an answer.
+fn paired(agent: &Agent) -> Result<(Meta, State)> {
+    paired_by(agent, || {})
+}
+
+/// [`paired`], running `between` between its reads.
+fn paired_by(agent: &Agent, mut between: impl FnMut()) -> Result<(Meta, State)> {
+    let first = agent.state()?;
+    between();
+    let meta = agent.meta()?;
+    between();
+    let state = agent.state()?;
+    match state == first {
+        true => Ok((meta, state)),
+        false => Ok((agent.meta()?, state)),
+    }
+}
+
 /// One agent's record read off disk, parsed once for both the sweep and the
 /// reading.
 pub struct Record {
@@ -2049,8 +2073,9 @@ fn records_of(root: &Path, ids: Vec<String>) -> Vec<Record> {
         let Ok(agent) = Agent::open(root, &id) else {
             continue;
         };
-        let Ok(meta) = agent.meta() else { continue };
-        let Ok(state) = agent.state() else { continue };
+        let Ok((meta, state)) = paired(&agent) else {
+            continue;
+        };
         records.push(Record { agent, meta, state });
     }
     records
@@ -3701,6 +3726,59 @@ Muse (1M context) │ ◈ 0% │ probe (main) │ ◖ medium
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("the screen never reached the pane");
+    }
+
+    #[test]
+    fn reader_never_pairs_the_pane_before_a_resume_with_the_state_after_it() {
+        // `amx resume` writes the new pane, then `starting`. A reading that
+        // straddled both would put the old, dead pane under `starting`.
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(root.path(), &meta()).unwrap();
+        let old = agent.meta().unwrap().pane;
+        let new = crate::tmux::PaneId::new("%42").unwrap();
+        let mut reads = 0;
+        let (meta, state) = paired_by(&agent, || {
+            reads += 1;
+            if reads == 1 {
+                let writer = agent.writer().unwrap();
+                writer.update_meta(|meta| meta.pane = new.clone()).unwrap();
+                writer
+                    .update_state(|state| state.state = Phase::Starting)
+                    .unwrap();
+            }
+        })
+        .unwrap();
+        assert_ne!(old, new);
+        assert_eq!((meta.pane, state.state), (new, Phase::Starting));
+    }
+
+    #[test]
+    fn reader_tries_a_record_that_keeps_moving_once_more_and_no_more() {
+        let root = TempDir::new().unwrap();
+        let agent = Agent::create(
+            root.path(),
+            &Meta {
+                pane: crate::tmux::PaneId::new("%0").unwrap(),
+                ..meta()
+            },
+        )
+        .unwrap();
+        let mut moves = 0;
+        let (meta, state) = paired_by(&agent, || {
+            moves += 1;
+            let writer = agent.writer().unwrap();
+            writer
+                .update_meta(|meta| {
+                    meta.pane = crate::tmux::PaneId::new(format!("%{moves}")).unwrap();
+                })
+                .unwrap();
+            writer.update_state(|state| state.seq = moves).unwrap();
+        })
+        .unwrap();
+        assert!(moves <= 2, "read again more than once: {moves}");
+        // The pane read last is at least as new as the state it goes with.
+        let pane: u64 = meta.pane.as_str()[1..].parse().unwrap();
+        assert!(pane >= state.seq, "{pane} under seq {}", state.seq);
     }
 
     /// Writes an agent's record straight to disk, bypassing the writer, so a
