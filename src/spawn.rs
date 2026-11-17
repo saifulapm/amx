@@ -944,6 +944,19 @@ pub fn take_a_place<T>(
         return Ok(Err(full));
     }
     let (claimed, dir) = claim()?;
+    Ok(Ok((claimed, a_port_for(root, &dir, project)?)))
+}
+
+/// Hold a free port for the agent whose directory is `dir`, as
+/// [`take_a_place`] does but under no cap, for a claude moved into amx.
+pub fn hold_a_port(root: &Path, dir: &Path, project: &Path) -> Result<crate::store::Claim> {
+    let _counting = crate::store::spawn_lock(root)?;
+    a_port_for(root, dir, project)
+}
+
+/// Keep a port in `dir` and hold it with a claim. Runs under
+/// [`crate::store::spawn_lock`].
+fn a_port_for(root: &Path, dir: &Path, project: &Path) -> Result<crate::store::Claim> {
     let mut held = held_ports(root)?;
     // An agent already on keeps its port: a second resume of it takes a
     // place before it finds the agent running.
@@ -954,12 +967,11 @@ pub fn take_a_place<T>(
         Some(port) => Some(port),
         None => {
             let port = crate::port::pick(crate::port::range(), &held.into_values().collect());
-            crate::store::keep_port(&dir, port)?;
+            crate::store::keep_port(dir, port)?;
             port
         }
     };
-    let place = crate::store::Claim::hold(&dir, project, port)?;
-    Ok(Ok((claimed, place)))
+    crate::store::Claim::hold(dir, project, port)
 }
 
 /// The port of each agent that holds one: a spawn still setting up, or an
@@ -2265,6 +2277,34 @@ mod tests {
             Some(first),
             "and so does its file"
         );
+    }
+
+    #[test]
+    fn spawn_an_adopt_setting_up_beside_a_new_agent_gets_another_port() {
+        let home = TempDir::new().unwrap();
+        let root = home.path().join("agents");
+        let (new, adopted) = (root.join("new-a1b"), root.join("adopted-b2c"));
+        for dir in [&new, &adopted] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let project = TempDir::new().unwrap();
+
+        let spawning = take_a_place(&root, project.path(), 5, None, || Ok(((), new.clone())))
+            .unwrap()
+            .unwrap()
+            .1;
+        let moving = hold_a_port(&root, &adopted, project.path()).unwrap();
+        assert!(spawning.port().is_some() && moving.port().is_some());
+        assert_ne!(spawning.port(), moving.port());
+        assert_eq!(crate::store::port(&adopted), moving.port());
+
+        // And the other way round: a spawn counts the adopt's claim.
+        drop(spawning);
+        let again = take_a_place(&root, project.path(), 5, None, || Ok(((), new.clone())))
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_ne!(again.port(), moving.port());
     }
 
     #[test]

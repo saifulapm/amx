@@ -29,7 +29,7 @@ use crate::spawn::{self, Handoff};
 use crate::store::{Agent, Event, Meta, Phase, now};
 use crate::tmux::PaneId;
 use crate::verbs::{adopt, ls, new, resume};
-use crate::{exit, paths, registry};
+use crate::{Severity, exit, paths, registry, said};
 
 /// How long the old claude has to end after SIGTERM.
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -43,10 +43,22 @@ pub fn from_env(args: &AdoptArgs) -> Result<i32> {
     let env = spawn::env_snapshot(std::env::vars());
     let home = std::env::home_dir().context("no home directory")?;
     let mut out = std::io::stdout().lock();
-    run(&root, &env, &home, crate::config::current(), args, &mut out)
+    let to_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let mut problems = std::io::stderr().lock();
+    run(
+        &root,
+        &env,
+        &home,
+        crate::config::current(),
+        args,
+        &mut out,
+        &mut problems,
+        to_terminal,
+    )
 }
 
 /// The move, with everything it reads named.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
     env: &BTreeMap<String, String>,
@@ -54,11 +66,24 @@ pub fn run(
     config: &Config,
     args: &AdoptArgs,
     out: &mut impl Write,
+    problems: &mut impl Write,
+    to_terminal: bool,
 ) -> Result<i32> {
     let held = adopt::hold(root)?;
     let planned = plan(root, env, home, config, args, false)?;
-    carry_out(root, env, &planned)?;
+    let portless = carry_out(root, env, &planned)?;
     drop(held);
+    if let Some(warning) = portless {
+        writeln!(
+            problems,
+            "{}",
+            said(
+                Severity::Warned,
+                &format!("amx adopt: {warning}"),
+                to_terminal
+            )
+        )?;
+    }
     writeln!(out, "moved to amx: amx attach {}", planned.id)?;
     Ok(exit::OK)
 }
@@ -130,11 +155,16 @@ pub fn finish_from_env(id: &str) -> Result<i32> {
         && let Ok(mut terminal) = std::fs::OpenOptions::new().write(true).open(tty)
     {
         let _ = match &carried {
-            Ok(()) => writeln!(terminal, "moved to amx: amx attach {id}"),
+            Ok(portless) => {
+                if let Some(warning) = portless {
+                    let _ = writeln!(terminal, "amx adopt: {warning}");
+                }
+                writeln!(terminal, "moved to amx: amx attach {id}")
+            }
             Err(e) => writeln!(terminal, "amx: {e:#}"),
         };
     }
-    carried.map(|()| exit::OK)
+    carried.map(|_| exit::OK)
 }
 
 /// Where a planned move waits for `amx _move`.
@@ -252,16 +282,28 @@ fn plan(
     })
 }
 
-/// End the planned claude, then start its pane.
+/// End the planned claude, then start its pane on a port of its own, and
+/// return the no-free-port warning when there was none.
 ///
 /// A claude that will not end takes its record with it: nothing was started.
 /// A pane that will not start leaves the record failed, and says how to get
 /// the conversation back by hand.
-fn carry_out(root: &Path, env: &BTreeMap<String, String>, planned: &Planned) -> Result<()> {
+fn carry_out(
+    root: &Path,
+    env: &BTreeMap<String, String>,
+    planned: &Planned,
+) -> Result<Option<String>> {
+    let dir = paths::agent_dir_in(root, &planned.id)?;
     if let Err(e) = end(&planned.claude) {
-        let _ = std::fs::remove_dir_all(paths::agent_dir_in(root, &planned.id)?);
+        let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
+    // Held until the pane's record answers for the port, as a spawn's is.
+    let place = spawn::hold_a_port(root, &dir, &planned.claude.cwd)?;
+    let portless = place
+        .port()
+        .is_none()
+        .then(|| crate::port::none_free(&crate::port::range()));
     let pinned = BTreeMap::from([(CONFIG_ENV.to_string(), planned.account.clone())]);
     if let Err(e) = resume::bring_back(root, &planned.id, None, env, &pinned) {
         if let Ok(agent) = Agent::open(root, &planned.id)
@@ -278,7 +320,7 @@ fn carry_out(root: &Path, env: &BTreeMap<String, String>, planned: &Planned) -> 
             recovery(&planned.claude)
         );
     }
-    Ok(())
+    Ok(portless)
 }
 
 /// How long a moved claude has to open its session before the move is taken

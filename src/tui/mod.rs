@@ -2602,14 +2602,27 @@ impl Screen {
             pid: Some(pid),
             ..Default::default()
         };
-        let mut said = Vec::new();
-        match verbs::move_in::run(root, &env, &home, config, &args, &mut said) {
+        let (mut said, mut warned) = (Vec::new(), Vec::new());
+        match verbs::move_in::run(
+            root,
+            &env,
+            &home,
+            config,
+            &args,
+            &mut said,
+            &mut warned,
+            false,
+        ) {
             Ok(_) => {
                 let said = String::from_utf8_lossy(&said).trim().to_string();
+                let warned = String::from_utf8_lossy(&warned).trim().to_string();
                 self.started = said
                     .strip_prefix("moved to amx: amx attach ")
                     .map(str::to_string);
-                self.notice = Some(Notice::Advice(said));
+                self.notice = Some(match warned.strip_prefix("amx adopt: ") {
+                    Some(warning) => Notice::Refused(format!("{said}; {warning}")),
+                    None => Notice::Advice(said),
+                });
             }
             Err(e) => self.notice = Some(Notice::Refused(format!("{e:#}"))),
         }

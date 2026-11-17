@@ -611,3 +611,49 @@ fn adopt_pid_refuses_a_claude_amx_started_and_one_that_is_not_claude() {
     assert!(!ours.ended());
     assert_eq!(common::agents(&amx), ["an-agent"]);
 }
+
+#[test]
+fn an_adopted_claude_gets_a_port_of_its_own() {
+    let amx = Harness::new();
+    let (mut claude, _) = a_loose_claude(&amx, &[]);
+
+    let id = moved(&adopt(&amx, &["--pid", &claude.pid().to_string()]));
+    amx.until("the old claude to end", || claude.ended().then_some(()));
+
+    // Only the two port variables: the pane's environment holds the
+    // machine's own, secrets among them.
+    let env = common::pane_env(&amx, &id);
+    let port: u16 = env
+        .get("AMX_PORT")
+        .expect("the pane has an AMX_PORT")
+        .parse()
+        .expect("a port number");
+    assert!((4100..=4999).contains(&port), "{port} is out of range");
+    assert_eq!(env.get("PORT"), Some(&port.to_string()));
+}
+
+#[test]
+fn an_adopt_with_no_port_free_says_so_and_still_moves_the_claude() {
+    let amx = Harness::new();
+    let (mut claude, _) = a_loose_claude(&amx, &[]);
+    let held = common::adjacent_ports(1);
+    let port = common::port_of(&held[0]);
+
+    let out = amx
+        .amx_command(&["adopt", "--pid", &claude.pid().to_string()])
+        .env("MOCK_CLAUDE_SCENARIO", amx.scenario("continues-a-session"))
+        .env("AMX_PORT_RANGE", format!("{port}-{port}"))
+        .output()
+        .expect("running amx adopt");
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        said.contains(&format!(
+            "amx adopt: no free port in {port}-{port}; the agent starts without $AMX_PORT and $PORT"
+        )),
+        "{said}"
+    );
+    let id = moved(&out);
+    amx.until("the old claude to end", || claude.ended().then_some(()));
+    amx.until_state(&id, "idle");
+    assert_eq!(common::pane_env(&amx, &id).get("AMX_PORT"), None);
+}
