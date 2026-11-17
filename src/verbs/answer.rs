@@ -733,7 +733,8 @@ fn reply(
     if send::moved(read, &now) || send::told_since(agent, read, from)? {
         return Ok(Answered::Moved);
     }
-    if !keyboard.answers_for(agent.id()) {
+    // `_park` lets the writer go while the pane dies, and the stamp stays.
+    if now.parked_at > 0 || !keyboard.answers_for(agent.id()) {
         return Ok(Answered::Gone);
     }
     drive(keyboard, &steps(&answer, note, shape))?;
@@ -1984,6 +1985,28 @@ mod tests {
         writer.append(&Event::new("Notification", said)).unwrap();
         let question = question.clone();
         writer.update_state(|state| *state = question).unwrap();
+    }
+
+    #[test]
+    fn a_question_on_a_record_park_has_stamped_gets_no_keys() {
+        // `_park` lets the writer go while the vendor dies, and a question the
+        // dying vendor raises keeps the stamp; the pane it is on is going.
+        for key in ["1", "y", "esc"] {
+            let root = tempfile::TempDir::new().unwrap();
+            let agent = recorded(root.path(), &a_permission_box());
+            agent
+                .writer()
+                .unwrap()
+                .observe(|state| state.parked_at = 4_600)
+                .unwrap();
+            let from = send::logged(&agent);
+            let read = agent.state().unwrap();
+
+            let (replied, typist) = answer_at(&agent, &read, from, key);
+            assert!(matches!(replied, Answered::Gone), "{key}");
+            assert!(typist.0.borrow().is_empty(), "{key}: nothing is typed");
+            assert!(agent.events().unwrap().is_empty(), "{key}: none logged");
+        }
     }
 
     #[test]

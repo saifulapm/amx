@@ -682,8 +682,9 @@ fn running(payload: &Value) -> (u32, u32) {
 ///   leave that box up, and so does its turn ending while subagents still run.
 ///   A subagent's finish also sets the counts of tasks still running.
 ///   A payload for an ended record changes nothing.
-/// - Any event about the agent clears the interrupt and park stamps, since
-///   the vendor spoke.
+/// - Any event about the agent clears the interrupt stamp, since the vendor
+///   spoke. Only a start or a prompt clears the park stamp: a parked vendor's
+///   last words on its way out leave it.
 ///
 /// Returns the notice this stop is worth, once per stop. A menu fires three
 /// events (the call, a permission event for the same tool, a notification),
