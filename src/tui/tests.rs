@@ -1535,6 +1535,7 @@ fn find_t_narrows_on_enter_to_the_agents_whose_conversation_holds_the_text() {
     );
 
     press(&mut screen, KeyEvent::from(KeyCode::Enter));
+    wait_for_the_search(&mut screen);
     assert_eq!(
         showing_ids(&screen),
         ["ask-a1b"],
@@ -1546,6 +1547,208 @@ fn find_t_narrows_on_enter_to_the_agents_whose_conversation_holds_the_text() {
     press(&mut screen, KeyEvent::from(KeyCode::Char('/')));
     press(&mut screen, KeyEvent::from(KeyCode::Esc));
     assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+}
+
+/// Take the screen's `t:` answer, waiting up to five seconds for it.
+fn wait_for_the_search(screen: &mut Screen) {
+    for _ in 0..500 {
+        screen.take_the_search();
+        if screen.searching.is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the search never answered");
+}
+
+/// Write a record for `id` with `task` under `root`. Its transcript holds
+/// `said`, or is a FIFO when `said` is None, so a search reading it waits
+/// until [`release`] writes to it.
+fn on_disk(root: &Path, id: &str, task: &str, said: Option<&str>) -> PathBuf {
+    let transcript = root.join(format!("{id}.jsonl"));
+    match said {
+        Some(said) => std::fs::write(&transcript, said).unwrap(),
+        None => nix::unistd::mkfifo(&transcript, nix::sys::stat::Mode::S_IRWXU).unwrap(),
+    }
+    let meta: crate::store::Meta = serde_json::from_value(serde_json::json!({
+        "id": id, "task": task, "dir": "/srv/app", "socket": {"name": "amx"},
+        "pane": "%1", "bg": false, "depth": 0, "created": 1, "transcript": transcript,
+    }))
+    .unwrap();
+    crate::store::Agent::create(root, &meta).unwrap();
+    transcript
+}
+
+/// Let the one search reading `fifo` go on: wait for it to open the FIFO,
+/// write `said` and close, which ends its read.
+fn release(fifo: &Path, said: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    for _ in 0..500 {
+        // Opening to write without blocking fails until a reader is there.
+        let opened = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+            .open(fifo);
+        if let Ok(mut writer) = opened {
+            writer.write_all(said.as_bytes()).unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("no search opened {}", fifo.display());
+}
+
+/// What the notice says, if there is one.
+fn noticed(screen: &Screen) -> Option<&str> {
+    match &screen.notice {
+        Some(Notice::Failed(said) | Notice::Refused(said) | Notice::Advice(said)) => Some(said),
+        None => None,
+    }
+}
+
+/// Type a `t:` search for `text` and press enter.
+fn search_for(screen: &mut Screen, root: &Path, config: &Config, text: &str) {
+    screen
+        .act(KeyEvent::from(KeyCode::Char('/')), root, config, None)
+        .unwrap();
+    for typed in format!("t:{text}").chars() {
+        screen
+            .act(KeyEvent::from(KeyCode::Char(typed)), root, config, None)
+            .unwrap();
+    }
+    screen
+        .act(KeyEvent::from(KeyCode::Enter), root, config, None)
+        .unwrap();
+}
+
+#[test]
+fn find_t_reads_the_conversations_while_keys_keep_working() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let fifo = on_disk(root.path(), "ask-a1b", "a task", None);
+    on_disk(
+        root.path(),
+        "port-b2c",
+        "a task",
+        Some("{\"text\":\"done\"}\n"),
+    );
+    let mut screen = watching(a_fleet_to_search());
+
+    search_for(&mut screen, root.path(), &config, "importer");
+    assert_eq!(noticed(&screen), Some("reading conversations"));
+    assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+    assert_eq!(screen.list.narrowing(), None);
+
+    assert_eq!(screen.list.selected().map(View::id), Some("ask-a1b"));
+    // The first j lands on the Completed heading, the second on its agent.
+    for _ in 0..2 {
+        screen
+            .act(
+                KeyEvent::from(KeyCode::Char('j')),
+                root.path(),
+                &config,
+                None,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        screen.list.selected().map(View::id),
+        Some("port-b2c"),
+        "j moves while it reads"
+    );
+    // The key cleared the notice; the next frame shows the search is still on.
+    screen.take_the_search();
+    assert_eq!(noticed(&screen), Some("reading conversations"));
+
+    release(&fifo, "{\"text\":\"the importer breaks on login\"}\n");
+    wait_for_the_search(&mut screen);
+    assert_eq!(showing_ids(&screen), ["ask-a1b"]);
+    assert_eq!(screen.list.narrowing().as_deref(), Some("t:importer"));
+    assert_eq!(noticed(&screen), None);
+}
+
+#[test]
+fn find_t_a_second_enter_drops_the_first_search() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    // Only the importer search reads the FIFO: `other` is in port-b2c's task,
+    // so the second search matches it there and never opens its transcript.
+    on_disk(
+        root.path(),
+        "ask-a1b",
+        "a task",
+        Some("{\"text\":\"the other team\"}\n"),
+    );
+    let fifo = on_disk(root.path(), "port-b2c", "another task", None);
+    let mut screen = watching(a_fleet_to_search());
+
+    search_for(&mut screen, root.path(), &config, "importer");
+    search_for(&mut screen, root.path(), &config, "other");
+    wait_for_the_search(&mut screen);
+    release(&fifo, "{\"text\":\"the importer\"}\n");
+    // Give the first search time to answer, were its answer still taken.
+    for _ in 0..30 {
+        screen.take_the_search();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(screen.list.narrowing().as_deref(), Some("t:other"));
+    assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+}
+
+#[test]
+fn find_t_esc_on_the_line_drops_the_search() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let fifo = on_disk(root.path(), "ask-a1b", "a task", None);
+    on_disk(
+        root.path(),
+        "port-b2c",
+        "a task",
+        Some("{\"text\":\"done\"}\n"),
+    );
+    let mut screen = watching(a_fleet_to_search());
+
+    search_for(&mut screen, root.path(), &config, "importer");
+    screen
+        .act(
+            KeyEvent::from(KeyCode::Char('/')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    screen
+        .act(KeyEvent::from(KeyCode::Esc), root.path(), &config, None)
+        .unwrap();
+    release(&fifo, "{\"text\":\"the importer\"}\n");
+    for _ in 0..30 {
+        screen.take_the_search();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(screen.list.narrowing(), None);
+    assert_eq!(showing_ids(&screen), ["ask-a1b", "port-b2c"]);
+    assert_eq!(noticed(&screen), None);
+}
+
+#[test]
+fn find_t_q_closes_the_view_while_a_search_reads() {
+    let root = TempDir::new().unwrap();
+    let config = Config::default();
+    let fifo = on_disk(root.path(), "ask-a1b", "a task", None);
+    let mut screen = watching(a_fleet_to_search());
+
+    search_for(&mut screen, root.path(), &config, "importer");
+    let doing = screen
+        .act(
+            KeyEvent::from(KeyCode::Char('q')),
+            root.path(),
+            &config,
+            None,
+        )
+        .unwrap();
+    assert!(matches!(doing, Doing::Close), "q waits for no search");
+    release(&fifo, "");
 }
 
 #[test]

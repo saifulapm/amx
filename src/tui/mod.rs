@@ -43,6 +43,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{BufWriter, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::Config;
@@ -702,7 +703,14 @@ struct Screen {
     stepped: Option<Instant>,
     /// Lines this view has sent, tasks and replies apart, for recall.
     sent: act::Backlog,
+    /// A `t:` search reading on its own thread: its text and where its answer
+    /// lands. Replacing or dropping it drops the answer, and the thread, never
+    /// joined, ends on its own.
+    searching: Option<(String, mpsc::Receiver<Result<verbs::find::Found>>)>,
 }
+
+/// The notice a `t:` search shows while it reads.
+const READING: &str = "reading conversations";
 
 /// Run the view on this terminal until it is closed.
 ///
@@ -1133,6 +1141,7 @@ where
             screen.adopt_the_view();
         }
         screen.step();
+        screen.take_the_search();
         screen.let_a_lapsed_arm_go();
         terminal.draw(|frame| paint::draw(frame, &screen))?;
 
@@ -2211,8 +2220,10 @@ impl Screen {
                 if self.on_the_card(&composer) {
                     self.look_away();
                 }
-                // Cancelling a search clears the narrowing it made.
+                // Cancelling a search clears the narrowing it made, and drops
+                // the answer of a `t:` search still reading.
                 if let Asking::Find = composer.asking {
+                    self.searching = None;
                     self.widen();
                 }
                 return Ok(Doing::Carry);
@@ -3172,14 +3183,49 @@ impl Screen {
         self.follow_the_cursor();
     }
 
-    /// Narrow the wall to the agents whose conversation holds `text`, saying
-    /// so when the search stopped at its budget.
+    /// Search the conversations for `text` on a thread of its own, so keys and
+    /// the paint go on while it reads. A search already reading is dropped.
     fn read_the_conversations(&mut self, root: &Path, text: &str) {
-        match verbs::find::search(root, text, verbs::find::BUDGET) {
+        let (answer, answered) = mpsc::channel();
+        let (root, wanted) = (root.to_path_buf(), text.to_string());
+        std::thread::spawn(move || {
+            // The view may have dropped the receiver, so a failed send is fine.
+            let _ = answer.send(verbs::find::search(&root, &wanted, verbs::find::BUDGET));
+        });
+        self.searching = Some((text.to_string(), answered));
+        self.notice = Some(Notice::Advice(READING.to_string()));
+    }
+
+    /// Take a finished `t:` search's answer, if one has arrived: narrow the
+    /// wall to the agents whose conversation holds the text, saying so when
+    /// the search stopped at its budget. While it reads, the notice says so
+    /// whenever no other notice is showing.
+    fn take_the_search(&mut self) {
+        let Some((text, answered)) = &self.searching else {
+            return;
+        };
+        let answer = match answered.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => {
+                if self.notice.is_none() {
+                    self.notice = Some(Notice::Advice(READING.to_string()));
+                }
+                return;
+            }
+            // The thread died without answering.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(anyhow::anyhow!("the conversation search stopped"))
+            }
+        };
+        let text = text.clone();
+        self.searching = None;
+        if matches!(&self.notice, Some(Notice::Advice(said)) if said == READING) {
+            self.notice = None;
+        }
+        match answer {
             Ok(found) => {
                 let ids = found.hits.into_iter().map(|hit| hit.id).collect();
-                self.list
-                    .narrow(vec![Narrow::Held(Some((text.to_string(), ids)))]);
+                self.list.narrow(vec![Narrow::Held(Some((text, ids)))]);
                 if found.stopped {
                     self.notice = Some(Notice::Advice(format!(
                         "stopped after {} MB of conversation",
