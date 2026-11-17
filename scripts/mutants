@@ -1,0 +1,20 @@
+#!/bin/sh
+# Mutates the lines of src/ changed since <base>, such as a milestone's first
+# commit's parent, and runs tests against each mutant, so a test that passes
+# whatever its fix does shows before the review: each `MISSED` line is a
+# change no test noticed. Tests are the unit tests unless cargo test arguments
+# follow the base, as in `scripts/mutants f3aa2a87 --test e2e_codex`. An
+# orchestrator runs it over a milestone's commits before the review.
+set -eu
+[ $# -ge 1 ] || { echo "usage: scripts/mutants <base> [cargo test args]" >&2; exit 2; }
+base=$1
+shift
+[ $# -gt 0 ] || set -- --bin amx
+diff=$(mktemp)
+trap 'rm -f "$diff"' EXIT
+git diff "$base" HEAD -- src > "$diff"
+# The copies it builds go under ~/.cache, since a build under /tmp runs out
+# of room, and so does its report: ~/.cache/amx-mutants/mutants.out.
+mkdir -p "$HOME/.cache/amx-mutants"
+"$(dirname "$0")/clean-room" env TMPDIR="$HOME/.cache" \
+    cargo mutants --in-diff "$diff" --output "$HOME/.cache/amx-mutants" -- "$@"
