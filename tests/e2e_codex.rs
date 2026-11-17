@@ -771,16 +771,10 @@ fn setup_wires_codex_beside_their_hooks_and_uninstall_puts_both_files_back() {
         std::fs::read_to_string(codex.join("config.toml")).unwrap(),
         config
     );
-    // setup's backups stay behind.
-    for (path, bytes) in tree(&codex) {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        match name.split_once(".amx-backup-") {
-            None => assert!(name == "hooks.json" || name == "config.toml", "{name}"),
-            Some((file, _)) => assert_eq!(
-                bytes,
-                std::fs::read(codex.join(file)).ok(),
-                "{name} is the file as it was"
-            ),
-        }
-    }
+    // and the copies setup took go with amx.
+    let names: Vec<_> = tree(&codex)
+        .into_iter()
+        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["config.toml", "hooks.json"]);
 }

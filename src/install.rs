@@ -345,6 +345,7 @@ pub fn uninstall_plugin(dir: &Path, files: &[(&str, &str)]) -> Result<Report> {
         if let Some(kept) = latest_backup(&path)? {
             std::fs::copy(&kept, &path)
                 .with_context(|| format!("putting {} back", path.display()))?;
+            put_back(&kept)?;
             report.backup = Some(kept);
         }
     }
@@ -709,7 +710,8 @@ fn restore(path: &Path, kept: Option<&Path>, empty: bool, rest: &[u8]) -> Result
         Some(kept) => {
             let bytes =
                 std::fs::read(kept).with_context(|| format!("reading {}", kept.display()))?;
-            write_bytes(path, &bytes)
+            write_bytes(path, &bytes)?;
+            put_back(kept)
         }
         None if empty => {
             std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))
@@ -826,12 +828,19 @@ pub fn uninstall_file(path: &Path, body: &str) -> Result<Report> {
         std::fs::copy(backup, path).with_context(|| {
             format!("putting {} back over {}", backup.display(), path.display())
         })?;
+        put_back(backup)?;
     }
     Ok(Report {
         path: path.to_path_buf(),
         backup,
         changed: true,
     })
+}
+
+/// Delete the backup `kept` once its file is put back from it: the file is the
+/// person's again, and a copy left behind takes the name the next setup wants.
+fn put_back(kept: &Path) -> Result<()> {
+    std::fs::remove_file(kept).with_context(|| format!("removing {}", kept.display()))
 }
 
 /// Whether `text` is amx's file: its first line matches the shipped body's,
@@ -1525,6 +1534,91 @@ mod tests {
             std::fs::read_to_string(&newest).unwrap(),
             "model = \"gpt-6\"\n",
             "the newest copy is the one the second setup took: {names:?}"
+        );
+    }
+
+    #[test]
+    fn uninstall_puts_codexs_config_back_and_deletes_the_copy_it_took() {
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join(CONFIG_FILE);
+        let theirs = "model = \"gpt-5\"\n";
+        std::fs::write(&config, theirs).unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+        assert_eq!(backups_of(&config).len(), 1, "setup took a copy");
+
+        uninstall_hooks(dir.path(), codex_body()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), theirs);
+        assert_eq!(backups_of(&config), Vec::<String>::new(), "no copy is left");
+        assert!(
+            !dir.path().join(HOOKS_FILE).exists(),
+            "amx made the hooks file"
+        );
+    }
+
+    #[test]
+    fn uninstall_puts_their_hooks_file_back_and_deletes_the_copy_it_took() {
+        let dir = TempDir::new().unwrap();
+        let hooks = dir.path().join(HOOKS_FILE);
+        let theirs = "{\"hooks\": {}}\n";
+        std::fs::write(&hooks, theirs).unwrap();
+        install_hooks(dir.path(), codex_body(), 7).unwrap();
+        assert_eq!(backups_of(&hooks).len(), 1, "setup took a copy");
+
+        uninstall_hooks(dir.path(), codex_body()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), theirs);
+        assert_eq!(backups_of(&hooks), Vec::<String>::new(), "no copy is left");
+    }
+
+    #[test]
+    fn uninstall_puts_their_file_back_and_deletes_the_copy_it_took() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("amx.ts");
+        std::fs::write(&path, "theirs\n").unwrap();
+        install_file(&path, "// amx\n", 7).unwrap();
+
+        uninstall_file(&path, "// amx\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+        assert_eq!(backups_of(&path), Vec::<String>::new(), "no copy is left");
+    }
+
+    #[test]
+    fn uninstall_puts_their_skill_back_and_deletes_the_copy_it_took() {
+        let dir = TempDir::new().unwrap();
+        let skill = dir.path().join("SKILL.md");
+        std::fs::write(&skill, "their skill\n").unwrap();
+        let files = [
+            ("SKILL.md", "amx's skill\n"),
+            (MANIFEST, "{\"name\": \"amx\"}\n"),
+        ];
+        install_plugin(dir.path(), &files, 7).unwrap();
+
+        uninstall_plugin(dir.path(), &files).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), "their skill\n");
+        assert_eq!(backups_of(&skill), Vec::<String>::new(), "no copy is left");
+    }
+
+    #[test]
+    fn a_restore_that_fails_keeps_its_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("amx.ts");
+        std::fs::write(&path, "theirs\n").unwrap();
+        install_file(&path, "// amx\n", 7).unwrap();
+        let kept = latest_backup(&path).unwrap().expect("a copy");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let failed = uninstall_file(&path, "// amx\n");
+
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(failed.is_err(), "the copy could not be read back");
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            "theirs\n",
+            "so it is still there to put back by hand"
         );
     }
 
